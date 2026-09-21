@@ -410,6 +410,70 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       externalId: data.id ? `op-${data.id as string}` : undefined,
       projectGuess,
     });
+
+    // --- WHO ON OUR SIDE WROTE IT (Sep 21 2026) -----------------------------
+    // Jordan: "make sure we track Kyle's responses in OpenPhone." Kyle's
+    // handset IS the company line, so until now every text the office sent was
+    // logged "Us" and the hub could not tell his words from Jordan's — 481 of
+    // the last 639 outbound texts. OpenPhone has always told us: the event
+    // carries data.object.userId. We simply threw it away.
+    //
+    // THE GATE IS NARROW ON PURPOSE. `userId` is present on INBOUND events too,
+    // and there it names the OpenPhone user whose INBOX the message landed in,
+    // not the person who typed it: all 730 stored incoming payloads carry the
+    // owner's id. The same is true of a teammate texting a client from their
+    // own handset, which OpenPhone stamps "incoming" — those rows are already
+    // named from the phone roster above, so nothing is lost by refusing them.
+    // So we trust this field only when OpenPhone's OWN direction is outgoing
+    // and the message left the workspace line. (Verified against 1,528 stored
+    // payloads: 692 outgoing, 692 with a userId, split 367 Kyle / 286 Jordan —
+    // which is the proof it varies with the sender rather than being a
+    // constant.) Everything else stays null, and null means UNKNOWN.
+    //
+    // Best-effort: attribution is a nice-to-have on top of the message, never a
+    // reason for the receiver to fail an event and retry the whole thing.
+    // THE GATE ITSELF NOW LIVES IN commSenders (Sep 21 2026, second pass). It
+    // was four conditions written out here and transcribed into the drill, so
+    // the drill would have gone on passing if the two ever drifted. One exported
+    // predicate, two callers, and the proof exercises the shipped rule.
+    //
+    // AND IT CANNOT INVENT AN ATTRIBUTION FOR A MESSAGE THE HUB SENT — without
+    // any send rail having to remember anything (Sep 21 2026, third pass).
+    //
+    // The first two passes made each rail stamp its own row. Four were fixed and
+    // the reviewers then found seven more doing the same thing, so the rule was
+    // moved here, where the echo is actually read, and restated as positive
+    // evidence: the hub's OpenPhone API key can only ever send as its own owner,
+    // so an echo carrying SOMEBODY ELSE'S id (Kyle's) can only have come from
+    // that person's handset and is attributed, while an echo carrying the KEY
+    // OWNER'S id is ambiguous forever — Jordan typing on his handset and the hub
+    // sending for Kyle look identical to OpenPhone — and is refused outright by
+    // stampCommSender. The cost is real and deliberate: Jordan's own
+    // handset-typed texts from the line stay UNKNOWN. He is not the one being
+    // coached, and inventing an attribution for him is the exact failure mode.
+    //
+    // The per-rail session stamps stay, because a session is BETTER evidence
+    // than an echo. Nothing here depends on them any more.
+    const { payloadIsAttributable, stampCommSender, hubComposedProviderId, noteApiKeySender } =
+      await import("@/lib/commSenders");
+    const senderUserId = typeof data.userId === "string" ? data.userId.trim() : "";
+    const messageId = typeof data.id === "string" ? data.id : "";
+    if (payloadIsAttributable({ eventType: type, direction, fromWorkspaceLine: fromLine, senderUserId, messageId })) {
+      // WHICH ID IS THE AMBIGUOUS ONE, learned from a message we KNOW we sent.
+      // An OutboxMessage holding this provider id is the hub's own record that
+      // it handed the text to the API, so the id on this echo is the key's
+      // owner by definition. That keeps the rule true through a key rotation
+      // with no deploy and no settings screen. Costs one indexed lookup on the
+      // ~690 outgoing message events a month, and writes only when it changes.
+      if (await hubComposedProviderId(messageId).catch(() => false)) {
+        await noteApiKeySender(senderUserId).catch((e) => {
+          console.warn("[webhook] openphone: could not record the API key's sender —", e instanceof Error ? e.message : e);
+        });
+      }
+      await stampCommSender({ externalId: `op-${messageId}`, senderUserId }).catch((e) => {
+        console.warn("[webhook] openphone: sender attribution skipped —", e instanceof Error ? e.message : e);
+      });
+    }
   }
 
   // --- Client path: log + reply task + revision detection (when we know the client).

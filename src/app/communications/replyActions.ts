@@ -141,6 +141,20 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
   const body = text.trim();
   if (!body) return { ok: false, message: "Write something first." };
 
+  // WHO IS TYPING (Sep 21 2026). Read before the send, because this is the only
+  // moment the hub will ever know it. Everything after this goes out through the
+  // OpenPhone API key, and that key belongs to Jordan — so the delivery echo
+  // comes back carrying HIS OpenPhone user id whoever pressed Send (89 of 89
+  // known hub sends carry it, 0 carry Kyle's). Until this line existed, a reply
+  // Kyle wrote in the Replies tab was recorded as Jordan's and the task
+  // full-view printed "Jordan Spackman" above Kyle's words. That is a worse
+  // claim than the "Us" this row used to carry, because "Us" named nobody.
+  // An owner in "view as" is NOT recorded: the preview is read-only, and
+  // recording a send against the person being previewed would be a lie.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const actor = await getCurrentUser().catch(() => null);
+  const actorTeamMemberId = actor && !actor.impersonating ? actor.teamMemberId : null;
+
   const card = await replyCardFor(key);
   if (!card) return { ok: false, message: "That conversation has already been answered." };
   if (!card.phone) {
@@ -183,6 +197,30 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
     // every shoot card the inbound was visible on (false-visible > hidden).
     projectGuess: true,
   }).catch(() => { /* the text is already sent; a log failure must not report failure */ });
+
+  // …and mark the row so the delivery echo cannot put the API key owner's name
+  // on it. It is marked as the HUB's words, not this person's, and that is a
+  // correction to what this comment said when it was written (Sep 21 2026).
+  //
+  // It claimed "a draft they read, edited and approved". Nothing here knows
+  // that. ReplyQueue pre-fills the textarea with the AI draft (ReplyQueue.tsx
+  // sends s.draft) and Send works on it untouched, so a row stamped "the
+  // person" can hold sentences the hub wrote. On its own that is a wrong byline;
+  // downstream it is worse, because the comms coaching audit reads exactly this
+  // shape and would coach Kyle on our draft's wording.
+  //
+  // The cost of refusing to claim it is one row: over 30 days 365 outbound texts
+  // came from Kyle's own handset and exactly 1 went out through a hub rail. So
+  // this gives up almost no signal and removes the last way a wrong name is
+  // written. To earn the byline back, `sendReply` needs the draft it offered
+  // alongside the text that was sent, and can then claim the person whenever the
+  // two differ — a client change, deliberately not made in passing.
+  if (sentId) {
+    void actorTeamMemberId; // read before the send; kept for when the draft arrives
+    await import("@/lib/commSenders")
+      .then(({ stampCommActor }) => stampCommActor({ externalId: `op-${sentId}`, wrote: "the hub" }))
+      .catch(() => { /* attribution is never a reason to report a sent text as failed */ });
+  }
 
   if (card.clientId) {
     await closeReplyForOutbound(card.clientId, body).catch(() => {});

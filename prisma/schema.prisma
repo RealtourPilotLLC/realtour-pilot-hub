@@ -1876,6 +1876,27 @@ model CommLog {
   // by project (e.g. the /ops shoot-card comms chip) must not treat a guessed
   // filing as proof the message is about that job.
   projectGuess Boolean  @default(false)
+
+  // WHO ON OUR SIDE ACTUALLY WROTE IT (Jordan, Sep 21 2026: "make sure we track
+  // Kyle's responses in OpenPhone"). Until now an outbound text from the company
+  // line was logged as "Us" and nothing more — 481 of the last 639 outbound
+  // texts, because the office answers on the shared number and contactName was
+  // only ever filled in for a teammate texting from their OWN handset. So the
+  // hub could not tell Kyle's words from Jordan's, which makes coaching anybody
+  // on them impossible and, worse, capable of coaching the wrong person.
+  //
+  // OpenPhone has always sent it: every outbound message webhook carries a
+  // `userId` (verified on a live payload, USpH7KOGFi). We simply never kept it.
+  // senderUserId is the provider's own id, kept raw so it stays true even if the
+  // roster mapping changes; senderTeamMemberId is that id resolved against the
+  // team through /users, re-resolvable at any time and null when we cannot say.
+  //
+  // Null on everything that predates this, on inbound rows and on automated
+  // sends. Null means UNKNOWN, never "nobody" — no audit may treat an
+  // unattributed row as belonging to anyone.
+  senderUserId       String?
+  senderTeamMemberId String?
+
   createdAt    DateTime @default(now())
 
   @@index([clientId])
@@ -1885,6 +1906,8 @@ model CommLog {
   // The reply queue scans recent texts newest-first; without this it table-scans.
   @@index([channel, occurredAt])
   @@index([fromPhone])
+  // The end-of-day comms audit reads one person's outbound day.
+  @@index([senderTeamMemberId, occurredAt])
 }
 
 // Persisted "Ask the Hub" conversations. Powers the owner-only chat-history +

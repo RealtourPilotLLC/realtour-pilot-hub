@@ -2,13 +2,15 @@ import { Suspense } from "react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film } from "lucide-react";
+import { Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film, Radar } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, payVisibilityRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
+import { commsCoachingSettings } from "@/lib/commsCoaching";
+import { CoachingSettings } from "@/components/coaching/CoachingSettings";
 import { ARYEO_MANUAL_NOTE } from "@/lib/integrations/topaz";
 import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
@@ -142,7 +144,7 @@ export default async function SettingsPage() {
   // of six real people, and "0 of 0" automations against thirteen keys; null
   // prints the same honest note the reminders card has always used, and the
   // Section badge is left off rather than asserting a number nobody read.
-  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, automations, reminders] = await Promise.all([
+  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, automations, reminders, coaching] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
     payVisibilityRules().then((r) => ({ paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy })),
     // Team notifications (Jordan, Sep 15) — every active person, the owner
@@ -155,6 +157,12 @@ export default async function SettingsPage() {
     // ONE place the policy is written, because this is the shape the reminder
     // evaluator reads.
     loadRemindersPanelState().catch(() => null),
+    // End-of-day comms coaching (Jordan, Sep 21). A local read like the other
+    // rules, so it paints with them; null rather than defaults on a failure,
+    // because a card that shows "nobody is coached" when it simply could not
+    // read the row is a lie about who is being audited. The shape is
+    // commsCoaching.ts's — that module runs the audit and owns the contract.
+    commsCoachingSettings().catch(() => null),
   ]);
 
   return (
@@ -205,6 +213,27 @@ export default async function SettingsPage() {
             ? <TeamNotifications rows={notifyRows} />
             : <p className="text-sm text-muted">The roster could not be read just now — reload to try again. Nothing has changed about who gets notified.</p>}
         </Section>
+
+        {/* END-OF-DAY COMMS COACHING (Jordan, Sep 21). Sits beside Team
+            notifications and the pay-view switch because all three are about
+            what a PERSON is shown, not about what the machinery does. The
+            anchor is what the report at /coaching links back to. */}
+        <div id="coaching" className="scroll-mt-6">
+          <Section
+            icon={Radar}
+            title="Comms coaching"
+            count={coaching ? (coaching.teamMemberIds.length === 0 ? "nobody yet" : coaching.teamMemberIds.length) : undefined}
+            action={
+              <Link href="/coaching" className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
+                Report <ArrowRight className="size-3" />
+              </Link>
+            }
+          >
+            {coaching
+              ? <CoachingSettings initial={coaching} isOwner={me ? me.role === "OWNER" : !authEnforced()} />
+              : <p className="text-sm text-muted">The coaching rules could not be read just now — reload to try again. Nobody has been added or removed, and nothing has been sent.</p>}
+          </Section>
+        </div>
 
         {/* Owner's own switch — read here so the card can say how long it has
             been on. Placed next to the Review Room because both are about what

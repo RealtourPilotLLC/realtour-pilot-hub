@@ -110,10 +110,11 @@ export async function getTaskConversation(taskId: string): Promise<TaskFullView>
         take: 15,
       });
       rows.reverse();
+      const names = await senderNames(rows);
       return {
         ok: true,
         canSeeConversation: true,
-        conversation: rows.map(rowToMessage).map(forRole(role)),
+        conversation: rows.map((r) => rowToMessage(r, names)).map(forRole(role)),
         note: rows.length === 0 ? "No Slack history captured around this message." : undefined,
       };
     }
@@ -132,10 +133,11 @@ export async function getTaskConversation(taskId: string): Promise<TaskFullView>
         take: 12,
       });
       rows.reverse();
+      const names = await senderNames(rows);
       return {
         ok: true,
         canSeeConversation: true,
-        conversation: rows.map(rowToMessage).map(forRole(role)),
+        conversation: rows.map((r) => rowToMessage(r, names)).map(forRole(role)),
         note: rows.length === 0 ? "No conversation on record for this client yet." : undefined,
       };
     }
@@ -147,18 +149,38 @@ export async function getTaskConversation(taskId: string): Promise<TaskFullView>
   }
 }
 
-function rowToMessage(r: {
-  channel: string;
-  direction: string;
-  clientName: string | null;
-  contactName: string | null;
-  subject: string | null;
-  body: string;
-  occurredAt: Date;
-}): SourceMessage {
+// WHO ON OUR SIDE SAID IT (Sep 21 2026). Every outbound text from the company
+// line used to read "Us" here, because Kyle's handset IS that line. Now that the
+// OpenPhone sender is kept (see lib/commSenders), the person shows through —
+// months later this is the difference between reading a thread and reading a
+// conversation. Rows with no attribution keep saying "Us": null means UNKNOWN,
+// and inventing a name on an old row would be worse than the vagueness.
+async function senderNames(rows: { senderTeamMemberId: string | null }[]): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.map((r) => r.senderTeamMemberId).filter((v): v is string => !!v))];
+  if (ids.length === 0) return new Map();
+  const team = await prisma.teamMember
+    .findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+    .catch(() => [] as { id: string; name: string }[]);
+  return new Map(team.map((t) => [t.id, t.name]));
+}
+
+function rowToMessage(
+  r: {
+    channel: string;
+    direction: string;
+    clientName: string | null;
+    contactName: string | null;
+    subject: string | null;
+    body: string;
+    occurredAt: Date;
+    senderTeamMemberId: string | null;
+  },
+  names: Map<string, string>,
+): SourceMessage {
   const fromUs = r.direction === "out";
+  const ours = (r.senderTeamMemberId && names.get(r.senderTeamMemberId)) || null;
   return {
-    from: fromUs ? "Us" : r.contactName || r.clientName || "Client",
+    from: fromUs ? ours ?? "Us" : r.contactName || r.clientName || "Client",
     fromUs,
     date: r.occurredAt.toISOString(),
     body: r.body,

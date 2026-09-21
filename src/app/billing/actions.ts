@@ -148,6 +148,23 @@ export async function sendPaymentNudge(
     })
     .catch(() => {}); // never let a log write fail the send result
 
+  // MARK IT, BUT DO NOT CLAIM IT (Sep 21 2026, corrected same day). The row has
+  // to be marked HERE: the send goes out through the OpenPhone API key, which
+  // belongs to Jordan, so the delivery echo names him on every reminder Kyle
+  // sends unless something gets there first.
+  //
+  // But it records the HUB, not the sender. This comment first said the nudge is
+  // "drafted for the person but they read and edit it before this action ever
+  // runs" — an assumption, not a fact this code can check. The payment nudge is
+  // our template; a person pressing Send on it unchanged has not written it, and
+  // the comms coaching audit reads this exact shape. Better no byline than a
+  // wrong one. Restoring it needs the offered draft passed in beside the sent
+  // text; see the note in communications/replyActions.ts.
+  if (sentId) {
+    const { stampCommActor } = await import("@/lib/commSenders");
+    await stampCommActor({ externalId: `op-${sentId}`, wrote: "the hub" }).catch(() => {});
+  }
+
   // Stamp the chase (best-effort until the lastNudgedAt migration lands).
   await prisma.project.update({ where: { id: projectId }, data: { lastNudgedAt: new Date() } }).catch(() => {});
 

@@ -139,6 +139,15 @@ export async function sendThreadText(
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
 
+  // WHO IS TYPING (Sep 21 2026). Same reason as the Replies rail: this send goes
+  // out through the OpenPhone API key, which belongs to Jordan, so the delivery
+  // echo names him whoever actually wrote the message. Read the session here,
+  // while we still have it, and stamp it on the row below. An owner in "view as"
+  // is not recorded — that preview is read-only.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const actor = await getCurrentUser().catch(() => null);
+  const actorTeamMemberId = actor && !actor.impersonating ? actor.teamMemberId : null;
+
   let sentId: string | undefined;
   try {
     const sent = await OpenPhone.sendMessage(from, tos.length === 1 ? tos[0] : tos, text || "📎", mediaUrls);
@@ -163,6 +172,21 @@ export async function sendThreadText(
       externalId: sentId ? `op-${sentId}` : undefined,
     }),
   ).catch(() => { /* already sent — a log failure must not report failure */ });
+
+  // Marked as the HUB's words, not this person's. The box has an AI draft button
+  // behind it (ConversationView.tsx), so "the words in this box are the person's
+  // own" — what this comment said on Sep 21 2026 — is not something this action
+  // can know, and a byline the hub cannot support is worse than none. The comms
+  // coaching audit reads this shape, so a wrong byline here becomes Kyle being
+  // coached on our draft. Same rule and same recovery as the Replies rail: pass
+  // the offered draft in beside the sent text and claim the person when they
+  // differ. See the long note in communications/replyActions.ts.
+  if (sentId) {
+    void actorTeamMemberId; // read before the send; kept for when the draft arrives
+    await import("@/lib/commSenders")
+      .then(({ stampCommActor }) => stampCommActor({ externalId: `op-${sentId}`, wrote: "the hub" }))
+      .catch(() => { /* attribution never fails a sent text */ });
+  }
 
   if (clientId) {
     const recent = await prisma.project.findFirst({

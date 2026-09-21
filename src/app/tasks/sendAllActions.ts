@@ -177,7 +177,15 @@ export async function sendDraftText(taskId: string, body: string): Promise<{ ok:
   const label = isDelivery ? "Delivery text" : "Confirmation text";
   const { sendThroughOutbox, confirmationKey, deliveryKey } = await import("@/lib/outbox");
   const { getCurrentUser } = await import("@/lib/auth/user");
-  const who = (await getCurrentUser().catch(() => null))?.email ?? "an admin";
+  const actor = await getCurrentUser().catch(() => null);
+  const who = actor?.email ?? "an admin";
+  // WHO PRESSED SEND is deliberately NOT recorded on this rail (Sep 21 2026).
+  // It is the outbox that owns that fact — `requestedBy` above — because the
+  // words that go out here are the hub's own confirmation/delivery template.
+  // See the stamp below the send for why naming the presser on a template is
+  // worse than naming nobody. The other rails, where a person writes the
+  // sentence, do record the session: replyActions, threadActions, shoot and
+  // billing all call stampCommActor with `wrote: "the person"`.
 
   // The database failure is caught here so a Neon blip answers the person
   // instead of throwing mid-batch — and, critically, is never read as "already
@@ -231,6 +239,7 @@ export async function sendDraftText(taskId: string, body: string): Promise<{ ok:
     .catch(() => {});
   // Self-record in comms memory — don't depend on the delivery webhook (audit;
   // same externalId the webhook uses, so its event dedupes).
+  const externalId = res.providerId ? `op-${res.providerId}` : undefined;
   await import("@/lib/commLog").then(({ logComm }) =>
     logComm({
       channel: "text",
@@ -242,9 +251,30 @@ export async function sendDraftText(taskId: string, body: string): Promise<{ ok:
       fromPhone: `+1${k}`,
       body: text,
       source: "openphone",
-      externalId: res.providerId ? `op-${res.providerId}` : undefined,
+      externalId,
     }),
   ).catch(() => {});
+  // …and mark it THE HUB'S WORDS, not the presser's.
+  //
+  // Corrected Sep 21 2026, hours after the first version, because the review was
+  // right: `text` here is the confirmation/delivery TEMPLATE. It is factually
+  // true that Kyle pressed the button, and the first version recorded him — but
+  // the row is then byte-identical, to the end-of-day audit, to a sentence he
+  // typed himself, and he gets coached on the hub's wording. Being told to write
+  // our own template more warmly is exactly the manufactured criticism that gets
+  // a coaching feature switched off after one night.
+  //
+  // So the row carries the hub-sent sentinel and NO person. That does two jobs
+  // at once: the audit never sees an author on it (null means unknown, and an
+  // unknown row is never coached), and the delivery echo — which comes back
+  // under the API key, i.e. Jordan — can no longer stamp a name on it either.
+  // The panel is not losing anything a surface reads today: before this feature
+  // the row said "Us" and claimed nothing, which is what it says again.
+  if (externalId) {
+    await import("@/lib/commSenders")
+      .then(({ stampCommActor }) => stampCommActor({ externalId, wrote: "the hub" }))
+      .catch(() => {});
+  }
   await prisma.activity.create({
     data: { projectId: project.id, type: "SYSTEM", body: `${label} sent to ${project.client.name}: ${text.slice(0, 160)}` },
   });

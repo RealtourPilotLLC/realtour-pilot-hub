@@ -108,6 +108,21 @@ export interface OpMessage {
   direction?: string; // incoming | outgoing
   status?: string;
   createdAt?: string;
+  conversationId?: string;
+  // WHICH OF OUR PEOPLE SENT IT — and ONLY on an outgoing message. Verified
+  // Sep 21 2026 against 1,528 stored webhook payloads and a live GET /messages
+  // read-back:
+  //   • outgoing: the real sender. 692 of 692 stored outgoing payloads carry
+  //     it, split 367 Kyle / 286 Jordan, which is what proves it tracks the
+  //     person and is not a constant.
+  //   • incoming: MEANINGLESS FOR ATTRIBUTION. The webhook stamps the userId of
+  //     the OpenPhone user whose inbox the message landed in — all 730 stored
+  //     incoming payloads say the workspace owner — while the read-back API
+  //     omits the field entirely. Read naively, every client text in the
+  //     company would be attributed to Jordan.
+  // Anything that reads this must gate on direction === "outgoing". See
+  // src/lib/commSenders.ts, which is the only place that turns it into a person.
+  userId?: string | null;
 }
 export interface OpCall {
   id: string;

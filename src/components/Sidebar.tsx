@@ -23,6 +23,7 @@ import {
   MessageSquareHeart,
   MessageSquarePlus,
   MonitorPlay,
+  Radar,
   IdCard,
   Plug,
   LogOut,
@@ -92,6 +93,18 @@ const SECTIONS: NavSection[] = [
       // own results on /shoot/feedback), so no new permission to grant and a
       // per-user `review` override carries here too.
       { label: "Client & Team Feedback", href: "/quality", icon: MessageSquareHeart, key: "review" },
+      // Feedback about how we TALK to clients: the end-of-day audit of the
+      // messages the office sent from the company line, and the one-thing-to-try
+      // note it writes (Jordan, Sep 21 2026). It sits next to Client & Team
+      // Feedback because it is the same desk — that one is about the work, this
+      // one is about the conversation.
+      //
+      // Rides the `review` PageKey, exactly as its neighbour does: same audience
+      // (owner + admin), so no new permission to grant and a per-user `review`
+      // override carries here too. /coaching itself has no PageKey, so
+      // middleware only checks you are signed in and the page's own owner /
+      // coached-roster check is the real gate — see the header comment there.
+      { label: "Comms coaching", href: "/coaching", icon: Radar, key: "review" },
       // "Project Tracker" (/pipeline) retired from the nav — its delivery board
       // is the Production Pipeline block on Home. Route + PageKey stay.
       // Schedule now carries the Map as its ?view=map tab (List | Map toggle in
@@ -194,8 +207,18 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // photographer has been carrying a nav item that bounced them home since it
     // shipped. /review itself answers them properly now (Sep 18); this one still
     // doesn't, so it comes off their menu rather than staying a dead door.
+    //
+    // "Comms coaching" comes off their menu for a different reason: the page
+    // works for them (a photographer on the coached roster reads their own
+    // notes there), but the roster is empty by default and today the people who
+    // answer the company line are the ops desk. A menu item that says "nothing
+    // here for you" to five photographers is the dead door this filter exists
+    // to prevent — and the Slack note a coached person receives carries the
+    // link, so nobody who IS coached has to find it in a menu.
     if (user && user.role === "PHOTOGRAPHER") {
-      items = items.filter((i) => i.href !== "/resources/video-styles" && i.href !== "/quality");
+      items = items.filter(
+        (i) => i.href !== "/resources/video-styles" && i.href !== "/quality" && i.href !== "/coaching",
+      );
     }
     // "My Pay" is a person's own payout view. Photographers always have it;
     // owner/admin see it ONLY with an explicit mypay:true override (James:

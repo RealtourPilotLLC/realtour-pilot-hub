@@ -880,3 +880,23 @@ export async function saveTopazSettings(next: Partial<TopazSettings>, updatedBy?
   await putSetting("topaz", { ...current, ...next, params: { ...current.params, ...(next.params ?? {}) } }, updatedBy);
   return topazSettings();
 }
+
+// ---------------------------------------------------------------------------
+// END-OF-DAY COMMS COACHING (Jordan, Sep 21 2026) LIVES IN src/lib/commsCoaching.ts
+//
+// A rules getter and a per-day note ledger were written here first, on the same
+// afternoon the audit engine was written next door, and the two did not agree:
+// this file wanted `coaching` / `coaching-note:<id>:<day>`, the engine writes
+// `comms_coaching` / `comms-coaching:<id>:<day>`. Two contracts for one feature
+// is how a report ends up permanently empty while the cron fills a ledger nobody
+// reads, so the copy here is RETIRED rather than left as a second definition
+// somebody could pick up by accident.
+//
+// The one definition is commsCoaching.ts:
+//   · commsCoachingSettings() / COMMS_COACHING_SETTING_KEY — who is coached,
+//     and whether the note is sent (off by default, on purpose).
+//   · readCoachingAudit() / listCoachingAudits() — the per-person, per-ET-day
+//     record the evening cron writes and /coaching reads.
+// Both still store through the generic AppSetting KV this file owns, so nothing
+// about the storage pattern changed — only where the shape is declared.
+// ---------------------------------------------------------------------------
