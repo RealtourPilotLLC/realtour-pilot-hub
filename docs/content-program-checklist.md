@@ -33,6 +33,17 @@ Jordan account and approves rollout.
 |---|---|---|
 | Phase 0 | `ee2c0a2` | This checklist and the provider capability matrix |
 | 1 | `a94d18a` | Preparation clock (48 weekday hours from call end), reminder calendar, production anchor per session |
+| 2 | `b7b6738` | Per-product videographer eligibility from Aryeo, honest production dates, Pro as two confirmed sessions, Stripe activation to portal access, teammates, Jordan test account |
+
+### Still open after batch 2
+
+- **A REOPENED job has no production clock at all.** Correct rather than invented, but not final:
+  Jordan's Sep 16 question (a fixed turnaround from the ask, or Kyle sets it by hand) is still
+  unanswered. 3 live reopened jobs carry no date and the card says so in words.
+- **2705 Graystone Rd is pinned Jul 19** and will read overdue on the board. That is correct (the
+  office wrote the date and the job is unsettled) but it looks like a bug until you know why.
+- Retired AppSetting rows `portal-aryeo-slots` and `portal-aryeo-slots:v2:240` are still in the
+  database, read by nothing. A deliberate cleanup, not done.
 
 Integration tasks needing Jordan or a third party: `docs/integration-tasks.md`.
 
