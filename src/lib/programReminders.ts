@@ -59,6 +59,67 @@ import {
 // when the switch is off — and writes nothing; it returns the exact rows that
 // would send, wait or be suppressed, with reasons. That is the settings
 // panel's "What would go out now?" and the acceptance probe's evidence.
+//
+// ---------------------------------------------------------------------------
+// THE MONTHLY CALENDAR (spec §12, batch F20, Sep 21 2026). What changed and why.
+//
+// The cadence used to be "14 days before the month starts, then every 3
+// business days, deadline the 25th of the PREVIOUS month". That is not the
+// schedule Jordan confirmed, and the old deadline sat in the past for the whole
+// of the month it governed — so `deadlineNear` was true on the first evaluation
+// of every month and every client month escalated to Kyle immediately. §12's
+// calendar is four dated milestones inside the program month itself:
+//
+//   MONTH_OPEN    the 1st                  (weekend → the next weekday)
+//   FOLLOW_UP_1   three WEEKDAYS after the ACTUAL initial send
+//   FOLLOW_UP_2   three more weekdays after that follow-up
+//   MID_MONTH     the 15th                 (weekend → the next weekday)
+//
+// Three WEEKDAYS, not 72 staffed hours: addBusinessDaysET walks ET day keys, so
+// a Friday send is due again on Wednesday, and a clock change cannot move it.
+// The follow-ups anchor on the row that actually SENT, never on the day we
+// wished it had — a send held overnight by quiet hours moves the whole tail.
+//
+// MID_MONTH is its own milestone with its own single attempt, its own ledger
+// identity (`…:mid:n`) and a Kyle follow-up task. It is the "unused sessions do
+// not roll over" note, so it is the one message that is WRONG to send to a
+// client in their first paid production cycle or to one whose shortfall we
+// caused, and both are suppressed with Kyle told instead (§3, §12, A28).
+//
+// LANES. §12 asks for review and address reminders to be kept off the planning
+// cadence, so a month is evaluated once per lane:
+//   PRIMARY  planning + session booking — the four milestones above.
+//   REVIEW   released cuts waiting on the client — its own clock and its own cap.
+//   ADDRESS  §8's "48 elapsed hours before filming, moved BACK to Friday if it
+//            lands on a weekend". Computed and previewed only: the client-facing
+//            template for it lives in reminderTemplates.ts, which is not this
+//            batch's to write, so this lane can never reach `send`.
+// At most one client email per enrollment per ET day across every lane, so two
+// cadences coinciding produce one message and not two near-identical ones.
+// A month is therefore TWO rows on every internal surface, and the lane has to
+// travel with the month id wherever a person can act on one (reminderRowId).
+//
+// WHAT THE CLIENT IS TOLD IS ITS OWN SETTING (F20 review, Sep 21 2026). §12
+// gives four milestones and no planning deadline, so the 15th is a milestone
+// here and nothing more: it anchors the internal escalation clock and Kyle's
+// follow-up, and it is NOT quoted in "We'd love to have it planned by <date>".
+// That sentence renders only when `quotedPlanningDeadlineDayOfMonth` is set,
+// which it is not by default — a client-facing promise is Jordan's to make, not
+// a side effect of moving a milestone.
+//
+// PER SESSION, NOT PER MONTH (A23). Sessions were two booleans — "something is
+// booked", "something was filmed" — which is the same answer for a Pro month
+// with one of its two four-hour sessions on the calendar as for an Accelerator
+// month that is fully booked. The count now comes from the enrollment's
+// sessionsPerMonth against the distinct sessions actually accounted for, and the
+// BOOK_SESSION cadence is keyed to WHICH session is missing (`…:s2:n`), so
+// booking the first one does not spend the second one's reminders.
+//
+// CLIENTS CANNOT TURN THESE OFF (§12, superseding the earlier toggle talk).
+// Nothing in this file reads a client-held preference. The only ways a reminder
+// stops are the ones staff own — a snooze with a reason, a pause, an ended
+// enrollment, revoked access — or the client's own state resolving the thing we
+// were asking for.
 // ---------------------------------------------------------------------------
 
 export const REMINDERS_KEY: AutomationKey = "reminders";
@@ -68,9 +129,16 @@ export type ReminderPolicy = {
   businessHours: { days: number[]; start: string; end: string };
   sender: string;
   escalationOwnerDuty: string;
+  /** RETIRED Sep 21 2026 (F20). The cadence starts on the 1st of the program
+   *  month now (§12), not N days before it. Kept so a stored policy carrying
+   *  the key still validates and saves; nothing reads it. */
   planningOpensDaysBeforeMonth: number;
+  /** RETIRED Sep 21 2026 (F20). Replaced by planningDeadlineDayOfMonth — a
+   *  deadline in the previous month is already past for every day of the month
+   *  it governs, which made every month escalate on its first evaluation. */
   planningDeadlineDayOfPrevMonth: number;
   firstReminderDelayBusinessDays: number;
+  /** §12: three WEEKDAYS between monthly scheduling follow-ups. */
   followUpAfterBusinessDays: number;
   maxAttemptsPerAction: number;
   escalateWhenDeadlineWithinBusinessDays: number;
@@ -93,6 +161,38 @@ export type ReminderPolicy = {
   scriptShareBatchMinutes: number;
   /** Hard cap per evaluator run — a bug cannot email the whole roster in one tick. */
   maxSendsPerRun: number;
+  // ---- the §12 calendar (F20, Sep 21 2026) ---------------------------------
+  /** The monthly planning email goes on this day of the PROGRAM month; a
+   *  weekend moves it to the next weekday. */
+  monthlyOpenDayOfMonth: number;
+  /** The mid-month milestone (the roll-over note + Kyle's follow-up), same
+   *  weekend rule. It is ALSO the internal clock the escalation threshold
+   *  measures against — see monthlyCalendar(). Nothing here is quoted to a
+   *  client. */
+  midMonthDayOfMonth: number;
+  /** RETIRED Sep 21 2026 (F20 review). It was a single number doing two jobs:
+   *  §12's 15th-of-the-month MILESTONE and the date quoted to the client in
+   *  "We'd love to have it planned by <date>". Setting the milestone therefore
+   *  moved a client-facing promise as a side effect — an October client would
+   *  have been told the 15th where the pre-F20 build told them the 25th of
+   *  September. Kept so a stored policy carrying the key still validates and
+   *  saves; nothing reads it. */
+  planningDeadlineDayOfMonth: number;
+  /** THE ONLY DATE A CLIENT IS EVER TOLD. §12's calendar establishes four
+   *  milestones and no planning deadline, so the hub quotes none until Jordan
+   *  sets one: null (the default) renders the planning emails without the
+   *  "planned by <date>" sentence, and a day of the program month renders it.
+   *  Separate from every internal clock on purpose (F20 review, Sep 21 2026). */
+  quotedPlanningDeadlineDayOfMonth: number | null;
+  /** REVIEW lane spacing and cap, deliberately NOT the planning cadence. */
+  reviewFollowUpBusinessDays: number;
+  reviewMaxAttempts: number;
+  /** §8: the missing-address reminder fires this many ELAPSED hours before
+   *  filming (48), moved BACK to the Friday when it lands on a weekend. */
+  addressReminderHoursBefore: number;
+  /** One client email per enrollment per ET day across every lane, so two
+   *  cadences falling together produce one message (§12). */
+  maxClientEmailsPerDay: number;
 };
 
 export const REMINDER_DEFAULTS: ReminderPolicy = {
@@ -100,15 +200,26 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   businessHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "16:30" },
   sender: "info@realtourpilot.com",
   escalationOwnerDuty: "ESCALATION",
-  planningOpensDaysBeforeMonth: 14,
-  planningDeadlineDayOfPrevMonth: 25,
+  planningOpensDaysBeforeMonth: 14, // retired — see the type
+  planningDeadlineDayOfPrevMonth: 25, // retired — see the type
   firstReminderDelayBusinessDays: 0,
   followUpAfterBusinessDays: 3,
-  maxAttemptsPerAction: 2,
+  // §12's cadence is the 1st plus TWO follow-ups; the mid-month milestone has
+  // its own single attempt on top and is not counted here.
+  maxAttemptsPerAction: 3,
   escalateWhenDeadlineWithinBusinessDays: 3,
   digestBothAppointments: true,
   includeNoCallOptionOnlyIfEligible: true,
-  suppressWhen: ["booked", "no_call_chosen", "preparation_submitted", "paused", "ended", "snoozed", "pending_session_request", "stale_scheduler_sync"],
+  // The CATALOGUE of reasons this evaluator can print, for the settings panel.
+  // It is not a switch list: removing "snoozed" from it does not make snoozes
+  // stop working, and a client has no way to add anything to it (§12 — clients
+  // cannot disable program reminders).
+  suppressWhen: [
+    "booked", "no_call_chosen", "preparation_submitted", "paused", "ended", "snoozed",
+    "pending_session_request", "stale_scheduler_sync", "access_revoked", "launch_not_authorised",
+    "no_recipient", "test_client_real_address", "quiet_hours", "first_cycle_exempt",
+    "catch_up_owed", "another_reminder_today", "no_template_yet",
+  ],
   templates: { ...DEFAULT_TEMPLATE_IDS },
   testClientsOnly: true,
   includePastMonths: false,
@@ -117,6 +228,18 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   sessionBookingDeadlineDayOfMonth: 20,
   scriptShareBatchMinutes: 15,
   maxSendsPerRun: 20,
+  monthlyOpenDayOfMonth: 1,
+  midMonthDayOfMonth: 15,
+  planningDeadlineDayOfMonth: 15, // retired — see the type
+  // No date is quoted to a client until Jordan sets one (F20 review, Sep 21 2026).
+  quotedPlanningDeadlineDayOfMonth: null,
+  // §8: four business days to review, with reminders two and one business days
+  // before the deadline. Release + 2 business days is two before; the follow-up
+  // one business day later is one before.
+  reviewFollowUpBusinessDays: 1,
+  reviewMaxAttempts: 2,
+  addressReminderHoursBefore: 48,
+  maxClientEmailsPerDay: 1,
 };
 
 // ---- policy validation (the settings panel and the action share it) ---------
@@ -164,6 +287,28 @@ export function validateReminderPolicy(input: unknown): PolicyValidation {
   num("sessionBookingDeadlineDayOfMonth", 1, 28);
   num("scriptShareBatchMinutes", 0, 240);
   num("maxSendsPerRun", 1, 200);
+  num("monthlyOpenDayOfMonth", 1, 28);
+  num("midMonthDayOfMonth", 1, 28);
+  num("planningDeadlineDayOfMonth", 1, 28);
+  // The one client-facing date in the whole policy. null is a deliberate value
+  // ("quote no deadline"), not a missing one, so it is checked by hand.
+  if (!(p.quotedPlanningDeadlineDayOfMonth === null || (typeof p.quotedPlanningDeadlineDayOfMonth === "number" && Number.isInteger(p.quotedPlanningDeadlineDayOfMonth) && p.quotedPlanningDeadlineDayOfMonth >= 1 && p.quotedPlanningDeadlineDayOfMonth <= 28)))
+    errors.push("quotedPlanningDeadlineDayOfMonth must be a day of the month between 1 and 28, or null to quote no deadline to the client.");
+  num("reviewFollowUpBusinessDays", 0, 20);
+  num("reviewMaxAttempts", 0, 6);
+  num("addressReminderHoursBefore", 1, 336);
+  num("maxClientEmailsPerDay", 1, 5);
+  // A mid-month milestone that lands on or before the opening day is not a
+  // milestone, it is a second first email. Refuse the save rather than let the
+  // collision rule quietly swallow one of them.
+  if (typeof p.midMonthDayOfMonth === "number" && typeof p.monthlyOpenDayOfMonth === "number" && p.midMonthDayOfMonth <= p.monthlyOpenDayOfMonth)
+    errors.push("midMonthDayOfMonth must be later in the month than monthlyOpenDayOfMonth.");
+  // A deadline the client is asked to hit BEFORE we have written to them is not
+  // a deadline, it is an apology waiting to happen.
+  if (typeof p.quotedPlanningDeadlineDayOfMonth === "number" && typeof p.monthlyOpenDayOfMonth === "number" && p.quotedPlanningDeadlineDayOfMonth < p.monthlyOpenDayOfMonth)
+    errors.push("quotedPlanningDeadlineDayOfMonth cannot be earlier in the month than monthlyOpenDayOfMonth — the client would be given a deadline before the first email reaches them.");
+  if (typeof p.quotedPlanningDeadlineDayOfMonth === "number")
+    warnings.push(`quotedPlanningDeadlineDayOfMonth is set: every planning email will tell the client "We'd love to have it planned by the ${p.quotedPlanningDeadlineDayOfMonth}th so your filming session lands on time." That is a promise about turnaround, so set it only if the ${p.quotedPlanningDeadlineDayOfMonth}th really does leave time to film and edit inside the month.`);
   bool("digestBothAppointments"); bool("includeNoCallOptionOnlyIfEligible"); bool("testClientsOnly"); bool("includePastMonths");
   if (!Array.isArray(p.suppressWhen) || !p.suppressWhen.every((s) => typeof s === "string")) errors.push("suppressWhen must be a list of reason names.");
   if (!p.templates || typeof p.templates !== "object" || Array.isArray(p.templates)) errors.push("templates must map actions to template ids.");
@@ -234,13 +379,137 @@ export function nextPolicyWindowOpen(at: Date, p: ReminderPolicy): Date {
 /** Business days between two instants on the ET calendar (weekends only; no holiday calendar in the program). */
 // Kept as a named export for its callers; the arithmetic lives in datetime.ts
 // with the rest of the business-day walk (audit S0, Sep 18).
-import { businessDaysBetweenET as businessDaysBetween } from "@/lib/datetime";
+import { businessDaysBetweenET as businessDaysBetween, endOfBusinessDaysET } from "@/lib/datetime";
 export { businessDaysBetween };
 
-const monthStart = (monthKey: string) => etAt(`${monthKey}-01`, 0);
-const prevMonthKey = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); const d = new Date(Date.UTC(y, m - 2, 15)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
+// `monthStart` and `prevMonthKey` retired here on Sep 21 2026 (F20): they only
+// ever served the "14 days before the month, deadline the 25th of the month
+// before" cadence, which §12 replaced with monthlyCalendar() below. Nothing
+// outside this file ever read them.
 const currentMonthKey = (now: Date) => etDayKey(now).slice(0, 7);
 const fmtDay = (d: Date | null) => (d ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null);
+
+// ---- ET day-key arithmetic for the §12 calendar ------------------------------
+// Day keys, never millisecond addition: "the 15th" is a date on the ET calendar
+// and a clock change must not be able to move it (datetime.ts §S0, Sep 18).
+
+const dowOfKey = (key: string) => new Date(`${key}T12:00:00Z`).getUTCDay();
+const shiftKey = (key: string, days: number) => {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days, 12)).toISOString().slice(0, 10);
+};
+const isWeekendKey = (key: string) => dowOfKey(key) === 0 || dowOfKey(key) === 6;
+
+/** §12: "1st/15th on a weekend → move that action to the next weekday." */
+export function nextWeekdayKeyET(key: string): string {
+  let k = key;
+  for (let i = 0; i < 7 && isWeekendKey(k); i++) k = shiftKey(k, 1);
+  return k;
+}
+
+/** §8's opposite rule, for the missing-address reminder only: "Monday filming
+ *  produces a Friday reminder, never a Saturday reminder." */
+export function previousWeekdayKeyET(key: string): string {
+  let k = key;
+  for (let i = 0; i < 7 && isWeekendKey(k); i++) k = shiftKey(k, -1);
+  return k;
+}
+
+/**
+ * A23 — THE SESSION GAP, AS A COUNT. Pure, so the acceptance drill can put a
+ * Pro month in front of it without a fixture in the live database (there is
+ * exactly ONE Pro enrollment on the roster and it is paused, and Aryeo has never
+ * carried a single Pro order, so the two-session path cannot be exercised from
+ * production data alone).
+ *
+ * "One booked or filmed session does not satisfy two" is the whole rule: the
+ * package says how many are owed, and booking or filming one of them leaves the
+ * others outstanding. A request the office has not answered covers one missing
+ * session each; two missing and one requested still leaves one to ask about.
+ */
+export function sessionGap(input: { sessionsRequired: number; sessionsBooked: number; sessionsFilmed: number; pendingSessionRequests: number }): {
+  required: number; accountedFor: number; missing: number;
+  action: "BOOK_SESSION" | null; ordinal: number | null; suppression: "pending_session_request" | null;
+} {
+  const required = Math.max(1, input.sessionsRequired);
+  const accountedFor = input.sessionsBooked + input.sessionsFilmed;
+  const missing = Math.max(0, required - accountedFor);
+  if (missing === 0) return { required, accountedFor, missing, action: null, ordinal: null, suppression: null };
+  if (input.pendingSessionRequests >= missing) return { required, accountedFor, missing, action: null, ordinal: null, suppression: "pending_session_request" };
+  return { required, accountedFor, missing, action: "BOOK_SESSION", ordinal: accountedFor + 1, suppression: null };
+}
+
+/**
+ * A28 — WHO MUST NOT GET THE ROLL-OVER WARNING. Pure for the same reason.
+ *
+ * The first paid production cycle is exempt from use-it-or-lose-it and from
+ * forfeiture (§3), and work that carried into a month for a reason nobody has
+ * written down might be work WE owe, which is never forfeited either. In both
+ * cases the client hears nothing about losing anything and Kyle gets the
+ * follow-up, with the task saying plainly that the client is not at fault.
+ */
+export function midMonthExemption(input: { firstCycle: boolean; carryoverUnclassified: number }): "first_cycle_exempt" | "catch_up_owed" | null {
+  if (input.firstCycle) return "first_cycle_exempt";
+  if (input.carryoverUnclassified > 0) return "catch_up_owed";
+  return null;
+}
+
+export type ReminderMilestone = "MONTH_OPEN" | "FOLLOW_UP_1" | "FOLLOW_UP_2" | "MID_MONTH" | "OFF_CALENDAR";
+export type ReminderLane = "PRIMARY" | "REVIEW" | "ADDRESS";
+
+export type MonthlyCalendar = {
+  /** The 1st of the program month, weekend-adjusted, at the policy's opening hour. */
+  monthOpenAt: Date;
+  /** The 15th, weekend-adjusted, at the policy's opening hour. */
+  midMonthAt: Date;
+  /** THE INTERNAL CLOCK, 5 pm ET on the mid-month day. It is what the
+   *  escalation threshold measures against ("this month is running out of
+   *  room, hand it to Kyle"). It is never shown to a client. */
+  planningDeadlineAt: Date;
+  /** THE CLIENT-FACING DATE, or null when Jordan has not set one — which is the
+   *  default, because §12 establishes milestones and no quoted deadline
+   *  (F20 review, Sep 21 2026). */
+  quotedPlanningDeadlineAt: Date | null;
+};
+
+/** The dated milestones of one program month. Follow-ups are NOT here: §12
+ *  anchors them on the instant the previous reminder actually sent, which is a
+ *  fact about the ledger, not about the calendar. */
+export function monthlyCalendar(monthKey: string, p: ReminderPolicy): MonthlyCalendar {
+  const [h, m] = p.businessHours.start.split(":").map(Number);
+  const day = (n: number) => nextWeekdayKeyET(`${monthKey}-${String(Math.min(Math.max(n, 1), 28)).padStart(2, "0")}`);
+  return {
+    monthOpenAt: etAt(day(p.monthlyOpenDayOfMonth), h, m),
+    midMonthAt: etAt(day(p.midMonthDayOfMonth), h, m),
+    // ONE NUMBER USED TO DO BOTH OF THESE (F20 review, Sep 21 2026). The
+    // internal escalation clock is anchored on the mid-month milestone, which is
+    // where §12 itself says the month starts running out of room; the date a
+    // client is told is a separate, deliberate setting that defaults to "none",
+    // so introducing the 15th milestone cannot move a client-facing promise.
+    planningDeadlineAt: etAt(day(p.midMonthDayOfMonth), 17),
+    quotedPlanningDeadlineAt: p.quotedPlanningDeadlineDayOfMonth == null ? null : etAt(day(p.quotedPlanningDeadlineDayOfMonth), 17),
+  };
+}
+
+/**
+ * §8: the missing-address reminder for a session starting at `shootStart`.
+ * 48 ELAPSED hours before filming (this clock is not the weekday-time one the
+ * preparation window uses — §8 is explicit that they are different clocks), and
+ * if that instant lands on a Saturday or Sunday it moves BACK to the Friday, at
+ * the policy's opening hour. Monday filming therefore produces a Friday
+ * reminder, never a Saturday one.
+ *
+ * Returns null when the moment has already passed — §8's answer there is "send
+ * at the next valid office opportunity and flag Kyle if urgent", which is the
+ * caller's decision, not this function's.
+ */
+export function addressReminderAt(shootStart: Date, p: ReminderPolicy): Date {
+  const raw = new Date(shootStart.getTime() - p.addressReminderHoursBefore * 3_600_000);
+  const key = etDayKey(raw);
+  if (!isWeekendKey(key)) return raw;
+  const [h, m] = p.businessHours.start.split(":").map(Number);
+  return etAt(previousWeekdayKeyET(key), h, m);
+}
 
 // ---- what the evaluator reads per month --------------------------------------
 
@@ -250,14 +519,32 @@ export type EvaluatedState = {
   preparationStatus: string | null;
   callMode: string;
   earliestSessionAt: string | null;
+  /** Kept as they were so an old ledger row and a new one read the same way;
+   *  every DECISION below now uses the counts underneath them. */
   sessionBooked: boolean;
   sessionFilmed: boolean;
   pendingSessionRequest: boolean;
+  // ---- per-session completeness (A23, Sep 21 2026) --------------------------
+  /** The package's sessions for this month: Starter 1, Accelerator 1, Pro 2. */
+  sessionsRequired: number;
+  sessionsBooked: number;
+  sessionsFilmed: number;
+  sessionsAccountedFor: number;
+  sessionsMissing: number;
+  /** Requests waiting on the OFFICE, which are not the client's to chase. */
+  pendingSessionRequests: number;
   releasedCutsAwaiting: number;
   oldestReleaseAt: string | null;
   snoozedUntil: string | null;
   enrollmentStatus: string;
   schedulerSync: { fresh: boolean; detail: string };
+  /** The Aryeo appointment feed's freshness — "no session is booked" is only as
+   *  true as the feed that would have told us it was (§12). */
+  sessionFeed: { fresh: boolean; detail: string };
+  /** This is the enrollment's FIRST paid production cycle (§3, A28). */
+  firstCycle: boolean;
+  /** Work carried into this month whose cause nobody has classified yet. */
+  carryoverUnclassified: number;
 };
 
 export type ReminderDecision = "send" | "wait" | "suppressed" | "none" | "escalate";
@@ -269,6 +556,13 @@ export type ReminderCandidate = {
   isTest: boolean;
   monthId: string;
   monthKey: string;
+  /** Which cadence this candidate belongs to (§12 keeps them apart). */
+  lane: ReminderLane;
+  /** Where it sits on §12's dated calendar. REVIEW and ADDRESS are OFF_CALENDAR. */
+  milestone: ReminderMilestone;
+  /** BOOK_SESSION only: the 1-based session this reminder is chasing, so
+   *  booking session 1 does not spend session 2's reminders (A23). */
+  sessionOrdinal: number | null;
   action: ReminderAction | null;
   templateKey: string | null;
   attempt: number;
@@ -279,7 +573,13 @@ export type ReminderCandidate = {
   reason: string;
   suppressionReason: string | null;
   nextEligibleAt: Date | null;
+  /** The INTERNAL deadline this lane is measured against (escalation, the
+   *  preview, the panel). Not client-facing. */
   deadlineAt: Date | null;
+  /** The date this message would QUOTE to the client, or null when it quotes
+   *  none. The templates render this one and never `deadlineAt` (F20 review,
+   *  Sep 21 2026). */
+  quotedDeadlineAt: Date | null;
   noCallEligible: boolean;
   digestSession: boolean;
   /** COMPLETE_ANSWERS: the interview has begun (wording changes). */
@@ -287,16 +587,62 @@ export type ReminderCandidate = {
   /** An existing FAILED row this send would retry, instead of a new attempt. */
   retryOfId: string | null;
   escalation: { due: boolean; reason: string } | null;
+  /** The §12 calendar this month is running on, for the preview and the panel. */
+  calendar: MonthlyCalendar | null;
+  /** MID_MONTH only: the follow-up Kyle gets whether or not the client is written to. */
+  kyleFollowUp: { due: boolean; reason: string } | null;
+  /** The extra paragraph this particular milestone adds to the template's body. */
+  extraParagraph: string | null;
   state: EvaluatedState;
 };
 
 type EnrollmentRow = {
   id: string; clientId: string; status: string; callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null;
   portalToken: string | null; portalTokenExpiresAt: Date | null; accessRevokedAt: Date | null;
+  /** A23: how many sessions this package owes per month (Pro = 2). */
+  sessionsPerMonth: number;
+  /** A28: the first program month this enrollment ever had — its first paid
+   *  production cycle, which never receives a use-it-or-lose-it warning. */
+  firstMonthKey: string | null;
   client: { name: string; email: string | null };
 };
 
+const ENROLLMENT_SELECT = {
+  id: true, clientId: true, status: true, callMode: true, strategyCallRequired: true, noCallEligible: true,
+  portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true, sessionsPerMonth: true, startedAt: true,
+} as const;
+
+/** The enrollment's first paid production cycle: whichever is EARLIER, the
+ *  month it started billing in or the first program month on file. Read once
+ *  per run and carried on the row, because "is this their first month?" is
+ *  asked for every month of every enrollment.
+ *
+ *  Backfilled (historical) months count here on purpose. They are evidence the
+ *  client has been through a cycle already, and the mistake to avoid is telling
+ *  a long-standing client "you are exempt": the exemption exists for someone who
+ *  has never done this before, not for someone whose early months were imported
+ *  rather than run through the hub. */
+async function firstMonthKeysFor(enrollmentIds: string[], startedAt: Map<string, Date | null>): Promise<Map<string, string | null>> {
+  const rows = enrollmentIds.length
+    ? await prisma.contentMonth.groupBy({ by: ["enrollmentId"], where: { enrollmentId: { in: enrollmentIds } }, _min: { monthKey: true } })
+    : [];
+  const out = new Map<string, string | null>();
+  for (const id of enrollmentIds) {
+    const earliestMonth = rows.find((r) => r.enrollmentId === id)?._min.monthKey ?? null;
+    const started = startedAt.get(id) ?? null;
+    const startedKey = started ? etDayKey(started).slice(0, 7) : null;
+    const candidates = [earliestMonth, startedKey].filter((k): k is string => !!k).sort();
+    out.set(id, candidates[0] ?? null);
+  }
+  return out;
+}
+
 type SchedulerSync = { fresh: boolean; detail: string };
+/** Two different feeds answer two different questions: Calendly says whether a
+ *  strategy CALL is booked, Aryeo says whether a filming SESSION is. Chasing a
+ *  client off a stale feed is the inaccuracy §12 forbids, so each is checked
+ *  against the lane that depends on it. */
+type BookingFeeds = { call: SchedulerSync; session: SchedulerSync };
 
 /** Booking truth is only as fresh as the verified call chain. Until an
  *  ENABLED monthly mapping exists and has synced inside the policy window,
@@ -315,15 +661,65 @@ async function schedulerSyncState(now: Date, p: ReminderPolicy): Promise<Schedul
   return { fresh: true, detail: `synced ${ageH.toFixed(1)} h ago` };
 }
 
-async function monthFacts(monthId: string, now: Date) {
-  const [projects, requests] = await Promise.all([
-    prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true, shootDate: true, status: true } }),
+/** The same rule for FILMING sessions, whose truth comes from Aryeo. Telling a
+ *  client "you still have not booked your session" while the appointment feed
+ *  is dark is the Sep 8 shape again — the integration goes quiet and the client
+ *  gets blamed for it. A stale feed holds the reminder and raises the internal
+ *  exception instead (§12). */
+async function sessionFeedState(now: Date, p: ReminderPolicy): Promise<SchedulerSync> {
+  const conn = await prisma.connection.findUnique({ where: { provider: "aryeo" }, select: { status: true, lastSyncedAt: true, lastError: true } }).catch(() => null);
+  if (!conn) return { fresh: false, detail: "there is no Aryeo connection on file" };
+  if (conn.status !== "CONNECTED") return { fresh: false, detail: `Aryeo is ${conn.status.toLowerCase()}` };
+  if (!conn.lastSyncedAt) return { fresh: false, detail: "the Aryeo sync has never recorded a run" };
+  const ageH = (now.getTime() - conn.lastSyncedAt.getTime()) / 3_600_000;
+  if (ageH > p.staleSchedulerSyncHours) return { fresh: false, detail: `the last Aryeo sync was ${ageH.toFixed(1)} h ago (limit ${p.staleSchedulerSyncHours} h)` };
+  if (conn.lastError) return { fresh: false, detail: `the last Aryeo sync reported an error: ${conn.lastError.slice(0, 120)}` };
+  return { fresh: true, detail: `synced ${ageH.toFixed(1)} h ago` };
+}
+
+async function bookingFeeds(now: Date, p: ReminderPolicy): Promise<BookingFeeds> {
+  const [call, session] = await Promise.all([schedulerSyncState(now, p), sessionFeedState(now, p)]);
+  return { call, session };
+}
+
+/**
+ * WHAT THIS MONTH ACTUALLY HAS, COUNTED (A23, Sep 21 2026).
+ *
+ * This used to answer in booleans — "something is booked", "something was
+ * filmed" — and a Pro month with ONE of its two four-hour sessions on the
+ * calendar therefore looked exactly like a fully booked Accelerator month: the
+ * evaluator said "nothing left to book" and the second session was never
+ * chased. §12 is explicit that one booked or filmed session does not satisfy
+ * two, so the answer is now a count against the package's `sessionsPerMonth`.
+ *
+ * A session is accounted for by a Project with a shoot date (the Aryeo
+ * appointment) or by a CONFIRMED request that has not become one yet. A
+ * confirmed request that already points at a counted project is the SAME
+ * session seen twice, so it is not added again.
+ */
+async function monthFacts(monthId: string, now: Date, sessionsRequired: number) {
+  const [projects, requests, carryover] = await Promise.all([
+    prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true, shootDate: true, status: true, addressLine: true } }),
     prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { status: true, projectId: true } }),
+    // Work that arrived in this month from an earlier one. Whether the client
+    // did not film it or WE were late is not recorded anywhere, and §3 says to
+    // hand an unclear shortfall to Kyle rather than invent the answer — so the
+    // count is all this needs to be.
+    prisma.contentVideo.count({ where: { monthId, kind: "CARRYOVER" } }),
   ]);
-  const future = projects.filter((p) => p.shootDate && p.shootDate.getTime() >= now.getTime() - 6 * 3_600_000);
-  const past = projects.filter((p) => p.shootDate && p.shootDate.getTime() < now.getTime() - 6 * 3_600_000);
-  const confirmed = requests.some((r) => r.status === "CONFIRMED");
-  const pending = requests.some((r) => r.status !== "CONFIRMED");
+  const withDate = projects.filter((p) => p.shootDate);
+  const future = withDate.filter((p) => p.shootDate!.getTime() >= now.getTime() - 6 * 3_600_000);
+  const past = withDate.filter((p) => p.shootDate!.getTime() < now.getTime() - 6 * 3_600_000);
+  const countedProjectIds = new Set(withDate.map((p) => p.id));
+  const confirmedUnlinked = requests.filter((r) => r.status === "CONFIRMED" && (!r.projectId || !countedProjectIds.has(r.projectId))).length;
+  const sessionsBooked = future.length + confirmedUnlinked;
+  const sessionsFilmed = past.length;
+  const sessionsAccountedFor = sessionsBooked + sessionsFilmed;
+  // A request the CLIENT has made and the office has not answered is not the
+  // client's to chase. A cancel request is about a session that is still on the
+  // calendar, so it holds no missing slot of its own.
+  const pendingSessionRequests = requests.filter((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED").length;
+  const cancelRequested = requests.filter((r) => r.status === "CANCEL_REQUESTED").length;
   const released = projects.length
     ? await prisma.reviewSubmission.findMany({
         where: { projectId: { in: projects.map((p) => p.id) }, clientReleasedAt: { not: null }, clientApprovedDecisionId: null, clientRequestedAt: null, withdrawnAt: null },
@@ -331,7 +727,22 @@ async function monthFacts(monthId: string, now: Date) {
       })
     : [];
   const oldest = released.reduce<Date | null>((m, r) => (r.clientReleasedAt && (!m || r.clientReleasedAt < m) ? r.clientReleasedAt : m), null);
-  return { sessionBooked: future.length > 0 || confirmed, sessionFilmed: past.length > 0, pendingSessionRequest: pending, releasedCutsAwaiting: released.length, oldestReleaseAt: oldest };
+  return {
+    sessionBooked: sessionsBooked > 0,
+    sessionFilmed: sessionsFilmed > 0,
+    pendingSessionRequest: pendingSessionRequests + cancelRequested > 0,
+    sessionsRequired: Math.max(1, sessionsRequired),
+    sessionsBooked,
+    sessionsFilmed,
+    sessionsAccountedFor,
+    sessionsMissing: Math.max(0, Math.max(1, sessionsRequired) - sessionsAccountedFor),
+    pendingSessionRequests,
+    carryoverUnclassified: carryover,
+    releasedCutsAwaiting: released.length,
+    oldestReleaseAt: oldest,
+    /** Upcoming shoots and where they say they are — the ADDRESS lane's input. */
+    upcomingShoots: future.map((p) => ({ projectId: p.id, shootDate: p.shootDate!, addressLine: p.addressLine })),
+  };
 }
 
 /** The live OWNER seat's address first (the person the portal knows), else the client record's. */
@@ -368,30 +779,87 @@ export async function resolvePortalLink(e: Pick<EnrollmentRow, "id" | "portalTok
   return tokenLink ? { url: tokenLink, kind: "token" } : null;
 }
 
-// ---- the derivation: one month → one candidate ---------------------------------
+// ---- the derivation: one month, one lane → one candidate ------------------------
+
+/** The client-facing paragraph a milestone adds on top of its template. The
+ *  templates live in reminderTemplates.ts and are not this batch's to edit, so
+ *  the sentence is inserted ABOVE the template's sign-off — which is the one
+ *  line every template ends with, by construction. If the marker ever moves the
+ *  paragraph lands before the sign-off block anyway, never after it. */
+export function withExtraParagraph(body: string, paragraph: string | null): string {
+  if (!paragraph) return body;
+  const lines = body.split("\n");
+  const at = lines.findIndex((l) => l.startsWith("— Jordan"));
+  if (at < 0) return `${body}\n\n${paragraph}`;
+  const before = lines.slice(0, at);
+  while (before.length && before[before.length - 1].trim() === "") before.pop();
+  return [...before, "", paragraph, "", ...lines.slice(at)].join("\n");
+}
+
+/** §12's roll-over note. No em dashes, no emojis, and it ends with the way
+ *  forward — Jordan's rule for anything a client reads. */
+const MID_MONTH_PARAGRAPH =
+  "One note on timing: your monthly sessions do not roll over into next month, and the calendar fills up as the month goes on. Picking your time this week is the surest way to get the slot you want.";
+
+/** A23: the second Pro session is a different ask from the first, and the
+ *  template cannot tell them apart on its own. */
+const secondSessionParagraph = (ordinal: number, required: number) =>
+  `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${ordinal - 1 === 1 ? "one is" : `${ordinal - 1} are`} already on the calendar. This one is about session ${ordinal}, so you still have four videos to film in it.`;
+
+/** Which sub-lane of the ledger a row belongs to. The dedupeKey carries it:
+ *  `enrollment:month:action[:sN][:mid|:copy|:retry]:sequence`. Rows written
+ *  before Sep 21 2026 have no tag at all, which reads correctly as session 1 on
+ *  the ordinary cadence. */
+function ledgerLaneOf(dedupeKey: string | null, enrollmentId: string, monthKey: string, action: string): { midMonth: boolean; sessionTag: string; manual: boolean } {
+  const prefix = `${enrollmentId}:${monthKey}:${action}:`;
+  const rest = dedupeKey && dedupeKey.startsWith(prefix) ? dedupeKey.slice(prefix.length) : "";
+  const segs = rest.split(":");
+  return {
+    midMonth: segs.includes("mid"),
+    sessionTag: segs.find((s) => /^s\d+$/.test(s)) ?? "s1",
+    manual: segs[0] === "copy" || segs[0] === "retry",
+  };
+}
 
 /** `ignoreReminderId`: the row THIS dispatch already wrote. The recheck asks
  *  "is the CLIENT's state still the one that earned a reminder?", so our own
  *  in-flight attempt must not count as an attempt already made — otherwise a
  *  policy of maxAttemptsPerAction 1 would re-read its own PENDING row, decide
  *  the quota was spent, and suppress the very send it just authorised. */
-async function evaluateMonth(e: EnrollmentRow, month: { id: string; monthKey: string; status: string; remindersSnoozedUntil: Date | null }, now: Date, p: ReminderPolicy, sync: SchedulerSync, clientWindowOpen: boolean, ignoreReminderId?: string | null): Promise<ReminderCandidate> {
+async function evaluateMonth(
+  e: EnrollmentRow,
+  month: { id: string; monthKey: string; status: string; remindersSnoozedUntil: Date | null },
+  now: Date,
+  p: ReminderPolicy,
+  feeds: BookingFeeds,
+  clientWindowOpen: boolean,
+  lane: "PRIMARY" | "REVIEW",
+  ignoreReminderId?: string | null,
+): Promise<ReminderCandidate> {
   const isTest = isTestClientName(e.client.name);
+  const cal = monthlyCalendar(month.monthKey, p);
   const base = {
     enrollmentId: e.id, clientId: e.clientId, clientName: e.client.name, isTest, monthId: month.id, monthKey: month.monthKey,
-    templateKey: null as string | null, attempt: 0, dedupeKey: null as string | null, to: null as string | null, nextEligibleAt: null as Date | null, deadlineAt: null as Date | null,
+    lane: lane as ReminderLane, milestone: "OFF_CALENDAR" as ReminderMilestone, sessionOrdinal: null as number | null,
+    templateKey: null as string | null, attempt: 0, dedupeKey: null as string | null, to: null as string | null, nextEligibleAt: null as Date | null,
+    deadlineAt: null as Date | null, quotedDeadlineAt: null as Date | null,
     noCallEligible: false, digestSession: false, answersStarted: false, retryOfId: null as string | null, escalation: null as ReminderCandidate["escalation"],
+    calendar: cal, kyleFollowUp: null as ReminderCandidate["kyleFollowUp"], extraParagraph: null as string | null,
   };
   // Authoritative month state, derived fresh (never persisted from here).
   const recalc = await recalcProgramMonth(month.id, { now, dryRun: true });
   const d: DerivedMonthState | null = recalc?.after ?? null;
-  const facts = await monthFacts(month.id, now);
+  const facts = await monthFacts(month.id, now, e.sessionsPerMonth);
+  const firstCycle = !!e.firstMonthKey && e.firstMonthKey === month.monthKey;
   const state: EvaluatedState = {
     strategyCallStatus: d?.strategyCallStatus ?? "?", planningMode: d?.planningMode ?? "?", preparationStatus: d?.preparationStatus ?? null, callMode: d?.callMode ?? "?",
     earliestSessionAt: d?.earliestSessionAt?.toISOString() ?? null,
     sessionBooked: facts.sessionBooked, sessionFilmed: facts.sessionFilmed, pendingSessionRequest: facts.pendingSessionRequest,
+    sessionsRequired: facts.sessionsRequired, sessionsBooked: facts.sessionsBooked, sessionsFilmed: facts.sessionsFilmed,
+    sessionsAccountedFor: facts.sessionsAccountedFor, sessionsMissing: facts.sessionsMissing, pendingSessionRequests: facts.pendingSessionRequests,
     releasedCutsAwaiting: facts.releasedCutsAwaiting, oldestReleaseAt: facts.oldestReleaseAt?.toISOString() ?? null,
-    snoozedUntil: month.remindersSnoozedUntil?.toISOString() ?? null, enrollmentStatus: e.status, schedulerSync: sync,
+    snoozedUntil: month.remindersSnoozedUntil?.toISOString() ?? null, enrollmentStatus: e.status,
+    schedulerSync: feeds.call, sessionFeed: feeds.session, firstCycle, carryoverUnclassified: facts.carryoverUnclassified,
   };
   const out = (c: Partial<ReminderCandidate> & { action: ReminderAction | null; decision: ReminderDecision; reason: string }): ReminderCandidate =>
     ({ ...base, suppressionReason: null, state, ...c });
@@ -399,42 +867,62 @@ async function evaluateMonth(e: EnrollmentRow, month: { id: string; monthKey: st
   if (!d) return out({ action: null, decision: "none", reason: "month or enrollment not found" });
   if (month.status !== "OPEN") return out({ action: null, decision: "none", reason: `month is ${month.status}` });
 
-  // ---- the ONE action -------------------------------------------------------
+  // ---- the ONE action for THIS lane -----------------------------------------
   const callHeld = d.strategyCallStatus === "COMPLETED";
   const callBooked = d.strategyCallStatus === "SCHEDULED";
+  // "Skip the strategy call this month" is an answer, not silence. It arrives
+  // either as an explicit SKIPPED stamp or as the written path being chosen;
+  // §12 says do not nag someone who chose it, so the call lane closes and only
+  // the written-preparation lane stays open. (F20, Sep 21 2026: before this, a
+  // month a staff member had marked SKIPPED while its planningMode was still
+  // CALL or UNDECIDED went straight back to "grab a time for your call".)
+  const callSkipped = d.strategyCallStatus === "SKIPPED";
   const prepComplete = d.preparationStatus === "PREPARING_SCRIPTS" || d.preparationStatus === "AWAITING_SCRIPT_APPROVAL" || d.preparationStatus === "READY_FOR_FILMING";
   const noCallEligible = d.callMode === "OPTIONAL_WRITTEN" ? (e.noCallEligible ?? true) : d.callMode === "NOT_INCLUDED";
 
   let action: ReminderAction | null = null;
   let planningSuppression: string | null = null;
   let answersStarted = false;
-  // A month whose content session has ALREADY BEEN SHOT has nothing left to
-  // plan — filming is terminal for the planning question, exactly the way a
-  // held call is. Without this, a client whose September shoot happened on the
-  // 11th and is sitting in EDITING would still be told "we still need to plan
-  // your September content — grab a time for your strategy call": the
-  // evaluator contradicting the facts it printed in the same object. (Found in
-  // review Sep 17 against live data: Sarina Spinelli 2026-09, filmed 09-11,
-  // held back only by the stale-sync lock and the pre-launch lock, neither of
-  // which is a truth check.) Filmed months fall through to the session/review
-  // branch below: REVIEW_WORK if cuts are waiting, otherwise nothing.
-  if (!prepComplete && !callHeld && !facts.sessionFilmed) {
-    if (callBooked) planningSuppression = "booked";
-    else if (d.planningMode === "WRITTEN") { action = "COMPLETE_ANSWERS"; answersStarted = d.preparationStatus === "AWAITING_ANSWERS"; }
-    else if (d.callMode === "REQUIRED") action = "BOOK_CALL";
-    else action = "CHOOSE_PATH";
-  }
   let sessionSuppression: string | null = null;
-  if (!action && !planningSuppression) {
-    if (facts.sessionBooked || facts.sessionFilmed) {
-      if (facts.releasedCutsAwaiting > 0) action = "REVIEW_WORK";
-    } else if (facts.pendingSessionRequest) sessionSuppression = "pending_session_request";
-    else if (prepComplete || callHeld) action = "BOOK_SESSION";
+  let sessionOrdinal: number | null = null;
+
+  if (lane === "REVIEW") {
+    // The review lane is deliberately independent of planning (§12): a client
+    // who owes us answers can still be the client who owes us an approval, and
+    // the two run on different clocks.
+    if (facts.releasedCutsAwaiting > 0) action = "REVIEW_WORK";
+  } else {
+    // A month whose content sessions are ALL accounted for has nothing left to
+    // plan — filming is terminal for the planning question, exactly the way a
+    // held call is. Without this, a client whose September shoot happened on the
+    // 11th and is sitting in EDITING would still be told "we still need to plan
+    // your September content — grab a time for your strategy call": the
+    // evaluator contradicting the facts it printed in the same object. (Found in
+    // review Sep 17 against live data: Sarina Spinelli 2026-09, filmed 09-11.)
+    // Read as a COUNT since Sep 21 (A23): a Pro month with one of two sessions
+    // filmed is not a finished month, and the planning question there has
+    // already been answered, so it falls through to the session branch.
+    if (!prepComplete && !callHeld && facts.sessionsFilmed === 0) {
+      if (callBooked) planningSuppression = "booked";
+      else if (d.planningMode === "WRITTEN") { action = "COMPLETE_ANSWERS"; answersStarted = d.preparationStatus === "AWAITING_ANSWERS"; }
+      else if (callSkipped) planningSuppression = "no_call_chosen";
+      else if (d.callMode === "REQUIRED") action = "BOOK_CALL";
+      else action = "CHOOSE_PATH";
+    }
+    if (!action && !planningSuppression) {
+      const plannedEnough = prepComplete || callHeld || facts.sessionsAccountedFor > 0;
+      const gap = sessionGap(facts);
+      if (plannedEnough) {
+        if (gap.suppression) sessionSuppression = gap.suppression;
+        else if (gap.action) { action = gap.action; sessionOrdinal = gap.ordinal; }
+      }
+    }
   }
-  const digestSession = !!action && ["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS"].includes(action) && p.digestBothAppointments && !facts.sessionBooked && !facts.pendingSessionRequest && !facts.sessionFilmed;
+  const digestSession = !!action && ["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS"].includes(action) && p.digestBothAppointments && facts.sessionsMissing > 0 && facts.pendingSessionRequests === 0;
 
   // ---- suppression (spec §24), in the order a person would ask ----------------
-  const sup = (reason: string, why: string, withAction: ReminderAction | null = action) => out({ action: withAction, decision: "suppressed", suppressionReason: reason, reason: why, noCallEligible, digestSession, answersStarted });
+  const sup = (reason: string, why: string, withAction: ReminderAction | null = action, extra: Partial<ReminderCandidate> = {}) =>
+    out({ action: withAction, decision: "suppressed", suppressionReason: reason, reason: why, noCallEligible, digestSession, answersStarted, sessionOrdinal, ...extra });
   if (e.status === "PAUSED") return sup("paused", "enrollment is paused");
   if (e.status === "ENDED") return sup("ended", "enrollment has ended");
   // Access deliberately cut off. The seat row is NOT revoked by revoking
@@ -446,91 +934,226 @@ async function evaluateMonth(e: EnrollmentRow, month: { id: string; monthKey: st
   if (e.accessRevokedAt) return sup("access_revoked", "portal access for this enrollment has been revoked");
   if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return sup("snoozed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`);
   if (planningSuppression === "booked") return sup("booked", "a strategy call is booked — nothing to remind", null);
+  if (planningSuppression === "no_call_chosen") return sup("no_call_chosen", "this month's strategy call was skipped on purpose — we do not chase it", null);
   if (sessionSuppression) return sup(sessionSuppression, "a session request is waiting on the office, not the client", null);
   if (!action) {
+    if (lane === "REVIEW") return out({ action: null, decision: "none", reason: "no released cut is waiting on this client" });
     // "already been filmed — nothing left to book" was read off sessionFilmed
     // alone, which is only "a shoot on this month is in the past". A month can
     // hold BOTH (Sarina Spinelli's 2026-09: filmed on the 11th, another booked
     // for the 19th) and the sentence then said the opposite of the calendar
     // (review, Sep 17). Say what is true of each.
-    const filmedReason = facts.sessionBooked
-      ? "a session has already been filmed this month, and another is on the calendar — nothing to remind"
-      : "a session has already been filmed this month — nothing left to plan or book";
-    return out({ action: null, decision: "none", reason: facts.sessionFilmed ? filmedReason : prepComplete || callHeld ? (facts.sessionBooked ? "planned and booked — nothing needed" : "nothing needed") : "nothing needed", noCallEligible });
+    const filmedReason = facts.sessionsBooked > 0
+      ? `${facts.sessionsFilmed} session(s) filmed this month and ${facts.sessionsBooked} more on the calendar — nothing to remind`
+      : `all ${facts.sessionsRequired} session(s) for this month have been filmed — nothing left to plan or book`;
+    return out({
+      action: null, decision: "none", noCallEligible,
+      reason: facts.sessionsFilmed > 0 ? filmedReason : prepComplete || callHeld ? (facts.sessionsMissing === 0 ? "planned and booked — nothing needed" : "nothing needed") : "nothing needed",
+    });
   }
-  if ((action === "BOOK_CALL" || action === "CHOOSE_PATH") && !sync.fresh) return sup("stale_scheduler_sync", `booking state is not trustworthy: ${sync.detail}`);
-  if (action === "REVIEW_WORK" && facts.oldestReleaseAt && businessDaysBetween(facts.oldestReleaseAt, now) < p.reviewWorkAfterBusinessDays) {
-    return out({ action, decision: "wait", reason: `cuts shared ${businessDaysBetween(facts.oldestReleaseAt, now)} business day(s) ago — reminder after ${p.reviewWorkAfterBusinessDays}`, nextEligibleAt: addBusinessDaysET(facts.oldestReleaseAt, p.reviewWorkAfterBusinessDays), noCallEligible });
-  }
+  // "Not booked" is only as true as the feed that would have told us it was.
+  if ((action === "BOOK_CALL" || action === "CHOOSE_PATH") && !feeds.call.fresh) return sup("stale_scheduler_sync", `booking state is not trustworthy: ${feeds.call.detail}`);
+  if (action === "BOOK_SESSION" && !feeds.session.fresh) return sup("stale_scheduler_sync", `appointment state is not trustworthy: ${feeds.session.detail}`);
+  // THE PRE-LAUNCH LOCK SITS AHEAD OF THE CALENDAR ON PURPOSE. A real client
+  // blocked here never reaches the mid-month branch, so no mid-month task is
+  // raised for them either. That is deliberate for now — the whole program is
+  // pre-launch — but it means Kyle's 15th-of-the-month list stays empty for real
+  // clients until Jordan authorises client reminders, which is his call to make,
+  // not this file's to assume (F20, Sep 21 2026).
   if (p.testClientsOnly && !isTest) return sup("launch_not_authorised", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised");
 
-  // ---- cadence ----------------------------------------------------------------
-  const start = monthStart(month.monthKey);
-  const prev = prevMonthKey(month.monthKey);
-  let opensAt: Date;
-  let deadlineAt: Date;
-  if (action === "BOOK_SESSION") {
-    const prepAt = d.planningMode === "CALL" ? d.strategyCallAt : d.preparationCompletedAt;
-    opensAt = prepAt && prepAt < now ? prepAt : now;
-    deadlineAt = etAt(`${month.monthKey}-${String(Math.min(p.sessionBookingDeadlineDayOfMonth, 28)).padStart(2, "0")}`, 17);
-  } else if (action === "REVIEW_WORK") {
-    opensAt = facts.oldestReleaseAt ? addBusinessDaysET(facts.oldestReleaseAt, p.reviewWorkAfterBusinessDays) : now;
-    deadlineAt = addBusinessDaysET(opensAt, 5);
-  } else {
-    opensAt = new Date(start.getTime() - p.planningOpensDaysBeforeMonth * 864e5);
-    deadlineAt = etAt(`${prev}-${String(p.planningDeadlineDayOfPrevMonth).padStart(2, "0")}`, 17);
-  }
-  const templateKey = templateForAction(action as keyof typeof DEFAULT_TEMPLATE_IDS, p.templates).id;
-  if (now < opensAt) return out({ action, templateKey, decision: "wait", reason: `planning opens ${fmtDay(opensAt)}`, nextEligibleAt: opensAt, deadlineAt, noCallEligible, digestSession });
-
-  const prior = (await prisma.programReminder.findMany({ where: { enrollmentId: e.id, monthKey: month.monthKey, action }, orderBy: { attempt: "desc" } }))
+  // ---- the §12 calendar ---------------------------------------------------------
+  const sessionTag = sessionOrdinal && sessionOrdinal > 1 ? `s${sessionOrdinal}` : "s1";
+  // THE WHOLE MONTH'S LEDGER, not just this action's. The 15th is a milestone of
+  // the MONTH (§12), and reading it per action let it fire twice: the ordinary
+  // BOOK_CALL -> BOOK_SESSION transition the moment a strategy call is held
+  // emptied the mid-month rows for the new action, the test passed again, and
+  // the client got a SECOND copy of the same roll-over warning days after the
+  // first (F20 review, Sep 21 2026). The cadence rows stay per action, because
+  // "how many times have we asked for THIS thing" is an action question.
+  const monthRows = (await prisma.programReminder.findMany({ where: { enrollmentId: e.id, monthKey: month.monthKey }, orderBy: { attempt: "desc" } }))
     .filter((r) => r.id !== ignoreReminderId);
-  const counted = prior.filter((r) => r.state === "SENT" || r.state === "UNKNOWN" || r.state === "QUEUED" || r.state === "BOUNCED" || (r.state === "PENDING" && r.leaseUntil && r.leaseUntil > now));
-  const lastSentAt = prior.reduce<Date | null>((m, r) => (r.sentAt && (!m || r.sentAt > m) ? r.sentAt : m), null);
-  const failedRetry = prior.find((r) => r.state === "FAILED" && (!r.nextAttemptAt || r.nextAttemptAt <= now)) ?? null;
+  const prior = monthRows.filter((r) => r.action === action);
+  const laneOf = (k: string | null) => ledgerLaneOf(k, e.id, month.monthKey, action);
+  const sameSession = (k: string | null) => laneOf(k).sessionTag === sessionTag;
+  const isCounted = (r: { state: string; leaseUntil: Date | null }) =>
+    r.state === "SENT" || r.state === "UNKNOWN" || r.state === "QUEUED" || r.state === "BOUNCED" || (r.state === "PENDING" && !!r.leaseUntil && r.leaseUntil > now);
+
+  // A mid-month row is read by ITS OWN action (the dedupeKey carries it), so a
+  // BOOK_CALL milestone still counts while we are evaluating BOOK_SESSION. The
+  // session tag deliberately does not scope this either: one 15th, one message.
+  const isMidRow = (r: { dedupeKey: string | null; action: string }) => ledgerLaneOf(r.dedupeKey, e.id, month.monthKey, r.action).midMonth;
+  const midRows = monthRows.filter(isMidRow);
+  const cadenceRows = prior.filter((r) => sameSession(r.dedupeKey) && !isMidRow(r));
+  const midSpent = midRows.some(isCounted);
+  const counted = cadenceRows.filter(isCounted);
   const attemptsMade = counted.length;
+  const lastSentAt = counted.reduce<Date | null>((m, r) => (r.sentAt && (!m || r.sentAt > m) ? r.sentAt : m), null);
+
+  // MID_MONTH is the 15th's own milestone, with its own single attempt. It wins
+  // a day it shares with an ordinary follow-up, because it is the message that
+  // carries the roll-over note and Kyle's task — §12: avoid two near-identical
+  // messages on one day when the cadences coincide.
+  const midMonthDue = lane === "PRIMARY" && now >= cal.midMonthAt && !midSpent;
+  const milestone: ReminderMilestone = midMonthDue
+    ? "MID_MONTH"
+    : lane === "REVIEW"
+      ? "OFF_CALENDAR"
+      : attemptsMade === 0 ? "MONTH_OPEN" : attemptsMade === 1 ? "FOLLOW_UP_1" : attemptsMade === 2 ? "FOLLOW_UP_2" : "OFF_CALENDAR";
+
+  // Where this lane's clock starts, and what we promise the client.
+  let laneReadyAt = cal.monthOpenAt;
+  let deadlineAt: Date;
+  // TWO DIFFERENT THINGS, KEPT APART (F20 review, Sep 21 2026). `deadlineAt` is
+  // the internal clock the escalation threshold measures; `quotedDeadlineAt` is
+  // the date the client actually reads. Only the planning templates quote one,
+  // and only when Jordan has set it.
+  let quotedDeadlineAt: Date | null = null;
+  if (lane === "REVIEW") {
+    laneReadyAt = facts.oldestReleaseAt ? addBusinessDaysET(facts.oldestReleaseAt, p.reviewWorkAfterBusinessDays) : now;
+    // §8: four business days for each released version.
+    deadlineAt = facts.oldestReleaseAt ? endOfBusinessDaysET(facts.oldestReleaseAt, 4) : addBusinessDaysET(now, 4);
+  } else if (action === "BOOK_SESSION") {
+    const prepAt = d.planningMode === "CALL" ? d.strategyCallAt : d.preparationCompletedAt;
+    // Never before the 1st, and never before the month was actually planned.
+    laneReadyAt = prepAt && prepAt > cal.monthOpenAt ? prepAt : cal.monthOpenAt;
+    deadlineAt = etAt(`${month.monthKey}-${String(Math.min(p.sessionBookingDeadlineDayOfMonth, 28)).padStart(2, "0")}`, 17);
+  } else {
+    deadlineAt = cal.planningDeadlineAt;
+    quotedDeadlineAt = cal.quotedPlanningDeadlineAt;
+  }
+
+  const maxAttempts = milestone === "MID_MONTH" ? 1 : lane === "REVIEW" ? p.reviewMaxAttempts : p.maxAttemptsPerAction;
+  const spacingBusinessDays = lane === "REVIEW" ? p.reviewFollowUpBusinessDays : p.followUpAfterBusinessDays;
+  const laneRows = milestone === "MID_MONTH" ? midRows : cadenceRows;
+  const laneAttemptsMade = milestone === "MID_MONTH" ? midRows.filter(isCounted).length : attemptsMade;
+
+  const templateKey = templateForAction(action as keyof typeof DEFAULT_TEMPLATE_IDS, p.templates).id;
+  const extraParagraph = milestone === "MID_MONTH"
+    ? MID_MONTH_PARAGRAPH
+    : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
+      ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired)
+      : null;
+
+  // §12/A28: the roll-over note is the one message that must never reach a
+  // client in their first paid production cycle, or a client whose shortfall we
+  // caused. Kyle still gets the follow-up; the client is not told they are
+  // losing something they are not losing, and is not blamed for work we owe.
+  const kyleFollowUp = milestone === "MID_MONTH" ? { due: true, reason: `mid-month check on ${month.monthKey}: still needs ${actionLabel(action)}` } : null;
+  const withMid = { milestone, sessionOrdinal, calendar: cal, kyleFollowUp, extraParagraph, templateKey, deadlineAt, quotedDeadlineAt };
+  if (milestone === "MID_MONTH") {
+    const exempt = midMonthExemption({ firstCycle, carryoverUnclassified: facts.carryoverUnclassified });
+    if (exempt === "first_cycle_exempt") {
+      return sup("first_cycle_exempt", "first paid production cycle — no use-it-or-lose-it warning and no forfeiture (§3). Kyle picks this up instead.", action, { ...withMid });
+    }
+    if (exempt === "catch_up_owed") {
+      return sup("catch_up_owed", `${facts.carryoverUnclassified} carried-in video(s) on this month and nobody has classified why — agency-delayed work is not forfeited, so the client is not warned. Kyle classifies it (§3).`, action, {
+        ...withMid,
+        kyleFollowUp: { due: true, reason: `${facts.carryoverUnclassified} carried-in video(s) on ${month.monthKey} need classifying: client-unfilmed, or delayed by us` },
+      });
+    }
+  }
+
+  const opensAt = milestone === "MID_MONTH"
+    ? cal.midMonthAt
+    : laneAttemptsMade === 0
+      ? laneReadyAt
+      // THREE WEEKDAYS AFTER THE ACTUAL SEND, not after the day we meant to
+      // send. A first email held overnight by quiet hours moves the whole tail
+      // with it, which is what §12 asks for and what "72 staffed hours" would
+      // not have given.
+      : lastSentAt ? addBusinessDaysET(lastSentAt, spacingBusinessDays) : laneReadyAt;
+  if (now < opensAt) {
+    return out({
+      ...withMid, action, decision: "wait", noCallEligible, digestSession, answersStarted,
+      reason: milestone === "MONTH_OPEN" ? `this month's planning email goes out ${fmtDay(opensAt)}` : `follow-up due ${fmtDay(opensAt)} (${spacingBusinessDays} weekdays after the last one actually sent)`,
+      nextEligibleAt: opensAt,
+    });
+  }
+
+  // A retry re-uses the EXISTING row, so it may only ever be a row written for
+  // the action we are about to send. The mid-month lane is read across the whole
+  // month now, and without this a failed BOOK_CALL milestone would be resurrected
+  // to carry a BOOK_SESSION body while the ledger still called it a BOOK_CALL
+  // (F20 review, Sep 21 2026).
+  const failedRetry = laneRows.find((r) => r.action === action && r.state === "FAILED" && (!r.nextAttemptAt || r.nextAttemptAt <= now)) ?? null;
   // One escalation per (month, action): the ESCALATION ledger row carries the
   // client action it escalated in its templateKey.
   const escalated = (await prisma.programReminder.count({ where: { monthId: month.id, action: "ESCALATION", templateKey: `escalation:${action}` } })) > 0;
-  const deadlineNear = businessDaysBetween(now, deadlineAt) <= p.escalateWhenDeadlineWithinBusinessDays;
+  // The review window is FOUR business days end to end (§8), so the planning
+  // lane's three-day escalation threshold would fire on the very first review
+  // reminder and put a task on Kyle for every cut we share. The review lane
+  // escalates when the deadline is genuinely upon us.
+  const escalateWithin = lane === "REVIEW" ? Math.min(p.escalateWhenDeadlineWithinBusinessDays, 1) : p.escalateWhenDeadlineWithinBusinessDays;
+  const deadlineNear = businessDaysBetween(now, deadlineAt) <= escalateWithin;
   // A ledger that only ever grows and never sends is the churn version of the
   // same silence: stop and hand it to a person rather than write row 40.
-  const rowCeiling = p.maxAttemptsPerAction + 5;
-  const rowCeilingHit = !failedRetry && prior.length >= rowCeiling;
-  const escalation = !escalated && (deadlineNear || attemptsMade >= p.maxAttemptsPerAction || rowCeilingHit)
-    ? { due: true, reason: rowCeilingHit ? `${prior.length} reminder rows exist for this month and action but only ${attemptsMade} actually sent — the evaluator has stopped` : deadlineNear ? `deadline ${fmtDay(deadlineAt)} is within ${p.escalateWhenDeadlineWithinBusinessDays} business days` : `${attemptsMade} reminder(s) sent, no response` }
+  const rowCeiling = maxAttempts + 5;
+  const rowCeilingHit = !failedRetry && laneRows.length >= rowCeiling;
+  const escalation = !escalated && (deadlineNear || laneAttemptsMade >= maxAttempts || rowCeilingHit)
+    ? { due: true, reason: rowCeilingHit ? `${laneRows.length} reminder rows exist for this month and action but only ${laneAttemptsMade} actually sent — the evaluator has stopped` : deadlineNear ? `deadline ${fmtDay(deadlineAt)} is within ${escalateWithin} business day(s)` : `${laneAttemptsMade} reminder(s) sent, no response` }
     : null;
 
   const to = await recipientFor(e);
-  const common = { action, templateKey, deadlineAt, noCallEligible, digestSession, answersStarted, escalation, to: to ? maskToRef("email", to.email) : null };
+  const common = { ...withMid, action, noCallEligible, digestSession, answersStarted, escalation, to: to ? maskToRef("email", to.email) : null };
   if (rowCeilingHit) {
-    return out({ ...common, attempt: attemptsMade, decision: escalation ? "escalate" : "none", reason: `${prior.length} reminder rows already written for this month and action (only ${attemptsMade} sent) — stopping so a person looks` });
+    return out({ ...common, attempt: laneAttemptsMade, decision: escalation ? "escalate" : "none", reason: `${laneRows.length} reminder rows already written for this month and action (only ${laneAttemptsMade} sent) — stopping so a person looks` });
   }
-  if (attemptsMade >= p.maxAttemptsPerAction && !failedRetry) {
-    return out({ ...common, attempt: attemptsMade, decision: escalation ? "escalate" : "none", reason: `${attemptsMade} of ${p.maxAttemptsPerAction} reminders already sent${escalation ? " — escalating to the office" : ""}` });
+  if (laneAttemptsMade >= maxAttempts && !failedRetry) {
+    return out({ ...common, attempt: laneAttemptsMade, decision: escalation ? "escalate" : "none", reason: milestone === "MID_MONTH" ? "the mid-month milestone has already gone out for this month" : `${laneAttemptsMade} of ${maxAttempts} reminders already sent${escalation ? " — escalating to the office" : ""}` });
   }
-  const attempt = failedRetry ? failedRetry.attempt : attemptsMade + 1;
+  const attempt = failedRetry ? failedRetry.attempt : laneAttemptsMade + 1;
   // THE ROW IDENTITY IS THE ROW'S POSITION IN THE LEDGER, NOT THE ATTEMPT
   // NUMBER. dedupeKey is @unique, and a SUPPRESSED or CANCELLED row does not
   // count towards `attemptsMade` — so keying on the attempt meant a reminder
   // that was cancelled before it left (a pause, a snooze, a lease race) burned
   // `…:BOOK_CALL:1` for ever: every later run recomputed attempt 1, collided on
   // P2002, recorded `duplicate`, and that client was never reminded again with
-  // nothing anywhere reading as broken. Sequencing on prior.length keeps the
-  // concurrency guarantee (two runs reading the same ledger compute the same
+  // nothing anywhere reading as broken. Sequencing on the lane's row count keeps
+  // the concurrency guarantee (two runs reading the same ledger compute the same
   // key, one wins on P2002) while letting a consumed-but-unsent row step aside.
-  // Cadence — how many reminders this person has actually had, and when the
-  // next is due — still comes from `counted` alone.
-  const dedupeKey = failedRetry ? (failedRetry.dedupeKey ?? `${e.id}:${month.monthKey}:${action}:retry:${failedRetry.id}`) : `${e.id}:${month.monthKey}:${action}:${prior.length + 1}`;
-  const nextEligibleAt = failedRetry ? (failedRetry.nextAttemptAt ?? now) : attempt === 1 ? addBusinessDaysET(opensAt, p.firstReminderDelayBusinessDays) : lastSentAt ? addBusinessDaysET(lastSentAt, p.followUpAfterBusinessDays) : now;
-  if (now < nextEligibleAt) return out({ ...common, attempt, dedupeKey, decision: "wait", reason: attempt === 1 ? `first reminder due ${fmtDay(nextEligibleAt)}` : `follow-up due ${fmtDay(nextEligibleAt)} (${p.followUpAfterBusinessDays} business days after the last one)`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
+  // The tags in the middle are what keep the lanes apart: `s2` is the second Pro
+  // session's cadence, `mid` is the 15th's single milestone.
+  const tags = [sessionTag === "s1" ? null : sessionTag, milestone === "MID_MONTH" ? "mid" : null].filter(Boolean).join(":");
+  const dedupeKey = failedRetry
+    ? (failedRetry.dedupeKey ?? `${e.id}:${month.monthKey}:${action}:retry:${failedRetry.id}`)
+    : `${e.id}:${month.monthKey}:${action}:${tags ? `${tags}:` : ""}${laneRows.length + 1}`;
+  const nextEligibleAt = failedRetry
+    ? (failedRetry.nextAttemptAt ?? now)
+    // addBusinessDaysET lands at MIDNIGHT of its day, so adding zero days would
+    // report a time earlier than the milestone itself. Zero delay means "the
+    // milestone", not "the milestone's midnight".
+    : attempt === 1 && p.firstReminderDelayBusinessDays > 0 ? addBusinessDaysET(opensAt, p.firstReminderDelayBusinessDays) : opensAt;
+  if (now < nextEligibleAt) return out({ ...common, attempt, dedupeKey, decision: "wait", reason: attempt === 1 ? `first reminder due ${fmtDay(nextEligibleAt)}` : `follow-up due ${fmtDay(nextEligibleAt)} (${spacingBusinessDays} weekdays after the last one)`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
   if (!to) return sup("no_recipient", "no email address on the portal seat or the client record");
   if (isTest && !isStaffControlledEmail(to.email)) return sup("test_client_real_address", `TEST client's address ${maskToRef("email", to.email)} is not staff-controlled`);
+  // ONE client email per enrollment per ET day, across every lane. Two cadences
+  // landing together is a normal month (a planning follow-up on the day the
+  // review clock opens), and two emails an hour apart reads as a system with no
+  // one steering it (§12).
+  const dayFrom = etAt(etDayKey(now), 0);
+  const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
+  const sentToday = await prisma.programReminder.count({
+    where: {
+      enrollmentId: e.id, channel: { in: ["email", "copy"] },
+      ...(ignoreReminderId ? { id: { not: ignoreReminderId } } : {}),
+      // A QUEUED row has no sentAt yet — it is a message on its way out, and it
+      // counts, or the second lane would slip past the one just handed over.
+      OR: [
+        { state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } },
+        { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } },
+      ],
+    },
+  });
+  if (sentToday >= p.maxClientEmailsPerDay) {
+    const next = nextPolicyWindowOpen(etAt(shiftKey(etDayKey(now), 1), 0), p);
+    return out({ ...common, attempt, dedupeKey, decision: "wait", suppressionReason: "another_reminder_today", reason: `${sentToday} program email already went to this client today — the next one waits until ${fmtDay(next)}`, nextEligibleAt: next, retryOfId: failedRetry?.id ?? null });
+  }
   if (!inPolicyWindow(now, p) || !clientWindowOpen) {
     const next = nextPolicyWindowOpen(now, p);
     return out({ ...common, attempt, dedupeKey, decision: "wait", suppressionReason: "quiet_hours", reason: `outside the send window — next opening ${fmtDay(next)} ${next.toLocaleTimeString("en-US", { timeZone: p.timezone, hour: "numeric", minute: "2-digit" })}`, nextEligibleAt: next, retryOfId: failedRetry?.id ?? null });
   }
-  return out({ ...common, attempt, dedupeKey, decision: "send", reason: failedRetry ? `retrying attempt ${attempt} (last error: ${failedRetry.lastError ?? "unknown"})` : attempt === 1 ? "first reminder" : `follow-up ${attempt}`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
+  return out({ ...common, attempt, dedupeKey, decision: "send", reason: failedRetry ? `retrying attempt ${attempt} (last error: ${failedRetry.lastError ?? "unknown"})` : milestone === "MID_MONTH" ? "the 15th: the mid-month milestone" : milestone === "MONTH_OPEN" ? "the 1st: this month's planning email" : `follow-up ${attempt} (${milestone.toLowerCase().replace("_", " ")})`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
 }
 
 // ---- the escalation owner ---------------------------------------------------------
@@ -606,7 +1229,7 @@ export function actionLabel(a: ReminderAction | null): string {
 
 export type DispatchOutcome = { reminderId: string | null; outcome: "sent" | "failed" | "unknown" | "suppressed" | "duplicate" | "skipped"; detail: string };
 
-async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolicy, now: Date, opts: { requestedBy: string; manual: boolean; byAppUserId: string | null; sync: SchedulerSync; clientWindowOpen: boolean }): Promise<DispatchOutcome> {
+async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolicy, now: Date, opts: { requestedBy: string; manual: boolean; byAppUserId: string | null; feeds: BookingFeeds; clientWindowOpen: boolean }): Promise<DispatchOutcome> {
   if (c.decision !== "send" || !c.action || !c.dedupeKey || !c.templateKey) return { reminderId: null, outcome: "skipped", detail: c.reason };
   const leaseBy = `${opts.requestedBy}:${process.pid}`;
   const leaseUntil = new Date(now.getTime() + 5 * 60_000);
@@ -635,8 +1258,11 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
   const month = await prisma.contentMonth.findUnique({ where: { id: c.monthId }, select: { id: true, monthKey: true, status: true, remindersSnoozedUntil: true } });
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: e.id }, select: { status: true } });
   // 2. RECHECK — the authoritative state, read again this instant.
-  const fresh = month && enrollment ? await evaluateMonth({ ...e, status: enrollment.status }, month, now, p, opts.sync, opts.clientWindowOpen, reminderId) : null;
-  const stillSend = fresh && fresh.decision === "send" && fresh.action === c.action;
+  const fresh = month && enrollment ? await evaluateMonth({ ...e, status: enrollment.status }, month, now, p, opts.feeds, opts.clientWindowOpen, c.lane === "REVIEW" ? "REVIEW" : "PRIMARY", reminderId) : null;
+  // The recheck has to agree about the MILESTONE too, not just the action: a
+  // run that decided "the 15th, with the roll-over note" must not quietly send
+  // the plain follow-up body, and vice versa.
+  const stillSend = fresh && fresh.decision === "send" && fresh.action === c.action && fresh.milestone === c.milestone;
   if (!stillSend) {
     const reason = fresh?.suppressionReason ?? (fresh?.decision === "wait" ? "quiet_hours" : "state_changed");
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, evaluatedStateJson: JSON.stringify(fresh?.state ?? {}), leaseUntil: null, leaseBy: null, lastError: fresh?.reason ?? null } });
@@ -655,7 +1281,7 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
   }
   // 4. RENDER.
   const vars = await templateVarsFor(c, e, link.url, fresh);
-  const body = renderReminder(reminderTemplate(c.templateKey), vars);
+  const body = withExtraParagraph(renderReminder(reminderTemplate(c.templateKey), vars), fresh.extraParagraph);
   await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, evaluatedStateJson: JSON.stringify({ ...fresh.state, portalLinkKind: link.kind }) } });
   // 5. THE ONE SEND. sendThroughOutbox queues, leases and delivers in one call,
   //    so a pending row never sits where the recovery drain could pick it up
@@ -677,12 +1303,17 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
     bookCallLink: monthly?.publicUrl ?? STRATEGY_CALL_BOOKING_URL,
     noCallEligible: c.noCallEligible,
     answersStarted: c.answersStarted,
-    sessionNote: c.digestSession ? `Once ${month} is planned we'll also need to book your filming session — you can pick a time in the same portal and we'll confirm it.` : null,
+    // No em dashes in anything a client reads (Jordan's rule).
+    sessionNote: c.digestSession ? `Once ${month} is planned we'll also need to book your filming session. You can pick a time in the same portal and we'll confirm it.` : null,
     earliestSession: fmtDay(fresh?.state.earliestSessionAt ? new Date(fresh.state.earliestSessionAt) : null),
     itemCount: fresh?.state.releasedCutsAwaiting ?? c.state.releasedCutsAwaiting,
     titles: [],
     updatedTitles: [],
-    deadline: c.deadlineAt && c.deadlineAt > new Date() ? c.deadlineAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" }) : null,
+    // THE QUOTED DATE, NEVER THE INTERNAL ONE. `deadlineAt` moves with the
+    // escalation calendar and with the lane; a client-facing promise must not
+    // move with it, so it is a separate, deliberately-set value and it is null
+    // unless Jordan has set one (F20 review, Sep 21 2026).
+    deadline: c.quotedDeadlineAt && c.quotedDeadlineAt > new Date() ? c.quotedDeadlineAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" }) : null,
   };
 }
 
@@ -733,6 +1364,12 @@ export type EvaluateResult = {
   candidates: ReminderCandidate[];
   sent: DispatchOutcome[];
   escalations: { candidate: ReminderCandidate; created: boolean; owner: string }[];
+  /** Mid-month milestones that put a follow-up on Kyle, whether or not the
+   *  client was written to (§12, A28). */
+  kyleFollowUps: { candidate: ReminderCandidate; created: boolean; owner: string }[];
+  /** §8's missing-address lane. Computed on a dry run only, and it can never
+   *  reach `send`: the client-facing template for it is not in this batch. */
+  addressLane: AddressReminderPreview[];
   /** A run that went quiet for an infrastructure reason, in words, for the
    *  automation row's lastError and the settings panel. null = healthy. */
   healthError: string | null;
@@ -747,13 +1384,16 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const now = opts.now ?? new Date();
   const { enabled, policy, source } = await reminderPolicy({ orDefaults: opts.dryRun });
   if (!policy || (!enabled && !opts.dryRun)) {
-    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
+    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
   }
-  const [sync, clientWindowOpen] = await Promise.all([schedulerSyncState(now, policy), clientTextWindowOpen(now)]);
-  const enrollments = (await prisma.contentEnrollment.findMany({
+  const [feeds, clientWindowOpen] = await Promise.all([bookingFeeds(now, policy), clientTextWindowOpen(now)]);
+  const sync = feeds.call;
+  const rawEnrollments = await prisma.contentEnrollment.findMany({
     where: { status: { in: ["ACTIVE", "PAUSED"] }, ...(opts.enrollmentIds?.length ? { id: { in: opts.enrollmentIds } } : {}) },
-    select: { id: true, clientId: true, status: true, callMode: true, strategyCallRequired: true, noCallEligible: true, portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true },
-  }));
+    select: ENROLLMENT_SELECT,
+  });
+  const firstMonths = await firstMonthKeysFor(rawEnrollments.map((e) => e.id), new Map(rawEnrollments.map((e) => [e.id, e.startedAt])));
+  const enrollments = rawEnrollments.map((e) => ({ ...e, firstMonthKey: firstMonths.get(e.id) ?? null }));
   const clients = new Map((await prisma.client.findMany({ where: { id: { in: enrollments.map((e) => e.clientId) } }, select: { id: true, name: true, email: true } })).map((c) => [c.id, c]));
   const cur = currentMonthKey(now);
   const months = await prisma.contentMonth.findMany({
@@ -764,23 +1404,38 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const candidates: ReminderCandidate[] = [];
   const sent: DispatchOutcome[] = [];
   const escalations: EvaluateResult["escalations"] = [];
+  const kyleFollowUps: EvaluateResult["kyleFollowUps"] = [];
+  const addressLane: AddressReminderPreview[] = [];
   let sends = 0;
   for (const m of months) {
     const en = enrollments.find((e) => e.id === m.enrollmentId);
     const client = en ? clients.get(en.clientId) : null;
     if (!en || !client) continue;
     const e: EnrollmentRow = { ...en, client: { name: client.name, email: client.email } };
-    const c = await evaluateMonth(e, m, now, policy, sync, clientWindowOpen);
-    candidates.push(c);
-    if (c.escalation?.due && (c.decision === "send" || c.decision === "escalate" || c.decision === "wait")) {
-      const r = await escalate(c, policy, now, c.escalation.reason, opts.dryRun);
-      escalations.push({ candidate: c, ...r });
+    // ONE MONTH, THE LANES IN ORDER. Planning/session first — it is the lane
+    // §12's calendar belongs to — then review on its own clock. The one-email-
+    // a-day rule inside the derivation is what stops the second lane doubling
+    // up on the first, and it re-reads the ledger, so it sees a send this loop
+    // has only just made.
+    for (const lane of ["PRIMARY", "REVIEW"] as const) {
+      const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane);
+      if (lane === "REVIEW" && c.action === null && c.decision === "none") continue; // nothing waiting: not worth a row in the preview
+      candidates.push(c);
+      if (c.kyleFollowUp?.due) {
+        const r = await raiseMidMonthFollowUp(c, policy, now, opts.dryRun);
+        kyleFollowUps.push({ candidate: c, ...r });
+      }
+      if (c.escalation?.due && (c.decision === "send" || c.decision === "escalate" || c.decision === "wait")) {
+        const r = await escalate(c, policy, now, c.escalation.reason, opts.dryRun);
+        escalations.push({ candidate: c, ...r });
+      }
+      if (opts.dryRun || c.decision !== "send") continue;
+      if (sends >= policy.maxSendsPerRun) { sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${c.clientName} ${c.monthKey} waits for the next run` }); continue; }
+      const r = await dispatch(c, e, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", manual: false, byAppUserId: opts.byAppUserId ?? null, feeds, clientWindowOpen });
+      sent.push(r);
+      if (r.outcome === "sent") sends++;
     }
-    if (opts.dryRun || c.decision !== "send") continue;
-    if (sends >= policy.maxSendsPerRun) { sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${c.clientName} ${c.monthKey} waits for the next run` }); continue; }
-    const r = await dispatch(c, e, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", manual: false, byAppUserId: opts.byAppUserId ?? null, sync, clientWindowOpen });
-    sent.push(r);
-    if (r.outcome === "sent") sends++;
+    if (opts.dryRun) addressLane.push(...(await previewAddressLane(e, m, now, policy)));
   }
   const wouldSend = candidates.filter((c) => c.decision === "send").length;
   // A BROKEN SCHEDULER MUST NOT BE A QUIET ONE. `stale_scheduler_sync` is a
@@ -790,14 +1445,108 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   // integration goes dark, then days of unnoticed silence. One line on the
   // automation row and one task per ET day, so the silence has an owner.
   const stale = candidates.filter((c) => c.suppressionReason === "stale_scheduler_sync");
+  // Two feeds can be the dark one now (Calendly for calls, Aryeo for filming
+  // sessions), so the sentence names whichever it actually was rather than
+  // always blaming Calendly.
+  const staleDetail = [feeds.call.fresh ? null : `Calendly: ${feeds.call.detail}`, feeds.session.fresh ? null : `Aryeo: ${feeds.session.detail}`].filter(Boolean).join("; ") || sync.detail;
   const healthError = stale.length
-    ? `${stale.length} month(s) got no booking reminder because the Calendly booking state is not trustworthy: ${sync.detail}. Nothing was sent for them — this is a suppression, not a decision about the client.`
+    ? `${stale.length} month(s) got no booking reminder because the booking state is not trustworthy (${staleDetail}). Nothing was sent for them — this is a suppression, not a decision about the client.`
     : null;
-  if (!opts.dryRun && healthError) await raiseSchedulerStaleTask(stale, sync, now, healthError);
+  if (!opts.dryRun && healthError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, healthError);
   return {
-    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, healthError,
+    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, healthError,
     note: opts.dryRun ? `dry run: ${wouldSend} would send, ${candidates.filter((c) => c.decision === "suppressed").length} suppressed, ${candidates.filter((c) => c.decision === "wait").length} waiting` : `${sends} sent`,
   };
+}
+
+/**
+ * THE 15th's FOLLOW-UP FOR KYLE (§12). It is raised whether or not the client
+ * is written to, which is the whole point of it in the two exempt cases: a
+ * first-cycle client and a client whose shortfall we caused both get no
+ * warning, and Kyle still gets the work.
+ *
+ * ONE task per month, not one per action and not one per lane — §12 is explicit
+ * that alerting several people must not produce several independent tasks. If
+ * this month has already been escalated for this action, the escalation IS the
+ * follow-up and nothing further is raised.
+ */
+async function raiseMidMonthFollowUp(c: ReminderCandidate, p: ReminderPolicy, now: Date, dryRun: boolean): Promise<{ created: boolean; owner: string }> {
+  if (dryRun) return { created: false, owner: "(not resolved in a dry run)" };
+  if (c.isTest) return { created: false, owner: "(TEST client — no owner work)" };
+  const already = await prisma.programReminder.count({ where: { monthId: c.monthId, action: "ESCALATION", templateKey: `escalation:${c.action}` } });
+  if (already > 0) return { created: false, owner: "(already escalated for this action)" };
+  const owner = await escalationOwner(c.enrollmentId, c.monthId, "SCHEDULING").catch(() => null);
+  const exempt = c.suppressionReason === "first_cycle_exempt" || c.suppressionReason === "catch_up_owed";
+  const task = await prisma.smartTask
+    .create({
+      data: {
+        taskType: "todo", status: "OPEN", source: "content_program", priority: "MEDIUM",
+        title: `${c.clientName}: mid-month check on ${c.monthKey}`.slice(0, 140),
+        summary: `${c.kyleFollowUp?.reason ?? "mid-month check"}${exempt ? " (the client was NOT sent a roll-over warning)" : ""}.`.slice(0, 500),
+        description: [
+          `It is the ${p.midMonthDayOfMonth}th and ${c.monthKey} still needs ${actionLabel(c.action)}.`,
+          exempt
+            ? c.suppressionReason === "first_cycle_exempt"
+              ? "This is their FIRST paid production cycle, so no use-it-or-lose-it warning went to them and nothing is forfeited. Give them a hand with the booking."
+              : "Work carried into this month and nobody has classified why. If we were late, it is still owed and it is not forfeited, and the client must not be told they are losing it. Classify it, then decide."
+            : "The client has had the mid-month note about sessions not rolling over.",
+          `Open the client file on /content/${c.enrollmentId}.`,
+        ].join("\n\n"),
+        reasonCreated: "Content-program mid-month milestone (spec §12)",
+        clientId: c.clientId, assignedKey: owner?.assignedKey ?? null,
+        dedupeKey: `program-reminder-midmonth:${c.monthId}`,
+        dueAt: new Date(now.getTime() + 2 * 864e5),
+      },
+      select: { id: true },
+    })
+    .catch(() => null); // P2002 = this month already has its mid-month task
+  return { created: !!task, owner: owner?.label ?? "(unassigned)" };
+}
+
+// ---- the ADDRESS lane (§8), computed and previewed only -------------------------
+
+export type AddressReminderPreview = {
+  enrollmentId: string; clientName: string; monthKey: string; projectId: string;
+  shootAt: Date; remindAt: Date; movedOffWeekend: boolean; addressLine: string | null;
+  /** Past its moment: §8 says send at the next office opportunity and flag Kyle. */
+  overdue: boolean;
+  reason: string;
+};
+
+/** Live orders really do carry "August 2026 Social Content, West Chester, PA
+ *  19382" and "[No address provided], 40.02,-76.52" as their address (Phase 0,
+ *  verified against Aryeo), so a general filming AREA is the house pattern and
+ *  not an error. What it is not is an exact address, and the one thing an exact
+ *  address always has is a street number in front of a street name. Conservative
+ *  on purpose: this decides whether a row appears in an internal preview. */
+export function looksLikeGeneralArea(addressLine: string | null): boolean {
+  const s = (addressLine ?? "").trim();
+  if (!s) return true;
+  if (/no address provided/i.test(s)) return true;
+  return !/^\d+[A-Za-z]?\s+\S/.test(s);
+}
+
+/**
+ * §8's missing-address reminder, worked out but never sent. The clock and the
+ * weekend rule are here so there is one source of truth for them; the
+ * client-facing template belongs to reminderTemplates.ts, which is not this
+ * batch's file, so every row this returns is preview-only.
+ */
+async function previewAddressLane(e: EnrollmentRow, month: { id: string; monthKey: string }, now: Date, p: ReminderPolicy): Promise<AddressReminderPreview[]> {
+  const facts = await monthFacts(month.id, now, e.sessionsPerMonth);
+  const out: AddressReminderPreview[] = [];
+  for (const s of facts.upcomingShoots) {
+    if (!looksLikeGeneralArea(s.addressLine)) continue;
+    const remindAt = addressReminderAt(s.shootDate, p);
+    const raw = new Date(s.shootDate.getTime() - p.addressReminderHoursBefore * 3_600_000);
+    out.push({
+      enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, projectId: s.projectId,
+      shootAt: s.shootDate, remindAt, movedOffWeekend: remindAt.getTime() !== raw.getTime(), addressLine: s.addressLine,
+      overdue: remindAt <= now,
+      reason: "no exact street address on the session yet — this lane is computed only: its client template is not built",
+    });
+  }
+  return out;
 }
 
 /** ONE task per ET day for the whole run, whoever the affected clients are —
@@ -813,7 +1562,7 @@ async function raiseSchedulerStaleTask(stale: ReminderCandidate[], sync: Schedul
         taskType: "todo", status: "OPEN", source: "content_program", priority: "HIGH",
         title: `Content-program reminders are holding: ${sync.detail}`.slice(0, 140),
         summary: `${real.length} client month(s) got no booking reminder this run. ${why}`.slice(0, 500),
-        description: `${why}\n\nAffected months: ${real.slice(0, 20).map((c) => `${c.clientName} ${c.monthKey}`).join(", ")}${real.length > 20 ? ` and ${real.length - 20} more` : ""}.\n\nThe evaluator refuses to tell a client "you still haven't booked" while the booking feed is stale — it would be guessing. Fix the Calendly mapping on Settings → Calendly & calls; the next hourly run clears this on its own.`,
+        description: `${why}\n\nAffected months: ${real.slice(0, 20).map((c) => `${c.clientName} ${c.monthKey}`).join(", ")}${real.length > 20 ? ` and ${real.length - 20} more` : ""}.\n\nThe evaluator refuses to tell a client "you still haven't booked" while the booking feed is stale — it would be guessing. Fix whichever feed the reason above names (the monthly-strategy mapping on Settings → Calendly & calls, or the Aryeo connection on Settings → Connections); the next hourly run clears this on its own.`,
         reasonCreated: "Content-program reminders suppressed by a stale scheduler sync (spec §24)",
         assignedKey: owner?.assignedKey ?? null, dedupeKey: `program-reminder-scheduler-stale:${etDayKey(now)}`, dueAt: new Date(now.getTime() + 4 * 3_600_000),
       },
@@ -916,17 +1665,80 @@ export async function recordReminderBounce(providerMessageId: string, reason: st
 
 export type ManualResult = { ok: boolean; message: string; candidate?: ReminderCandidate; link?: string; body?: string; reminderId?: string | null };
 
+/**
+ * THE ROW IDENTITY A PERSON CLICKS (F20 review, Sep 21 2026).
+ *
+ * §12 evaluates every month once per lane, so a month id on its own does not
+ * identify a row on the dry-run table: a month with a released cut waiting on
+ * the client produces a planning row and a review row, and "Send now" on the
+ * review row was silently acting on the planning lane — the client would have
+ * received the wrong message entirely. The lane rides along with the month id
+ * through the settings action, because that action's file is not this batch's
+ * to widen, and a BARE month id still reads as PRIMARY so every existing caller
+ * is unchanged. Month ids are cuids and never contain "#".
+ */
+export function reminderRowId(monthId: string, lane: ReminderLane): string {
+  return `${monthId}#${lane}`;
+}
+export function parseReminderRowId(rowId: string): { monthId: string; lane: "PRIMARY" | "REVIEW" } {
+  const hash = rowId.indexOf("#");
+  if (hash < 0) return { monthId: rowId, lane: "PRIMARY" };
+  return { monthId: rowId.slice(0, hash), lane: rowId.slice(hash + 1) === "REVIEW" ? "REVIEW" : "PRIMARY" };
+}
+
 async function loadForManual(monthId: string, now: Date, policyOpt: { orDefaults: boolean }) {
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true, status: true, remindersSnoozedUntil: true } });
   if (!month) throw new Error("Month not found.");
-  const en = await prisma.contentEnrollment.findUnique({ where: { id: month.enrollmentId }, select: { id: true, clientId: true, status: true, callMode: true, strategyCallRequired: true, noCallEligible: true, portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true } });
+  const en = await prisma.contentEnrollment.findUnique({ where: { id: month.enrollmentId }, select: ENROLLMENT_SELECT });
   if (!en) throw new Error("Enrollment not found.");
   const client = await prisma.client.findUnique({ where: { id: en.clientId }, select: { name: true, email: true } });
-  const e: EnrollmentRow = { ...en, client: { name: client?.name ?? "", email: client?.email ?? null } };
+  const firstMonths = await firstMonthKeysFor([en.id], new Map([[en.id, en.startedAt]]));
+  const e: EnrollmentRow = { ...en, firstMonthKey: firstMonths.get(en.id) ?? null, client: { name: client?.name ?? "", email: client?.email ?? null } };
   const { enabled, policy } = await reminderPolicy(policyOpt);
-  const sync = await schedulerSyncState(now, policy ?? REMINDER_DEFAULTS);
+  const feeds = await bookingFeeds(now, policy ?? REMINDER_DEFAULTS);
   const clientWindowOpen = await clientTextWindowOpen(now);
-  return { month, e, enabled, policy: policy ?? REMINDER_DEFAULTS, sync, clientWindowOpen };
+  return { month, e, enabled, policy: policy ?? REMINDER_DEFAULTS, feeds, clientWindowOpen };
+}
+
+/**
+ * THE PREVIEW (F20, Sep 21 2026). What this month's reminder calendar is, what
+ * the next message would say, and why it is or is not going. It WRITES NOTHING
+ * — not a ledger row, not a login link, not an owner task — which is what
+ * separates it from copyReminderLink, whose whole job is to record that a human
+ * pasted the text into a message they then sent themselves.
+ *
+ * `portalLink` therefore shows the token page or a placeholder: minting a
+ * sign-in link voids the one the client is holding, and a preview must not be
+ * able to do that to somebody.
+ */
+export type ReminderPreview = {
+  monthKey: string;
+  clientName: string;
+  calendar: MonthlyCalendar;
+  lanes: { lane: ReminderLane; candidate: ReminderCandidate; body: string | null }[];
+  addressLane: AddressReminderPreview[];
+};
+
+export async function previewReminders(monthId: string, opts: { now?: Date } = {}): Promise<ReminderPreview> {
+  const now = opts.now ?? new Date();
+  const { month, e, policy, feeds, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: true });
+  const lanes: ReminderPreview["lanes"] = [];
+  for (const lane of ["PRIMARY", "REVIEW"] as const) {
+    const c = await evaluateMonth(e, month, now, policy, feeds, clientWindowOpen, lane);
+    let body: string | null = null;
+    if (c.action && c.templateKey) {
+      const tokenLink = e.portalToken && !e.accessRevokedAt ? `${appBase()}/portal/${e.portalToken}` : "(no portal link has been issued for this client yet)";
+      body = withExtraParagraph(renderReminder(reminderTemplate(c.templateKey), await templateVarsFor(c, e, tokenLink, c)), c.extraParagraph);
+    }
+    lanes.push({ lane, candidate: c, body });
+  }
+  return {
+    monthKey: month.monthKey,
+    clientName: e.client.name,
+    calendar: monthlyCalendar(month.monthKey, policy),
+    lanes,
+    addressLane: await previewAddressLane(e, month, now, policy),
+  };
 }
 
 /**
@@ -935,18 +1747,22 @@ async function loadForManual(monthId: string, now: Date, policyOpt: { orDefaults
  * suppression rules still apply (a booked month has no link to copy), and the
  * copy is recorded as an attempt (channel "copy") so the cadence counts it.
  */
-export async function copyReminderLink(monthId: string, by: { email: string; appUserId?: string | null }, opts: { now?: Date } = {}): Promise<ManualResult> {
+export async function copyReminderLink(rowId: string, by: { email: string; appUserId?: string | null }, opts: { now?: Date } = {}): Promise<ManualResult> {
   const now = opts.now ?? new Date();
-  const { month, e, policy, sync } = await loadForManual(monthId, now, { orDefaults: true });
+  // `rowId` is the month id, optionally carrying the lane the person clicked.
+  const { monthId, lane } = parseReminderRowId(rowId);
+  const { month, e, policy, feeds } = await loadForManual(monthId, now, { orDefaults: true });
   // Cadence, quiet hours and the launch lock do not bind a human copying text;
-  // the derivation and the state-based suppressions do.
-  const c = await evaluateMonth(e, month, now, { ...policy, testClientsOnly: false, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, maxAttemptsPerAction: 99 }, sync, true);
+  // the derivation and the state-based suppressions do. maxClientEmailsPerDay
+  // is lifted for the same reason: a person who has decided to write to this
+  // client today is not the automation doubling up on itself.
+  const c = await evaluateMonth(e, month, now, { ...policy, testClientsOnly: false, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, reviewFollowUpBusinessDays: 0, maxAttemptsPerAction: 99, reviewMaxAttempts: 99, maxClientEmailsPerDay: 99 }, feeds, true, lane);
   if (c.decision === "suppressed" && c.suppressionReason !== "test_client_real_address") return { ok: false, message: `Nothing to copy — ${c.reason}.`, candidate: c };
   if (!c.action || !c.templateKey) return { ok: false, message: `Nothing to copy — ${c.reason}.`, candidate: c };
   const to = await recipientFor(e);
   const link = await resolvePortalLink(e, to, by.appUserId ?? null, now);
   if (!link) return { ok: false, message: "No portal link exists for this client yet (no seat, no token).", candidate: c };
-  const body = renderReminder(reminderTemplate(c.templateKey), await templateVarsFor(c, e, link.url, c));
+  const body = withExtraParagraph(renderReminder(reminderTemplate(c.templateKey), await templateVarsFor(c, e, link.url, c)), c.extraParagraph);
   const row = await prisma.programReminder.create({
     data: {
       enrollmentId: e.id, clientId: e.clientId, monthId: month.id, monthKey: month.monthKey, action: c.action, templateKey: c.templateKey, templateVersion: reminderTemplate(c.templateKey).version,
@@ -963,20 +1779,25 @@ export async function copyReminderLink(monthId: string, by: { email: string; app
  * refuses a suppressed month, still holds outside the send window; it only
  * overrides the cadence (a human decided it is time).
  */
-export async function sendReminderNow(monthId: string, by: { email: string; appUserId?: string | null }, opts: { now?: Date } = {}): Promise<ManualResult> {
+export async function sendReminderNow(rowId: string, by: { email: string; appUserId?: string | null }, opts: { now?: Date } = {}): Promise<ManualResult> {
   const now = opts.now ?? new Date();
   if (!(await isAutomationEnabled(REMINDERS_KEY))) return { ok: false, message: "Reminders are switched off (Settings → Automations). Copy the link instead." };
-  const { month, e, enabled, policy, sync, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: false });
+  // `rowId` is the month id, optionally carrying the lane the person clicked.
+  const { monthId, lane } = parseReminderRowId(rowId);
+  const { month, e, enabled, policy, feeds, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: false });
   // The switch is on but reminderPolicy still says no: the SAVED policy failed
   // validation, so the hourly pass is doing nothing. Send now must not quietly
   // run on code defaults while the settings panel shows the errors — the two
   // surfaces would disagree about whether reminders are running at all.
   if (!enabled) return { ok: false, message: "The saved reminder policy is not valid, so nothing is running on it (Settings → Reminders lists the errors). Fix the policy, or copy the link and send it yourself." };
-  const c = await evaluateMonth(e, month, now, { ...policy, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0 }, sync, clientWindowOpen);
+  // A human overriding the cadence is not a human overriding the milestone: the
+  // one-a-day rule and the mid-month exemptions stay exactly as the evaluator
+  // computed them, because those protect the client, not the schedule.
+  const c = await evaluateMonth(e, month, now, { ...policy, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, reviewFollowUpBusinessDays: 0 }, feeds, clientWindowOpen, lane);
   if (c.decision === "suppressed") return { ok: false, message: `Not sent — ${c.reason}.`, candidate: c };
   if (c.decision === "wait") return { ok: false, message: `Not sent — ${c.reason}.`, candidate: c };
   if (c.decision !== "send") return { ok: false, message: `Not sent — ${c.reason}.`, candidate: c };
-  const r = await dispatch(c, e, policy, now, { requestedBy: `send-now:${by.email}`, manual: true, byAppUserId: by.appUserId ?? null, sync, clientWindowOpen });
+  const r = await dispatch(c, e, policy, now, { requestedBy: `send-now:${by.email}`, manual: true, byAppUserId: by.appUserId ?? null, feeds, clientWindowOpen });
   return { ok: r.outcome === "sent", message: r.outcome === "sent" ? `Sent to ${c.to}.` : `${r.outcome}: ${r.detail}`, candidate: c, reminderId: r.reminderId };
 }
 

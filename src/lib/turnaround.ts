@@ -345,3 +345,361 @@ export function targetAtFor(tier: Tier, startedAt: Date, rules?: PromiseRules | 
   if (tier.businessDays) return endOfBusinessDaysET(startedAt, tier.targetDays, hour);
   return etAt(etDayKey(new Date(startedAt.getTime() + tier.targetDays * 86_400_000)), hour);
 }
+
+// ===========================================================================
+// THE PRODUCTION ANCHOR — where a monthly content session's clock starts
+// (spec §8/§9, finding F27, Sep 21 2026).
+//
+// Jordan's rule, verbatim from §8: "Internal production — target business day
+// 7, overdue after business day 10, ANCHORED TO THAT APPOINTMENT'S END." The
+// 7/10 window itself has been right since this file was written (TIERS
+// .monthly_social above); what was wrong is the thing it counts FROM.
+//
+// Every date path in the hub counts from a START: deliveryBoard.clockStart
+// takes Project.shootDate (and falls back to `now` for a monthly job with no
+// shoot), and tasks.videoAnchorFor takes the last appointment's startAt. On a
+// four-hour Accelerator session that is the moment the photographer arrives —
+// the crew has not shot a frame of the thing being promised. Anchoring at the
+// END is also the only reading that survives §9's other sentence: "Delivery
+// timing starts at the appointment end even if the photographer uploads late.
+// Late raw footage should consume the same deadline and alert the team; it
+// must not restart the clock." Nothing in here reads an upload, a Dropbox
+// landing or a task completion, and nothing may be added that does — a late
+// upload eats the window, it does not move it.
+//
+// AND THE ANCHOR IS PER APPOINTMENT, NOT PER JOB. A Pro month is two
+// four-hour sessions (§3) that may hang off one order, and §9 says each has
+// "a separate end time and day-7/day-10 target". So the unit here is a LEG.
+//
+// WHAT THE LIVE DATA DOES WITH "the appointment's end" (Phase 0 recon, 33
+// content orders across 12 customers, all booked by hand):
+//   · durations drift from the purchased package — Sarina Spinelli bought a
+//     4-hour Accelerator and her appointment is 120 minutes; others sit at 180
+//     and 210. So a package duration is a FALLBACK, never a correction: we do
+//     not lengthen a real booked appointment to match what was sold.
+//   · one appointment is UNSCHEDULED with null start_at/end_at.
+//   · one order has no appointment at all.
+// "The appointment's end" is therefore not always available, and the reply to
+// that is an explicit, named, visible fallback — never a silent slide back to
+// the shoot date, which is the very defect F27 names. Every answer below says
+// which rung of the ladder it came from and whether it is estimated, so a card
+// can print "estimated from the booked start" instead of quietly asserting a
+// deadline nobody can defend.
+// ===========================================================================
+
+/** One booked leg — the Appointment columns this file needs, and no more. */
+export type SessionLeg = {
+  id?: string | null;
+  startAt: Date | null;
+  endAt?: Date | null;
+  /** Aryeo's own minutes for the leg, when the sync carried one. */
+  durationMin?: number | null;
+  /** Aryeo status: SCHEDULED | CANCELED | UNSCHEDULED. */
+  status?: string | null;
+};
+
+/** Which rung of the ladder answered. Ordered best to worst. */
+export type ProductionAnchorSource =
+  /** the appointment's real end instant — the rule */
+  | "appointment_end"
+  /** end missing, the provider gave the leg a duration */
+  | "appointment_start_plus_duration"
+  /** end and duration both missing, the package says how long it was sold for */
+  | "appointment_start_plus_package"
+  /** a leg with a start and nothing else — better than the job's shoot date,
+   *  and labelled so nobody reads it as a real end */
+  | "appointment_start"
+  /** no usable leg at all — Project.shootDate, and the caller must SAY so */
+  | "shoot_date"
+  /** unscheduled: this session has no clock yet */
+  | "none";
+
+export type ProductionAnchor = {
+  at: Date | null;
+  source: ProductionAnchorSource;
+  /** true when `at` is not the appointment's real recorded end. */
+  estimated: boolean;
+  /** one line for the card, so the fallback is visible rather than implied. */
+  note: string | null;
+  /** the leg this anchor came from, when it came from one. */
+  legId: string | null;
+  /** minutes actually booked, when known — for the drift flag below. */
+  bookedMinutes: number | null;
+};
+
+const MINUTE = 60_000;
+const legIsBookable = (a: SessionLeg): boolean => {
+  const s = (a.status || "").toUpperCase();
+  // Same exclusions as tasks.videoAnchorFor (Sep 16): a cancelled leg is not a
+  // visit, and UNSCHEDULED means the office postponed it and it has no slot —
+  // a stale time on that row is not a shoot.
+  return !s.startsWith("CANCEL") && s !== "UNSCHEDULED" && a.startAt !== null;
+};
+
+/**
+ * The end of one booked leg, walking the ladder.
+ *
+ * `expectedSessionMinutes` is what the PACKAGE was sold as (Starter 120,
+ * Accelerator 240, Pro 240 per session — contentProgram.sessionMinutesFor).
+ * It is used only when the provider told us nothing, and it never overrides a
+ * real duration: Sarina's 120-minute Accelerator is a booking Kyle made, and
+ * silently promising against a 4-hour end she never booked would invent a
+ * deadline out of a sales record.
+ */
+export function legEnd(a: SessionLeg, expectedSessionMinutes?: number | null): ProductionAnchor {
+  if (!legIsBookable(a)) {
+    return { at: null, source: "none", estimated: false, note: "This session is not on the calendar yet, so production has no clock.", legId: a.id ?? null, bookedMinutes: null };
+  }
+  const start = a.startAt!;
+  const booked = typeof a.durationMin === "number" && a.durationMin > 0 ? a.durationMin : null;
+  if (a.endAt) {
+    return {
+      at: a.endAt,
+      source: "appointment_end",
+      estimated: false,
+      note: null,
+      legId: a.id ?? null,
+      bookedMinutes: booked ?? Math.max(0, Math.round((a.endAt.getTime() - start.getTime()) / MINUTE)),
+    };
+  }
+  if (booked) {
+    return {
+      at: new Date(start.getTime() + booked * MINUTE),
+      source: "appointment_start_plus_duration",
+      estimated: true,
+      note: `Estimated from the booked start plus ${booked} minutes. Aryeo carried no end time for this session.`,
+      legId: a.id ?? null,
+      bookedMinutes: booked,
+    };
+  }
+  if (expectedSessionMinutes && expectedSessionMinutes > 0) {
+    return {
+      at: new Date(start.getTime() + expectedSessionMinutes * MINUTE),
+      source: "appointment_start_plus_package",
+      estimated: true,
+      note: `Estimated from the booked start plus the package's ${expectedSessionMinutes} minutes. This session carries neither an end time nor a duration.`,
+      legId: a.id ?? null,
+      bookedMinutes: null,
+    };
+  }
+  // A leg with a start and nothing else. Its own start is still a better,
+  // honestly-labelled answer than the job's shootDate, which on a two-visit job
+  // is a different day entirely.
+  return {
+    at: start,
+    source: "appointment_start",
+    estimated: true,
+    note: "Estimated from the booked start. This session carries no end time, no duration and no package length.",
+    legId: a.id ?? null,
+    bookedMinutes: null,
+  };
+}
+
+/** One bookable leg of a job, with its own end and its own place in the run. */
+export type ProductionSession = {
+  /** 1-based, by start time, over THIS job's bookable legs — "session 1 of 2".
+   *  A display ordinal, never an identity (§9.8); the clock rides on legId. */
+  index: number;
+  of: number;
+  legId: string | null;
+  startAt: Date | null;
+  anchor: ProductionAnchor;
+};
+
+/**
+ * EVERY SESSION ON THE JOB, each with its own end (§9: "Each Pro session has a
+ * separate end time and day-7/day-10 target").
+ *
+ * This is the primitive. A caller rendering a video, a cut or a session reads
+ * its own leg from here (or asks productionAnchorFor for it by id); only a
+ * caller asking about the WHOLE job rolls these up, and the roll-up below is
+ * deliberately a minimum rather than a pick.
+ *
+ * Empty when the job has no bookable leg at all — the caller then falls back
+ * to the shoot-date rung, which productionAnchorFor does and labels.
+ */
+export function productionSessionsFor(
+  p: { appointments?: SessionLeg[] | null },
+  opts: { expectedSessionMinutes?: number | null } = {},
+): ProductionSession[] {
+  const legs = (p.appointments ?? [])
+    .filter(legIsBookable)
+    .sort((x, y) => x.startAt!.getTime() - y.startAt!.getTime());
+  return legs.map((a, i) => ({
+    index: i + 1,
+    of: legs.length,
+    legId: a.id ?? null,
+    startAt: a.startAt,
+    anchor: legEnd(a, opts.expectedSessionMinutes),
+  }));
+}
+
+/**
+ * THE JOB-LEVEL anchor: the EARLIEST obligation the job is still carrying.
+ *
+ * WHY EARLIEST, AND WHY THIS CHANGED (review of the F27 batch, Sep 21 2026).
+ * The first cut of this function mirrored tasks.videoAnchorFor — the latest leg
+ * that has actually happened wins — so that the two engines could not disagree
+ * about WHICH visit. On a one-visit job, which is 68 of the 69 live content
+ * jobs, that is the same leg either way. On a TWO-visit job it erased the first
+ * session's deadline outright: Joe Sutow, 1023 Sycamore Mills Rd, is filmed
+ * Fri Jul 24 (ends 2:30pm) and again Mon Jul 27 (ends 4:00pm), and sessionClocksFor
+ * correctly reported session 1 overdue after 2026-08-07 and session 2 after
+ * 2026-08-10 while this function answered 2026-08-10 alone — session one's
+ * videos read as on time for three extra days, which is exactly the merge §9
+ * forbids.
+ *
+ * So the two engines now answer two different questions on purpose, and the
+ * divergence is the fix rather than a regression:
+ *   · videoAnchorFor asks WHEN WAS THIS REEL FILMED — a reel shot on the second
+ *     visit is not late against the first, so the latest visit is right there.
+ *   · this asks IS THIS JOB LATE, and a job is late as soon as its earliest
+ *     unmet session is. A minimum can only ever pull a date earlier, so no
+ *     roll-up here can hide lateness the way the old pick did.
+ * Anything rendering per-video or per-session must pass `legId` (or read
+ * productionSessionsFor) and gets its own leg, untouched by this roll-up —
+ * contentProgram.sessionClocksFor always names a leg, which is why the per
+ * session numbers were right while the job-level answer was wrong.
+ *
+ * A booked-but-unshot job still shows a date: the minimum is taken over ALL
+ * bookable legs, past and upcoming alike, so the clock is never lost the way an
+ * anchor-on-past-only rule would lose it.
+ */
+export function productionAnchorFor(
+  p: { shootDate?: Date | null; appointments?: SessionLeg[] | null },
+  // `now` is no longer read — the old rule split the legs into past and
+  // upcoming and this one does not care which side a leg falls on. It stays in
+  // the type because every caller passes it (productionClockFor threads its
+  // whole opts object through) and because a clock the caller can pin is how
+  // the drills replay a job at a chosen instant.
+  opts: { now?: number; expectedSessionMinutes?: number | null; legId?: string | null } = {},
+): ProductionAnchor {
+  const legs = (p.appointments ?? []).filter(legIsBookable);
+  // Pro: each session is asked for by id, and answers for itself alone (§9).
+  // A named leg that is cancelled or unscheduled answers NOTHING — it must
+  // never quietly fall through to the other session's end, which would hand
+  // session two's deadline to a session-one card and read as on time.
+  if (opts.legId) {
+    const one = legs.find((a) => a.id === opts.legId);
+    if (one) return legEnd(one, opts.expectedSessionMinutes);
+    const dropped = (p.appointments ?? []).find((a) => a.id === opts.legId);
+    if (dropped) return legEnd(dropped, opts.expectedSessionMinutes);
+    return { at: null, source: "none", estimated: false, note: "That session is no longer on the calendar.", legId: opts.legId, bookedMinutes: null };
+  }
+  const sessions = productionSessionsFor(p, opts).filter((s) => s.anchor.at !== null);
+  if (sessions.length > 0) {
+    const earliest = sessions.reduce((a, b) => (a.anchor.at!.getTime() <= b.anchor.at!.getTime() ? a : b));
+    if (earliest.of === 1) return earliest.anchor;
+    // More than one visit: say which one this date belongs to. A job-level
+    // number that does not name its session is how the merge happened in the
+    // first place, and a card printing one date for a two-session job has to
+    // admit that the other session has its own.
+    const mine = `This job has ${earliest.of} sessions, each with its own day-7/day-10. This date is session ${earliest.index}'s, the earliest still owed.`;
+    return { ...earliest.anchor, note: earliest.anchor.note ? `${earliest.anchor.note} ${mine}` : mine };
+  }
+  if (p.shootDate) {
+    return {
+      at: p.shootDate,
+      source: "shoot_date",
+      estimated: true,
+      // Said out loud on purpose. One live content order has no appointment
+      // row at all, and the whole point of F27 is that the shoot date is the
+      // wrong anchor — so where it is still the only date we hold, the screen
+      // has to admit it rather than present it as the session's end.
+      note: "No appointment on this job, so the shoot date is standing in for the session end. Ask Kyle to confirm the booking.",
+      legId: null,
+      bookedMinutes: null,
+    };
+  }
+  return { at: null, source: "none", estimated: false, note: "Nothing is booked, so production has no clock yet.", legId: null, bookedMinutes: null };
+}
+
+/**
+ * THE PRODUCTION WINDOW off an anchor: business day 7 is the target, business
+ * day 10 is overdue (§8). Business days and the office's 5pm close, through
+ * the same endOfBusinessDaysET every other day-quoted promise here uses, and
+ * through TIERS.monthly_social so there is still exactly ONE 7/10 table.
+ *
+ * `monthlyBusinessDays` in Settings keeps moving the overdue point, as it
+ * always has. The target is clamped to it: an internal aim the office could
+ * miss while still being on time is not a target, it is a second deadline.
+ */
+export function productionWindowFrom(anchor: Date, rules?: PromiseRules | null): { productionTargetAt: Date; productionDueAt: Date } {
+  const productionDueAt = dueAtFor(TIERS.monthly_social, anchor, rules);
+  const aim = targetAtFor(TIERS.monthly_social, anchor, rules);
+  return { productionTargetAt: aim > productionDueAt ? productionDueAt : aim, productionDueAt };
+}
+
+/**
+ * THE PRODUCTION CLOCK, and nothing else.
+ *
+ * §10's deadline-reporting rule: "Show the day-7/day-10 production target
+ * SEPARATELY from client review and revision clocks… Do not silently merge
+ * these measures or blame client review time on the editor." That is why the
+ * fields are named productionTargetAt/productionDueAt rather than target/due —
+ * a screen that wants to print one number for a whole job has to make that
+ * choice visibly, at the call site, instead of picking up an ambiguous `dueAt`
+ * from here. The client's four-business-day review window per released version
+ * is a different clock with a different anchor (the release) and does not live
+ * in this type.
+ */
+export type ProductionClock = {
+  anchor: ProductionAnchor;
+  /** computed from the anchor under today's rules. */
+  productionTargetAt: Date | null;
+  productionDueAt: Date | null;
+  /** what the office is actually held to, after the overrides below. */
+  effectiveDueAt: Date | null;
+  effectiveSource: "office_override" | "as_promised" | "computed" | "none";
+};
+
+/**
+ * The production clock for ONE SESSION when `opts.legId` names one, and for the
+ * whole job when it does not — and "the whole job" means its EARLIEST unmet
+ * session, never a merged date (see productionAnchorFor, F27 review Sep 21
+ * 2026). Anything rendering a video, a cut or a session names its leg.
+ *
+ * …WITH the promise ladder that already
+ * governs every other date in the hub applied on top:
+ *
+ *   1. Project.dueOverrideAt — the office set this date by hand (Jordan, Sep
+ *      13: "I want to be able to override anything"). It outranks everything.
+ *   2. Project.promisedDueAt — the deadline the job was SOLD under, frozen at
+ *      the rules in force then. A recomputed date is never allowed past it
+ *      (cappedByPromise), and only a rebooked visit may void it (livePromise).
+ *   3. the computed day-10.
+ *
+ * THE LADDER IS THE WHOLE SAFETY ARGUMENT FOR MOVING THE ANCHOR (Sep 21
+ * 2026). Re-anchoring is the rule that decides when work is late, so a silent
+ * shift of a promise already made would be a serious regression — every pinned
+ * job and every hand-set override therefore keeps exactly the date it has
+ * today, and only an unpinned, un-overridden job feels the new anchor at all.
+ * Measured on production in scripts/_drill/f27-anchor.ts before this shipped.
+ */
+export function productionClockFor(
+  p: {
+    shootDate?: Date | null;
+    appointments?: SessionLeg[] | null;
+    dueOverrideAt?: Date | null;
+    promisedDueAt?: Date | null;
+  },
+  opts: { now?: number; expectedSessionMinutes?: number | null; legId?: string | null; rules?: PromiseRules | null } = {},
+): ProductionClock {
+  const anchor = productionAnchorFor(p, opts);
+  const win = anchor.at ? productionWindowFrom(anchor.at, opts.rules) : null;
+  const productionTargetAt = win?.productionTargetAt ?? null;
+  const productionDueAt = win?.productionDueAt ?? null;
+  if (p.dueOverrideAt) {
+    return { anchor, productionTargetAt, productionDueAt, effectiveDueAt: p.dueOverrideAt, effectiveSource: "office_override" };
+  }
+  const pin = livePromise(p.promisedDueAt, p.shootDate ?? null);
+  const capped = cappedByPromise(productionDueAt, pin);
+  const movedByPin = !!capped && !!productionDueAt && capped.getTime() !== productionDueAt.getTime();
+  return {
+    anchor,
+    productionTargetAt,
+    productionDueAt,
+    effectiveDueAt: capped,
+    effectiveSource: capped === null ? "none" : movedByPin ? "as_promised" : "computed",
+  };
+}

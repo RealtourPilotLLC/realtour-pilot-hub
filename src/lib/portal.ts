@@ -472,7 +472,7 @@ export async function sessionGate(enrollmentId: string, monthId: string): Promis
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, historical: true } });
   if (!month || month.enrollmentId !== enrollmentId) return closed("Pick one of your program months.");
   if (month.historical) return closed("That month is closed.");
-  const { recalcProgramMonth, addBusinessDaysET } = await import("@/lib/programMonths");
+  const { recalcProgramMonth, addWeekdayHoursET } = await import("@/lib/programMonths");
   const r = await recalcProgramMonth(monthId, { dryRun: true });
   if (!r) return closed("Pick one of your program months.");
   const d = r.after;
@@ -481,9 +481,23 @@ export async function sessionGate(enrollmentId: string, monthId: string): Promis
   const floor = new Date(Date.now() + 24 * 3600_000);
   const open = (from: Date): SessionGate => ({ locked: false, reason: "", earliest: from > floor ? from : floor, ...base });
   if (d.earliestSessionAt) return open(d.earliestSessionAt);
-  // Booked but not yet held: the same window, measured from the booked time.
+  // Booked but not yet held: the SAME clock, measured from when that booking is
+  // due to END — because that is the base deriveMonthState will use the moment
+  // the call is held, so what the client is told today is what the gate will
+  // say tomorrow. A booking with no end on record falls back to its start.
+  //
+  // Sep 21 2026, F04. This line used to read
+  //   addBusinessDaysET(d.strategyCallAt, d.windowDays)
+  // and it is a real gate, not a hint: portalRequestSession rejects any slot
+  // before `earliest`. When §8's window became 48 weekday HOURS, the derived
+  // `windowDays` fell from 3 to 2 without the name changing, so every client
+  // with a booked call could suddenly request filming a full business day
+  // earlier than the day before. Two separate readings of one rule — days
+  // here, hours there — is what allowed that, so `windowDays` no longer
+  // exists and this branch runs the hour clock itself.
   if (d.strategyCallStatus === "SCHEDULED" && d.strategyCallAt && d.strategyCallAt > new Date()) {
-    return open(d.windowWaived ? d.strategyCallAt : addBusinessDaysET(d.strategyCallAt, d.windowDays));
+    const callEndsAt = d.strategyCallEndsAt ?? d.strategyCallAt;
+    return open(d.windowWaived ? callEndsAt : addWeekdayHoursET(callEndsAt, d.windowHours));
   }
   if (d.planningMode === "WRITTEN") return closed(LOCK_ANSWERS, base);
   if (d.strategyCallStatus === "NOT_SCHEDULED") return closed(LOCK_BOOK_CALL, base);

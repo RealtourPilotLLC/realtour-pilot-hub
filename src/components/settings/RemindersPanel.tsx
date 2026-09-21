@@ -46,6 +46,26 @@ function Btn({ onClick, children, busy, tone = "default", title }: { onClick: ()
   );
 }
 
+// ---------------------------------------------------------------------------
+// ONE MONTH IS TWO ROWS (F20 review, Sep 21 2026). §12 evaluates every month
+// once per lane — planning/session, and review — so `enrollmentId:monthKey` is
+// not a row identity: the two rows collided on one React key whenever a month
+// had a released cut waiting on the client. Worse, both per-row buttons passed
+// the bare month id, and the server defaulted that to the PRIMARY lane, so
+// "Send now" on the review row would have sent the PLANNING message to a client
+// who was only being asked to approve a cut.
+//
+// The lane is read off the action because REVIEW_WORK is the only action the
+// review lane ever produces and the planning lane never produces it
+// (programReminders.evaluateMonth). The row's position is the tiebreak for the
+// rows that carry no action to name a lane with: a paused month is suppressed
+// in both lanes with action null, and a dry run replaces the whole list at once,
+// so nothing here is ever reordered or filtered in place.
+type Lane = "PRIMARY" | "REVIEW";
+const laneOfRow = (r: DryRunRow): Lane => (r.action === "REVIEW_WORK" ? "REVIEW" : "PRIMARY");
+/** What the per-row buttons send: the month id carrying its own lane. */
+const rowActionId = (r: DryRunRow) => `${r.monthId}#${laneOfRow(r)}`;
+
 const decisionTone = (d: string): "ok" | "warn" | "bad" | "muted" => (d === "send" ? "ok" : d === "wait" ? "warn" : d === "suppressed" ? "bad" : d === "escalate" ? "warn" : "muted");
 const stateTone = (s: string): "ok" | "warn" | "bad" | "muted" => (s === "SENT" ? "ok" : s === "QUEUED" || s === "PENDING" ? "warn" : s === "FAILED" || s === "BOUNCED" || s === "UNKNOWN" ? "bad" : "muted");
 
@@ -128,19 +148,19 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
                     <tr><th className="px-2 py-1.5">Client</th><th className="px-2 py-1.5">Month</th><th className="px-2 py-1.5">Action</th><th className="px-2 py-1.5">Decision</th><th className="px-2 py-1.5">Why</th><th className="px-2 py-1.5">Next</th><th className="px-2 py-1.5"></th></tr>
                   </thead>
                   <tbody>
-                    {dry.rows.map((r) => (
-                      <tr key={`${r.enrollmentId}:${r.monthKey}`} className="border-t border-border align-top">
+                    {dry.rows.map((r, i) => (
+                      <tr key={`${r.enrollmentId}:${r.monthKey}:${laneOfRow(r)}:${i}`} className="border-t border-border align-top">
                         <td className="px-2 py-1.5 whitespace-nowrap">{r.clientName}{r.isTest && <Chip tone="muted">TEST</Chip>}</td>
                         <td className="px-2 py-1.5">{r.monthKey}</td>
-                        <td className="px-2 py-1.5 whitespace-nowrap">{r.action ?? "—"}{r.attempt ? <span className="text-muted"> #{r.attempt}</span> : null}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{r.action ?? "—"}{r.attempt ? <span className="text-muted"> #{r.attempt}</span> : null}{laneOfRow(r) === "REVIEW" && <Chip tone="muted">review lane</Chip>}</td>
                         <td className="px-2 py-1.5"><Chip tone={decisionTone(r.decision)}>{r.decision}{r.suppressionReason ? ` · ${r.suppressionReason}` : ""}</Chip>{r.escalation && <div className="mt-0.5 text-[11px] text-warning">escalate: {r.escalation}</div>}</td>
                         <td className="px-2 py-1.5 text-muted">{r.reason}{r.to ? ` → ${r.to}` : ""}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-muted">{fmt(r.nextEligibleAt)}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           {r.action && (
                             <span className="flex gap-1">
-                              <Btn busy={pending} title="Render the text + a portal link to paste yourself (records an attempt)" onClick={() => start(async () => { const c = await copyReminderLinkAction(r.monthId); setMsg({ ok: c.ok, text: c.message }); if (c.ok && c.link && c.body) setCopied({ monthId: r.monthId, link: c.link, body: c.body }); })}><Copy className="size-3" /> Copy link</Btn>
-                              <Btn busy={pending} title="Owner only. Still blocked while the switch is off; still holds outside the send window." onClick={() => run(() => sendReminderNowAction(r.monthId))}><Send className="size-3" /> Send now</Btn>
+                              <Btn busy={pending} title={`Render the text + a portal link to paste yourself (records an attempt). Acts on this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} lane.`} onClick={() => start(async () => { const c = await copyReminderLinkAction(rowActionId(r)); setMsg({ ok: c.ok, text: c.message }); if (c.ok && c.link && c.body) setCopied({ monthId: r.monthId, link: c.link, body: c.body }); })}><Copy className="size-3" /> Copy link</Btn>
+                              <Btn busy={pending} title={`Owner only. Still blocked while the switch is off; still holds outside the send window. Sends this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} message.`} onClick={() => run(() => sendReminderNowAction(rowActionId(r)))}><Send className="size-3" /> Send now</Btn>
                               <Btn busy={pending} title="Snooze this month's reminders for 7 days" onClick={() => { const reason = window.prompt("Why snooze this month's reminders?"); if (reason) run(() => snoozeRemindersAction(r.monthId, 7, reason)); }}><MoonStar className="size-3" /></Btn>
                             </span>
                           )}

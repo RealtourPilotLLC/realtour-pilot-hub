@@ -1,7 +1,11 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
-import { tierFor, dueAtFor, cappedByPromise, pinnedPromise, TIERS, type Tier } from "@/lib/turnaround";
+import {
+  tierFor, dueAtFor, cappedByPromise, pinnedPromise, TIERS, type Tier,
+  // §9's per-session clocks (F27 review, Sep 21 2026) — see boardSessions.
+  productionSessionsFor, productionWindowFrom,
+} from "@/lib/turnaround";
 import { parseEvidence, evidenceFreshness, type EvidenceFreshness, type ParsedEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 // The product-name → category read and the category labels live in the light,
@@ -53,8 +57,14 @@ export type BoardJob = {
   /** Earliest outstanding promise; null when nothing is outstanding. */
   dueAt: Date | null;
   dueTierLabel: string | null;
-  /** What that date is FOR — the product Kyle is actually chasing. */
+  /** What that date is FOR — the product Kyle is actually chasing, prefixed
+   *  with the filming session on a job that has more than one (§9). */
   dueFor: string | null;
+  /** THE SESSION GROUPING (§9; F27 review, Sep 21 2026). Empty on a
+   *  single-session job — which is every job on this board but one today — and
+   *  otherwise one row per filming session, each with its own day-7/day-10, so
+   *  a two-visit job is never presented as one merged date again. */
+  sessions: BoardSession[];
   overdue: boolean;
   blocker: BlockerKind;
   blockerLabel: string;
@@ -199,7 +209,42 @@ export type PromiseInput = {
   statusEvidence: string | null;
   orderItems: { title: string; quantity: number }[];
   deliverables: { type: string; status: string; uploadedAt: Date | null; label: string | null }[];
-  appointments: { startAt: Date | null; status: string | null }[];
+  // id/endAt/durationMin are OPTIONAL on purpose (F27 review, Sep 21 2026).
+  // outstandingPromise is also called by projectBrief.ts and by the project
+  // page's StatusEvidenceCard, and both build their own select with startAt and
+  // status alone. Requiring the new columns would break those two callers at
+  // compile time for a grouping only Kyle's board renders; without them a
+  // session simply anchors on its booked start (turnaround.legEnd's
+  // `appointment_start` rung), which is labelled as estimated and is never
+  // LATER than the end, so the board can only ever call a job late sooner.
+  appointments: { id?: string; startAt: Date | null; endAt?: Date | null; durationMin?: number | null; status: string | null }[];
+};
+
+/**
+ * ONE FILMING SESSION on a multi-session monthly job, with its own day-7/day-10.
+ *
+ * §9: "Each Pro session has a separate end time and day-7/day-10 target."
+ * Joe Sutow, 1023 Sycamore Mills Rd, is filmed twice — Fri Jul 24 and Mon Jul
+ * 27 — and every screen in the hub showed it one merged date taken from the
+ * LATER visit, so the first session's videos read as on time for three extra
+ * days (F27 review, Sep 21 2026). The merged date is fixed below; this is the
+ * grouping that replaces it, so a card can print both sessions instead of
+ * silently choosing one.
+ */
+export type BoardSession = {
+  appointmentId: string | null;
+  /** 1-based over this job's bookable legs, by start — a display ordinal. */
+  index: number;
+  of: number;
+  startAt: Date | null;
+  /** the session's END, the anchor §8 asks for. */
+  anchorAt: Date | null;
+  /** true when the end was estimated rather than recorded — say so on the card. */
+  anchorEstimated: boolean;
+  /** business day 7 — what the office aims at. */
+  productionTargetAt: Date | null;
+  /** business day 10 — late after this. */
+  productionDueAt: Date | null;
 };
 
 export type BoardPromise = {
@@ -214,6 +259,11 @@ export type BoardPromise = {
   pinned?: boolean;
   /** the documented reason this job's promise is what it is, if there is one. */
   reason?: string | null;
+  /** "Session 1 of 2" — set only on a multi-session monthly job, so a card
+   *  saying ONE date for a two-visit job has to name the visit it belongs to
+   *  (§9; F27 review, Sep 21 2026). Null everywhere else, which is every job
+   *  but one today. */
+  sessionLabel?: string | null;
 };
 
 export type TurnaroundRuleSet = Awaited<ReturnType<typeof turnaroundRules>> | undefined;
@@ -225,14 +275,66 @@ export type TurnaroundRuleSet = Awaited<ReturnType<typeof turnaroundRules>> | un
 // every single day — 775 Scotch Way sat in Due tomorrow for a week (audit, Sep
 // 8 2026), padding Kyle's tomorrow count by one. It belongs in Upcoming,
 // marked "no date", until it is on the calendar.
-function clockStart(p: Pick<PromiseInput, "shootDate" | "deliverables" | "packageName">, now: Date): Date | null {
-  return p.shootDate ?? (isMonthlyContentJob(p.deliverables, p.packageName) ? now : null);
+/** What clockStart and boardSessions read. `appointments` is Partial so the two
+ *  callers outside this file that build their own select keep compiling. */
+type SessionSource = Pick<PromiseInput, "deliverables" | "packageName"> & Partial<Pick<PromiseInput, "appointments">>;
+
+function clockStart(
+  p: Pick<PromiseInput, "shootDate"> & SessionSource,
+  now: Date,
+): Date | null {
+  const base = p.shootDate ?? (isMonthlyContentJob(p.deliverables, p.packageName) ? now : null);
+  // A MULTI-SESSION MONTHLY JOB IS DATED BY ITS EARLIEST SESSION (F27 review,
+  // Sep 21 2026). Project.shootDate carries ONE visit, and on Joe Sutow's
+  // 1023 Sycamore Mills Rd it is the second one (Mon Jul 27) — so this board
+  // dated the whole job off the later visit and the Fri Jul 24 session's
+  // videos read as on time for three extra days. §9 gives each Pro session its
+  // own day-7/day-10, and "when is this job late" is the earliest of them.
+  //
+  // Two deliberate limits:
+  //   · MONTHLY ONLY. §9 is about Pro sessions. A listing with two visits is a
+  //     different question (a reel filmed on the second visit is not late
+  //     against the first, tasks.videoAnchorFor), and moving those dates is not
+  //     what this fix was asked to do.
+  //   · NEVER LATER. The earliest session's end can in principle sit after
+  //     shootDate, and a board date that moved later would HIDE lateness, which
+  //     is the same class of bug in the other direction. So this only ever
+  //     pulls the clock earlier.
+  const sessions = boardSessions(p);
+  if (sessions.length < 2) return base;
+  const earliest = sessions[0].anchorAt;
+  if (!earliest) return base;
+  return base && base.getTime() <= earliest.getTime() ? base : earliest;
+}
+
+/**
+ * The job's filming sessions, each on its own clock. Empty unless this is a
+ * monthly content job with MORE THAN ONE bookable leg — a single-session job
+ * has nothing to group and must keep exactly the date it has today.
+ */
+export function boardSessions(p: SessionSource, rules?: TurnaroundRuleSet): BoardSession[] {
+  if (!isMonthlyContentJob(p.deliverables, p.packageName)) return [];
+  const sessions = productionSessionsFor({ appointments: p.appointments ?? [] });
+  if (sessions.length < 2) return [];
+  return sessions.map((s) => {
+    const win = s.anchor.at ? productionWindowFrom(s.anchor.at, rules) : null;
+    return {
+      appointmentId: s.legId,
+      index: s.index,
+      of: s.of,
+      startAt: s.startAt,
+      anchorAt: s.anchor.at,
+      anchorEstimated: s.anchor.estimated,
+      productionTargetAt: win?.productionTargetAt ?? null,
+      productionDueAt: win?.productionDueAt ?? null,
+    };
+  });
 }
 
 /** Every ordered product with its own tier and promise — the "n products
  *  ordered" list on the card, and the raw material for the date below. */
 export function boardItems(
-  p: Pick<PromiseInput, "shootDate" | "deliverables" | "packageName" | "orderItems">,
+  p: Pick<PromiseInput, "shootDate" | "orderItems"> & SessionSource,
   now = new Date(),
   // The office's editable promises. This was the one date path in the hub that
   // never received them, so a turnaround changed in Settings moved every
@@ -286,6 +388,12 @@ export function outstandingPromise(
   const reopened = !settled && !!p.deliveredAt;
 
   const startedAt = clockStart(p, now);
+  // The clock above is anchored on the EARLIEST session, so a job with more
+  // than one visit names that visit rather than presenting its date as the
+  // whole job's (§9; F27 review, Sep 21 2026). Null on every single-session
+  // job, which is 68 of the 69 live content jobs today.
+  const sessions = boardSessions(p, opts.turnarounds);
+  const sessionLabel = sessions.length >= 2 ? `Session ${sessions[0].index} of ${sessions[0].of}` : null;
   const dated = boardItems(p, now, opts.turnarounds).filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
   const outstandingItems = missingCategories
     ? dated.filter((i) => {
@@ -343,6 +451,7 @@ export function outstandingPromise(
       tierLabel: "office override",
       office: true,
       reason: p.promisedReason ?? null,
+      sessionLabel,
     };
   }
   // THE PROMISE THE JOB WAS SOLD UNDER (Sep 18). Project.promisedDueAt is the
@@ -370,6 +479,10 @@ export function outstandingPromise(
     office: false,
     pinned: capped,
     reason: p.promisedReason ?? null,
+    // The label describes the DATE, so a job with no date carries no label —
+    // a settled or reopened job printing "Session 1 of 2" beside nothing would
+    // read as a promise it does not have (F27 review, Sep 21 2026).
+    sessionLabel: at ? sessionLabel : null,
   };
 }
 
@@ -528,7 +641,11 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       // earliest one, and the video promise below dates from the LAST leg
       // that actually happened — a reel filmed on the second visit is not
       // late against the first (Sep 16 review, videoAnchorFor).
-      appointments: { select: { assignedTo: { select: { name: true } }, startAt: true, status: true }, orderBy: { startAt: "asc" } },
+      // id/endAt/durationMin are new (F27 review, Sep 21 2026): §9 anchors each
+      // session on its END, and boardSessions cannot tell one session from
+      // another without the row id. Aryeo leaves endAt null on some legs, hence
+      // durationMin as the second rung of turnaround.legEnd's ladder.
+      appointments: { select: { id: true, assignedTo: { select: { name: true } }, startAt: true, endAt: true, durationMin: true, status: true }, orderBy: { startAt: "asc" } },
     },
     orderBy: { shootDate: "desc" },
     take: 400,
@@ -550,6 +667,8 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     // (review, Sep 16).
     const promise = outstandingPromise(p, { now, turnarounds, evidence: ev });
     const dueAt = promise.at;
+    // §9's grouping, computed once for the card and for the "for …" line.
+    const sessions = boardSessions(p, turnarounds);
 
     return {
       id: p.id,
@@ -561,7 +680,12 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       photographer: p.appointments[0]?.assignedTo?.name ?? null,
       dueAt,
       dueTierLabel: promise.tierLabel,
-      dueFor: promise.label,
+      // A job filmed twice says WHICH visit this date belongs to. Without it
+      // the card reads as the whole job's promise, which is the merge that let
+      // 1023 Sycamore Mills Rd's first session look on time for three extra
+      // days (F27 review, Sep 21 2026).
+      dueFor: promise.sessionLabel ? [promise.sessionLabel, promise.label].filter(Boolean).join(" · ") : promise.label,
+      sessions,
       overdue: !!dueAt && dueAt < now,
       blocker: kind,
       blockerLabel: label,

@@ -15,6 +15,10 @@
 //     eligible clients") — a REQUIRED-call client never reads it;
 //   · a session paragraph rides along in a digest only when asked for, and
 //     it never carries its own CTA — the main CTA is the planning action;
+//   · the "We'd love to have it planned by <date>" sentence renders ONLY when
+//     the caller hands over a date. No template invents one and none derives
+//     it from a milestone — a date a client is promised is Jordan's to set
+//     (F20 review, Sep 21 2026);
 //   · {portalLink} is whatever the evaluator minted: an authenticated sign-in
 //     link for a person, or the enrollment's token link for a token-era client.
 //     The template never invents a URL.
@@ -47,7 +51,12 @@ export type TemplateVars = {
   titles: string[];
   /** SCRIPTS_READY: titles that were UPDATED after an earlier share. */
   updatedTitles: string[];
-  /** The planning deadline in words ("September 25"), or null. */
+  /** THE ONE DATE A CLIENT IS PROMISED, in words ("October 20"), or null for
+   *  no deadline sentence at all — which is the default. It is never the
+   *  evaluator's internal escalation clock or a milestone date: those move with
+   *  the calendar, and a promise a client reads must not move with them. The
+   *  caller passes it only when Jordan has deliberately set one
+   *  (quotedPlanningDeadlineDayOfMonth, F20 review, Sep 21 2026). */
   deadline: string | null;
 };
 
