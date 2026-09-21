@@ -1,6 +1,42 @@
 # Content Program — requirement checklist
 
-Phase 0 verification, Sep 21 2026, against head  (which is exactly the commit the spec audited, and is deployed).
+Phase 0 verification, Sep 21 2026, against head `8e1f153` (which is exactly the commit the spec audited, and is deployed).
+
+
+## Jordan's clarifications, Sep 21 2026 — these override the spec where they differ
+
+1. **Video Pro is two separate four-hour sessions.** Book the existing four-hour product twice; no
+   new Aryeo product. A month is fully scheduled only when two distinct, confirmed sessions are
+   linked to that client and month. One booking still shows one session remaining.
+2. **Videographer eligibility is per PRODUCT, read from Aryeo.** Harrison is not currently assigned
+   to Starter, Accelerator or Pro. James is. `is_service_provider` and general availability do NOT
+   establish eligibility — my Phase 0 report drew that inference and was wrong. Future assignment
+   changes in Aryeo must be reflected without a deploy.
+3. **No planning deadline and no 20th booking cutoff.** The 15th is a scheduling reminder and a
+   Kyle follow-up milestone, not a cutoff and not a promise of delivery within the month. The
+   first-month and agency-delayed-work exemptions stand.
+4. **Never invent a production date.** "Not scheduled" for genuinely unbooked work; "Production
+   date needs verification" plus a Kyle task when filming happened but the appointment or its end
+   time is missing. An unknown deadline must never read as on time.
+5. **Transcripts are Google Meet via Google Drive; Calendly identifies the booking.** Calendly
+   Notetaker is not a requirement, so its 403 is not a blocker.
+6. **The new preparation rule must be enforced through the real booking path**, with existing
+   bookings staying stable while new requests use the corrected rule.
+7. **Jordan test account:** phone 2155348650, email info@realtourpilot.com. Resolved.
+
+Standing: client invitations and new client-facing automations stay held until Jordan tests the
+Jordan account and approves rollout.
+
+## Batches shipped
+
+| Batch | Commit | Contents |
+|---|---|---|
+| Phase 0 | `ee2c0a2` | This checklist and the provider capability matrix |
+| 1 | `a94d18a` | Preparation clock (48 weekday hours from call end), reminder calendar, production anchor per session |
+
+Integration tasks needing Jordan or a third party: `docs/integration-tasks.md`.
+
+## Findings
 
 Status key: EXISTING = already meets the requirement · PARTIAL = some of it · MISSING · MISCHARACTERIZED = the spec misread the code.
 
