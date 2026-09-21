@@ -35,3 +35,7 @@ yarn-error.log*
 # local file storage (Dropbox stand-in)
 /storage
 tsconfig.tsbuildinfo
+
+# Agent scratch worktrees. 25 of these (1.6GB, 60k files) once broke a production
+# deploy: Vercel uploads anything git does not ignore, and its limit is 15,000 files.
+.claude/worktrees/
