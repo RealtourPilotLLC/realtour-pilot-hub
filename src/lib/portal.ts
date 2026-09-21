@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etMonthKey } from "@/lib/contentProgram";
+import { etMonthKey, aryeoProductFor } from "@/lib/contentProgram";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 
@@ -399,49 +399,192 @@ export function addBusinessDays(from: Date, n: number): Date {
   return d;
 }
 
-export type PortalSlotDay = { date: string; slots: string[] }; // ISO starts
+export type PortalSlotDay = {
+  date: string;
+  /** ISO starts, each one genuinely long enough for this session (see below). */
+  slots: string[];
+  /** the session length these starts were measured against, in minutes. */
+  fitsMinutes?: number;
+  /** who could actually film it — Aryeo's own per-product assignment. */
+  creatives?: string[];
+};
 
-const SLOTS_CACHE_KEY = "portal-aryeo-slots";
+// RETIRED Sep 21 2026. The old company-wide cache. The row is left in place
+// rather than deleted (house rule), and nothing reads it any more: the slots it
+// holds were computed with no duration and no creative, so serving one would
+// re-offer exactly the starts this change removed.
+const LEGACY_SLOTS_CACHE_KEY = "portal-aryeo-slots";
+void LEGACY_SLOTS_CACHE_KEY;
+
+// RETIRED Sep 21 2026, hours old. `…:v2:${minutes}` keyed the calendar on
+// session length alone, and Accelerator and Pro are BOTH 240 minutes: whichever
+// package asked first wrote the row the other one then read for ten minutes.
+// The cached day carries a `creatives` list that came from
+// productAvailability({ productId }) and that product's own assigned providers,
+// so a shared row hands Pro the Accelerator's roster (and the starts that fit
+// it) — throwing away the per-product scoping this batch was built to add. Left
+// in place rather than deleted (house rule); nothing reads it.
+const LEGACY_SLOTS_CACHE_KEY_V2 = "portal-aryeo-slots:v2";
+void LEGACY_SLOTS_CACHE_KEY_V2;
+
 const SLOTS_TTL_MS = 10 * 60_000;
+/** Keyed by the whole question asked of Aryeo, because every part of it changes
+ *  the answer: WHICH PRODUCT (its own assigned creatives), how long one session
+ *  is, and how far ahead we looked. */
+const slotsCacheKey = (productId: string, minutes: number, days: number) =>
+  `portal-aryeo-slots:v3:${productId}:${minutes}:${days}`;
 
-/** Company-wide Aryeo availability for the next three weeks (cached 10 min).
- *  Unfiltered: the scheduler filters per chosen month's earliest moment. */
-export async function companySlotDays(): Promise<PortalSlotDay[]> {
-  const cached = await prisma.appSetting.findUnique({ where: { key: SLOTS_CACHE_KEY } }).catch(() => null);
+// ---------------------------------------------------------------------------
+// THE SLOTS A CLIENT IS OFFERED (Jordan, Sep 21 2026).
+//
+// What this used to do, and what it cost, MEASURED rather than reasoned about
+// (Phase 0, six consecutive days against the live account). companySlotDays
+// called getSchedulingAvailability with interval 60 and then availableTimeslots
+// with interval 60 — no duration, no product, no creative, company-wide. Over
+// those six days it offered 66 starts where 19 fit a four-hour Accelerator with
+// James. On Thursday 2026-09-24 it offered 11 starts on a day James had zero.
+// 11 of the 66 were on a Saturday, which this program does not film.
+//
+// Three separate faults, and all three are Aryeo telling the truth to a
+// question nobody meant to ask:
+//   · NO DURATION. Aryeo defaults to meta.duration 0, so it answers "is this
+//     person free at 4pm", not "can they give us four hours from 4pm".
+//   · NO CREATIVE. The default roster is every is_service_provider — five
+//     people, including Harrison, who is NOT assigned to any of the three
+//     program products, and Sarah Anne, whose Aryeo login is inactive.
+//   · NO WEEKEND RULE. §8 says no weekend shoots in this program; Aryeo offered
+//     14 four-hour slots on Saturday 2026-09-26. The provider will not enforce
+//     it, so the hub does.
+//
+// integrations/aryeo.productAvailability fixes all three, and reads the
+// eligible creatives from Aryeo on every call so an assignment Jordan changes
+// in the Aryeo UI is reflected without a deploy.
+// ---------------------------------------------------------------------------
+
+/**
+ * Real, bookable slot days for ONE program package.
+ *
+ * `sessionMinutes` is the length the client actually needs: 120 for Starter,
+ * 240 for Accelerator, and 240 for EACH of Pro's two four-hour sessions (Jordan,
+ * Sep 21: Pro is the existing four-hour product booked twice, not a new
+ * eight-hour product — so Pro asks this for 240, once per session, and never
+ * for 480).
+ */
+export async function programSlotDays(opts: {
+  package?: string | null;
+  /** overrides the package's own length — a Pro session asks for 240 */
+  sessionMinutes?: number | null;
+  days?: number;
+}): Promise<PortalSlotDay[]> {
+  const product = aryeoProductFor(opts.package);
+  const minutes = opts.sessionMinutes ?? product?.durationMinutes ?? null;
+  // No package, or a package we do not sell: offer nothing. An unknown package
+  // used to fall through to the company-wide list, which is the over-offer.
+  if (!product || !minutes) return [];
+
+  const horizonDays = opts.days ?? 21;
+  const key = slotsCacheKey(product.productId, minutes, horizonDays);
+  const cached = await prisma.appSetting.findUnique({ where: { key } }).catch(() => null);
   if (cached) {
     try {
       const v = JSON.parse(cached.value) as { at: number; days: PortalSlotDay[] };
       if (Date.now() - v.at < SLOTS_TTL_MS) return v.days;
     } catch { /* recompute */ }
   }
-  const { getSchedulingAvailability, Aryeo } = await import("@/lib/integrations/aryeo");
-  const dates = (await getSchedulingAvailability({ days: 21, limit: 8 }).catch(() => null)) ?? [];
-  const days: PortalSlotDay[] = [];
-  for (let i = 0; i < dates.length; i += 4) {
-    await Promise.all(
-      dates.slice(i, i + 4).map(async (d) => {
-        try {
-          const r = (await Aryeo.availableTimeslots({ timezone: "America/New_York", interval: 60, date: d.date })) as {
-            data?: { start_at?: string }[];
-          };
-          const slots = (r?.data ?? [])
-            .map((s) => s.start_at)
-            .filter((s): s is string => !!s)
-            .slice(0, 10);
-          if (slots.length) days.push({ date: d.date, slots });
-        } catch { /* a missing day is fine */ }
-      }),
-    );
-  }
-  days.sort((a, b) => a.date.localeCompare(b.date));
+
+  const { productAvailability } = await import("@/lib/integrations/aryeo");
+  const got = await productAvailability({
+    productId: product.productId,
+    durationMin: minutes,
+    days: horizonDays,
+    interval: 30,
+  }).catch(() => null);
+  // COULD NOT ASK vs NOBODY IS FREE. A null is Aryeo being unreachable, and an
+  // empty calendar is a real answer — so a null is NOT cached, or one bad
+  // minute would show every client an empty scheduler for the next ten.
+  if (!got) return [];
+
+  const named = got.providers.filter((p) => p.bookable).map((p) => p.name ?? p.teamMemberId);
+  const days: PortalSlotDay[] = got.days.map((d) => ({
+    date: d.date,
+    slots: d.slots.slice(0, 10),
+    fitsMinutes: minutes,
+    creatives: named,
+  }));
   await prisma.appSetting
     .upsert({
-      where: { key: SLOTS_CACHE_KEY },
+      where: { key },
       update: { value: JSON.stringify({ at: Date.now(), days }) },
-      create: { key: SLOTS_CACHE_KEY, value: JSON.stringify({ at: Date.now(), days }) },
+      create: { key, value: JSON.stringify({ at: Date.now(), days }) },
     })
     .catch(() => {});
   return days;
+}
+
+/**
+ * The portal's slot list.
+ *
+ * SIGNATURE KEPT, BEHAVIOUR CORRECTED. PortalPage.tsx calls this with no
+ * arguments and is outside this batch, so the default has to be safe on its own.
+ * It asks for 240 minutes — the longest program session — against the creatives
+ * Aryeo has assigned to the Accelerator product, weekends excluded.
+ *
+ * WHAT THAT COSTS, SAID PLAINLY. A 2-hour Starter client is offered only the
+ * starts where four hours fit, so they see FEWER real slots than they could
+ * have. That is the deliberate direction: this change exists because the portal
+ * offered slots nobody could film, and under-offering a Starter client is a
+ * booking Kyle can still make by hand, while over-offering is a client picking a
+ * time and being told no. Four ACTIVE Starter enrollments are affected today.
+ *
+ * THE ONE-LINE FOLLOW-UP, in a file this batch may not touch: PortalPage.tsx
+ * line 242 should pass the viewer's package —
+ *     companySlotDays({ package: <enrollment.package> })
+ * — and the Starter client immediately gets their own 120-minute calendar. The
+ * default stays as the safe answer for any caller that cannot say.
+ */
+export async function companySlotDays(opts?: { package?: string | null; sessionMinutes?: number | null }): Promise<PortalSlotDay[]> {
+  return programSlotDays({
+    package: opts?.package ?? "Accelerator",
+    sessionMinutes: opts?.sessionMinutes ?? null,
+  });
+}
+
+/** Saturday or Sunday on the CLIENT'S calendar, not the server's. A 00:30 ET
+ *  Saturday start is Saturday to them and Friday to a UTC box. */
+export function isWeekendET(at: Date): boolean {
+  const d = at.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short" });
+  return d === "Sat" || d === "Sun";
+}
+
+/**
+ * THE SERVER-SIDE HALF OF "NO WEEKEND SHOOTS" (§8; A22).
+ *
+ * Hiding weekends from the picker is a UI fact, and §8 is a business rule — a
+ * request posted straight at the server action carries whatever ISO string the
+ * caller chose. The preparation window is already enforced for real on that
+ * path (src/app/portal/actions.ts:254-266 calls sessionGate and refuses a slot
+ * earlier than gate.earliest), which is why this gap is worth closing the same
+ * way rather than trusting the calendar component.
+ *
+ * NOT YET WIRED, and said plainly rather than left to be discovered: the one
+ * caller is src/app/portal/actions.ts, which this batch may not edit. The line
+ * belongs immediately after the existing `slot < gate.earliest` refusal —
+ *
+ *     const no = sessionSlotRefusal(slot);
+ *     if (no) return fail(no);
+ *
+ * Until then a weekend slot is only absent from the picker, not refused. No
+ * client can reach either path today: session booking is held behind the launch
+ * gates and every ProgramAutomation switch is off.
+ *
+ * Returns the client-safe refusal, or null when the slot is fine. Jordan's
+ * voice: no em dashes, no emojis, and it says the way forward.
+ */
+export function sessionSlotRefusal(slotStart: Date): string | null {
+  if (isWeekendET(slotStart)) {
+    return "We film these sessions Monday through Friday. Pick a weekday and we will get you on the calendar.";
+  }
+  return null;
 }
 
 export type SessionGate = {

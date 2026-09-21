@@ -1,4 +1,5 @@
 import "server-only";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 import { etMonthKey } from "@/lib/contentProgram";
@@ -251,6 +252,213 @@ export function planSessions(
   }));
 }
 
+// ---------------------------------------------------------------------------
+// WHAT COUNTS AS A BOOKED SESSION (spec §3 / A23 / A24, Jordan Sep 21 2026).
+//
+// Jordan, in his own words: "Video Pro is two separate four-hour sessions. Book
+// the existing four-hour Video Pro product in Aryeo twice. No new product is
+// needed. The month is fully scheduled only when two distinct, confirmed
+// sessions are linked to that client and month. One booking should still show
+// one session remaining."
+//
+// Booking one product twice puts TWO APPOINTMENTS on ONE Aryeo order, and one
+// Aryeo order is ONE Project here. Every place that answered "how many sessions
+// does this month have" counted PROJECTS, so a Pro month with both of its
+// sessions booked the way Jordan says to book them would have counted as one:
+// the portal would have said one session remaining with nothing left to book,
+// and the evaluator would have gone on chasing a session that was already on
+// the calendar.
+//
+// That is not hypothetical arithmetic. Joe Sutow's 2026-07 content month
+// carries ONE project with TWO live appointment legs (2026-07-24 14:30-18:30Z
+// and 2026-07-27 19:00-20:00Z) and the project's own shootDate points at the
+// SECOND one. Measured read-only across all 110 live content months on Sep 21
+// 2026, that is the single month where project-counting and appointment-
+// counting disagree today, and it is the exact shape a Pro month will take.
+//
+// So a session's identity is its APPOINTMENT. A project-level shoot date is the
+// fallback ONLY for a project that carries no appointment row at all (3 of 65
+// content-month projects, 1 of them with a shoot date). DISTINCTNESS is the
+// whole point of the rule: an appointment is one session however many records
+// point at it, so two requests that resolve to the same appointment are one
+// session, not two.
+//
+// This function is PURE on purpose. There is exactly one Pro enrollment on the
+// roster, it is PAUSED, and Aryeo has never carried a single Pro order, so the
+// two-session path cannot be exercised from production data at all — the only
+// way to hold it to account is to put a Pro month in front of a pure function.
+// ---------------------------------------------------------------------------
+
+/** A live Aryeo appointment on a content month's project. */
+export type SessionAppointmentInput = {
+  /** The stable provider id (Appointment.aryeoId), which is what a session request links to. */
+  appointmentId: string;
+  projectId: string;
+  startAt: Date | null;
+  endAt: Date | null;
+  /** Aryeo status CANCELED, or the project itself cancelled. */
+  cancelled: boolean;
+};
+
+/** A content-month project, for the no-appointment fallback only. */
+export type SessionProjectInput = { projectId: string; shootDate: Date | null; addressLine?: string | null };
+
+/** A ProgramSessionRequest that says a session exists (CONFIRMED), with whatever it links to. */
+export type SessionRequestLinkInput = { requestId: string; projectId: string | null; appointmentId: string | null; slotStart: Date | null };
+
+export type CountedSession = {
+  /** The identity two records have to share to be ONE session. */
+  key: string;
+  source: "APPOINTMENT" | "PROJECT_SHOOT_DATE" | "CONFIRMED_REQUEST";
+  projectId: string | null;
+  appointmentId: string | null;
+  /** The instant this session is anchored to: an appointment's END where there
+   *  is one, because §9's production clock starts there. Never invented. */
+  at: Date | null;
+  /** When it STARTS — a different clock from `at`, and the one §8's
+   *  missing-address reminder counts back 48 elapsed hours from. */
+  startsAt: Date | null;
+  /** In the past (with the same six-hour grace the evaluator has always used). */
+  filmed: boolean;
+  /** Every record that resolved to this one session — the evidence of distinctness. */
+  evidence: string[];
+  addressLine?: string | null;
+};
+
+export type BookedSessionCount = {
+  sessions: CountedSession[];
+  /** Sessions on the calendar that have not happened yet. */
+  booked: number;
+  /** Sessions that have. */
+  filmed: number;
+  accountedFor: number;
+  /** Records that pointed at a session something else had already counted. */
+  duplicatesFolded: number;
+};
+
+/** The grace the evaluator has always applied before calling a shoot "past". */
+const FILMED_GRACE_MS = 6 * 3_600_000;
+
+/**
+ * The DISTINCT confirmed sessions linked to one client and one month.
+ *
+ * Order of authority: live appointments first (they are the provider's own
+ * record of a booked session), then a project with a shoot date and no
+ * appointment row, then a confirmed request that points at neither. A record
+ * that resolves to a session already counted is folded into it and named in
+ * `evidence` rather than dropped silently.
+ *
+ * An appointment with no start time is NOT a booked session. Jordan, Sep 21:
+ * "Do not invent production dates — show Not scheduled for genuinely unbooked
+ * work." An UNSCHEDULED leg is exactly that, and counting it would report a
+ * month as fully scheduled on the strength of a row with no date in it.
+ */
+export function countDistinctSessions(input: {
+  now: Date;
+  appointments: SessionAppointmentInput[];
+  projects: SessionProjectInput[];
+  confirmedRequests: SessionRequestLinkInput[];
+}): BookedSessionCount {
+  const cutoff = input.now.getTime() - FILMED_GRACE_MS;
+  const byKey = new Map<string, CountedSession>();
+  const projectsWithAppointments = new Set<string>();
+  /** The counted appointment sessions of each project, in the order they were counted. */
+  const apptKeysByProject = new Map<string, string[]>();
+  /** Appointment sessions a confirmed request has already been resolved to. */
+  const claimedByRequest = new Set<string>();
+  let duplicatesFolded = 0;
+
+  const fold = (key: string, make: () => CountedSession, evidence: string) => {
+    const existing = byKey.get(key);
+    if (existing) { existing.evidence.push(evidence); duplicatesFolded++; return; }
+    byKey.set(key, { ...make(), evidence: [evidence] });
+  };
+
+  for (const a of input.appointments) {
+    if (a.cancelled) continue;
+    // No start time = not scheduled. See the doc comment: a dateless leg must
+    // never make a month read as fully booked.
+    if (!a.startAt) continue;
+    projectsWithAppointments.add(a.projectId);
+    const at = a.endAt ?? a.startAt;
+    const key = `appt:${a.appointmentId}`;
+    if (!byKey.has(key)) apptKeysByProject.set(a.projectId, [...(apptKeysByProject.get(a.projectId) ?? []), key]);
+    fold(key, () => ({
+      key, source: "APPOINTMENT", projectId: a.projectId, appointmentId: a.appointmentId,
+      at, startsAt: a.startAt, filmed: at.getTime() < cutoff, evidence: [],
+    }), `appointment ${a.appointmentId}`);
+  }
+
+  for (const p of input.projects) {
+    if (!p.shootDate) continue;
+    // A project whose legs we already have is not an extra session on top of
+    // them. This is the line that keeps Joe Sutow's July at two legs rather
+    // than three.
+    if (projectsWithAppointments.has(p.projectId)) continue;
+    fold(`project:${p.projectId}`, () => ({
+      key: `project:${p.projectId}`, source: "PROJECT_SHOOT_DATE", projectId: p.projectId, appointmentId: null,
+      at: p.shootDate, startsAt: p.shootDate, filmed: p.shootDate!.getTime() < cutoff, evidence: [], addressLine: p.addressLine ?? null,
+    }), `project ${p.projectId} shoot date`);
+  }
+
+  // REQUESTS THAT NAME THEIR APPOINTMENT GO FIRST (review, Sep 21 2026). The
+  // loop below resolves a request that names only a project onto one of that
+  // project's appointment sessions, so an explicit link has to claim its own
+  // appointment before a vaguer row can take it.
+  for (const r of [...input.confirmedRequests.filter((x) => x.appointmentId), ...input.confirmedRequests.filter((x) => !x.appointmentId)]) {
+    // The request's own links decide which session it IS. Two requests that
+    // resolve to the same appointment are one session (§8: "prevent double
+    // bookings and duplicate Pro sessions under simultaneous requests").
+    //
+    // A REQUEST CARRYING ONLY A PROJECT ID IS NOT AN EXTRA SESSION ON TOP OF
+    // THAT PROJECT'S APPOINTMENTS (review, Sep 21 2026). It used to key on
+    // `project:<id>` unconditionally, and the project loop above deliberately
+    // skips a project whose legs it already has — so nothing held that key, the
+    // request minted a second session, and ONE booking counted as two. That is
+    // Jordan's clarification 1 inverted: a Pro month would have read as fully
+    // scheduled on a single booking and the second session would never have
+    // been chased. `confirmSessionRequest(requestId, { projectId }, by)`
+    // (sessionRequests.ts) writes exactly this shape — `aryeoAppointmentId` is
+    // optional and is filled in later, if ever, by the Aryeo sync.
+    //
+    // So it resolves onto the project's first unclaimed appointment session,
+    // one for one. Only when a project carries MORE confirmed requests than it
+    // has counted appointments does the surplus stand as a session of its own:
+    // that is a slot the office confirmed and the provider has not synced back
+    // yet, and folding it away would put us back to chasing a booked session.
+    const freeApptKey = !r.appointmentId && r.projectId
+      ? (apptKeysByProject.get(r.projectId) ?? []).find((k) => !claimedByRequest.has(k)) ?? null
+      : null;
+    const key = r.appointmentId
+      ? `appt:${r.appointmentId}`
+      : freeApptKey
+        ? freeApptKey
+        : r.projectId && !projectsWithAppointments.has(r.projectId)
+          ? `project:${r.projectId}`
+          : `request:${r.requestId}`;
+    if (key.startsWith("appt:")) claimedByRequest.add(key);
+    fold(key, () => ({
+      key, source: "CONFIRMED_REQUEST", projectId: r.projectId, appointmentId: r.appointmentId,
+      at: r.slotStart, startsAt: r.slotStart, filmed: !!r.slotStart && r.slotStart.getTime() < cutoff, evidence: [],
+    }), `confirmed request ${r.requestId}`);
+  }
+
+  const sessions = [...byKey.values()].sort((a, b) => (a.at?.getTime() ?? Number.MAX_SAFE_INTEGER) - (b.at?.getTime() ?? Number.MAX_SAFE_INTEGER) || a.key.localeCompare(b.key));
+  const filmed = sessions.filter((s) => s.filmed).length;
+  return { sessions, booked: sessions.length - filmed, filmed, accountedFor: sessions.length, duplicatesFolded };
+}
+
+/**
+ * Jordan's completeness rule, stated once: a month is fully scheduled ONLY when
+ * every session the package owes is a DISTINCT confirmed session. One booking on
+ * a Pro month leaves one remaining, everywhere.
+ */
+export function sessionShortfall(required: number, count: BookedSessionCount): { required: number; accountedFor: number; missing: number; fullyScheduled: boolean } {
+  const req = Math.max(1, Math.floor(required) || 1);
+  const missing = Math.max(0, req - count.accountedFor);
+  return { required: req, accountedFor: count.accountedFor, missing, fullyScheduled: missing === 0 };
+}
+
 export type DeriveInput = {
   now: Date;
   month: {
@@ -287,6 +495,15 @@ export type DeriveInput = {
   plan?: { videosPerMonth: number; sessionsPerMonth: number } | null;
   /** The month's topics with the material each one carries. Optional, same reason. */
   topics?: TopicMaterialInput[] | null;
+  /**
+   * The month's DISTINCT confirmed sessions, from countDistinctSessions (A23,
+   * Sep 21 2026). Optional for the same reason as `plan`: the read-only overview
+   * screen builds its own input. When it is absent `bookingKnown` is false and
+   * the scheduling counts below say nothing at all, rather than reporting zero
+   * sessions booked — "we did not look" and "nothing is booked" are different
+   * answers and only one of them may reach a client.
+   */
+  booking?: BookedSessionCount | null;
 };
 
 export type DerivedMonthState = {
@@ -305,6 +522,23 @@ export type DerivedMonthState = {
   sessions: SessionReadiness[];
   /** False when the caller supplied no topics/plan, so the month-wide fallback was used. */
   sessionsKnown: boolean;
+  // ---- SCHEDULING COMPLETENESS (A23, Jordan Sep 21 2026) --------------------
+  // Jordan: "The month is fully scheduled only when two distinct, confirmed
+  // sessions are linked to that client and month. One booking should still show
+  // one session remaining." These are the month's answer to that, counted from
+  // APPOINTMENTS rather than projects — see countDistinctSessions.
+  /** What the package owes this month: Starter 1, Accelerator 1, Pro 2. */
+  sessionsRequired: number;
+  /** Distinct confirmed sessions linked to this client and month. */
+  sessionsAccountedFor: number;
+  sessionsBooked: number;
+  sessionsFilmed: number;
+  sessionsMissing: number;
+  /** Every owed session is a distinct confirmed session. */
+  fullyScheduled: boolean;
+  /** False when no booking evidence was supplied, so the four counts above are
+   *  not an observation. Never render "0 booked" off a false one. */
+  bookingKnown: boolean;
   /** At least one session's material is complete right now. Re-derived every
    *  pass, so a month whose answers go unfinished again closes again. */
   preparationSufficient: boolean;
@@ -532,6 +766,22 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   const earliestSessionAt = openAts.length > 0 ? openAts.reduce((a, b) => (a <= b ? a : b)) : null;
   const preparationSufficient = sessions.some((s) => s.sufficient);
 
+  // ---- scheduling completeness (A23) ----------------------------------------
+  // The count is the caller's to supply because it needs appointment rows; the
+  // RULE lives here, once, so the portal's capacity, the reminder evaluator and
+  // anything that later asks "is this month fully scheduled?" cannot drift apart
+  // the way the two readings of the preparation window did in F04.
+  const sessionsRequired = Math.max(1, Math.floor(plan?.sessionsPerMonth ?? 1) || 1);
+  const booking = input.booking ?? null;
+  const bookingKnown = !!booking;
+  const shortfall = booking ? sessionShortfall(sessionsRequired, booking) : null;
+  if (booking && booking.duplicatesFolded > 0) {
+    reasons.push(`${booking.duplicatesFolded} record(s) pointed at a session another record had already counted — folded into one session each`);
+  }
+  if (booking && shortfall && shortfall.accountedFor > sessionsRequired) {
+    exceptions.push(`${shortfall.accountedFor} distinct filming sessions are linked to this month but the package owes ${sessionsRequired} — a person should say whether that is an approved extra`);
+  }
+
   // The month's completion stamp is HISTORY — the moment material first became
   // complete — and it is no longer what opens the gate. Before Sep 21 2026 it
   // was both, so a month whose answers were reopened kept a stored stamp and
@@ -583,6 +833,15 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   return {
     callMode, strategyCallStatus, strategyCallAt, strategyCallEndsAt, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt,
     earliestSessionAt, sessions, sessionsKnown, preparationSufficient,
+    sessionsRequired,
+    sessionsAccountedFor: shortfall?.accountedFor ?? 0,
+    sessionsBooked: booking?.booked ?? 0,
+    sessionsFilmed: booking?.filmed ?? 0,
+    sessionsMissing: shortfall?.missing ?? 0,
+    // A month with no booking evidence supplied is not "fully scheduled" and is
+    // not "missing everything" either; `bookingKnown` is how a reader tells.
+    fullyScheduled: shortfall?.fullyScheduled ?? false,
+    bookingKnown,
     // `windowDays` (windowHours / 24) is GONE, Sep 21 2026 (F04). When the
     // window became 48 weekday HOURS the derived day count silently fell from
     // 3 to 2, and src/lib/portal.ts fed it straight into addBusinessDaysET for
@@ -604,6 +863,43 @@ export type RecalcResult = {
   after: DerivedMonthState;
 };
 
+/** Either the client or an interactive-transaction client. Session counting has
+ *  to be readable INSIDE the transaction that decides whether a new request fits
+ *  (A24), or the check and the write are not looking at the same database. */
+export type ProgramDb = Prisma.TransactionClient;
+
+/**
+ * The month's distinct confirmed sessions, read from the rows Aryeo's hourly
+ * sync already maintains — no provider call.
+ *
+ * Scoped to the enrollment's OWN client on purpose: a job mis-attached to
+ * another client's month is hidden by the portal and must not fill this
+ * client's allowance (the same rule sessionCapacity has carried since W1-A).
+ * Appointments are read through their projects for the same reason.
+ */
+export async function monthSessionCount(monthId: string, clientId: string, now: Date, db: ProgramDb = prisma): Promise<BookedSessionCount> {
+  const projects = await db.project.findMany({
+    where: { contentMonthId: monthId, clientId, status: { not: "CANCELLED" } },
+    select: { id: true, shootDate: true, addressLine: true },
+  });
+  const appointments = projects.length
+    ? await db.appointment.findMany({
+        where: { projectId: { in: projects.map((p) => p.id) } },
+        select: { aryeoId: true, projectId: true, startAt: true, endAt: true, status: true },
+      })
+    : [];
+  const confirmed = await db.programSessionRequest.findMany({
+    where: { monthId, status: "CONFIRMED" },
+    select: { id: true, projectId: true, aryeoAppointmentId: true, slotStart: true },
+  });
+  return countDistinctSessions({
+    now,
+    appointments: appointments.map((a) => ({ appointmentId: a.aryeoId, projectId: a.projectId, startAt: a.startAt, endAt: a.endAt, cancelled: a.status === "CANCELED" })),
+    projects: projects.map((p) => ({ projectId: p.id, shootDate: p.shootDate, addressLine: p.addressLine })),
+    confirmedRequests: confirmed.map((r) => ({ requestId: r.id, projectId: r.projectId, appointmentId: r.aryeoAppointmentId, slotStart: r.slotStart })),
+  });
+}
+
 export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dryRun?: boolean } = {}): Promise<RecalcResult | null> {
   const now = opts.now ?? new Date();
   const month = await prisma.contentMonth.findUnique({
@@ -618,7 +914,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   const [enrollment, records, scripts, interviews, monthTopics] = await Promise.all([
     prisma.contentEnrollment.findUnique({
       where: { id: month.enrollmentId },
-      select: { callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true },
+      select: { clientId: true, callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true },
     }),
     prisma.programCallRecord.findMany({
       where: { monthId: month.id },
@@ -653,6 +949,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   const after = deriveMonthState({
     now, month, enrollment, records, scripts, interviews, topics,
     plan: { videosPerMonth: enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth },
+    booking: await monthSessionCount(month.id, enrollment.clientId, now),
   });
   const before = { strategyCallStatus: month.strategyCallStatus, strategyCallAt: month.strategyCallAt, planningMode: month.planningMode, preparationStatus: month.preparationStatus };
   const sameTime = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);

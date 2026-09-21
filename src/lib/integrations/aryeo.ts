@@ -222,6 +222,267 @@ export async function getSchedulingAvailability(opts?: {
   }
 }
 
+// ===========================================================================
+// WHO IS ACTUALLY ASSIGNED TO A PRODUCT (Jordan, Sep 21 2026).
+//
+// Phase 0 measured `is_service_provider` on the company team member, found it
+// true for Harrison Wells, and told Jordan he was already eligible for the
+// three monthly-content products. He corrected it the same day:
+//
+//   "Follow Aryeo's product-specific videographer assignments. Harrison is not
+//    currently assigned to Starter, Accelerator, or Pro. General availability
+//    and is_service_provider do not establish eligibility for those products.
+//    James is currently eligible. Reflect future assignment changes from Aryeo."
+//
+// He is right, and the flag is the wrong field. `is_service_provider` says
+// "this person shoots" — it is true for five people including Sarah Anne, whose
+// Aryeo user account is INACTIVE. The per-product assignment is a separate
+// relation, and it is reachable: GET /products rejects most includes with a 400
+// that names the allowed set, and that error message is what found it —
+//
+//   Requested include(s) `users` are not allowed. Allowed include(s) are
+//   `categories, order_form_categories, order_form_categories.order_form,
+//    providers`.
+//
+// `providers` is the assignment. Read against the live account on Sep 21 2026 it
+// returns, for all three program products identically:
+//
+//   Video Starter - 2HR Session      → 3352bfaf… (Jordan), 019cf893-edf5… (James)
+//   Video Accelerator - 4HR Session  → 3352bfaf… (Jordan), 019cf893-edf5… (James)
+//   VIDEO PRO - 8HR Session          → 3352bfaf… (Jordan), 019cf893-edf5… (James)
+//
+// Harrison (019470c9-4713…) is on 40 of the other 44 products and on none of
+// these three. That is Jordan's ground truth, measured rather than assumed, and
+// it is why nothing here is hard-coded: the answer is read from Aryeo on every
+// call (cached for a minute), so the day Jordan assigns Harrison to Accelerator
+// in the Aryeo UI, the hub offers Harrison's slots with no deploy.
+//
+// THE IDS ARE COMPANY-TEAM-MEMBER IDS, which matters because the scheduling
+// filter wants exactly those and Aryeo's own docs are wrong about it:
+// filter[user_ids][] is documented as "The IDs of users" and rejects a user id
+// with 422, while a company-team-member id returns 200 (Phase 0). `providers[].id`
+// matches the /company-team-members ids exactly, so the two fit together.
+//
+// AND THE PRODUCT FILTERS ARE A TRAP. /scheduling/available-dates accepts
+// filter[product_ids][], filter[product_id], product_id and filter[order_form_id]
+// with a 200 and SILENTLY IGNORES ALL FOUR: meta.company_team_member_ids comes
+// back as the same five people every time. Scoping to a product is something we
+// have to do ourselves, by resolving the providers here and passing them as
+// filter[user_ids][]. Believing the 200 is how a caller would ship the exact
+// over-offer this whole change exists to fix.
+// ===========================================================================
+
+/** One creative Aryeo has assigned to a product, resolved to a real person. */
+export type AryeoProductProvider = {
+  /** COMPANY_TEAM_MEMBER id — what filter[user_ids][] wants (not the user id). */
+  teamMemberId: string;
+  name: string | null;
+  email: string | null;
+  /** the general "this person shoots" flag — NOT eligibility on its own */
+  isServiceProvider: boolean;
+  /** Aryeo user status; "inactive" people are assigned but must not be offered */
+  userStatus: string | null;
+  /** assigned to the product AND shootable AND their login is live */
+  bookable: boolean;
+  /** when not bookable, why — so a picker offering nobody can say so */
+  reason: string | null;
+};
+
+// Aryeo is asked once a minute at most. Eligibility has to be live enough that
+// a change Jordan makes is picked up without a deploy, and cheap enough that a
+// portal page rendering a three-week calendar does not make 21 catalogue reads.
+// Deliberately IN-PROCESS, not an AppSetting row: companySlotDays' AppSetting
+// cache is the reason that function cannot be called from a read-only context
+// (Phase 0), and a helper the drills must be able to run has no business
+// writing to production to answer a question.
+const PROVIDER_TTL_MS = 60_000;
+let providerCache: { at: number; byProduct: Map<string, AryeoProductProvider[]> } | null = null;
+
+/**
+ * Every program-relevant product's assigned, bookable creatives, keyed by
+ * product id. Read live from Aryeo; throws if Aryeo cannot be reached, because
+ * a caller must not be handed an empty roster that looks like "nobody is
+ * assigned" when it means "we could not ask".
+ */
+export async function productProviders(): Promise<Map<string, AryeoProductProvider[]>> {
+  const hit = providerCache;
+  if (hit && Date.now() - hit.at < PROVIDER_TTL_MS) return hit.byProduct;
+
+  const [products, team] = await Promise.all([
+    Aryeo.products({ include: "providers" }),
+    Aryeo.companyTeamMembers(),
+  ]);
+  const byTm = new Map<string, AryeoCompanyTeamMember>();
+  for (const t of team) if (t.id) byTm.set(t.id, t);
+
+  const byProduct = new Map<string, AryeoProductProvider[]>();
+  for (const p of products) {
+    if (!p.id) continue;
+    const rows: AryeoProductProvider[] = [];
+    for (const ref of p.providers ?? []) {
+      if (!ref?.id) continue;
+      const tm = byTm.get(ref.id);
+      const isSp = tm?.is_service_provider ?? false;
+      const status = tm?.company_user?.status ?? null;
+      // §19's eligibility question, answered with all three facts rather than
+      // one. Sarah Anne is is_service_provider:true with an INACTIVE user and
+      // still returns 24 bookable days from the availability endpoint, so a
+      // picker that trusted the provider list alone would offer a client a
+      // photographer who cannot log in (Phase 0).
+      const reason =
+        !tm ? "Aryeo assigned this person to the product but we could not find their team-member record."
+        : !isSp ? "Assigned to the product but not marked as a service provider in Aryeo."
+        : status && status.toLowerCase() !== "active" ? `Assigned to the product but their Aryeo account is ${status}.`
+        : null;
+      rows.push({
+        teamMemberId: ref.id,
+        name: tm?.company_user?.full_name ?? null,
+        email: tm?.company_user?.email ?? null,
+        isServiceProvider: isSp,
+        userStatus: status,
+        bookable: reason === null,
+        reason,
+      });
+    }
+    byProduct.set(p.id, rows);
+  }
+  providerCache = { at: Date.now(), byProduct };
+  return byProduct;
+}
+
+/**
+ * The creatives Aryeo has assigned to ONE product. `bookable` is the set a
+ * client may be offered; the rest are returned too, each carrying why, so an
+ * empty picker can explain itself instead of showing a blank calendar.
+ *
+ * An unknown product id returns an EMPTY list, which callers must read as "no
+ * eligible creative" and refuse to book — never as "no filter, offer everyone",
+ * which is the company-wide behaviour Jordan corrected.
+ */
+export async function productProvidersFor(productId: string): Promise<AryeoProductProvider[]> {
+  return (await productProviders()).get(productId) ?? [];
+}
+
+/** Just the ids filter[user_ids][] wants, for the creatives who may be offered. */
+export async function bookableProviderIdsFor(productId: string): Promise<string[]> {
+  return (await productProvidersFor(productId)).filter((p) => p.bookable).map((p) => p.teamMemberId);
+}
+
+/** Drop the in-process provider cache — for a drill that wants a cold read. */
+export function resetProductProviderCache(): void {
+  providerCache = null;
+}
+
+/** One bookable day and the real starts on it, in ISO instants. */
+export type AryeoSlotDay = { date: string; slots: string[] };
+
+/**
+ * REAL availability for ONE product: the package's own duration, scoped to the
+ * creatives Aryeo has assigned to that product, with weekends removed.
+ *
+ * WHAT THIS REPLACES, measured (Phase 0, six consecutive days). The portal
+ * asked for company-wide availability at interval 60 with NO duration and NO
+ * creative, and over those six days offered 66 starts where 19 fit a four-hour
+ * Accelerator with James — including 11 on a Thursday James had none, and 11 on
+ * a Saturday. Every one of those is a slot a client could pick and nobody could
+ * film.
+ *
+ * WEEKENDS ARE OURS TO ENFORCE (§8: "no weekend shoots in this program"). Aryeo
+ * returned 14 four-hour slots on Saturday 2026-09-26 and will not apply that
+ * rule, so it is applied here, on the ET calendar day rather than the server's.
+ *
+ * Returns null when Aryeo cannot be reached or when the product has no bookable
+ * creative — both mean "do not offer a calendar", and they are separated by the
+ * throw/empty distinction in productProviders above.
+ */
+export async function productAvailability(opts: {
+  productId: string;
+  /** minutes the session needs — 120 Starter, 240 Accelerator, 240 per Pro session */
+  durationMin: number;
+  /** how far ahead to look */
+  days?: number;
+  /** granularity of the offered starts */
+  interval?: number;
+  /** cap on days returned */
+  limit?: number;
+  /** false only for a drill that wants to SEE the weekend slots Aryeo offers */
+  excludeWeekends?: boolean;
+}): Promise<{ days: AryeoSlotDay[]; providers: AryeoProductProvider[] } | null> {
+  const tz = "America/New_York";
+  const interval = opts.interval ?? 30;
+  const horizon = opts.days ?? 21;
+  const excludeWeekends = opts.excludeWeekends !== false;
+  const isoZ = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
+  // ET day-of-week, not the server's. A 00:30 ET Saturday start is Saturday to
+  // the client and Friday to a UTC box, and this program's rule is the client's.
+  const etDow = (day: string) =>
+    new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: tz, weekday: "short" });
+  const isWeekend = (day: string) => {
+    const d = etDow(day);
+    return d === "Sat" || d === "Sun";
+  };
+
+  let providers: AryeoProductProvider[];
+  try {
+    providers = await productProvidersFor(opts.productId);
+  } catch {
+    return null; // could not ask Aryeo — say nothing rather than offer everyone
+  }
+  const ids = providers.filter((p) => p.bookable).map((p) => p.teamMemberId);
+  if (ids.length === 0) return { days: [], providers };
+
+  // filter[user_ids][] repeats, once per creative. `query` on aryeoRequest is a
+  // flat record, so the repetition is built here.
+  const userFilter: Record<string, string> = {};
+  ids.forEach((id, i) => { userFilter[`filter[user_ids][${i}]`] = id; });
+
+  const start = new Date(Date.now() + 86_400_000); // from tomorrow
+  const end = new Date(Date.now() + horizon * 86_400_000);
+  let dates: { date: string; is_available?: boolean }[];
+  try {
+    const r = await aryeoRequest<{ data?: { date: string; is_available?: boolean }[] }>(
+      "/scheduling/available-dates",
+      {
+        query: {
+          timezone: tz,
+          interval,
+          duration: opts.durationMin,
+          "filter[start_at]": isoZ(start),
+          "filter[end_at]": isoZ(end),
+          ...userFilter,
+        },
+      },
+    );
+    dates = (r?.data ?? []).filter((d) => d.is_available !== false);
+  } catch {
+    return null;
+  }
+  const wanted = dates.filter((d) => !(excludeWeekends && isWeekend(d.date))).slice(0, opts.limit ?? 21);
+
+  const days: AryeoSlotDay[] = [];
+  for (let i = 0; i < wanted.length; i += 4) {
+    await Promise.all(
+      wanted.slice(i, i + 4).map(async (d) => {
+        try {
+          const r = await aryeoRequest<{ data?: { start_at?: string }[] }>("/scheduling/available-timeslots", {
+            query: {
+              timezone: tz,
+              interval,
+              duration: opts.durationMin,
+              date: d.date,
+              ...userFilter,
+            },
+          });
+          const slots = (r?.data ?? []).map((s) => s.start_at).filter((s): s is string => !!s);
+          if (slots.length) days.push({ date: d.date, slots });
+        } catch { /* a missing day is fine */ }
+      }),
+    );
+  }
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  return { days, providers };
+}
+
 // ---------------------------------------------------------------------------
 // Aryeo payload shapes (verified against the live v1 API). Money amounts are
 // always integer cents. customer/items/appointments embed via ?include=.
@@ -355,6 +616,10 @@ export interface AryeoProduct {
   categories?: { title?: string }[];
   tags?: { name?: string; title?: string }[];
   variants?: AryeoProductVariant[];
+  /** PER-PRODUCT VIDEOGRAPHER ASSIGNMENT (Jordan, Sep 21 2026). Present only
+   *  when the read asks for `include=providers`. Each entry carries a
+   *  COMPANY_TEAM_MEMBER id and nothing else — see productProviders(). */
+  providers?: { id?: string }[];
 }
 
 export interface AryeoCustomerUser {
@@ -399,6 +664,10 @@ export interface AryeoUser {
   avatar_url?: string;
   is_super?: boolean;
   internal_notes?: string;
+  /** "active" | "inactive" — live on /company-team-members.company_user. Sarah
+   *  Anne is inactive and still returns bookable days, so any picker has to
+   *  read this as well as is_service_provider (Phase 0, Sep 21 2026). */
+  status?: string;
 }
 
 export interface AryeoCompanyTeamMember {

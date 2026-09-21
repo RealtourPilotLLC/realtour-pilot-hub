@@ -2,21 +2,65 @@
 // Create (or top up) a SYNTHETIC content-program client for testing the
 // portal's identity layer in production, where the only database is.
 //
-//   npx tsx scripts/create-test-client.ts                      → "Cara TEST"
-//   npx tsx scripts/create-test-client.ts "Dave TEST" dave     → another one
+//   npx tsx scripts/create-test-client.ts --dry-run                → plan only
+//   npx tsx scripts/create-test-client.ts                          → "Cara TEST"
+//   npx tsx scripts/create-test-client.ts "Dave TEST" dave         → another one
 //
-// REFUSES any name without the word TEST (src/lib/testClients.ts) and any
-// sign-in address outside the staff-controlled @realtourpilot.com domain.
-// Idempotent: run it twice and nothing duplicates. Never deletes, never
-// touches a non-test row. Prisma self-loads .env, so DATABASE_URL is the live
-// Neon — that is the point, and the guards above are the safety.
+// THE §16 JORDAN ACCOUNT, which is what this script is for now:
 //
-// What it makes:
-//   Client "<name>"            email info+<slug>@realtourpilot.com
+//   npx tsx scripts/create-test-client.ts --jordan --dry-run       → plan
+//   npx tsx scripts/create-test-client.ts --jordan                 → apply
+//   npx tsx scripts/create-test-client.ts --jordan --phone         → + SMS route
+//
+// REFUSES any name without the word TEST (src/lib/testClients.ts), any sign-in
+// address outside the staff-controlled @realtourpilot.com domain, any client id
+// on the never-synthetic list, and any destination that is not one Jordan
+// verified. Idempotent: run it twice and nothing duplicates. Never deletes,
+// never touches a non-test row. Prisma self-loads .env, so DATABASE_URL is the
+// live Neon — that is the point, and the guards above are the safety.
+//
+// ---------------------------------------------------------------------------
+// WHY --dry-run IS A CONNECTION AND NOT A PROMISE (Sep 21 2026).
+//
+// The attribution drill claimed "wrote nothing" and then wrote an AppSetting
+// three calls deep through a helper that rebuilt a cache. A promise about what
+// a file calls is worth nothing next to a connection that cannot execute an
+// INSERT. So --dry-run does two independent things: it opens the database with
+// `default_transaction_read_only=on` and PROVES that with a refused write
+// before reading anything, and it separately takes the no-write branch at every
+// step. Either one alone would do; both together mean a bug in the second is
+// caught by the first instead of by production.
+// ---------------------------------------------------------------------------
+// WHAT IT MAKES (all ids fresh — nothing is copied from a real client):
+//
+//   Client "<name>"            email info+<slug>test@realtourpilot.com
+//                              phone NULL unless --phone, aryeoCustomerId NULL,
+//                              autoConfirmationText / autoDeliveryText OFF
 //   ContentEnrollment          ACTIVE · Starter · 2 videos / 1 session / 2h · manual
 //   ContentMonth 2026-09       OPEN
 //   portalToken                issued (so the link path is testable)
 //   ClientUser + Membership    OWNER seat for the same address
+//
+// The two auto-text switches default to TRUE in the schema and clientTextSweeps
+// has NO test-client gate — it decides in the query on those columns. A test
+// client created with the defaults and a phone number is one shoot confirmation
+// away from a real outbound text, so this script writes them OFF explicitly and
+// re-asserts them OFF on every top-up run.
+//
+// Sep 21 2026 — THAT SENTENCE WAS A COMMENT, NOT A SAFEGUARD. The review read
+// the code under it: only the CREATE branch wrote the two switches. The `client
+// exists` branch performed no update at all, so a test client that was ever
+// flipped SMS-live in the admin UI stayed live through every later run while
+// this header said the opposite. --phone had the same shape — applied at create
+// only, so a top-up run with --phone changed nothing and still printed the
+// WARNING block claiming the number was being written. And auditIsolation
+// counted FAILs into a local variable and never touched process.exitCode, so a
+// run that DISCOVERED the test client was SMS-live exited 0 and read as success
+// in any wrapper. reassertSafetyFlags() below is now the actual re-assert, on
+// both branches; --phone writes the verified number on both branches; and a
+// failed isolation audit exits non-zero. Absence of --phone deliberately does
+// NOT clear an existing number (retire, never delete) — the audit reports the
+// live value and fails the run if it is not a verified destination.
 //
 // With --scenarios it ALSO stands up the §25 acceptance fixtures on the same
 // client (idempotent, tagged, never touching a non-test row):
@@ -29,68 +73,380 @@
 // ---------------------------------------------------------------------------
 import { PrismaClient } from "@prisma/client";
 import { randomBytes } from "crypto";
-import { assertTestClient, isStaffControlledEmail } from "../src/lib/testClients";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  assertTestClient,
+  assertTestDestinations,
+  isStaffControlledEmail,
+  isNeverSyntheticClientId,
+  isVerifiedTestDestinationEmail,
+  isVerifiedTestDestinationPhone,
+  JORDAN_TEST_CLIENT_NAME,
+  JORDAN_TEST_PHONE_DIGITS,
+  providerWriteDecision,
+} from "../src/lib/testClients";
 
-const prisma = new PrismaClient();
-const NAME = process.argv[2] ?? "Cara TEST";
-const SLUG = (process.argv[3] ?? NAME.split(/\s+/)[0]).toLowerCase().replace(/[^a-z0-9]/g, "");
+const ARGS = process.argv.slice(2);
+const FLAGS = new Set(ARGS.filter((a) => a.startsWith("--")));
+const POSITIONAL = ARGS.filter((a) => !a.startsWith("--"));
+
+const DRY_RUN = FLAGS.has("--dry-run");
+const JORDAN = FLAGS.has("--jordan");
+const WITH_SCENARIOS = FLAGS.has("--scenarios");
+const WITH_PHONE = FLAGS.has("--phone");
+
+const NAME = JORDAN ? JORDAN_TEST_CLIENT_NAME : (POSITIONAL[0] ?? "Cara TEST");
+const SLUG = (JORDAN ? "jordan" : (POSITIONAL[1] ?? NAME.split(/\s+/)[0])).toLowerCase().replace(/[^a-z0-9]/g, "");
 const EMAIL = `info+${SLUG}test@realtourpilot.com`;
-const MONTH_KEY = (process.argv[4] && /^\d{4}-\d{2}$/.test(process.argv[4]) ? process.argv[4] : null) ?? "2026-09";
-const WITH_SCENARIOS = process.argv.includes("--scenarios");
+/** Only ever the number Jordan verified on Sep 21 2026, and only when asked for. */
+const PHONE = WITH_PHONE ? `+1${JORDAN_TEST_PHONE_DIGITS}` : null;
+const MONTH_KEY = (POSITIONAL[2] && /^\d{4}-\d{2}$/.test(POSITIONAL[2]) ? POSITIONAL[2] : null) ?? "2026-09";
+/** Isolated by construction — never a real client's folder. Nothing is created in Dropbox here. */
+const BRAND_ASSETS_PATH = `/RealTour Pilot TEST FIXTURES/${NAME}/Brand Assets`;
 
 /** Every row this script writes for §25 carries this, so a re-run tops up and a reader can tell. */
 export const SCENARIO_TAG = "[§25 acceptance fixture]";
 
+// ---------------------------------------------------------------------------
+// THE READ-ONLY CONNECTION (--dry-run only). Postgres refuses every write on
+// it, SQLSTATE 25006, however deep the call stack goes. Built before the client
+// is constructed, because PrismaClient resolves its URL at construction.
+// dotenv is not imported on purpose: it is a transitive dependency, not a
+// declared one, and a safety guard must not rest on somebody else's package
+// tree. Prisma self-loads .env, so DATABASE_URL is usually absent from the
+// process environment here and we read the file ourselves.
+// ---------------------------------------------------------------------------
+function readOnlyDatabaseUrl(): string {
+  let url = process.env.DATABASE_URL ?? "";
+  if (!url) {
+    for (const file of [path.resolve(process.cwd(), ".env"), path.resolve(__dirname, "../.env")]) {
+      if (!fs.existsSync(file)) continue;
+      const m = fs.readFileSync(file, "utf8").match(/^\s*DATABASE_URL\s*=\s*(.*)$/m);
+      if (m) { url = m[1].trim().replace(/^["']|["']$/g, ""); break; }
+    }
+  }
+  if (!url) throw new Error("DATABASE_URL not found — refusing to dry-run without the read-only guard.");
+  const u = new URL(url);
+  const existing = u.searchParams.get("options");
+  u.searchParams.set("options", [existing, "-c default_transaction_read_only=on"].filter(Boolean).join(" "));
+  return u.toString();
+}
+
+const prisma = DRY_RUN ? new PrismaClient({ datasourceUrl: readOnlyDatabaseUrl() }) : new PrismaClient();
+
+const plan: string[] = [];
+const would = (line: string) => { plan.push(line); console.log(`WOULD  ${line}`); };
+const isOk = (ok: boolean) => (ok ? "ok  " : "FAIL");
+
+/**
+ * An UPDATE whose WHERE matches nothing: Postgres still refuses it inside a
+ * read-only transaction, and if the guard were ever broken it would change no
+ * row. The one probe that is safe whether or not it is needed.
+ */
+async function proveReadOnly(): Promise<boolean> {
+  try {
+    await prisma.appSetting.updateMany({ where: { key: "__create_test_client_readonly_probe__" }, data: { value: "x" } });
+    return false;
+  } catch (e) {
+    return /read-only transaction/i.test(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * The columns the safety re-assert reasons about. Both branches select exactly
+ * these so the create path and the top-up path hand the same shape to
+ * reassertSafetyFlags — a narrower select on one branch is how the two drifted
+ * apart in the first place (Sep 21 2026).
+ */
+const TEST_CLIENT_SELECT = {
+  id: true,
+  name: true,
+  phone: true,
+  autoConfirmationText: true,
+  autoDeliveryText: true,
+} as const;
+
+type TestClientRow = {
+  id: string;
+  name: string | null;
+  phone: string | null;
+  autoConfirmationText: boolean;
+  autoDeliveryText: boolean;
+};
+
+/**
+ * Re-assert the §16 safety flags on an EXISTING row, which is what the header
+ * has always promised and what the code did not do until Sep 21 2026.
+ *
+ * Writes only the columns that are actually wrong, so a healthy record costs no
+ * UPDATE and the log says plainly that nothing needed changing. --phone writes
+ * the verified number here exactly as it does on create; its absence does not
+ * clear an existing number, because retire-never-delete applies to a column
+ * somebody may have set on purpose — the isolation audit below is what reports
+ * an unverified one, and it now fails the run.
+ */
+async function reassertSafetyFlags(c: TestClientRow): Promise<void> {
+  const data: { autoConfirmationText?: false; autoDeliveryText?: false; phone?: string } = {};
+  const parts: string[] = [];
+  if (c.autoConfirmationText !== false) { data.autoConfirmationText = false; parts.push(`autoConfirmationText ${c.autoConfirmationText} -> false`); }
+  if (c.autoDeliveryText !== false) { data.autoDeliveryText = false; parts.push(`autoDeliveryText ${c.autoDeliveryText} -> false`); }
+  // PHONE is null unless --phone, and assertTestDestinations has already refused
+  // anything that is not Jordan's verified number, so this can only ever write that.
+  if (PHONE && c.phone !== PHONE) { data.phone = PHONE; parts.push(`phone ${c.phone ?? "NULL"} -> ${PHONE}`); }
+
+  if (!parts.length) {
+    console.log(`Safety flags        already correct (autoConfirmationText=false, autoDeliveryText=false${PHONE ? `, phone=${PHONE}` : ""})`);
+    return;
+  }
+  if (DRY_RUN) {
+    would(`update Client ${c.id}: ${parts.join(", ")}`);
+    return;
+  }
+  await prisma.client.update({ where: { id: c.id }, data });
+  console.log(`Safety re-asserted  ${parts.join(", ")}`);
+}
+
 async function main() {
-  assertTestClient({ name: NAME });
-  if (!isStaffControlledEmail(EMAIL)) throw new Error(`Refusing: ${EMAIL} is not a staff-controlled address.`);
+  console.log(`=== create-test-client  ${DRY_RUN ? "DRY RUN (nothing will be written)" : "APPLY"} ===`);
+  console.log(`name   ${NAME}`);
+  console.log(`email  ${EMAIL}`);
+  console.log(`phone  ${PHONE ?? "(none — no SMS route at all)"}`);
+  console.log(`month  ${MONTH_KEY}`);
+  console.log(`folder ${BRAND_ASSETS_PATH}\n`);
 
-  let client = await prisma.client.findFirst({ where: { name: NAME }, select: { id: true, name: true } });
-  if (!client) {
-    client = await prisma.client.create({ data: { name: NAME, email: EMAIL, generalNotes: "SYNTHETIC test client for the portal build (Sep 16 2026). Not a real person." }, select: { id: true, name: true } });
-    console.log(`Client created      ${client.id}  ${NAME}`);
-  } else console.log(`Client exists       ${client.id}  ${NAME}`);
-  assertTestClient(client);
-
-  let e = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id } });
-  if (!e) {
-    e = await prisma.contentEnrollment.create({
-      data: {
-        clientId: client.id, package: "Starter", videosPerMonth: 2, sessionsPerMonth: 1, sessionHours: 2,
-        status: "ACTIVE", statusManual: true, packageSource: "manual", startedAt: new Date(),
-        notes: "SYNTHETIC — portal identity-layer testing.",
-      },
-    });
-    console.log(`Enrollment created  ${e.id}`);
-  } else console.log(`Enrollment exists   ${e.id}  ${e.status}`);
-
-  if (!e.portalToken) {
-    e = await prisma.contentEnrollment.update({ where: { id: e.id }, data: { portalToken: randomBytes(24).toString("base64url"), portalTokenIssuedAt: new Date() } });
-    console.log("Portal link issued");
+  if (PHONE) {
+    // src/lib/contacts.ts builds a phone -> client index (phoneKey, :171/:200),
+    // so putting Jordan's own mobile on a Client row means his handset's
+    // inbound texts can start resolving to this TEST client in the comms
+    // surfaces. That is a real, visible side effect, not a theoretical one, so
+    // --phone is off by default and says so out loud when it is on.
+    console.log(`WARNING  --phone puts ${PHONE} on a Client row, on a create run AND on a top-up run.`);
+    console.log(`         Inbound texts from Jordan's own handset can then resolve to this TEST client`);
+    console.log(`         in comms (src/lib/contacts.ts phone index).`);
+    console.log(`         Both auto-text switches are re-asserted OFF on every run, so nothing sends on its own.\n`);
   }
 
-  const month = await prisma.contentMonth.upsert({
-    where: { enrollmentId_monthKey: { enrollmentId: e.id, monthKey: MONTH_KEY } },
-    create: { enrollmentId: e.id, clientId: client.id, monthKey: MONTH_KEY, videosOwed: e.videosPerMonth, status: "OPEN" },
-    update: {},
-  });
-  console.log(`Month               ${month.id}  ${MONTH_KEY}`);
+  if (DRY_RUN) {
+    const proven = await proveReadOnly();
+    console.log(`=== READ-ONLY GUARD: ${proven ? "PROVEN" : "NOT PROVEN"} ===\n`);
+    if (!proven) {
+      console.error("  The connection accepted a write. Refusing to run against production.");
+      process.exitCode = 1;
+      return;
+    }
+  }
 
-  const user = await prisma.clientUser.upsert({
-    where: { email: EMAIL },
-    create: { email: EMAIL, name: NAME },
-    update: {},
-  });
-  const seat = await prisma.clientMembership.upsert({
-    where: { clientUserId_enrollmentId: { clientUserId: user.id, enrollmentId: e.id } },
-    create: { clientUserId: user.id, enrollmentId: e.id, clientId: client.id, role: "OWNER", invitedByAppUserId: null },
-    update: { revokedAt: null, revokedBy: null, role: "OWNER" },
-  });
-  console.log(`ClientUser          ${user.id}  ${EMAIL}`);
-  console.log(`Membership          ${seat.id}  OWNER`);
-  console.log(`\nPortal link: /portal/${e.portalToken}`);
+  // ---- refuse anything that is not the test record, before touching a row --
+  assertTestClient({ name: NAME });
+  if (!isStaffControlledEmail(EMAIL)) throw new Error(`Refusing: ${EMAIL} is not a staff-controlled address.`);
+  // §16: every test send lands on a destination Jordan verified himself.
+  assertTestDestinations({ email: EMAIL, phone: PHONE });
 
-  if (WITH_SCENARIOS) await scenarioFixtures(client.id, e.id, month.id, MONTH_KEY);
+  let client = await prisma.client.findFirst({ where: { name: NAME }, select: TEST_CLIENT_SELECT });
+  if (client) {
+    // The ordering matters: a REAL row renamed to contain TEST must be refused
+    // by id, and assertTestClient checks the id first for exactly that reason.
+    assertTestClient(client);
+    console.log(`Client exists       ${client.id}  ${NAME}`);
+    // Sep 21 2026: this call is the difference between the header's promise and
+    // a comment. Before it, a top-up run left an SMS-live test client SMS-live.
+    await reassertSafetyFlags(client);
+  } else if (DRY_RUN) {
+    would(`create Client "${NAME}" email=${EMAIL} phone=${PHONE ?? "NULL"} aryeoCustomerId=NULL autoConfirmationText=false autoDeliveryText=false brandAssetsPath="${BRAND_ASSETS_PATH}"`);
+  } else {
+    client = await prisma.client.create({
+      data: {
+        name: NAME,
+        email: EMAIL,
+        phone: PHONE,
+        brandAssetsPath: BRAND_ASSETS_PATH,
+        // OFF explicitly. See the header: the schema defaults are true and
+        // clientTextSweeps has no test-client gate.
+        autoConfirmationText: false,
+        autoDeliveryText: false,
+        generalNotes: `SYNTHETIC TEST CLIENT — not a real person, excluded from counts, payouts, reminders and reports. Created ${new Date().toISOString().slice(0, 10)} for the §16 walkthrough.`,
+      },
+      select: TEST_CLIENT_SELECT,
+    });
+    assertTestClient(client);
+    console.log(`Client created      ${client.id}  ${NAME}`);
+  }
+
+  // ---- the isolation audit, on whatever exists -----------------------------
+  // Read-only and run on every pass, dry or not: §16's isolation is a property
+  // of the row as it stands today, not of the moment it was created.
+  // Sep 21 2026: the count used to stop at a console line. A wrapper that shells
+  // out to this script read exit 0 and called an SMS-live test client healthy,
+  // so the audit's verdict is now the process's verdict.
+  if (client) {
+    const failures = await auditIsolation(client.id);
+    if (failures > 0) process.exitCode = 1;
+  }
+
+  let enrollmentId: string | null = null;
+  let portalToken: string | null = null;
+  let videosOwed = 2; // the Starter allowance this script creates, unless a row already says otherwise
+  if (client) {
+    let e = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id } });
+    if (!e && DRY_RUN) {
+      would(`create ContentEnrollment for ${client.id}: Starter 2 videos / 1 session / 2h, ACTIVE, packageSource=manual`);
+    } else if (!e) {
+      e = await prisma.contentEnrollment.create({
+        data: {
+          clientId: client.id, package: "Starter", videosPerMonth: 2, sessionsPerMonth: 1, sessionHours: 2,
+          status: "ACTIVE", statusManual: true, packageSource: "manual", startedAt: new Date(),
+          notes: "SYNTHETIC — portal identity-layer testing.",
+        },
+      });
+      console.log(`Enrollment created  ${e.id}`);
+    } else console.log(`Enrollment exists   ${e.id}  ${e.status}`);
+
+    if (e && !e.portalToken) {
+      if (DRY_RUN) would(`issue a fresh portalToken on enrollment ${e.id} (new random value, never copied)`);
+      else {
+        e = await prisma.contentEnrollment.update({ where: { id: e.id }, data: { portalToken: randomBytes(24).toString("base64url"), portalTokenIssuedAt: new Date() } });
+        console.log("Portal link issued");
+      }
+    }
+    enrollmentId = e?.id ?? null;
+    portalToken = e?.portalToken ?? null;
+    if (e) videosOwed = e.videosPerMonth;
+  } else if (DRY_RUN) {
+    // The client row does not exist yet, so nothing downstream of it can be
+    // looked up. The chain is deterministic, so report it rather than going
+    // quiet — a plan that stops at the first missing row is not a plan.
+    would(`create ContentEnrollment: Starter 2 videos / 1 session / 2h, ACTIVE, statusManual=true, packageSource=manual`);
+    would(`issue a fresh portalToken on that enrollment (new random value, never copied)`);
+  }
+
+  let monthId: string | null = null;
+  if (client && enrollmentId) {
+    const existing = await prisma.contentMonth.findUnique({ where: { enrollmentId_monthKey: { enrollmentId, monthKey: MONTH_KEY } } });
+    if (!existing && DRY_RUN) would(`create ContentMonth ${MONTH_KEY} on enrollment ${enrollmentId}, status OPEN`);
+    else if (!existing) {
+      const m = await prisma.contentMonth.create({ data: { enrollmentId, clientId: client.id, monthKey: MONTH_KEY, videosOwed, status: "OPEN" } });
+      monthId = m.id;
+      console.log(`Month               ${m.id}  ${MONTH_KEY}`);
+    } else { monthId = existing.id; console.log(`Month               ${existing.id}  ${MONTH_KEY}`); }
+  } else if (DRY_RUN) would(`create ContentMonth ${MONTH_KEY}, status OPEN`);
+
+  // ---- the portal seat ----------------------------------------------------
+  const existingUser = await prisma.clientUser.findUnique({ where: { email: EMAIL }, select: { id: true } });
+  if (!existingUser && DRY_RUN) would(`create ClientUser ${EMAIL} (fresh id, no token or membership copied from anyone)`);
+  let userId = existingUser?.id ?? null;
+  if (!DRY_RUN && client && enrollmentId) {
+    const user = await prisma.clientUser.upsert({ where: { email: EMAIL }, create: { email: EMAIL, name: NAME }, update: {} });
+    userId = user.id;
+    const seat = await prisma.clientMembership.upsert({
+      where: { clientUserId_enrollmentId: { clientUserId: user.id, enrollmentId } },
+      create: { clientUserId: user.id, enrollmentId, clientId: client.id, role: "OWNER", invitedByAppUserId: null },
+      update: { revokedAt: null, revokedBy: null, role: "OWNER" },
+    });
+    console.log(`ClientUser          ${user.id}  ${EMAIL}`);
+    console.log(`Membership          ${seat.id}  OWNER`);
+  } else if (DRY_RUN) {
+    const seat = userId && enrollmentId
+      ? await prisma.clientMembership.findUnique({ where: { clientUserId_enrollmentId: { clientUserId: userId, enrollmentId } }, select: { id: true, role: true } })
+      : null;
+    if (seat) console.log(`Membership exists   ${seat.id}  ${seat.role}`);
+    else would(`create ClientMembership OWNER for ${EMAIL} on this enrollment only (no other client's seat is touched)`);
+  }
+
+  if (portalToken) console.log(`\nPortal link: /portal/${portalToken}`);
+  else if (DRY_RUN) console.log(`\nPortal link: (issued on apply)`);
+
+  if (WITH_SCENARIOS) {
+    if (DRY_RUN) {
+      would(`--scenarios: 1 pillar, 5 topics (3 selected for ${MONTH_KEY}), 1 NEEDS_FOLLOWUP interview + 1 thin answer, 3 ClientFacts, 1 strategy proposal, 1 refresh run + 2 PENDING suggestions — all tagged "${SCENARIO_TAG}"`);
+    } else if (client && enrollmentId && monthId) {
+      await scenarioFixtures(client.id, enrollmentId, monthId, MONTH_KEY);
+    }
+  }
+
+  // ---- what a test journey may NOT do, stated out loud ---------------------
+  reportProviderPosture();
+
+  if (DRY_RUN) {
+    console.log(`\n=== DRY RUN COMPLETE — ${plan.length} write${plan.length === 1 ? "" : "s"} withheld, 0 rows changed ===`);
+    if (!plan.length) console.log("Everything this script creates already exists. An apply run would be a no-op.");
+  }
+
+  // The tail of the log has to agree with the exit code, or the next reader
+  // trusts the last line they saw instead of the status a wrapper reads.
+  if (process.exitCode) {
+    console.log(`\n=== EXIT 1 — the isolation audit above FAILED. This record is not safe for a test journey yet. ===`);
+  }
+}
+
+/**
+ * §16's isolation requirements, checked against the live row. Read-only, so it
+ * runs identically in a dry run and an apply. A FAIL here is a real finding:
+ * it means a test record picked up a real client's identity somewhere.
+ *
+ * Returns the number of failed checks so the caller can set process.exitCode.
+ * A dry run reports the row AS IT STANDS — if it says the auto-text switches are
+ * on, that is today's truth and the WOULD line above is the fix an apply run
+ * would perform.
+ */
+async function auditIsolation(clientId: string): Promise<number> {
+  const c = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { id: true, name: true, email: true, backupEmail: true, phone: true, aryeoCustomerId: true, autoConfirmationText: true, autoDeliveryText: true, brandAssetsPath: true },
+  });
+  if (!c) return 0;
+  console.log(`\n--- isolation audit  ${c.id} ---`);
+  const rows: [string, boolean, string][] = [
+    ["not on the never-synthetic list", !isNeverSyntheticClientId(c.id), c.id],
+    ["email is a verified Jordan destination", isVerifiedTestDestinationEmail(c.email), c.email ?? "(none)"],
+    ["backup email is verified or absent", !c.backupEmail || isVerifiedTestDestinationEmail(c.backupEmail), c.backupEmail ?? "(none)"],
+    ["phone is verified or absent", !c.phone || isVerifiedTestDestinationPhone(c.phone), c.phone ?? "(none)"],
+    ["no Aryeo customer id reused", c.aryeoCustomerId === null, c.aryeoCustomerId ?? "NULL"],
+    ["auto confirmation text OFF", c.autoConfirmationText === false, String(c.autoConfirmationText)],
+    ["auto delivery text OFF", c.autoDeliveryText === false, String(c.autoDeliveryText)],
+    ["brand assets folder is isolated", !c.brandAssetsPath || c.brandAssetsPath.includes("TEST"), c.brandAssetsPath ?? "(none)"],
+  ];
+  let failed = 0;
+  for (const [label, ok, detail] of rows) { if (!ok) failed++; console.log(`  [${isOk(ok)}] ${label.padEnd(42)} ${detail}`); }
+
+  // Writable rows that must be this record's own, never a real client's.
+  const [projects, appts, memberships] = await Promise.all([
+    prisma.project.count({ where: { clientId } }),
+    prisma.appointment.count({ where: { project: { clientId } } }),
+    prisma.clientMembership.count({ where: { clientId } }),
+  ]);
+  console.log(`  [${isOk(appts === 0)}] no Aryeo-backed appointments               ${appts}`);
+  console.log(`  [ok  ] projects on this record                 ${projects}`);
+  console.log(`  [ok  ] portal memberships on this record       ${memberships}`);
+  if (appts > 0) failed++;
+  if (failed) console.log(`  ${failed} isolation check(s) FAILED — do not run a test journey against this record until they are fixed. (exit 1)`);
+  return failed;
+}
+
+/**
+ * The §16 property that matters most, printed so it is not folded into a
+ * comment nobody reads: a test enrollment cannot create a real billable session
+ * and cannot edit a real client's appointment. Both are decided by
+ * providerWriteDecision in src/lib/testClients.ts; this prints the actual
+ * verdicts rather than asserting they exist.
+ */
+function reportProviderPosture(): void {
+  console.log(`\n--- provider-write guard (src/lib/testClients.ts) ---`);
+  const testClient = { id: "test-row", name: NAME };
+  const realClient = { id: "cmqikskt1008u9k9qej9ltjy5", name: "Jordan Spackman" };
+  const cases: [string, ReturnType<typeof providerWriteDecision>][] = [
+    ["book a session for the test client", providerWriteDecision({ provider: "aryeo", operation: "orders.create", client: testClient })],
+    ["reschedule a real client's appointment from a test journey", providerWriteDecision({ provider: "aryeo", operation: "appointments.reschedule", client: realClient, actingAsTestClient: testClient })],
+    ["a real client's ordinary staff reschedule", providerWriteDecision({ provider: "aryeo", operation: "appointments.reschedule", client: realClient })],
+    ["the same test booking through a sandbox adapter", providerWriteDecision({ provider: "aryeo", operation: "orders.create", client: testClient, sandbox: true })],
+  ];
+  for (const [label, d] of cases) {
+    console.log(`  ${d.allowed ? "ALLOW " : "REFUSE"} ${label}`);
+    if (!d.allowed) console.log(`         ${d.reason}`);
+  }
+  console.log(`  NOTE: the decision function lives here; wiring it into the two Aryeo write`);
+  console.log(`  call sites (rescheduleAppointmentAction / cancelAppointmentAction in`);
+  console.log(`  src/app/actions.ts) is outside this lane's files and is still open.`);
 }
 
 // ---------------------------------------------------------------------------

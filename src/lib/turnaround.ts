@@ -381,10 +381,40 @@ export function targetAtFor(tier: Tier, startedAt: Date, rules?: PromiseRules | 
 //   · one order has no appointment at all.
 // "The appointment's end" is therefore not always available, and the reply to
 // that is an explicit, named, visible fallback — never a silent slide back to
-// the shoot date, which is the very defect F27 names. Every answer below says
-// which rung of the ladder it came from and whether it is estimated, so a card
-// can print "estimated from the booked start" instead of quietly asserting a
-// deadline nobody can defend.
+// the shoot date, which is the very defect F27 names.
+//
+// ---------------------------------------------------------------------------
+// AND THEN JORDAN NARROWED IT (Sep 21 2026, batch 2). Batch 1 answered a
+// missing end by ESTIMATING one — booked start plus the package's minutes, or
+// the booked start on its own — and labelling the result "(estimated)". His
+// correction:
+//
+//   "Don't invent production dates. Show 'Not scheduled' for genuinely
+//    unbooked work. If filming happened but its appointment or end time is
+//    missing, show 'Production date needs verification' and assign Kyle the
+//    correction. Unknown deadlines must not appear as on time."
+//
+// An estimate is a date, and a date gets counted, coloured and sorted. Start
+// plus the PACKAGE's 240 minutes is a deadline read off a sales record for a
+// session nobody has evidence was four hours long — Sarina's 120-minute
+// Accelerator is the standing proof that the sold length and the filmed length
+// are different facts. So those rungs are gone. What is left is three states,
+// and only one of them carries a date:
+//
+//   known               · the appointment's real end (or Aryeo's own recorded
+//                         minutes for that same appointment, which is the end
+//                         written another way, not a guess) → day 7 / day 10.
+//   needs_verification  · there IS work here, and its end is missing. No date,
+//                         never on time, and Kyle is asked to correct it.
+//   not_scheduled       · genuinely unbooked. No date, and nothing to correct.
+//
+// MEASURED BEFORE IT SHIPPED, on every monthly-content project in production
+// (scripts/_drill/honest-dates.ts): 63 of 63 bookable legs carry a real
+// `endAt`, so not one live session loses a date it has today. The three jobs
+// with no bookable leg are all TEST fixtures — two unbooked cut jobs, which
+// now read "Not scheduled", and one filmed-and-delivered job with no
+// appointment row, which now reads "Production date needs verification"
+// instead of silently borrowing the shoot date.
 // ===========================================================================
 
 /** One booked leg — the Appointment columns this file needs, and no more. */
@@ -398,34 +428,72 @@ export type SessionLeg = {
   status?: string | null;
 };
 
-/** Which rung of the ladder answered. Ordered best to worst. */
+/** Which rung answered. The first two carry a date; the rest do not. */
 export type ProductionAnchorSource =
   /** the appointment's real end instant — the rule */
   | "appointment_end"
-  /** end missing, the provider gave the leg a duration */
+  /** no end_at, but Aryeo recorded THIS appointment's own length. Still the
+   *  appointment's end, written another way — not a guess from a sales record. */
   | "appointment_start_plus_duration"
-  /** end and duration both missing, the package says how long it was sold for */
+  /** there is work here and its end is missing. NO DATE. Kyle corrects it. */
+  | "needs_verification"
+  /** genuinely unbooked. NO DATE, and nothing for anyone to correct. */
+  | "none"
+  // ---- RETIRED Sep 21 2026 (Jordan: "don't invent production dates") -------
+  // Never emitted any more. Kept in the union so a stored or logged value from
+  // before batch 2 still type-checks, and so the next reader can see what the
+  // ladder used to do rather than wondering why it has four rungs.
+  //   appointment_start_plus_package · start + the minutes the PACKAGE was sold
+  //     as. A deadline off a sales record. Now needs_verification.
+  //   appointment_start · a leg with a start and nothing else, treated as a
+  //     zero-length session. Now needs_verification.
+  //   shoot_date · no appointment at all, so Project.shootDate stood in. This
+  //     is the exact substitution F27 was raised about. Now needs_verification.
   | "appointment_start_plus_package"
-  /** a leg with a start and nothing else — better than the job's shoot date,
-   *  and labelled so nobody reads it as a real end */
   | "appointment_start"
-  /** no usable leg at all — Project.shootDate, and the caller must SAY so */
-  | "shoot_date"
-  /** unscheduled: this session has no clock yet */
-  | "none";
+  | "shoot_date";
+
+/** The three states a production date can be in (Jordan, Sep 21 2026). Only
+ *  `known` may be dated, sorted or counted as on time. */
+export type ProductionAnchorStatus = "known" | "needs_verification" | "not_scheduled";
 
 export type ProductionAnchor = {
+  /** null unless `status` is "known". There is no such thing as a soft date. */
   at: Date | null;
   source: ProductionAnchorSource;
-  /** true when `at` is not the appointment's real recorded end. */
+  status: ProductionAnchorStatus;
+  /** RETIRED Sep 21 2026: always false. The hub no longer estimates a
+   *  production date, so nothing can be an estimate. Kept because callers
+   *  outside this batch still read it and `false` is the honest answer for
+   *  every anchor this function now returns. */
   estimated: boolean;
-  /** one line for the card, so the fallback is visible rather than implied. */
+  /** What a card prints INSTEAD of a date when there is none — Jordan's own
+   *  words, verbatim. Null when the anchor is known. */
+  unknownLabel: string | null;
+  /** one line for the card, so the gap is visible rather than implied. */
   note: string | null;
   /** the leg this anchor came from, when it came from one. */
   legId: string | null;
   /** minutes actually booked, when known — for the drift flag below. */
   bookedMinutes: number | null;
 };
+
+/** Jordan's two sentences, in his words, used everywhere a date is missing. */
+export const NOT_SCHEDULED_LABEL = "Not scheduled";
+export const NEEDS_VERIFICATION_LABEL = "Production date needs verification";
+
+const notScheduled = (note: string, legId: string | null = null): ProductionAnchor => ({
+  at: null, source: "none", status: "not_scheduled", estimated: false,
+  unknownLabel: NOT_SCHEDULED_LABEL, note, legId, bookedMinutes: null,
+});
+
+const needsVerification = (note: string, legId: string | null = null): ProductionAnchor => ({
+  at: null, source: "needs_verification", status: "needs_verification", estimated: false,
+  unknownLabel: NEEDS_VERIFICATION_LABEL, note, legId, bookedMinutes: null,
+});
+
+/** True when this anchor may be dated, sorted or counted as on time. */
+export const anchorIsKnown = (a: ProductionAnchor): boolean => a.status === "known" && a.at !== null;
 
 const MINUTE = 60_000;
 const legIsBookable = (a: SessionLeg): boolean => {
@@ -437,18 +505,35 @@ const legIsBookable = (a: SessionLeg): boolean => {
 };
 
 /**
- * The end of one booked leg, walking the ladder.
+ * The end of one booked leg.
  *
- * `expectedSessionMinutes` is what the PACKAGE was sold as (Starter 120,
- * Accelerator 240, Pro 240 per session — contentProgram.sessionMinutesFor).
- * It is used only when the provider told us nothing, and it never overrides a
- * real duration: Sarina's 120-minute Accelerator is a booking Kyle made, and
- * silently promising against a 4-hour end she never booked would invent a
- * deadline out of a sales record.
+ * Two rungs carry a date and both are the appointment's OWN evidence: the
+ * recorded `end_at`, or the recorded `duration` added to the recorded start.
+ * Everything else is an answer without a date.
+ *
+ * `expectedSessionMinutes` — the minutes the PACKAGE was sold as (Starter 120,
+ * Accelerator 240, Pro 240 per session) — is deliberately NO LONGER USED to
+ * produce a date. It stays in the signature because sessionClocksFor and the
+ * board both pass it and both still want the drift flag ("booked for 120, sold
+ * as 240"), which needs the number. Reinstating it as a fallback end would
+ * re-create precisely the invention Jordan named on Sep 21: Sarina Spinelli
+ * bought a 4-hour Accelerator and her appointment is 120 minutes, so a day-10
+ * computed off 240 would be a deadline for a session that never existed.
  */
 export function legEnd(a: SessionLeg, expectedSessionMinutes?: number | null): ProductionAnchor {
+  void expectedSessionMinutes; // see above — read for drift, never for a date
   if (!legIsBookable(a)) {
-    return { at: null, source: "none", estimated: false, note: "This session is not on the calendar yet, so production has no clock.", legId: a.id ?? null, bookedMinutes: null };
+    const s = (a.status || "").toUpperCase();
+    // A CANCELLED or UNSCHEDULED leg is not work in flight; there is nothing
+    // for Kyle to correct, so this is "Not scheduled", not an exception.
+    return notScheduled(
+      s === "UNSCHEDULED"
+        ? "This session was taken off the calendar, so production has no clock."
+        : s.startsWith("CANCEL")
+          ? "This session was cancelled, so production has no clock."
+          : "This session is not on the calendar yet, so production has no clock.",
+      a.id ?? null,
+    );
   }
   const start = a.startAt!;
   const booked = typeof a.durationMin === "number" && a.durationMin > 0 ? a.durationMin : null;
@@ -456,43 +541,36 @@ export function legEnd(a: SessionLeg, expectedSessionMinutes?: number | null): P
     return {
       at: a.endAt,
       source: "appointment_end",
+      status: "known",
       estimated: false,
+      unknownLabel: null,
       note: null,
       legId: a.id ?? null,
       bookedMinutes: booked ?? Math.max(0, Math.round((a.endAt.getTime() - start.getTime()) / MINUTE)),
     };
   }
   if (booked) {
+    // Not an estimate: Aryeo holds a length for THIS appointment. The end is
+    // start + that length, and saying so is reporting the booking, not guessing
+    // at it. Zero live legs take this rung today (all 63 carry an end_at) — it
+    // exists because Aryeo has left end_at null on legs in the past.
     return {
       at: new Date(start.getTime() + booked * MINUTE),
       source: "appointment_start_plus_duration",
-      estimated: true,
-      note: `Estimated from the booked start plus ${booked} minutes. Aryeo carried no end time for this session.`,
+      status: "known",
+      estimated: false,
+      unknownLabel: null,
+      note: `Aryeo carried no end time for this session, so the end is its booked start plus its own recorded ${booked} minutes.`,
       legId: a.id ?? null,
       bookedMinutes: booked,
     };
   }
-  if (expectedSessionMinutes && expectedSessionMinutes > 0) {
-    return {
-      at: new Date(start.getTime() + expectedSessionMinutes * MINUTE),
-      source: "appointment_start_plus_package",
-      estimated: true,
-      note: `Estimated from the booked start plus the package's ${expectedSessionMinutes} minutes. This session carries neither an end time nor a duration.`,
-      legId: a.id ?? null,
-      bookedMinutes: null,
-    };
-  }
-  // A leg with a start and nothing else. Its own start is still a better,
-  // honestly-labelled answer than the job's shootDate, which on a two-visit job
-  // is a different day entirely.
-  return {
-    at: start,
-    source: "appointment_start",
-    estimated: true,
-    note: "Estimated from the booked start. This session carries no end time, no duration and no package length.",
-    legId: a.id ?? null,
-    bookedMinutes: null,
-  };
+  // A booked session with neither an end nor a length. There IS work here and
+  // we cannot say when it finished, which is exactly Jordan's second case.
+  return needsVerification(
+    "This session is on the calendar with no end time and no duration, so there is no day-7 or day-10 to hold it to. Kyle: open the appointment in Aryeo and set its end.",
+    a.id ?? null,
+  );
 }
 
 /** One bookable leg of a job, with its own end and its own place in the run. */
@@ -584,34 +662,47 @@ export function productionAnchorFor(
     if (one) return legEnd(one, opts.expectedSessionMinutes);
     const dropped = (p.appointments ?? []).find((a) => a.id === opts.legId);
     if (dropped) return legEnd(dropped, opts.expectedSessionMinutes);
-    return { at: null, source: "none", estimated: false, note: "That session is no longer on the calendar.", legId: opts.legId, bookedMinutes: null };
+    return notScheduled("That session is no longer on the calendar.", opts.legId);
   }
-  const sessions = productionSessionsFor(p, opts).filter((s) => s.anchor.at !== null);
-  if (sessions.length > 0) {
-    const earliest = sessions.reduce((a, b) => (a.anchor.at!.getTime() <= b.anchor.at!.getTime() ? a : b));
-    if (earliest.of === 1) return earliest.anchor;
-    // More than one visit: say which one this date belongs to. A job-level
-    // number that does not name its session is how the merge happened in the
-    // first place, and a card printing one date for a two-session job has to
-    // admit that the other session has its own.
-    const mine = `This job has ${earliest.of} sessions, each with its own day-7/day-10. This date is session ${earliest.index}'s, the earliest still owed.`;
-    return { ...earliest.anchor, note: earliest.anchor.note ? `${earliest.anchor.note} ${mine}` : mine };
+  const all = productionSessionsFor(p, opts);
+  const dated = all.filter((s) => anchorIsKnown(s.anchor));
+  if (dated.length > 0) {
+    const earliest = dated.reduce((a, b) => (a.anchor.at!.getTime() <= b.anchor.at!.getTime() ? a : b));
+    // A DATED SESSION NEXT TO AN UNDATED ONE STILL OWES THE UNDATED ONE (Sep 21
+    // 2026, batch 2). Taking the earliest KNOWN end and stopping would let a
+    // Pro month whose session 2 has no end read as fully clocked — the same
+    // merge F27 was raised about, one level up. So the job says so.
+    const blind = all.length - dated.length;
+    const parts: string[] = [];
+    if (earliest.anchor.note) parts.push(earliest.anchor.note);
+    if (earliest.of > 1) {
+      // More than one visit: say which one this date belongs to. A job-level
+      // number that does not name its session is how the merge happened in the
+      // first place, and a card printing one date for a two-session job has to
+      // admit that the other session has its own.
+      parts.push(`This job has ${earliest.of} sessions, each with its own day-7/day-10. This date is session ${earliest.index}'s, the earliest still owed.`);
+    }
+    if (blind > 0) parts.push(`${blind} of its sessions ${blind === 1 ? "has" : "have"} no end time yet, so ${blind === 1 ? "that one has" : "those have"} no date at all.`);
+    return { ...earliest.anchor, note: parts.length ? parts.join(" ") : null };
   }
+  // No session carries a date. If any leg is a booked session missing its end,
+  // that is the exception Kyle corrects — it outranks "not scheduled", because
+  // work that exists and cannot be dated is not the same as work nobody booked.
+  const blindLeg = all.find((s) => s.anchor.status === "needs_verification");
+  if (blindLeg) return blindLeg.anchor;
+  // RETIRED Sep 21 2026: the shoot-date rung. Jordan: "Don't invent production
+  // dates." A job with a shoot date and no appointment row is filming that
+  // happened (or is meant to happen) with its appointment missing — Jordan's
+  // second case exactly, so it gets no date and Kyle gets the correction. One
+  // live row takes this path today, the TEST Cara listing job, which used to
+  // borrow its Sep 11 shoot date and read as comfortably on time.
   if (p.shootDate) {
-    return {
-      at: p.shootDate,
-      source: "shoot_date",
-      estimated: true,
-      // Said out loud on purpose. One live content order has no appointment
-      // row at all, and the whole point of F27 is that the shoot date is the
-      // wrong anchor — so where it is still the only date we hold, the screen
-      // has to admit it rather than present it as the session's end.
-      note: "No appointment on this job, so the shoot date is standing in for the session end. Ask Kyle to confirm the booking.",
-      legId: null,
-      bookedMinutes: null,
-    };
+    const when = p.shootDate.getTime() <= (opts.now ?? Date.now()) ? "was filmed on" : "is due to film on";
+    return needsVerification(
+      `This job ${when} ${p.shootDate.toISOString().slice(0, 10)} but has no appointment in Aryeo, so there is no session end to count from. Kyle: find or create the appointment so the day-7 and day-10 dates are real.`,
+    );
   }
-  return { at: null, source: "none", estimated: false, note: "Nothing is booked, so production has no clock yet.", legId: null, bookedMinutes: null };
+  return notScheduled("Nothing is booked, so production has no clock yet.");
 }
 
 /**
@@ -651,6 +742,19 @@ export type ProductionClock = {
   /** what the office is actually held to, after the overrides below. */
   effectiveDueAt: Date | null;
   effectiveSource: "office_override" | "as_promised" | "computed" | "none";
+  /** THE ON-TIME GUARD (Jordan, Sep 21 2026: "unknown deadlines must not
+   *  appear as on time"). False whenever the session's end is unknown, EVEN
+   *  IF `effectiveDueAt` carries a date — because on such a job that date can
+   *  only have come from an office override or a frozen promise, which is a
+   *  deliberate human decision and not evidence of when filming ended. A
+   *  caller colouring, sorting or counting a job must test this, not just
+   *  `effectiveDueAt !== null`. */
+  dateKnown: boolean;
+  /** What the card prints where the date would go, when there is none.
+   *  "Not scheduled" or "Production date needs verification". */
+  unknownLabel: string | null;
+  /** Kyle has something to fix here. Drives the exception list on the board. */
+  needsProductionDateCheck: boolean;
 };
 
 /**
@@ -686,12 +790,25 @@ export function productionClockFor(
   opts: { now?: number; expectedSessionMinutes?: number | null; legId?: string | null; rules?: PromiseRules | null } = {},
 ): ProductionClock {
   const anchor = productionAnchorFor(p, opts);
-  const win = anchor.at ? productionWindowFrom(anchor.at, opts.rules) : null;
+  const known = anchorIsKnown(anchor);
+  const win = known ? productionWindowFrom(anchor.at!, opts.rules) : null;
   const productionTargetAt = win?.productionTargetAt ?? null;
   const productionDueAt = win?.productionDueAt ?? null;
+  // The three fields every caller needs to render an undated job honestly.
+  // Carried on BOTH returns below, because the office-override branch is
+  // exactly the one where a date exists and the anchor is still unknown.
+  const honesty = {
+    dateKnown: known,
+    unknownLabel: anchor.unknownLabel,
+    needsProductionDateCheck: anchor.status === "needs_verification",
+  };
   if (p.dueOverrideAt) {
-    return { anchor, productionTargetAt, productionDueAt, effectiveDueAt: p.dueOverrideAt, effectiveSource: "office_override" };
+    return { anchor, productionTargetAt, productionDueAt, effectiveDueAt: p.dueOverrideAt, effectiveSource: "office_override", ...honesty };
   }
+  // cappedByPromise(null, pin) returns null, which is the behaviour this rule
+  // needs and not an accident: an unknown anchor produces no day-10, so the
+  // frozen promise has nothing to cap and the job ends with no computed date
+  // rather than quietly inheriting the pin as if the clock had started.
   const pin = livePromise(p.promisedDueAt, p.shootDate ?? null);
   const capped = cappedByPromise(productionDueAt, pin);
   const movedByPin = !!capped && !!productionDueAt && capped.getTime() !== productionDueAt.getTime();
@@ -701,5 +818,6 @@ export function productionClockFor(
     productionDueAt,
     effectiveDueAt: capped,
     effectiveSource: capped === null ? "none" : movedByPin ? "as_promised" : "computed",
+    ...honesty,
   };
 }

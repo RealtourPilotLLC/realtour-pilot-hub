@@ -62,6 +62,256 @@ export async function waiveDiscovery(enrollmentId: string, by: string, reason: s
   await prisma.programOnboarding.update({ where: { id }, data: { discoveryRequired: false, discoveryWaivedAt: new Date(), discoveryWaivedBy: by, discoveryWaivedReason: reason.trim(), status: "WAIVED" } });
 }
 
+// ---------------------------------------------------------------------------
+// DISCOVERY AND PAYMENT ARRIVE IN EITHER ORDER (§4.3 / A01, Sep 21 2026)
+//
+// The website sells the program and then sends the buyer to the brand
+// discovery Calendly link. Which of those two facts reaches the hub first is
+// not ours to decide: Stripe is polled hourly, Calendly is synced on its own
+// schedule, and Phase 0 found a live signup (Mike Flatley, Sep 3) that has
+// never been paired with a call at all. So both directions land in one
+// idempotent function, and the DESK TASK is the thing that tells the truth:
+//   · payment, no booking      → open "book the discovery call" for Kyle
+//   · payment, booking already → pin the call, CLOSE that task (§4.3: "remove
+//                                the discovery-scheduling task when already
+//                                booked")
+//   · booking arrives later    → the hourly sweep calls this again and the
+//                                task closes then
+// Running it twice changes nothing the second time. Running it on a TEST
+// client writes no desk row at all.
+//
+// It never merges identities. A discovery booking made from a different
+// address than the one that paid (Arielle paid as arielleroemer@gmail.com and
+// books as arielle.roemer@foxroach.com — live, today) is recorded as an
+// UNVERIFIED alias proposal and handed to Kyle. A proposal is not a match:
+// resolveInviteeIdentity only accepts aliases somebody verified.
+// ---------------------------------------------------------------------------
+
+const DISCOVERY_TASK_PREFIX = "program-discovery-booking:";
+
+// THE IDENTITY QUESTION IS NOT THE SCHEDULING TASK (Sep 21 2026).
+// It used to be raised under the scheduling dedupeKey, and the two conditions
+// cancel each other out exactly: a payer/invitee conflict can only ever be
+// raised when a booking EXISTS, and reconcileDiscoveryTasks closes anything on
+// the scheduling key the moment a booking exists. Kyle would have been handed
+// the question and had it closed underneath him by the next hourly sweep — and
+// in the payment-first order, where the scheduling task is already OPEN, the
+// question never even overwrote the row it was sharing. Its own prefix, and the
+// invitee address in the key, so a second, different mismatch is a second
+// question and the one a person already answered stays answered.
+const IDENTITY_TASK_PREFIX = "program-identity-conflict:";
+
+// SmartTask.status in this schema is OPEN | IN_PROGRESS | WAITING_* | BLOCKED |
+// COMPLETED | CANCELLED (prisma/schema.prisma), and every consumer in the hub
+// filters `status notIn ["COMPLETED","CANCELLED"]` — queries.ts:59 and about
+// forty other sites. The first cut of this file closed its tasks by writing
+// "DONE", a status nothing in the hub reads: measured read-only on Sep 21 2026,
+// all 1,934 SmartTask rows are COMPLETED (1,523), CANCELLED (293), OPEN (116)
+// or IN_PROGRESS (2), and not one says DONE or CLOSED. So a "closed" discovery
+// task would have stayed OPEN on every list, count and board in the product,
+// and a task a human genuinely COMPLETED was not in TASK_DONE either, so the
+// reopen path never fired on it.
+const TASK_DONE = ["COMPLETED", "CANCELLED"];
+/** TASK_DONE plus the two statuses that first cut wrote. Nothing carries them
+ *  today (0 rows, measured above) and nothing writes them any more — they are
+ *  READ so that a row minted by that version is recognised as closed instead of
+ *  nagging for ever. Retire, never delete. */
+const TASK_DONE_INCLUDING_LEGACY = [...TASK_DONE, "DONE", "CLOSED"];
+
+export type ActivationResult =
+  | { outcome: "booked"; detail: string }
+  | { outcome: "task_open"; detail: string }
+  | { outcome: "conflict"; detail: string }
+  | { outcome: "skipped"; detail: string }
+  | { outcome: "error"; detail: string };
+
+/**
+ * Did the person who PAID and the person who BOOKED give different addresses?
+ * Pure, so it can be exercised against real rows without touching any of them.
+ *
+ * Live today (Sep 21 2026): Arielle Roemer paid as arielleroemer@gmail.com and
+ * books from arielle.roemer@foxroach.com, and that single mismatch is why one
+ * of the two genuine client bookings on the account is unrouted. The answer is
+ * a PROPOSAL and a question for the client, never a merge — §4.4, and
+ * resolveInviteeIdentity accepts an alias only after a person verifies it.
+ *
+ * An address already on the client record (email or backupEmail) is not a
+ * conflict: somebody already decided that one is theirs.
+ */
+export function payerInviteeConflict(input: {
+  payer: string | null | undefined;
+  invitee: string | null | undefined;
+  knownEmails: (string | null | undefined)[];
+}): { payer: string; invitee: string; message: string } | null {
+  const payer = input.payer?.trim().toLowerCase() || null;
+  const invitee = input.invitee?.trim().toLowerCase() || null;
+  if (!payer || !invitee || payer === invitee) return null;
+  const known = input.knownEmails.filter((e): e is string => !!e).map((e) => e.trim().toLowerCase());
+  if (known.includes(invitee)) return null;
+  return {
+    payer,
+    invitee,
+    message: `The discovery call was booked from ${invitee} but the payment came from ${payer}. Confirm with them which address is theirs before either is treated as verified. Nothing was merged.`,
+  };
+}
+
+/**
+ * Called the moment a payment is verified, and again by the onboarding sweep.
+ * Idempotent in both directions; writes nothing client-facing.
+ */
+export async function onProgramActivated(
+  enrollmentId: string,
+  opts: { payerEmail?: string | null; payerName?: string | null; checkoutId?: string | null } = {},
+): Promise<ActivationResult> {
+  const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+  if (!enrollment) return { outcome: "error", detail: "Enrollment not found." };
+  const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { name: true, email: true, backupEmail: true } });
+  const isTest = isTestClientName(client?.name);
+  await ensureOnboardingRecord(enrollmentId);
+
+  // Any brand-discovery booking on file for this client, whatever state the
+  // matcher left it in — including one that is only a CANDIDATE, because "is
+  // there a booking" and "do we know whose it is" are different questions and
+  // only the first one closes Kyle's task.
+  const booking = await prisma.programCallRecord.findFirst({
+    where: {
+      callType: "BRAND_DISCOVERY",
+      status: { notIn: ["CANCELLED"] },
+      OR: [{ enrollmentId }, { clientId: enrollment.clientId }],
+    },
+    orderBy: { scheduledStart: "desc" },
+    select: { id: true, scheduledStart: true, status: true, inviteeEmail: true, matchState: true },
+  });
+
+  // A payer address the booking does not share is a §4.4 conflict: proposed,
+  // never merged, and only a person may verify it.
+  const conflict = payerInviteeConflict({
+    payer: opts.payerEmail,
+    invitee: booking?.inviteeEmail ?? null,
+    knownEmails: [client?.email, client?.backupEmail],
+  });
+  if (conflict) {
+    try {
+      const { proposeClientEmailAlias } = await import("@/lib/contentCallRecords");
+      await proposeClientEmailAlias(enrollment.clientId, enrollmentId, conflict.invitee, "signup");
+    } catch { /* the alias proposal is a convenience; the task below is the record that matters */ }
+  }
+
+  if (booking) {
+    // Pin it on the onboarding record and let the ladder read the facts.
+    await advanceOnboarding(enrollmentId, { enqueue: false, requestedBy: "activation" }).catch(() => {});
+    await closeDiscoveryTask(enrollmentId);
+    if (conflict && !isTest) {
+      await openProgramDeskTask({
+        // Its own key, carrying the address in question — never the scheduling
+        // key, which the booking that caused this conflict has just closed.
+        dedupeKey: `${IDENTITY_TASK_PREFIX}${enrollmentId}:${conflict.invitee}`,
+        clientId: enrollment.clientId,
+        clientName: client?.name ?? "",
+        title: `Confirm which address is ${client?.name ?? "this client"}'s`,
+        lines: [conflict.message],
+        assignedKey: "kyle",
+        reasonCreated: "The discovery booking and the payment carried different email addresses",
+        // A person who closes this has ANSWERED it, and the answer lives in the
+        // alias ledger (ClientEmailAlias), not on the client row that
+        // payerInviteeConflict reads — so re-deriving the conflict every hour
+        // and reopening the task would be a permanent nag, not a reminder.
+        reopenIfClosed: false,
+      });
+    }
+    return conflict
+      ? { outcome: "conflict", detail: conflict.message }
+      : { outcome: "booked", detail: `discovery call ${booking.id} (${booking.status}) linked; the scheduling task is closed` };
+  }
+
+  if (isTest) return { outcome: "skipped", detail: "TEST client — no desk task raised" };
+  await openProgramDeskTask({
+    dedupeKey: `${DISCOVERY_TASK_PREFIX}${enrollmentId}`,
+    clientId: enrollment.clientId,
+    clientName: client?.name ?? "",
+    title: `Book the brand discovery call — ${client?.name ?? "new program client"}`,
+    lines: [
+      "A Content Program signup is paid and active, and no brand discovery call is on the books yet.",
+      "Discovery happens once, and the whole strategy is built from it, so nothing else in the program can start until it is held.",
+      opts.payerEmail ? `Buyer: ${opts.payerName ?? "name not given at checkout"} <${opts.payerEmail}>` : "The checkout carried no email address.",
+      opts.checkoutId ? `Stripe checkout ${opts.checkoutId}` : "",
+      "",
+      "This closes itself the moment a brand discovery booking appears on their record.",
+    ].filter(Boolean),
+    assignedKey: "kyle",
+    reasonCreated: "A paid Content Program signup has no brand discovery call yet",
+    // The one legitimate reopen in this file: a booking that was cancelled
+    // after the task was closed puts the same job back on Kyle's list.
+    reopenIfClosed: true,
+  });
+  return { outcome: "task_open", detail: "no discovery booking on file — the scheduling task is open for Kyle" };
+}
+
+/**
+ * Raise (or refresh) one desk task for the program, identified by its own
+ * dedupeKey. Never for a TEST client. The caller owns the key, because the two
+ * tasks this file raises answer different questions and must not share one.
+ */
+async function openProgramDeskTask(input: {
+  dedupeKey: string;
+  clientId: string;
+  clientName: string;
+  title: string;
+  lines: string[];
+  assignedKey: string;
+  reasonCreated: string;
+  reopenIfClosed: boolean;
+}): Promise<void> {
+  if (isTestClientName(input.clientName)) return;
+  const description = input.lines.join("\n");
+  const title = input.title.slice(0, 140);
+  const existing = await prisma.smartTask
+    .findUnique({ where: { dedupeKey: input.dedupeKey }, select: { id: true, status: true, title: true, description: true } })
+    .catch(() => null);
+  if (existing) {
+    if (TASK_DONE_INCLUDING_LEGACY.includes(existing.status)) {
+      if (!input.reopenIfClosed) return;
+      await prisma.smartTask.update({ where: { id: existing.id }, data: { status: "OPEN", completedAt: null, title, description } }).catch(() => {});
+      return;
+    }
+    // STILL OPEN, AND THE FACTS HAVE MOVED. The first cut returned here without
+    // rewriting anything, so whichever version of a task was written first won
+    // and every later one was dropped on the floor — which is how the identity
+    // question stayed invisible in the payment-first order. Rewriting an open
+    // machine-raised row is not overwriting a person's work: the description IS
+    // the evidence, and stale evidence is worse than none.
+    if (existing.title !== title || existing.description !== description) {
+      await prisma.smartTask.update({ where: { id: existing.id }, data: { title, description } }).catch(() => {});
+    }
+    return;
+  }
+  await prisma.smartTask
+    .create({
+      data: {
+        title, description, summary: input.title.slice(0, 200),
+        taskType: "todo", status: "OPEN", source: "content_program", priority: "HIGH",
+        clientId: input.clientId, dedupeKey: input.dedupeKey, assignedKey: input.assignedKey,
+        dueAt: new Date(Date.now() + 2 * 864e5),
+        reasonCreated: input.reasonCreated,
+      },
+    })
+    .catch(() => {});
+}
+
+/** §4.3: the scheduling task disappears when the booking exists. Closed, not
+ *  deleted — the hub retires rows, it does not erase them. COMPLETED is the
+ *  word every other surface reads; the `notIn TASK_DONE` filter (rather than
+ *  the legacy list) is deliberate, so any row the old code left saying "DONE"
+ *  is normalised to COMPLETED the next time this runs. */
+async function closeDiscoveryTask(enrollmentId: string): Promise<void> {
+  await prisma.smartTask
+    .updateMany({
+      where: { dedupeKey: `${DISCOVERY_TASK_PREFIX}${enrollmentId}`, status: { notIn: TASK_DONE } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    })
+    .catch(() => {});
+}
+
 type AdvanceResult = { id: string; from: string; to: string; actions: string[] };
 
 /**
@@ -87,6 +337,11 @@ export async function advanceOnboarding(enrollmentId: string, opts: { now?: Date
   const pinned = ob.discoveryCallRecordId ? calls.find((c) => c.id === ob.discoveryCallRecordId) ?? null : null;
   const call = pinned ?? calls[0] ?? null;
   if (call && call.id !== ob.discoveryCallRecordId) { data.discoveryCallRecordId = call.id; actions.push(`discovery call → ${call.id}`); }
+  // §4.3: a booking on file means the scheduling task has done its job,
+  // whichever path noticed the booking first. Closing here (not only in
+  // onProgramActivated) is what makes the booking-after-payment order work:
+  // nobody has to re-run activation for Kyle's row to go away.
+  if (call) await closeDiscoveryTask(enrollmentId);
   if (!call && ob.discoveryCallRecordId && (status === "DISCOVERY_BOOKED" || status === "NOT_STARTED")) {
     // The only backward move: the booking was cancelled before it happened.
     data.discoveryCallRecordId = null; status = "NOT_STARTED"; actions.push("discovery booking cancelled → NOT_STARTED");
@@ -204,8 +459,13 @@ function missingItemsFrom(sectionsJson: string): string[] {
  * row is visited; the rest are untouched (no row is minted for the eleven
  * live clients who never had a discovery call).
  */
-export async function sweepOnboarding(opts: { now?: Date; max?: number } = {}): Promise<{ skipped: string } | { checked: number; advanced: number; actions: string[] }> {
-  if (!(await isAutomationEnabled(ONBOARDING_KEY))) return { skipped: "strategy_generation is off" };
+export async function sweepOnboarding(opts: { now?: Date; max?: number } = {}): Promise<{ skipped: string; reconciled?: number } | { checked: number; advanced: number; actions: string[]; reconciled: number }> {
+  // The discovery-scheduling desk task is reconciled FIRST, outside the
+  // switch. `strategy_generation` gates AI drafting and the money it spends;
+  // it must not also decide whether Kyle's task list tells the truth about a
+  // call that is already on the calendar (§4.3).
+  const reconciled = await reconcileDiscoveryTasks(opts.max ?? 25);
+  if (!(await isAutomationEnabled(ONBOARDING_KEY))) return { skipped: "strategy_generation is off", reconciled };
   const now = opts.now ?? new Date();
   const withRecord = await prisma.programOnboarding.findMany({ where: { status: { notIn: ["COMPLETE"] } }, select: { enrollmentId: true }, take: opts.max ?? 25 });
   const withDiscovery = await prisma.programCallRecord.findMany({ where: { callType: "BRAND_DISCOVERY", enrollmentId: { not: null } }, select: { enrollmentId: true }, distinct: ["enrollmentId"] });
@@ -225,7 +485,41 @@ export async function sweepOnboarding(opts: { now?: Date; max?: number } = {}): 
     }
   }
   await recordAutomationRun(ONBOARDING_KEY, error);
-  return { checked: ids.length, advanced, actions: actions.slice(0, 20) };
+  return { checked: ids.length, advanced, actions: actions.slice(0, 20), reconciled };
+}
+
+/**
+ * Close every discovery-scheduling task whose booking has since appeared.
+ * Cheap, unconditional, and independent of any switch: it reads open tasks
+ * and the call records they are waiting on, and closes the ones that are done.
+ * Opens nothing — raising a task is activation's job, so a sweep can never
+ * invent desk work for a client who never paid.
+ *
+ * SCHEDULING KEYS ONLY. The §4.4 identity question lives under
+ * IDENTITY_TASK_PREFIX precisely so that this loop cannot reach it: "a booking
+ * exists" is the reason that question was asked, not an answer to it.
+ */
+export async function reconcileDiscoveryTasks(max = 25): Promise<number> {
+  const open = await prisma.smartTask.findMany({
+    where: { dedupeKey: { startsWith: DISCOVERY_TASK_PREFIX }, status: { notIn: TASK_DONE } },
+    select: { dedupeKey: true },
+    take: max,
+  });
+  let closed = 0;
+  for (const t of open) {
+    const enrollmentId = (t.dedupeKey ?? "").slice(DISCOVERY_TASK_PREFIX.length);
+    if (!enrollmentId) continue;
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+    if (!e) continue;
+    const booking = await prisma.programCallRecord.findFirst({
+      where: { callType: "BRAND_DISCOVERY", status: { notIn: ["CANCELLED"] }, OR: [{ enrollmentId }, { clientId: e.clientId }] },
+      select: { id: true },
+    });
+    if (!booking) continue;
+    await closeDiscoveryTask(enrollmentId);
+    closed++;
+  }
+  return closed;
 }
 
 /**

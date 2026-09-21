@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
-import { recalcProgramMonth, addBusinessDaysET, type DerivedMonthState } from "@/lib/programMonths";
+import { recalcProgramMonth, addBusinessDaysET, monthSessionCount, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef } from "@/lib/outbox";
@@ -155,7 +155,27 @@ export type ReminderPolicy = {
   staleSchedulerSyncHours: number;
   /** Shared cuts must have waited this many business days before a review reminder. */
   reviewWorkAfterBusinessDays: number;
-  /** BOOK_SESSION deadline: this day of the program month. */
+  /**
+   * BOOK_SESSION deadline: this day of the program month, 5 pm ET.
+   *
+   * REPORTED, NOT ENFORCED, AND NOT BUILT ON (Jordan, Sep 21 2026). He asked
+   * explicitly whether anything in the tree implies a hard booking cutoff on the
+   * 20th, and this is it — the only "20th" in the codebase. What it actually
+   * does is narrow: it is the INTERNAL clock the BOOK_SESSION lane's escalation
+   * threshold measures against, so when it is within
+   * `escalateWhenDeadlineWithinBusinessDays` the evaluator stops nudging the
+   * client and puts a task on the escalation owner. What it does NOT do, checked
+   * line by line: it never reaches a client (the BOOK_SESSION branch leaves
+   * `quotedDeadlineAt` null and the templates render only that), it never blocks
+   * a booking (nothing in sessionRequests.ts, portal.ts or the session gate reads
+   * it), and it never forfeits anything.
+   *
+   * Jordan's ruling is that no booking cutoff exists as a business rule, so this
+   * number is left exactly as it was rather than corrected into one shape or the
+   * other: raising it, lowering it or deleting it would each be a decision about
+   * when Kyle gets told, and that is his to make. Batch 2 added nothing that
+   * depends on it.
+   */
   sessionBookingDeadlineDayOfMonth: number;
   /** Approve & share: releases inside this window go out as ONE email. */
   scriptShareBatchMinutes: number;
@@ -533,6 +553,13 @@ export type EvaluatedState = {
   sessionsMissing: number;
   /** Requests waiting on the OFFICE, which are not the client's to chase. */
   pendingSessionRequests: number;
+  /** Jordan, Sep 21 2026: every session the package owes is a DISTINCT confirmed
+   *  session. One Pro booking leaves this false with one session remaining. */
+  fullyScheduled: boolean;
+  /** The last time this month LOST a session (a cancelled request, a cancelled
+   *  appointment). Reminders written before it no longer count against the ask,
+   *  so a re-opened gap is chased again instead of going quiet for good. */
+  sessionLostAt: string | null;
   releasedCutsAwaiting: number;
   oldestReleaseAt: string | null;
   snoozedUntil: string | null;
@@ -601,6 +628,10 @@ type EnrollmentRow = {
   portalToken: string | null; portalTokenExpiresAt: Date | null; accessRevokedAt: Date | null;
   /** A23: how many sessions this package owes per month (Pro = 2). */
   sessionsPerMonth: number;
+  /** A23: the month's planned videos, so "four videos in this session" is read
+   *  off the package rather than written into a sentence. Three live
+   *  Accelerators carry a manual override of 5 that §3 says must survive. */
+  videosPerMonth: number;
   /** A28: the first program month this enrollment ever had — its first paid
    *  production cycle, which never receives a use-it-or-lose-it warning. */
   firstMonthKey: string | null;
@@ -609,7 +640,7 @@ type EnrollmentRow = {
 
 const ENROLLMENT_SELECT = {
   id: true, clientId: true, status: true, callMode: true, strategyCallRequired: true, noCallEligible: true,
-  portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true, sessionsPerMonth: true, startedAt: true,
+  portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true, sessionsPerMonth: true, videosPerMonth: true, startedAt: true,
 } as const;
 
 /** The enrollment's first paid production cycle: whichever is EARLIER, the
@@ -683,6 +714,29 @@ async function bookingFeeds(now: Date, p: ReminderPolicy): Promise<BookingFeeds>
 }
 
 /**
+ * ARYEO'S OWN LAST-CHANGE STAMP for an appointment, out of the payload we store
+ * verbatim in `Appointment.rawJson` (integrations/aryeo.ts:4134).
+ *
+ * The one durable time an appointment carries. Our `updatedAt` is rewritten by
+ * every hourly sync pass; this one moves only when the appointment changes at
+ * the provider, so on a CANCELED row it dates the cancellation. Undated and
+ * unparseable rows answer null on purpose: "we do not know when this was lost"
+ * must never be answered with "just now", which is the defect this replaced.
+ */
+function aryeoLastChangedAt(rawJson: string | null): Date | null {
+  if (!rawJson) return null;
+  try {
+    const parsed: unknown = JSON.parse(rawJson);
+    const updatedAt = (parsed as { updated_at?: unknown } | null)?.updated_at;
+    if (typeof updatedAt !== "string") return null;
+    const d = new Date(updatedAt);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * WHAT THIS MONTH ACTUALLY HAS, COUNTED (A23, Sep 21 2026).
  *
  * This used to answer in booleans — "something is booked", "something was
@@ -697,28 +751,60 @@ async function bookingFeeds(now: Date, p: ReminderPolicy): Promise<BookingFeeds>
  * confirmed request that already points at a counted project is the SAME
  * session seen twice, so it is not added again.
  */
-async function monthFacts(monthId: string, now: Date, sessionsRequired: number) {
-  const [projects, requests, carryover] = await Promise.all([
+async function monthFacts(monthId: string, clientId: string, now: Date, sessionsRequired: number) {
+  const [projects, requests, carryover, count, lostRequests] = await Promise.all([
     prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true, shootDate: true, status: true, addressLine: true } }),
-    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { status: true, projectId: true } }),
+    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { status: true, projectId: true, aryeoAppointmentId: true } }),
     // Work that arrived in this month from an earlier one. Whether the client
     // did not film it or WE were late is not recorded anywhere, and §3 says to
     // hand an unclear shortfall to Kyle rather than invent the answer — so the
     // count is all this needs to be.
     prisma.contentVideo.count({ where: { monthId, kind: "CARRYOVER" } }),
+    // A23 (Jordan, Sep 21 2026). This used to count PROJECTS with a shoot date.
+    // Video Pro is the existing four-hour product booked TWICE, which is two
+    // appointments on ONE order and therefore one Project here — so a Pro month
+    // with both sessions on the calendar counted as one, and the evaluator went
+    // on chasing a session that was already booked. The rule now lives in
+    // programMonths.countDistinctSessions and the portal's capacity reads the
+    // same function, so the chaser and the client's own screen cannot disagree.
+    monthSessionCount(monthId, clientId, now),
+    // WHEN A SESSION WAS LAST LOST (Jordan, Sep 21 2026: the reminders "must
+    // stop when the condition actually resolves, including a cancellation that
+    // takes a month back to one confirmed session"). Stopping is the easy half;
+    // the hard half is STARTING AGAIN. A Pro month that spent its second
+    // session's three reminders, got booked, and then had that booking
+    // cancelled would have gone permanently quiet, because the cadence counts
+    // rows and the rows were already there. So a cancellation is a fact with a
+    // time, and reminders written before it no longer count against the ask.
+    //
+    // ONLY A REQUEST THAT WAS ACTUALLY A BOOKING COUNTS AS A LOSS (review, Sep
+    // 21 2026). The set used to include EXPIRED and DECLINED, and every
+    // CANCELLED row whether or not it had ever been confirmed. None of those is
+    // a lost booking: EXPIRED is a client ask nobody answered in time, DECLINED
+    // is the office saying no, and a CANCELLED row with no `confirmedAt` is a
+    // client withdrawing their own pending ask. Treating any of them as a loss
+    // would wipe the cadence and re-ask a client who was never booked in the
+    // first place. `confirmedAt` is the one column that says a session existed.
+    // (ProgramSessionRequest holds 0 rows today — the program is pre-launch —
+    // so this is the rule the first real row will meet, measured against the
+    // writer in sessionRequests.confirmSessionRequest rather than against data.)
+    prisma.programSessionRequest.findMany({ where: { monthId, status: "CANCELLED", confirmedAt: { not: null } }, select: { cancelledAt: true, updatedAt: true } }),
   ]);
-  const withDate = projects.filter((p) => p.shootDate);
-  const future = withDate.filter((p) => p.shootDate!.getTime() >= now.getTime() - 6 * 3_600_000);
-  const past = withDate.filter((p) => p.shootDate!.getTime() < now.getTime() - 6 * 3_600_000);
-  const countedProjectIds = new Set(withDate.map((p) => p.id));
-  const confirmedUnlinked = requests.filter((r) => r.status === "CONFIRMED" && (!r.projectId || !countedProjectIds.has(r.projectId))).length;
-  const sessionsBooked = future.length + confirmedUnlinked;
-  const sessionsFilmed = past.length;
-  const sessionsAccountedFor = sessionsBooked + sessionsFilmed;
+  const addressByProject = new Map(projects.map((p) => [p.id, p.addressLine]));
+  const shortfall = sessionShortfall(sessionsRequired, count);
+  const sessionsBooked = count.booked;
+  const sessionsFilmed = count.filmed;
+  const sessionsAccountedFor = count.accountedFor;
+  const countedKeys = new Set(count.sessions.map((x) => x.key));
   // A request the CLIENT has made and the office has not answered is not the
-  // client's to chase. A cancel request is about a session that is still on the
-  // calendar, so it holds no missing slot of its own.
-  const pendingSessionRequests = requests.filter((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED").length;
+  // client's to chase. One that already resolves to a counted session is that
+  // session seen twice, not an extra ask. A cancel request is about a session
+  // that is still on the calendar, so it holds no missing slot of its own.
+  const pendingSessionRequests = requests.filter(
+    (r) => (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") &&
+      !(r.aryeoAppointmentId && countedKeys.has(`appt:${r.aryeoAppointmentId}`)) &&
+      !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
+  ).length;
   const cancelRequested = requests.filter((r) => r.status === "CANCEL_REQUESTED").length;
   const released = projects.length
     ? await prisma.reviewSubmission.findMany({
@@ -727,21 +813,62 @@ async function monthFacts(monthId: string, now: Date, sessionsRequired: number) 
       })
     : [];
   const oldest = released.reduce<Date | null>((m, r) => (r.clientReleasedAt && (!m || r.clientReleasedAt < m) ? r.clientReleasedAt : m), null);
+  // A cancelled APPOINTMENT is the other way a month loses a session, and
+  // dating it is where the first version of this went wrong.
+  //
+  // IT USED TO READ `Appointment.updatedAt` (review, Sep 21 2026). That column
+  // is @updatedAt on a row the Aryeo sync rewrites unconditionally on every
+  // pass — `prisma.appointment.upsert({ update: fields })`,
+  // integrations/aryeo.ts:4136, hourly, over recent plus all future and undated
+  // rows. Measured against production that hour: 1150 of 1573 appointment rows
+  // had `updatedAt` inside the last 3 hours, and 21 of the 39 CANCELED ones
+  // did. So on any month holding a cancellation the loss stamp walked forward
+  // to ~now every hour, every earlier reminder read as "written before the
+  // loss", and the re-open this block exists for could never fire.
+  //
+  // Aryeo's own `updated_at`, kept verbatim in `rawJson`, is the durable stamp:
+  // it moves only when the appointment actually changes AT THE PROVIDER. Same
+  // measurement: 1505 of 1534 live rows carry an Aryeo `updated_at` more than 7
+  // days old while our own column says minutes. And it is the cancellation it
+  // dates — on all 6 CANCELED appointments that also have a one-per-transition
+  // cancellation bell on file (notify dedupeKey `appt-<id>-canceled`, which is
+  // never rewritten), 5 match the bell to within 20 seconds and the 6th is 4
+  // days later because that appointment was touched again at Aryeo afterwards.
+  //
+  // So: the provider's last-change time, never ours. It is read only as "the
+  // loss happened no earlier than here" and is never quoted to anyone.
+  const cancelledAppts = projects.length
+    ? await prisma.appointment.findMany({ where: { projectId: { in: projects.map((p) => p.id) }, status: "CANCELED" }, select: { rawJson: true } })
+    : [];
+  const sessionLostAt = [...lostRequests.map((r) => r.cancelledAt ?? r.updatedAt), ...cancelledAppts.map((a) => aryeoLastChangedAt(a.rawJson))]
+    .filter((d): d is Date => d instanceof Date && !isNaN(d.getTime()))
+    .reduce<Date | null>((m, d) => (!m || d > m ? d : m), null);
   return {
     sessionBooked: sessionsBooked > 0,
     sessionFilmed: sessionsFilmed > 0,
     pendingSessionRequest: pendingSessionRequests + cancelRequested > 0,
-    sessionsRequired: Math.max(1, sessionsRequired),
+    sessionsRequired: shortfall.required,
     sessionsBooked,
     sessionsFilmed,
     sessionsAccountedFor,
-    sessionsMissing: Math.max(0, Math.max(1, sessionsRequired) - sessionsAccountedFor),
+    sessionsMissing: shortfall.missing,
+    fullyScheduled: shortfall.fullyScheduled,
+    sessionLostAt,
     pendingSessionRequests,
     carryoverUnclassified: carryover,
     releasedCutsAwaiting: released.length,
     oldestReleaseAt: oldest,
-    /** Upcoming shoots and where they say they are — the ADDRESS lane's input. */
-    upcomingShoots: future.map((p) => ({ projectId: p.id, shootDate: p.shootDate!, addressLine: p.addressLine })),
+    /** Upcoming sessions and where they say they are — the ADDRESS lane's input.
+     *  PER SESSION, not per project: a Pro month's two four-hour legs are two
+     *  filming days at two addresses, and one row for the order would have asked
+     *  about one of them (§8). `startsAt`, never the end, because the reminder
+     *  counts 48 elapsed hours back from when filming BEGINS. */
+    upcomingShoots: count.sessions
+      // A confirmed request with no project behind it yet has nothing to attach
+      // an address to, so it is not an address-lane row — an empty projectId in
+      // a preview is a row nobody can act on.
+      .filter((x): x is typeof x & { startsAt: Date; projectId: string } => !x.filmed && !!x.startsAt && !!x.projectId)
+      .map((x) => ({ projectId: x.projectId, shootDate: x.startsAt, addressLine: x.addressLine ?? addressByProject.get(x.projectId) ?? null })),
   };
 }
 
@@ -798,13 +925,22 @@ export function withExtraParagraph(body: string, paragraph: string | null): stri
 
 /** §12's roll-over note. No em dashes, no emojis, and it ends with the way
  *  forward — Jordan's rule for anything a client reads. */
-const MID_MONTH_PARAGRAPH =
+export const MID_MONTH_PARAGRAPH =
   "One note on timing: your monthly sessions do not roll over into next month, and the calendar fills up as the month goes on. Picking your time this week is the surest way to get the slot you want.";
 
 /** A23: the second Pro session is a different ask from the first, and the
- *  template cannot tell them apart on its own. */
-const secondSessionParagraph = (ordinal: number, required: number) =>
-  `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${ordinal - 1 === 1 ? "one is" : `${ordinal - 1} are`} already on the calendar. This one is about session ${ordinal}, so you still have four videos to film in it.`;
+ *  template cannot tell them apart on its own.
+ *
+ *  The video count comes from the PACKAGE, not from the word "four". Pro is 8
+ *  videos across 2 sessions today, but three live Accelerator enrollments carry
+ *  a manual videosPerMonth of 5 that §3 says must survive reconciliation, so a
+ *  hard-coded four is a sentence that can become untrue without anyone touching
+ *  this file. No em dashes and it ends with the way forward (Jordan's rule). */
+export const secondSessionParagraph = (ordinal: number, required: number, videosPerMonth: number) => {
+  const perSession = Math.max(1, Math.ceil(Math.max(0, videosPerMonth) / Math.max(1, required)) || 1);
+  const done = ordinal - 1;
+  return `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, which is another ${perSession} video${perSession === 1 ? "" : "s"}. Pick a time in your portal and we'll confirm it.`;
+};
 
 /** Which sub-lane of the ledger a row belongs to. The dedupeKey carries it:
  *  `enrollment:month:action[:sN][:mid|:copy|:retry]:sequence`. Rows written
@@ -849,7 +985,7 @@ async function evaluateMonth(
   // Authoritative month state, derived fresh (never persisted from here).
   const recalc = await recalcProgramMonth(month.id, { now, dryRun: true });
   const d: DerivedMonthState | null = recalc?.after ?? null;
-  const facts = await monthFacts(month.id, now, e.sessionsPerMonth);
+  const facts = await monthFacts(month.id, e.clientId, now, e.sessionsPerMonth);
   const firstCycle = !!e.firstMonthKey && e.firstMonthKey === month.monthKey;
   const state: EvaluatedState = {
     strategyCallStatus: d?.strategyCallStatus ?? "?", planningMode: d?.planningMode ?? "?", preparationStatus: d?.preparationStatus ?? null, callMode: d?.callMode ?? "?",
@@ -857,6 +993,7 @@ async function evaluateMonth(
     sessionBooked: facts.sessionBooked, sessionFilmed: facts.sessionFilmed, pendingSessionRequest: facts.pendingSessionRequest,
     sessionsRequired: facts.sessionsRequired, sessionsBooked: facts.sessionsBooked, sessionsFilmed: facts.sessionsFilmed,
     sessionsAccountedFor: facts.sessionsAccountedFor, sessionsMissing: facts.sessionsMissing, pendingSessionRequests: facts.pendingSessionRequests,
+    fullyScheduled: facts.fullyScheduled, sessionLostAt: facts.sessionLostAt?.toISOString() ?? null,
     releasedCutsAwaiting: facts.releasedCutsAwaiting, oldestReleaseAt: facts.oldestReleaseAt?.toISOString() ?? null,
     snoozedUntil: month.remindersSnoozedUntil?.toISOString() ?? null, enrollmentStatus: e.status,
     schedulerSync: feeds.call, sessionFeed: feeds.session, firstCycle, carryoverUnclassified: facts.carryoverUnclassified,
@@ -986,8 +1123,34 @@ async function evaluateMonth(
   const midRows = monthRows.filter(isMidRow);
   const cadenceRows = prior.filter((r) => sameSession(r.dedupeKey) && !isMidRow(r));
   const midSpent = midRows.some(isCounted);
-  const counted = cadenceRows.filter(isCounted);
+  // A CANCELLATION RE-OPENS THE ASK (Jordan, Sep 21 2026). Stopping when the
+  // condition resolves was already true — a booked session yields no action at
+  // all. Starting again was not: a Pro month that spent session 2's three
+  // reminders, got it booked, and then had that booking cancelled went quiet for
+  // good, because the cadence counts LEDGER ROWS and the rows were still there.
+  // Reminders written before the loss no longer count against the ask.
+  //
+  // The ROW SEQUENCE deliberately still counts every row (`cadenceRows` below
+  // feeds the dedupeKey and the runaway ceiling). dedupeKey is @unique, so
+  // re-numbering from a shrunken count would collide on P2002, record
+  // "duplicate", and silence the very reminder this is meant to restore — the
+  // same defect the sequencing comment further down was written for.
+  //
+  // AND IT RE-OPENS ONE LANE, NOT ALL OF THEM (review, Sep 21 2026). This was
+  // computed once per evaluateMonth and then applied to whatever action the
+  // month happened to be on, so `counted`, `attemptsMade`, `lastSentAt`,
+  // `reopened` and `milestone` were shared by REVIEW_WORK, COMPLETE_ANSWERS,
+  // BOOK_CALL and CHOOSE_PATH as well. A cancelled filming session therefore
+  // reset the review cadence, and a client could be chased past
+  // reviewMaxAttempts for a cut they had already been chased about three times.
+  // A lost session is a fact about the BOOKING, so only the booking lane reads
+  // it: planning is not undone by a cancellation (a held call stays held, sent
+  // answers stay sent) and a released cut is not waiting on the calendar at all.
+  const lostAt = action === "BOOK_SESSION" ? facts.sessionLostAt : null;
+  const afterLoss = (r: { sentAt: Date | null; createdAt: Date }) => !lostAt || (r.sentAt ?? r.createdAt) > lostAt;
+  const counted = cadenceRows.filter((r) => isCounted(r) && afterLoss(r));
   const attemptsMade = counted.length;
+  const reopened = !!lostAt && cadenceRows.filter(isCounted).length > attemptsMade;
   const lastSentAt = counted.reduce<Date | null>((m, r) => (r.sentAt && (!m || r.sentAt > m) ? r.sentAt : m), null);
 
   // MID_MONTH is the 15th's own milestone, with its own single attempt. It wins
@@ -999,7 +1162,13 @@ async function evaluateMonth(
     ? "MID_MONTH"
     : lane === "REVIEW"
       ? "OFF_CALENDAR"
-      : attemptsMade === 0 ? "MONTH_OPEN" : attemptsMade === 1 ? "FOLLOW_UP_1" : attemptsMade === 2 ? "FOLLOW_UP_2" : "OFF_CALENDAR";
+      // A cadence re-opened by a cancellation is NOT back at the 1st of the
+      // month. The count resets so the ask can be made again, but calling the
+      // next email "this month's planning email" in the third week would be the
+      // evaluator contradicting the calendar it prints beside it.
+      : reopened
+        ? "OFF_CALENDAR"
+        : attemptsMade === 0 ? "MONTH_OPEN" : attemptsMade === 1 ? "FOLLOW_UP_1" : attemptsMade === 2 ? "FOLLOW_UP_2" : "OFF_CALENDAR";
 
   // Where this lane's clock starts, and what we promise the client.
   let laneReadyAt = cal.monthOpenAt;
@@ -1032,7 +1201,7 @@ async function evaluateMonth(
   const extraParagraph = milestone === "MID_MONTH"
     ? MID_MONTH_PARAGRAPH
     : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
-      ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired)
+      ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, e.videosPerMonth)
       : null;
 
   // §12/A28: the roll-over note is the one message that must never reach a
@@ -1153,7 +1322,7 @@ async function evaluateMonth(
     const next = nextPolicyWindowOpen(now, p);
     return out({ ...common, attempt, dedupeKey, decision: "wait", suppressionReason: "quiet_hours", reason: `outside the send window — next opening ${fmtDay(next)} ${next.toLocaleTimeString("en-US", { timeZone: p.timezone, hour: "numeric", minute: "2-digit" })}`, nextEligibleAt: next, retryOfId: failedRetry?.id ?? null });
   }
-  return out({ ...common, attempt, dedupeKey, decision: "send", reason: failedRetry ? `retrying attempt ${attempt} (last error: ${failedRetry.lastError ?? "unknown"})` : milestone === "MID_MONTH" ? "the 15th: the mid-month milestone" : milestone === "MONTH_OPEN" ? "the 1st: this month's planning email" : `follow-up ${attempt} (${milestone.toLowerCase().replace("_", " ")})`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
+  return out({ ...common, attempt, dedupeKey, decision: "send", reason: `${failedRetry ? `retrying attempt ${attempt} (last error: ${failedRetry.lastError ?? "unknown"})` : milestone === "MID_MONTH" ? "the 15th: the mid-month milestone" : milestone === "MONTH_OPEN" ? "the 1st: this month's planning email" : `follow-up ${attempt} (${milestone.toLowerCase().replace("_", " ")})`}${reopened ? " — a booked session was cancelled, so this ask is open again" : ""}`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
 }
 
 // ---- the escalation owner ---------------------------------------------------------
@@ -1533,7 +1702,7 @@ export function looksLikeGeneralArea(addressLine: string | null): boolean {
  * batch's file, so every row this returns is preview-only.
  */
 async function previewAddressLane(e: EnrollmentRow, month: { id: string; monthKey: string }, now: Date, p: ReminderPolicy): Promise<AddressReminderPreview[]> {
-  const facts = await monthFacts(month.id, now, e.sessionsPerMonth);
+  const facts = await monthFacts(month.id, e.clientId, now, e.sessionsPerMonth);
   const out: AddressReminderPreview[] = [];
   for (const s of facts.upcomingShoots) {
     if (!looksLikeGeneralArea(s.addressLine)) continue;

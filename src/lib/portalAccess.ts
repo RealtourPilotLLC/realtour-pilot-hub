@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { appBase } from "@/lib/appUrl";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
+import { isTestClientName, isStaffControlledEmail, isVerifiedTestDestinationEmail } from "@/lib/testClients";
 import { liveMemberships, type PortalRole, type PortalViewer } from "@/lib/portal";
 
 // ---------------------------------------------------------------------------
@@ -33,17 +33,34 @@ export type PortalPermission =
   | "connectPublishing" // link an Instagram account (§12, disabled until credentials exist)
   | "comment" // drop a timestamped note on a cut
   | "suggest" // suggest a change to a script
-  | "requestSession"; // ask for a filming session
+  | "requestSession" // ask for a filming session
+  | "manageTeam"; // invite / remove the client's own assistant (§4.9-4.10)
 
 const ALL: Record<PortalPermission, boolean> = {
-  approveEdits: true, requestChanges: true, editBrandProfile: true, connectPublishing: true, comment: true, suggest: true, requestSession: true,
+  approveEdits: true, requestChanges: true, editBrandProfile: true, connectPublishing: true, comment: true, suggest: true, requestSession: true, manageTeam: true,
 };
 const NONE: Record<PortalPermission, boolean> = {
-  approveEdits: false, requestChanges: false, editBrandProfile: false, connectPublishing: false, comment: false, suggest: false, requestSession: false,
+  approveEdits: false, requestChanges: false, editBrandProfile: false, connectPublishing: false, comment: false, suggest: false, requestSession: false, manageTeam: false,
 };
 
 /** The matrix, in one place. OWNER decides; COLLABORATOR works the month but
- *  cannot approve, reshape the brand or connect accounts; VIEWER watches. */
+ *  cannot approve, reshape the brand, connect accounts or hand out seats;
+ *  VIEWER watches.
+ *
+ *  §4.9 (Sep 21 2026) says a teammate gets "full program access for this
+ *  client, including scheduling, branding, topic answers, script/video
+ *  approvals, and revisions". In this three-role model that set IS the OWNER
+ *  row, so a client inviting an assistant gives them an OWNER seat by default
+ *  (portalInviteTeammate) and may downgrade to COLLABORATOR or VIEWER
+ *  deliberately. The matrix below is NOT redefined to suit the new sentence:
+ *  the staff card at src/components/portal/staff/PortalAccessControls.tsx
+ *  describes COLLABORATOR to Kyle as "cannot approve or change the brand", and
+ *  quietly making that sentence false is worse than an honest extra choice.
+ *
+ *  The consequence is stated rather than hidden: an OWNER-seat teammate can
+ *  also invite further people and connect a publishing account. If Jordan
+ *  wants an assistant who may approve but may not hand out keys, that is a
+ *  fourth role, which is a schema change nobody has authorised. */
 export const PERMISSIONS: Record<PortalRole, Record<PortalPermission, boolean>> = {
   OWNER: ALL,
   COLLABORATOR: { ...NONE, requestChanges: true, comment: true, suggest: true, requestSession: true },
@@ -52,8 +69,9 @@ export const PERMISSIONS: Record<PortalRole, Record<PortalPermission, boolean>> 
 
 /** The legacy link carries no person, so it may do what it could on Sep 15 —
  *  and nothing that needs a name on it: approval "records the actual person"
- *  (§8), and a publishing connection is a credential. */
-const LEGACY_TOKEN: Record<PortalPermission, boolean> = { ...ALL, approveEdits: false, connectPublishing: false };
+ *  (§8), a publishing connection is a credential, and an invitation sent from
+ *  a link anyone may have forwarded has no author to attribute it to. */
+const LEGACY_TOKEN: Record<PortalPermission, boolean> = { ...ALL, approveEdits: false, connectPublishing: false, manageTeam: false };
 
 /**
  * May this viewer do this? READ_ONLY (paused/ended) and NONE refuse
@@ -90,6 +108,11 @@ export function refusalMessage(viewer: PortalViewer, permission: PortalPermissio
   if (permission === "approveEdits") return "Only the program owner can approve.";
   if (permission === "editBrandProfile") return "Only the program owner can change the brand profile.";
   if (permission === "connectPublishing") return "Only the program owner can connect accounts.";
+  if (permission === "manageTeam") {
+    return viewer.actor.kind === "TOKEN"
+      ? "Sign in with your email to add someone to your account. The shared link doesn't carry a name, and every invitation records who sent it."
+      : "Only the program owner can add or remove people on the account.";
+  }
   return "You don't have access to do that.";
 }
 
@@ -226,6 +249,301 @@ export async function inviteClientUser(
     membershipId: membership.id, clientUserId: person.id, emailed,
     note: emailed ? "Invitation sent." : r.outcome === "unknown" ? "The invitation may have gone out — it is held on Connections for a person to confirm." : `The invitation did not send (${"error" in r ? r.error : r.outcome}). The seat exists; try again.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// FROM A VERIFIED PAYMENT TO AN ACCOUNT (F02 / §4.1-4.5, Sep 21 2026)
+//
+// Until today activation stopped at the enrollment. Phase 0 measured the
+// consequence on live data: all three verified Stripe buyers (Mike Flatley,
+// Kristin Ciarmella, Arielle Roemer) had ZERO ClientMembership rows, Mike had
+// no portal link at all, and no welcome had ever been composed, let alone
+// sent. A client could pay $15,290 and have nowhere to sign in.
+//
+// `grantProgramAccess` is the one door from "Stripe says this is paid" to "this
+// person has an account", and it is deliberately the SAME door a Stripe webhook
+// will use when Jordan registers one (the account has zero endpoints today, so
+// the hourly poll is still what calls it). It is idempotent on (enrollment,
+// email): however the events arrive, repeat or race, one seat and one welcome.
+//
+// THE GATE HOLDS HERE, NOT IN THE UI. While `portal_invites` is off and the
+// client is not synthetic, nothing is created and nothing is composed into the
+// outbox: no ClientUser, no ClientMembership, no OutboxMessage. The access that
+// is OWED is written to an AppSetting row instead, so the moment Jordan
+// authorises rollout every paying client who arrived in the meantime can be
+// granted in one pass, in payment order, with no replay of Stripe.
+// ---------------------------------------------------------------------------
+
+/** The kv row that remembers an account we owe but may not open yet. One per
+ *  (enrollment, address); the value is JSON, like every other AppSetting. */
+const OWED_PREFIX = "portal-access-owed:";
+const owedKey = (enrollmentId: string, email: string) => `${OWED_PREFIX}${enrollmentId}:${email}`;
+
+export type OwedAccess = {
+  enrollmentId: string;
+  clientId: string;
+  email: string;
+  /** The person's REAL name as the payment or the inviter gave it, or null.
+   *  Never the email's local part: "klciarmella@gmail.com" is not "Klciarmella",
+   *  and §4.4 forbids the guess outright. */
+  name: string | null;
+  role: PortalRole;
+  reason: "welcome" | "teammate";
+  since: string;
+};
+
+export type GrantOutcome =
+  /** The seat exists and the welcome is queued (or was already). */
+  | { outcome: "GRANTED"; membershipId: string; clientUserId: string; welcome: "queued" | "already" | "suppressed"; note: string }
+  /** Launch is not authorised: nothing was created, the debt is recorded. */
+  | { outcome: "HELD"; note: string }
+  /** Two different people, or one person we cannot safely name. A human decides. */
+  | { outcome: "CONFLICT"; note: string };
+
+/**
+ * Give the paying client (or a teammate they named) their account.
+ *
+ * `name` must come from a person: the Stripe checkout's `customer_details.name`,
+ * the Calendly invitee name, or what the account owner typed. Passing null is
+ * correct and safe — the welcome says "Hi there". Deriving one from the address
+ * is not, and this function will not do it for you.
+ */
+export async function grantProgramAccess(input: {
+  enrollmentId: string;
+  emailRaw: string;
+  name: string | null;
+  role?: PortalRole;
+  reason: "welcome" | "teammate";
+  byAppUserId?: string | null;
+  /** Who is credited on the email row and in the log. */
+  requestedBy?: string;
+}): Promise<GrantOutcome> {
+  const email = input.emailRaw.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { outcome: "CONFLICT", note: `"${input.emailRaw}" is not an email address we can open an account on.` };
+  const role: PortalRole = input.role && isPortalRole(input.role) ? input.role : "OWNER";
+  const target = await testClientOf(input.enrollmentId);
+  if (!target) return { outcome: "CONFLICT", note: "Enrollment not found." };
+
+  const invitesOn = await isAutomationEnabled("portal_invites");
+  if (!invitesOn && target.isTest && !isStaffControlledEmail(email)) {
+    // The same rule inviteClientUser has held since Sep 16: a synthetic client
+    // with a real person's inbox on it is not synthetic. Repeated here rather
+    // than inherited, because this door is opened by a PAYMENT, and a payment
+    // is not a person who read the warning.
+    return { outcome: "CONFLICT", note: "Until launch, portal people on a TEST client must use a staff-controlled @realtourpilot.com address." };
+  }
+  if (!invitesOn && !target.isTest) {
+    // HELD. Record the debt (idempotent on the key) and stop. Nothing about
+    // this reaches the client, and nothing about it is lost either.
+    const value = JSON.stringify({
+      enrollmentId: input.enrollmentId, clientId: target.clientId, email,
+      name: input.name?.trim() || null, role, reason: input.reason, since: new Date().toISOString(),
+    } satisfies OwedAccess);
+    const key = owedKey(input.enrollmentId, email);
+    await prisma.appSetting
+      .upsert({ where: { key }, create: { key, value }, update: {} }) // update:{} — the FIRST time we owed it is the fact worth keeping
+      .catch(() => {});
+    return {
+      outcome: "HELD",
+      note: "Account access is held: client invitations are switched off until Jordan authorises rollout. The debt is recorded and will be granted in one pass when the switch turns on.",
+    };
+  }
+
+  const name = (input.name ?? "").trim().slice(0, 120) || null;
+
+  // THE CROSS-TENANT WRITE, CLOSED (Sep 21 2026).
+  // ClientUser is keyed by email GLOBALLY — one row per address, whatever seats
+  // it holds — and this door is now reachable BY A CLIENT: portalInviteTeammate
+  // (src/app/portal/actions.ts) hands us an address and a name the client typed.
+  // The old `update: name ? { name } : {}` wrote that name onto whatever row the
+  // address already pointed at, and the only pre-check anywhere looked for a
+  // seat on THIS enrollment, so an address belonging to another client fell
+  // straight through. Measured read-only the same day: 3 ClientUser rows exist
+  // and all 3 carry a name, so all 3 were renameable by a teammate invite sent
+  // from an account they have nothing to do with.
+  // Two rules now, both conservative:
+  //   · an address already seated on a DIFFERENT client is not ours to rename
+  //     and not ours to seat either. A person decides, and nothing is written.
+  //   · an existing name is never overwritten. A blank one may be filled in,
+  //     because that adds a fact rather than replacing somebody's.
+  const priorPerson = await prisma.clientUser.findUnique({ where: { email }, select: { id: true, name: true } });
+  if (priorPerson) {
+    const elsewhere = await prisma.clientMembership.findFirst({
+      where: { clientUserId: priorPerson.id, revokedAt: null, clientId: { not: target.clientId } },
+      select: { id: true },
+    });
+    if (elsewhere) {
+      return {
+        outcome: "CONFLICT",
+        note: `${email} already has an account with another client of ours, so we have not added it here or changed the name on it. Someone on the team needs to check with them first.`,
+      };
+    }
+  }
+  const person = priorPerson
+    ? name && !priorPerson.name
+      ? await prisma.clientUser.update({ where: { id: priorPerson.id }, data: { name }, select: { id: true } })
+      : { id: priorPerson.id }
+    : // upsert, not create: two payment events for the same new address can race
+      // here, and losing that race must not lose the seat.
+      await prisma.clientUser.upsert({ where: { email }, create: { email, name }, update: {}, select: { id: true } });
+  const existing = await prisma.clientMembership.findUnique({ where: { clientUserId_enrollmentId: { clientUserId: person.id, enrollmentId: input.enrollmentId } }, select: { id: true, revokedAt: true } });
+  // A REVOKED seat is not re-opened by a payment. Somebody took this person's
+  // access away on purpose; a renewal charge is not their decision reversed.
+  if (existing?.revokedAt) {
+    return { outcome: "CONFLICT", note: `${email} had access to this program and it was revoked. A person should decide whether the payment restores it.` };
+  }
+  const membershipId = existing
+    ? existing.id
+    : (await prisma.clientMembership.create({
+        data: { clientUserId: person.id, enrollmentId: input.enrollmentId, clientId: target.clientId, role, invitedByAppUserId: input.byAppUserId ?? null },
+        select: { id: true },
+      })).id;
+
+  const welcome = await queueWelcome({
+    membershipId, email, name, clientName: target.name, clientId: target.clientId, isTestClient: target.isTest,
+    reason: input.reason, requestedBy: input.requestedBy ?? input.byAppUserId ?? "program-activation",
+  });
+  await prisma.appSetting.deleteMany({ where: { key: owedKey(input.enrollmentId, email) } }).catch(() => {});
+  return {
+    outcome: "GRANTED", membershipId, clientUserId: person.id, welcome,
+    note: welcome === "queued" ? "Account opened and the welcome is queued." : welcome === "already" ? "Account already open; the welcome was queued earlier." : "Account opened. The welcome is suppressed while invitations are switched off.",
+  };
+}
+
+/** ONE welcome per seat, for ever. The dedupeKey carries no timestamp on
+ *  purpose (portalInviteKey does, because a re-invitation is a real second
+ *  message): payment webhooks repeat, the poll runs hourly, and A01 says one
+ *  welcome however the events arrive. */
+export const portalWelcomeKey = (membershipId: string) => `portal_invite:${membershipId}:welcome`;
+
+async function queueWelcome(input: {
+  membershipId: string; email: string; name: string | null; clientName: string; clientId: string; isTestClient: boolean;
+  reason: "welcome" | "teammate"; requestedBy: string;
+}): Promise<"queued" | "already" | "suppressed"> {
+  // THE ONE WAY THIS EMAIL LEAVES THE BUILDING BEFORE LAUNCH (Jordan, Sep 21:
+  // "Keep client invitations and new client-facing automations held until I
+  // test the Jordan account and approve rollout"). He cannot approve a welcome
+  // he has never received, so a SYNTHETIC client writing to JORDAN'S OWN
+  // VERIFIED INBOX may send while the switch is off — that is Jordan emailing
+  // himself through the real rail, not a client being contacted. Both halves
+  // are re-checked here, at the moment of enqueue, not inherited from a caller.
+  //
+  // IT IS ONE INBOX, NOT A DOMAIN (Sep 21 2026). This test used to be
+  // isStaffControlledEmail, i.e. ANY @realtourpilot.com address, and that is
+  // wider than the only destination Jordan actually verified
+  // (info@realtourpilot.com, with 215-534-8650 for texts). Measured read-only
+  // the same day: of the four staff-controlled addresses on file, three are
+  // info+…@realtourpilot.com plus-addresses that land in Jordan's own inbox and
+  // the fourth is nick@realtourpilot.com — a colleague's mailbox that the old
+  // rule would have put a pre-launch client welcome into. hello@ and james@ are
+  // the same shape and neither is Jordan. isVerifiedTestDestinationEmail folds
+  // plus-addressing away (canonicalInbox), so the test account keeps its own
+  // distinct sign-in address without a second inbox.
+  //
+  // This is also the ONE hole in the outbox invariant documented at
+  // src/lib/outbox.ts:67-72 ("nothing of these kinds is even enqueued while a
+  // switch is off"). Narrowing it from a domain to a single verified inbox is
+  // as close to keeping that sentence true as a testable pre-launch rail can
+  // get; outbox.ts was outside this pass's files, so its parenthetical still
+  // needs the matching one-line amendment.
+  const allowed =
+    (await isAutomationEnabled("portal_invites")) || (input.isTestClient && isVerifiedTestDestinationEmail(input.email));
+  if (!allowed) return "suppressed";
+  const body = await composeWelcomeEmail({ name: input.name, clientName: input.clientName, reason: input.reason });
+  const { sendThroughOutbox } = await import("@/lib/outbox");
+  const r = await sendThroughOutbox({
+    channel: "email", toRef: input.email, body,
+    dedupeKey: portalWelcomeKey(input.membershipId),
+    clientId: input.clientId, requestedBy: input.requestedBy,
+  });
+  return r.outcome === "duplicate" ? "already" : "queued";
+}
+
+/**
+ * The welcome, in Jordan's voice, composed whether or not it may be sent — so
+ * the exact words can be read and approved before the gate ever opens.
+ *
+ * It points at the DURABLE sign-in page, never a one-time token: §4.5 asks for
+ * a link that still works after the 15-minute link in some other email has
+ * expired, and /portal/login mints a fresh one on request.
+ */
+export async function composeWelcomeEmail(input: { name: string | null; clientName: string; reason: "welcome" | "teammate" }): Promise<string> {
+  const first = (input.name ?? "").trim().split(/\s+/)[0] || "there";
+  const discovery = await prisma.programCalendlyEventMapping
+    .findFirst({ where: { purpose: "BRAND_DISCOVERY", enabled: true, publicUrl: { not: null } }, select: { publicUrl: true } })
+    .catch(() => null);
+  const signIn = `${appBase()}/portal/login`;
+  if (input.reason === "teammate") {
+    return [
+      `Hi ${first},`,
+      "",
+      `${input.clientName} added you to their RealTour Pilot content account, so you can work the program with them: topics, scripts, filming dates, and approving the videos when they come back.`,
+      "",
+      `Sign in any time with this email address at ${signIn}. We send you a one time link, so there is no password to set up.`,
+      "",
+      "Anything you do in there shows up under your own name, so the team always knows who asked for what.",
+      "",
+      "If you have a question, just reply to this email and we'll pick it up.",
+      "",
+      "RealTour Pilot",
+    ].join("\n");
+  }
+  return [
+    `Hi ${first},`,
+    "",
+    "You're in, and everything for your content program now lives in one place: your strategy, your topics, your scripts, your filming dates, and every finished video ready to download.",
+    "",
+    `Sign in any time with this email address at ${signIn}. We send you a one time link, so there is no password to set up.`,
+    "",
+    "Here's the way forward:",
+    discovery?.publicUrl
+      ? `1. Book your brand discovery call at ${discovery.publicUrl}. That call is where we build your strategy, and it only happens once.`
+      : "1. Book your brand discovery call. That call is where we build your strategy, and it only happens once.",
+    "2. Add your logo, headshot and brand colors in the portal so the editing team matches your look from the very first video.",
+    "3. Pick your topics for the month, and we'll get you on the filming calendar.",
+    "",
+    "None of it is a test. If something looks wrong, reply to this email and we'll sort it out with you.",
+    "",
+    "RealTour Pilot",
+  ].join("\n");
+}
+
+/** Every account we owe but have not opened, oldest debt first. The owner's
+ *  /content strip reads this so "held" is visible rather than silent. */
+export async function pendingProgramAccess(): Promise<OwedAccess[]> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: OWED_PREFIX } }, select: { value: true } });
+  const out: OwedAccess[] = [];
+  for (const r of rows) {
+    try {
+      const v = JSON.parse(r.value) as OwedAccess;
+      if (v && typeof v.email === "string" && typeof v.enrollmentId === "string") out.push(v);
+    } catch { /* a hand-edited row is not a reason to fail the page */ }
+  }
+  return out.sort((a, b) => a.since.localeCompare(b.since));
+}
+
+/**
+ * Grant everything that was held, in the order it was owed. Safe to call twice:
+ * `grantProgramAccess` is idempotent and clears each debt as it settles. Does
+ * nothing at all while `portal_invites` is still off, so a stray call cannot
+ * open the gate — only the switch can.
+ */
+export async function releasePendingProgramAccess(by: string | null): Promise<{ granted: number; held: number; conflicts: string[] }> {
+  if (!(await isAutomationEnabled("portal_invites"))) return { granted: 0, held: (await pendingProgramAccess()).length, conflicts: [] };
+  const owed = await pendingProgramAccess();
+  let granted = 0;
+  let held = 0;
+  const conflicts: string[] = [];
+  for (const o of owed) {
+    const r = await grantProgramAccess({
+      enrollmentId: o.enrollmentId, emailRaw: o.email, name: o.name, role: o.role, reason: o.reason,
+      byAppUserId: by, requestedBy: by ?? "release-held-access",
+    });
+    if (r.outcome === "GRANTED") granted++;
+    else if (r.outcome === "HELD") held++;
+    else conflicts.push(`${o.email}: ${r.note}`);
+  }
+  return { granted, held, conflicts };
 }
 
 /** Take a seat away. Immediate: the resolver re-reads memberships per request. */

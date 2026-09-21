@@ -21,14 +21,28 @@ import { getSecret } from "@/lib/integrations/connections";
 //                 → create/activate the ContentEnrollment with the package +
 //                   billing terms parsed from the product name
 //                 → current-month workspace
+//                 → ACCOUNT ACCESS: a portal seat for the buyer and ONE
+//                   welcome (Sep 21 2026 — see grantProgramAccess). Both are
+//                   idempotent on (enrollment, email) and both are HELD while
+//                   `portal_invites` is off, which it is.
+//                 → DISCOVERY, in either order (§4.3): link a booking that
+//                   already exists, or raise the task to make one
 //                 → owner/admin bell (package only — no dollar amounts, no
 //                   billing term; how a client pays is owner-only)
 //
-// Polling, not a webhook, on purpose: the hub's restricted read key can see
-// checkout sessions but registering a webhook endpoint writes to the Stripe
-// account, and the hourly cron + Sync-now button already give the freshness
-// this flow needs. Reading Stripe's ledger IS the "verified by Stripe" truth
-// the spec demands — the browser redirect is never consulted.
+// Polling, not a webhook, on purpose: registering a webhook endpoint WRITES to
+// the Stripe account, which is Jordan's to do, and the hourly cron + Sync-now
+// button already give the freshness this flow needs. Phase 0 (Sep 21 2026)
+// confirmed GET /v1/webhook_endpoints returns count=0 — there is no endpoint
+// on the live account and no receiver in this repo. Reading Stripe's ledger IS
+// the "verified by Stripe" truth the spec demands; the browser redirect is
+// never consulted.
+//
+// WHEN THE WEBHOOK ARRIVES, nothing here is rewritten. A receiver's job is to
+// build the same `base` record and call the same claim + activateSignup: the
+// claim is the unique checkoutId, so a webhook and the poll racing on one
+// checkout produce one activation, and grantProgramAccess collapses a repeated
+// `checkout.session.completed` into the same seat and the same welcome.
 //
 // Spec rule 15 honoured: web-activated enrollments get statusManual=true and
 // packageSource="website", so the Aryeo social-flag sweep can never pause,
@@ -248,6 +262,51 @@ export async function sweepStripeSignups(): Promise<{ scanned: number; activated
   return { scanned, activated, skippedKnown, parked };
 }
 
+/**
+ * A conflict a machine must not resolve (§4.4 / A02). Two addresses, or two
+ * people with one name, are routed to Kyle with the evidence — never merged,
+ * never guessed. One task per checkout, reopened if somebody closed it early.
+ */
+async function routeIdentityConflict(input: { checkoutId: string; clientId: string | null; clientName: string; title: string; lines: string[] }): Promise<void> {
+  const { isTestClientName } = await import("@/lib/testClients");
+  if (isTestClientName(input.clientName)) return; // synthetic records make no real desk work
+  const dedupeKey = `program-identity-conflict:${input.checkoutId}`;
+  const description = [
+    ...input.lines,
+    "",
+    "Do not merge these by hand in the database. Confirm with the client which address is theirs, then add the other one as a verified alias on their client page.",
+  ].join("\n");
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true, status: true } }).catch(() => null);
+  if (existing) {
+    if (["DONE", "CLOSED", "CANCELLED"].includes(existing.status)) {
+      await prisma.smartTask.update({ where: { id: existing.id }, data: { status: "OPEN", completedAt: null, description } }).catch(() => {});
+    }
+    return;
+  }
+  await prisma.smartTask
+    .create({
+      data: {
+        title: input.title.slice(0, 140), description, summary: input.title.slice(0, 200),
+        taskType: "todo", status: "OPEN", source: "content_program", priority: "HIGH",
+        clientId: input.clientId, dedupeKey, assignedKey: "kyle",
+        dueAt: new Date(Date.now() + 2 * 864e5),
+        reasonCreated: "A paid signup and an existing record disagree about who this person is",
+      },
+    })
+    .catch(() => {});
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "program_signup",
+      title: input.title.slice(0, 90),
+      body: "A paid signup does not line up with the records on file. Nothing was merged.",
+      href: "/content",
+      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      dedupeKey,
+    });
+  } catch { /* bell is best-effort */ }
+}
+
 async function activateSignup(sig: {
   checkoutId: string; subscriptionId: string | null; stripeCustomerId: string | null;
   email: string | null; name: string | null; phone: string | null;
@@ -255,6 +314,10 @@ async function activateSignup(sig: {
   amount: number; recurring: boolean; paidAt: Date;
   terms: NonNullable<ReturnType<typeof parseProgramProduct>>;
 }): Promise<{ clientId: string; enrollmentId: string; note: string | null }> {
+  // Anything the identity checks below want to say on the signup row. Folded
+  // into `note` once the enrollment section declares it.
+  let identityNote: string | null = null;
+
   // --- Find the client: checkout email first; exact full-name second, but
   // ONLY a row whose email is blank or already matches — a same-name client
   // with a DIFFERENT email may be a different person, and a wrong merge is
@@ -294,10 +357,41 @@ async function activateSignup(sig: {
     if (Object.keys(patch).length) await prisma.client.update({ where: { id: client.id }, data: patch });
   } else {
     if (!sig.name && !sig.email) throw new Error("Checkout carried no name or email to build a client from.");
+    // NEVER a name derived from the address (§4.4). When Stripe gave us no
+    // name at all the row is created under the address itself and says so,
+    // rather than inventing "Klciarmella" out of klciarmella@gmail.com.
+    const displayName = sig.name?.trim() || `${sig.email} (name not given at checkout)`;
+    // A same-name client on a DIFFERENT address is the A02 case: it may be the
+    // same person paying from a brokerage address, or it may be two people. We
+    // create the new record (a duplicate a human can merge beats a wrong merge
+    // nobody can unpick) and hand Kyle the decision with both addresses.
+    const namesakes = sig.name
+      ? await prisma.client.findMany({
+          where: { name: { equals: sig.name.trim(), mode: "insensitive" }, email: { not: null } },
+          select: { id: true, name: true, email: true },
+          take: 3,
+        })
+      : [];
     client = await prisma.client.create({
-      data: { name: sig.name ?? sig.email!, email: sig.email, phone: sig.phone },
+      data: { name: displayName, email: sig.email, phone: sig.phone },
       select: { id: true, name: true, email: true, backupEmail: true, phone: true },
     });
+    if (namesakes.length > 0) {
+      await routeIdentityConflict({
+        checkoutId: sig.checkoutId,
+        clientId: client.id,
+        clientName: client.name,
+        title: `Two records for ${sig.name} after a paid signup`,
+        lines: [
+          `A Content Program checkout was paid by ${sig.name} <${sig.email ?? "no email"}>.`,
+          `${namesakes.length} existing client record(s) carry that same name on a different address:`,
+          ...namesakes.map((n) => `  · ${n.name} <${n.email}> (client ${n.id})`),
+          "",
+          `A new client record was created (${client.id}) and the program was set up on it. Nothing was merged.`,
+        ],
+      });
+      identityNote = "A client with this name already exists on a different address. Kyle has the decision; nothing was merged.";
+    }
   }
 
   // --- The enrollment. One per client; a payment on an already-enrolled
@@ -309,6 +403,7 @@ async function activateSignup(sig: {
   let note: string | null = sig.terms.guessed
     ? `Billing terms guessed from "${sig.productName}" — confirm them on the settings card.`
     : null;
+  if (identityNote) note = `${note ? note + " " : ""}${identityNote}`;
   if (!existing) {
     const created = await prisma.contentEnrollment.create({
       data: {
@@ -357,6 +452,45 @@ async function activateSignup(sig: {
   // but the owner clicking the bell should land on a live workspace.
   const { ensureCurrentMonths } = await import("@/lib/contentProgram");
   await ensureCurrentMonths().catch(() => {});
+
+  // ---- ACCOUNT ACCESS (F02 / §4.1, Sep 21 2026). Until today the chain
+  // stopped at the enrollment, and Phase 0 measured what that meant on live
+  // data: three verified buyers, zero seats, no welcome ever composed. The
+  // grant is idempotent on (enrollment, email), so the hourly poll, a retry
+  // and a future Stripe webhook can all run it without a second account or a
+  // second welcome. While `portal_invites` is off it creates nothing and
+  // records the debt instead — Jordan has not authorised client invitations.
+  let access: string;
+  if (sig.email) {
+    const { grantProgramAccess } = await import("@/lib/portalAccess");
+    const g = await grantProgramAccess({
+      enrollmentId, emailRaw: sig.email,
+      // The buyer's real name as Stripe captured it, or nothing. Never the
+      // email's local part (§4.4).
+      name: sig.name, role: "OWNER", reason: "welcome", requestedBy: "stripe-signup",
+    }).catch((e: unknown) => ({ outcome: "CONFLICT" as const, note: e instanceof Error ? e.message : "access grant failed" }));
+    access = g.outcome === "GRANTED" ? `access granted (welcome ${g.welcome})` : g.outcome === "HELD" ? "access HELD (invitations are off)" : `access needs a person: ${g.note}`;
+    if (g.outcome === "CONFLICT") note = `${note ? note + " " : ""}${g.note}`;
+  } else {
+    access = "no checkout email — no account could be opened";
+    note = `${note ? note + " " : ""}The checkout carried no email address, so there is nobody to open an account for.`;
+  }
+
+  // ---- DISCOVERY, IN EITHER ORDER (§4.3). Payment may land before the call
+  // is booked or after it; both arrive here, and both are idempotent. This
+  // links a booking that already exists, clears the "book the discovery call"
+  // task when it does, raises it when it does not, and routes a payer/invitee
+  // address mismatch to Kyle rather than merging it.
+  const discovery = await (async () => {
+    try {
+      const { onProgramActivated } = await import("@/lib/programOnboarding");
+      return await onProgramActivated(enrollmentId, { payerEmail: sig.email, payerName: sig.name, checkoutId: sig.checkoutId });
+    } catch (e) {
+      return { outcome: "error" as const, detail: e instanceof Error ? e.message : String(e) };
+    }
+  })();
+  console.info(`[signup] ${sig.checkoutId}: ${access}; discovery ${discovery.outcome}${"detail" in discovery && discovery.detail ? ` (${discovery.detail})` : ""}`);
+  if (discovery.outcome === "conflict" && "detail" in discovery && discovery.detail) note = `${note ? note + " " : ""}${discovery.detail}`;
 
   try {
     const { notifyInApp } = await import("@/lib/notify");

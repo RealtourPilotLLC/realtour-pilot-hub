@@ -217,9 +217,26 @@ export type SessionRequestResult = R & { requestId?: string; label?: string; dup
  * SmartTask that forgot the request on reload. createSessionRequest raises
  * the desk task + owner bell itself (not for TEST clients), collides
  * duplicate clicks on its dedupeKey, checks the month's capacity and never
- * writes to Aryeo. The 3-business-day window is the month's DERIVED state
- * (sessionGate → deriveMonthState) — the picker enforces it visually, this
- * enforces it for real.
+ * writes to Aryeo.
+ *
+ * THE PREPARATION WINDOW (§8; corrected in batch 1, Sep 21 2026). The rule is
+ * 48 hours of WEEKDAY time after the strategy call ENDS, or after enough
+ * online preparation — not the three business days this comment used to claim
+ * and not measured from the call's start. `sessionGate` derives it
+ * (deriveMonthState → addWeekdayHoursET) and returns `earliest`; the line
+ * below is what actually enforces it. The picker only greys out the slots.
+ *
+ * HOW EXISTING BOOKINGS STAY STABLE (Jordan asked for this in writing). The
+ * window is evaluated at REQUEST TIME and nowhere else. It is a derived value:
+ * no ProgramSessionRequest stores it, no confirmed Aryeo appointment is
+ * re-checked against it, and nothing in the tree revisits a request once it is
+ * written — `sessionGate` has exactly two other callers and both are display
+ * (src/lib/portal.ts scheduleMonths, and the reminder text's "earliest
+ * session" line). So moving the rule moves the DOOR, never anything already
+ * through it: every session already requested, confirmed or filmed keeps its
+ * date, its desk task and its deadlines, and only a NEW request is measured
+ * against the corrected clock. The one visible change for an existing client
+ * is the earliest date their picker offers next time.
  */
 export async function portalRequestSession(
   auth: PortalAuth,
@@ -243,6 +260,9 @@ export async function portalRequestSession(
   if (input.slotISO) {
     const slot = new Date(input.slotISO);
     if (!Number.isFinite(slot.getTime())) return fail("Pick a time from the list.");
+    // THE GATE, for real. `gate.earliest` is the later of the §8 preparation
+    // window and a 24-hour floor (a same-day ask is not a request the desk can
+    // honour), so this one comparison enforces both.
     if (slot < gate.earliest) return fail("That time is inside the prep window after your strategy call — pick a later slot.");
     startISO = slot.toISOString();
     // The package's session length, so the desk sees the whole block.
@@ -554,4 +574,207 @@ export async function portalDraftCaption(auth: PortalAuth, videoId: string): Pro
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
   return draftCaptionForVideo(v, videoId);
+}
+
+// ===========================================================================
+// THE CLIENT'S OWN TEAM (F19 / §4.9-4.10, Sep 21 2026)
+//
+// "The client can invite an assistant/teammate by name and email. Send that
+// person their own sign-in path. They have full program access for this client
+// … All actions identify the actual person."
+//
+// Everything below runs through the same four steps as every other action in
+// this file: resolve WHO is asking, check they MAY (manageTeam, which only an
+// OWNER seat holds — and never the shared link, because a forwarded link has
+// no author to attribute an invitation to), prove the row belongs to THIS
+// enrollment, then write. A seat is scoped to one enrollmentId, so "full
+// program access" is still access to one client's program: the resolver reads
+// memberships per request and refuses anything else (src/lib/portal.ts), and
+// nothing on the portal renders internal staff notes, payroll or billing.
+//
+// WHILE LAUNCH IS NOT AUTHORISED nothing here reaches an inbox. The invitation
+// is composed and the seat is HELD: grantProgramAccess creates no ClientUser,
+// no ClientMembership and no outbox row while `portal_invites` is off, and
+// records the debt so the whole queue can be granted in one pass when Jordan
+// turns it on. The client is told the truth ("we'll send it the moment we
+// switch invitations on"), not a fiction.
+// ===========================================================================
+
+export type TeamSeat = {
+  membershipId: string;
+  email: string;
+  name: string | null;
+  role: "OWNER" | "COLLABORATOR" | "VIEWER";
+  invitedAtISO: string;
+  acceptedAtISO: string | null;
+  lastSignInISO: string | null;
+  isYou: boolean;
+  pending: boolean; // invited, never signed in
+};
+
+/** Who is on this account, for the Settings screen. Live seats only. */
+export async function portalTeamMembers(auth: PortalAuth): Promise<{ ok: boolean; message: string; seats: TeamSeat[]; invitationsOn: boolean }> {
+  const v = await viewerFor(auth, "manageTeam");
+  if (typeof v === "string") return { ok: false, message: v, seats: [], invitationsOn: false };
+  const rows = await prisma.clientMembership.findMany({
+    where: { enrollmentId: v.enrollment.id, revokedAt: null },
+    orderBy: { invitedAt: "asc" },
+    select: { id: true, clientUserId: true, role: true, invitedAt: true, acceptedAt: true },
+  });
+  const users = rows.length
+    ? await prisma.clientUser.findMany({ where: { id: { in: rows.map((r) => r.clientUserId) } }, select: { id: true, email: true, name: true, lastLoginAt: true } })
+    : [];
+  const byId = new Map(users.map((u) => [u.id, u]));
+  const me = v.actor.kind === "CLIENT" ? v.actor.clientUserId : null;
+  const { isPortalRole } = await import("@/lib/portalAccess");
+  const { isAutomationEnabled } = await import("@/lib/programAutomation");
+  return {
+    ok: true,
+    message: "",
+    invitationsOn: await isAutomationEnabled("portal_invites"),
+    seats: rows.map((r) => {
+      const u = byId.get(r.clientUserId);
+      return {
+        membershipId: r.id,
+        email: u?.email ?? "",
+        name: u?.name ?? null,
+        role: isPortalRole(r.role) ? r.role : "VIEWER",
+        invitedAtISO: r.invitedAt.toISOString(),
+        acceptedAtISO: r.acceptedAt ? r.acceptedAt.toISOString() : null,
+        lastSignInISO: u?.lastLoginAt ? u.lastLoginAt.toISOString() : null,
+        isYou: !!me && r.clientUserId === me,
+        pending: !r.acceptedAt,
+      };
+    }),
+  };
+}
+
+/**
+ * Invite an assistant BY NAME AND EMAIL (§4.9). The name is required and it is
+ * the person's, typed by the client — never derived from the address, which
+ * §4.4 forbids outright and which would put "Klciarmella" at the top of
+ * somebody's welcome email.
+ *
+ * The default role is OWNER because §4.9's list (scheduling, branding, topic
+ * answers, script and video approvals, revisions) IS the OWNER row of the
+ * permission matrix. The client may choose a narrower seat instead, and the
+ * message says plainly what each one means.
+ */
+export async function portalInviteTeammate(
+  auth: PortalAuth,
+  input: { name: string; email: string; role?: string },
+): Promise<R & { membershipId?: string; held?: boolean }> {
+  const v = await viewerFor(auth, "manageTeam");
+  if (typeof v === "string") return fail(v);
+  const name = clip((input.name ?? "").trim(), 120);
+  if (name.length < 2) return fail("Add their name so we know who we're writing to, and so their actions show up under their own name.");
+  const email = (input.email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("That doesn't look like an email address.");
+  const { isPortalRole, grantProgramAccess } = await import("@/lib/portalAccess");
+  const role = isPortalRole(input.role) ? input.role : "OWNER";
+
+  // Already here? Say so rather than sending a second welcome.
+  const existing = await prisma.clientUser.findUnique({ where: { email }, select: { id: true } });
+  if (existing) {
+    const seat = await prisma.clientMembership.findUnique({
+      where: { clientUserId_enrollmentId: { clientUserId: existing.id, enrollmentId: v.enrollment.id } },
+      select: { id: true, revokedAt: true },
+    });
+    if (seat && !seat.revokedAt) return { ok: true, message: `${name} already has access to this account.`, membershipId: seat.id };
+    // SOMEBODY ELSE'S PERSON (Sep 21 2026). This check used to look only at the
+    // caller's own enrollment, so an address belonging to a DIFFERENT client
+    // fell straight through into grantProgramAccess — which is keyed on the
+    // email globally and would have written this client's typed name onto that
+    // other person's row. grantProgramAccess now refuses it outright; the stop
+    // is repeated here so the client gets a sentence that makes sense to them
+    // instead of a staff-shaped refusal.
+    const elsewhere = await prisma.clientMembership.findFirst({
+      where: { clientUserId: existing.id, revokedAt: null, clientId: { not: v.enrollment.clientId } },
+      select: { id: true },
+    });
+    if (elsewhere) {
+      return fail("That email address already has an account with us under a different client. Reply to any of our emails and we'll get them added to your account the right way.");
+    }
+  }
+
+  const g = await grantProgramAccess({
+    enrollmentId: v.enrollment.id, emailRaw: email, name, role, reason: "teammate",
+    requestedBy: `portal:${actorLabel(v)}`,
+  });
+  if (g.outcome === "CONFLICT") return fail(g.note);
+  await ownerBell(
+    "portal_teammate",
+    `Teammate added — ${v.enrollment.clientName || "a client"}`,
+    `${actorLabel(v)} gave ${name} <${email}> ${role.toLowerCase()} access${g.outcome === "HELD" ? " (held: invitations are switched off)" : ""}.`,
+    `/content/${v.enrollment.id}`,
+    `portal-teammate-${v.enrollment.id}-${email}`,
+  );
+  if (g.outcome === "HELD") {
+    return {
+      ok: true, held: true,
+      message: `Saved. ${name} is on your account, and we'll send their sign-in email the moment we switch invitations on. Nothing has gone to them yet.`,
+    };
+  }
+  return {
+    ok: true, membershipId: g.membershipId,
+    message:
+      role === "OWNER"
+        ? `${name} is in. They can do everything you can on this account, including approving videos, and we've emailed them their sign-in link.`
+        : role === "COLLABORATOR"
+          ? `${name} is in. They can plan, comment and request changes, and you keep the approvals. We've emailed them their sign-in link.`
+          : `${name} is in, with view-only access. We've emailed them their sign-in link.`,
+  };
+}
+
+/** Change what a teammate may do. The account cannot be left with nobody who can approve. */
+export async function portalSetTeammateRole(auth: PortalAuth, membershipId: string, role: string): Promise<R> {
+  const v = await viewerFor(auth, "manageTeam");
+  if (typeof v === "string") return fail(v);
+  const { isPortalRole, setMembershipRole } = await import("@/lib/portalAccess");
+  if (!isPortalRole(role)) return fail("Pick owner, collaborator or viewer.");
+  const seat = await prisma.clientMembership.findFirst({
+    where: { id: membershipId, enrollmentId: v.enrollment.id, revokedAt: null },
+    select: { id: true, role: true },
+  });
+  if (!seat) return fail("That person isn't on this account.");
+  if (seat.role === "OWNER" && role !== "OWNER" && (await lastOwnerSeat(v.enrollment.id, seat.id))) {
+    return fail("Someone has to be able to approve your videos. Give another person owner access first, then change this one.");
+  }
+  await setMembershipRole(seat.id, role);
+  return { ok: true, message: "Updated." };
+}
+
+/** Remove a teammate. Immediate — the resolver re-reads seats on every request. */
+export async function portalRevokeTeammate(auth: PortalAuth, membershipId: string): Promise<R> {
+  const v = await viewerFor(auth, "manageTeam");
+  if (typeof v === "string") return fail(v);
+  const seat = await prisma.clientMembership.findFirst({
+    where: { id: membershipId, enrollmentId: v.enrollment.id, revokedAt: null },
+    select: { id: true, role: true, clientUserId: true },
+  });
+  if (!seat) return fail("That person isn't on this account.");
+  // Two doors that must not lock behind you: your own seat, and the last one
+  // that can approve. Either would leave a paying client unable to use their
+  // own account, and only staff could undo it.
+  if (v.actor.kind === "CLIENT" && seat.clientUserId === v.actor.clientUserId) {
+    return fail("You can't remove your own access. Text us and we'll help you hand the account over.");
+  }
+  if (seat.role === "OWNER" && (await lastOwnerSeat(v.enrollment.id, seat.id))) {
+    return fail("That's the only person who can approve videos on this account. Give someone else owner access first.");
+  }
+  const { revokeMembership } = await import("@/lib/portalAccess");
+  await revokeMembership(seat.id, null);
+  await ownerBell(
+    "portal_teammate",
+    `Teammate removed — ${v.enrollment.clientName || "a client"}`,
+    `${actorLabel(v)} removed a person from the account.`,
+    `/content/${v.enrollment.id}`,
+    `portal-teammate-off-${seat.id}`,
+  );
+  return { ok: true, message: "Removed. They lose access straight away." };
+}
+
+async function lastOwnerSeat(enrollmentId: string, exceptId: string): Promise<boolean> {
+  const others = await prisma.clientMembership.count({ where: { enrollmentId, revokedAt: null, role: "OWNER", id: { not: exceptId } } });
+  return others === 0;
 }

@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
-import { recalcProgramMonth } from "@/lib/programMonths";
+import { monthSessionCount, recalcProgramMonth, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,19 @@ export type CreateSessionRequestInput = {
   supersedesId?: string | null;
 };
 
-export type CapacityCheck = { allowed: number; used: number; extrasApproved: number; remaining: number; sessionHours: number };
+export type CapacityCheck = {
+  allowed: number; used: number; extrasApproved: number; remaining: number; sessionHours: number;
+  // ---- A23 (Jordan, Sep 21 2026) -------------------------------------------
+  /** The package's sessions for this month, before staff-approved extras. Pro = 2. */
+  sessionsPerMonth: number;
+  /** DISTINCT confirmed sessions already linked to this client and month. */
+  confirmedSessions: number;
+  /** Requests waiting on the office that do not yet resolve to one of those. */
+  pendingRequests: number;
+  /** Every session the package owes is a distinct confirmed session. One Pro
+   *  booking leaves this false with one session remaining. */
+  fullyScheduled: boolean;
+};
 
 export type CreateSessionRequestResult =
   | { ok: true; id: string; status: string; duplicate: boolean; capacity: CapacityCheck; message: string }
@@ -62,26 +74,50 @@ export type CreateSessionRequestResult =
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const TASK_PREFIX = "content-session-request-";
 
-/** Sessions used vs allowed for a month. Confirmed requests + attached projects, deduplicated by project. */
-export async function sessionCapacity(enrollmentId: string, monthId: string): Promise<CapacityCheck> {
-  const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, sessionsPerMonth: true, sessionHours: true } });
-  const [projects, requests] = await Promise.all([
-    // Only THIS client's filmed sessions use up the allowance. A job mis-attached to another client's month is hidden
-    // by the portal and must not block a booking here, and a job with no shoot date (an editing-only or review job)
-    // was never a filming session. Found by W1-A's fixer: synthetic review cuts were filling September's capacity.
-    prisma.project.findMany({
-      where: { contentMonthId: monthId, status: { not: "CANCELLED" }, shootDate: { not: null }, ...(enrollment ? { clientId: enrollment.clientId } : {}) },
-      select: { id: true },
-    }),
-    prisma.programSessionRequest.findMany({ where: { enrollmentId, monthId, status: { in: ["CONFIRMED", "REQUESTED"] } }, select: { id: true, projectId: true, kind: true, extraApprovedBy: true, status: true } }),
-  ]);
-  const projectIds = new Set(projects.map((p) => p.id));
-  // A confirmed request whose project is already attached counts once.
-  const pending = requests.filter((r) => !(r.projectId && projectIds.has(r.projectId)));
+/**
+ * Sessions used vs allowed for a month.
+ *
+ * COUNTED FROM APPOINTMENTS, NOT PROJECTS (A23, Jordan Sep 21 2026). Video Pro
+ * is the existing four-hour product booked TWICE, which puts two appointments on
+ * one Aryeo order and therefore on ONE Project here. This function used to count
+ * projects, so a Pro client who had booked both of their sessions the way Jordan
+ * says to book them would have been shown one session used and one remaining,
+ * and a Pro client who had booked ONE would have been shown the same thing. The
+ * rule now lives in programMonths.countDistinctSessions and is shared with the
+ * reminder evaluator, so the portal and the chaser cannot drift apart.
+ *
+ * Only THIS client's sessions use up the allowance: a job mis-attached to another
+ * client's month is hidden by the portal and must not block a booking here.
+ */
+export async function sessionCapacity(enrollmentId: string, monthId: string, opts: { now?: Date; db?: ProgramDb } = {}): Promise<CapacityCheck> {
+  const db = opts.db ?? prisma;
+  const now = opts.now ?? new Date();
+  const enrollment = await db.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, sessionsPerMonth: true, sessionHours: true } });
+  const count = enrollment ? await monthSessionCount(monthId, enrollment.clientId, now, db) : { sessions: [], booked: 0, filmed: 0, accountedFor: 0, duplicatesFolded: 0 };
+  const requests = await db.programSessionRequest.findMany({
+    where: { enrollmentId, monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED"] } },
+    select: { id: true, projectId: true, aryeoAppointmentId: true, kind: true, extraApprovedBy: true, status: true },
+  });
+  // A CONFIRMED request is already inside `count` (it is one of the things
+  // countDistinctSessions folds), so only the asks the office has not answered
+  // are added on top — and only when they do not already resolve to a counted
+  // session. Two clicks that landed on one appointment are one session, not two.
+  const countedKeys = new Set(count.sessions.map((x) => x.key));
+  const pending = requests.filter(
+    (r) => (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") &&
+      !(r.aryeoAppointmentId && countedKeys.has(`appt:${r.aryeoAppointmentId}`)) &&
+      !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
+  );
   const extrasApproved = requests.filter((r) => r.kind === "EXTRA_SESSION" && r.extraApprovedBy).length;
-  const allowed = (enrollment?.sessionsPerMonth ?? 1) + extrasApproved;
-  const used = projectIds.size + pending.length;
-  return { allowed, used, extrasApproved, remaining: Math.max(0, allowed - used), sessionHours: enrollment?.sessionHours ?? 2 };
+  const sessionsPerMonth = Math.max(1, enrollment?.sessionsPerMonth ?? 1);
+  const allowed = sessionsPerMonth + extrasApproved;
+  const used = count.accountedFor + pending.length;
+  const shortfall = sessionShortfall(sessionsPerMonth, count);
+  return {
+    allowed, used, extrasApproved, remaining: Math.max(0, allowed - used), sessionHours: enrollment?.sessionHours ?? 2,
+    sessionsPerMonth, confirmedSessions: count.accountedFor, pendingRequests: pending.length,
+    fullyScheduled: shortfall.fullyScheduled,
+  };
 }
 
 /**
@@ -108,42 +144,110 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   const location = clip((input.slot.locationText ?? "").trim(), 300);
 
   const kind = input.kind ?? "CONTENT_SESSION";
-  const capacity = await sessionCapacity(enrollment.id, month.id);
-  // The duplicate check comes BEFORE the capacity check: a second click on
-  // the same slot is the same request (the row it already made fills the
-  // month's one slot), not "over capacity".
   const dedupeKey = `${enrollment.id}:${month.id}:${start ? start.toISOString() : "flex"}`;
-  const existing = await prisma.programSessionRequest.findUnique({ where: { dedupeKey }, select: { id: true, status: true } });
-  if (existing && !["CANCELLED", "DECLINED", "EXPIRED"].includes(existing.status)) {
-    return { ok: true, id: existing.id, status: existing.status, duplicate: true, capacity, message: "We already have this request — it shows as requested until we confirm it." };
-  }
-  if (kind === "CONTENT_SESSION" && capacity.remaining <= 0) {
-    return { ok: false, reason: `This month's ${capacity.allowed} session${capacity.allowed === 1 ? " is" : "s are"} already booked or requested — ask us about an extra session.`, capacity };
-  }
   const bookingOn = await isAutomationEnabled("session_booking");
-  const data = {
-    enrollmentId: enrollment.id, clientId: enrollment.clientId, monthId: month.id, kind,
-    slotStart: start, slotEnd: end, timezone: input.slot.timezone ?? enrollment.timezone ?? "America/New_York",
-    locationText: location || null,
-    notes: [when && `Preferred: ${when}`, input.slot.notes?.trim()].filter(Boolean).join("\n") || null,
-    requestedByClientUserId: input.actor.kind === "CLIENT" ? input.actor.clientUserId : null,
-    requestedByStaffUserId: input.actor.kind === "STAFF" ? input.actor.userId : null,
-    status: "REQUESTED",
-    supersedesId: input.supersedesId ?? null,
-    capacityCheckJson: JSON.stringify(capacity),
-    // The switch decides whether a provider booking is even attempted.
-    bookingState: bookingOn && start ? "QUEUED" : "NONE",
-    dedupeKey,
-  };
-  const row = existing
-    ? await prisma.programSessionRequest.update({ where: { id: existing.id }, data: { ...data, cancelledAt: null, cancelledBy: null, cancelReason: null, confirmedAt: null, confirmedBy: null }, select: { id: true } })
-    : await prisma.programSessionRequest.create({ data, select: { id: true } });
-  if (input.supersedesId) {
-    await prisma.programSessionRequest.updateMany({ where: { id: input.supersedesId, status: { in: ["REQUESTED", "CONFIRMED"] } }, data: { status: "RESCHEDULE_REQUESTED" } });
+  const now = new Date();
+
+  // A24 — SIMULTANEOUS REQUESTS MUST NOT CREATE DUPLICATE PRO SESSIONS.
+  //
+  // §8: "Revalidate the slot and program capacity at submission. Prevent double
+  // bookings and duplicate Pro sessions under simultaneous requests." The
+  // capacity read and the row write used to be two separate statements, so two
+  // clicks a few milliseconds apart on a Pro month with one session left BOTH
+  // read `remaining: 1`, both passed, and both wrote — two requests against one
+  // remaining session, with nothing anywhere reading as broken. dedupeKey does
+  // not catch it: two DIFFERENT slots are two different keys, which is exactly
+  // the Pro case (a client picking their second session's time twice).
+  //
+  // The provider write is not ours to make in this build, so the concurrency
+  // work that IS ours is to make the check and the write one atomic decision:
+  // an advisory lock scoped to this enrollment and month, held for the length of
+  // the transaction, so the second caller reads the first caller's row.
+  //
+  // ::int4 IS NOT DECORATION (Topaz drill, Sep 18 2026). Prisma sends a JS
+  // number as a bigint, Postgres has no pg_advisory_xact_lock(bigint, bigint),
+  // and without the casts every call raised 42883 — which is how cut uploads
+  // were broken for four hours.
+  const [lockA, lockB] = monthLockKey(enrollment.id, month.id);
+  type Settled =
+    | { kind: "duplicate"; id: string; status: string; capacity: CapacityCheck }
+    | { kind: "full"; capacity: CapacityCheck }
+    | { kind: "created"; id: string; capacity: CapacityCheck };
+  const settled = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}::int4, ${lockB}::int4)`;
+    // Read INSIDE the lock, so it is the capacity as of this decision.
+    const capacity = await sessionCapacity(enrollment.id, month.id, { now, db: tx });
+    // The duplicate check comes BEFORE the capacity check: a second click on
+    // the same slot is the same request (the row it already made fills the
+    // month's one slot), not "over capacity".
+    const existing = await tx.programSessionRequest.findUnique({ where: { dedupeKey }, select: { id: true, status: true } });
+    if (existing && !["CANCELLED", "DECLINED", "EXPIRED"].includes(existing.status)) {
+      return { kind: "duplicate", id: existing.id, status: existing.status, capacity } satisfies Settled;
+    }
+    if (kind === "CONTENT_SESSION" && capacity.remaining <= 0) return { kind: "full", capacity } satisfies Settled;
+    const data = {
+      enrollmentId: enrollment.id, clientId: enrollment.clientId, monthId: month.id, kind,
+      slotStart: start, slotEnd: end, timezone: input.slot.timezone ?? enrollment.timezone ?? "America/New_York",
+      locationText: location || null,
+      notes: [when && `Preferred: ${when}`, input.slot.notes?.trim()].filter(Boolean).join("\n") || null,
+      requestedByClientUserId: input.actor.kind === "CLIENT" ? input.actor.clientUserId : null,
+      requestedByStaffUserId: input.actor.kind === "STAFF" ? input.actor.userId : null,
+      status: "REQUESTED",
+      supersedesId: input.supersedesId ?? null,
+      capacityCheckJson: JSON.stringify(capacity),
+      // The switch decides whether a provider booking is even attempted.
+      bookingState: bookingOn && start ? "QUEUED" : "NONE",
+      dedupeKey,
+    };
+    const row = existing
+      ? await tx.programSessionRequest.update({ where: { id: existing.id }, data: { ...data, cancelledAt: null, cancelledBy: null, cancelReason: null, confirmedAt: null, confirmedBy: null }, select: { id: true } })
+      : await tx.programSessionRequest.create({ data, select: { id: true } });
+    if (input.supersedesId) {
+      await tx.programSessionRequest.updateMany({ where: { id: input.supersedesId, status: { in: ["REQUESTED", "CONFIRMED"] } }, data: { status: "RESCHEDULE_REQUESTED" } });
+    }
+    return { kind: "created", id: row.id, capacity } satisfies Settled;
+    // The lock is held only for these statements; the desk task and the month
+    // recalculation below are deliberately outside it. 20s is far past anything
+    // this transaction does and short enough that a stuck caller frees the month.
+  }, { timeout: 20_000 });
+
+  if (settled.kind === "duplicate") {
+    return { ok: true, id: settled.id, status: settled.status, duplicate: true, capacity: settled.capacity, message: "We already have this request — it shows as requested until we confirm it." };
   }
-  await ensureDeskTask(row.id);
+  if (settled.kind === "full") {
+    const c = settled.capacity;
+    // Jordan, Sep 21: "One booking should still show one session remaining."
+    // The refusal says which session is missing rather than "your month is full",
+    // because on Pro those are different sentences.
+    return { ok: false, reason: `This month's ${c.allowed} session${c.allowed === 1 ? " is" : "s are"} already booked or requested — ask us about an extra session.`, capacity: c };
+  }
+  await ensureDeskTask(settled.id);
   await recalcProgramMonth(month.id);
-  return { ok: true, id: row.id, status: "REQUESTED", duplicate: false, capacity, message: "Requested — it stays “awaiting confirmation” until it's booked in Aryeo, then the date shows here." };
+  // The capacity quoted back is the one the decision was made on, re-read after
+  // the write so the caller sees the session it just used up.
+  const after = await sessionCapacity(enrollment.id, month.id, { now });
+  const remainingNote = after.remaining > 0
+    ? ` You still have ${after.remaining} session${after.remaining === 1 ? "" : "s"} to book this month.`
+    : "";
+  return { ok: true, id: settled.id, status: "REQUESTED", duplicate: false, capacity: after, message: `Requested — it stays “awaiting confirmation” until it's booked in Aryeo, then the date shows here.${remainingNote}` };
+}
+
+/**
+ * A stable int4 pair for pg_advisory_xact_lock, scoped to ONE enrollment's ONE
+ * month. Two FNV-1a passes with different seeds, the same shape review uploads
+ * use: same month → same pair on every worker, different months → different
+ * pairs, so two clients booking at the same instant never wait on each other. A
+ * collision across months would cost a moment's waiting, never correctness.
+ * (Two int4s rather than one int8 because the build targets below ES2020.)
+ */
+function monthLockKey(enrollmentId: string, monthId: string): [number, number] {
+  const str = `program-session|${enrollmentId}|${monthId}`;
+  const fnv = (seed: number): number => {
+    let h = seed;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return h | 0;
+  };
+  return [fnv(0x811c9dc5), fnv(0x9e3779b9)];
 }
 
 /** Kyle's desk row for one request — the ask with the exact slot; closed when the request settles. */
@@ -164,8 +268,17 @@ async function ensureDeskTask(requestId: string): Promise<void> {
   const when = r.slotStart
     ? `${r.slotStart.toLocaleString("en-US", { timeZone: r.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} (${r.timezone ?? "ET"})`
     : "no slot picked";
+  // WHICH session, on a package that owes more than one (A23, Jordan Sep 21
+  // 2026). "Book content session" told Kyle nothing about whether this was the
+  // first or the second half of a Pro month, and the two are different bookings
+  // of the same four-hour product.
+  const capacity = await sessionCapacity(r.enrollmentId, r.monthId).catch(() => null);
+  const ordinalLine = capacity && capacity.sessionsPerMonth > 1
+    ? `Session ${Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth)} of ${capacity.sessionsPerMonth} — ${capacity.confirmedSessions} already confirmed for this month. Book the four-hour product again; it is a second booking, not a longer one.`
+    : null;
   const description = [
     `Content session request for ${month?.monthKey ?? "their month"} (${r.kind === "EXTRA_SESSION" ? "EXTRA session" : "package session"}).`,
+    ordinalLine,
     `Time: ${when}`,
     r.locationText ? `Filming location: ${r.locationText}` : null,
     r.notes ? r.notes : null,
@@ -180,7 +293,10 @@ async function ensureDeskTask(requestId: string): Promise<void> {
   }
   const task = await prisma.smartTask.create({
     data: {
-      taskType: "todo", title: `Book content session — ${client?.name ?? "client"}`,
+      taskType: "todo",
+      title: capacity && capacity.sessionsPerMonth > 1
+        ? `Book content session ${Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth)} of ${capacity.sessionsPerMonth} — ${client?.name ?? "client"}`
+        : `Book content session — ${client?.name ?? "client"}`,
       summary: clip(`Requested: ${when}${r.locationText ? ` · ${r.locationText}` : ""}`, 200),
       description, reasonCreated: "Client requested a content session (persisted request)", source: "portal", priority: "HIGH",
       dueAt: new Date(Date.now() + 24 * 3600_000), assignedKey: "kyle", clientId: client?.id ?? null, dedupeKey,
@@ -247,6 +363,24 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
   const open = await prisma.programSessionRequest.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] } } });
   let confirmed = 0, cancelled = 0, expired = 0;
   const touched = new Set<string>();
+  // ONE APPOINTMENT IS ONE SESSION (A23 / A24, Jordan Sep 21 2026).
+  //
+  // The matcher below accepts any appointment within two hours of the slot, and
+  // for a flex request any appointment in the month. Nothing stopped TWO
+  // requests resolving to the SAME appointment, and on a Pro month that is the
+  // ordinary case rather than a freak one: a client asks for 10:00 and 11:00 for
+  // their two four-hour sessions, Kyle books one of them, and both requests
+  // confirmed against it. The client would then have read "Booked" for a session
+  // that was never booked, Kyle's second desk task would have closed itself, and
+  // the month would have counted as fully scheduled with one session missing.
+  //
+  // So an appointment already claimed by another request is off the table. The
+  // set starts from what the ledger already says and grows as this run confirms.
+  const claimed = new Set(
+    (await prisma.programSessionRequest.findMany({ where: { status: "CONFIRMED", aryeoAppointmentId: { not: null } }, select: { aryeoAppointmentId: true } }))
+      .map((x) => x.aryeoAppointmentId!)
+      .filter(Boolean),
+  );
   for (const r of open) {
     if (r.status === "REQUESTED") {
       const month = await prisma.contentMonth.findUnique({ where: { id: r.monthId }, select: { monthKey: true } });
@@ -257,11 +391,13 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
       });
       const hit = appts.find((a) => {
         if (!a.startAt) return false;
+        if (claimed.has(a.aryeoId)) return false;
         if (r.slotStart) return Math.abs(a.startAt.getTime() - r.slotStart.getTime()) <= 2 * 3600_000;
         // Flex request: any appointment inside the requested program month.
         return a.project.contentMonthId === r.monthId || (!!month && etMonthKey(a.startAt) === month.monthKey && a.startAt > r.createdAt);
       });
       if (hit) {
+        claimed.add(hit.aryeoId);
         await prisma.programSessionRequest.update({ where: { id: r.id }, data: { status: "CONFIRMED", projectId: hit.projectId, aryeoAppointmentId: hit.aryeoId, confirmedAt: now, confirmedBy: "aryeo-reconcile", bookingState: r.bookingState === "NONE" ? "NONE" : "SUCCEEDED" } });
         await closeDeskTask(r.id, "COMPLETED");
         confirmed++; touched.add(r.monthId);
@@ -279,6 +415,11 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
       const appt = await prisma.appointment.findUnique({ where: { aryeoId: r.aryeoAppointmentId }, select: { status: true, project: { select: { status: true } } } });
       const gone = !appt || appt.status === "CANCELED" || appt.project.status === "CANCELLED";
       if (gone) {
+        // The appointment is gone, so the claim on it is too: a later request
+        // for this month is free to match whatever replaces it. This is the
+        // cancellation path Jordan named — a Pro month drops back to one
+        // confirmed session and has to start asking for the other one again.
+        claimed.delete(r.aryeoAppointmentId);
         await prisma.programSessionRequest.update({ where: { id: r.id }, data: { status: "CANCELLED", cancelledAt: r.cancelledAt ?? now, cancelledBy: r.cancelledBy ?? "aryeo-reconcile", cancelReason: r.cancelReason ?? "appointment cancelled in Aryeo" } });
         await closeDeskTask(r.id, "COMPLETED");
         cancelled++; touched.add(r.monthId);

@@ -5,6 +5,8 @@ import {
   tierFor, dueAtFor, cappedByPromise, pinnedPromise, TIERS, type Tier,
   // §9's per-session clocks (F27 review, Sep 21 2026) — see boardSessions.
   productionSessionsFor, productionWindowFrom,
+  // Jordan's honest-date rule (Sep 21 2026, batch 2) — see productionDateState.
+  productionAnchorFor, anchorIsKnown, NEEDS_VERIFICATION_LABEL, type ProductionAnchorStatus,
 } from "@/lib/turnaround";
 import { parseEvidence, evidenceFreshness, type EvidenceFreshness, type ParsedEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -101,6 +103,12 @@ export type BoardJob = {
   settled: boolean;
   /** Delivered once, and owed again since. */
   reopened: boolean;
+  /** THE HONEST-DATE VERDICT for a monthly content job (Jordan, Sep 21 2026).
+   *  Null on every other job kind. When `status` is not "known" this job has no
+   *  production date at all, and a card MUST print `label` where the date would
+   *  go rather than leaving the space blank — a blank date on a board whose only
+   *  other signal is a red "overdue" chip reads as on time. */
+  productionDate: ProductionDateState | null;
 };
 
 export type DeliveryBoard = {
@@ -109,6 +117,17 @@ export type DeliveryBoard = {
   upcoming: BoardJob[];
   delivered: BoardJob[];
   overdueCount: number;
+  /** Monthly jobs whose production date Kyle has to correct — filming happened
+   *  and the appointment or its end time is missing (Jordan, Sep 21 2026).
+   *  Counted separately from `overdueCount` on purpose: "three jobs are late"
+   *  and "I cannot tell whether three jobs are late" are different facts, and
+   *  the second one used to be invisible.
+   *
+   *  OPTIONAL for the same reason `unavailable` exists (audit, Sep 17): the
+   *  home page builds a fallback board when the query throws, and a required
+   *  empty array there would assert "no corrections owed" out of a read that
+   *  never happened. Absent means NOT KNOWN; only deliveryBoard() sets it. */
+  needsProductionDate?: BoardJob[];
   /**
    * The board could not be read at all (the query threw). An empty board and an
    * unreadable one look identical and mean opposite things — "nothing is late"
@@ -237,10 +256,18 @@ export type BoardSession = {
   index: number;
   of: number;
   startAt: Date | null;
-  /** the session's END, the anchor §8 asks for. */
+  /** the session's END, the anchor §8 asks for. Null when it is not known —
+   *  and then `unknownLabel` is what the card prints in its place. */
   anchorAt: Date | null;
-  /** true when the end was estimated rather than recorded — say so on the card. */
+  /** RETIRED Sep 21 2026: always false. Nothing is estimated any more. */
   anchorEstimated: boolean;
+  /** "known" | "needs_verification" | "not_scheduled" (Jordan, Sep 21 2026).
+   *  Only "known" may be coloured or counted as on time. */
+  anchorStatus: ProductionAnchorStatus;
+  /** "Not scheduled" / "Production date needs verification", or null. */
+  unknownLabel: string | null;
+  /** why, in one line, when this session has no date. */
+  anchorNote: string | null;
   /** business day 7 — what the office aims at. */
   productionTargetAt: Date | null;
   /** business day 10 — late after this. */
@@ -269,21 +296,35 @@ export type BoardPromise = {
 export type TurnaroundRuleSet = Awaited<ReturnType<typeof turnaroundRules>> | undefined;
 
 // The clock starts at the shoot — that's when we take possession of the work.
-// Monthly social content often has no shoot of its own, so its clock runs from
-// now. Anything ELSE with no shoot date has no clock at all: an unscheduled
-// BOOKED job used to anchor at `now` too, which made it "due tomorrow 5 PM"
-// every single day — 775 Scotch Way sat in Due tomorrow for a week (audit, Sep
-// 8 2026), padding Kyle's tomorrow count by one. It belongs in Upcoming,
-// marked "no date", until it is on the calendar.
+// Anything with no shoot date has no clock at all: an unscheduled BOOKED job
+// used to anchor at `now`, which made it "due tomorrow 5 PM" every single day —
+// 775 Scotch Way sat in Due tomorrow for a week (audit, Sep 8 2026), padding
+// Kyle's tomorrow count by one. It belongs in Upcoming, marked "no date", until
+// it is on the calendar.
+//
+// THAT SAME `now` FALLBACK SURVIVED FOR MONTHLY CONTENT UNTIL Sep 21 2026,
+// where it was worse. A monthly job with no shoot date anchored on `now`, so
+// its day-10 was recomputed ten business days into the future on every single
+// render: the job could never be late, never entered Today, and sat in Upcoming
+// looking perfectly on time for as long as it existed. Jordan, Sep 21:
+// "Unknown deadlines must not appear as on time." An always-receding deadline
+// is the purest form of that, so the fallback is gone and such a job now has no
+// date and says which kind of nothing it is — "Not scheduled" when nobody has
+// booked it, "Production date needs verification" when filming happened and its
+// appointment is missing (turnaround.productionAnchorFor).
 /** What clockStart and boardSessions read. `appointments` is Partial so the two
  *  callers outside this file that build their own select keep compiling. */
 type SessionSource = Pick<PromiseInput, "deliverables" | "packageName"> & Partial<Pick<PromiseInput, "appointments">>;
 
 function clockStart(
   p: Pick<PromiseInput, "shootDate"> & SessionSource,
+  // `now` is no longer read: the monthly `now` fallback it existed for is
+  // retired (see above). It stays in the signature because both callers thread
+  // their own clock through and a drill replays the board at a chosen instant.
   now: Date,
 ): Date | null {
-  const base = p.shootDate ?? (isMonthlyContentJob(p.deliverables, p.packageName) ? now : null);
+  void now;
+  const base = p.shootDate ?? null;
   // A MULTI-SESSION MONTHLY JOB IS DATED BY ITS EARLIEST SESSION (F27 review,
   // Sep 21 2026). Project.shootDate carries ONE visit, and on Joe Sutow's
   // 1023 Sycamore Mills Rd it is the second one (Mon Jul 27) — so this board
@@ -317,18 +358,109 @@ export function boardSessions(p: SessionSource, rules?: TurnaroundRuleSet): Boar
   const sessions = productionSessionsFor({ appointments: p.appointments ?? [] });
   if (sessions.length < 2) return [];
   return sessions.map((s) => {
-    const win = s.anchor.at ? productionWindowFrom(s.anchor.at, rules) : null;
+    const win = anchorIsKnown(s.anchor) ? productionWindowFrom(s.anchor.at!, rules) : null;
     return {
       appointmentId: s.legId,
       index: s.index,
       of: s.of,
       startAt: s.startAt,
-      anchorAt: s.anchor.at,
+      anchorAt: anchorIsKnown(s.anchor) ? s.anchor.at : null,
       anchorEstimated: s.anchor.estimated,
+      anchorStatus: s.anchor.status,
+      unknownLabel: s.anchor.unknownLabel,
+      anchorNote: s.anchor.note,
       productionTargetAt: win?.productionTargetAt ?? null,
       productionDueAt: win?.productionDueAt ?? null,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// WHEN THERE IS NO DATE, SAY WHICH KIND OF NOTHING (Jordan, Sep 21 2026).
+//
+//   "Show 'Not scheduled' for genuinely unbooked work. If filming happened but
+//    its appointment or end time is missing, show 'Production date needs
+//    verification' and assign Kyle the correction. Unknown deadlines must not
+//    appear as on time."
+//
+// The board's `overdue` is `!!dueAt && dueAt < now`, so a job with no date has
+// always been not-overdue, which on a green/red board reads as fine. That was
+// survivable while the only dateless jobs were reopened and on-hold ones, which
+// the Upcoming sort already floats to the top and whose blocker chip says what
+// they are. It is not survivable for a monthly job that simply lost its
+// appointment: nothing on the card would say so.
+//
+// So a monthly content job now carries the anchor's own verdict, the Upcoming
+// sort floats an undated one alongside the reopened work, and the board counts
+// the corrections Kyle owes. MONTHLY ONLY, deliberately: a listing shoot with
+// no date is the existing "No shoot date" blocker and is not what this rule is
+// about.
+// ---------------------------------------------------------------------------
+
+// KYLE'S CORRECTION TASK — the half that is NOT in this file. Jordan asked for
+// the exception to be "assigned to Kyle", and a task is a WRITE, which a read
+// path that renders a board must not perform. The detector, the wording and the
+// list live here; the filing belongs in the sweep that already mints Kyle's
+// tasks (src/lib/tasks.ts, the prisma.smartTask.upsert pattern at ~:3058). The
+// exact row, so the next pass does not have to invent it:
+//
+//   taskType "internal_instruction", priority "HIGH", assignedKey "kyle",
+//   dedupeKey dedupe([projectId, "production-date-unverified"]),
+//   title   `Production date needs verification — ${street}`
+//   summary  productionDateState(p).note
+//   update: {}   — one per job, never re-opened over a human's handling
+//
+// It is deliberately NOT minted from deliveryBoard(), because that function is
+// called on every render of Kyle's screen and of the home page.
+// ---------------------------------------------------------------------------
+
+export type ProductionDateState = {
+  status: ProductionAnchorStatus;
+  /** what the card prints where the date would go; null when the date is known */
+  label: string | null;
+  /** one line of why, for the card's second row */
+  note: string | null;
+  /** Kyle owes a correction on this job */
+  needsCheck: boolean;
+};
+
+/** The monthly job's production-date verdict. Null on every other job kind,
+ *  and null on a SETTLED job: six monthly jobs delivered between Sep 2025 and
+ *  Jun 2026 carry no appointment row at all, and putting six closed jobs on
+ *  Kyle's correction list would bury the one live exception under history. The
+ *  board's own rule — the obligation decides everything here — applies. */
+export function productionDateState(
+  p: Pick<PromiseInput, "shootDate" | "status" | "deliveredAt" | "revisionRequestedAt"> & SessionSource,
+  now = new Date(),
+): ProductionDateState | null {
+  if (!isMonthlyContentJob(p.deliverables, p.packageName)) return null;
+  if (isSettled(p)) return null;
+  const anchor = productionAnchorFor(
+    { shootDate: p.shootDate, appointments: p.appointments ?? [] },
+    { now: now.getTime() },
+  );
+  // "FILMING HAPPENED" IS NOT ONLY A SHOOT DATE (Jordan, Sep 21 2026). A job
+  // with no appointment and no shootDate still had a camera pointed at
+  // something if its files are in — and turnaround.productionAnchorFor cannot
+  // know that, because it is given the two date columns and nothing else. The
+  // board has the deliverable rows, so the upgrade from "nobody booked this" to
+  // "somebody filmed this and the booking is missing" belongs here. No live row
+  // takes this path today; it exists because a job whose appointment is deleted
+  // after delivery would otherwise read as merely unbooked.
+  if (anchor.status === "not_scheduled" && (p.deliverables ?? []).some((d) => isIn(d))) {
+    return {
+      status: "needs_verification",
+      label: NEEDS_VERIFICATION_LABEL,
+      note: "Files are in for this job but it has no appointment in Aryeo, so there is no session end to count from. Kyle: find or create the appointment so the day-7 and day-10 dates are real.",
+      needsCheck: true,
+    };
+  }
+  return {
+    status: anchor.status,
+    label: anchor.unknownLabel,
+    note: anchor.note,
+    needsCheck: anchor.status === "needs_verification",
+  };
 }
 
 /** Every ordered product with its own tier and promise — the "n products
@@ -470,8 +602,30 @@ export function outstandingPromise(
   // promise walking forward one day per day, which is the exact drift the
   // freeze exists to stop. Only a rebooked VISIT may void a pin.
   const pin = pinnedPromise(p);
-  const at = cappedByPromise(earliest?.dueAt ?? null, pin);
-  const capped = !!at && !!earliest && at.getTime() !== earliest.dueAt.getTime();
+  // A FROZEN PROMISE OUTLIVES THE LOSS OF THE CLOCK (Sep 21 2026, batch 2).
+  // Retiring the monthly `now` fallback left this job with no computed item
+  // date, and cappedByPromise(null, pin) returns null — so 80 W Lancaster Ave
+  // Floor 2, a BOOKED job whose only appointment is off the calendar, went from
+  // a drifting fake deadline to NO deadline while still carrying a recorded
+  // promise of Mon Sep 7 2:30pm. Both readings are wrong and the second is
+  // worse, because a job sold under a date that has passed would sit in
+  // Upcoming reading as not overdue. A pin is not an invented date — it is the
+  // deadline the office wrote down — so where there is nothing to cap, the pin
+  // IS the promise.
+  // …AND ONLY ON A JOB THAT STILL OWES SOMETHING (review, Sep 21 2026, same
+  // day). Written for the dateless job, the line fired on EVERY path that
+  // leaves `earliest` null, and there are three of them: a SETTLED job zeroes
+  // every candidate above on purpose, a REOPENED job is an explicit
+  // `reopened ? null : …` because a revision has no clock until Jordan answers,
+  // and only the third is the one this was for. Measured read-only over 400
+  // live board rows: 278 jobs took a date from this line — 272 settled and
+  // DELIVERED, every one of them instantly overdue (a board of red chips on
+  // finished work), 3 live REOPENED jobs re-dated to a promise they had already
+  // KEPT, which is precisely what that ternary exists to prevent, and 3 that
+  // were the dateless monthly jobs. After this scoping: 3.
+  const datelessButPromised = !settled && !reopened && !earliest;
+  const at = earliest ? cappedByPromise(earliest.dueAt, pin) : datelessButPromised ? pin : null;
+  const capped = !!at && (!earliest || at.getTime() !== earliest.dueAt.getTime());
   return {
     at,
     label: earliest?.title ?? null,
@@ -726,6 +880,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       revisionAskedAt: openAsk ? p.revisionRequestedAt : null,
       settled,
       reopened,
+      productionDate: productionDateState(p, now),
     };
   });
 
@@ -744,7 +899,12 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   const upcoming = live
     .filter((j) => !j.dueAt || etDayKey(j.dueAt) > tomorrowKey)
     .sort((a, b) => {
-      const owedNoClock = (j: BoardJob) => (!j.dueAt && (j.blocker === "revision" || j.blocker === "on_hold") ? 0 : 1);
+      // A MONTHLY JOB WITH AN UNKNOWN DATE RIDES WITH THE REOPENED WORK (Sep 21
+      // 2026). Without this it sorts on Infinity and lands under thirty future
+      // shoots — the quietest possible place to put the one card that says "I
+      // do not know whether this is late."
+      const owedNoClock = (j: BoardJob) =>
+        !j.dueAt && (j.blocker === "revision" || j.blocker === "on_hold" || j.productionDate?.needsCheck) ? 0 : 1;
       return owedNoClock(a) - owedNoClock(b) || byDue(a, b);
     });
   // The delivered tail. Sorted on the stamp where there is one — a terminal
@@ -754,5 +914,13 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     .filter((j) => j.settled)
     .sort((a, b) => (b.deliveredAt?.getTime() ?? 0) - (a.deliveredAt?.getTime() ?? 0));
 
-  return { today, tomorrow, upcoming, delivered, overdueCount: today.filter((j) => j.overdue).length };
+  // The corrections Kyle owes, across every live column. Not a fourth column:
+  // these jobs still sit where their state puts them, and this is the list a
+  // banner counts so the exception is visible rather than merely present.
+  const needsProductionDate = live.filter((j) => j.productionDate?.needsCheck);
+  return {
+    today, tomorrow, upcoming, delivered,
+    overdueCount: today.filter((j) => j.overdue).length,
+    needsProductionDate,
+  };
 }
