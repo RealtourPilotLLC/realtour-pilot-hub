@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, Files, FolderOpen, Loader2, Send } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { RetryRender } from "@/components/ops/RetryRender";
@@ -26,16 +29,32 @@ import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
 // screen so a stalled render is visible, and they are unpressable so nobody
 // sends the editor's un-enhanced export by mistake.
 //
-// A SERVER COMPONENT. It renders rows the page already fetched (opsDay), and
-// the only interactive parts are <MarkSent/> and <RetryRender/>, client islands
-// holding an id. Nothing here reaches the database, and nothing here can reach a
-// client: the buttons are "download the file", "record what you did" and "run
-// the 1080p pass again".
+// A CLIENT COMPONENT SINCE Sep 21, and only for one reason: after a press the
+// row has to come back and LOOK at itself, and that is a browser event. It
+// WRITES nothing of its own any more — the "somebody has this file" stamp is
+// the download route's to write, once the file has actually been handed over
+// (review, Sep 21: this button used to write it on the press, so a 404 on a
+// moved file still read "Downloaded by Kyle"). Everything else is unchanged —
+// it still renders rows the page already fetched (opsDay), it still reaches no
+// database of its own, and every field it reads is a plain string or number off
+// ReadyBoard. `import type` above is erased at build, so nothing drags
+// @/lib/readyToSend (prisma, settings, server-only) across the client boundary;
+// keep it that way.
 //
-// OWNER/ADMIN ONLY. Enforced by the caller (Home hides it) AND by both things
-// it can actually do — the download routes are requireRole(OWNER/ADMIN) /
-// canViewProject, and markVideoSentAction is requireAdmin. No editor or
-// photographer ever sees a client delivery surface.
+// Nothing here can reach a client. The buttons are "download the file", "record
+// what I did" and "run the 1080p pass again".
+//
+// OWNER/ADMIN ONLY — and since Sep 21 the ADMIN half is the point. Jordan: "I
+// just want to make sure Kyle gets that view." Three approved videos had sat
+// unsent for up to three days (5 Raymond Cir, 453 Cardigan Terrace, 5642
+// Limeport Rd) because the big card was owner-gated and Kyle's copy lived
+// inside a time block that only opens by itself between 1:00 and 1:30 PM.
+// Sending these IS his job, so the card is now at the top of his page too.
+// Enforced by the caller (Home renders it for OWNER and ADMIN, and no other
+// role reaches Home at all) AND by everything it can do — the download routes
+// are requireRole(OWNER/ADMIN) / canViewProject, the hand-off stamp inside them
+// is written only for an OWNER or ADMIN, and markVideoSentAction is
+// requireAdmin. No editor or photographer ever sees a client delivery surface.
 // ---------------------------------------------------------------------------
 
 /** "3h" / "2 days" — the same unit the rest of the day uses. */
@@ -70,7 +89,9 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
         Download the file, upload it to Aryeo and deliver the listing — then mark it sent. Aryeo has no way for
         another program to do that step, so this card is the record that it happened. Each row also says what Aryeo
         is showing on that listing: the hub re-checks every hour, so a row that says it can&rsquo;t tell yet will
-        name the video shortly.
+        name the video shortly. Downloading the file is noted on the row so nobody doubles up on it, but it
+        isn&rsquo;t delivery &mdash; a row leaves this card when it&rsquo;s marked sent, or when the hourly check
+        finds it live on Aryeo.
       </p>
       {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
       <Rendering rows={rendering} />
@@ -103,8 +124,21 @@ function Rendering({ rows }: { rows: RenderingVideo[] }) {
   );
 }
 
+/** A press is recent enough that somebody is plainly ON this row right now.
+ *  Four hours, because the three steps after Download — upload to Aryeo,
+ *  deliver the listing, come back and press Mark as sent — are an afternoon's
+ *  work at most, and past that the silence is the story again. */
+const IN_HAND_HOURS = 4;
+
 function ReadyRow({ v }: { v: ReadyVideo }) {
-  const stale = v.waitingHours >= 24;
+  // SOMEBODY IS DOING THIS RIGHT NOW — so stop shouting at them (Jordan, Sep
+  // 21). A row pulled ten minutes ago rendered identically to one nobody had
+  // ever opened, both in red, both reading "ready 3 days". The red goes away
+  // while the file is freshly in hand and comes straight back after that,
+  // because "downloaded three days ago and still not sent" is a WORSE fact
+  // than "nobody has touched it", not a better one.
+  const inHand = v.downloadedHoursAgo != null && v.downloadedHoursAgo < IN_HAND_HOURS;
+  const stale = v.waitingHours >= 24 && !inHand;
   return (
     // min-w-0 all the way down + wrapping rows: at 375px the address, the file
     // name and the buttons stack instead of pushing the page sideways.
@@ -136,17 +170,64 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span>
       </p>
 
+      {/* WHO HAS THE FILE, AND SINCE WHEN.
+          Written by the download route once the file has actually been handed
+          over, not by the press — a 409, a 404 on a moved file or a 502 leaves
+          this line off the row, because nobody has anything. It is the
+          difference between "nobody has looked at this in three days" and "Kyle
+          is on it" — and on Sep 21, when 5 Raymond Cir, 453 Cardigan Terrace
+          and 5642 Limeport Rd had all been sitting for days, the card could not
+          tell those two apart on any row.
+
+          IT SAYS OUT LOUD THAT IT IS NOT DELIVERY. Having the file is one step
+          of three. The row is still here, still owed, and still needs Mark as
+          sent or the hourly Aryeo check — and the sentence says so rather than
+          letting a green tick imply otherwise. */}
+      {v.downloadedAtISO && (
+        <p className={cn("mt-0.5 text-[11px]", inHand ? "text-success" : "font-medium text-warning")}>
+          Downloaded{v.downloadedBy ? ` by ${v.downloadedBy}` : ""} {etDateTime(new Date(v.downloadedAtISO))} ET
+          {inHand
+            ? " — still needs uploading to Aryeo and marking sent."
+            : ` — that was ${waited(v.downloadedHoursAgo ?? 0)} ago and it still hasn’t been marked sent.`}
+        </p>
+      )}
+
       {/* Which file, and why it is that one rather than the other. */}
       <p className="mt-1.5 text-[11px] leading-relaxed text-muted-2">
         <span className="font-medium text-foreground">{v.file.says}</span>
         {/* break-all: a real file name is "Done_322 N 62nd St_Stephen
             Kennedy_1_prob4.mp4" and would otherwise run off a phone. */}
         <span className="mt-0.5 block break-all font-mono text-[10px]">{v.file.fileName}</span>
-        {v.file.dropboxPath && (
-          <span className="mt-0.5 flex items-start gap-1 break-all">
-            <FolderOpen className="mt-0.5 size-3 shrink-0" />
-            {v.file.dropboxPath}
-          </span>
+        {/* A DOOR, NOT A STRING (Jordan, Sep 21 2026: "I dont think we need to
+            show the file path on dropbox, a link to the dropbox would be
+            better"). The path was four lines of
+            /AutoHDR/2026/Q3/September/… that nobody reads and nobody can
+            click. This opens the file itself, previewed in the folder it lives
+            in, where Kyle already works.
+
+            THE LABEL SAYS WHAT THE LINK DOES. It read "Open the Dropbox folder"
+            while the URL was built from the file's own path (review, Sep 21):
+            two different promises, neither of them kept. dropboxFileUrl in
+            lib/readyToSend now builds the one form Dropbox honours for a file —
+            the parent folder, with the file named in ?preview= — and the words
+            here match it.
+
+            The full path is still on the row, as the link's title: a deep
+            link into a folder that has since been reorganised lands somewhere
+            unhelpful, and the string is what you search with when it does —
+            322 N 62nd St's Final Video folder was emptied out from under this
+            very pointer. Shown on hover, not in the layout. */}
+        {v.file.dropboxUrl && (
+          <a
+            href={v.file.dropboxUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={v.file.dropboxPath ?? undefined}
+            className="mt-0.5 inline-flex items-center gap-1 text-muted hover:text-brand hover:underline"
+          >
+            <FileVideo className="size-3 shrink-0" />
+            Open this file in Dropbox
+          </a>
         )}
         {/* Only when the bytes come from the hub's own store AND no filed copy
             is on record. Saying "it's in Dropbox" when it is not is how this
@@ -196,12 +277,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
       </p>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <a
-          href={v.file.downloadHref}
-          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
-        >
-          <Download className="size-3.5" /> Download
-        </a>
+        <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
         {v.aryeoUrl && (
           <a
             href={v.aryeoUrl}
@@ -231,6 +307,60 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         )}
       </div>
     </div>
+  );
+}
+
+/** Long enough for the route to have minted its Dropbox link and written the
+ *  stamp, short enough that the row repaints while Kyle is still looking at it.
+ *  A refresh that finds nothing new changes nothing on screen, so erring late
+ *  costs a second and erring early costs the sentence. */
+const REPAINT_AFTER_MS = 2500;
+
+/**
+ * DOWNLOAD — the bytes, and nothing else.
+ *
+ * Still a plain <a>. The href is a route that mints a fresh Dropbox link on
+ * every press (see /api/topaz/download/[id]), so the link works on day thirty;
+ * the anchor is deliberately untouched — navigation, middle-click, "save link
+ * as" and the browser's own download handling all keep working exactly as they
+ * did.
+ *
+ * THE PRESS WRITES NOTHING (review, Sep 21 2026). It used to fire
+ * recordCutDownloadedAction from here, which is a press, not a hand-off: both
+ * download routes have real failure exits — 409 the 1080p file is not filed
+ * yet, 404 it was moved or renamed in Dropbox, 502 Dropbox refused — and on
+ * every one of them the row was left permanently reading "Downloaded by Kyle"
+ * for a file nobody had. 322 N 62nd St, whose Final Video folder was emptied
+ * out from under its own pointer, is that 404. First press wins, so nothing
+ * could correct it, and the four-hour quiet period then suppressed the red
+ * "waiting 3 days" on the one row where the file was actually missing.
+ *
+ * The stamp is now written inside the routes, once Dropbox has handed over a
+ * link or the store has started returning bytes. All this does afterwards is
+ * come back and look: if the file was served the row repaints with who has it,
+ * and if it was not the row honestly still reads untouched.
+ *
+ * AND IT IS NOT "SENT". Pressing this does not take the row off the card, does
+ * not change what the card says is owed, and does not touch Aryeo, the
+ * project's status or the cut's sentToClientAt. A client has the video when
+ * Kyle has uploaded it and delivered the listing — nothing less, and no
+ * download will ever be allowed to stand in for that.
+ */
+function DownloadFile({ href, taken }: { href: string; taken: boolean }) {
+  const router = useRouter();
+  return (
+    <a
+      href={href}
+      onClick={() => {
+        // Already stamped: the first hand-off is the one that answers "since
+        // when", so a second copy changes nothing and there is nothing to see.
+        if (taken) return;
+        window.setTimeout(() => router.refresh(), REPAINT_AFTER_MS);
+      }}
+      className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+    >
+      <Download className="size-3.5" /> Download
+    </a>
   );
 }
 

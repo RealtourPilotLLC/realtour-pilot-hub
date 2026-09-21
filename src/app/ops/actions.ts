@@ -331,3 +331,31 @@ export async function markVideoSentAction(submissionId: string): Promise<{ ok: b
   }
   return r;
 }
+
+// ---------------------------------------------------------------------------
+// recordCutDownloadedAction LIVED HERE, AND IT IS GONE (review, Sep 21 2026).
+//
+// WHAT IT DID. "Download" on the Ready-to-send card fired it from the button's
+// onClick, and it stamped downloadedAt/downloadedBy on the cut so the row could
+// say who has the file and since when. That answer is still wanted — three
+// approved videos had sat unsent for up to three days (5 Raymond Cir, 453
+// Cardigan Terrace, 5642 Limeport Rd) and a row somebody had picked up two
+// minutes ago looked exactly like a row nobody had ever opened.
+//
+// WHY IT COULD NOT STAY. A press is not a hand-off. Both download routes have
+// real failure exits — 409 the 1080p file is not filed yet, 404 it was moved or
+// renamed in Dropbox, 502 Dropbox refused — and on every one of them this wrote
+// "Downloaded by Kyle" for a file nobody had. 322 N 62nd St, whose Final Video
+// folder was emptied out from under its own pointer, is that 404. First press
+// wins, so nothing could ever correct it, and the card's four-hour quiet period
+// then suppressed the red "waiting 3 days" on the one row whose file was
+// actually missing.
+//
+// WHERE IT WENT. Into the two routes that KNOW, once Dropbox has handed over a
+// link or the store has started returning bytes: /api/topaz/download/[id] and
+// /api/review/cut/[id]/stream (stampHandOff there, which also insists on
+// download intent, no portal token, and a real OWNER or ADMIN). Both call the
+// same lib/readyToSend markCutDownloaded. Nothing should bring a
+// press-triggered version of this back: the way to know a person has a file is
+// to have given them one.
+// ---------------------------------------------------------------------------

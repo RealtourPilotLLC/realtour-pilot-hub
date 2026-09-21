@@ -142,9 +142,18 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // then, treat any cut URL that has already left the building as still live.
   // docs/REVIEW-CUT-STORE-HANDOVER.md is the order that replacement has to go
   // in and the list of what else breaks; no private read has ever executed.
-  // `dl=1` (the portal's download door, /api/portal/download) asks for an
-  // attachment so the browser saves the file instead of playing it.
-  if (sub.blobUrl) return proxyBlob(req, sub.blobUrl, sub.fileName, req.nextUrl.searchParams.get("dl") === "1");
+  // `dl=1` (the portal's download door, /api/portal/download, and the
+  // Ready-to-send card's Download button) asks for an attachment so the browser
+  // saves the file instead of playing it.
+  const wantsFile = req.nextUrl.searchParams.get("dl") === "1";
+  if (sub.blobUrl) {
+    const res = await proxyBlob(req, sub.blobUrl, sub.fileName, wantsFile);
+    // The store accepted the read and the body is on its way back. Everything
+    // proxyBlob refuses (404 the object is gone, 502 it could not be fetched)
+    // comes back not-ok and stamps nothing.
+    if (res.ok) await stampHandOff(req, id, wantsFile);
+    return res;
+  }
 
   // assetPath is where the editor's file lives; finalPath is the copy the
   // approval filed (and, after a 1080p pass, the superseded original). Pruning
@@ -169,6 +178,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       link = r.link;
       linkCache.set(id, { link, at: Date.now() });
     }
+    // Dropbox has named a live link for this exact path — a cached one was
+    // named the same way, minutes ago, for the same path. The two exits below
+    // (404 moved or renamed, 502 refused) stamp nothing.
+    await stampHandOff(req, id, wantsFile);
     const res = NextResponse.redirect(link, 302);
     res.headers.set("Cache-Control", "private, no-store");
     return res;
@@ -177,6 +190,50 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     // A moved/renamed file is a 404 to the player, not a server fault.
     const status = /not_found|path_lookup/i.test(msg) ? 404 : 502;
     return NextResponse.json({ error: status === 404 ? "That file is no longer in the Final folder" : "Dropbox couldn't serve this file right now — try again" }, { status });
+  }
+}
+
+/**
+ * "Somebody in the office has taken this cut's file" — written here, where the
+ * hand-off is KNOWN, and nowhere else (review, Sep 21 2026).
+ *
+ * The Ready-to-send card used to write this from the Download button's onClick,
+ * before anything knew whether a file came back. Every failure exit on both
+ * download routes therefore left a row reading "Downloaded by Kyle" for a file
+ * nobody had — and 322 N 62nd St's Final Video folder being emptied out from
+ * under its own pointer is exactly the 404 that does it. First press wins, so
+ * nothing could correct it, and the card's four-hour quiet period then hid the
+ * red "waiting 3 days" on the one row whose file was actually missing.
+ *
+ * THREE THINGS HAVE TO BE TRUE, because this door is far wider than the card:
+ *   - DOWNLOAD INTENT (`dl=1`). This route is also the Review Room's and the
+ *     portal's <video src>. An editor pressing play, or a client watching their
+ *     own cut, is not the office taking the file, and must never read as it.
+ *   - NO PORTAL TOKEN. A `?m=` / `?t=` request is the client's own door
+ *     (/api/portal/download mints one). The card's button carries neither.
+ *   - AN OWNER OR ADMIN, signed in for real and not previewing as somebody
+ *     else. The row's sentence names a person and Kyle is ADMIN; a photographer
+ *     or editor saving a copy is not the delivery step this row is waiting on.
+ * When any of them is false the row simply stays untouched, which is where
+ * every row was before Sep 21.
+ *
+ * IT IS NOT DELIVERY. downloadedAt/downloadedBy and nothing else: the row stays
+ * on the card, stays owed, and still needs Mark as sent or the hourly Aryeo
+ * proof. It never throws and never fails the response — the bytes are the
+ * point, the stamp is a courtesy.
+ */
+async function stampHandOff(req: NextRequest, submissionId: string, wantsFile: boolean): Promise<void> {
+  if (!wantsFile) return;
+  if (req.nextUrl.searchParams.get("m") || req.nextUrl.searchParams.get("t")) return;
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser();
+    if (!me || me.impersonating) return;
+    if (me.realRole !== "OWNER" && me.realRole !== "ADMIN") return;
+    const { markCutDownloaded } = await import("@/lib/readyToSend");
+    await markCutDownloaded(submissionId, me.name ?? me.email ?? null);
+  } catch {
+    // Deliberately silent: a stamp that did not land costs a sentence on a row.
   }
 }
 

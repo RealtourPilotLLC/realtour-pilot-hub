@@ -1708,6 +1708,20 @@ model ReviewSubmission {
   sentToClientAt           DateTime?
   sentToClientBy           String?
 
+  // SOMEBODY STARTED THE HAND-OFF (Jordan, Sep 21). Pressing Download on the
+  // Ready-to-send card is the first half of a send: the file is on a laptop,
+  // on its way to Aryeo. It is NOT evidence the client has it — the listing
+  // is — but it is the difference between "nobody has touched this in three
+  // days" and "Kyle is doing it right now", and the card could not tell those
+  // apart. It also gives the auto-stamp a second signal to agree with: a
+  // listing that gained a video AFTER we downloaded the file is a much
+  // stronger match than a listing that simply has one.
+  //
+  // Same shape and same rule as the pair above: both nullable, no default,
+  // nothing reads them until a person presses the button.
+  downloadedAt             DateTime?
+  downloadedBy             String?
+
   // One row per (file, round): the sweep and the editor's button can race on
   // the same new file; Postgres treats the legacy NULL-path rows as distinct.
   @@unique([projectId, assetPath, round])

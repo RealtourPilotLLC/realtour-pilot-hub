@@ -13,7 +13,7 @@ import { constantTimeEqual, readArmState, noteRefusalWhileArmed, noteVerifiedDel
 // owns has to live in ONE place or the receiver and the handler will drift
 // apart. Everything heavy it needs (the status engine, the task reconciler,
 // the Topaz jobs) it imports dynamically inside itself.
-import { isAryeoDeliveryActivity, handleAryeoActivity, refreshSurfaces } from "@/lib/aryeoDelivery";
+import { isAryeoDeliveryActivity, handleAryeoActivity, refreshSurfaces, proveListingNow } from "@/lib/aryeoDelivery";
 import {
   syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers,
   upsertAryeoCustomerClient, orderIdForListing, type AryeoCustomer,
@@ -787,6 +787,30 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
       if (project) {
         try { await restatusProject(project.id); } catch { /* non-fatal */ }
         await retaskProject(project.id);
+        // THE LISTING'S MEDIA MAY HAVE JUST CHANGED (Sep 21 2026, Jordan: "when
+        // the video is sent, that auto updates").
+        //
+        // The status engine above answers "is this job delivered"; it does not
+        // answer "which of Kyle's unsent cuts is the video that just appeared
+        // up there", and only the second question takes a row off the
+        // Ready-to-send card. lib/aryeoDelivery owns that answer and this is the
+        // same function the hourly sweep and the delivery handler call — there
+        // is one definition of "has this been sent" and this is not a second.
+        // It costs nothing on a job with nothing outstanding, which is almost
+        // all of them; see proveListingNow for the three guards in front of it.
+        //
+        // WORTH BEING PLAIN ABOUT WHAT REACHES HERE TODAY: nothing. In the ten
+        // days since the subscriptions were recreated on Sep 18, Aryeo has sent
+        // LISTING_CREATED, LISTING_DELIVERED and LISTING_CONTENT_DOWNLOADED and
+        // not one LISTING_UPDATED — and there is no "media added" activity to
+        // subscribe to at all. So a video appearing on an already-delivered
+        // listing produces no event of its own, and this branch is the place it
+        // would land on the day Aryeo adds one. Until then the download handler
+        // is what catches it early, and the hourly sweep is the backstop.
+        try {
+          const proof = await proveListingNow(id, `aryeo ${name}`);
+          if (proof.closed > 0 || proof.stamped > 0) console.info(`[webhook] ${proof.note}`);
+        } catch { /* the hourly sweep is the net */ }
         await refreshSurfaces(project.id);
         return;
       }

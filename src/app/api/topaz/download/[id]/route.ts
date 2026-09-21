@@ -32,9 +32,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ error: (e as Error).message }, { status: 403 });
   }
 
+  // submissionId comes back because the Ready-to-send row this file belongs to
+  // is a ReviewSubmission, and the hand-off stamp lives there (one render per
+  // cut, so the relation is 1:1).
   const job = await prisma.topazJob.findUnique({
     where: { id },
-    select: { finalPath: true, savedAt: true, state: true },
+    select: { finalPath: true, savedAt: true, state: true, submissionId: true },
   });
   if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!job.finalPath || !job.savedAt) {
@@ -50,6 +53,30 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const { dbx } = await import("@/lib/integrations/dropbox");
     const r = await dbx<{ link?: string }>("files/get_temporary_link", { path: job.finalPath });
     if (!r.link) throw new Error("Dropbox returned no link");
+
+    // THE ROW IS STAMPED HERE, WHERE THE HAND-OFF IS KNOWN (review, Sep 21
+    // 2026). The card used to write it from the button's onClick, before
+    // anything knew whether a file came back — so the three exits below (409
+    // not filed yet, 404 moved or renamed, 502 Dropbox refused) all left a row
+    // reading "Downloaded by Kyle" for a file nobody had. 322 N 62nd St's Final
+    // Video folder being emptied out from under its own pointer is that 404,
+    // and it has already happened once. First press wins, so the wrong stamp
+    // could never be corrected, and it bought four hours of silence on the one
+    // row whose file was actually missing.
+    //
+    // Dropbox has now named a live four-hour link for this exact path, which is
+    // the strongest evidence this route ever gets. The stamp goes down before
+    // the redirect because after it we are out of the request.
+    //
+    // NOT DELIVERY, AND NEVER WILL BE. This writes downloadedAt/downloadedBy
+    // and nothing else: the row stays on the card, stays owed, and still needs
+    // Mark as sent or the hourly Aryeo proof. It also never fails the download
+    // — the bytes are the point.
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    const { markCutDownloaded } = await import("@/lib/readyToSend");
+    await markCutDownloaded(job.submissionId, me?.name ?? me?.email ?? null).catch(() => {});
+
     const res = NextResponse.redirect(r.link, 302);
     // Minted per press and good for four hours — never cache it anywhere.
     res.headers.set("Cache-Control", "private, no-store");

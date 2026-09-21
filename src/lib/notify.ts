@@ -94,9 +94,22 @@ export type NotifyTarget = {
    *  switch was inert because only the owner was ever iterated). Because it
    *  now reaches the office, the bridge scrubs money out of it for anyone but
    *  an owner — write it money-free anyway. Leave it OFF and the row is
-   *  bell-only for everyone — the emitter's way of saying "the owner did this
-   *  himself" (his own upload). Person-addressed rows carry slackDm instead. */
+   *  bell-only for everyone (topazJobs.ts relies on exactly that for its OWNER
+   *  row). Person-addressed rows carry slackDm instead. */
   ownerSms?: string;
+  /** Sep 21 2026: THE OWNER DID THIS HIMSELF. Only the Review Room sends it
+   *  (reviewCuts.ts announceCutInReview, a cut Jordan uploaded from his own
+   *  login). The sentence above still goes to the office; the owner's roster
+   *  rows are dropped from the fan-out, so his phone and his DM stay quiet on
+   *  his own upload — the Sep 11 carve-out, kept.
+   *
+   *  It is on the EMITTER because it is a fact about the event, not a guess
+   *  about a person: leaving it to a preference would either text him about
+   *  work he just filed (his saved matrix says Slack and text) or make him
+   *  turn off "video in review" altogether and miss everyone else's cuts.
+   *  Saved preferences still decide everything the owner did NOT cause, and
+   *  every other person on the broadcast, untouched. */
+  ownerActed?: boolean;
   /** Sep 15: the emitter's own sentence for the person this row is addressed
    *  to (tm:<id>, or editor:<key> resolved to its TeamMember) — who, where,
    *  the summary, the link; money already scrubbed for a non-owner
@@ -310,6 +323,34 @@ const ROUTINE_KINDS = new Set<string>([
   "review_approved", // the editor's loop closing
   "cut_ready", // the Saturday 09:26 and 12:22 pages, by name
   "cut_change_ask", // the photographer asking the editor for a tweak
+  // The 1080p file landing back from Topaz (Sep 21 2026, classified today —
+  // see notifyPrefs.ts KIND_TO_EVENT for why it is a switch at all now).
+  //
+  // ROUTINE, DELIBERATELY, AND THE CASE AGAINST IS REAL. On one side: a
+  // finished render is a client already waiting on a video we have been paid
+  // for, and 3 of the last 13 topaz_ready rows landed on a Saturday or a
+  // Sunday, so this is not a hypothetical weekend. On the other: what the
+  // alert asks for is a manual Aryeo upload at a desk — ARYEO_MANUAL_NOTE
+  // says plainly there is no API for it — and that is office work on the
+  // office rota, not a field response somebody can give from a phone. It also
+  // sits in the same lane as cut_ready and review_approved, both routine;
+  // classifying its twin as urgent would be the same weekend wave the Sep 20
+  // audit was opened to stop, arriving one step further down the pipeline.
+  // The lane wins. The three videos that sat unsent for three days sat there
+  // on WEEKDAYS, unseen — that is a visibility failure, and the Slack DM this
+  // change adds is what fixes it. None of it needed a Saturday page.
+  //
+  // WHAT IT ACTUALLY CHANGES TODAY: nothing, and that is worth saying out
+  // loud rather than claiming a win. Kyle is the only person this kind
+  // addresses and his review_ready row is {slack:true, sms:false}, so no line
+  // can be held as a text, so `hold && state.sms` is false and the DM goes
+  // immediately whatever day it is — the "quieter than today is the goal,
+  // silent never is" carve-out, working as written. This entry is a standing
+  // declaration: the day anyone's text switch goes on for it, a Sunday render
+  // is dated to Monday 9am instead of buzzing a phone. An explicitly saved
+  // preference still beats the rota in the only sense that rule ever meant —
+  // the alert is KEPT and dated, never dropped.
+  "topaz_ready",
   // review_feedback is deliberately ABSENT (review, Sep 20). It was listed in
   // the first cut and it does not belong: notifyPrefs maps it to shoot_change,
   // BELL_RULES calls it "capture feedback the photographer has to fix", and it
@@ -1124,8 +1165,15 @@ export async function notifyInApp(n: {
         } else if ((roles.includes("OWNER") || roles.includes("ADMIN")) && t.ownerSms) {
           // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
           // "cut ready" row, which carries a sentence for the owner (Sep 11)
-          // and, since Sep 16, the office (bridgeBroadcast).
-          await bridgeBroadcast(n.kind, t.ownerSms, { roles, notificationId: row.id }, delivered);
+          // and, since Sep 16, the office (bridgeBroadcast). `ownerActed` says
+          // the owner filed this one himself: the office leg still goes, his
+          // own is dropped inside the bridge (Sep 21 — see NotifyTarget).
+          await bridgeBroadcast(
+            n.kind,
+            t.ownerSms,
+            { roles, notificationId: row.id, ownerActed: t.ownerActed === true },
+            delivered,
+          );
         }
         // A NEW editor-addressed bell row with no login to see it → nudge Jordan
         // once (deduped inside) to send that editor their Hub invite.
@@ -1488,12 +1536,19 @@ async function bridgePerson(
 // event, each by their own row: the owner texts by default, Kyle's default
 // stays off and his switch works when he flips it. The bell row is logged
 // per addressed person, then the DM (Slack's words on failure) and the text
-// (queueStaffSms, which refuses the company line and logs why). No sentence
-// (the owner's own upload) never gets here — bell-only for everyone.
+// (queueStaffSms, which refuses the company line and logs why). A row with no
+// sentence at all never gets here — bell-only for everyone.
+//
+// `ctx.ownerActed` (Sep 21 2026) is the owner's own upload, and it now takes
+// out HIS legs rather than the whole broadcast. Until today the Review Room
+// said "he did it himself" by omitting the sentence, which is the same field
+// this bridge is guarded on, so the office fell silent with him: Kyle got a
+// bell row and nothing else on 3 of the last 41 cuts. Everyone else on the
+// row is reached exactly as always.
 async function bridgeBroadcast(
   kind: string,
   sentence: string,
-  ctx: { roles: Role[]; notificationId: string },
+  ctx: { roles: Role[]; notificationId: string; ownerActed?: boolean },
   delivered: Map<string, Delivery>,
 ): Promise<void> {
   try {
@@ -1521,6 +1576,19 @@ async function bridgeBroadcast(
       if (!member?.active) continue;
       await logDelivery({ ...meta, teamMemberId: id, channel: "bell", status: "sent" });
       const want = (await notifyPrefsFor(id)).review_ready;
+      // HIS OWN UPLOAD (Sep 11 carve-out, now per person — Sep 21). Both
+      // channels, not just the text: a DM saying a video is waiting on him is
+      // as wrong as a buzz when he is the one who just filed it. He keeps the
+      // bell row, and `delivered` holds his name so no later target on the
+      // same event reaches him by another leg. The skip is written to the
+      // delivery log so a quiet phone here reads as this rule firing rather
+      // than as a bridge that broke.
+      if (ctx.ownerActed && owners.has(id)) {
+        const detail = "the owner filed this cut himself — his own legs suppressed";
+        if (want.slack) await logDelivery({ ...meta, teamMemberId: id, channel: "slack", status: "skipped", detail });
+        if (want.sms) await logDelivery({ ...meta, teamMemberId: id, channel: "sms", status: "skipped", detail });
+        continue;
+      }
       if (!want.slack && !want.sms) continue;
       // ownerSms was written for the owner's eyes; since Sep 16 this bridge
       // also hands it to the office, so a non-owner reads it scrubbed (review,

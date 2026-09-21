@@ -9,6 +9,7 @@ import { parseEvidence, EVIDENCE_STALE_HOURS, type ParsedEvidence } from "@/lib/
 import { etDateTime } from "@/lib/datetime";
 import { topazSettings } from "@/lib/settings";
 import { cutReleasedAt } from "@/lib/contentVideos";
+import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import type { TopazState } from "@/lib/topazJobs";
 
 // ===========================================================================
@@ -178,6 +179,26 @@ export type ReadyVideo = {
      *  today, and a path on screen that is not there any more is worse than no
      *  path. */
     dropboxPath: string | null;
+    /** THE SAME PATH, AS A DOOR RATHER THAN A STRING (Jordan, Sep 21 2026: "I
+     *  dont think we need to show the file path on dropbox, a link to the
+     *  dropbox would be better"). A /home deep link into the team's own
+     *  Dropbox — free to build, no API call, never null, and it discloses
+     *  nothing because it opens behind Dropbox's own sign-in.
+     *
+     *  NOT a shared link. dropboxSharedLink() is the other helper and it is
+     *  wrong here three times over: this app has NO sharing scope, so it
+     *  returns null in this tenant (see the note at the top of
+     *  /api/topaz/download/[id]); it is an HTTP round trip PER ROW on a card
+     *  that renders on two home screens on every request; and a shared link is
+     *  a public address for a client's unreleased video, which is the one
+     *  thing this lane must never mint.
+     *
+     *  Null only when there is no path at all. The path itself stays on the
+     *  row (as the link's title) because a link into a folder that has been
+     *  reorganised lands somewhere unhelpful, and the string is what somebody
+     *  searches with when it does — 322 N 62nd St's Final Video folder was
+     *  emptied out from under its own pointer. */
+    dropboxUrl: string | null;
     /** what this file is, in one line Kyle can act on */
     says: string;
     /** the reason the 1080p pass did not produce it, recorded at the time and
@@ -193,6 +214,31 @@ export type ReadyVideo = {
   aryeoTitle: string;
   /** the Review Room page for this cut, for a last look before it goes */
   reviewHref: string;
+  /** SOMEBODY HAS THE FILE (Jordan, Sep 21 2026).
+   *
+   *  Written when a person presses Download on this row, and it is the answer
+   *  to the question the card could not answer on Sep 21: three approved
+   *  videos — 5 Raymond Cir, 453 Cardigan Terrace, 5642 Limeport Rd — sat for
+   *  up to three days each, and a row somebody was working on that minute
+   *  looked exactly like a row nobody had touched. "Waiting 3 days" over a
+   *  file that was pulled ten minutes ago is the card telling a person off for
+   *  work they are in the middle of.
+   *
+   *  IT IS NOT EVIDENCE THE CLIENT HAS IT, and nothing in this module treats
+   *  it as any. Downloading a file is a step on the way to Aryeo, not arrival:
+   *  the row stays on the card, still says it has not gone, and still needs
+   *  "Mark as sent" or the hourly Aryeo proof pass. The stamp is corroboration
+   *  for that pass — "a person did take this file" — never a reason on its
+   *  own. Marking a video sent when it was not is the exact failure this whole
+   *  card exists to prevent. */
+  downloadedAtISO: string | null;
+  downloadedBy: string | null;
+  /** hours since that press, measured HERE rather than in the card — the card
+   *  is a client component now, and a `Date.now()` inside it would be read once
+   *  on the server and again in the browser, which is how a row renders one way
+   *  in the HTML and another way a heartbeat later. Same reason waitingHours is
+   *  a number and not a date. */
+  downloadedHoursAgo: number | null;
   /** WHAT ARYEO IS SHOWING ON THIS LISTING, ON THE ROW.
    *
    *  The card cannot prove that the video already up there is this file — see
@@ -634,6 +680,7 @@ const CANDIDATE_SELECT = {
   id: true, projectId: true, round: true, fileName: true, deliverableId: true, slot: true,
   assetPath: true, blobUrl: true, finalPath: true,
   decidedAt: true, decidedBy: true, completedAt: true, createdAt: true,
+  downloadedAt: true, downloadedBy: true,
   clientReleasedAt: true, clientRequestedAt: true,
   deliverable: { select: { type: true } },
   topazJob: {
@@ -786,6 +833,9 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
       aryeoUrl: aryeoJobUrl(sub.project),
       aryeoTitle: aryeoJobTitle(sub.project),
       reviewHref: `/review/${sub.projectId}?cut=${sub.id}`,
+      downloadedAtISO: sub.downloadedAt?.toISOString() ?? null,
+      downloadedBy: sub.downloadedBy,
+      downloadedHoursAgo: sub.downloadedAt ? Math.max(0, Math.floor((now - sub.downloadedAt.getTime()) / HOUR)) : null,
       listing: sub.project.aryeoListingId
         ? listingLine(
             sub,
@@ -1109,6 +1159,74 @@ function fileIdentity(name: string | null, fallback: string): string {
 
 export type SentResult = { ok: boolean; message: string; already?: boolean };
 
+// ---------------------------------------------------------------------------
+// "SOMEBODY HAS THE FILE" — the other write, and the smaller one.
+//
+// WHY IT EXISTS. Sep 21 2026: three approved videos had been sitting unsent for
+// up to three days — 5 Raymond Cir (Brie Martinez), 453 Cardigan Terrace (Renee
+// Ryan), 5642 Limeport Rd (Sarina Spinelli). Nobody had ignored them; the card
+// was on a screen Kyle could not get to. Fixing that surfaces a second problem
+// immediately: once a person IS working the list, a row they pulled a minute
+// ago and a row nobody has ever touched render identically, both shouting
+// "ready 3 days". So the press is recorded.
+//
+// WHAT IT IS NOT. It is not delivery, and this module will never let it become
+// delivery. A file on Kyle's machine is one step of three — download, upload to
+// Aryeo, deliver the listing — and only the last of those reaches the client.
+// The row stays on the card, keeps saying it has not gone, and still needs
+// "Mark as sent" or the hourly Aryeo proof pass in lib/aryeoDelivery. Nothing
+// here touches sentToClientAt, DeliverableOutput.deliveredAt, TopazJob or the
+// project's status, and nothing here messages anybody.
+// ---------------------------------------------------------------------------
+
+/**
+ * Record that a person took this cut's file.
+ *
+ * CALLED WHERE THE HAND-OFF IS KNOWN, not where it was requested (review, Sep
+ * 21 2026). It used to be fired from the card's onClick, before anything knew
+ * whether a file came back: /api/topaz/download has three real failure exits
+ * (409 not filed yet, 404 moved or renamed, 502 Dropbox refused), and the 404
+ * is not hypothetical — 322 N 62nd St's Final Video folder was emptied out from
+ * under its own pointer. Every one of those wrote "Downloaded by Kyle" for a
+ * file nobody had, first-press-wins meant nothing could correct it, and the
+ * four-hour quiet period then suppressed the red "waiting 3 days" on the one
+ * row where the file was actually missing. The two download routes now call
+ * this AFTER Dropbox has handed over a link or the store has started returning
+ * bytes.
+ *
+ * FIRST PRESS WINS, and that is deliberate. The question the row is answering
+ * is "has anybody picked this up, and when" — the age of the oldest press is
+ * what tells you whether somebody is on it or whether it went quiet again.
+ * Re-pressing Download (a second copy, a different machine) must not reset that
+ * clock or overwrite the first person's name. Idempotent in Postgres rather
+ * than by a read-then-write: the WHERE still carries `downloadedAt: null`, so
+ * two presses race and exactly one lands.
+ *
+ * Never throws and never blocks the download — the bytes are the point, the
+ * stamp is a courtesy. A row that fails to stamp reads as untouched, which is
+ * where every row was before Sep 21; a row that stamps a download that never
+ * happened is a lie the card cannot take back.
+ */
+export async function markCutDownloaded(
+  submissionId: string,
+  by: string | null,
+): Promise<{ ok: boolean; message: string; already?: boolean }> {
+  const claimed = await prisma.reviewSubmission
+    .updateMany({
+      where: { id: submissionId, downloadedAt: null },
+      data: { downloadedAt: new Date(), downloadedBy: by },
+    })
+    .catch(() => null);
+  if (!claimed) return { ok: false, message: "Couldn’t record that download." };
+  // count 0 = somebody (or this person, twice) already has it. `already` is a
+  // flag rather than a sentence because a caller decides whether to re-render
+  // the page on it, and a decision keyed on prose breaks the day the prose
+  // changes.
+  if (claimed.count === 0) return { ok: true, already: true, message: "Already recorded." };
+  return { ok: true, message: "Download recorded." };
+}
+
+
 /**
  * Record that THIS cut's file went to the client.
  *
@@ -1225,6 +1343,32 @@ function alreadySent(at: Date, by: string | null): SentResult {
 }
 
 /**
+ * A Dropbox link that opens THIS FILE — the only form of it in this module.
+ *
+ * dropboxWebUrl builds `/home/<path>` and its own comment says it takes a
+ * FOLDER; all ten other call sites in the repo pass one. Handed a file path it
+ * produced
+ * `…/05-Final-Video/Standard%20Cinematic%20Video%20-%20v1%20-%20FINAL%20(Topaz).mp4`
+ * under a link labelled "Open the Dropbox folder" — neither what the label
+ * promised nor a place Dropbox reliably lands you (review, Sep 21 2026).
+ *
+ * The shape below is the one this repo already found for linking to a file:
+ * open the PARENT folder and name the file in `?preview=`. /edit/[id] uses it
+ * for the music pick and music.actions.ts returns it, both because somebody had
+ * already discovered that `/home/<path to a file>` does not go where you want.
+ * Written once, here, so the card's three sources cannot drift apart — the
+ * three copies are how one of them would have been fixed and the others left.
+ *
+ * A path with no slash in it is not a real Dropbox path; it falls back rather
+ * than inventing an empty parent folder.
+ */
+function dropboxFileUrl(path: string): string {
+  const cut = path.lastIndexOf("/");
+  if (cut <= 0) return dropboxWebUrl(path);
+  return `${dropboxWebUrl(path.slice(0, cut))}?preview=${encodeURIComponent(path.slice(cut + 1))}`;
+}
+
+/**
  * Which file to send, where it comes from and why — in that order of
  * preference, because a finished 1080p pass is always the better file when one
  * exists, and the hub's own store is more dependable than a Dropbox path (322's
@@ -1247,6 +1391,7 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
       fileName: named(j.finalPath, sub.fileName),
       downloadHref: `/api/topaz/download/${j.id}`,
       dropboxPath: j.finalPath,
+      dropboxUrl: dropboxFileUrl(j.finalPath),
       says: "The 1080p pass finished — this is the file to send.",
       why: null,
     };
@@ -1284,6 +1429,10 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
       // that had been moved that morning, which is why the card treats a path
       // as a signpost and keeps the download on the route it controls.)
       dropboxPath: sub.finalPath ?? sub.assetPath ?? null,
+      dropboxUrl: (() => {
+        const p = sub.finalPath ?? sub.assetPath;
+        return p ? dropboxFileUrl(p) : null;
+      })(),
       says,
       why,
     };
@@ -1295,8 +1444,15 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
     return {
       source: "editor-dropbox",
       fileName: named(path, sub.fileName),
-      downloadHref: `/api/review/cut/${sub.id}/stream`,
+      // ?dl=1 on this branch too. The bytes come back as a Dropbox 302 either
+      // way, so it changes nothing about what is served — it is the DOWNLOAD
+      // INTENT the stream route reads before it stamps the hand-off. Without it
+      // this href is character-for-character the Review Room's playback URL,
+      // and an editor pressing play would have read as Kyle taking the file
+      // (review, Sep 21 2026).
+      downloadHref: `/api/review/cut/${sub.id}/stream?dl=1`,
       dropboxPath: path,
+      dropboxUrl: dropboxFileUrl(path),
       says,
       why,
     };

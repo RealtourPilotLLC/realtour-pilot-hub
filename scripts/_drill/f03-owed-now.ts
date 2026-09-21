@@ -242,13 +242,35 @@ async function live() {
   check("the gate never blocks less than it used to", blocked >= head, `${blocked} vs ${head}`);
   check("a unit shortfall is never news on live data", shortfallOnly === 0, `${shortfallOnly}`);
 
-  for (const title of ["5 Raymond Cir", "453 Cardigan", "5642 Limeport"]) {
-    const p = rows.find((r) => r.title.includes(title));
-    if (!p) { console.log(`  (not found: ${title})`); continue; }
+  // NAME NOTHING (Sep 21 2026). This block used to assert on three real jobs by
+  // street — 5 Raymond Cir, 453 Cardigan Terrace, 5642 Limeport Rd, the three
+  // the gate gained on Sep 20. Then 5 Raymond Cir was genuinely uploaded to
+  // Aryeo at 11:28 on Sep 21, Aryeo told the hub, and the gate correctly
+  // started saying "Everything ordered has landed" — so the drill went red for
+  // doing exactly the right thing. A drill that hard-codes live rows rots the
+  // moment the business moves, and a red drill nobody believes is worse than
+  // no drill.
+  //
+  // So it asserts the PROPERTY instead, over whatever the live book holds
+  // today: every job the engine says is still awaiting a send must be refused
+  // by the gate, and every job it says has landed must not be. That is the
+  // contract; the street names were only ever examples of it.
+  let owed = 0;
+  let sample = "";
+  for (const p of rows) {
+    const ev = parseEvidence(p.statusEvidence);
+    const awaiting = (ev?.awaitingSend ?? []).length > 0 || (ev?.missing ?? []).length > 0;
     const gate = outstandingForDelivery(p.statusEvidence);
-    console.log(`  ${p.title}: ${outstandingMessage(gate)}`);
-    check(`${title} is refused`, gate.categories.length > 0, "");
+    if (awaiting) {
+      owed++;
+      if (!sample) sample = `${p.title}: ${outstandingMessage(gate)}`;
+      check(`still owed, so refused: ${p.title.split(",")[0]}`, gate.categories.length > 0, "");
+    } else {
+      check(`nothing owed, so allowed: ${p.title.split(",")[0]}`, gate.categories.length === 0, JSON.stringify(gate.categories));
+    }
   }
+  console.log(`  jobs the engine says still owe a send: ${owed}`);
+  if (sample) console.log(`  e.g. ${sample}`);
   await prisma.$disconnect();
 }
 

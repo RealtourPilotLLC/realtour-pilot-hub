@@ -68,6 +68,42 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   cut_change_ask: "job_ping",
   cut_ready: "review_ready",
   review_submitted: "review_ready",
+  // THE 1080p FILE COMING BACK FROM TOPAZ (Sep 21 2026). Jordan, in one
+  // sentence: "I just want to make sure Kyle gets that view and is notified via
+  // Slack when a video is ready for review, and then when a video is back from
+  // Topaz." Two events, one want, so they ride one switch — the switch he is
+  // describing is "Video in review", and Kyle already has it on for Slack
+  // (his saved matrix reads review_ready {slack:true, sms:false}, saved
+  // 2026-09-18 20:54Z, and the three cut_ready broadcasts since then each wrote
+  // him a slack/sent leg).
+  //
+  // THE SEP 16 COMMENT ABOVE pingKyle SAID TO LEAVE THIS UNCLASSIFIED, and it
+  // was right at the time for a reason that has since been overtaken: folding
+  // it into "Job pings" would have put a live switch in front of Kyle that
+  // governed two unrelated things. What it could not foresee is that Jordan
+  // would name this event and "a video ready for review" as the same ask. The
+  // cost of leaving it unclassified was measured before touching it: 13
+  // topaz_ready bell legs to Kyle in 21 days, every one of them bell/sent and
+  // nothing else, while three approved videos sat unsent for up to three days.
+  //
+  // WHY review_ready AND NOT job_ping, which reads closer. job_ping's
+  // `appliesTo` is [Editor, Photographer] (notifyPrefDefaults.ts), so
+  // clearInapplicable() zeroes it for anyone in the Office group on every save
+  // — Kyle's stored row already reads job_ping {slack:false, sms:false}. Mapping
+  // there would have shipped a fix that delivers nothing and reads like one.
+  // review_ready's appliesTo already includes Office, so his switch is live and
+  // honest rather than a new inert toggle.
+  //
+  // WHAT THIS DOES NOT DO: the OWNER leg of the topaz_ready row carries no
+  // ownerSms, so bridgeBroadcast never runs for it and Jordan's phone is
+  // exactly as quiet as it was yesterday. He asked for Kyle.
+  //
+  // STILL OWED (notifyPrefDefaults.ts is not this pass's file): the card's
+  // label for this switch still says "A video waiting on review", and
+  // NOTIFY_KIND_LABELS has no entry for topaz_ready, so Settings will render
+  // "Last reached … (topaz ready)". Both are wording on a switch that now
+  // governs one more thing than it names.
+  topaz_ready: "review_ready",
   // Shoot feedback sent to the photographer's lane texted them before Sep 15
   
   // ("Shoot feedback — <street> → link"); keeping it under Shoot changes so the

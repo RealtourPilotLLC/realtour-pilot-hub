@@ -353,7 +353,11 @@ function ReadyChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?
         small ? "px-1.5 text-[10px]" : "px-2.5 py-0.5 text-xs",
         onBrand ? "bg-white text-success" : "bg-success text-white",
       )}
-      title={`${n} approved video${n === 1 ? " has" : "s have"} not gone to the client yet`}
+      // WHERE THE LIST IS, because since Sep 21 it is not in this block: the
+      // card sits at the top of the page for whoever is reading this. The chip
+      // stays because a shut block whose badge says "clear" must not be the
+      // last word on a client still waiting for a video.
+      title={`${n} approved video${n === 1 ? " has" : "s have"} not gone to the client yet — the card at the top of this page has them`}
     >
       <Send className={small ? "size-2.5" : "size-3"} /> {n} to send
     </span>
@@ -667,13 +671,28 @@ export default async function HomePage() {
 
   const nextShoot = shoots.week[0] ?? null;
 
-  // READY TO SEND, ON JORDAN'S SCREEN (his ask, Sep 17). Kyle meets this card
-  // inside Video Review, because his day is laid out as time blocks and that is
-  // the block he is already in. The owner's page is laid out by what needs
-  // attention, and a block that opens by itself only between 1:00 and 1:30 is
-  // not where he will notice a client waiting on a video we have already made.
+  // READY TO SEND, ON JORDAN'S SCREEN (his ask, Sep 17) — AND ON KYLE'S
+  // (Jordan, Sep 21: "I just want to make sure Kyle gets that view").
+  //
+  // The Sep 17 reasoning below is why the owner gets this at the top of his
+  // page rather than folded into a time block, and every word of it applies
+  // harder to Kyle, because sending these IS his job. It had exactly the
+  // failure it warns about. Kyle's copy lived inside the Video Review block —
+  // a <details> whose BLOCK_OPEN_POLICY is "now-only", so it is SHUT for him
+  // unless the clock is between 1:00 and 1:30 PM, and all he got the rest of
+  // the day was a small green chip on a closed header. On Sep 21 three
+  // approved videos had been sitting unsent for up to three days: 5 Raymond
+  // Cir (Brie Martinez), 453 Cardigan Terrace (Renee Ryan) and 5642 Limeport
+  // Rd (Sarina Spinelli), all three confirmed unsent on live data. Nobody
+  // ignored them. He could not see them.
+  //
+  // So the gate is the page's own audience now, not the owner: only OWNER and
+  // ADMIN reach Home at all (creatives are redirected at the top of this
+  // function, and a sessionless dev render reads as owner), which is exactly
+  // the pair the card's own buttons are guarded for.
+  //
   // Only when there is something: an empty card here would be furniture on
-  // every other day, and his page already tells him when a list is clear.
+  // every other day, and both layouts already say when a list is clear.
   // FIRST THING ON THE PAGE, AND LOUD (Jordan, Sep 17: "at the top of the
   // screen in a big bright card"). A finished video nobody has sent is a client
   // already waiting on work we have already done and already been paid for —
@@ -690,7 +709,7 @@ export default async function HomePage() {
   // border-[var(--brand)] all computed to rgba(214,222,240,0.09). Fixing that
   // globally would restyle every coloured border in the hub at once, which is
   // not a change to make in passing — so this card states its own colour.
-  const readySection = isOwner && readyCount > 0 ? (
+  const readySection = readyCount > 0 ? (
     <section
       id="ready-to-send"
       className="panel-shadow scroll-mt-32 overflow-hidden rounded-2xl border-2 bg-brand-soft/40 md:scroll-mt-28"
@@ -826,7 +845,7 @@ export default async function HomePage() {
             </nav>
             <div className="mt-2 space-y-2.5">
               {BLOCKS.map((b) => (
-                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} isOwner={isOwner} dayKey={todayKey} />
+                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} dayKey={todayKey} />
               ))}
             </div>
           </div>
@@ -896,7 +915,14 @@ export default async function HomePage() {
         ) : (
           <>
             {/* KYLE'S ORDER — the tower first: today's shoots, then the guided
-                blocks, and only then the decisions list and his task door. */}
+                blocks, and only then the decisions list and his task door.
+                ONE THING GOES ABOVE THE TOWER (Jordan, Sep 21): finished videos
+                nobody has sent. A shoot at 10am is work that hasn't started; an
+                approved video sitting in Dropbox is a client already waiting on
+                work we have done and been paid for — and it is his job to send
+                it. It renders on no other day, because readySection is null
+                when there is nothing to send. */}
+            {readySection}
             {shootsSection}
             {daySection}
             {needsSection}
@@ -1070,12 +1096,8 @@ function MoneyStat({ label, value, sub, tone }: { label: string; value: string; 
 
 type OffPageCounts = Awaited<ReturnType<typeof offPageNumbers>>;
 
-function Block({ def, current, d, board, counts, needsBelow, isOwner, dayKey }: {
+function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
   def: BlockDef; current: boolean; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
-  /** The owner meets "Ready to send" as its own card near the top of his page,
-   *  so the copy inside Video Review is his alone to skip — one card per person,
-   *  never the same list twice on one screen. */
-  isOwner: boolean;
   /** "What needs you" renders UNDER the blocks in Kyle's order (page order
    *  is by whose day it is) — the tower's jump link has to point that way. */
   needsBelow: boolean;
@@ -1146,15 +1168,20 @@ function Block({ def, current, d, board, counts, needsBelow, isOwner, dayKey }: 
       <div className="border-t border-border px-5 py-3.5">
         <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
         <div className="mt-3">
-          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} isOwner={isOwner} />
+          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} />
         </div>
       </div>
     </DayBlock>
   );
 }
 
-function BlockBody({ blockKey, d, board, counts, needsBelow, isOwner }: {
-  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean; isOwner: boolean;
+// `isOwner` used to be threaded down here for one thing only: whether the Video
+// Review block drew its own copy of the ready-to-send list. That is decided by
+// the list itself now (Jordan, Sep 21 — the top card is OWNER and ADMIN alike),
+// so the prop went with it. `needsBelow` still carries the same bit for the
+// blocks that genuinely lay out differently for the two people.
+function BlockBody({ blockKey, d, board, counts, needsBelow }: {
+  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean;
 }) {
   switch (blockKey) {
     case "tower":
@@ -1297,7 +1324,19 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, isOwner }: {
       return <LoopsCard d={d} />;
 
     case "video-review":
-      return <VideoReviewCard d={d} showReady={!isOwner} />;
+      // ONE CARD PER PERSON, NEVER THE SAME LIST TWICE ON ONE SCREEN. The
+      // ready list is at the top of the page now for OWNER and ADMIN alike
+      // (Jordan, Sep 21), so the block must not render a second copy of it —
+      // until Sep 21 that rule was spelled `!isOwner`, which was the same
+      // rule when only the owner had the top card.
+      //
+      // The one case where it still belongs here is when the top card isn't
+      // rendering at all: with nothing ready to send, readySection is null,
+      // and this is what keeps the "still in the 1080p pass" footnote on
+      // screen. A render that stalls must not be invisible on the only screen
+      // that tracks finished video, which is why ReadyToSendCard draws that
+      // footnote even with an empty list.
+      return <VideoReviewCard d={d} showReady={d.readySend.ready.length === 0} />;
 
     case "lunch":
       return <p className="text-sm text-muted">Eat. The hub holds the fort.</p>;

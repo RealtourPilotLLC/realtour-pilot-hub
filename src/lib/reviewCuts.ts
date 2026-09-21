@@ -84,8 +84,24 @@ export const streamUrlFor = (submissionId: string) => `/api/review/cut/${submiss
  * The owner's line is the exact sentence his phone gets (notify.ts prefixes
  * it): "Video in review — 1033 Preserve Ln (Kim, v2). <link to the cut>".
  * `ownerActed` = the owner put the cut there himself (a vendor's file from
- * his own login): the office still gets the bell, his phone stays quiet —
- * he knows (reviewer, Sep 11). Best-effort like every bell: never throws.
+ * his own login): his phone and his DM stay quiet, he knows (reviewer,
+ * Sep 11) — and ONLY his, which is the Sep 21 correction below.
+ * Best-effort like every bell: never throws.
+ *
+ * THE CARVE-OUT USED TO SILENCE THE WHOLE OFFICE WITH HIM (Sep 21 2026).
+ * Until today this emitter dropped the `ownerSms` sentence entirely when the
+ * owner acted. But the sentence is what the broadcast leg is GUARDED on —
+ * notifyInApp only calls bridgeBroadcast when a target carries one — so no
+ * sentence meant no bridge at all, and Kyle got a bell row and nothing else on
+ * a cut Jordan uploaded himself. That is precisely the silence the Ready-to-
+ * send work exists to end ("Kyle gets Slacked when a video is ready for
+ * review"). Measured on production the same day: 3 of the last 41
+ * ReviewSubmission rows in 60 days carry no editor key and the name "Jordan
+ * Spackman", which smsPrefs.ownerActedBy resolves true — one cut in fourteen
+ * reaching nobody.
+ * So the sentence always goes now, and the suppression moved to where it can
+ * name a person: bridgeBroadcast skips the OWNER roster rows for this row and
+ * reaches the office normally.
  *
  * `dedupeSuffix` (Sep 16, Jordan: "it would also be cool if they could
  * reassign that video to a different project") is the one thing allowed to
@@ -135,10 +151,11 @@ export async function announceCutInReview(input: {
       targets: [
         {
           roles: ["OWNER", "ADMIN"],
-          // No sentence = no text (notify.ts): the owner's own upload is bell-only.
-          ...(input.ownerActed
-            ? {}
-            : { ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}` }),
+          ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}`,
+          // …and the owner's own upload takes his name off the fan-out inside
+          // the bridge, one person at a time, instead of taking the sentence
+          // away from everybody (see the note above this function).
+          ...(input.ownerActed ? { ownerActed: true } : {}),
         },
         ...(shooter ? [shooter] : []),
       ],

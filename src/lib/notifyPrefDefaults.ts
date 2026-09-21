@@ -47,7 +47,12 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 //   review_ready    — the Review Room's OWNER+ADMIN broadcast, bridged to
 //                     the owner and the office (notify.ts bridgeBroadcast) —
 //                     and, since Sep 18, the person-addressed cut_ready row
-//                     for the photographer whose shoot the cut came from;
+//                     for the photographer whose shoot the cut came from.
+//                     Sep 21: it also governs topaz_ready, Kyle's row for the
+//                     1080p file coming back from Topaz (notifyPrefs.ts
+//                     KIND_TO_EVENT), which is why the label below names both;
+//                     nothing addresses a photographer or the owner's phone
+//                     for that one, so the groups on the row are unchanged;
 //   shoot_change    — the assigned photographer, the owner because he
 //                     shoots, and the OFFICE: tasks.ts creativeAlertTargets
 //                     addresses whoever carries TeamMember.creativeManager
@@ -58,7 +63,10 @@ export const NOTIFY_EVENTS = [
   { key: "mention", label: "Tagged in a message, or replied to", short: "Tags", appliesTo: ["Owner", "Editor", "Photographer", "Office"] },
   { key: "project_message", label: "A message posted on one of their jobs", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
   { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, reassigned", short: "Job pings", appliesTo: ["Editor", "Photographer"] },
-  { key: "review_ready", label: "A video waiting on review", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
+  // Sep 21 2026: the label said "A video waiting on review" while the switch
+  // had just been given a second job — the 1080p file landing back from Topaz
+  // — so a person turning it off had no way to know what else went quiet.
+  { key: "review_ready", label: "A video waiting on review, or a 1080p file back from Topaz", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
   { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
 ] as const satisfies readonly { key: string; label: string; short: string; appliesTo: readonly NotifyGroup[] }[];
 
@@ -102,6 +110,9 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   cut_change_ask: "change asked on a cut",
   cut_ready: "video in review",
   review_submitted: "video in review",
+  // Sep 21 2026: without this the "Last reached" line rendered the raw kind as
+  // "(topaz ready)", which is not how anyone here says it.
+  topaz_ready: "video back from Topaz",
   review_feedback: "shoot feedback",
   appointment_change: "shoot change",
   order_canceled: "cancelled",

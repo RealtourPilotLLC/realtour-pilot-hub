@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
-import { actualFolderPaths } from "@/lib/dropboxFolders";
+import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
 import { aryeoJobUrl } from "@/lib/aryeoUrl";
 import { appBase } from "@/lib/appUrl";
@@ -1912,7 +1912,7 @@ function derivedCutName(job: NonNullable<JobRow>): string {
 // F. THE PING TO KYLE.
 //
 // Everything he needs to finish the job by hand, in one card: the street, the
-// file's name, where it is in Dropbox, and a direct link to the RIGHT Aryeo
+// file's name, a link that opens its Dropbox folder, and a direct link to the RIGHT Aryeo
 // record (aryeoJobUrl prefers the listing and falls back to the order — an
 // order-only job has no listing to open). Plus the plain truth about why this
 // step is manual, so it never reads as something the hub forgot to do.
@@ -1935,6 +1935,23 @@ function derivedCutName(job: NonNullable<JobRow>): string {
 // itself arrives as a card on his queue, which is where he works, and the card
 // is the thing he ticks. If Jordan later wants this to chase somebody, it wants
 // its own switch on that card, not a borrowed one.
+//
+// ^ SUPERSEDED FOR topaz_ready ON SEP 21 2026, and kept because its reasoning
+// is still why topaz_PROBLEM is bell-only. Jordan asked for the last sentence
+// of it, in his own words: "notified via Slack when a video is ready for
+// review, and then when a video is back from Topaz". He named this event and
+// "a video ready for review" as ONE want, so it rides that one switch —
+// review_ready, whose `appliesTo` already includes the Office group Kyle is
+// in, rather than job_ping, which is greyed out for him and would have
+// delivered nothing. topaz_ready now has a slackDm sentence below and reaches
+// him on whichever channels his own row names. See notifyPrefs.ts
+// KIND_TO_EVENT and notify.ts ROUTINE_KINDS for the full reasoning and for
+// what is still owed on the card's wording. topaz_problem is unchanged.
+//
+// THE INCIDENT (Sep 21 2026): three approved videos — 5 Raymond Cir, 453
+// Cardigan Terrace, 5642 Limeport Rd — sat unsent for up to three days.
+// Nobody ignored them; the only thing that had told Kyle about them was a bell
+// row on a screen he was not on.
 // ---------------------------------------------------------------------------
 async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: boolean): Promise<string | null> {
   const project = job.project;
@@ -1956,6 +1973,15 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   // card can sit overnight.
   const downloadUrl = `${appBase()}/api/topaz/download/${job.id}`;
 
+  // A LINK, NOT A PATH (Jordan, Sep 21 2026: "I dont think we need to show the
+  // file path on dropbox, a link to the dropbox would be better"). The card
+  // used to print the raw `/RealTour Pilot/Listings/…/Final Video` path, which
+  // is something to retype rather than something to press. dropboxWebUrl opens
+  // the same folder in the Dropbox web app, in whichever team space the person
+  // has. The file NAME stays: the folder holds the superseded original too, so
+  // Kyle still has to know which of the two he is after.
+  const folderUrl = dropboxWebUrl(folder);
+
   const lines = [
     `The 1080p version of ${street} is ready to upload.`,
     ``,
@@ -1963,7 +1989,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     ``,
     `It's also in Dropbox, in this job's Final Video folder:`,
     `  ${fileName}`,
-    `  ${folder}`,
+    `  Open the folder: ${folderUrl}`,
     ``,
     originalMoved
       ? `That is the only video left in that folder — the editor's original is safe in the "superseded" subfolder underneath, in case it's ever needed.`
@@ -2011,18 +2037,51 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   try {
     const { notifyInApp } = await import("@/lib/notify");
     const href = taskId ? `/tasks?task=${taskId}` : `/projects/${job.projectId}`;
+    // The sentence Kyle's Slack DM carries (Sep 21 2026). The bridge will fall
+    // back to "title → link" without one, and that is a notification about a
+    // notification: he would have to open the hub to learn the two links he
+    // actually needs. Everything he presses to finish the job is in these four
+    // lines, so the DM is the work, not a pointer at it. No money in it, by
+    // construction — this lane never carries any, and the bridge scrubs a
+    // non-owner's copy regardless.
+    const slackDm = [
+      `The 1080p version of ${street} is ready to upload to Aryeo.`,
+      `Download it: ${downloadUrl}`,
+      `Dropbox folder: ${folderUrl}`,
+      aryeo ? `Aryeo listing: ${aryeo}` : `No Aryeo listing on this job, so it has to be found by address.`,
+      `Full steps, and Complete when it's delivered: ${appBase()}${href}`,
+    ].join("\n");
     await notifyInApp({
       kind: "topaz_ready",
       title: `1080p video ready to upload — ${street}`,
       body: `${fileName} is in the job's Final Video folder. Aryeo can't be uploaded to automatically — this one's by hand.`,
       href,
       // Kyle by roster id rather than by role, so one person gets one row and
-      // his own preferences get the chance to decide the channel. Today that
-      // decision is "the bell", because this kind is unclassified — see the
-      // block above pingKyle for why that is deliberate and what it costs
-      // (nothing: the work itself arrives as a card on his queue).
+      // his own preferences get the chance to decide the channel.
+      //
+      // WHERE THIS LANDS, as of Sep 21 2026: notifyPrefs' KIND_TO_EVENT now
+      // maps topaz_ready to review_ready, so this row goes through the same
+      // bridge a "cut ready" goes through and reaches Kyle on whichever
+      // channels his own "Video in review" switch names. His saved matrix says
+      // Slack, which is exactly what Jordan asked for ("notified via Slack …
+      // when a video is back from Topaz"). Until today it was bell-only: 13
+      // topaz_ready legs to him in 21 days, every one of them bell and nothing
+      // else.
+      //
+      // THE OWNER ROW BELOW STAYS BELL-ONLY ON PURPOSE. A role broadcast only
+      // reaches a phone or a DM when it carries an `ownerSms` sentence, and
+      // this one deliberately does not: Jordan's review_ready row is
+      // {slack:true, sms:true}, so adding one would start texting him on every
+      // render. He asked for Kyle to be told, not for a second pager.
+      //
+      // AND IT IS ONE PING, NOT TWO. Checked before shipping: nothing else
+      // fires at this moment. The SmartTask above is a direct upsert with no
+      // emitter behind it (zero task_assigned rows in production in 21 days),
+      // topaz_problem is the failure path, and the cut_ready for this same
+      // video fired when the cut went IN for review, an hour and a state
+      // change earlier.
       targets: kyle
-        ? [{ roles: ["ADMIN"], userKey: `tm:${kyle.id}`, href }, { roles: ["OWNER"], href }]
+        ? [{ roles: ["ADMIN"], userKey: `tm:${kyle.id}`, href, slackDm }, { roles: ["OWNER"], href }]
         : [{ roles: ["ADMIN"], href }, { roles: ["OWNER"], href }],
       dedupeKey: `topaz-ready-${job.id}`,
     });
