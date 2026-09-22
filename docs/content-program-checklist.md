@@ -34,6 +34,31 @@ Jordan account and approves rollout.
 | Phase 0 | `ee2c0a2` | This checklist and the provider capability matrix |
 | 1 | `a94d18a` | Preparation clock (48 weekday hours from call end), reminder calendar, production anchor per session |
 | 2 | `b7b6738` | Per-product videographer eligibility from Aryeo, honest production dates, Pro as two confirmed sessions, Stripe activation to portal access, teammates, Jordan test account |
+| 3a | `e679460` | **The drafting chain.** Neither planning path reached a script: SCRIPT_DRAFT was never enqueued by anything, and `submitInterview` set a status while the portal told the client "we'll draft the script from your answers". `contentDrafting.ts` settles both, as a sweep behind the new `script_drafting` switch. Staff see "Still owed this month" with the honest reason per topic. |
+| 3b | `58c77e0` | **The client's own verdict on a script (F09).** Pinned to the version they read, so an edit after their yes brings the buttons back. Two records: the ledger timeline (CLIENT_APPROVED / CLIENT_CHANGES with the actor) and a ScriptSuggestion work item in the queue staff already open. A change request is never a model call. |
+| 3c | `5e05b79` | **Per-topic planning questions (F10).** The six house templates each say "per-topic wording is the AI's job" and nothing did it. The roles, order and gap rules stay the policy's; only the sentences change, and anything thin falls back. Runs ahead of the client. |
+| A07 | `35042d2` | **Proximity no longer confirms a content session.** Positive evidence required (provider id / month link / content deliverable); two candidates go AMBIGUOUS to Kyle instead of a guess. 18 checks, pure function. |
+| A01–A06 | `c359ce4` | **Five audit findings of one shape** — a write that failed, recorded as if it had gone well. Revision evidence reports `known:false`; "marked sent" converges and repairs; the editor brief appends under a lock; an ambiguous send is not a failure; the SMS digest carries only complete lines; Slack task processing retries. |
+| W01 | `420f4fd` `7c51a40` | **Correcting my own note.** `LISTING_CHANGED` is real and already handled better than the handler I wrote — reverted. Its `videos` array is EMPTY on the events we have, so it is not a media-added signal either. |
+| 4a | `6da0549` | **F23 — the client library stops being keyed on an array position.** Re-keyed onto Aryeo's own video id where the row's URL provably matches one video: 155 of 159, 0 collisions. |
+| 4b | `e6d7c9f` | **F12 — the photographer says WHICH topics they filmed**, not how many videos. 166 filming dates were derived and 0 confirmed by anyone who was there. Nothing pre-ticked; an unticked topic was not filmed; a missing appointment end time raises a verification flag rather than a date. |
+| 4c | `c5c52e3` | **F18 — all three portal-profile boxes now reach the team.** Working preferences never reached the editor; none of the three ever reached the photographer. |
+| 4d | `6a7baf8` | **F14 — an approved cut that never reached the client's library is now found.** Repaired 2 of 8 in 45 days; one was a real client's video, absent from their portal since Aug 31. |
+| 4e | `611714c` | **A send floor under the outbox**, so a synthetic client cannot text a real handset. Narrow by design: real clients untouched. 17 checks against the live database on a read-only connection. |
+| — | `(this)` | The board asks for the strategy call unless the client is visibly planning the month in writing. Blast radius measured: 3 of 31 live months, all TEST. |
+
+### Verified on the Jordan test account (Sep 22)
+
+Created with `create-test-client.ts --jordan --phone --scenarios`: client
+`cmucrtvy100009kpoprlsryjd`, enrollment `cmucrtwco00019kpodjl6hcbe`, month 2026-09.
+
+Walked end to end in the browser: portal home / topics / strategy / schedule /
+resources / profile; the per-topic questions; **draft → approve → release →
+the client presses "I'll film this" → the staff chip turns "client signed off"**;
+then a change request whose exact words land on the ledger and in the suggestion
+queue. Mobile (375×812) checked on the same journey. §25 acceptance:
+**6 PASS, 0 FAIL, 4 NOT YET** (each NOT YET is an automation switch that is off
+or a fixture nobody stood up — none is a defect).
 
 ### Still open after batch 2
 
