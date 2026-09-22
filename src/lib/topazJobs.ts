@@ -2286,9 +2286,14 @@ export async function markTopazDelivered(jobId: string, by?: string | null): Pro
       .catch(() => {});
   }
 
-  if (incomplete) return { ok: true, message: `Marked delivered, but ${incomplete}.`, incomplete };
-  if (!first) return { ok: true, message: repaired ? "Already marked delivered — the upload task it left open is now closed." : "Already marked delivered." };
-  return { ok: true, message: "Marked delivered." };
+  // `repaired` rides back on the RESULT, not just in the sentence — the caller
+  // (markVideoSent) reports it to the person who pressed the button, and an
+  // earlier cut of this computed the flag and then dropped it on the way out,
+  // so a repair really happened and nobody was told. Caught by
+  // scripts/_drill/a02-a04-delivery-truth.ts.
+  if (incomplete) return { ok: true, message: `Marked delivered, but ${incomplete}.`, repaired, incomplete };
+  if (!first) return { ok: true, message: repaired ? "Already marked delivered — the upload task it left open is now closed." : "Already marked delivered.", repaired };
+  return { ok: true, message: "Marked delivered.", repaired };
 }
 
 export type TopazJobView = {

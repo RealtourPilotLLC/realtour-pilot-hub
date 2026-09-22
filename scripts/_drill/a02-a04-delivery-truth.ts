@@ -135,7 +135,7 @@ async function main() {
     data: { taskType: "todo", title: "Upload the 1080p file", status: "OPEN", projectId: project.id, dedupeKey: `topaz-upload-${sub.id}` },
     select: { id: true },
   });
-  const job = await prisma.topazJob.create({
+  await prisma.topazJob.create({
     data: {
       submissionId: sub.id, projectId: project.id, state: "done", taskId: task.id,
       finalPath: "/Topaz/12-oak-1080p.mp4", savedAt: new Date(), finishedAt: new Date(),
@@ -187,8 +187,16 @@ async function main() {
       data: { taskType: "todo", title: "Upload another 1080p file", status: "OPEN", projectId: project.id, dedupeKey: "topaz-upload-2" },
       select: { id: true },
     });
+    // Its own cut: TopazJob.submissionId is unique, one pass per round.
+    const sub2 = await prisma.reviewSubmission.create({
+      data: {
+        projectId: project.id, deliverableId: deliverable.id, slot: 1, round: 2, status: "APPROVED",
+        fileName: "12-oak-st-v2.mp4", assetPath: "/cuts/12-oak-v2.mp4", sizeBytes: 100, decidedAt: new Date(), decidedBy: "jordan",
+      },
+      select: { id: true },
+    });
     const j2 = await prisma.topazJob.create({
-      data: { submissionId: sub.id, projectId: project.id, state: "done", taskId: t2.id, finalPath: "/Topaz/b.mp4", deliveredAt: new Date(), deliveredBy: "kyle" },
+      data: { submissionId: sub2.id, projectId: project.id, state: "done", taskId: t2.id, finalPath: "/Topaz/b.mp4", deliveredAt: new Date(), deliveredBy: "kyle" },
       select: { id: true },
     });
     const r = await markTopazDelivered(j2.id, "kyle");

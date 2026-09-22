@@ -799,14 +799,26 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
         // It costs nothing on a job with nothing outstanding, which is almost
         // all of them; see proveListingNow for the three guards in front of it.
         //
-        // WORTH BEING PLAIN ABOUT WHAT REACHES HERE TODAY: nothing. In the ten
-        // days since the subscriptions were recreated on Sep 18, Aryeo has sent
-        // LISTING_CREATED, LISTING_DELIVERED and LISTING_CONTENT_DOWNLOADED and
-        // not one LISTING_UPDATED — and there is no "media added" activity to
-        // subscribe to at all. So a video appearing on an already-delivered
-        // listing produces no event of its own, and this branch is the place it
-        // would land on the day Aryeo adds one. Until then the download handler
-        // is what catches it early, and the hourly sweep is the backstop.
+        // WHAT ACTUALLY REACHES HERE (measured read-only, Sep 22 2026, 45 days):
+        // LISTING_CONTENT_DOWNLOADED 100, LISTING_DELIVERED 22, LISTING_CREATED
+        // 7, LISTING_CHANGED 5 — every one of them PROCESSED. So this branch is
+        // not theoretical: a flat LISTING payload is classified LISTING_CHANGED
+        // by classifyAryeoPayload and lands here, and proveListingNow below is
+        // the same answer the hourly sweep and the delivery handler reach.
+        //
+        // TWO THINGS THE OLD NOTE HERE GOT WRONG, and they pull in opposite
+        // directions, so both are worth saying.
+        //   · "There is no media-added activity to subscribe to at all" — there
+        //     is no LISTING_UPDATED, but LISTING_CHANGED exists, is subscribed,
+        //     arrives, and comes through this branch.
+        //   · It is still not a media-added SIGNAL. The `videos` array on the
+        //     Sep 3 payloads is present and EMPTY (videos[0]), and the Sep 6
+        //     ones carry no videos key at all, so the body never evidenced a
+        //     video. Nothing here reads it: proveListingNow asks Aryeo. And all
+        //     five of those events predate the Sep 18 re-registration — zero
+        //     have arrived since — so in practice the download handler is what
+        //     catches a new video early and the hourly sweep is the backstop,
+        //     exactly as before.
         try {
           const proof = await proveListingNow(id, `aryeo ${name}`);
           if (proof.closed > 0 || proof.stamped > 0) console.info(`[webhook] ${proof.note}`);
