@@ -707,8 +707,32 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
   const rows = await prisma.pendingSms.findMany({
     where: { teamMemberId, ...dueSmsWhere() },
     orderBy: { createdAt: "asc" },
+    // Bounded: a member with a long backlog (Kim's 63 lines sat unsent for a
+    // week) otherwise had every id read and re-read on a five-minute tick. Far
+    // more than one text's worth, so the pack below is never starved.
+    take: 60,
   });
   if (rows.length === 0) return "none";
+
+  // ---------------------------------------------------------------------
+  // R3 (follow-up audit, Sep 22 2026) — PACK FIRST, THEN CLAIM ONLY WHAT FITS.
+  //
+  // The A01 fix claimed every due row, packed, and then RELEASED the overflow
+  // with `.catch(() => {})` before sending anyway. That introduced a new way to
+  // strand an update, and it is worse than the bug it replaced: if the release
+  // fails, the omitted rows stay claimed under the SAME claim stamp as a digest
+  // that really was sent — so recoverUnclaimedStaffSms reconstructs the outbox
+  // key, finds the outbox owns it, and skips those rows forever. Six sent, six
+  // stranded, and nothing ever looks again.
+  //
+  // There is no release to fail if there is no overflow to release. The pack
+  // decides the batch BEFORE anything is claimed; the rows that do not fit are
+  // simply never touched and are still due on the next tick.
+  // ---------------------------------------------------------------------
+  const plan = packStaffDigest(rows.map((r) => r.line));
+  if (plan.count === 0) return "none";
+  const wanted = rows.slice(0, plan.count);
+
   // CLAIM before sending — the immediate flush and the 5-minute cron can race
   // on the same unsent rows and text the digest twice (audit). The claim stamp
   // is a unique instant; the body is then built from EXACTLY the rows this
@@ -716,7 +740,7 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
   // (review finding), and an unclaim can only release our own.
   const claimStamp = new Date();
   const claimed = await prisma.pendingSms.updateMany({
-    where: { id: { in: rows.map((r) => r.id) }, sentAt: null },
+    where: { id: { in: wanted.map((r) => r.id) }, sentAt: null },
     data: { sentAt: claimStamp },
   });
   if (claimed.count === 0) return "none";
@@ -747,15 +771,25 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     await logAll("failed", "no OpenPhone number to send from");
     return "none";
   }
-  // A01: pack COMPLETE lines only, and send exactly what the record will claim.
+  // A01 + R3: the body is packed from exactly the rows this claim WON.
+  //
+  // `mine` is a subset of `wanted`, which already packed — and a subset always
+  // still fits, because dropping a line shortens the body and can only shrink
+  // the "N updates" header (and at N=1 the shorter single-line form is used).
+  // So this repack never leaves an overflow behind; the assertion below says so
+  // out loud rather than trusting the reasoning.
   const packed = packStaffDigest(mine.map((r) => r.line));
-  sending = mine.slice(0, packed.count);
-  const deferred = mine.slice(packed.count);
-  if (deferred.length > 0) {
-    // Back in the queue, unstamped. They are the NEXT digest, not a lost one —
-    // and they are not logged as delivered, which is the whole of A01.
-    await prisma.pendingSms.updateMany({ where: { id: { in: deferred.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
-    console.info(`flushMemberSms: ${teamMemberId} — ${packed.count} of ${mine.length} line(s) fit this text; ${deferred.length} put back for the next one.`);
+  if (packed.count !== mine.length) {
+    // Unreachable by the argument above. If it ever happens, the rows we cannot
+    // carry go back to the queue BEFORE anything is sent, and the send is
+    // abandoned for this tick — never sent-with-a-silent-remainder.
+    await prisma.pendingSms.updateMany({ where: { id: { in: mine.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
+    console.warn(`flushMemberSms: ${teamMemberId} — repack shrank ${mine.length} claimed line(s) to ${packed.count}; released them all and sent nothing.`);
+    return "none";
+  }
+  sending = mine;
+  if (rows.length > mine.length) {
+    console.info(`flushMemberSms: ${teamMemberId} — ${mine.length} of ${rows.length} due line(s) fit this text; the rest were never claimed and are due on the next tick.`);
   }
   const body = packed.body;
   // Through the outbox (RTP-08): one durable row per digest, keyed on the claim
@@ -798,6 +832,22 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
   if (res.outcome === "accepted") {
     // Sent — one row per line so "Last reached: text" names the kind that went.
     await logAll("sent", res.providerId ? `op-${res.providerId}` : undefined);
+    // R3 — THE CHECKPOINT, and ONLY on `accepted`.
+    //
+    // recoverUnclaimedStaffSms pages through claimed rows in a multi-day window
+    // and asks the outbox about each. Settled rows never leave that window, so
+    // a busy week fills the page with history and a genuine orphan behind it is
+    // never reached — ordering alone cannot fix that, because the settled rows
+    // are the OLDEST. This marks a row as answered for good so the scan can
+    // query exactly the orphans.
+    //
+    // ACCEPTED is the only state that may be written here. markFailed,
+    // retryHeld and recoverExpiredLeases all RELEASE the dedupeKey (set it to
+    // null) on purpose, so "the outbox holds this key" is a temporary fact for
+    // every other state — and turning a temporary fact into a permanent marker
+    // would reintroduce this finding's exact shape under a new name. markAccepted
+    // never touches the key.
+    await settleStaffSms(sending.map((r) => r.id));
     return "sent";
   }
   if (res.outcome === "failed") {
@@ -837,6 +887,18 @@ const FLUSH_REQUESTED_BY = "notify:flushMemberSms";
  *  Lines claimed in the last 15 minutes are left alone — their flush may still
  *  be in flight — and anything we cannot read is left claimed, because a stuck
  *  digest beats a duplicate one. */
+/** Mark digest lines as answered for good. Only ever called where the outbox's
+ *  ownership of the key is permanent — see the note at the accepted branch. */
+async function settleStaffSms(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  await prisma.pendingSms.updateMany({ where: { id: { in: ids }, settledAt: null }, data: { settledAt: new Date() } }).catch(() => {
+    // A failed stamp is SAFE in the only direction that matters: the row stays
+    // unsettled, the scan looks at it again, finds the accepted outbox row and
+    // stamps it then. The marker is an optimisation over a correct scan, never
+    // a substitute for one.
+  });
+}
+
 async function recoverUnclaimedStaffSms(): Promise<number> {
   const { outboxStateOf, staffKey } = await import("@/lib/outbox");
   const firstStaff = await prisma.outboxMessage
@@ -846,14 +908,20 @@ async function recoverUnclaimedStaffSms(): Promise<number> {
   const from = new Date(firstStaff.createdAt.getTime() + 5 * 60_000);
   const until = new Date(Date.now() - 15 * 60_000);
   if (from >= until) return 0;
-  // OLDEST FIRST, and bounded (A01's related recovery note, Sep 21 audit). This
-  // read had no ordering at all and took the first 200 rows Postgres happened to
-  // return — successful flushes included. A busy week could therefore fill the
-  // page with rows the outbox already owns and hide a genuine orphan behind
-  // them, indefinitely. Oldest-first means the orphan that has waited longest is
-  // always on the page, and each pass that recovers one frees its slot.
+  // R3 — THE PAGE HOLDS ORPHANS, NOT HISTORY.
+  //
+  // This read took a page of 200 claimed rows in the window with no settled
+  // predicate. Settled rows stay in that window for days and they are the
+  // OLDEST, so ordering them first — which is what the A01 pass added — puts
+  // the history at the front of the page and leaves a later orphan permanently
+  // out of reach. `settledAt: null` is the fix: a digest that provably went is
+  // marked once and never competes for a slot again.
+  //
+  // Rows written before that column existed have a null marker, which is
+  // correct and self-limiting: each is examined once, found to be owned by an
+  // accepted outbox row, stamped by the loop below, and never seen again.
   const claimed = await prisma.pendingSms
-    .findMany({ where: { sentAt: { gt: from, lt: until }, skippedAt: null }, select: { id: true, teamMemberId: true, sentAt: true }, orderBy: { sentAt: "asc" }, take: 200 })
+    .findMany({ where: { sentAt: { gt: from, lt: until }, skippedAt: null, settledAt: null }, select: { id: true, teamMemberId: true, sentAt: true }, orderBy: { sentAt: "asc" }, take: 200 })
     .catch(() => [] as { id: string; teamMemberId: string; sentAt: Date | null }[]);
   if (claimed.length === 0) return 0;
   // One group per flush: the claim stamp names it, which is what makes the
@@ -868,13 +936,21 @@ async function recoverUnclaimedStaffSms(): Promise<number> {
   }
   let recovered = 0;
   for (const [key, g] of byFlush) {
-    let held: unknown;
+    let held: Awaited<ReturnType<typeof outboxStateOf>> = null;
     try {
       held = await outboxStateOf(key);
     } catch {
       continue; // can't tell → leave it claimed
     }
-    if (held) continue; // the outbox owns this flush: accepted, held, or queued for the drain
+    if (held) {
+      // The outbox owns this flush. Stamp it out of the scan ONLY when the
+      // answer is permanent: an accepted row keeps its dedupeKey for ever,
+      // while pending / attempting / unknown can all have their identity
+      // released again (markFailed, retryHeld, recoverExpiredLeases) — so
+      // those keep today's behaviour and stay re-examinable on the next pass.
+      if (held.state === "accepted") await settleStaffSms(g.ids);
+      continue;
+    }
     const back = await prisma.pendingSms
       .updateMany({ where: { id: { in: g.ids }, sentAt: g.sentAt }, data: { sentAt: null } })
       .catch(() => ({ count: 0 }));

@@ -2702,6 +2702,23 @@ model PendingSms {
   // of being retried every five minutes.
   skippedAt    DateTime?
   skipReason   String?
+  /// R3 (Sep 22 2026) — THE CHECKPOINT recoverUnclaimedStaffSms NEEDS.
+  ///
+  /// Recovery looked for rows that are CLAIMED (sentAt set) but whose flush
+  /// never reached the outbox, by reading a page of 200 claimed rows in the
+  /// window and asking the outbox about each. Settled rows stay in that window
+  /// for days, so a busy week fills the page with claims the outbox already
+  /// owns and a genuine orphan behind them is never reached. Ordering alone
+  /// does not fix it — the settled rows are the OLDEST ones.
+  ///
+  /// This is stamped the moment a flush resolves (accepted, or held by the
+  /// outbox), and by recovery itself when it confirms the outbox owns a row.
+  /// Recovery then queries exactly the orphans and the page can never fill with
+  /// history. Null on every pre-existing row, which is correct: each is checked
+  /// once, then stamped, and never re-examined.
+  settledAt    DateTime?
+
+  @@index([settledAt])
 
   @@index([teamMemberId, sentAt])
   @@index([sentAt])
@@ -2768,6 +2785,13 @@ model OutboxMessage {
   providerError String?
   dedupeKey     String?   @unique // one send per (what, whom, when) — a unique violation is a duplicate claim, nothing else
   requestedBy   String? // the person, or the sweep that queued it
+  /// R4 (Sep 22 2026). A manual text can be a GROUP and can carry attachments,
+  /// and those were the two reasons the comms surface called OpenPhone directly
+  /// instead of going through here — which is why a manual send had no durable
+  /// intent and no honest unknown state. `toRef` stays THE recipient (masking,
+  /// indexing and every existing reader keep working); these carry the rest.
+  extraToRefsJson String? // JSON string[] of additional 10-digit keys — a group text
+  mediaUrlsJson   String? // JSON string[] of attachment URLs
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   acceptedAt    DateTime?
