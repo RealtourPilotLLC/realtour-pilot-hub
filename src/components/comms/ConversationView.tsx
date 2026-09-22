@@ -25,6 +25,11 @@ export type ChatItem = {
   status?: string;
   media?: string[];
   from?: string;
+  /**
+   * R4: the provider did not confirm this one. The words exist in the outbox
+   * and may well have been delivered — shown, and marked, rather than dropped.
+   */
+  unconfirmed?: boolean;
 };
 export type ChatMember = { phone: string; key: string; name: string; clientId: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null; avatarUrl?: string | null };
 function phoneKey10(p?: string) { return (p || "").replace(/\D/g, "").slice(-10); }
@@ -73,6 +78,8 @@ export function ChatPanel({
   const [body, setBody] = useState("");
   const [attach, setAttach] = useState<{ url: string; name: string } | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  /** R4: the last send came back unconfirmed — the note is information, not an error. */
+  const [pending, setPending] = useState(false);
   const [sending, startSend] = useTransition();
   const [drafting, startDraft] = useTransition();
   const [uploading, startUpload] = useTransition();
@@ -88,21 +95,27 @@ export function ChatPanel({
   function send() {
     const text = body.trim();
     if (!text && !attach) return;
+    // R4 — THE IDENTITY OF THIS PRESS, minted here and nowhere else. A double
+    // submit of one press carries the same id and collides in the outbox; a
+    // second, deliberate message is a new press and a new id. The server
+    // refuses a request without one rather than inventing it.
+    const intentId = (globalThis.crypto?.randomUUID?.() ?? `i${Date.now()}${Math.random().toString(36).slice(2, 10)}`).replace(/-/g, "");
+    const media = attach ? [attach.url] : undefined;
     startSend(async () => {
-      const r = await sendThreadText(toPhone, text, attach ? [attach.url] : undefined, client?.id ?? null);
+      const r = await sendThreadText(toPhone, text, media, client?.id ?? null, intentId);
       setNote(r.ok && !r.message.startsWith("Sent —") ? null : r.message);
-      // A03: `pending` is neither sent nor failed — OpenPhone did not answer and
-      // may well have taken the message. Clearing the box is the point: leaving
-      // the text sitting there is an invitation to press send again, which is
-      // exactly how the client ends up with it twice. The note says what is
-      // known and the thread refreshes from the provider.
+      setPending(!!r.pending);
+      // `pending` is neither sent nor failed — the provider did not confirm and
+      // may well have taken it. The words are on disk in the outbox either way,
+      // so the composer clears (a box still holding your text is an invitation
+      // to press again) and the message appears in the thread marked
+      // unconfirmed rather than vanishing. R4: the bubble used to be dropped
+      // entirely and the only copy with it, including the uploaded attachment.
       if (r.ok || r.pending) {
-        if (r.ok) {
-          setMsgs((m) => [...m, {
-            kind: "message", id: `local-${Date.now()}`, at: new Date().toISOString(),
-            direction: "outgoing", text, media: attach ? [attach.url] : undefined,
-          }]);
-        }
+        setMsgs((m) => [...m, {
+          kind: "message", id: `local-${Date.now()}`, at: new Date().toISOString(),
+          direction: "outgoing", text, media, unconfirmed: r.pending ? true : undefined,
+        }]);
         setBody(""); setAttach(null);
       }
     });
@@ -168,7 +181,11 @@ export function ChatPanel({
                   <img key={i} src={m} alt="attachment" className="mb-1 max-h-52 rounded-lg object-cover" />
                 ))}
                 {it.text && <p className="whitespace-pre-wrap">{it.text}</p>}
-                <div className={cn("mt-1 text-[10px]", out ? "text-white/70" : "text-muted-2")}>{fmtTime(it.at)}</div>
+                <div className={cn("mt-1 flex items-center gap-1 text-[10px]", out ? "text-white/70" : "text-muted-2")}>
+                  {fmtTime(it.at)}
+                  {/* R4: neither a tick nor a cross — we genuinely do not know. */}
+                  {it.unconfirmed && <span className="rounded bg-white/20 px-1 py-px font-medium">sending · not confirmed</span>}
+                </div>
               </div>
             </div>
             </Fragment>
@@ -216,7 +233,10 @@ export function ChatPanel({
             {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </button>
         </div>
-        {note && <p className="mt-1.5 text-[11px] text-danger">{note}</p>}
+        {/* R4: an unconfirmed send is not a failure, and painting it in the
+            same red as "Failed to send." is the signal that invites the second
+            press. */}
+        {note && <p className={cn("mt-1.5 text-[11px]", pending ? "text-warning" : "text-danger")}>{note}</p>}
         <p className="mt-1 text-[10px] text-muted-2">Review before sending — nothing auto-sends. ⌘/Ctrl+Enter to send.</p>
       </div>
     </div>

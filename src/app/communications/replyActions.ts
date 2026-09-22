@@ -136,7 +136,7 @@ export async function generateAllReplies(
 // Send the reviewed text. A HUMAN clicks this — nothing in the reply queue
 // ever sends on its own, which is the same rule every other client-facing
 // message in the hub follows.
-export async function sendReply(key: string, text: string): Promise<{ ok: boolean; message: string; pending?: boolean }> {
+export async function sendReply(key: string, text: string, intentId?: string): Promise<{ ok: boolean; message: string; pending?: boolean }> {
   await requireAdmin();
   const body = text.trim();
   if (!body) return { ok: false, message: "Write something first." };
@@ -164,24 +164,39 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
 
+  if (!intentId || !/^[A-Za-z0-9_-]{8,64}$/.test(intentId)) {
+    return { ok: false, message: "Refresh the queue and try again — we couldn't identify this send, and we won't guess in case it doubles up." };
+  }
+  // R4 — THE SAME RAIL AS EVERY OTHER SEND. See the long note in
+  // threadActions.sendThreadText: direct provider calls had no durable intent,
+  // treated only a 408 as ambiguous, and sat outside the TEST-client floor.
+  const { sendThroughOutbox, manualKey } = await import("@/lib/outbox");
   let sentId: string | null = null;
   try {
-    const res = await OpenPhone.sendMessage(from, `+1${card.phone}`, body);
-    sentId = res?.data?.id ?? null;
-  } catch (e) {
-    // A03 (Sep 21 audit, fixed Sep 22 2026). OpenPhone.request turns a timed-out
-    // send into a 408 and its own comment calls that ambiguous — "OpenPhone may
-    // have taken the message before it stopped answering". This action reported
-    // it as "Failed to send", and the obvious response to that is to press Send
-    // again, which is how one message becomes two on a client's phone.
-    const status = (e as { status?: number } | null)?.status;
-    if (status === 408) {
+    const res = await sendThroughOutbox({
+      channel: "sms",
+      toRef: card.phone,
+      body,
+      dedupeKey: manualKey(intentId),
+      clientId: card.clientId ?? null,
+      projectId: card.projectId ?? null,
+      requestedBy: actor?.email ?? actor?.name ?? null,
+    });
+    if (res.outcome === "accepted") {
+      sentId = res.providerId ?? null;
+    } else if (res.outcome === "failed") {
+      return { ok: false, message: `OpenPhone refused it — ${res.error}` };
+    } else if (res.outcome === "duplicate" || res.outcome === "busy") {
+      return { ok: true, message: `That reply to ${card.displayName} is already going out — we didn't send it twice.` };
+    } else {
       return {
         ok: false,
         pending: true,
-        message: `OpenPhone didn't answer in time, so we can't tell whether this reached ${card.displayName}. Give the thread a minute and look before sending again — it may already be on its way.`,
+        message: `OpenPhone didn't confirm this one, so we can't say yet whether it reached ${card.displayName}. It's saved and marked unconfirmed — give it a minute rather than sending again.`,
       };
     }
+  } catch (e) {
+    if ((e as Error)?.name === "TestClientSendRefusedError") return { ok: false, message: (e as Error).message };
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
 

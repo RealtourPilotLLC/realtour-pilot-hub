@@ -313,6 +313,32 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   const effIncoming = incoming && !fromUs;
   const isInboundText = !fromUs && (type === "message.received" || (!isCall && incoming));
 
+  // ---------------------------------------------------------------------
+  // R4 — OPENPHONE'S ECHO SETTLES A SEND WE COULD NOT CONFIRM.
+  //
+  // A manual text now leaves a durable outbox row before it is handed over,
+  // and an ambiguous answer (a timeout, a 5xx, a dropped connection) leaves
+  // that row `unknown`. Until this existed there was NO path from unknown back
+  // to settled except retryHeld, which settles by texting the client AGAIN —
+  // so the honest "not confirmed" mark would have sat in the thread for ever
+  // beside the message that actually arrived. This hub has shipped permanent
+  // phantom rows before and they cost real trust.
+  //
+  // This is the evidence arriving. OpenPhone is telling us it holds a message
+  // with these words to this number, which is the proof the send needed. Only
+  // ever in the accepting direction, best-effort, and never a resend.
+  // ---------------------------------------------------------------------
+  if (!isCall && fromUs && text.trim()) {
+    try {
+      const { settleUnknownFromEcho } = await import("@/lib/outbox");
+      for (const to of recipients.length ? recipients : outsiders) {
+        if (await settleUnknownFromEcho({ toRef: to, body: text, providerId: typeof data.id === "string" ? data.id : null })) break;
+      }
+    } catch {
+      /* the row stays unconfirmed and a person can settle it — never a resend */
+    }
+  }
+
   // --- THE HUB TALKING TO ITS OWN PEOPLE (Sep 11) ----------------------------
   // The hub texts staff from this same line — "⚙️ RealTour Hub: Video in
   // review…", a mention, payday, photos-not-delivered — and every one of those

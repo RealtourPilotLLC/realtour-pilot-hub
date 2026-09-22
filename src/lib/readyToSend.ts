@@ -1379,6 +1379,14 @@ async function settleDeliveryBookkeeping(
         },
       });
       if (r.count > 0 && !opts.first) repaired.push("the video's own delivery row");
+      if (r.count === 0) {
+        // `count: 0` means EITHER already stamped OR there is no row to stamp,
+        // and only one of those is fine. Ask which, so a cut whose per-video
+        // row has not been minted yet is reported rather than reading as a
+        // clean send. (sweepOutputUnits mints it; this says so out loud.)
+        const exists = await prisma.deliverableOutput.count({ where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1 } });
+        if (exists === 0) incomplete.push("this video has no per-video delivery row yet — the hourly output sweep mints it, then press again");
+      }
     } catch (e) {
       incomplete.push(`the video's own delivery row did not stamp (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
     }
@@ -1442,7 +1450,11 @@ async function settleDeliveryBookkeeping(
 function alreadySent(at: Date, by: string | null, repair?: { repaired: string[]; incomplete: string[] }): SentResult {
   const when = at.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   const head = `Already marked sent${by ? ` by ${by}` : ""} — ${when} ET.`;
-  if (repair?.incomplete.length) return { ok: true, already: true, message: `${head} ${repair.incomplete.join("; ")} — press again to retry.`, incomplete: repair.incomplete };
+  if (repair?.incomplete.length) {
+    // Both, when both happened: a press that fixed two of three things and
+    // failed the third used to report only the failure in the structured field.
+    return { ok: true, already: true, message: `${head}${repair.repaired.length ? ` Finished off: ${repair.repaired.join(", ")}.` : ""} ${repair.incomplete.join("; ")} — press again to retry.`, incomplete: repair.incomplete, ...(repair.repaired.length ? { repaired: repair.repaired } : {}) };
+  }
   if (repair?.repaired.length) return { ok: true, already: true, message: `${head} Finished off what the first attempt left: ${repair.repaired.join(", ")}.`, repaired: repair.repaired };
   return { ok: true, already: true, message: head };
 }
@@ -1589,4 +1601,74 @@ function trimReason(raw: string | null): string | null {
   while (end > 1 && claimsDelivery(parts[end - 1])) end--;
   const kept = parts.slice(0, end).join(" ").trim();
   return kept || raw.trim();
+}
+
+// ---------------------------------------------------------------------------
+// R5 — THE DURABLE HALF: a sent video whose own records did not finish.
+//
+// markVideoSent repairs on a repeat press, and the card now keeps that press
+// reachable. Neither helps if nobody presses it again — and the machine path
+// (aryeoDelivery's proof pass) calls markVideoSent too and has no fingers.
+//
+// THE PREDICATE IS NARROW ON PURPOSE, and this is the whole design.
+//
+// A TopazJob with `deliveredAt` NULL and an open upload task is NOT broken: it
+// is the ordinary "Kyle still has to upload this" state, and its
+// `topaz-deliver-<jobId>` card is a real, owner-assigned chase card that
+// completing runs the very same repair. A sweep that closed those would mass-
+// close Kyle's queue and destroy the only record that the upload is owed.
+//
+// The unambiguous break is the other way round: the job IS stamped delivered
+// and its task is still open. Nothing legitimate produces that — the only
+// writer of deliveredAt closes the task in the same breath, so an open task
+// beside a delivered job is exactly the half-finished settle A04 described.
+//
+// The DeliverableOutput arm needs nothing here: refreshOutputsForProject
+// already stamps `if (sent && !o.deliveredAt)` on every live job, every hour.
+// ---------------------------------------------------------------------------
+export async function repairIncompleteDeliveries(opts: { sinceDays?: number; max?: number } = {}): Promise<{
+  checked: number;
+  repaired: number;
+  failed: number;
+  lastError: string | null;
+  detail: { jobId: string; taskId: string }[];
+}> {
+  const since = new Date(Date.now() - (opts.sinceDays ?? 30) * 86_400_000);
+  const jobs = await prisma.topazJob.findMany({
+    where: { deliveredAt: { not: null, gte: since }, taskId: { not: null } },
+    select: { id: true, taskId: true },
+    orderBy: { deliveredAt: "desc" },
+    take: opts.max ?? 200,
+  });
+  if (!jobs.length) return { checked: 0, repaired: 0, failed: 0, lastError: null, detail: [] };
+
+  // One read for the tasks that are genuinely still open.
+  const open = await prisma.smartTask.findMany({
+    where: { id: { in: jobs.map((j) => j.taskId!).filter(Boolean) }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true },
+  });
+  if (!open.length) return { checked: jobs.length, repaired: 0, failed: 0, lastError: null, detail: [] };
+  const openIds = new Set(open.map((t) => t.id));
+
+  const { markTopazDelivered } = await import("@/lib/topazJobs");
+  let repaired = 0, failed = 0;
+  let lastError: string | null = null;
+  const detail: { jobId: string; taskId: string }[] = [];
+  for (const j of jobs) {
+    if (!j.taskId || !openIds.has(j.taskId)) continue;
+    try {
+      // The same function a person's press calls. It leaves the historical
+      // deliveredAt alone and closes the task that was left open.
+      const r = await markTopazDelivered(j.id, "delivery-repair");
+      if (r.repaired) { repaired++; detail.push({ jobId: j.id, taskId: j.taskId }); }
+      else if (r.incomplete) { failed++; lastError = r.incomplete; }
+    } catch (e) {
+      failed++;
+      lastError = e instanceof Error ? e.message.slice(0, 200) : "unknown";
+    }
+  }
+  if (repaired > 0) {
+    console.info(`[delivery] ${repaired} delivered 1080p job(s) still had an open upload card — closed. A "mark as sent" had stamped the job and not finished the card.`);
+  }
+  return { checked: jobs.length, repaired, failed, lastError, detail };
 }

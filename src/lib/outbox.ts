@@ -73,7 +73,9 @@ export type OutboxState = "pending" | "attempting" | "accepted" | "failed" | "un
  *  enqueued while a switch is off (src/lib/portalAccess.ts). */
 export type OutboxKind =
   | "confirmation" | "delivery" | "welcome" | "afterhours" | "staff" | "portal_login" | "portal_invite"
-  | "program_reminder" | "script_share" | "strategy_ready";
+  | "program_reminder" | "script_share" | "strategy_ready"
+  /** R4: a text a PERSON typed and pressed send on, from the comms surface. */
+  | "manual";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
 /** CONTENT-PROGRAM kinds (W2-F, Sep 17 2026). Client-facing EMAILS from the
  *  program: a §24 reminder, a §22 "your scripts are ready" notice, a §21
@@ -111,6 +113,9 @@ export type OutboxRow = {
   createdAt: Date;
   acceptedAt: Date | null;
   resolvedAt: Date | null;
+  /** R4: a group text's other recipients, and any attachments. JSON, as stored. */
+  extraToRefsJson: string | null;
+  mediaUrlsJson: string | null;
 };
 
 export type OutboxMessageInput = {
@@ -127,6 +132,20 @@ export type OutboxMessageInput = {
   taskId?: string | null;
   /** The person, or the sweep, that queued it. */
   requestedBy?: string | null;
+  /**
+   * R4 (Sep 22 2026) — THE TWO REASONS MANUAL SENDS BYPASSED THIS RAIL.
+   *
+   * A text Kyle types can go to a GROUP and can carry an attachment, and this
+   * input carried neither — so communications/threadActions called OpenPhone
+   * directly, with no durable intent, no honest "unknown", and (as the
+   * follow-up audit found) outside the TEST-client floor that
+   * refuseTestClientSend installs on this very function.
+   *
+   * `toRef` stays THE recipient, so masking, the indexes and every existing
+   * reader keep working unchanged. These carry the rest.
+   */
+  extraToRefs?: string[] | null;
+  mediaUrls?: string[] | null;
 };
 
 export type OutboxSendResult =
@@ -167,7 +186,7 @@ export class OutboxSendError extends Error {
 export type OutboxProvider = {
   /** Hand the message over. Resolve with the provider's own id (null when it
    *  gives none), or throw OutboxSendError. */
-  send(row: Pick<OutboxRow, "channel" | "toRef" | "body" | "dedupeKey">): Promise<{ providerId: string | null }>;
+  send(row: Pick<OutboxRow, "channel" | "toRef" | "body" | "dedupeKey" | "extraToRefsJson" | "mediaUrlsJson">): Promise<{ providerId: string | null }>;
 };
 
 // ---- the store seam ---------------------------------------------------------
@@ -230,7 +249,19 @@ const ROW_SELECT = {
   leaseUntil: true, leaseBy: true, providerId: true, providerError: true,
   dedupeKey: true, requestedBy: true, clientId: true, projectId: true, taskId: true,
   createdAt: true, acceptedAt: true, resolvedAt: true,
+  extraToRefsJson: true, mediaUrlsJson: true,
 } as const;
+
+/** A stored JSON string[] column, read defensively — a malformed blob is an empty list, never a throw mid-send. */
+export function parseJsonArray(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const v: unknown = JSON.parse(json);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : [];
+  } catch {
+    return [];
+  }
+}
 
 function stateWhere(state: OutboxState | OutboxState[] | undefined) {
   if (!state) return {};
@@ -258,6 +289,8 @@ export function prismaOutboxStore(): OutboxStore {
             projectId: row.projectId ?? null,
             taskId: row.taskId ?? null,
             requestedBy: row.requestedBy ?? null,
+            extraToRefsJson: row.extraToRefs?.length ? JSON.stringify(row.extraToRefs) : null,
+            mediaUrlsJson: row.mediaUrls?.length ? JSON.stringify(row.mediaUrls) : null,
             state: "pending",
           },
           select: ROW_SELECT,
@@ -330,7 +363,12 @@ export function realOutboxProvider(): OutboxProvider {
       const from = await sendingNumber();
       if (!from) throw new OutboxSendError("OpenPhone isn't connected.", false, 401);
       try {
-        const res = await OpenPhone.sendMessage(from, `+1${row.toRef}`, row.body);
+        // R4: one recipient stays a string (every existing caller), a group
+        // becomes the array OpenPhone's own API takes. Attachments ride along.
+        const extra = parseJsonArray(row.extraToRefsJson);
+        const media = parseJsonArray(row.mediaUrlsJson);
+        const to = extra.length ? [row.toRef, ...extra].map((k) => `+1${k}`) : `+1${row.toRef}`;
+        const res = await OpenPhone.sendMessage(from, to, row.body, media.length ? media : undefined);
         return { providerId: res?.data?.id ?? null };
       } catch (e) {
         // A 4xx (except 408) means OpenPhone REJECTED it — nothing was sent.
@@ -789,6 +827,22 @@ export const confirmationKey = (projectId: string, shootDate: Date | null) => {
 export const welcomeKey = (clientId: string) => `welcome:${clientId}`;
 export const afterHoursKey = (clientId: string, periodKey: string) => `afterhours:${clientId}:${periodKey}`;
 export const staffKey = (teamMemberId: string, claimStamp: Date) => `staff:${teamMemberId}:${claimStamp.toISOString()}`;
+/**
+ * R4 — THE IDENTITY OF A MESSAGE SOMEBODY TYPED.
+ *
+ * Every other key in this file is derived from the thing being messaged about
+ * (a delivery, a job, a reminder), because those sends are the system's. A
+ * manual text has no such anchor: the same person may legitimately send the
+ * same words to the same number twice in a row, and must be able to.
+ *
+ * So the identity comes from the COMPOSE, not the content: the browser mints an
+ * id when the person presses Send and sends it with the request. A double
+ * submit of one press carries the same id and collides; a second, deliberate
+ * message is a new press and a new id. The server never invents one — a
+ * request that arrives without it is refused rather than given a fresh id,
+ * because inventing an id is exactly what turns a retry into a second text.
+ */
+export const manualKey = (intentId: string) => `manual:${intentId}`;
 /** One sign-in link per person per MINT — the stamp is the moment the token
  *  was minted, so a second request a minute later is its own message (the
  *  first one's token is void by then) while a double-submit collides. */
@@ -917,4 +971,112 @@ export async function outboxStatesFor(dedupeKeys: string[]): Promise<Map<string,
     .catch(() => [] as { dedupeKey: string | null; state: string }[]);
   for (const r of rows) if (r.dedupeKey) out.set(r.dedupeKey, r.state as OutboxState);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// R4 — WHAT THE COMMS SURFACE NEEDS TO SHOW A SEND IT CANNOT CONFIRM.
+//
+// A manual text now leaves a durable row before it is handed to OpenPhone, so
+// "we don't know whether this went" is a fact on disk rather than a sentence in
+// a toast that a refresh erases. These two functions are how a thread reads it.
+// ---------------------------------------------------------------------------
+
+export type PendingManualSend = {
+  id: string;
+  /** pending · attempting · unknown — the three that mean "not settled". */
+  state: string;
+  body: string;
+  /** Every recipient, 10-digit keys. One entry for an ordinary text. */
+  toRefs: string[];
+  mediaUrls: string[];
+  queuedAt: Date;
+  requestedBy: string | null;
+  /** Set only on `unknown`: why the provider's answer was not usable. */
+  reason: string | null;
+};
+
+/**
+ * Manual sends on this conversation that are not settled — so the thread can
+ * show the words with an honest "sending, not confirmed" mark instead of
+ * dropping them and inviting a second press.
+ *
+ * Scoped by RECIPIENT, not by client: a thread can be a group, and a number
+ * with no Client row still has a conversation.
+ */
+export async function pendingManualSends(toRefs: string[], opts: { withinMs?: number } = {}): Promise<PendingManualSend[]> {
+  const keys = toRefs.map((t) => t.replace(/\D/g, "").slice(-10)).filter((k) => k.length === 10);
+  if (!keys.length) return [];
+  const since = new Date(Date.now() - (opts.withinMs ?? 24 * 3600_000));
+  const rows = (await prisma.outboxMessage
+    .findMany({
+      where: { channel: "sms", state: { in: ["pending", "attempting", "unknown"] }, createdAt: { gte: since }, dedupeKey: { startsWith: "manual:" }, toRef: { in: keys } },
+      select: ROW_SELECT,
+      orderBy: { createdAt: "asc" },
+      take: 20,
+    })
+    .catch(() => [])) as OutboxRow[];
+  return rows.map((r) => ({
+    id: r.id,
+    state: r.state,
+    body: r.body,
+    toRefs: [r.toRef, ...parseJsonArray(r.extraToRefsJson)],
+    mediaUrls: parseJsonArray(r.mediaUrlsJson),
+    queuedAt: r.createdAt,
+    requestedBy: r.requestedBy,
+    reason: r.state === "unknown" ? r.providerError : null,
+  }));
+}
+
+/**
+ * LATER EVIDENCE SETTLES AN UNKNOWN — without sending anything again.
+ *
+ * This is the half R4 asks for that nothing in the codebase had: there was no
+ * path from `unknown` back to settled except retryHeld, which settles by
+ * TEXTING AGAIN. The OpenPhone webhook writes a CommLog for every outbound
+ * message it hears about and never touched OutboxMessage, so an unknown row
+ * would have sat in the thread as a permanent "not confirmed" ghost beside the
+ * message that actually arrived — this codebase has shipped permanent phantom
+ * rows before and they cost real trust.
+ *
+ * The echo IS the proof: OpenPhone is telling us it has this message. Matched
+ * on recipient + body within a short window, which is the same identity the
+ * comms log already dedupes on, and only ever in the accepting direction —
+ * nothing here can mark a message failed or send one.
+ */
+export async function settleUnknownFromEcho(echo: { toRef: string; body: string; providerId: string | null; at?: Date }): Promise<boolean> {
+  const key = echo.toRef.replace(/\D/g, "").slice(-10);
+  const body = (echo.body ?? "").trim();
+  if (key.length !== 10 || !body) return false;
+  const at = echo.at ?? new Date();
+  const row = await prisma.outboxMessage
+    .findFirst({
+      where: {
+        channel: "sms",
+        state: { in: ["unknown", "attempting", "pending"] },
+        dedupeKey: { startsWith: "manual:" },
+        toRef: key,
+        body,
+        createdAt: { gte: new Date(at.getTime() - 6 * 3600_000), lte: new Date(at.getTime() + 5 * 60_000) },
+      },
+      select: { id: true, state: true },
+      orderBy: { createdAt: "desc" },
+    })
+    .catch(() => null);
+  if (!row) return false;
+  // NOT markAccepted: that is the DELIVERY path's transition and it is
+  // conditional on `attempting`, so it does nothing to an `unknown` row — which
+  // is the state this function exists to clear. (My first cut called it and the
+  // drill caught the no-op.) The transition here is its own, conditional on the
+  // three unsettled states so two echoes cannot both claim it, and the identity
+  // is deliberately KEPT: a settled row's dedupeKey is what stops a later drain
+  // offering the same words again.
+  const settledAt = new Date();
+  const n = await prisma.outboxMessage
+    .updateMany({
+      where: { id: row.id, state: { in: ["unknown", "attempting", "pending"] } },
+      data: { state: "accepted", providerId: echo.providerId ?? undefined, acceptedAt: settledAt, resolvedAt: settledAt, leaseUntil: null, leaseBy: null, providerError: null },
+    })
+    .catch(() => ({ count: 0 }));
+  if (n.count > 0) console.info(`[outbox] a manual send we could not confirm was settled by OpenPhone's own echo (${row.state} -> accepted).`);
+  return n.count > 0;
 }

@@ -284,8 +284,19 @@ export async function GET(req: NextRequest) {
   // it) and nothing looked again afterwards. Normally repairs nothing.
   await step("libraryRepair", async () => {
     const { repairApprovedCutLibrary } = await import("@/lib/portalLibrary");
-    return repairApprovedCutLibrary({ sinceDays: 45, max: 200 });
-  }, { maxMs: 20_000 });
+    const library = await repairApprovedCutLibrary({ sinceDays: 45, max: 200 });
+    // R2: a client change request whose work item never reached the queue. The
+    // client was told "it's with the writer" and the writer had nothing.
+    const { repairScriptChangeRequests } = await import("@/lib/scriptDecisions");
+    const changes = await repairScriptChangeRequests({ sinceDays: 90, max: 300 });
+    // R5: a video recorded as sent whose 1080p job was stamped delivered and
+    // whose upload card was left open — the half-finished settle A04 described.
+    // Deliberately NOT the other way round: an undelivered job with an open
+    // card is Kyle's ordinary chase card and must not be closed.
+    const { repairIncompleteDeliveries } = await import("@/lib/readyToSend");
+    const deliveries = await repairIncompleteDeliveries({ sinceDays: 30, max: 200 });
+    return { library, changes, deliveries };
+  }, { maxMs: 30_000 });
   await step("scriptDrafting", async () => {
     const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
     // Questions first: phrasing them for the topic has to happen BEFORE the

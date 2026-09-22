@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { SentResult } from "@/lib/readyToSend";
 import { prisma } from "@/lib/prisma";
 import { CLOSED_BY_HAND, qcGateComplete, recordQcCompletion, reopenedForCategories } from "@/lib/tasks";
 import { stampHandledByHand } from "@/lib/opsDay";
@@ -315,7 +316,7 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
  * gate the QC closes above use (Kyle is ADMIN); no editor or photographer lane
  * reaches a client delivery surface.
  */
-export async function markVideoSentAction(submissionId: string): Promise<{ ok: boolean; message: string; already?: boolean }> {
+export async function markVideoSentAction(submissionId: string): Promise<SentResult> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -324,7 +325,22 @@ export async function markVideoSentAction(submissionId: string): Promise<{ ok: b
   const me = await getCurrentUser().catch(() => null);
   const { markVideoSent } = await import("@/lib/readyToSend");
   const r = await markVideoSent(submissionId, me?.name ?? me?.email ?? null);
-  if (r.ok) {
+  // R5 (follow-up audit, Sep 22 2026) — TWO THINGS HERE USED TO SWALLOW THE
+  // BACKEND'S OWN "press it again" AND MAKE IT IMPOSSIBLE TO DO.
+  //
+  //   · The return type narrowed to { ok, message, already }, so `incomplete`
+  //     never reached the component even though markVideoSent sets it.
+  //   · A partial settle is `ok: true`, so this revalidated `/` and `/ops` —
+  //     the two routes the Ready-to-send card renders on. Next updates the UI
+  //     of a revalidated path immediately from a Server Function, so the row
+  //     (now carrying sentToClientAt, and therefore off the board) unmounted
+  //     under the operator's finger. Gating MarkSent alone would have been
+  //     inert: the button was gone either way.
+  //
+  // The send happened and its stamp is permanent. What is withheld on an
+  // incomplete settle is the REFRESH, so the row stays on screen with a live
+  // button and the repair is one press away.
+  if (r.ok && !r.incomplete?.length) {
     revalidatePath("/");
     revalidatePath("/ops");
     revalidatePath("/tasks");

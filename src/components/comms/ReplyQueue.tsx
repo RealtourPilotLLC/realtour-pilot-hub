@@ -335,7 +335,10 @@ export function ReplyQueue({
     if (!s.draft.trim()) return;
     patch(card.key, { status: "drafting", error: null });
     startBulk(async () => {
-      const r = await sendReply(card.key, s.draft);
+      // R4: the identity of THIS press (see outbox.manualKey). A double submit
+      // collides; a deliberate second reply is a new press and a new id.
+      const intentId = (globalThis.crypto?.randomUUID?.() ?? `i${Date.now()}${Math.random().toString(36).slice(2, 10)}`).replace(/-/g, "");
+      const r = await sendReply(card.key, s.draft, intentId);
       if (r.ok) {
         patch(card.key, { status: "sent", note: r.message, error: null });
         // Drop it after a beat so Kyle sees the confirmation land.

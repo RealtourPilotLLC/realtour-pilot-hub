@@ -138,13 +138,25 @@ export async function sendThreadText(
   content: string,
   mediaUrls?: string[],
   clientId?: string | null,
+  /**
+   * R4: the id the BROWSER minted when this press happened. It is the message's
+   * identity — a double submit of one press carries the same id and collides in
+   * the outbox; a second, deliberate message is a new press and a new id. The
+   * server never invents one, because inventing an id is precisely what turns a
+   * retry into a second text on a client's phone.
+   */
+  intentId?: string,
 ): Promise<SendResult> {
   await requireAdmin();
   const text = content.trim();
   if (!text && !(mediaUrls && mediaUrls.length)) return { ok: false, message: "Write a message first." };
   // toPhone may be a comma-separated list for a group message.
-  const tos = toPhone.split(",").map((x) => phoneKey(x)).filter((k) => k.length === 10).map((k) => `+1${k}`);
+  const keys = toPhone.split(",").map((x) => phoneKey(x)).filter((k) => k.length === 10);
+  const tos = keys.map((k) => `+1${k}`);
   if (tos.length === 0) return { ok: false, message: "That phone number looks invalid." };
+  if (!intentId || !/^[A-Za-z0-9_-]{8,64}$/.test(intentId)) {
+    return { ok: false, message: "Refresh this page and try again — we couldn't identify this send, and we won't guess in case it doubles up." };
+  }
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
 
@@ -157,27 +169,59 @@ export async function sendThreadText(
   const actor = await getCurrentUser().catch(() => null);
   const actorTeamMemberId = actor && !actor.impersonating ? actor.teamMemberId : null;
 
+  // ---------------------------------------------------------------------
+  // R4 (follow-up audit, Sep 22 2026) — THROUGH THE OUTBOX, NOT PAST IT.
+  //
+  // This called OpenPhone directly and persisted nothing first. Three things
+  // followed from that, and the third is the one I got wrong in writing:
+  //
+  //   · only a 408 was treated as ambiguous. A 5xx or a dropped connection
+  //     came back as an ordinary failure, and an ordinary failure invites the
+  //     press that puts the message on the client's phone twice. The outbox's
+  //     provider has classified this correctly all along — 4xx except 408 is
+  //     provably-not-sent, everything else is ambiguous by default.
+  //   · there was no durable record of the attempt, so "we don't know" lived in
+  //     a toast that a refresh erased.
+  //   · it bypassed the TEST-client floor. That floor is installed on
+  //     outbox.enqueue / sendThroughOutbox, and a commit of mine called it "a
+  //     floor under every send path" — which was not true of this path or of
+  //     the Replies rail. Routing through the outbox is what makes it true.
+  //
+  // The dedupeKey is the browser's intent id, so the row IS the claim: a double
+  // submit collides instead of sending twice.
+  // ---------------------------------------------------------------------
+  const { sendThroughOutbox, manualKey } = await import("@/lib/outbox");
   let sentId: string | undefined;
   try {
-    const sent = await OpenPhone.sendMessage(from, tos.length === 1 ? tos[0] : tos, text || "📎", mediaUrls);
-    sentId = sent?.data?.id;
-  } catch (e) {
-    // A03 (Sep 21 audit, fixed Sep 22 2026) — A TIMEOUT IS NOT A REJECTION.
-    //
-    // OpenPhone.request already turns a timed-out send into a 408 and calls it
-    // ambiguous in its own comment, and this action then reported it to Kyle as
-    // "Failed to send." He retries, and the client gets the message twice —
-    // because OpenPhone may well have taken the first one before it stopped
-    // answering. The message says what is actually known, and says plainly not
-    // to press it again.
-    const status = (e as { status?: number } | null)?.status;
-    if (status === 408) {
+    const res = await sendThroughOutbox({
+      channel: "sms",
+      toRef: keys[0],
+      extraToRefs: keys.slice(1),
+      mediaUrls: mediaUrls?.length ? mediaUrls : null,
+      body: text || "📎",
+      dedupeKey: manualKey(intentId),
+      clientId: clientId ?? null,
+      requestedBy: actor?.email ?? actor?.name ?? null,
+    });
+    if (res.outcome === "accepted") {
+      sentId = res.providerId ?? undefined;
+    } else if (res.outcome === "failed") {
+      return { ok: false, message: `OpenPhone refused it — ${res.error}` };
+    } else if (res.outcome === "duplicate" || res.outcome === "busy") {
+      // The same press, twice. Never a second text.
+      return { ok: true, message: "That one's already going out — we didn't send it twice." };
+    } else {
+      // unknown: it may be on its way. The row is on disk, the thread shows it
+      // as unconfirmed until OpenPhone's own echo settles it, and nothing here
+      // invites a retry.
       return {
         ok: false,
         pending: true,
-        message: "OpenPhone didn't answer in time, so we can't tell whether this went out. Check the thread in a minute before sending it again — it may already be on its way.",
+        message: "OpenPhone didn't confirm this one, so we can't say yet whether it went. It's saved and marked unconfirmed in the thread — give it a minute rather than sending again.",
       };
     }
+  } catch (e) {
+    if ((e as Error)?.name === "TestClientSendRefusedError") return { ok: false, message: (e as Error).message };
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
 
