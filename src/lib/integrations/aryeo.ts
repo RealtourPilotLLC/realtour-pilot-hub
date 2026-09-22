@@ -4644,7 +4644,21 @@ type DeliverableStatusValue = "PENDING" | "UPLOADED" | "IN_PROGRESS" | "DONE" | 
 // Fetch a listing's media live (for the project detail gallery). Returns a
 // compact summary plus gallery image URLs. Never throws — returns null on error.
 export type MediaImage = { thumb: string; large: string; original: string; caption: string | null; filename: string | null };
-export type MediaVideo = { title: string | null; thumb: string | null; playback: string | null; download: string | null; duration: number | null };
+export type MediaVideo = {
+  /**
+   * ARYEO'S OWN ID FOR THIS VIDEO (F23, Sep 22 2026). Carried through because
+   * the client library used to key its rows on the video's POSITION in this
+   * array, which changes whenever a video is added, removed or reordered — so
+   * a refresh could rewrite one video's row with another video's title and
+   * URLs. Null only for a listing payload that omitted it.
+   */
+  id: string | null;
+  title: string | null;
+  thumb: string | null;
+  playback: string | null;
+  download: string | null;
+  duration: number | null;
+};
 export type MediaFloorPlan = { title: string | null; thumb: string; large: string; original: string };
 
 export type ListingMedia = {
@@ -4661,7 +4675,7 @@ export type ListingMedia = {
 export async function getListingMedia(listingId: string): Promise<ListingMedia | null> {
   try {
     const l = await Aryeo.listing(listingId);
-    const videos = (l.videos ?? []) as { title?: string; thumbnail_url?: string; playback_url?: string; download_url?: string; duration?: number }[];
+    const videos = (l.videos ?? []) as { id?: string; title?: string; thumbnail_url?: string; playback_url?: string; download_url?: string; duration?: number }[];
     const floorPlans = (l.floor_plans ?? []) as { title?: string; thumbnail_url?: string; large_url?: string; original_url?: string }[];
     const images = (l.images ?? []).filter((i) => i.display_in_gallery !== false);
     return {
@@ -4678,6 +4692,7 @@ export async function getListingMedia(listingId: string): Promise<ListingMedia |
         filename: i.filename ?? null,
       })),
       videos: videos.map((v) => ({
+        id: typeof v.id === "string" && v.id.trim() ? v.id : null,
         title: v.title ?? null,
         thumb: v.thumbnail_url ?? null,
         playback: v.playback_url ?? null,
