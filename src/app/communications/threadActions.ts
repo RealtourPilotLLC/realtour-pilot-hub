@@ -3,7 +3,7 @@
 import { requireAdmin } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
-import { OpenPhone, defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
+import { defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
 import { loadConversation } from "@/lib/commsThread";
 import { resolveParticipants } from "@/lib/queries";
 import { closeReplyForOutbound } from "@/lib/tasks";
