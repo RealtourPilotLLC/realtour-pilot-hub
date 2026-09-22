@@ -316,6 +316,20 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const topicsSelected = selectedIds.size;
     const myInterviews = interviews.filter((i) => i.monthId === mid);
     const answersOutstanding = myInterviews.filter((i) => i.status !== "SUFFICIENT" && i.status !== "SUPERSEDED" && !i.submittedAt).length;
+    // ARE THEY PLANNING THIS MONTH IN WRITING? (Sep 22 2026, §25 scenario 4.)
+    //
+    // The ladder below asks for the strategy call before it asks for answers,
+    // which is right for a month where nothing has started. It is wrong for a
+    // client who has already chosen their topics and begun typing answers: they
+    // are visibly planning the month the other way, and "Strategy call is
+    // required and nothing is booked" both chases them for something they are
+    // working around AND hides the one ask that would actually move the month.
+    //
+    // Deliberately narrow. One stray keystroke on an empty month does not
+    // cancel a required call — it takes committed topics AND an interview with
+    // real answers on it.
+    const planningInWriting =
+      topicsSelected > 0 && myInterviews.some((i) => (i.answeredCount ?? 0) > 0 || i.status === "SUFFICIENT" || !!i.submittedAt);
 
     const myScriptsAll = scripts.filter((s) => s.monthId === mid);
     const myScripts = myScriptsAll.filter((s) => !s.historical);
@@ -499,14 +513,18 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
       next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: "Fix the transcript" };
-    } else if (callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall && m.strategyCallStatus !== "SCHEDULED") {
+    } else if (callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall && m.strategyCallStatus !== "SCHEDULED" && !planningInWriting) {
       next = { text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href(), cta: "Chase the booking" };
     } else if (callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" && !callHeld && !callSkipped && !bookedCall) {
       next = { text: "They have not chosen a call or the written path", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href(), cta: "Ask them to choose" };
     } else if (bookedCall?.scheduledStart && !callHeld) {
       next = { text: `Strategy call booked for ${bookedCall.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: iso(bookedCall.scheduledStart), href: href(), cta: "Open the month" };
     } else if (answersOutstanding > 0) {
-      next = { text: `${answersOutstanding} topic${answersOutstanding === 1 ? "" : "s"} still waiting on their answers`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: deadline, href: href("ideas"), cta: "See the questions" };
+      const overtook = planningInWriting && callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall;
+      next = {
+        text: `${answersOutstanding} topic${answersOutstanding === 1 ? "" : "s"} still waiting on their answers${overtook ? " — they are planning this month in writing rather than on a call" : ""}`,
+        owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: deadline, href: href("ideas"), cta: "See the questions",
+      };
     } else if (topicsNeeded > 0 && !e.clientSuppliesTopics) {
       next = { text: `${topicsNeeded} more topic${topicsNeeded === 1 ? "" : "s"} to pick for ${monthLabel(key)}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("ideas"), cta: "Pick topics" };
     } else if (strategyReviewNeeded > 0) {
