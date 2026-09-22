@@ -353,6 +353,12 @@ export async function finalizeUpload(
     introScript?: string | null;
     /** monthly plans: how many videos the photographer actually filmed */
     videosFilmed?: number | null;
+    /**
+     * F12: WHICH of the month's topics were filmed. Absent on a listing shoot
+     * and on a pre-update tab; an empty array is a real answer ("none of them"),
+     * which is why absence and emptiness are not folded together.
+     */
+    filmedTopicIds?: string[];
     /** premium packages with no Studio script: the script typed on site */
     providedScript?: string | null;
   },
@@ -755,6 +761,28 @@ export async function finalizeUpload(
       ...(prior?.uploadedAt ? {} : { uploadedAt: new Date() }),
     },
   });
+
+  // F12 — WHICH TOPICS WERE FILMED, from the only person who was there.
+  //
+  // After the project write, because it must not be able to fail the submit:
+  // the photographer's footage is in either way, and losing their whole debrief
+  // over a topic link would be the wrong trade. It is idempotent, so a
+  // re-submit neither duplicates nor re-stamps.
+  if (Array.isArray(data.filmedTopicIds)) {
+    try {
+      const { confirmFilmedTopics } = await import("@/lib/filmedTopics");
+      const r = await confirmFilmedTopics(projectId, data.filmedTopicIds, submitterName, {});
+      if (r.dateUnverified && r.confirmed > 0) {
+        // Jordan, Sep 21: never invent a production date. Filming happened; the
+        // appointment has no end time, so the date is flagged rather than guessed.
+        await prisma.activity
+          .create({ data: { projectId, type: "FLAG", body: `${r.confirmed} topic(s) confirmed filmed by ${submitterName}, but this session's appointment has no start or end time — the production date needs verification.` } })
+          .catch(() => {});
+      }
+    } catch {
+      /* the debrief stands; the hourly sweep still sees the project */
+    }
+  }
 
   // The office's Waiting hold ends here (Jordan, Sep 11): this submit is the
   // photographer's own word that the footage is in — the first of the two

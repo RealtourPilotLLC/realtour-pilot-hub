@@ -224,6 +224,19 @@ export default async function UploadProjectPage({
   // (override / legacy / SOP), so the chip can never contradict the sweep.
   const photoPolicy = photoPolicyFor(project);
   const photoTarget = photoPolicy.target;
+  // F12: the content-program topics this session is for. Null on an ordinary
+  // listing shoot, which has no month and no topic bank.
+  const { topicsForSession } = await import("@/lib/filmedTopics");
+  const session = await topicsForSession(project.id).catch(() => null);
+  const sessionTopics = session
+    ? {
+        owed: session.owed,
+        topics: session.topics.map((t) => ({
+          topicId: t.topicId, title: t.title, pillarName: t.pillarName, scriptTitle: t.scriptTitle,
+          clientApproved: t.clientApproved, filmedConfirmedAtISO: t.filmedConfirmedAtISO, filmedConfirmedBy: t.filmedConfirmedBy,
+        })),
+      }
+    : null;
   // Photo policy sections only render for jobs that ordered photos; the video
   // script + instructions only for jobs that ordered video (audit Aug 25).
   const photosOrdered = project.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
@@ -295,6 +308,7 @@ export default async function UploadProjectPage({
       <div className="mb-4"><BackLink href="/upload" label="All shoots" /></div>
 
       <UploadPortal
+        sessionTopics={sessionTopics}
         foldersSlot={<DropboxFolders state={folderState} photoTarget={photoTarget} />}
         project={{
           id: project.id,

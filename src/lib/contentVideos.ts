@@ -168,6 +168,10 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // Every candidate below is proven live first, and a stale link is repaired.
   const live = new Set(existingVideos.map((v) => v.id));
   const liveOr = (id: string | null | undefined): string | null => (id && live.has(id) ? id : null);
+  // F12: rows whose filming date came from a person, not from an appointment.
+  const confirmedFilming = new Set(
+    (await prisma.contentVideo.findMany({ where: { enrollmentId: enrollment.id, filmedConfirmedAt: { not: null } }, select: { id: true } })).map((v) => v.id),
+  );
   let created = 0;
   const videosByProject = new Map<string, { videoId: string; slotOrder: number; titleKey: string }[]>();
   // Which logical video each cut really belongs to, decided by the cut key.
@@ -266,7 +270,16 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
           finalFileRef: finalCut?.finalPath ?? null,
           finalVersionLabel: finalCut ? `v${finalCut.round}` : null,
           status: deriveStatus(cuts, delivered, !!filmedAt),
-          filmedAt, releasedToClientAt: releasedCuts[0] ? cutReleasedAt(releasedCuts[0]) : null,
+          // F12 (Sep 22 2026) — A DERIVED DATE MAY NOT OVERWRITE A CONFIRMED ONE.
+          //
+          // `filmedAt` here is inferred from Project.shootDate, and 100% of the
+          // filming dates in production were inferred that way. When the
+          // photographer has actually confirmed on the upload portal WHICH
+          // topics they filmed, that row carries filmedConfirmedAt and its
+          // filmedAt is a stated fact — this hourly sweep must not quietly
+          // replace it with the appointment's date again.
+          ...(confirmedFilming.has(videoId) ? {} : { filmedAt }),
+          releasedToClientAt: releasedCuts[0] ? cutReleasedAt(releasedCuts[0]) : null,
           deliveredAt: finalCut?.completedAt ?? (p.status === "DELIVERED" ? p.deliveredAt : null),
           ...(monthKeyOf.get(p.contentMonthId!) ? { monthKey: monthKeyOf.get(p.contentMonthId!) } : {}),
         },

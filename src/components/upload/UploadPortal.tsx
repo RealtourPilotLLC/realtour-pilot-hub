@@ -259,6 +259,7 @@ export function UploadPortal({
   submission,
   viewerIsOffice,
   payGateFromMs,
+  sessionTopics,
 }: {
   project: {
     id: string;
@@ -324,6 +325,15 @@ export function UploadPortal({
     addOns: { item: string; note: string | null; addedBy: string | null; handled: boolean }[];
     files: { name: string; size: number }[];
   };
+  /**
+   * F12: the content-program topics this session is for, when it is one.
+   * Null on an ordinary listing shoot — there is no month and no topic bank,
+   * and the plain count box below is the whole of the question.
+   */
+  sessionTopics: {
+    owed: number;
+    topics: { topicId: string; title: string; pillarName: string | null; scriptTitle: string | null; clientApproved: boolean; filmedConfirmedAtISO: string | null; filmedConfirmedBy: string | null }[];
+  } | null;
   /** owner/admin — the reopen button reads "Edit this upload" for them */
   viewerIsOffice: boolean;
   /** DEBRIEF_PAY_GATE_FROM (lib/payroll is server-only, so the page passes
@@ -404,7 +414,22 @@ export function UploadPortal({
   const [videosFilmed, setVideosFilmed] = useState<string>(
     project.videosFilmed != null ? String(project.videosFilmed) : "",
   );
-  const videosFilmedNum = /^\d{1,3}$/.test(videosFilmed.trim()) ? Number(videosFilmed.trim()) : null;
+  // F12: the topics this session is for. Pre-ticked ONLY where somebody has
+  // already confirmed one — never a helpful default, because a pre-ticked box
+  // the photographer skims past is the hub inventing a production fact.
+  const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(
+    () => (sessionTopics?.topics ?? []).filter((t) => t.filmedConfirmedAtISO).map((t) => t.topicId),
+  );
+  const hasTopics = (sessionTopics?.topics.length ?? 0) > 0;
+  const toggleTopic = (id: string) =>
+    setFilmedTopicIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  // With a topic list, the count IS the number of ticks — asking for it twice
+  // invites two different answers about the same shoot.
+  const videosFilmedNum = hasTopics
+    ? filmedTopicIds.length || null
+    : /^\d{1,3}$/.test(videosFilmed.trim())
+      ? Number(videosFilmed.trim())
+      : null;
   const spec = policy.videoSpec;
   // A fixed-style job composes with that style regardless of the picker state.
   // Scoped to a job that ACTUALLY ordered video: isMonthlyContentJob matches on
@@ -440,7 +465,7 @@ export function UploadPortal({
   // "vision and style" on a shape whose only required field is the intro.
   const requiredLabels = [
     spec.requireIntro ? "The intro script" : null,
-    spec.requireVideoCount ? "The video count" : null,
+    spec.requireVideoCount ? (hasTopics ? "Which topics you filmed" : "The video count") : null,
     fullFields ? (spec.fixedStyle ? "vision" : "vision and style") : null,
     notesRequired ? "Your editing instructions" : null,
   ].filter(Boolean) as string[];
@@ -645,6 +670,7 @@ export function UploadPortal({
       // server treats absence as "old tab, ask for a refresh", null as
       // "unanswered, block with the real message").
       videosFilmed: spec.requireVideoCount ? videosFilmedNum : undefined,
+      filmedTopicIds: hasTopics ? filmedTopicIds : undefined,
       introScript: spec.requireIntro ? vidSections.intro.trim() || null : undefined,
       providedScript: spec.requireScript && !script ? scriptText.trim() || null : undefined,
       ...(force ? { force: true } : {}),
@@ -1283,10 +1309,53 @@ export function UploadPortal({
               </>
             )}
 
-            {/* Monthly plans: the batch size the editor cuts to. The order
-                carries ONE line item, so this number is the only truth about
-                how many videos were actually filmed (Jordan, Sep 1). */}
-            {spec.requireVideoCount && (
+            {/* F12 — WHICH TOPICS, not how many videos.
+                A content session is filmed against a named list the client
+                chose and (often) approved a script for. Ticking them is the
+                only moment anybody who was there tells the hub what exists,
+                and it is what links video → topic → script → the client's
+                approval. Nothing is pre-ticked. An unticked topic was NOT
+                filmed, and a month that reads one short is the truth. */}
+            {spec.requireVideoCount && hasTopics && (
+              <div className="mt-3">
+                <label className="text-[13px] font-medium text-muted">
+                  Which topics did you film? <span className="text-brand">*</span>
+                </label>
+                <ul className="mt-1.5 space-y-1.5">
+                  {sessionTopics!.topics.map((t) => {
+                    const on = filmedTopicIds.includes(t.topicId);
+                    return (
+                      <li key={t.topicId}>
+                        <button
+                          type="button"
+                          onClick={() => toggleTopic(t.topicId)}
+                          className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left ${on ? "border-brand bg-brand-soft" : "border-border bg-surface-2"}`}
+                        >
+                          <span className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${on ? "border-brand bg-brand text-white" : "border-border"}`}>
+                            {on ? <Check className="size-3" /> : null}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium">{t.title}</span>
+                            <span className="block text-[11px] text-muted">
+                              {t.pillarName ? `${t.pillarName} · ` : ""}
+                              {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script written") : "no script yet"}
+                              {t.filmedConfirmedAtISO ? ` · already confirmed by ${t.filmedConfirmedBy ?? "the office"}` : ""}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-1.5 text-xs text-muted">
+                  Tick only what you actually filmed. Anything you leave unticked stays on their list for next time — it is better for us to know one is missing than to find out when they ask for it.
+                </p>
+              </div>
+            )}
+
+            {/* No topic list (a session booked before the month was planned):
+                the batch size the editor cuts to, as before. */}
+            {spec.requireVideoCount && !hasTopics && (
               <div className="mt-3">
                 <label className="text-[13px] font-medium text-muted">
                   How many videos did you film? <span className="text-brand">*</span>
