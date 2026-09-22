@@ -47,6 +47,45 @@ Jordan account and approves rollout.
 | 4e | `611714c` | **A send floor under the outbox**, so a synthetic client cannot text a real handset. Narrow by design: real clients untouched. 17 checks against the live database on a read-only connection. |
 | — | `(this)` | The board asks for the strategy call unless the client is visibly planning the month in writing. Blast radius measured: 3 of 31 live months, all TEST. |
 
+### Follow-up audit (Sep 22, pinned at `4547f68`) — R1–R5
+
+The audit's snapshot matched this working tree exactly (`d1119a59`), so there
+was no drift to reconcile. All five findings verified against the real code —
+by reading, and by a five-way parallel trace each adversarially re-checked from
+three lenses. All five CONFIRMED. Nineteen further defects surfaced in the same
+functions; the ones that mattered are closed with them.
+
+| ID | Commit | State |
+|---|---|---|
+| R1 | `977bddb` | Client decisions pinned to the version displayed; one decision rule across portal, staff panel and the photographer's brief. **Source-complete · drilled (37) · browser-verified · deployed** |
+| R2 | `977bddb` | Change request, work item and stamp in one transaction; retry repairs; sweep for the rest. **Source-complete · drilled · deployed** |
+| R3 | `bda400b` | Pack-then-claim, so there is no overflow to strand; `settledAt` checkpoint so the recovery scan can reach an orphan. **Source-complete · drilled (18) · deployed** |
+| R4 | `5a43ba2` | Manual sends through the outbox: durable intent, honest unknown, group + attachments, echo reconcile, TEST-client floor now genuinely covering them. **Source-complete · drilled (30) · NOT yet exercised against a real provider incident** |
+| R5 | `5a43ba2` `245ddcd` | Incomplete settle is visible, pressable and durably repaired. **Source-complete · drilled · browser-verified · deployed** |
+| W01 | `420f4fd` | Closed as recommended — the existing listing branch already calls `proveListingNow`. No competing handler. |
+
+### What "done" means here, stated four ways
+
+The audit asked for this distinction and it is worth keeping:
+
+- **Source-complete** — the code is written, typechecked and linted.
+- **Drilled** — a focused test reproduces the OLD behaviour and then the new one,
+  against a real Postgres (PGlite) or as a pure function. Every drill in this
+  batch asserts the "before" first, so a test that would pass against the bug
+  cannot pass quietly.
+- **Browser-verified** — exercised through the rendered UI on the Jordan test
+  account. R1 (stale tab) and R5 (retry card) are; the rest are not.
+- **Deployed / enabled** — deployed is the build on `hub.realtourpilot.com`.
+  ENABLED is separate and mostly false: every `ProgramAutomation` row is absent,
+  which means off, including `script_drafting`. A manually driven test is not
+  evidence the scheduled path runs.
+
+**Not yet established, and not claimed:** one controlled scheduled journey with
+`script_drafting` + `ai_runs` on; any real Aryeo provider write; a real
+OpenPhone incident against the new send rail; the disposition of the four
+library rows that could not be re-keyed; script length against the 20–30s
+target on real examples.
+
 ### Verified on the Jordan test account (Sep 22)
 
 Created with `create-test-client.ts --jordan --phone --scenarios`: client
