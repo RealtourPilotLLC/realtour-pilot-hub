@@ -703,7 +703,61 @@ export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvide
 // The hub's outbox: the real table, the real providers.
 const hubOutbox = createOutbox({ store: prismaOutboxStore(), provider: realOutboxProvider() });
 
-export const enqueue: Outbox["enqueue"] = (msg) => hubOutbox.enqueue(msg);
+// ---------------------------------------------------------------------------
+// THE TEST-CLIENT FLOOR (§16, Sep 22 2026).
+//
+// Phase 0 found nothing standing between a synthetic client and a real
+// outbound message. Every protection was a per-feature check — create-test-client
+// writes autoConfirmationText/autoDeliveryText OFF and re-asserts them on every
+// run, which is good and is not a floor: clientTextSweeps decides in its own
+// query on those two columns, is not one of the ProgramAutomation switches, and
+// a new send path only has to forget to look. A TEST client with a phone number
+// is then one shoot confirmation away from a real text.
+//
+// So the check moves under every send path instead of beside each one. It is
+// deliberately NARROW — this is not the pre-launch gate and must not become it:
+//
+//   · it applies ONLY when the message names a client whose name is synthetic;
+//   · a real client's message is untouched, because the existing approved
+//     client texts run today and stopping them would break the business;
+//   · a synthetic client's message is allowed when it lands on one of the two
+//     destinations Jordan verified on Sep 21, and refused otherwise.
+//
+// A refusal is loud: the row is never enqueued and the caller gets a thrown
+// error naming what it tried to do. A silent drop would be a second way to
+// believe a message went out.
+// ---------------------------------------------------------------------------
+export class TestClientSendRefusedError extends Error {
+  constructor(clientName: string, toRef: string) {
+    super(
+      `Refusing to send to "${toRef}" for TEST client "${clientName}". A synthetic client may only be messaged at one of Jordan's verified test destinations. ` +
+        `If this is a real client, the name carries the word TEST and should be corrected.`,
+    );
+    this.name = "TestClientSendRefusedError";
+  }
+}
+
+async function refuseTestClientSend(msg: OutboxMessageInput): Promise<void> {
+  if (!msg.clientId) return;
+  let client: { name: string | null } | null = null;
+  try {
+    client = await prisma.client.findUnique({ where: { id: msg.clientId }, select: { name: true } });
+  } catch {
+    // A failed lookup must not block a real client's message. The per-feature
+    // gates above this are still in place; this floor simply cannot assert.
+    return;
+  }
+  if (!client) return;
+  const { isTestClientName, isVerifiedTestDestinationEmail, isVerifiedTestDestinationPhone } = await import("@/lib/testClients");
+  if (!isTestClientName(client.name)) return;
+  const ok = msg.channel === "email" ? isVerifiedTestDestinationEmail(msg.toRef) : isVerifiedTestDestinationPhone(msg.toRef);
+  if (!ok) throw new TestClientSendRefusedError(client.name ?? "(unnamed)", msg.toRef);
+}
+
+export const enqueue: Outbox["enqueue"] = async (msg) => {
+  await refuseTestClientSend(msg);
+  return hubOutbox.enqueue(msg);
+};
 export const claim: Outbox["claim"] = (workerId, n, opts) => hubOutbox.claim(workerId, n, opts);
 export const claimById: Outbox["claimById"] = (id, workerId) => hubOutbox.claimById(id, workerId);
 export const deliver: Outbox["deliver"] = (id, workerId) => hubOutbox.deliver(id, workerId);
@@ -712,7 +766,10 @@ export const markFailed: Outbox["markFailed"] = (id, error) => hubOutbox.markFai
 export const markUnknown: Outbox["markUnknown"] = (id, reason) => hubOutbox.markUnknown(id, reason);
 export const recoverExpiredLeases: Outbox["recoverExpiredLeases"] = () => hubOutbox.recoverExpiredLeases();
 export const drainPending: Outbox["drainPending"] = (opts) => hubOutbox.drainPending(opts);
-export const sendThroughOutbox: Outbox["sendThroughOutbox"] = (msg, opts) => hubOutbox.sendThroughOutbox(msg, opts);
+export const sendThroughOutbox: Outbox["sendThroughOutbox"] = async (msg, opts) => {
+  await refuseTestClientSend(msg);
+  return hubOutbox.sendThroughOutbox(msg, opts);
+};
 
 // ---- identities -------------------------------------------------------------
 // The dedupeKey IS the message's identity, and it is deliberately the same
