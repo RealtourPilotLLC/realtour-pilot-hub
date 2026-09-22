@@ -41,15 +41,27 @@ Pilot, LLC group (`a34b1908-d279-475e-8ec3-a7d8b9a459aa`) pointing at
 posting with a stale signing secret. Keep the current one. Our key cannot manage subscriptions
 itself (401), which is why this needs them.
 
-**A second correction: the "media added" signal exists.** I wrote that there was no media-added or
-listing-updated subscription. There is no event named `LISTING_UPDATED` in Aryeo, but
-**`LISTING_CHANGED` fires and its payload carries a `videos` array** when the listing has them
-(seen on the Sep 3 event; the Sep 6 ones omit it, so the payload only includes non-empty
-collections). It arrives about 5 times in 30 days and the receiver does not handle it today.
+**A second correction, and then a correction to the correction (Sep 22).** I first wrote that there
+was no media-added or listing-updated subscription. I then told Jordan that `LISTING_CHANGED` fires
+carrying a `videos` array, that this was the missing media-added signal, and that wiring it was a
+code change we could make. I measured it properly before building on it, and two of those three
+claims were wrong.
 
-So the instant "a video was added to an already-delivered listing" path is a **code change we can
-make**, not something to ask Aryeo for. It belongs with the ready-to-send work, and the hourly
-sweep stays as the backstop either way.
+- **`LISTING_CHANGED` does fire** — 5 events in 45 days, all PROCESSED (against
+  LISTING_CONTENT_DOWNLOADED 100, LISTING_DELIVERED 22, LISTING_CREATED 7). There is no
+  `LISTING_UPDATED` in Aryeo, but this one exists and arrives.
+- **It is NOT a media-added signal.** The `videos` array on the Sep 3 payloads is present and
+  **empty** (`videos[0]`), and the Sep 6 ones carry no `videos` key at all. The body never
+  evidenced a video. All five also predate the Sep 18 re-registration — none has arrived since.
+- **The receiver already handles it, and better than the handler I wrote.** A flat LISTING payload
+  is classified `LISTING_CHANGED` and lands in the generic LISTING branch, which restatuses the
+  project, re-tasks it, repairs a missing listing link, and calls `proveListingNow` — the same
+  evidence function the hourly sweep and the delivery handler call. My handler would have
+  intercepted the event ahead of all of that. Reverted.
+
+So there is **no Aryeo work here and no hub work here**. The early catch for a video appearing on a
+delivered listing remains `LISTING_CONTENT_DOWNLOADED` (100 events in 45 days), and the hourly
+sweep is the backstop, exactly as before.
 
 ## 2. Stripe webhook registration — Jordan, five minutes
 
