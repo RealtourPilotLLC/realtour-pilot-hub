@@ -278,9 +278,15 @@ export type RenderingVideo = {
   says: string;
 };
 
-export type ReadyBoard = { ready: ReadyVideo[]; rendering: RenderingVideo[] };
+/** R5: a cut recorded as SENT whose own records did not finish. Survives a refresh. */
+export type NeedsFinishing = { submissionId: string; street: string; sentAtISO: string; sentBy: string | null; why: string };
+
+export type ReadyBoard = { ready: ReadyVideo[]; rendering: RenderingVideo[]; needsFinishing: NeedsFinishing[] };
 
 const HOUR = 3_600_000;
+
+/** "5642 Limeport Rd, Coopersburg, PA" -> "5642 Limeport Rd". */
+const streetOf = (title: string | null | undefined): string => (title ?? "").split(",")[0].trim();
 
 /** The states the 1080p lane has finished with, whatever the outcome. Written
  *  as the TERMINAL list rather than the live one on purpose: a state this
@@ -773,7 +779,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [] };
+  if (subs.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []) };
 
   // Still the live version of its cut, and not already with the client.
   // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
@@ -784,7 +790,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
     (await prisma.clientMembership.findMany({ select: { clientId: true } }).catch(() => [])).map((m) => m.clientId),
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
-  if (open.length === 0) return { ready: [], rendering: [] };
+  if (open.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -878,7 +884,10 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   // Late first, then oldest first — the order a person would work them in.
   ready.sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.approvedAtISO.localeCompare(b.approvedAtISO));
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
-  return { ready, rendering };
+  // R5: rows already recorded as sent whose own records did not finish. Derived
+  // on every read, so a refresh keeps showing it until it is genuinely fixed.
+  const needsFinishing = await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []);
+  return { ready, rendering, needsFinishing };
 }
 
 /**
@@ -1671,4 +1680,68 @@ export async function repairIncompleteDeliveries(opts: { sinceDays?: number; max
     console.info(`[delivery] ${repaired} delivered 1080p job(s) still had an open upload card — closed. A "mark as sent" had stamped the job and not finished the card.`);
   }
   return { checked: jobs.length, repaired, failed, lastError, detail };
+}
+
+// ---------------------------------------------------------------------------
+// R5 — THE REPAIR ITEM THAT SURVIVES A REFRESH.
+//
+// A press that came back incomplete keeps the row on screen with a live button,
+// which is the immediate half. It is not enough on its own: reload the page and
+// the row is gone, because it now carries sentToClientAt and the board is
+// filtered on that. The cron sweep still repairs it within the hour, but the
+// person who pressed has nothing to look at in the meantime.
+//
+// So the card asks the same question the sweep does, and shows what it finds.
+// DERIVED, not a status column — nothing has to remember to set or clear it.
+//
+// Two shapes, and only these two, for the same reason the sweep is narrow:
+//   · a 1080p job stamped delivered whose upload card is still open. Nothing
+//     legitimate produces that. (The reverse — undelivered, card open — is
+//     Kyle's ordinary chase card and must never be listed as a fault.)
+//   · a sent cut whose per-video delivery row was never minted for its slot.
+// ---------------------------------------------------------------------------
+export async function deliveriesNeedingFinishing(opts: { projectId?: string; sinceDays?: number; max?: number } = {}): Promise<NeedsFinishing[]> {
+  const since = new Date(Date.now() - (opts.sinceDays ?? 14) * 86_400_000);
+  const sent = await prisma.reviewSubmission.findMany({
+    where: { ...(opts.projectId ? { projectId: opts.projectId } : {}), sentToClientAt: { not: null, gte: since } },
+    select: {
+      id: true, slot: true, deliverableId: true, sentToClientAt: true, sentToClientBy: true,
+      project: { select: { title: true } },
+      topazJob: { select: { id: true, deliveredAt: true, taskId: true } },
+    },
+    orderBy: { sentToClientAt: "desc" },
+    take: opts.max ?? 60,
+  });
+  if (!sent.length) return [];
+
+  const taskIds = sent.map((s) => s.topazJob?.taskId).filter((x): x is string => !!x);
+  const openTasks = taskIds.length
+    ? new Set((await prisma.smartTask.findMany({ where: { id: { in: taskIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true } })).map((t) => t.id))
+    : new Set<string>();
+
+  const pairs = sent.filter((s) => s.deliverableId).map((s) => ({ deliverableId: s.deliverableId!, slot: s.slot ?? 1 }));
+  const outs = pairs.length
+    ? await prisma.deliverableOutput.findMany({ where: { deliverableId: { in: [...new Set(pairs.map((p) => p.deliverableId))] } }, select: { deliverableId: true, slot: true } })
+    : [];
+  const haveOutput = new Set(outs.map((o) => `${o.deliverableId}:${o.slot}`));
+
+  const out: NeedsFinishing[] = [];
+  for (const s of sent) {
+    const why: string[] = [];
+    if (s.topazJob?.deliveredAt && s.topazJob.taskId && openTasks.has(s.topazJob.taskId)) {
+      why.push("its 1080p upload card never closed");
+    }
+    if (s.deliverableId && !haveOutput.has(`${s.deliverableId}:${s.slot ?? 1}`)) {
+      why.push("this video has no per-video delivery row");
+    }
+    if (!why.length) continue;
+    out.push({
+      submissionId: s.id,
+      street: streetOf(s.project?.title) || (s.project?.title ?? "a job"),
+      sentAtISO: s.sentToClientAt!.toISOString(),
+      sentBy: s.sentToClientBy,
+      why: why.join(" and "),
+    });
+  }
+  return out;
 }

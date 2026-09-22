@@ -72,19 +72,21 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
 };
 
 export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
-  const { ready, rendering } = board;
+  const { ready, rendering, needsFinishing } = board;
   if (ready.length === 0) {
     return (
       <div className="space-y-2">
         <p className="flex items-center gap-1.5 text-sm text-success">
           <CheckCircle2 className="size-4" /> Nothing waiting to go out.
         </p>
+        <NeedsFinishing rows={needsFinishing ?? []} />
         <Rendering rows={rendering} />
       </div>
     );
   }
   return (
     <div className="space-y-2">
+      <NeedsFinishing rows={needsFinishing ?? []} />
       <p className="text-[11px] text-muted">
         Download the file, upload it to Aryeo and deliver the listing — then mark it sent. Aryeo has no way for
         another program to do that step, so this card is the record that it happened. Each row also says what Aryeo
@@ -371,5 +373,37 @@ export function ReadyToSendHeading({ n }: { n: number }) {
       <Send className="size-3.5" /> Ready to send
       <span className="rounded-full bg-success/15 px-1.5 text-[10px] tabular-nums text-success">{n}</span>
     </h4>
+  );
+}
+
+/**
+ * R5 — SENT, BUT OUR OWN RECORDS DID NOT FINISH.
+ *
+ * The video really did go and that stamp is permanent — this is never a reason
+ * to send anything again, and the wording says so twice because the one thing
+ * that must not happen here is a second upload. It is derived on every read, so
+ * unlike the in-page "press again" it survives a refresh, and it disappears by
+ * itself when the hourly repair closes the gap.
+ */
+function NeedsFinishing({ rows }: { rows: { submissionId: string; street: string; sentAtISO: string; sentBy: string | null; why: string }[] }) {
+  if (!rows.length) return null;
+  return (
+    <div className="rounded-lg border border-warning/40 bg-warning/5 px-3 py-2">
+      <p className="text-[11px] font-semibold text-warning">
+        {rows.length === 1 ? "One video is recorded as sent but its paperwork did not finish" : `${rows.length} videos are recorded as sent but their paperwork did not finish`}
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {rows.map((r) => (
+          <li key={r.submissionId} className="text-[11px] text-muted">
+            <span className="font-medium text-foreground/85">{r.street}</span> — {r.why}.{" "}
+            {r.sentBy ? `Marked sent by ${r.sentBy}.` : "Marked sent."}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1 text-[10px] text-muted-2">
+        The client has these. Nothing needs re-uploading or re-sending — the hourly check finishes our own records, and
+        this note clears itself when it does.
+      </p>
+    </div>
   );
 }

@@ -653,7 +653,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
     // day so Home still makes ONE pass at the database, and so the badge on the
     // block, the row in "What needs you today" and the card itself are all the
     // length of the same array.
-    readyToSend().catch(() => ({ ready: [], rendering: [] }) as ReadyBoard),
+    readyToSend().catch(() => ({ ready: [], rendering: [], needsFinishing: [] }) as ReadyBoard),
   ]);
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
