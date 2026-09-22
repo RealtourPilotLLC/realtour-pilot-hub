@@ -89,6 +89,46 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
   return { ok: true, message: "Got it — we'll take a look and update the script." };
 }
 
+/**
+ * "Yes — I'll film this." The client's own verdict on the script they were
+ * shown, pinned to the exact version (F09). Staff approval and release are two
+ * separate acts and stay ours; this is the third and it is theirs.
+ */
+export async function portalApproveScript(auth: PortalAuth, scriptId: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const { clientApproveScript } = await import("@/lib/scriptDecisions");
+  const r = await clientApproveScript(v, scriptId);
+  if (!r.ok) return fail(r.message);
+  if (!r.duplicate) {
+    const script = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { title: true } });
+    await ownerBell(
+      "portal_script_approved",
+      `Script signed off — ${v.enrollment.clientName || "a client"}`,
+      `${actorLabel(v)} approved "${script?.title ?? "a script"}" as written.`,
+      `/content/${v.enrollment.id}?tab=scripts`,
+      `portal-script-ok-${scriptId}`,
+    );
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  }
+  return { ok: true, message: r.message };
+}
+
+/**
+ * "Change this." Recorded against the version they read and routed into the
+ * suggestion queue staff already work from — never an edit, never a model call
+ * on the client's click.
+ */
+export async function portalRequestScriptChanges(auth: PortalAuth, scriptId: string, note: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const { clientRequestScriptChanges } = await import("@/lib/scriptDecisions");
+  const r = await clientRequestScriptChanges(v, scriptId, note);
+  if (!r.ok) return fail(r.message);
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: true, message: r.message };
+}
+
 /** Client drops a (timestamped) note on one of their cuts — or, with `parentId`, a reply under an existing note. */
 export async function portalAddComment(auth: PortalAuth, submissionId: string, timeSec: number | null, body: string, parentId?: string | null): Promise<RId> {
   const v = await viewerFor(auth, "comment");

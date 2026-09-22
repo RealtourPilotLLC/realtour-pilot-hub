@@ -13,6 +13,7 @@ import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi } from
 import type { GroupUi, ProposedUi, SuggestionUi, RunUi, EventUi, TopicUi } from "@/components/content/TopicsPanel";
 import type { InterviewUi } from "@/components/content/InterviewPanel";
 import { scriptWorkForMonth } from "@/lib/contentDrafting";
+import { scriptDecisionsFor } from "@/lib/scriptDecisions";
 import type { ScriptUi, VersionUi } from "@/components/content/ScriptsPanel";
 import type { FactUi } from "@/components/content/FactsPanel";
 import type { BatchUi, ReviewUi } from "@/components/content/ImportPanel";
@@ -103,6 +104,9 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId }, select: { id: true, versionNo: true } }), prisma.programGenerationPolicyVersion.findMany({ select: { id: true, versionNo: true } }),
   ]);
   const versions = scripts.length ? await prisma.contentScriptVersion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) } }, orderBy: { versionNo: "desc" } }) : [];
+  // The CLIENT's verdict on each shared script (F09) — the fact that decides
+  // whether it is safe to put on a call sheet, and the one nobody could see.
+  const verdicts = scripts.length ? await scriptDecisionsFor(enrollmentId, scripts.map((s) => s.id)).catch(() => new Map()) : new Map();
   const months = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
   const rows: ScriptUi[] = scripts.map((s) => {
     const vs = versions.filter((v) => v.scriptId === s.id);
@@ -125,6 +129,7 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
     return {
       id: s.id, title: s.title, status: s.status, historical: s.historical, releaseState: s.releaseState, monthKey: s.monthId ? months.get(s.monthId) ?? null : null, pillarName: pillars.find((p) => p.id === s.pillarId)?.name ?? null,
       currentVersionId: s.currentVersionId, approvedVersionId: s.approvedVersionId, sharedVersionId: s.sharedVersionId, approvedBy: s.approvedBy, approvedAt: iso(s.approvedAt), sharedAt: iso(s.sharedAt), versions: vlist, sourceFile: s.sourceFile,
+      clientVerdict: verdicts.get(s.id)?.decision ?? (verdicts.get(s.id)?.staleApproval ? "STALE" : null), clientVerdictAt: verdicts.get(s.id)?.decidedAt ?? null,
     };
   });
   // What the month still OWES, and why each one is or is not ready to draft

@@ -33,7 +33,7 @@ const version = (over: Partial<VersionUi>): VersionUi => ({
 
 const script = (title: string, v: VersionUi): ScriptUi => ({
   id: title, title, status: "DRAFT", historical: false, releaseState: null, monthKey: "2026-09", pillarName: "Local Area Authority",
-  currentVersionId: v.id, approvedVersionId: null, sharedVersionId: null, approvedBy: null, approvedAt: null, sharedAt: null, versions: [v], sourceFile: null,
+  currentVersionId: v.id, approvedVersionId: null, sharedVersionId: null, approvedBy: null, approvedAt: null, sharedAt: null, versions: [v], sourceFile: null, clientVerdict: null, clientVerdictAt: null,
 });
 
 async function main() {

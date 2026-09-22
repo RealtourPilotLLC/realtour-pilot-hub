@@ -2,9 +2,9 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ChevronRight, Lightbulb, Loader2, MessageSquare, Plus, X } from "lucide-react";
+import { CheckCircle2, CheckCheck, ChevronRight, Lightbulb, Loader2, MessageSquare, PencilLine, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalSelectTopic, portalSuggestTopic } from "@/app/portal/actions";
+import { portalApproveScript, portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalRequestScriptChanges, portalSelectTopic, portalSuggestTopic } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
@@ -52,6 +52,9 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   const [suggesting, setSuggesting] = useState(false);
   const [idea, setIdea] = useState({ title: "", concept: "", pillarId: "" });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  /** Which script's "what should change?" box is open, and what is in it. */
+  const [changing, setChanging] = useState<string | null>(null);
+  const [changeNote, setChangeNote] = useState("");
   const [busy, start] = useTransition();
   const month = months.find((m) => m.id === monthId) ?? null;
   const done = (r: { ok: boolean; message: string }) => { setMsg({ ok: r.ok, text: r.message }); if (r.ok) router.refresh(); };
@@ -71,6 +74,12 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       else setMsg({ ok: false, text: r.message });
     });
   };
+  const approveScript = (scriptId: string) => start(async () => done(await portalApproveScript(portalAuthFromLocation(), scriptId).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
+  const sendChanges = (scriptId: string) => start(async () => {
+    const r = await portalRequestScriptChanges(portalAuthFromLocation(), scriptId, changeNote).catch(() => ({ ok: false, message: "That didn't send — try again." }));
+    if (r.ok) { setChangeNote(""); setChanging(null); }
+    done(r);
+  });
   const suggest = () => start(async () => {
     const r = await portalSuggestTopic(portalAuthFromLocation(), { title: idea.title, concept: idea.concept, pillarId: idea.pillarId || null, monthId: null }).catch(() => ({ ok: false, message: "That didn't save — try again." }));
     if (r.ok) { setIdea({ title: "", concept: "", pillarId: "" }); setSuggesting(false); }
@@ -193,6 +202,33 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                             </summary>
                             {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history — a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
                             <ScriptBody body={t.scriptText.body} size="xs" />
+                            {/* THE CLIENT'S OWN VERDICT (F09). Only on a script
+                                that is genuinely shared with them — an import we
+                                hold as history is not theirs to approve, and a
+                                draft they cannot see has nothing to approve. */}
+                            {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
+                              <div className="mt-2 border-t border-border pt-2">
+                                {t.script.decision === "APPROVED" ? (
+                                  <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><CheckCheck className="size-3.5" /> You signed off on this one{t.script.decidedAtISO ? ` on ${new Date(t.script.decidedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}.</p>
+                                ) : t.script.decision === "CHANGES_REQUESTED" ? (
+                                  <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes — we&rsquo;re reworking it and the new version lands here.</p>
+                                ) : (
+                                  <>
+                                    {t.script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it — have another read.</p>}
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <button type="button" onClick={() => approveScript(t.script!.id)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><CheckCheck className="size-3" /> I&rsquo;ll film this</button>
+                                      <button type="button" onClick={() => { setChanging(changing === t.script!.id ? null : t.script!.id); setChangeNote(""); }} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><PencilLine className="size-3" /> Change something</button>
+                                    </div>
+                                    {changing === t.script.id && (
+                                      <div className="mt-1.5 flex items-start gap-2">
+                                        <textarea value={changeNote} onChange={(e) => setChangeNote(e.target.value)} rows={2} placeholder="What should change? A line, a word, the whole angle&hellip;" aria-label="What should change about this script" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
+                                        <button type="button" onClick={() => sendChanges(t.script!.id)} disabled={busy || changeNote.trim().length < 3} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Send</button>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
                           </details>
                         )}
                         {/* Actions */}

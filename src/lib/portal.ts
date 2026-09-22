@@ -757,7 +757,22 @@ export type PortalTopic = {
   state: PortalTopicState;
   selection: { monthId: string; monthKey: string; status: string; overflow: boolean; removable: boolean } | null;
   interview: { id: string; status: string; answered: number } | null;
-  script: { versionLabel: string | null; strategyLabel: string | null; shared: boolean } | null;
+  script: {
+    /** The ContentScript id — needed so the client can act on the script, not just read it. */
+    id: string;
+    versionLabel: string | null;
+    strategyLabel: string | null;
+    shared: boolean;
+    /**
+     * THEIR OWN VERDICT on the shared version (F09). Null when nothing is
+     * shared, or when their last answer was about an earlier version — an
+     * approval of v2 is not an approval of v3, and the buttons come back.
+     */
+    decision: "APPROVED" | "CHANGES_REQUESTED" | null;
+    decidedAtISO: string | null;
+    /** They approved an earlier version and the words have changed since. */
+    staleApproval: boolean;
+  } | null;
   /**
    * THE WORDS, when the client is allowed to read them. Null is the normal
    * case: a draft, an internal review, an approved-but-withheld script all
@@ -909,6 +924,9 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     // Walker, Sep 18) and one resolve is three queries however many there are.
     visibleTopicScripts(enrollment, topicIds),
   ]);
+  // Their standing answer on each shared script (F09) — one batched read.
+  const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
+  const decisions = await scriptDecisionsFor(enrollment.id, scripts.map((s) => s.id)).catch(() => new Map());
   const monthKeyOf = new Map(monthsRaw.map((m) => [m.id, m.monthKey]));
   const strategyLabelOf = new Map(versionsOfStrategies.map((v) => [v.id, `v${v.versionNo}`]));
   const versionIds = scripts.map((s) => s.sharedVersionId ?? s.approvedVersionId ?? s.currentVersionId).filter((x): x is string => !!x);
@@ -931,7 +949,17 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       mine: t.source === "client" || !!mineOfTopic.get(t.id), state,
       selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status, overflow: sel.overflow, removable: !inProduction && sel.status !== "RECONCILED" } : null,
       interview: iv ? { id: iv.id, status: iv.status, answered: iv.answeredCount } : null,
-      script: sc ? { versionLabel: scv ? `v${scv.versionNo}` : null, strategyLabel: scv?.strategyVersionId ? strategyLabelOf.get(scv.strategyVersionId) ?? null : sc.strategyVersionId ? strategyLabelOf.get(sc.strategyVersionId) ?? null : null, shared: !!sc.sharedVersionId } : null,
+      script: sc
+        ? {
+            id: sc.id,
+            versionLabel: scv ? `v${scv.versionNo}` : null,
+            strategyLabel: scv?.strategyVersionId ? strategyLabelOf.get(scv.strategyVersionId) ?? null : sc.strategyVersionId ? strategyLabelOf.get(sc.strategyVersionId) ?? null : null,
+            shared: !!sc.sharedVersionId,
+            decision: decisions.get(sc.id)?.decision ?? null,
+            decidedAtISO: decisions.get(sc.id)?.decidedAt ?? null,
+            staleApproval: decisions.get(sc.id)?.staleApproval ?? false,
+          }
+        : null,
       scriptText: topicScripts.get(t.id) ?? null,
       strategyLabel: stratOfTopic.get(t.id) ? strategyLabelOf.get(stratOfTopic.get(t.id)!) ?? null : null,
       lastEventAtISO: t.lastEventAt,

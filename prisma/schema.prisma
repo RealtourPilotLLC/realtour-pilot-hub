@@ -2590,6 +2590,13 @@ model ContentScript {
   approvedAt        DateTime? // approveScript has stamped nothing until now
   approvedBy        String?
   sharedAt          DateTime?
+  // THE CLIENT'S OWN VERDICT (F09, Sep 22 2026). Staff approval and release are
+  // two acts; this is the third, and it is the client's. Pinned to the exact
+  // version they read, so a later edit cannot inherit their yes.
+  clientApprovedVersionId String? // -> ContentScriptVersion the client approved
+  clientApprovedAt        DateTime?
+  clientApprovedByUserId  String? // -> ClientUser
+  clientChangesAt         DateTime? // they asked for changes on the shared version
   // Imported scripts are HISTORICAL records (Jordan's ruling): import ≠
   // approved/filmed/released. The 131 APPROVED imports stay visible as
   // history via releaseState = "historical"; null = legacy status-driven.
@@ -3435,6 +3442,10 @@ model ContentScriptRelease {
   action            String // APPROVE | APPROVE_AND_SHARE | SHARE | UNSHARE | UPDATE_SHARED | RETURN_TO_QUEUE
   actorAppUserId    String? // -> AppUser (Jordan)
   actorEmail        String?
+  /// -> ClientUser. Set on CLIENT_APPROVED / CLIENT_CHANGES rows, where the
+  /// actor is the client rather than a staff member, so "who said yes" is a
+  /// column and not an inference from a null actorAppUserId.
+  actorClientUserId String?
   batchKey          String? // one batch approval → one email; rows share it
   releasedAt        DateTime? // portal visibility began
   notificationState String    @default("NONE") // NONE | QUEUED | SENT | FAILED | SUPPRESSED
@@ -3487,6 +3498,13 @@ model ContentVideo {
   finalVersionLabel     String? // "v3 (final)"
   status                String    @default("PLANNED") // PLANNED | FILMED | EDITING | CLIENT_REVIEW | APPROVED | DELIVERED | ARCHIVED
   filmedAt              DateTime?
+  /// WHO SAID IT WAS FILMED (F12, Sep 22 2026). 100% of filmedAt values today
+  /// are DERIVED from an appointment or a delivery date; none came from the
+  /// person holding the camera. Null here means filmedAt is an inference and
+  /// must read as one — never as a confirmed production fact.
+  filmedConfirmedAt     DateTime?
+  filmedConfirmedBy     String? // staff email / photographer AppUser email
+  filmedSource          String? // upload_portal | staff | derived
   deliveredAt           DateTime?
   releasedToClientAt    DateTime?
   postedByClientAt      DateTime? // "marked as posted" — NOT a verified publication
@@ -3701,6 +3719,15 @@ model ProgramSessionRequest {
   status                  String    @default("REQUESTED") // REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED | CANCEL_REQUESTED | CANCELLED | DECLINED | EXPIRED
   projectId               String? // -> Project once the Aryeo appointment exists
   aryeoAppointmentId      String?
+  aryeoOrderId            String? // the order the booking created, when we made it
+  /// A07 (Sep 22 2026). Proximity alone used to confirm a content session
+  /// against ANY non-cancelled appointment for that client within two hours —
+  /// a listing shoot at 11:00 could confirm a content request at 10:00 and
+  /// close the desk task. These two columns hold what the match was actually
+  /// based on, and let a request sit in AMBIGUOUS for a person instead of
+  /// guessing. NONE | PROVIDER_ID | CONTENT_EVIDENCE | AMBIGUOUS | STAFF
+  matchState              String?
+  matchEvidenceJson       String? // {candidates:[{appointmentId, why, score}], chose, rejected}
   confirmedAt             DateTime?
   confirmedBy             String?
   cancelledAt             DateTime?

@@ -31,7 +31,7 @@ export type VersionUi = { id: string; versionNo: number; status: string; source:
 /** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
 export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
 
-export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null };
+export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null; clientVerdict: "APPROVED" | "CHANGES_REQUESTED" | "STALE" | null; clientVerdictAt: string | null };
 
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
@@ -106,6 +106,15 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
   const releasedLive = approvedLive && !!s.sharedVersionId && s.releaseState !== "withheld";
   const state = s.historical ? "historical" : releasedLive ? "released to the portal" : approvedLive ? (cur && cur.id !== s.approvedVersionId ? "new draft since approval" : "approved · not released") : "needs your OK";
   const tone = s.historical ? "bg-surface-2 text-muted" : state.startsWith("needs") || state.startsWith("new draft") ? "bg-brand-soft text-brand" : "bg-success-soft text-success";
+  // THE CLIENT'S OWN VERDICT (F09). Separate from every chip above, because our
+  // approval and their willingness to say these words on camera are different
+  // facts and the second one decides whether this belongs on a call sheet.
+  const verdict =
+    s.clientVerdict === "APPROVED" ? { label: "client signed off", cls: "bg-success-soft text-success" }
+    : s.clientVerdict === "CHANGES_REQUESTED" ? { label: "client asked for changes", cls: "bg-warning-soft text-warning" }
+    : s.clientVerdict === "STALE" ? { label: "rewritten since they approved", cls: "bg-warning-soft text-warning" }
+    : releasedLive ? { label: "client hasn't answered yet", cls: "bg-surface-2 text-muted" }
+    : null;
   return (
     <details className="group px-5 py-3" open={open}>
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 marker:content-none">
@@ -126,6 +135,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
           </span>
         )}
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
+        {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
       </summary>
       <div className="mt-2">
         {cur && (
