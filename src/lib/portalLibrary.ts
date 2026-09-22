@@ -137,6 +137,11 @@ export async function addApprovedCutToLibrary(submissionId: string): Promise<boo
     select: { id: true, enrollmentId: true },
   });
   if (!month) return false;
+  // The upsert used to end in `.catch(() => {})` and the function returned
+  // `true` regardless — so a caller that DID check got "added" on a row that
+  // was never written (F14). It throws now; approveCut's own try/catch is what
+  // keeps an approval from failing over it, and repairApprovedCutLibrary is
+  // what makes sure the row arrives in the end.
   await prisma.portalVideo
     .upsert({
       where: { externalKey: `sub:${sub.id}` },
@@ -153,8 +158,7 @@ export async function addApprovedCutToLibrary(submissionId: string): Promise<boo
         externalKey: `sub:${sub.id}`,
         deliveredAt: sub.decidedAt ?? new Date(),
       },
-    })
-    .catch(() => {});
+    });
   return true;
 }
 
@@ -232,4 +236,56 @@ export async function rekeyIndexedLibraryRows(opts: { dryRun?: boolean; max?: nu
     }
   }
   return { examined: rows.length, rekeyed, alreadyKeyed, unmatched, unreadable, collisions, detail };
+}
+
+// ---------------------------------------------------------------------------
+// F14 — THE APPROVE → LIBRARY BRIDGE CONVERGES INSTEAD OF HOPING.
+//
+// approveCut calls addApprovedCutToLibrary inside a try/catch with the comment
+// "best-effort — approval never fails over it". Making the approval survive a
+// library failure is right. Leaving the library row missing forever afterwards
+// is not: the client's Videos tab simply never shows that cut, nobody is told,
+// and nothing looks again. addApprovedCutToLibrary itself swallows its own
+// upsert error too, so even a caller that checked the return value would be
+// told `true` on a failed write.
+//
+// sweepPortalLibraries does not cover this: it only rebuilds the ARYEO-sourced
+// rows, and only for projects delivered in the last three days. A `sub:` row
+// that never landed is invisible to it.
+//
+// This is the watcher. It asks the only question that matters — which approved
+// content cuts have no library row — and makes the missing ones, idempotently.
+// It is cheap because the answer is normally zero.
+// ---------------------------------------------------------------------------
+export async function repairApprovedCutLibrary(opts: { sinceDays?: number; max?: number } = {}): Promise<{ checked: number; repaired: number; failed: number; lastError: string | null }> {
+  const since = new Date(Date.now() - (opts.sinceDays ?? 45) * 86_400_000);
+  // Approved cuts on content-program jobs — the exact set addApprovedCutToLibrary
+  // is meant to have covered.
+  const approved = await prisma.reviewSubmission.findMany({
+    where: { status: "APPROVED", assetUrl: { not: null }, decidedAt: { gte: since }, project: { contentMonthId: { not: null }, status: { not: "CANCELLED" } } },
+    select: { id: true },
+    orderBy: { decidedAt: "desc" },
+    take: opts.max ?? 200,
+  });
+  if (!approved.length) return { checked: 0, repaired: 0, failed: 0, lastError: null };
+
+  const have = new Set(
+    (await prisma.portalVideo.findMany({ where: { externalKey: { in: approved.map((a) => `sub:${a.id}`) } }, select: { externalKey: true } })).map((r) => r.externalKey),
+  );
+  let repaired = 0, failed = 0;
+  let lastError: string | null = null;
+  for (const a of approved) {
+    if (have.has(`sub:${a.id}`)) continue;
+    try {
+      const ok = await addApprovedCutToLibrary(a.id);
+      // A false here is a legitimate refusal (no asset, not a content job), not
+      // a failure — the row is not owed.
+      if (ok) repaired++;
+    } catch (e) {
+      failed++;
+      lastError = e instanceof Error ? e.message.slice(0, 200) : "unknown";
+    }
+  }
+  if (repaired > 0) console.info(`[library] ${repaired} approved cut(s) had no portal row and were added — the approve-time write had failed and nothing was watching.`);
+  return { checked: approved.length, repaired, failed, lastError };
 }

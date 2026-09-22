@@ -279,6 +279,13 @@ export async function GET(req: NextRequest) {
   // told the client "we'll draft the script from your answers". Behind
   // `script_drafting` (off at the database) AND `ai_runs`; drafts land in the
   // same review lane a hand-written one does.
+  // F14: approved content cuts that never reached the client's library. The
+  // approve-time write is best-effort by design (an approval must not fail over
+  // it) and nothing looked again afterwards. Normally repairs nothing.
+  await step("libraryRepair", async () => {
+    const { repairApprovedCutLibrary } = await import("@/lib/portalLibrary");
+    return repairApprovedCutLibrary({ sinceDays: 45, max: 200 });
+  }, { maxMs: 20_000 });
   await step("scriptDrafting", async () => {
     const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
     // Questions first: phrasing them for the topic has to happen BEFORE the
