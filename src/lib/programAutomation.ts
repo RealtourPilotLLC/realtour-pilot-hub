@@ -26,6 +26,7 @@ import { prisma } from "@/lib/prisma";
 export const AUTOMATION_KEYS = [
   "reminders", // §24 client reminders (new outbox kinds; never the existing auto texts)
   "transcript_jobs", // §20 analyse a call transcript into topics/answers/facts/scripts
+  "script_drafting", // §6/§7 draft the scripts a planned month owes, from the client's answers or the call
   "ai_runs", // §13 master switch for any ProgramAiRun execution
   "publishing", // §12 Instagram (no credentials exist today)
   "script_share_email", // §22 "Approve & share" → email to the client

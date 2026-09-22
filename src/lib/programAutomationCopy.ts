@@ -30,6 +30,11 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
     onEffect: "Queued call transcripts are analysed automatically into topics, answers, facts and script inputs, spending AI credit per run. Results still land as proposals a person reviews.",
     reaches: "internal",
   },
+  script_drafting: {
+    title: "Draft the scripts a month owes",
+    onEffect: "Once a month's topics are settled, the hub drafts each script on its own — from the client's written answers where they gave them, otherwise from the planning call's excerpts. It never drafts a topic with neither (that one waits for a person), never drafts a topic still only proposed by the call, and nothing it writes is approved, released or client-visible. Spends AI credit per script.",
+    reaches: "internal",
+  },
   ai_runs: {
     title: "AI runs (master switch)",
     onEffect: "Allows every kind of generation to execute at all. With this off, no strategy, topic bank, script or caption can be generated, however its own switch is set.",

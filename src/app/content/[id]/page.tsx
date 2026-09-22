@@ -449,7 +449,7 @@ export default async function ContentClientPage({
               <h2 className="text-xl font-semibold tracking-tight">Scripts — {monthName}</h2>
               <MonthPicker months={months.map((m) => ({ key: m.monthKey, label: monthLabel(m.monthKey), historical: m.historical }))} currentKey={month?.monthKey ?? activeKey} makeHref={`/content/${id}?tab=scripts&month=MONTH`} />
             </div>
-            <ScriptsPanel scripts={scriptsData.scripts} queueCount={scriptsData.queueCount} scriptOwner={scriptsData.scriptOwner} />
+            <ScriptsPanel scripts={scriptsData.scripts} queueCount={scriptsData.queueCount} scriptOwner={scriptsData.scriptOwner} owed={scriptsData.owed} />
           </>
         )}
 

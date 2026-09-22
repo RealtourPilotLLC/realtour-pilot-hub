@@ -272,6 +272,17 @@ export async function GET(req: NextRequest) {
     const { driveTranscriptJobs } = await import("@/lib/transcriptJobs");
     return driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "sync-cron" });
   }, { maxMs: 40_000 });
+  // THE DRAFTING CHAIN (F07/F08, Sep 22 2026). Both planning paths end here:
+  // a client's written answers, and a reconciled planning call. Until today
+  // neither reached a script on its own — SCRIPT_DRAFT was never enqueued by
+  // anything, and submitInterview set a status and stopped while the portal
+  // told the client "we'll draft the script from your answers". Behind
+  // `script_drafting` (off at the database) AND `ai_runs`; drafts land in the
+  // same review lane a hand-written one does.
+  await step("scriptDrafting", async () => {
+    const { sweepOwedScripts } = await import("@/lib/contentDrafting");
+    return sweepOwedScripts({ max: 6, budgetMs: 60_000 });
+  }, { maxMs: 75_000 });
   // Session requests: REQUESTED → CONFIRMED when the Aryeo appointment (synced
   // above) appears at the slot; CONFIRMED → CANCELLED when Aryeo cancels it;
   // stale ones expire. The provider-booking driver only runs behind

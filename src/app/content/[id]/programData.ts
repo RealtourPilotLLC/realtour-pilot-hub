@@ -12,6 +12,7 @@ import { activePolicyVersion } from "@/lib/aiRuns";
 import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi } from "@/components/content/StrategyPanel";
 import type { GroupUi, ProposedUi, SuggestionUi, RunUi, EventUi, TopicUi } from "@/components/content/TopicsPanel";
 import type { InterviewUi } from "@/components/content/InterviewPanel";
+import { scriptWorkForMonth } from "@/lib/contentDrafting";
 import type { ScriptUi, VersionUi } from "@/components/content/ScriptsPanel";
 import type { FactUi } from "@/components/content/FactsPanel";
 import type { BatchUi, ReviewUi } from "@/components/content/ImportPanel";
@@ -126,7 +127,10 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       currentVersionId: s.currentVersionId, approvedVersionId: s.approvedVersionId, sharedVersionId: s.sharedVersionId, approvedBy: s.approvedBy, approvedAt: iso(s.approvedAt), sharedAt: iso(s.sharedAt), versions: vlist, sourceFile: s.sourceFile,
     };
   });
-  return { scripts: rows, queueCount: queue.filter((q) => !month || q.monthId === month.id).length, scriptOwner: owners.SCRIPTS.label };
+  // What the month still OWES, and why each one is or is not ready to draft
+  // (F07/F08). Read-only; the doing lives in src/lib/contentDrafting.ts.
+  const owed = month ? await scriptWorkForMonth(month.id).catch(() => []) : [];
+  return { scripts: rows, queueCount: queue.filter((q) => !month || q.monthId === month.id).length, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT") };
 }
 
 export async function loadFactsTab(clientId: string, enrollmentId: string) {

@@ -991,6 +991,29 @@ export async function draftScriptFromInterview(interviewId: string): Promise<Res
 }
 
 // ---- scripts ---------------------------------------------------------------------------------
+/**
+ * Draft every script this month owes that HAS the evidence to be drafted
+ * (F07/F08). The same work the hourly sweep does when `script_drafting` is on,
+ * on demand and attributed to the person who pressed it.
+ *
+ * `includeThin` is the explicit "draft it from the topic line and the strategy
+ * alone" — never the default, and never what the unattended sweep does.
+ */
+export async function draftOwedScriptsAction(monthId: string, includeThin = false): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { draftOwedScriptsForMonth } = await import("@/lib/contentDrafting");
+    const r = await draftOwedScriptsForMonth(monthId, { requestedBy: me.email, unattended: false, includeThin });
+    revalidatePath("/content");
+    if (!r.drafted && !r.failed && !r.skipped) return { ok: true, message: includeThin ? "Nothing left to draft." : "Nothing is ready to draft — the rest are waiting on answers, on reconciling, or have no evidence yet." };
+    const parts = [`${r.drafted} drafted`];
+    if (r.skipped) parts.push(`${r.skipped} already being drafted`);
+    if (r.failed) parts.push(`${r.failed} failed (${r.outcomes.find((o) => o.result === "failed")?.note ?? "see the run log"})`);
+    return { ok: true, message: `${parts.join(" · ")}. They are on the Scripts tab for your review — nothing is approved or shared.` };
+  } catch (e) { return fail(e); }
+}
+
 export async function generateScriptForTopicAction(topicId: string, monthId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {

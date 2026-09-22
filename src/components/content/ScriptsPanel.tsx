@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, FileText, History, Loader2, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
+import { Check, CircleDashed, FileText, History, Loader2, PenLine, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ScriptBody } from "@/components/portal/ScriptBody";
@@ -18,7 +18,7 @@ import { ScriptBody } from "@/components/portal/ScriptBody";
 // sentence behind. It is named here rather than claimed away; prompts.ts was
 // outside this change's files.
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
-import { approveScriptVersionAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText, tightenScriptAI } from "@/app/content/actions";
+import { approveScriptVersionAction, draftOwedScriptsAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText, tightenScriptAI } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
@@ -28,6 +28,9 @@ import { approveScriptVersionAction, releaseScriptAction, returnScriptAction, re
 // ---------------------------------------------------------------------------
 
 export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[] };
+/** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
+export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
+
 export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null };
 
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
@@ -50,7 +53,7 @@ function band(seconds: number | null): "under" | "on" | "over" | null {
   return seconds > TARGET_HI ? "over" : seconds < TARGET_LO ? "under" : "on";
 }
 
-export function ScriptsPanel({ scripts, queueCount, scriptOwner }: { scripts: ScriptUi[]; queueCount: number; scriptOwner: string }) {
+export function ScriptsPanel({ scripts, queueCount, scriptOwner, owed = [] }: { scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[] }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
@@ -60,6 +63,7 @@ export function ScriptsPanel({ scripts, queueCount, scriptOwner }: { scripts: Sc
   return (
     <div className="space-y-5">
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
+      <OwedScripts owed={owed} busy={busy} run={run} />
       <Section icon={FileText} title="Review queue" count={queueCount} flush action={<span className="text-[11px] text-muted-2">approval owner: {scriptOwner} · call-derived and written-answer drafts land here alike</span>}>
         <div className="divide-y divide-border">
           {queue.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} open />)}
@@ -223,5 +227,73 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
         )}
       </div>
     </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WHAT THIS MONTH STILL OWES (F07/F08, Sep 22 2026).
+//
+// The queue above shows scripts that EXIST. This shows the ones that do not,
+// and the honest reason for each — because the two states that used to be
+// invisible are the two that matter: a client whose written answers are sitting
+// there undrafted (the portal told them we would draft it), and a topic the
+// call only PROPOSED that nobody has reconciled.
+//
+// "Draft what's ready" never touches a THIN topic. Drafting one of those from
+// the topic line and the strategy alone is a judgement call, so it is its own
+// button with its own words on it.
+// ---------------------------------------------------------------------------
+const READY = new Set(["FROM_ANSWERS", "FROM_CALL"]);
+const TONE: Record<string, string> = {
+  FROM_ANSWERS: "border-emerald-500/30 bg-emerald-500/5",
+  FROM_CALL: "border-emerald-500/30 bg-emerald-500/5",
+  WAITING_ON_ANSWERS: "border-amber-500/30 bg-amber-500/5",
+  WAITING_ON_PLANNING: "border-amber-500/30 bg-amber-500/5",
+  THIN: "border-border bg-surface-2",
+};
+const LABEL: Record<string, string> = {
+  FROM_ANSWERS: "Ready — their answers",
+  FROM_CALL: "Ready — call excerpts",
+  WAITING_ON_ANSWERS: "Waiting on them",
+  WAITING_ON_PLANNING: "Needs reconciling",
+  THIN: "No evidence yet",
+};
+
+function OwedScripts({ owed, busy, run }: { owed: OwedUi[]; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
+  if (!owed.length) return null;
+  const monthId = owed[0].monthId;
+  const ready = owed.filter((o) => READY.has(o.readiness));
+  const thin = owed.filter((o) => o.readiness === "THIN");
+  return (
+    <Section
+      icon={CircleDashed}
+      title="Still owed this month"
+      count={owed.length}
+      flush
+      action={
+        <span className="flex flex-wrap items-center gap-2">
+          {ready.length > 0 && (
+            <button disabled={busy} onClick={() => run(() => draftOwedScriptsAction(monthId, false))} className={`${btn} bg-brand text-white`}>
+              <Sparkles className="mr-1 inline size-3" />Draft what&rsquo;s ready ({ready.length})
+            </button>
+          )}
+          {thin.length > 0 && ready.length === 0 && (
+            <button disabled={busy} onClick={() => run(() => draftOwedScriptsAction(monthId, true))} className={quiet}>
+              <PenLine className="mr-1 inline size-3" />Draft from the topic alone ({thin.length})
+            </button>
+          )}
+        </span>
+      }
+    >
+      <ul className="divide-y divide-border">
+        {owed.map((o) => (
+          <li key={o.topicId} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-5 py-2.5">
+            <span className="text-sm font-medium">{o.title}</span>
+            <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${TONE[o.readiness] ?? "border-border bg-surface-2"}`}>{LABEL[o.readiness] ?? o.readiness}</span>
+            <span className="text-[12px] text-muted">{o.why}</span>
+          </li>
+        ))}
+      </ul>
+    </Section>
   );
 }

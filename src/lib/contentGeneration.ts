@@ -157,13 +157,13 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
 }
 
 /** Written-answer path: a DRAFT version from the interview's exact answer rows, gaps carried through, never filled. */
-export async function generateScriptFromInterview(interviewId: string, requestedBy: string): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
+export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
   const bundle = buildScriptPrompt(built.ctx, { path: "written-answers", input: a.input });
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds },
-    promptKey: "script", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `script:interview:${interviewId}`,
+    promptKey: "script", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`,
     system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
   });
   const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId);
