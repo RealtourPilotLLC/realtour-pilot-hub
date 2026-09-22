@@ -6,29 +6,50 @@ Sep 21 2026 against head `8e1f153`.
 
 ---
 
-## 1. Aryeo webhook registration — needs Aryeo support
+## 1. Aryeo webhooks — WORKING. One old subscription still needs purging.
 
-**State:** Aryeo's webhook subscriptions are dead. Our API key cannot manage them: subscription
-management returns 401 on this key, which is a documented account limitation rather than a scope
-we can widen ourselves. This is a standing issue, not something this week's work introduced.
+**Corrected Sep 22 2026.** I previously wrote here that the subscriptions were dead and told Jordan
+to ask Aryeo to re-register them. That was wrong, and he caught it: they were re-registered on
+Sep 18 and they have been working ever since. The Phase 0 agent said plainly that it had not
+re-probed this and was repeating a standing note; I passed it on as live fact without checking.
 
-**What it costs while it stays broken:** nothing is lost, but everything is late. Order changes,
-appointment changes and delivery confirmations reach the hub through the hourly reconcile
-(`/api/cron/sync` at `:00`) instead of arriving on the event. So a booking confirmed at 9:05 is
-not visible in the hub until 10:00, and the same is true of a delivery. The hub is already built
-to reconcile rather than depend on the push, so this degrades freshness, not correctness.
+**Measured state (read-only, Sep 22):**
 
-**The exact action:** email Aryeo support and ask them to re-register the webhook subscriptions
-for the Realtour Pilot, LLC group (`a34b1908-d279-475e-8ec3-a7d8b9a459aa`) against
-`https://hub.realtourpilot.com/api/webhooks/aryeo`, and to confirm which event types are enabled.
-Ask specifically whether a **media-added or listing-updated** event exists — zero `LISTING_UPDATED`
-events have arrived in ten days out of 176 received, which is why a video added to an
-already-delivered listing still waits for the hourly sweep.
+- 935 events in 30 days, 213 in 7 days, **46 in the last 24 hours**. Most recent
+  `LISTING_DELIVERED`, processed, Sep 21 20:46.
+- 20 event types arriving and processing cleanly: `ORDER_CHANGED` 315, `APPOINTMENT_CHANGED` 232,
+  `CUSTOMER_CHANGED` 132, `LISTING_CONTENT_DOWNLOADED` 99, `LISTING_DELIVERED` 22,
+  `APPOINTMENT_SCHEDULED`/`RESCHEDULED` 12, and the rest.
 
-**After it lands:** nothing to deploy. The receiver already exists and already recognises the
-event types; the reconcile stays as the backstop.
+**The real issue, which is smaller and different.** 50 events were **refused on signature**, oldest
+Sep 8, most recent **Sep 21 19:45** — an hour before a good event landed. So two senders are
+posting: one signing correctly, one not. That second sender is almost certainly the pre-Sep-8
+subscription, created when the secret was saved in the hub and never given to Aryeo.
 
----
+Of those 50: **11 were duplicates** we also received from the good sender, and **39 were genuinely
+lost** — never seen any other way. By name: `ORDER_PLACED` 2, `ORDER_CREATED`, `ORDER_RECEIVED`,
+`ORDER_PAYMENT_ENTERED`, `ORDER_PAYMENT_COMPLETED`, `ORDER_SYNCED_TO_QUICKBOOKS`,
+`MEDIA_REQUEST_CREATED`, `CUSTOMER_TEAM_INTERNAL_NOTE_UPDATED`, and 6 customer-shaped payloads.
+
+Nothing is permanently lost — orders and appointments are re-read by the hourly reconcile, which is
+why this went unnoticed. But those events were dropped at the door, and the rate is roughly two a
+week and continuing.
+
+**The exact action:** ask Aryeo support to **delete the old webhook subscription** for the Realtour
+Pilot, LLC group (`a34b1908-d279-475e-8ec3-a7d8b9a459aa`) pointing at
+`https://hub.realtourpilot.com/api/webhooks/aryeo` — the one created before Sep 18, which is still
+posting with a stale signing secret. Keep the current one. Our key cannot manage subscriptions
+itself (401), which is why this needs them.
+
+**A second correction: the "media added" signal exists.** I wrote that there was no media-added or
+listing-updated subscription. There is no event named `LISTING_UPDATED` in Aryeo, but
+**`LISTING_CHANGED` fires and its payload carries a `videos` array** when the listing has them
+(seen on the Sep 3 event; the Sep 6 ones omit it, so the payload only includes non-empty
+collections). It arrives about 5 times in 30 days and the receiver does not handle it today.
+
+So the instant "a video was added to an already-delivered listing" path is a **code change we can
+make**, not something to ask Aryeo for. It belongs with the ready-to-send work, and the hourly
+sweep stays as the backstop either way.
 
 ## 2. Stripe webhook registration — Jordan, five minutes
 
@@ -82,6 +103,8 @@ rather than leave a permanently broken one on the connections page.
 
 ## Not blockers, recorded so they are not re-investigated
 
+- **Aryeo webhook re-registration** — done Sep 18, verified working Sep 22. Only the old duplicate
+  subscription needs purging (see task 1).
 - **Calendly Notetaker** returns 403, "required features are not enabled". Jordan, Sep 21:
   transcripts come from Google Meet via Google Drive and Calendly identifies the booking, so
   Notetaker is not a requirement. Closed.
