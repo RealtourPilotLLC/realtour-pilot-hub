@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
 import { replyCardFor, type ReplyCard } from "@/lib/replyQueue";
-import { OpenPhone, defaultOpenPhoneNumber } from "@/lib/integrations/openphone";
+import { defaultOpenPhoneNumber } from "@/lib/integrations/openphone";
 import { closeReplyForOutbound } from "@/lib/tasks";
 import { logComm } from "@/lib/commLog";
 
