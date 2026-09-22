@@ -760,6 +760,12 @@ export type PortalTopic = {
   script: {
     /** The ContentScript id — needed so the client can act on the script, not just read it. */
     id: string;
+    /**
+     * R1: the EXACT version this page is rendering. Sent back with the client's
+     * decision so the server can refuse a stale tab rather than recording an
+     * approval of words they never read. Null when nothing is shared.
+     */
+    sharedVersionId: string | null;
     versionLabel: string | null;
     strategyLabel: string | null;
     shared: boolean;
@@ -952,6 +958,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       script: sc
         ? {
             id: sc.id,
+            sharedVersionId: sc.sharedVersionId,
             versionLabel: scv ? `v${scv.versionNo}` : null,
             strategyLabel: scv?.strategyVersionId ? strategyLabelOf.get(scv.strategyVersionId) ?? null : sc.strategyVersionId ? strategyLabelOf.get(sc.strategyVersionId) ?? null : null,
             shared: !!sc.sharedVersionId,

@@ -34,7 +34,11 @@ export type SessionTopic = {
   /** The script the client is expecting to say, when there is one. */
   scriptId: string | null;
   scriptTitle: string | null;
-  /** The client signed off on those words (F09) — worth seeing on a call sheet. */
+  /**
+   * The client signed off on THE WORDS THAT ARE SHARED (F09). Read through
+   * scriptDecisionsFor so this agrees with the portal and the staff panel —
+   * a client who asked for a change must never read as approved here (R1).
+   */
   clientApproved: boolean;
   /** A person has already confirmed this one was filmed, and when. */
   filmedConfirmedAtISO: string | null;
@@ -75,9 +79,14 @@ export async function topicsForSession(projectId: string): Promise<SessionTopics
   const topicIds = selections.map((s) => s.topicId);
   const [topics, scripts, videos, pillars] = await Promise.all([
     prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true, pillarId: true } }),
+    // ONE script per topic, chosen deterministically. Nothing in the schema
+    // makes (monthId, topicId) unique, and an unordered findMany + `.find()`
+    // means two scripts on one topic answer differently between two renders of
+    // the same page. Newest first, and the `.find()` below takes that one.
     prisma.contentScript.findMany({
       where: { monthId: month.id, topicId: { in: topicIds }, historical: false },
-      select: { id: true, topicId: true, title: true, clientApprovedVersionId: true, sharedVersionId: true },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      select: { id: true, topicId: true, title: true, sharedVersionId: true },
     }),
     prisma.contentVideo.findMany({
       where: { monthId: month.id, topicId: { in: topicIds } },
@@ -85,6 +94,18 @@ export async function topicsForSession(projectId: string): Promise<SessionTopics
     }),
     prisma.contentPillar.findMany({ where: { enrollmentId: month.enrollmentId }, select: { id: true, name: true } }),
   ]);
+  // R1 — ONE RULE FOR "DID THE CLIENT APPROVE THIS".
+  //
+  // This used to compute it here, from `clientApprovedVersionId === sharedVersionId`.
+  // The portal and the staff panel read the newest ledger row instead, and a
+  // change request never cleared that pointer — so a client could ask for a
+  // change and the person holding the camera would still be told they had
+  // signed off on it. The filming brief is the LAST place that should be
+  // guessing, so it asks the same function the other two do.
+  const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
+  const verdicts = scripts.length
+    ? await scriptDecisionsFor(month.enrollmentId, scripts.map((sc) => sc.id)).catch(() => new Map())
+    : new Map();
   const titleOf = new Map(topics.map((t) => [t.id, t.title]));
   const pillarOf = new Map(topics.map((t) => [t.id, t.pillarId]));
   const pillarName = new Map(pillars.map((p) => [p.id, p.name]));
@@ -105,7 +126,7 @@ export async function topicsForSession(projectId: string): Promise<SessionTopics
         pillarName: pid ? pillarName.get(pid) ?? null : null,
         scriptId: sc?.id ?? null,
         scriptTitle: sc?.title ?? null,
-        clientApproved: !!sc?.clientApprovedVersionId && sc.clientApprovedVersionId === sc.sharedVersionId,
+        clientApproved: !!sc && verdicts.get(sc.id)?.decision === "APPROVED",
         filmedConfirmedAtISO: v?.filmedConfirmedAt?.toISOString() ?? null,
         filmedConfirmedBy: v?.filmedConfirmedBy ?? null,
         videoId: v?.id ?? null,

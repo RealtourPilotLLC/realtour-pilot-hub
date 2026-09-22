@@ -74,9 +74,20 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       else setMsg({ ok: false, text: r.message });
     });
   };
-  const approveScript = (scriptId: string) => start(async () => done(await portalApproveScript(portalAuthFromLocation(), scriptId).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
-  const sendChanges = (scriptId: string) => start(async () => {
-    const r = await portalRequestScriptChanges(portalAuthFromLocation(), scriptId, changeNote).catch(() => ({ ok: false, message: "That didn't send — try again." }));
+  // R1 — the decision carries the version THIS PAGE rendered. If a newer one
+  // has been released since, the server refuses and `done` refreshes, so the
+  // client lands on the words we would actually film instead of approving
+  // something they have not read.
+  const approveScript = (scriptId: string, versionId: string | null) =>
+    start(async () =>
+      done(
+        await portalApproveScript(portalAuthFromLocation(), scriptId, versionId ?? "").catch(() => ({ ok: false, message: "That didn't save — try again." })),
+      ),
+    );
+  const sendChanges = (scriptId: string, versionId: string | null) => start(async () => {
+    const r = await portalRequestScriptChanges(portalAuthFromLocation(), scriptId, changeNote, versionId ?? "").catch(() => ({ ok: false, message: "That didn't send — try again." }));
+    // A stale refusal keeps their words in the box: they are about to read a
+    // new version and may well want to say the same thing about it.
     if (r.ok) { setChangeNote(""); setChanging(null); }
     done(r);
   });
@@ -216,13 +227,13 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                                   <>
                                     {t.script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it — have another read.</p>}
                                     <div className="flex flex-wrap items-center gap-1.5">
-                                      <button type="button" onClick={() => approveScript(t.script!.id)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><CheckCheck className="size-3" /> I&rsquo;ll film this</button>
+                                      <button type="button" onClick={() => approveScript(t.script!.id, t.script!.sharedVersionId)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><CheckCheck className="size-3" /> I&rsquo;ll film this</button>
                                       <button type="button" onClick={() => { setChanging(changing === t.script!.id ? null : t.script!.id); setChangeNote(""); }} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><PencilLine className="size-3" /> Change something</button>
                                     </div>
                                     {changing === t.script.id && (
                                       <div className="mt-1.5 flex items-start gap-2">
                                         <textarea value={changeNote} onChange={(e) => setChangeNote(e.target.value)} rows={2} placeholder="What should change? A line, a word, the whole angle&hellip;" aria-label="What should change about this script" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                                        <button type="button" onClick={() => sendChanges(t.script!.id)} disabled={busy || changeNote.trim().length < 3} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Send</button>
+                                        <button type="button" onClick={() => sendChanges(t.script!.id, t.script!.sharedVersionId)} disabled={busy || changeNote.trim().length < 3} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Send</button>
                                       </div>
                                     )}
                                   </>

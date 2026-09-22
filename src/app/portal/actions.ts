@@ -94,11 +94,14 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
  * shown, pinned to the exact version (F09). Staff approval and release are two
  * separate acts and stay ours; this is the third and it is theirs.
  */
-export async function portalApproveScript(auth: PortalAuth, scriptId: string): Promise<R> {
+export async function portalApproveScript(auth: PortalAuth, scriptId: string, readVersionId: string): Promise<R> {
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
   const { clientApproveScript } = await import("@/lib/scriptDecisions");
-  const r = await clientApproveScript(v, scriptId);
+  // R1: readVersionId is the version the PAGE was showing. The server refuses
+  // if a newer one has been released since, rather than approving words the
+  // client never read.
+  const r = await clientApproveScript(v, scriptId, readVersionId);
   if (!r.ok) return fail(r.message);
   if (!r.duplicate) {
     const script = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { title: true } });
@@ -119,11 +122,11 @@ export async function portalApproveScript(auth: PortalAuth, scriptId: string): P
  * suggestion queue staff already work from — never an edit, never a model call
  * on the client's click.
  */
-export async function portalRequestScriptChanges(auth: PortalAuth, scriptId: string, note: string): Promise<R> {
+export async function portalRequestScriptChanges(auth: PortalAuth, scriptId: string, note: string, readVersionId: string): Promise<R> {
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
   const { clientRequestScriptChanges } = await import("@/lib/scriptDecisions");
-  const r = await clientRequestScriptChanges(v, scriptId, note);
+  const r = await clientRequestScriptChanges(v, scriptId, note, readVersionId);
   if (!r.ok) return fail(r.message);
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
   return { ok: true, message: r.message };
