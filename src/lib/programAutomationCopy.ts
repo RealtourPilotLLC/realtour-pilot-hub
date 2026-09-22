@@ -31,8 +31,8 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
     reaches: "internal",
   },
   script_drafting: {
-    title: "Draft the scripts a month owes",
-    onEffect: "Once a month's topics are settled, the hub drafts each script on its own — from the client's written answers where they gave them, otherwise from the planning call's excerpts. It never drafts a topic with neither (that one waits for a person), never drafts a topic still only proposed by the call, and nothing it writes is approved, released or client-visible. Spends AI credit per script.",
+    title: "Prepare and draft what a month owes",
+    onEffect: "Two steps of one chain. First, for each topic the month has committed to, the hub phrases the six planning questions FOR THAT TOPIC before the client opens them — so they read a question about their actual subject instead of the house wording. Then it drafts each owed script: from the client's written answers where they gave them, otherwise from the planning call's excerpts. It never drafts a topic with neither (that one waits for a person), never touches a topic still only proposed by the call, and nothing it writes is approved, released or client-visible. Spends AI credit per question set and per script.",
     reaches: "internal",
   },
   ai_runs: {

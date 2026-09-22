@@ -12,6 +12,7 @@ import { activePolicyVersion } from "@/lib/aiRuns";
 import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi } from "@/components/content/StrategyPanel";
 import type { GroupUi, ProposedUi, SuggestionUi, RunUi, EventUi, TopicUi } from "@/components/content/TopicsPanel";
 import type { InterviewUi } from "@/components/content/InterviewPanel";
+import { interviewPlanningContext } from "@/lib/contentInterview";
 import { scriptWorkForMonth } from "@/lib/contentDrafting";
 import { scriptDecisionsFor } from "@/lib/scriptDecisions";
 import type { ScriptUi, VersionUi } from "@/components/content/ScriptsPanel";
@@ -88,6 +89,7 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
       const hasDraft = (await prisma.contentScriptVersion.count({ where: { interviewId: iv.id } })) > 0;
       interviews[iv.topicId] = {
         interviewId: iv.id, topicId: iv.topicId, topicTitle: t?.title ?? "", status: st.status, answeredCount: st.answeredCount, nextKey: st.nextKey,
+        tailored: (await interviewPlanningContext(iv.id).catch(() => null))?.hasPlan ?? false,
         next: st.next.kind === "done" ? { kind: "done" } : { kind: st.next.kind, prompt: st.next.prompt, label: st.next.question.id, condition: st.next.kind === "follow-up" ? st.next.condition : undefined, substantive: st.next.question.substantive },
         sufficiency: st.sufficiency, answers: st.answers.map((a) => ({ questionKey: a.questionKey, questionText: a.questionText, answerText: a.answerText, answerKind: a.answerKind, version: a.version })),
         answersChangedSinceDraft: await answersChangedSinceLastDraft(iv.id), hasDraft,

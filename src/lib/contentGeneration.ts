@@ -558,4 +558,52 @@ export async function draftStrategyFromTranscript(o: { enrollmentId: string; cli
   return { versionId: r.versionId, versionNo: r.versionNo, gaps: gaps.length, runId: run.runId };
 }
 
+/**
+ * Phrase the six house questions FOR ONE TOPIC (F10).
+ *
+ * The roles, order and gap rules stay the policy's — only the sentences change,
+ * and every key that comes back missing, short or still carrying a placeholder
+ * falls straight back to the house template. So the worst case of a bad plan is
+ * the behaviour we had before it existed.
+ */
+export async function planInterviewQuestions(interviewId: string, o: { requestedBy: string; unattended: boolean }): Promise<{ runId: string; questions: number; followUps: number }> {
+  const { interviewPlanningContext } = await import("@/lib/contentInterview");
+  const { INTERVIEW_QUESTION_PLAN } = await import("@/lib/contentPolicy");
+  const { buildInterviewPlanPrompt } = await import("@/lib/contentPolicy/prompts");
+  const ctxRow = await interviewPlanningContext(interviewId);
+  const built = await buildClientContext(ctxRow.enrollmentId, { monthId: ctxRow.monthId });
+  const bundle = buildInterviewPlanPrompt(built.ctx, { topic: ctxRow.topic, plan: INTERVIEW_QUESTION_PLAN });
+  type PlanOut = { questions: { id: string; ask: string }[]; followUps: { key: string; ask: string }[] };
+  const run = await runAiJson<PlanOut>({
+    kind: "interview_plan", enrollmentId: ctxRow.enrollmentId, clientId: ctxRow.clientId, scope: { interviewId, topicId: ctxRow.topic.id, monthId: ctxRow.monthId },
+    inputRefs: { ...built.inputRefs, topicTitle: ctxRow.topic.title }, promptKey: "interview-plan", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId,
+    requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: `interview-plan:${interviewId}`,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 2000,
+  });
+
+  // Only ids the POLICY knows survive — a renamed or invented one is dropped
+  // rather than stored, because assembleScriptInputs reads these by id.
+  const allowed = new Set<string>(INTERVIEW_QUESTION_PLAN.map((q) => q.id));
+  const allowedFu = new Set<string>(INTERVIEW_QUESTION_PLAN.flatMap((q) => q.followUps.map((f) => `${q.id}:fu:${f.when}`)));
+  const usable = (t: unknown): t is string => typeof t === "string" && t.trim().length >= 12 && !t.includes("{{");
+  const rows: { key: string; role: string; text: string }[] = [];
+  const roleOf = new Map(INTERVIEW_QUESTION_PLAN.map((q) => [q.id as string, q.id]));
+  for (const q of INTERVIEW_QUESTION_PLAN) {
+    const hit = (run.output.questions ?? []).find((x) => x && x.id === q.id);
+    // The house template is stored for anything unusable, exactly as
+    // getOrCreateInterview would have — so the row is always complete.
+    rows.push({ key: q.id, role: roleOf.get(q.id) ?? q.id, text: usable(hit?.ask) ? hit!.ask.trim() : q.template });
+  }
+  let followUps = 0;
+  for (const f of run.output.followUps ?? []) {
+    if (!f || !allowedFu.has(f.key) || !usable(f.ask)) continue;
+    rows.push({ key: f.key, role: "FOLLOWUP", text: f.ask.trim() });
+    followUps++;
+  }
+  const questions = rows.filter((r) => allowed.has(r.key) && !r.text.includes("{{")).length;
+  await prisma.contentInterview.update({ where: { id: interviewId }, data: { questionPlanJson: JSON.stringify(rows), aiRunId: run.runId } });
+  await setRunOutputRef(run.runId, `ContentInterview:${interviewId}`);
+  return { runId: run.runId, questions, followUps };
+}
+
 export const GENERATION_KINDS: AiRunKind[] = ["call_analysis", "strategy_draft", "topic_bank", "topic_refresh", "recommendation", "script_draft", "script_revise", "interview_plan"];

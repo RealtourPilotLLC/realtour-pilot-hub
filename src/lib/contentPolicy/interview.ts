@@ -192,7 +192,36 @@ export type NextStep =
   | { kind: "follow-up"; question: InterviewQuestion; condition: FollowUpCondition; prompt: string }
   | { kind: "done"; answered: number; skipped: number; substantiveAnswered: number };
 
-export type InterviewContext = { topic: Topic; audience: string | null; clientName: string | null };
+export type InterviewContext = {
+  topic: Topic;
+  audience: string | null;
+  clientName: string | null;
+  /**
+   * PER-TOPIC WORDING (F10). The templates above carry the comment "per-topic
+   * wording is the AI's job", and until Sep 22 2026 nothing did that job — every
+   * client on every topic read the same six sentences with the title dropped in,
+   * which is why "what do people in this situation usually get wrong?" arrived
+   * on a topic about pre-listing inspections.
+   *
+   * Keyed by question id, or `<id>:fu:<condition>` for a follow-up. The house
+   * template is the FALLBACK, never replaced: a plan that failed to generate, a
+   * key the model omitted, or a phrasing that arrives empty all fall straight
+   * back to the sentence that has always worked. The six question ROLES are
+   * fixed — assembleScriptInputs depends on them — so this changes how a
+   * question is asked and never what is being asked for.
+   */
+  phrasing?: Record<string, string> | null;
+};
+
+/** The stored per-topic sentence for a step, when one exists and is usable. */
+function phrased(ctx: InterviewContext, key: string): string | null {
+  const v = ctx.phrasing?.[key];
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  // A phrasing that still carries a placeholder was never filled in; a
+  // one-word one is not a question. Either way the template is better.
+  return t.length >= 12 && !t.includes("{{") ? t : null;
+}
 
 function fill(template: string, ctx: InterviewContext): string {
   return template
@@ -212,16 +241,16 @@ export function nextQuestion(answers: InterviewAnswer[], ctx: InterviewContext):
   const byId = new Map(answers.map((a) => [a.questionId, a]));
   for (const q of INTERVIEW_QUESTION_PLAN) {
     const a = byId.get(q.id);
-    if (!a || a.status === "pending") return { kind: "question", question: q, prompt: fill(q.template, ctx) };
+    if (!a || a.status === "pending") return { kind: "question", question: q, prompt: phrased(ctx, q.id) ?? fill(q.template, ctx) };
     if (a.status === "skipped" || a.status === "dont-know") continue;
     const asked = new Set((a.followUps ?? []).map((f) => f.condition));
     const pendingFollowUp = (a.followUps ?? []).find((f) => f.status === "pending");
-    if (pendingFollowUp) return { kind: "follow-up", question: q, condition: pendingFollowUp.condition, prompt: pendingFollowUp.ask };
+    if (pendingFollowUp) return { kind: "follow-up", question: q, condition: pendingFollowUp.condition, prompt: phrased(ctx, `${q.id}:fu:${pendingFollowUp.condition}`) ?? fill(pendingFollowUp.ask, ctx) };
     if (asked.size) continue; // one follow-up per question
     const cond = followUpConditions(q, a)[0];
     if (cond) {
       const fu = q.followUps.find((f) => f.when === cond)!;
-      return { kind: "follow-up", question: q, condition: cond, prompt: fill(fu.ask, ctx) };
+      return { kind: "follow-up", question: q, condition: cond, prompt: phrased(ctx, `${q.id}:fu:${cond}`) ?? fill(fu.ask, ctx) };
     }
   }
   const answered = answers.filter((a) => a.status === "answered").length;

@@ -297,3 +297,73 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   await recordAutomationRun("script_drafting", lastError).catch(() => {});
   return { months: touched, drafted, skipped, failed, waiting, thin, detail };
 }
+
+// ---------------------------------------------------------------------------
+// THE QUESTIONS, PHRASED FOR THE TOPIC (F10) — the step BEFORE the answers.
+//
+// The interview row is only created when a client presses "Answer the
+// questions", which is one moment too late to phrase them: by then they are
+// reading question 1. So this runs ahead of them — for every topic a month has
+// committed to, it opens the interview and has the model rewrite the six house
+// questions for THAT topic, so the first thing the client sees is about
+// pre-listing inspections rather than about "people in this situation".
+//
+// Creating the interview early changes nothing downstream: a NOT_STARTED
+// interview is not "waiting on them" in scriptWorkForMonth — it falls through
+// to the call-excerpt check exactly as a missing one did.
+// ---------------------------------------------------------------------------
+export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: number } = {}): Promise<{ skipped: string } | { planned: number; alreadyPlanned: number; failed: number; lastError: string | null }> {
+  if (!(await isAutomationEnabled("script_drafting"))) return { skipped: "script_drafting is off" };
+  const started = Date.now();
+  const budgetMs = opts.budgetMs ?? 45_000;
+  const max = opts.max ?? 5;
+
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  if (!live.length) return { planned: 0, alreadyPlanned: 0, failed: 0, lastError: null };
+  const months = await prisma.contentMonth.findMany({
+    where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },
+    select: { id: true },
+    orderBy: { monthKey: "desc" },
+    take: 40,
+  });
+  if (!months.length) return { planned: 0, alreadyPlanned: 0, failed: 0, lastError: null };
+
+  // Committed topics only. A call's PROPOSED suggestion is not the month's plan,
+  // and phrasing questions for a topic nobody has agreed to is spent credit.
+  const selections = await prisma.contentTopicSelection.findMany({
+    where: { monthId: { in: months.map((m) => m.id) }, status: { in: ["SELECTED", "RECONCILED"] } },
+    select: { topicId: true, monthId: true },
+    take: 200,
+  });
+  if (!selections.length) return { planned: 0, alreadyPlanned: 0, failed: 0, lastError: null };
+
+  // Topics that already have this month's script need no questions.
+  const scripted = new Set(
+    (await prisma.contentScript.findMany({ where: { monthId: { in: months.map((m) => m.id) }, topicId: { in: selections.map((s) => s.topicId) }, historical: false }, select: { topicId: true, monthId: true } }))
+      .map((r) => `${r.topicId}:${r.monthId}`),
+  );
+
+  const { getOrCreateInterview, interviewPlanningContext } = await import("@/lib/contentInterview");
+  const { planInterviewQuestions } = await import("@/lib/contentGeneration");
+  let planned = 0, alreadyPlanned = 0, failed = 0;
+  let lastError: string | null = null;
+
+  for (const sel of selections) {
+    if (planned >= max || Date.now() - started > budgetMs) break;
+    if (scripted.has(`${sel.topicId}:${sel.monthId}`)) continue;
+    try {
+      const interviewId = await getOrCreateInterview(sel.topicId, sel.monthId, {});
+      const ctx = await interviewPlanningContext(interviewId);
+      if (ctx.hasPlan) { alreadyPlanned++; continue; }
+      await planInterviewQuestions(interviewId, { requestedBy: "cron", unattended: true });
+      planned++;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/already (running|in progress)|Unique constraint|dedupe/i.test(msg)) { alreadyPlanned++; continue; }
+      failed++;
+      lastError = msg.slice(0, 300);
+      if (e instanceof Error && e.name === "AutomationDisabledError") break;
+    }
+  }
+  return { planned, alreadyPlanned, failed, lastError };
+}

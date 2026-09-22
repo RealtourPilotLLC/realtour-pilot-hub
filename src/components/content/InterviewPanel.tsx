@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { Loader2, MessageSquare, Sparkles } from "lucide-react";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
-import { answerInterview, draftScriptFromInterview } from "@/app/content/actions";
+import { answerInterview, draftScriptFromInterview, planInterviewQuestionsAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // The guided topic interview (spec §6): one concise question at a time, skip
@@ -15,6 +15,8 @@ import { answerInterview, draftScriptFromInterview } from "@/app/content/actions
 
 export type InterviewUi = {
   interviewId: string; topicId: string; topicTitle: string; status: string; answeredCount: number; nextKey: string | null;
+  /** The six questions have been rewritten for this topic (F10), rather than read from the house template. */
+  tailored: boolean;
   next: { kind: "question" | "follow-up" | "done"; prompt?: string; label?: string; condition?: string; substantive?: boolean };
   sufficiency: { ready: boolean; substantiveAnswered: number; substantiveTotal: number; gaps: { kind: string; field: string | null; text: string; question: string | null }[] };
   answers: { questionKey: string; questionText: string; answerText: string | null; answerKind: string; version: number }[];
@@ -38,6 +40,13 @@ export function InterviewPanel({ iv }: { iv: InterviewUi }) {
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
         <MessageSquare className="size-3.5" />
         <span className="font-medium text-foreground">Written answers · {iv.topicTitle}</span>
+        {iv.tailored ? (
+          <span className="rounded-full bg-success-soft px-2 py-0.5 text-[10px] font-medium text-success">questions written for this topic</span>
+        ) : (
+          <button disabled={busy} onClick={() => run(() => planInterviewQuestionsAction(iv.interviewId))} className={quiet} title="Rewrite the six house questions for this topic. Anything left thin keeps the house wording.">
+            <Sparkles className="mr-1 inline size-3" />Write the questions for this topic
+          </button>
+        )}
         <span>{iv.sufficiency.substantiveAnswered}/{iv.sufficiency.substantiveTotal} substantive answers · {iv.status.toLowerCase().replace("_", " ")}</span>
       </div>
       {iv.answers.length > 0 && (

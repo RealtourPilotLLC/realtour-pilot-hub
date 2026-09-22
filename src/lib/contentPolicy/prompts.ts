@@ -21,7 +21,7 @@ import { renderScript } from "./scriptFormat";
 export type JsonSchema = Record<string, unknown>;
 
 export type PromptBundle = {
-  name: "strategy" | "topic-bank" | "script" | "interview-follow-up" | "caption";
+  name: "strategy" | "topic-bank" | "script" | "interview-plan" | "interview-follow-up" | "caption";
   system: string;
   user: string;
   outputSchema: JsonSchema;
@@ -407,6 +407,98 @@ export function buildInterviewFollowUpPrompt(
     .filter(Boolean)
     .join("\n");
   return { name: "interview-follow-up", system, user, outputSchema: FOLLOW_UP_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+}
+
+// ---------------------------------------------------------------------------
+// 4b. THE WHOLE QUESTION SET, PHRASED FOR ONE TOPIC (spec §6, F10).
+//
+// INTERVIEW_QUESTION_PLAN's templates each carry the comment "per-topic wording
+// is the AI's job" and nothing did that job, so every client on every topic read
+// the same six sentences with a title dropped in — "what do people in this
+// situation usually get wrong?" arriving on a topic about pre-listing
+// inspections.
+//
+// This rewrites the SENTENCES and nothing else. The six roles, their order, the
+// follow-up conditions and the gap rules are the policy's and stay fixed:
+// assembleScriptInputs reads them by id, so a model that renamed or dropped one
+// would silently break the script inputs. The output is keyed BY THE SAME IDS
+// and any key that comes back missing, short or still carrying a placeholder
+// falls back to the house template.
+// ---------------------------------------------------------------------------
+
+export const INTERVIEW_PLAN_OUTPUT_SCHEMA: JsonSchema = {
+  type: "object",
+  required: ["questions", "followUps"],
+  additionalProperties: false,
+  properties: {
+    questions: {
+      type: "array",
+      description: "One entry per house question id, same ids, same order. Rewrite the sentence for THIS topic in this client's register.",
+      items: {
+        type: "object",
+        required: ["id", "ask"],
+        additionalProperties: false,
+        properties: {
+          id: { type: "string", description: "Exactly the house question id: audienceProblem | pointOfView | talkingPoints | evidence | story | nextAction." },
+          ask: { type: "string", description: "The question as the client should read it. One sentence, plain speech, specific to this topic. Never suggests an answer, a number or a story." },
+        },
+      },
+    },
+    followUps: {
+      type: "array",
+      description: "Optional. Rewritten follow-ups, keyed '<questionId>:fu:<condition>' using the house conditions verbatim.",
+      items: {
+        type: "object",
+        required: ["key", "ask"],
+        additionalProperties: false,
+        properties: {
+          key: { type: "string", description: "'<questionId>:fu:<condition>', e.g. 'talkingPoints:fu:no-example'." },
+          ask: { type: "string", description: "The follow-up as the client should read it." },
+        },
+      },
+    },
+  },
+};
+
+export function buildInterviewPlanPrompt(ctx: ClientContext, opts: { topic: Topic; plan: readonly InterviewQuestion[] }): PromptBundle {
+  assertClientScoped(ctx, opts.topic);
+  const system = [
+    "You phrase the questions a Realtour Pilot client answers about ONE video topic, so a writer can script it in their voice.",
+    "",
+    "You are rewriting SENTENCES, not designing a questionnaire. Every house question below must come back exactly once, under its own id, in the same order, serving the same rule. Do not add, drop, merge or reorder them.",
+    "",
+    "WHAT A GOOD REWRITE DOES:",
+    "- names the actual subject instead of gesturing at it (\"what do sellers assume a pre-listing inspection will turn up?\", not \"what do people get wrong here?\")",
+    "- sounds like a colleague asking, not a form",
+    "- stays ONE question. No stacked clauses, no 'and also'.",
+    "- can be answered in two or three spoken sentences",
+    "",
+    "WHAT IT MUST NEVER DO:",
+    "- suggest the answer, or offer an example, number, outcome or story for them to agree with. An unanswered question becomes a recorded gap; a leading question becomes a fabricated script.",
+    "- ask for anything the house question does not ask for",
+    "- ask a generic brand-questionnaire question",
+    "",
+    NO_INVENTION_RULE,
+    "",
+    "OUTPUT: one JSON object matching the schema.",
+  ].join("\n");
+  const user = [
+    `CLIENT: ${ctx.clientName} (id ${ctx.clientId})`,
+    `TOPIC: ${opts.topic.title} (pillar: ${opts.topic.pillarRef.pillarName})`,
+    opts.topic.description ? `TOPIC DESCRIPTION: ${opts.topic.description}` : "",
+    opts.topic.audienceNeed ? `AUDIENCE NEED: ${opts.topic.audienceNeed}` : "",
+    opts.topic.businessGoal ? `BUSINESS GOAL: ${opts.topic.businessGoal}` : "",
+    opts.topic.intendedMessage ? `INTENDED TAKEAWAY: ${opts.topic.intendedMessage}` : "",
+    "",
+    "THE HOUSE QUESTIONS — rewrite each one for this topic:",
+    ...opts.plan.map((q) => `- id "${q.id}" · rule: ${q.rule} · captures: ${q.captures} · house wording: ${q.template}`),
+    "",
+    "THE HOUSE FOLLOW-UPS — rewrite the ones worth rewriting for this topic, keyed '<id>:fu:<condition>':",
+    ...opts.plan.flatMap((q) => q.followUps.map((f) => `- key "${q.id}:fu:${f.when}" · house wording: ${f.ask}`)),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return { name: "interview-plan", system, user, outputSchema: INTERVIEW_PLAN_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------

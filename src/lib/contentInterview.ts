@@ -78,6 +78,32 @@ async function topicForInterview(interviewId: string): Promise<{ topic: Topic; a
   return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row };
 }
 
+/**
+ * The per-topic wording stored on the interview (F10), or null.
+ *
+ * Shape-tolerant on purpose. `getOrCreateInterview` has always written
+ * questionPlanJson as `[{key, role, text}]` with the RAW `{{topic}}` template
+ * in `text` — so every existing row parses here and every one of them is
+ * correctly rejected by `phrased()`'s placeholder check. A generated plan
+ * writes the same array with real sentences and the follow-up keys alongside.
+ */
+function storedPhrasing(questionPlanJson: string | null | undefined): Record<string, string> | null {
+  if (!questionPlanJson) return null;
+  try {
+    const v: unknown = JSON.parse(questionPlanJson);
+    if (!Array.isArray(v)) return null;
+    const out: Record<string, string> = {};
+    for (const row of v) {
+      const key = (row as { key?: unknown }).key;
+      const text = (row as { text?: unknown }).text;
+      if (typeof key === "string" && typeof text === "string") out[key] = text;
+    }
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Rows → the policy's answer shape (follow-ups fold under their question). */
 function toPolicyAnswers(rows: Awaited<ReturnType<typeof currentAnswers>>): InterviewAnswer[] {
   const out = new Map<InterviewQuestionId, InterviewAnswer>();
@@ -108,7 +134,7 @@ export async function interviewState(interviewId: string): Promise<InterviewStat
   const { topic, audience, clientName, row } = await topicForInterview(interviewId);
   const rows = await currentAnswers(interviewId);
   const answers = toPolicyAnswers(rows);
-  const next = nextQuestion(answers, { topic, audience, clientName });
+  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson) });
   const inputs = assembleScriptInputs(answers, topic, row.strategyVersionId);
   const nextKey = next.kind === "question" ? next.question.id : next.kind === "follow-up" ? followUpKey(next.question.id, next.condition) : null;
   const status = next.kind === "done" ? (inputs.completeness.ready ? "SUFFICIENT" : "NEEDS_FOLLOWUP") : rows.length ? "IN_PROGRESS" : "NOT_STARTED";
@@ -144,9 +170,15 @@ export async function answerQuestion(interviewId: string, questionKey: string, i
   // the raw {{topic}} placeholders).
   let questionText = input.questionText?.trim() || "";
   if (!questionText) {
-    const { topic, audience, clientName } = await topicForInterview(interviewId);
-    const raw = isFollowUp ? q.followUps.find((f) => f.when === m[2])?.ask ?? q.template : q.template;
-    questionText = raw.replace(/\{\{topic\}\}/g, topic.title).replace(/\{\{pillar\}\}/g, topic.pillarRef.pillarName).replace(/\{\{client\}\}/g, clientName ?? "you").replace(/\{\{audience\}\}/g, audience ?? "people in this situation");
+    const { topic, audience, clientName, row: full } = await topicForInterview(interviewId);
+    // The per-topic sentence when one was generated; the house template else.
+    const stored = storedPhrasing(full.questionPlanJson)?.[questionKey]?.trim();
+    if (stored && stored.length >= 12 && !stored.includes("{{")) {
+      questionText = stored;
+    } else {
+      const raw = isFollowUp ? q.followUps.find((f) => f.when === m[2])?.ask ?? q.template : q.template;
+      questionText = raw.replace(/\{\{topic\}\}/g, topic.title).replace(/\{\{pillar\}\}/g, topic.pillarRef.pillarName).replace(/\{\{client\}\}/g, clientName ?? "you").replace(/\{\{audience\}\}/g, audience ?? "people in this situation");
+    }
   }
   const prev = await prisma.contentInterviewAnswer.findFirst({ where: { interviewId, questionKey }, orderBy: { version: "desc" }, select: { id: true, version: true } });
   const text = input.kind === "TYPED" ? (input.text ?? "").trim().slice(0, 8000) : null;
@@ -190,4 +222,17 @@ export async function answersChangedSinceLastDraft(interviewId: string): Promise
   ]);
   if (!latestAnswer || !latestVersion) return false;
   return latestAnswer.createdAt > latestVersion.createdAt;
+}
+
+/** Everything the question planner needs about one interview, in one read. */
+export async function interviewPlanningContext(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; enrollmentId: string; clientId: string; monthId: string; policyVersionId: string | null; strategyVersionId: string | null; hasPlan: boolean }> {
+  const { topic, audience, clientName, row } = await topicForInterview(interviewId);
+  // A GENERATED plan is identified by its RUN, not by reading the sentences.
+  // getOrCreateInterview stores the six raw templates in the same column, and
+  // five of those six carry no {{placeholder}} at all — so "does any stored
+  // sentence look like a real question" is true of every interview ever
+  // created and said "tailored" on all of them. ContentInterview.aiRunId is
+  // written by planInterviewQuestions and by nothing else.
+  const hasPlan = !!row.aiRunId && !!storedPhrasing(row.questionPlanJson);
+  return { topic, audience, clientName, enrollmentId: row.enrollmentId, clientId: row.clientId, monthId: row.monthId, policyVersionId: row.policyVersionId, strategyVersionId: row.strategyVersionId, hasPlan };
 }

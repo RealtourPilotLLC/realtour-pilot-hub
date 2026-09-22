@@ -280,9 +280,14 @@ export async function GET(req: NextRequest) {
   // `script_drafting` (off at the database) AND `ai_runs`; drafts land in the
   // same review lane a hand-written one does.
   await step("scriptDrafting", async () => {
-    const { sweepOwedScripts } = await import("@/lib/contentDrafting");
-    return sweepOwedScripts({ max: 6, budgetMs: 60_000 });
-  }, { maxMs: 75_000 });
+    const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
+    // Questions first: phrasing them for the topic has to happen BEFORE the
+    // client opens them, and a topic that gets answered this way produces a
+    // better script than the same topic drafted from a call excerpt.
+    const plans = await sweepInterviewPlans({ max: 4, budgetMs: 30_000 });
+    const drafts = await sweepOwedScripts({ max: 6, budgetMs: 45_000 });
+    return { plans, drafts };
+  }, { maxMs: 90_000 });
   // Session requests: REQUESTED → CONFIRMED when the Aryeo appointment (synced
   // above) appears at the slot; CONFIRMED → CANCELLED when Aryeo cancels it;
   // stale ones expire. The provider-booking driver only runs behind

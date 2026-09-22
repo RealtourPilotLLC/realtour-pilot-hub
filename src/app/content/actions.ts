@@ -977,6 +977,21 @@ export async function answerInterview(interviewId: string, questionKey: string, 
   } catch (e) { return fail(e); }
 }
 
+/**
+ * Phrase the six planning questions for THIS topic (F10) — the same work the
+ * sweep does before a client opens them, on demand.
+ */
+export async function planInterviewQuestionsAction(interviewId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { planInterviewQuestions } = await import("@/lib/contentGeneration");
+    const r = await planInterviewQuestions(interviewId, { requestedBy: me.email, unattended: false });
+    revalidatePath("/content");
+    return { ok: true, message: `${r.questions} question${r.questions === 1 ? "" : "s"} rewritten for this topic${r.followUps ? ` (+${r.followUps} follow-ups)` : ""}. Anything the model left thin keeps the house wording.` };
+  } catch (e) { return fail(e); }
+}
+
 export async function draftScriptFromInterview(interviewId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
