@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
+import { MONTHLY_PLAN_RE } from "@/lib/videoStyles";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { monthSessionCount, recalcProgramMonth, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
@@ -251,6 +252,18 @@ function monthLockKey(enrollmentId: string, monthId: string): [number, number] {
 }
 
 /** Kyle's desk row for one request — the ask with the exact slot; closed when the request settles. */
+/** The "two bookings both fit" sentence for Kyle's task, from the stored evidence. */
+function ambiguityLine(matchEvidenceJson: string | null): string {
+  let names = "";
+  try {
+    const v = JSON.parse(matchEvidenceJson ?? "") as { candidates?: { appointmentId: string; startAt: string | null }[] };
+    names = (v.candidates ?? [])
+      .map((c) => `${c.startAt ? new Date(c.startAt).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "no time"} (${c.appointmentId})`)
+      .join(" and ");
+  } catch { /* the sentence stands without the ids */ }
+  return `⚠ TWO content appointments both fit this request${names ? `: ${names}` : ""}. The hub will not guess between them — open the request and confirm which one is this session.`;
+}
+
 async function ensureDeskTask(requestId: string): Promise<void> {
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId } });
   if (!r) return;
@@ -283,6 +296,10 @@ async function ensureDeskTask(requestId: string): Promise<void> {
     r.locationText ? `Filming location: ${r.locationText}` : null,
     r.notes ? r.notes : null,
     "",
+    // A07: when two real content bookings both fit, the reconcile refuses to
+    // pick and says so HERE rather than leaving Kyle to wonder why an obviously
+    // booked session never confirmed.
+    r.matchState === "AMBIGUOUS" ? ambiguityLine(r.matchEvidenceJson) : null,
     "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
     r.taskId ? null : `Request ${r.id}`,
   ].filter((x): x is string => x != null).join("\n");
@@ -344,35 +361,130 @@ export async function confirmSessionRequest(requestId: string, link: { projectId
   if (!r) throw new Error("Request not found.");
   await prisma.programSessionRequest.update({
     where: { id: requestId },
-    data: { status: "CONFIRMED", projectId: link.projectId ?? undefined, aryeoAppointmentId: link.aryeoAppointmentId ?? undefined, confirmedAt: new Date(), confirmedBy: by, bookingState: "SUCCEEDED" },
+    data: { status: "CONFIRMED", projectId: link.projectId ?? undefined, aryeoAppointmentId: link.aryeoAppointmentId ?? undefined, confirmedAt: new Date(), confirmedBy: by, bookingState: "SUCCEEDED", matchState: "STAFF", matchEvidenceJson: JSON.stringify({ chose: link.aryeoAppointmentId ?? null, why: `confirmed by hand by ${by}` }) },
   });
   await closeDeskTask(requestId, "COMPLETED");
   await recalcProgramMonth(r.monthId);
 }
 
+// ---------------------------------------------------------------------------
+// A07 (Sep 21 audit, fixed Sep 22 2026) — PROXIMITY IS NOT EVIDENCE.
+//
+// The matcher took ANY non-cancelled appointment for the client within two
+// hours of the requested slot. Nothing required that appointment to be content
+// work at all, so a listing shoot at 11:00 confirmed a content session request
+// at 10:00, linked the unrelated project, told the client "Booked", and closed
+// Kyle's desk task. The flex (no-slot) arm was looser still: any appointment in
+// the month.
+//
+// A confirmation now needs POSITIVE evidence that this appointment IS the
+// content session, in this order of strength:
+//
+//   PROVIDER_ID        the hub booked it and holds the appointment id. Nothing
+//                      to infer.
+//   MONTH_LINK         the appointment's project is attached to THIS content
+//                      month (Project.contentMonthId) — set by
+//                      attachMonthlyProjects from the deliverable labels.
+//   CONTENT_DELIVERABLE the project's own deliverables read as monthly content
+//                      (MONTHLY_PLAN_RE, the one shared signal the rest of the
+//                      pipeline uses) and it falls in the requested month.
+//
+// Timing still has to agree, but it can no longer carry the decision alone. An
+// appointment that is merely NEAR the slot is recorded as a near miss and
+// confirms nothing.
+//
+// And when two eligible appointments both fit, the request goes AMBIGUOUS
+// rather than picking one: Kyle's task stays open and the evidence for each
+// candidate is on the row. Guessing between two real bookings is the same
+// error as guessing from proximity, just rarer.
+// ---------------------------------------------------------------------------
+
+export type ApptRow = {
+  id: string;
+  aryeoId: string;
+  startAt: Date | null;
+  projectId: string;
+  project: { contentMonthId: string | null; deliverables: { label: string | null }[] };
+};
+
+export type SessionMatchKind = "PROVIDER_ID" | "MONTH_LINK" | "CONTENT_DELIVERABLE";
+
+/** Is this appointment content-program work, and how do we know? Null = no evidence. */
+function contentEvidence(a: ApptRow, monthId: string, monthKey: string | null): { kind: SessionMatchKind; why: string } | null {
+  if (a.project.contentMonthId === monthId) {
+    return { kind: "MONTH_LINK", why: "its project is attached to this content month" };
+  }
+  // Attached to a DIFFERENT content month is positive evidence of the wrong
+  // thing — it is somebody's other session and must never match here.
+  if (a.project.contentMonthId && a.project.contentMonthId !== monthId) return null;
+  const monthly = a.project.deliverables.some((d) => d.label && MONTHLY_PLAN_RE.test(d.label));
+  if (!monthly) return null;
+  if (monthKey && a.startAt && etMonthKey(a.startAt) !== monthKey) return null;
+  return { kind: "CONTENT_DELIVERABLE", why: "its deliverables read as monthly content and it falls in the requested month" };
+}
+
+export type SessionMatchDecision = {
+  /** Appointments that are provably this content session AND fit the timing. */
+  eligible: { a: ApptRow; kind: SessionMatchKind; why: string }[];
+  /** Appointments that fit the timing but are not content work — what used to confirm. */
+  nearMisses: { appointmentId: string; startAt: string | null; why: string }[];
+  /** What the caller should do: exactly one eligible confirms, more than one is a person's call. */
+  verdict: "CONFIRM" | "AMBIGUOUS" | "NONE";
+};
+
+/**
+ * THE MATCH DECISION, pure — so the audit's scenarios can be run against it
+ * without a database, and so the rule lives in one readable place rather than
+ * inside a loop that also writes rows.
+ */
+export function chooseSessionAppointment(
+  req: { monthId: string; monthKey: string | null; slotStart: Date | null; createdAt: Date },
+  appts: ApptRow[],
+  claimed: ReadonlySet<string>,
+): SessionMatchDecision {
+  const timingFits = (a: ApptRow): boolean => {
+    if (!a.startAt) return false;
+    if (req.slotStart) return Math.abs(a.startAt.getTime() - req.slotStart.getTime()) <= 2 * 3600_000;
+    // Flex request: inside the requested program month, booked after the ask.
+    return a.project.contentMonthId === req.monthId || (!!req.monthKey && etMonthKey(a.startAt) === req.monthKey && a.startAt > req.createdAt);
+  };
+  const eligible: SessionMatchDecision["eligible"] = [];
+  const nearMisses: SessionMatchDecision["nearMisses"] = [];
+  for (const a of appts) {
+    if (claimed.has(a.aryeoId)) continue;
+    const fits = timingFits(a);
+    if (!fits) continue;
+    const ev = contentEvidence(a, req.monthId, req.monthKey);
+    if (ev) { eligible.push({ a, ...ev }); continue; }
+    // Recorded so a person can see WHY nothing confirmed — the listing shoot an
+    // hour away is exactly what used to be taken for the session.
+    nearMisses.push({ appointmentId: a.aryeoId, startAt: a.startAt?.toISOString() ?? null, why: "close to the requested time, but nothing says it is content work" });
+  }
+  return { eligible, nearMisses, verdict: eligible.length === 1 ? "CONFIRM" : eligible.length > 1 ? "AMBIGUOUS" : "NONE" };
+}
+
 /**
  * Hourly reconcile against Aryeo (through the Appointment/Project rows the
  * appointments sync already maintains — no new Aryeo calls):
- *   REQUESTED + an appointment for this client inside ±2h of the slot (or any
- *   in the month for a flex request) → CONFIRMED with the appointment id;
+ *   REQUESTED + ONE appointment that is provably this content session → CONFIRMED;
+ *   REQUESTED + two that both fit → AMBIGUOUS, left for Kyle;
  *   CONFIRMED whose appointment was cancelled in Aryeo → CANCELLED;
  *   REQUESTED whose slot passed 2 days ago with nothing booked → EXPIRED.
  */
-export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promise<{ checked: number; confirmed: number; cancelled: number; expired: number }> {
+export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promise<{ checked: number; confirmed: number; cancelled: number; expired: number; ambiguous: number }> {
   const now = opts.now ?? new Date();
   const open = await prisma.programSessionRequest.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] } } });
-  let confirmed = 0, cancelled = 0, expired = 0;
+  let confirmed = 0, cancelled = 0, expired = 0, ambiguous = 0;
   const touched = new Set<string>();
   // ONE APPOINTMENT IS ONE SESSION (A23 / A24, Jordan Sep 21 2026).
   //
-  // The matcher below accepts any appointment within two hours of the slot, and
-  // for a flex request any appointment in the month. Nothing stopped TWO
-  // requests resolving to the SAME appointment, and on a Pro month that is the
-  // ordinary case rather than a freak one: a client asks for 10:00 and 11:00 for
-  // their two four-hour sessions, Kyle books one of them, and both requests
-  // confirmed against it. The client would then have read "Booked" for a session
-  // that was never booked, Kyle's second desk task would have closed itself, and
-  // the month would have counted as fully scheduled with one session missing.
+  // Nothing stopped TWO requests resolving to the SAME appointment, and on a Pro
+  // month that is the ordinary case rather than a freak one: a client asks for
+  // 10:00 and 11:00 for their two four-hour sessions, Kyle books one of them,
+  // and both requests confirmed against it. The client would then have read
+  // "Booked" for a session that was never booked, Kyle's second desk task would
+  // have closed itself, and the month would have counted as fully scheduled
+  // with one session missing.
   //
   // So an appointment already claimed by another request is off the table. The
   // set starts from what the ledger already says and grows as this run confirms.
@@ -383,26 +495,68 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
   );
   for (const r of open) {
     if (r.status === "REQUESTED") {
+      // THE HUB'S OWN BOOKING, when it ever makes one: the appointment id is
+      // the provider's answer and there is nothing to infer from timing.
+      if (r.aryeoAppointmentId && !claimed.has(r.aryeoAppointmentId)) {
+        const mine = await prisma.appointment.findUnique({ where: { aryeoId: r.aryeoAppointmentId }, select: { projectId: true, status: true } });
+        if (mine && mine.status !== "CANCELED") {
+          claimed.add(r.aryeoAppointmentId);
+          await prisma.programSessionRequest.update({
+            where: { id: r.id },
+            data: { status: "CONFIRMED", projectId: mine.projectId, confirmedAt: now, confirmedBy: "aryeo-reconcile", bookingState: r.bookingState === "NONE" ? "NONE" : "SUCCEEDED", matchState: "PROVIDER_ID", matchEvidenceJson: JSON.stringify({ chose: r.aryeoAppointmentId, why: "the hub holds this appointment id from its own booking" }) },
+          });
+          await closeDeskTask(r.id, "COMPLETED");
+          confirmed++; touched.add(r.monthId);
+          continue;
+        }
+      }
       const month = await prisma.contentMonth.findUnique({ where: { id: r.monthId }, select: { monthKey: true } });
-      const appts = await prisma.appointment.findMany({
+      const appts: ApptRow[] = await prisma.appointment.findMany({
         where: { project: { clientId: r.clientId, status: { not: "CANCELLED" } }, status: { not: "CANCELED" }, startAt: { not: null } },
-        select: { id: true, aryeoId: true, startAt: true, projectId: true, project: { select: { contentMonthId: true, shootDate: true } } },
+        select: { id: true, aryeoId: true, startAt: true, projectId: true, project: { select: { contentMonthId: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } } } },
         orderBy: { startAt: "asc" },
       });
-      const hit = appts.find((a) => {
-        if (!a.startAt) return false;
-        if (claimed.has(a.aryeoId)) return false;
-        if (r.slotStart) return Math.abs(a.startAt.getTime() - r.slotStart.getTime()) <= 2 * 3600_000;
-        // Flex request: any appointment inside the requested program month.
-        return a.project.contentMonthId === r.monthId || (!!month && etMonthKey(a.startAt) === month.monthKey && a.startAt > r.createdAt);
-      });
-      if (hit) {
-        claimed.add(hit.aryeoId);
-        await prisma.programSessionRequest.update({ where: { id: r.id }, data: { status: "CONFIRMED", projectId: hit.projectId, aryeoAppointmentId: hit.aryeoId, confirmedAt: now, confirmedBy: "aryeo-reconcile", bookingState: r.bookingState === "NONE" ? "NONE" : "SUCCEEDED" } });
+
+      const decision = chooseSessionAppointment(
+        { monthId: r.monthId, monthKey: month?.monthKey ?? null, slotStart: r.slotStart, createdAt: r.createdAt },
+        appts,
+        claimed,
+      );
+      const { eligible, nearMisses } = decision;
+
+      if (eligible.length === 1) {
+        const { a, kind, why } = eligible[0];
+        claimed.add(a.aryeoId);
+        await prisma.programSessionRequest.update({
+          where: { id: r.id },
+          data: {
+            status: "CONFIRMED", projectId: a.projectId, aryeoAppointmentId: a.aryeoId, confirmedAt: now, confirmedBy: "aryeo-reconcile",
+            bookingState: r.bookingState === "NONE" ? "NONE" : "SUCCEEDED",
+            matchState: kind, matchEvidenceJson: JSON.stringify({ chose: a.aryeoId, why, nearMisses }),
+          },
+        });
         await closeDeskTask(r.id, "COMPLETED");
         confirmed++; touched.add(r.monthId);
         continue;
       }
+
+      if (eligible.length > 1) {
+        // Two real content bookings both fit. Picking one is a guess; the desk
+        // task stays open and both candidates are on the row for Kyle.
+        await prisma.programSessionRequest.update({
+          where: { id: r.id },
+          data: { matchState: "AMBIGUOUS", matchEvidenceJson: JSON.stringify({ candidates: eligible.map((e) => ({ appointmentId: e.a.aryeoId, startAt: e.a.startAt?.toISOString() ?? null, why: e.why })), chose: null, nearMisses }) },
+        });
+        await ensureDeskTask(r.id);
+        ambiguous++; touched.add(r.monthId);
+        continue;
+      }
+
+      // Nothing confirmable. Keep the near misses visible rather than silent.
+      if (nearMisses.length) {
+        await prisma.programSessionRequest.update({ where: { id: r.id }, data: { matchState: "NONE", matchEvidenceJson: JSON.stringify({ chose: null, nearMisses }) } }).catch(() => {});
+      }
+
       if (r.slotStart && now.getTime() - r.slotStart.getTime() > 2 * 864e5) {
         await prisma.programSessionRequest.update({ where: { id: r.id }, data: { status: "EXPIRED", cancelReason: "slot passed with nothing booked in Aryeo" } });
         await closeDeskTask(r.id, "CANCELLED");
@@ -427,7 +581,7 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
     }
   }
   for (const m of touched) await recalcProgramMonth(m, { now });
-  return { checked: open.length, confirmed, cancelled, expired };
+  return { checked: open.length, confirmed, cancelled, expired, ambiguous };
 }
 
 /**
