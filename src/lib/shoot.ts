@@ -174,6 +174,21 @@ export type ShootView = {
     // Was `editingPreferences` alone, a column with no writer since the notes
     // cards merged, so this read NULL on all 349 clients.
     customerNote: string | null;
+    /**
+     * F18 (Sep 22 2026) — WHAT THE CLIENT TYPED ON THEIR OWN PORTAL.
+     *
+     * The portal's profile page says, above three boxes, "Everything here
+     * reaches your editor and photographer on every job." Two of the three
+     * reached the editor; NONE of them reached the photographer, whose screen
+     * only ever carried the Aryeo-mirrored customer note. These are the
+     * client's own words about how they want to be filmed, and the person
+     * holding the camera is the one who needs them most.
+     *
+     * Money-scrubbed like everything else on a creative's screen.
+     */
+    theirStyle: string | null;
+    theirPreferences: string | null;
+    brandColors: string[];
   };
   segment: SegmentMeta | null;
   profile: ClientProfile | null;
@@ -279,6 +294,14 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       socialPlan: p.client.socialPlan,
       avatarUrl: p.client.avatarUrl,
       customerNote: creativeCustomerNote(p.client),
+      theirStyle: stripMoneySentences(p.client.portalVideoStyle ?? "") || null,
+      theirPreferences: stripMoneySentences(p.client.portalPreferences ?? "") || null,
+      brandColors: (p.client.brandColors ?? "")
+        .split(/[,\n]/)
+        .map((c) => c.trim())
+        .filter((c) => /^#?[0-9a-f]{3,8}$/i.test(c))
+        .map((c) => (c.startsWith("#") ? c : `#${c}`))
+        .slice(0, 8),
     },
     segment: segmentMeta(p.client.segment),
     profile: parseClientProfile(p.client.profileJson),

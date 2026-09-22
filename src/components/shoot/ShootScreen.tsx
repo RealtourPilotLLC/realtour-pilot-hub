@@ -410,7 +410,10 @@ function CustomerCard({
 }) {
   const isVip = segment?.key === "vip";
   const [open, setOpen] = useState(false);
-  const hasMore = !!profile || !!client.customerNote;
+  // F18: the client's own portal words count as "more to show" too — a
+  // client with no office note and no AI profile can still have typed exactly
+  // how they want to be filmed.
+  const hasMore = !!profile || !!client.customerNote || !!client.theirStyle || !!client.theirPreferences || client.brandColors.length > 0;
 
   return (
     <section className="panel-shadow rounded-2xl border border-border bg-surface">
@@ -457,7 +460,9 @@ function CustomerCard({
         <p className="px-4 pb-3 text-sm text-muted-2">
           {client.customerNote
             ? `Customer notes: ${client.customerNote}`
-            : "No working profile yet — this builds up as we do more shoots together."}
+            : client.theirStyle || client.theirPreferences
+              ? `From their portal: ${client.theirStyle ?? client.theirPreferences}`
+              : "No working profile yet — this builds up as we do more shoots together."}
         </p>
       )}
 
@@ -472,6 +477,35 @@ function CustomerCard({
             <div>
               <div className="mb-1 text-xs font-semibold text-muted">Customer notes</div>
               <p className="whitespace-pre-line text-sm text-foreground/85">{client.customerNote}</p>
+            </div>
+          )}
+          {/* F18 — THE CLIENT'S OWN WORDS, FIRST-HAND.
+              Their portal profile says "Everything here reaches your editor and
+              photographer on every job." It reached the editor. It has never
+              reached this screen, which is the one held by the person pointing
+              the camera at them. Above the AI working profile for the same
+              reason it is above it on the editor's screen (Jordan, Sep 2): the
+              client's own words outrank our read of them. */}
+          {(client.theirStyle || client.theirPreferences || client.brandColors.length > 0) && (
+            <div className="rounded-lg border border-brand/25 bg-brand-soft/40 p-2.5">
+              <div className="mb-1 text-xs font-semibold text-brand">From their own portal</div>
+              {client.theirStyle && (
+                <p className="whitespace-pre-line text-sm text-foreground/85">{client.theirStyle}</p>
+              )}
+              {client.theirPreferences && (
+                <p className="mt-1.5 whitespace-pre-line text-sm text-foreground/85">{client.theirPreferences}</p>
+              )}
+              {client.brandColors.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-muted">Brand colors</span>
+                  {client.brandColors.map((c) => (
+                    <span key={c} className="flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 text-[10px]">
+                      <span className="size-2.5 rounded-sm border border-border" style={{ backgroundColor: c }} />
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {profile ? (
@@ -492,7 +526,7 @@ function CustomerCard({
                 </div>
               )}
             </>
-          ) : !client.customerNote ? (
+          ) : !client.customerNote && !client.theirStyle && !client.theirPreferences ? (
             <p className="text-sm text-muted-2">No working profile yet — this builds up as we do more shoots together.</p>
           ) : null}
         </div>

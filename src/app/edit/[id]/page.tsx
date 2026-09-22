@@ -418,6 +418,12 @@ export default async function EditBriefPage({
   // The client's OWN style notes, typed on their portal (client-owned column,
   // distinct from our internal editing notes) — scrubbed like everything else.
   const showTheirStyle = scrub(project.client.portalVideoStyle);
+  // F18 (Sep 22 2026). The portal's profile page tells the client, in these
+  // words, "Everything here reaches your editor and photographer on every job",
+  // above three boxes: brand colors, video style, working preferences. Two of
+  // the three arrived here. This is the third — it is the client's own
+  // client-owned column and it was written to a screen nobody rendered.
+  const showTheirPrefs = scrub(project.client.portalPreferences);
   const showJobNote = scrub(project.notes);
   const rawAsks = videoRevisionTasks
     .flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /))
@@ -1090,7 +1096,7 @@ export default async function EditBriefPage({
               instruction card — and ABOVE the profile: the client's own words
               outrank the AI's read of them (Jordan, Sep 2: "How they like it
               should be above the working profile"). */}
-          {(showPrefs || showTheirStyle) && (
+          {(showPrefs || showTheirStyle || showTheirPrefs) && (
             <Section icon={Quote} title="How they like it">
               <div className="space-y-3">
                 {showPrefs && (
@@ -1103,6 +1109,12 @@ export default async function EditBriefPage({
                   <div>
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">In their own words — from their portal</div>
                     <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showTheirStyle}</p>
+                  </div>
+                )}
+                {showTheirPrefs && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">How they like to work — from their portal</div>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showTheirPrefs}</p>
                   </div>
                 )}
               </div>
