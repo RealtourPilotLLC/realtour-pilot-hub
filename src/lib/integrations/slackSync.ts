@@ -562,8 +562,32 @@ async function recentHistory(token: string, channel: string, oldest: string): Pr
   return out;
 }
 
-async function ingest(channel: string, messages: any[], minRole: string, source: string, otherName: string | undefined, resolve: (t: string) => string, userMap: Record<string, string>): Promise<number> {
+/**
+ * A06 (Sep 21 audit, fixed Sep 22 2026) — TASK PROCESSING IS RETRIED, NOT SKIPPED.
+ *
+ * The poll wrote the communication first and only called maybeCreateSlackTask
+ * when logComm reported the row as NEWLY created, with the call itself wrapped
+ * in a bare `catch {}`. So one failing task write lost the task permanently: the
+ * next poll saw the message already logged, skipped task generation entirely,
+ * and the request sat in the hub's history with nothing in the queue. The audit
+ * reproduced exactly that — "a second ingestion of the same message did not
+ * attempt task creation again."
+ *
+ * The `created` gate is gone, and it can be, because BOTH of the things it was
+ * standing in for already live inside maybeCreateSlackTask and are stronger
+ * there: a four-day recency guard (a history backfill cannot resurrect an old
+ * message as a to-do) and a `slack-<ts>` dedupe key checked against SmartTask
+ * (a message that already has its task never gets a second one). Re-asking is
+ * therefore idempotent — and a message that is correctly no task at all is
+ * refused by the same deterministic rules every time, which is how "processed,
+ * needs no task" and "failed to process" stop looking alike.
+ *
+ * Errors are counted and returned rather than swallowed, so a persistent
+ * failure shows up in the sync's own result instead of nowhere.
+ */
+async function ingest(channel: string, messages: any[], minRole: string, source: string, otherName: string | undefined, resolve: (t: string) => string, userMap: Record<string, string>): Promise<{ logged: number; taskErrors: string[] }> {
   let n = 0;
+  const taskErrors: string[] = [];
   const me = await jordanSlackId();
   for (const m of messages) {
     if (m.subtype && m.subtype !== "thread_broadcast") continue;
@@ -581,19 +605,23 @@ async function ingest(channel: string, messages: any[], minRole: string, source:
       externalId: `slack-${channel}-${m.ts}`,
     });
     n++;
-    // Only newly-seen messages become tasks (backfilled history won't re-trigger).
-    // A DM names its other party so the addressee rule can use it (Sep 8);
-    // channels and group DMs pass nothing.
-    if (created) {
-      try {
-        await maybeCreateSlackTask({ text, ts: m.ts, channel, senderName, dmWith: source === "slack-dm" ? otherName ?? null : null });
-      } catch { /* non-fatal */ }
+    void created; // logComm's "was this row new" — no longer what decides the task (A06)
+    // EVERY message in the window is offered to the task rule, every poll. Old
+    // messages and already-tasked ones are refused inside it; a message whose
+    // task write failed last time gets another go. A DM names its other party so
+    // the addressee rule can use it (Sep 8); channels and group DMs pass nothing.
+    try {
+      await maybeCreateSlackTask({ text, ts: m.ts, channel, senderName, dmWith: source === "slack-dm" ? otherName ?? null : null });
+    } catch (e) {
+      // Not fatal to the sync — but not invisible either. The next poll retries
+      // this same message, and until it succeeds the failure is reported.
+      taskErrors.push(`${channel}/${m.ts}: ${e instanceof Error ? e.message.slice(0, 120) : "unknown"}`);
     }
   }
-  return n;
+  return { logged: n, taskErrors };
 }
 
-export async function syncSlackHistory(opts: { sinceHours?: number } = {}): Promise<{ logged: number; skipped?: boolean }> {
+export async function syncSlackHistory(opts: { sinceHours?: number } = {}): Promise<{ logged: number; skipped?: boolean; taskErrors?: string[] }> {
   const token = await getSecret("slack_user");
   if (!token) return { logged: 0, skipped: true };
   const auth = await su(token, "auth.test");
@@ -606,20 +634,25 @@ export async function syncSlackHistory(opts: { sinceHours?: number } = {}): Prom
   const resolve = resolver(userMap);
 
   let logged = 0;
+  // A06: task-processing failures ride back with the result rather than being
+  // swallowed. Every one of these messages is retried on the next poll.
+  const taskErrors: string[] = [];
+  const take = (r: { logged: number; taskErrors: string[] }) => { logged += r.logged; taskErrors.push(...r.taskErrors); };
   // Channels (ADMIN).
   const ch = await su(token, "conversations.list", { types: "public_channel,private_channel", limit: "500", exclude_archived: "true" });
   for (const c of (ch.channels ?? []).filter((c: any) => c.is_member && CHANNEL_NAME_RE.test(c.name))) {
-    logged += await ingest(c.id, await recentHistory(token, c.id, oldest), "ADMIN", "slack-channel", undefined, resolve, userMap);
+    take(await ingest(c.id, await recentHistory(token, c.id, oldest), "ADMIN", "slack-channel", undefined, resolve, userMap));
   }
   // DMs (OWNER).
   const ims = await su(token, "conversations.list", { types: "im", limit: "400" });
   for (const im of (ims.channels ?? []).filter((im: any) => TARGET_DM_USERS[im.user])) {
-    logged += await ingest(im.id, await recentHistory(token, im.id, oldest), "OWNER", "slack-dm", TARGET_DM_USERS[im.user], resolve, userMap);
+    take(await ingest(im.id, await recentHistory(token, im.id, oldest), "OWNER", "slack-dm", TARGET_DM_USERS[im.user], resolve, userMap));
   }
   // Group DMs (OWNER).
   const mpims = await su(token, "conversations.list", { types: "mpim", limit: "100" });
   for (const g of mpims.channels ?? []) {
-    logged += await ingest(g.id, await recentHistory(token, g.id, oldest), "OWNER", "slack-groupdm", undefined, resolve, userMap);
+    take(await ingest(g.id, await recentHistory(token, g.id, oldest), "OWNER", "slack-groupdm", undefined, resolve, userMap));
   }
-  return { logged };
+  if (taskErrors.length) console.warn(`syncSlackHistory: ${taskErrors.length} message(s) logged but their task did not write — retried next poll. ${taskErrors.slice(0, 3).join(" · ")}`);
+  return { logged, ...(taskErrors.length ? { taskErrors } : {}) };
 }

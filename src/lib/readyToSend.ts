@@ -538,30 +538,58 @@ export function cardsAryeoCanAccountFor(
 // not.
 // ---------------------------------------------------------------------------
 
-/** What the client has asked to be changed on these jobs, newest last. Returned
- *  whole rather than as a boolean so the caller can compare each ask against
- *  the moment its own file was ready, and so the card can put the date on
- *  screen. Never throws: no answer means no complaint, which only ever makes
- *  the matcher stricter. */
-export async function clientChangeRequestsFor(
-  projectIds: string[],
-): Promise<Map<string, { at: Date; words: string }[]>> {
-  const out = new Map<string, { at: Date; words: string }[]>();
-  if (projectIds.length === 0) return out;
-  const rows = await prisma.revisionBrief
-    .findMany({
+export type ChangeRequestEvidence = {
+  /**
+   * FALSE when the read failed. The distinction A02 exists for: "this client
+   * has not complained" and "we could not find out whether this client has
+   * complained" are different facts, and only the first one may let a delivery
+   * stamp itself.
+   */
+  known: boolean;
+  /** Per project, oldest first. Empty when `known` is false. */
+  byProject: Map<string, { at: Date; words: string }[]>;
+  /** Every ask across the projects asked about, oldest first. */
+  all: { at: Date; words: string }[];
+  /** Why the evidence is unavailable, for the operational line on the card. */
+  error: string | null;
+};
+
+/**
+ * What the client has asked to be changed on these jobs, newest last. Returned
+ * whole rather than as a boolean so the caller can compare each ask against the
+ * moment its own file was ready, and so the card can put the date on screen.
+ *
+ * A02 (Sep 21 audit, fixed Sep 22 2026). This used to `.catch(() => [])`, and
+ * the comment above it said "no answer means no complaint, which only ever
+ * makes the matcher stricter." That was exactly backwards. Callers turn an
+ * empty map into `contested: false`, and the automatic delivery matcher REFUSES
+ * a contested item — so a failed read removed a guard and made the decision more
+ * permissive, not less. The audit reproduced it: injecting a query failure made
+ * a contested cut eligible for an automatic match.
+ *
+ * It still never throws. It reports.
+ */
+export async function clientChangeRequestsFor(projectIds: string[]): Promise<ChangeRequestEvidence> {
+  const byProject = new Map<string, { at: Date; words: string }[]>();
+  if (projectIds.length === 0) return { known: true, byProject, all: [], error: null };
+  let rows: { projectId: string; createdAt: Date; headline: string | null; originalText: string | null }[];
+  try {
+    rows = await prisma.revisionBrief.findMany({
       where: { projectId: { in: [...new Set(projectIds)] } },
       select: { projectId: true, createdAt: true, headline: true, originalText: true },
       orderBy: { createdAt: "asc" },
-    })
-    .catch(() => []);
-  for (const r of rows) {
-    out.set(r.projectId, [
-      ...(out.get(r.projectId) ?? []),
-      { at: r.createdAt, words: (r.headline ?? r.originalText ?? "").slice(0, 160) },
-    ]);
+    });
+  } catch (e) {
+    return { known: false, byProject, all: [], error: e instanceof Error ? e.message.slice(0, 200) : "the revision history could not be read" };
   }
-  return out;
+  const all: { at: Date; words: string }[] = [];
+  for (const r of rows) {
+    const ask = { at: r.createdAt, words: (r.headline ?? r.originalText ?? "").slice(0, 160) };
+    byProject.set(r.projectId, [...(byProject.get(r.projectId) ?? []), ask]);
+    all.push(ask);
+  }
+  all.sort((a, b) => a.at.getTime() - b.at.getTime());
+  return { known: true, byProject, all, error: null };
 }
 
 /** The latest ask that landed at or after this file was ready — the one that
@@ -840,7 +868,8 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
         ? listingLine(
             sub,
             listingFactsOf(ev, sub.project.statusEvidence),
-            contestedSince(asks.get(sub.projectId), claimantOf(sub).readyAt),
+            asks.known ? contestedSince(asks.byProject.get(sub.projectId), claimantOf(sub).readyAt) : null,
+            asks.known ? null : asks.error,
           )
         : null,
     });
@@ -936,6 +965,12 @@ function listingLine(
   facts: ListingFacts | null,
   /** the client's latest complaint about this job since this file was ready */
   contested: { at: Date; words: string } | null,
+  /**
+   * A02: set when the revision history could not be READ. Distinct from
+   * `contested: null`, which means it was read and there is nothing. The card
+   * must not imply the client is happy when we did not manage to ask.
+   */
+  evidenceUnavailable: string | null = null,
 ): ReadyVideo["listing"] {
   const when = facts?.at ? ` (checked ${etDateTime(facts.at)} ET)` : "";
   // THE COLOUR FOLLOWS THE SENTENCE. `contested` is what turns this line red on
@@ -946,14 +981,18 @@ function listingLine(
   // the matcher to keep its hands off the row (holding wide costs a tap) and no
   // reason at all to shout at Kyle about a video.
   const base = { checkedAtISO: facts?.at?.toISOString() ?? null, videos: facts?.count ?? 0, contested: false };
-  const disputed = { ...base, contested: Boolean(contested) };
+  // An unreadable history colours the line too: "we could not check" is a
+  // reason to look, and the sentence above says which of the two it is.
+  const disputed = { ...base, contested: Boolean(contested) || Boolean(evidenceUnavailable) };
   // What to do about a video that might be this file. Never "mark it sent": the
   // hub cannot tell a re-cut from the thing it replaces, and neither can a
   // sentence. Playing it is what settles it, and the row's own Aryeo button is
   // one click away.
   const settleIt = contested
     ? ` The client reported a problem with this job on ${etDateTime(contested.at)} ET — after this file was ready — so what’s up there may be the one they’re complaining about. Play it before marking this sent.`
-    : ` Nothing here can tell that apart from the file it replaces — play it before marking this sent.`;
+    : evidenceUnavailable
+      ? ` The hub could not check this client’s revision history just now, so it cannot tell you whether they have asked for a change since. Play it before marking this sent.`
+      : ` Nothing here can tell that apart from the file it replaces — play it before marking this sent.`;
 
   if (!facts || !facts.at || !facts.fresh) {
     const since = facts?.at ? `since ${etDateTime(facts.at)} ET` : "yet";
@@ -1157,7 +1196,15 @@ function fileIdentity(name: string | null, fallback: string): string {
 // file to Aryeo and delivered the listing). It sends nothing, to anyone, ever.
 // ---------------------------------------------------------------------------
 
-export type SentResult = { ok: boolean; message: string; already?: boolean };
+export type SentResult = {
+  ok: boolean;
+  message: string;
+  already?: boolean;
+  /** A04: bookkeeping this call finished off that an earlier attempt did not. */
+  repaired?: string[];
+  /** A04: bookkeeping that STILL did not land. The send stands; pressing again retries only these. */
+  incomplete?: string[];
+};
 
 // ---------------------------------------------------------------------------
 // "SOMEBODY HAS THE FILE" — the other write, and the smaller one.
@@ -1243,7 +1290,16 @@ export async function markVideoSent(submissionId: string, by: string | null): Pr
   });
   if (!sub) return { ok: false, message: "That cut no longer exists." };
   if (sub.status !== "APPROVED") return { ok: false, message: "Only an approved cut can be marked sent." };
-  if (sub.sentToClientAt) return alreadySent(sub.sentToClientAt, sub.sentToClientBy);
+  // A04 (Sep 21 audit, fixed Sep 22 2026). This used to return here, full stop.
+  // The stamp on the cut row is written FIRST, so any later write that failed —
+  // the per-video delivery row, the 1080p job, Kyle's upload task — was
+  // unreachable forever: every retry hit this line and reported success. The
+  // historical timestamp is still immutable; what happens now is that the rest
+  // of the bookkeeping is reconciled and the caller is told what it repaired.
+  if (sub.sentToClientAt) {
+    const repair = await settleDeliveryBookkeeping(sub, sub.sentToClientBy ?? by, { first: false });
+    return alreadySent(sub.sentToClientAt, sub.sentToClientBy, repair);
+  }
   // The card never offers a button on a cut the 1080p lane is still working on,
   // but a server action is a public endpoint and a stale tab is a real thing.
   // Refusing here is what stops the stamp landing on a queued job minutes before
@@ -1266,13 +1322,43 @@ export async function markVideoSent(submissionId: string, by: string | null): Pr
     return alreadySent(now?.sentToClientAt ?? new Date(), now?.sentToClientBy ?? null);
   }
 
-  // THE ONE FACT THE VIDEO'S OWN ROW EXISTS TO HOLD (audit WF-02): this
+  const settled = await settleDeliveryBookkeeping(sub, by, { first: true });
+  if (settled.incomplete.length) {
+    // The send happened and the stamp is real. What did NOT happen is named,
+    // and pressing again now re-runs exactly the steps that failed.
+    return { ok: true, message: `Marked sent — but ${settled.incomplete.join("; ")}. Press it again to finish that off.`, incomplete: settled.incomplete };
+  }
+  return { ok: true, message: "Marked sent." };
+}
+
+/**
+ * EVERYTHING THAT HAS TO BE TRUE ONCE A CUT IS SENT, made repeatable (A04).
+ *
+ * Four writes hang off one send: the per-video delivery row, the 1080p job's
+ * own stamp, Kyle's upload task, and the timeline line. They were inline, they
+ * were each `.catch(() => {})`, and they ran exactly once — behind a stamp that
+ * made every retry a no-op. Pulled out here, each one is filtered on the field
+ * it sets still being null, so running this a second time repairs the gaps and
+ * touches nothing that already landed.
+ *
+ * `first` controls only the things that are genuinely once-per-send: the
+ * timeline line, and whether a silent success is worth reporting.
+ */
+async function settleDeliveryBookkeeping(
+  sub: CandidateSub & { sentToClientBy?: string | null },
+  by: string | null,
+  opts: { first: boolean },
+): Promise<{ repaired: string[]; incomplete: string[] }> {
+  const repaired: string[] = [];
+  const incomplete: string[] = [];
+
+  // 1. THE ONE FACT THE VIDEO'S OWN ROW EXISTS TO HOLD (audit WF-02): this
   // particular video reached the client, and how we know. The cut row says it
   // for the round; DeliverableOutput says it for the VIDEO, which is what the
   // project view, the promise clock and the content meter read. Only ever
   // written when it is still null — a stamp somebody already made by hand is
   // not ours to restate — and never the other way round: nothing here can
-  // un-send a video. Best-effort; the send is recorded either way.
+  // un-send a video.
   if (sub.deliverableId) {
     // `by` carries the proof pass's own sentence when the hourly Aryeo reader
     // settled it ("Aryeo — “Cinematic Video”, 60s on the listing since …"), so
@@ -1280,66 +1366,85 @@ export async function markVideoSent(submissionId: string, by: string | null): Pr
     // button is the office sending the file by hand, which is the only way
     // finished video actually leaves this business (see the header note).
     const via = by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
-    await prisma.deliverableOutput
-      .updateMany({
+    try {
+      const r = await prisma.deliverableOutput.updateMany({
         where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null },
         data: {
-          sentSubmissionId: submissionId,
+          sentSubmissionId: sub.id,
           deliveredAt: new Date(),
           deliveredBy: by,
           deliveredVia: via,
           evidenceSource: via === "aryeo-listing" ? "aryeo-listing" : "review-sent",
           evidenceSucceededAt: new Date(),
         },
+      });
+      if (r.count > 0 && !opts.first) repaired.push("the video's own delivery row");
+    } catch (e) {
+      incomplete.push(`the video's own delivery row did not stamp (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
+    }
+  }
+
+  // 2. THE 1080p LANE. The done path goes through markTopazDelivered, which
+  // since A04 reconciles the task on a repeat call instead of returning early —
+  // so this reaches an upload task the first attempt left open.
+  const j = sub.topazJob;
+  if (j?.state === "done") {
+    try {
+      const { markTopazDelivered } = await import("@/lib/topazJobs");
+      const r = await markTopazDelivered(j.id, by);
+      if (r.incomplete) incomplete.push(r.incomplete);
+      else if (r.repaired) repaired.push("the upload task the 1080p job left open");
+    } catch (e) {
+      incomplete.push(`the 1080p job did not close (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
+    }
+  } else if (j) {
+    // Cases (b) and (c): the same writes, in words that fit the file that
+    // actually went out. markTopazDelivered's line says "1080p video uploaded"
+    // and names job.finalPath — both untrue here, where the whole point is that
+    // the 1080p file does not exist and the editor's export is the deliverable.
+    try {
+      // Stamp the job anyway: its card on /connections and its "waiting on
+      // Kyle" count must clear with the row it describes.
+      const stamped = await prisma.topazJob.updateMany({ where: { id: j.id, deliveredAt: null }, data: { deliveredAt: new Date(), deliveredBy: by } });
+      if (stamped.count > 0 && !opts.first) repaired.push("the 1080p job's stamp");
+      const task = await prisma.topazJob.findUnique({ where: { id: j.id }, select: { taskId: true } });
+      if (task?.taskId) {
+        const closed = await prisma.smartTask.updateMany({ where: { id: task.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: new Date() } });
+        if (closed.count > 0 && !opts.first) repaired.push("the upload task");
+      }
+    } catch (e) {
+      incomplete.push(`the 1080p job did not close (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
+    }
+  }
+
+  // 3. THE TIMELINE LINE — once per send, never on a repair. Writing a second
+  // "Video sent to the client" months later would be a false record.
+  if (opts.first) {
+    const file = fileFor(sub, null);
+    // It says WHICH file went out, in the same words the card used — a fixed
+    // "the editor's own export; no 1080p pass" was untrue for a cut whose
+    // deliverable type simply never goes through the lane, and for one whose
+    // finished 1080p file is exactly what was sent.
+    await prisma.activity
+      .create({
+        data: {
+          projectId: sub.projectId,
+          type: "SYSTEM",
+          body: `Video sent to the client${by ? ` by ${by}` : ""} — ${file?.fileName ?? sub.fileName ?? "video"}${file ? ` (${file.says.replace(/\.$/, "")})` : ""}.`,
+        },
       })
       .catch(() => {});
   }
 
-  const j = sub.topazJob;
-  if (j?.state === "done" && !j.deliveredAt) {
-    // The 1080p path has had its own closer since Sep 16 — it stamps the job,
-    // completes Kyle's card and writes the timeline line. Reuse it whole rather
-    // than keeping a second copy of those three writes in step with it.
-    const { markTopazDelivered } = await import("@/lib/topazJobs");
-    await markTopazDelivered(j.id, by).catch(() => null);
-    return { ok: true, message: "Marked sent." };
-  }
-
-  // Cases (b) and (c): the same three writes, in words that fit the file that
-  // actually went out. markTopazDelivered's line says "1080p video uploaded"
-  // and names job.finalPath — both untrue here, where the whole point is that
-  // the 1080p file does not exist and the editor's export is the deliverable.
-  if (j && !j.deliveredAt) {
-    // Stamp the job anyway: its card on /connections and its "waiting on Kyle"
-    // count must clear with the row it describes.
-    await prisma.topazJob.updateMany({ where: { id: j.id, deliveredAt: null }, data: { deliveredAt: new Date(), deliveredBy: by } }).catch(() => {});
-    const task = await prisma.topazJob.findUnique({ where: { id: j.id }, select: { taskId: true } }).catch(() => null);
-    if (task?.taskId) {
-      await prisma.smartTask
-        .updateMany({ where: { id: task.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: new Date() } })
-        .catch(() => {});
-    }
-  }
-  const file = fileFor(sub, null);
-  // The timeline says WHICH file went out, in the same words the card used —
-  // a fixed "the editor's own export; no 1080p pass" was untrue for a cut whose
-  // deliverable type simply never goes through the lane, and for one whose
-  // finished 1080p file is exactly what was sent.
-  await prisma.activity
-    .create({
-      data: {
-        projectId: sub.projectId,
-        type: "SYSTEM",
-        body: `Video sent to the client${by ? ` by ${by}` : ""} — ${file?.fileName ?? sub.fileName ?? "video"}${file ? ` (${file.says.replace(/\.$/, "")})` : ""}.`,
-      },
-    })
-    .catch(() => {});
-  return { ok: true, message: "Marked sent." };
+  return { repaired, incomplete };
 }
 
-function alreadySent(at: Date, by: string | null): SentResult {
+function alreadySent(at: Date, by: string | null, repair?: { repaired: string[]; incomplete: string[] }): SentResult {
   const when = at.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  return { ok: true, already: true, message: `Already marked sent${by ? ` by ${by}` : ""} — ${when} ET.` };
+  const head = `Already marked sent${by ? ` by ${by}` : ""} — ${when} ET.`;
+  if (repair?.incomplete.length) return { ok: true, already: true, message: `${head} ${repair.incomplete.join("; ")} — press again to retry.`, incomplete: repair.incomplete };
+  if (repair?.repaired.length) return { ok: true, already: true, message: `${head} Finished off what the first attempt left: ${repair.repaired.join(", ")}.`, repaired: repair.repaired };
+  return { ok: true, already: true, message: head };
 }
 
 /**

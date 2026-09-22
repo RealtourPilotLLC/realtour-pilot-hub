@@ -9,7 +9,16 @@ import { resolveParticipants } from "@/lib/queries";
 import { closeReplyForOutbound } from "@/lib/tasks";
 import type { ChatItem, ConvoClient, ChatMember } from "@/components/comms/ConversationView";
 
-export type SendResult = { ok: boolean; message: string };
+export type SendResult = {
+  ok: boolean;
+  message: string;
+  /**
+   * A03: the provider did not answer in time, so whether the text went out is
+   * UNKNOWN. Distinct from ok:false, which means it definitely did not. The UI
+   * must not invite a retry on this.
+   */
+  pending?: boolean;
+};
 
 // One selectable conversation on a client's chat: their direct 1:1 line, plus
 // any GROUP threads that include them or a folded teammate (e.g. Kelly/Ruthie
@@ -153,6 +162,22 @@ export async function sendThreadText(
     const sent = await OpenPhone.sendMessage(from, tos.length === 1 ? tos[0] : tos, text || "📎", mediaUrls);
     sentId = sent?.data?.id;
   } catch (e) {
+    // A03 (Sep 21 audit, fixed Sep 22 2026) — A TIMEOUT IS NOT A REJECTION.
+    //
+    // OpenPhone.request already turns a timed-out send into a 408 and calls it
+    // ambiguous in its own comment, and this action then reported it to Kyle as
+    // "Failed to send." He retries, and the client gets the message twice —
+    // because OpenPhone may well have taken the first one before it stopped
+    // answering. The message says what is actually known, and says plainly not
+    // to press it again.
+    const status = (e as { status?: number } | null)?.status;
+    if (status === 408) {
+      return {
+        ok: false,
+        pending: true,
+        message: "OpenPhone didn't answer in time, so we can't tell whether this went out. Check the thread in a minute before sending it again — it may already be on its way.",
+      };
+    }
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
 
@@ -188,15 +213,36 @@ export async function sendThreadText(
       .catch(() => { /* attribution never fails a sent text */ });
   }
 
+  // A03 — POST-SEND BOOKKEEPING MAY NOT UNDO AN ACCEPTED SEND.
+  //
+  // The project lookup, the activity line and the reply-task closure below all
+  // ran unguarded AFTER OpenPhone had taken the message. Any one of them
+  // throwing rejected the whole action, so the composer never cleared and the
+  // outgoing message never appeared — and the obvious thing to do with a box
+  // that still holds your text is press send again. The audit reproduced it:
+  // "exactly one provider send had occurred before the rejection."
+  //
+  // The text has gone. Every line below is now isolated and the failure is
+  // reported as a note on a SUCCESSFUL send, never as a failure of it.
+  const notLogged: string[] = [];
   if (clientId) {
-    const recent = await prisma.project.findFirst({
-      where: { clientId }, orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }], select: { id: true },
-    });
-    if (recent) {
-      await prisma.activity.create({ data: { projectId: recent.id, type: "SYSTEM", body: `Text sent: ${(text || "[attachment]").slice(0, 200)}` } });
+    try {
+      const recent = await prisma.project.findFirst({
+        where: { clientId }, orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }], select: { id: true },
+      });
+      if (recent) {
+        await prisma.activity.create({ data: { projectId: recent.id, type: "SYSTEM", body: `Text sent: ${(text || "[attachment]").slice(0, 200)}` } });
+      }
+    } catch {
+      notLogged.push("it isn't on the job's timeline");
     }
-    await closeReplyForOutbound(clientId, text || "");
+    try {
+      await closeReplyForOutbound(clientId, text || "");
+    } catch {
+      notLogged.push("the reply task didn't close");
+    }
   }
+  if (notLogged.length) return { ok: true, message: `Sent — but ${notLogged.join(" and ")}. The message went out; this is only our own record.` };
   return { ok: true, message: "Sent." };
 }
 

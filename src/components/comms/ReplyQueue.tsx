@@ -343,6 +343,12 @@ export function ReplyQueue({
           setCards((cs) => cs.filter((c) => c.key !== card.key));
           setHandled((cs) => cs.filter((c) => c.key !== card.key));
         }, 1400);
+      } else if (r.pending) {
+        // A03: the provider did not answer, so this is neither sent nor failed.
+        // The card STAYS (somebody has to look), but it is not reset to "idle"
+        // with a red error — that reads as "it didn't go" and invites the
+        // second press that puts the message on the client's phone twice.
+        patch(card.key, { status: "idle", note: r.message, error: null });
       } else {
         patch(card.key, { status: "idle", error: r.message });
       }

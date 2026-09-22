@@ -90,12 +90,19 @@ export function ChatPanel({
     if (!text && !attach) return;
     startSend(async () => {
       const r = await sendThreadText(toPhone, text, attach ? [attach.url] : undefined, client?.id ?? null);
-      setNote(r.ok ? null : r.message);
-      if (r.ok) {
-        setMsgs((m) => [...m, {
-          kind: "message", id: `local-${Date.now()}`, at: new Date().toISOString(),
-          direction: "outgoing", text, media: attach ? [attach.url] : undefined,
-        }]);
+      setNote(r.ok && !r.message.startsWith("Sent —") ? null : r.message);
+      // A03: `pending` is neither sent nor failed — OpenPhone did not answer and
+      // may well have taken the message. Clearing the box is the point: leaving
+      // the text sitting there is an invitation to press send again, which is
+      // exactly how the client ends up with it twice. The note says what is
+      // known and the thread refreshes from the provider.
+      if (r.ok || r.pending) {
+        if (r.ok) {
+          setMsgs((m) => [...m, {
+            kind: "message", id: `local-${Date.now()}`, at: new Date().toISOString(),
+            direction: "outgoing", text, media: attach ? [attach.url] : undefined,
+          }]);
+        }
         setBody(""); setAttach(null);
       }
     });

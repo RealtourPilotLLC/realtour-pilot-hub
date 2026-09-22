@@ -136,7 +136,7 @@ export async function generateAllReplies(
 // Send the reviewed text. A HUMAN clicks this — nothing in the reply queue
 // ever sends on its own, which is the same rule every other client-facing
 // message in the hub follows.
-export async function sendReply(key: string, text: string): Promise<{ ok: boolean; message: string }> {
+export async function sendReply(key: string, text: string): Promise<{ ok: boolean; message: string; pending?: boolean }> {
   await requireAdmin();
   const body = text.trim();
   if (!body) return { ok: false, message: "Write something first." };
@@ -169,6 +169,19 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
     const res = await OpenPhone.sendMessage(from, `+1${card.phone}`, body);
     sentId = res?.data?.id ?? null;
   } catch (e) {
+    // A03 (Sep 21 audit, fixed Sep 22 2026). OpenPhone.request turns a timed-out
+    // send into a 408 and its own comment calls that ambiguous — "OpenPhone may
+    // have taken the message before it stopped answering". This action reported
+    // it as "Failed to send", and the obvious response to that is to press Send
+    // again, which is how one message becomes two on a client's phone.
+    const status = (e as { status?: number } | null)?.status;
+    if (status === 408) {
+      return {
+        ok: false,
+        pending: true,
+        message: `OpenPhone didn't answer in time, so we can't tell whether this reached ${card.displayName}. Give the thread a minute and look before sending again — it may already be on its way.`,
+      };
+    }
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
 
@@ -222,17 +235,22 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
       .catch(() => { /* attribution is never a reason to report a sent text as failed */ });
   }
 
+  // A03: already isolated, and now also REPORTED. A card that silently failed
+  // to close is a card that keeps asking to be answered, and the person looking
+  // at it has no way to tell that from a message that never went.
+  const notLogged: string[] = [];
   if (card.clientId) {
-    await closeReplyForOutbound(card.clientId, body).catch(() => {});
+    await closeReplyForOutbound(card.clientId, body).catch(() => { notLogged.push("this card may not have cleared"); });
     if (card.projectId) {
       await prisma.activity
         .create({ data: { projectId: card.projectId, type: "SYSTEM", body: `Text sent: ${body.slice(0, 200)}` } })
-        .catch(() => {});
+        .catch(() => { notLogged.push("it isn't on the job's timeline"); });
     }
   }
 
   revalidatePath("/communications");
   revalidatePath("/queue");
+  if (notLogged.length) return { ok: true, message: `Sent to ${card.displayName} — but ${notLogged.join(" and ")}. The text went out; this is only our own record.` };
   return { ok: true, message: `Sent to ${card.displayName}.` };
 }
 

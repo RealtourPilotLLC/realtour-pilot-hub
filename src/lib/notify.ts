@@ -623,6 +623,67 @@ async function parkUntextableSms(teamMemberId: string, reason: string): Promise<
 //              failure unclaimed the rows exactly like a refusal, so an
 //              accepted-then-timed-out digest went out again five minutes later.
 // Throws when OpenPhone REFUSES, after un-claiming the rows for the next tick.
+/** The SMS body budget. One segment-safe cap for the whole digest. */
+const SMS_BODY_LIMIT = 1500;
+
+export type PackedDigest = {
+  /** How many queued lines the outgoing body ACTUALLY contains. */
+  count: number;
+  /** The body to send — always complete lines, never a mid-sentence cut. */
+  body: string;
+  /** True when one single line was too long to send whole and was summarised. */
+  summarisedOne: boolean;
+};
+
+/**
+ * A01 (Sep 21 audit, fixed Sep 22 2026) — THE DIGEST AND THE RECORD AGREE.
+ *
+ * flushMemberSms claimed every due line, built one body from all of them, sent
+ * `body.slice(0, 1500)`, and then stamped EVERY claimed row as sent. So the
+ * lines past 1,500 characters were cut off mid-sentence, never delivered, and
+ * recorded as delivered. The audit reproduced it: twelve ~210-character updates
+ * produced a 1,500-character body, the twelfth was absent, and all twelve
+ * carried a sent stamp and a successful delivery log.
+ *
+ * This packs COMPLETE lines only and reports how many fit. The caller unclaims
+ * the rest, so they go out in the next digest instead of being lost — which is
+ * also why the header count is computed from what fits rather than from what
+ * was claimed.
+ *
+ * A single line longer than the whole budget is not cut in the middle either:
+ * it is summarised, and the text says so, because half an instruction reads
+ * like a whole one.
+ *
+ * Pure, so the boundary cases can be tested without a queue or a provider.
+ */
+export function packStaffDigest(lines: string[], limit = SMS_BODY_LIMIT): PackedDigest {
+  if (lines.length === 0) return { count: 0, body: "", summarisedOne: false };
+
+  const single = (line: string) => `${HUB_SMS_PREFIX}: ${line}`;
+  const many = (ls: string[]) => `${HUB_SMS_PREFIX} — ${ls.length} updates:\n` + ls.map((l) => `• ${l}`).join("\n");
+
+  // One line, and it fits: the ordinary case.
+  if (lines.length === 1 && single(lines[0]).length <= limit) {
+    return { count: 1, body: single(lines[0]), summarisedOne: false };
+  }
+
+  // The largest k whose body fits, complete lines only. n is small (a staff
+  // digest is a handful of lines), so the straightforward walk is fine and the
+  // header's own length is accounted for because the body is rebuilt each time.
+  for (let k = lines.length; k >= 2; k--) {
+    const body = many(lines.slice(0, k));
+    if (body.length <= limit) return { count: k, body, summarisedOne: false };
+  }
+  if (single(lines[0]).length <= limit) return { count: 1, body: single(lines[0]), summarisedOne: false };
+
+  // ONE line, too long for a text on its own. Never a mid-sentence cut — the
+  // beginning plus an explicit pointer, so the reader knows there is more and
+  // where it is. The full text is on the bell in the hub.
+  const tail = " … (cut short — open the hub to read it in full)";
+  const room = limit - `${HUB_SMS_PREFIX}: `.length - tail.length;
+  return { count: 1, body: `${HUB_SMS_PREFIX}: ${lines[0].slice(0, Math.max(40, room))}${tail}`, summarisedOne: true };
+}
+
 async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "parked" | "held"> {
   // The number BEFORE the claim: a member whose roster phone can't be texted
   // (none, or not a US number) must not claim rows and bounce off OpenPhone
@@ -664,13 +725,17 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     orderBy: { createdAt: "asc" },
   });
   if (mine.length === 0) return "none";
+  // A01: both of these are bound to the rows this digest ACTUALLY carries,
+  // which is decided below by packStaffDigest — `sending`, never `mine`. A
+  // delivery log covering a line the text does not contain is the defect.
+  let sending: typeof mine = mine;
   const unclaim = () =>
-    prisma.pendingSms.updateMany({ where: { id: { in: mine.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
+    prisma.pendingSms.updateMany({ where: { id: { in: sending.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
   // The bell rows and kinds behind these lines, for the log (one lookup).
   const meta = await queuedMeta(mine.map((r) => r.id));
   const logAll = (status: "sent" | "failed", detail?: string) =>
     Promise.all(
-      mine.map((r) => {
+      sending.map((r) => {
         const m = meta.get(r.id);
         return logDelivery({ teamMemberId, kind: m?.kind ?? "staff_sms", notificationId: m?.notificationId ?? null, channel: "sms", status, detail: detail ?? r.id });
       }),
@@ -682,10 +747,17 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     await logAll("failed", "no OpenPhone number to send from");
     return "none";
   }
-  const body =
-    mine.length === 1
-      ? `${HUB_SMS_PREFIX}: ${mine[0].line}`
-      : `${HUB_SMS_PREFIX} — ${mine.length} updates:\n` + mine.map((r) => `• ${r.line}`).join("\n");
+  // A01: pack COMPLETE lines only, and send exactly what the record will claim.
+  const packed = packStaffDigest(mine.map((r) => r.line));
+  sending = mine.slice(0, packed.count);
+  const deferred = mine.slice(packed.count);
+  if (deferred.length > 0) {
+    // Back in the queue, unstamped. They are the NEXT digest, not a lost one —
+    // and they are not logged as delivered, which is the whole of A01.
+    await prisma.pendingSms.updateMany({ where: { id: { in: deferred.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
+    console.info(`flushMemberSms: ${teamMemberId} — ${packed.count} of ${mine.length} line(s) fit this text; ${deferred.length} put back for the next one.`);
+  }
+  const body = packed.body;
   // Through the outbox (RTP-08): one durable row per digest, keyed on the claim
   // stamp this flush won — so the send survives a killed worker with a record,
   // and OpenPhone's own message id is kept as the proof that it went.
@@ -704,7 +776,7 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     res = await sendThroughOutbox({
       channel: "sms",
       toRef: num.key,
-      body: body.slice(0, 1500),
+      body, // already packed to complete lines within the limit (A01)
       dedupeKey: key,
       requestedBy: FLUSH_REQUESTED_BY,
     });
@@ -774,8 +846,14 @@ async function recoverUnclaimedStaffSms(): Promise<number> {
   const from = new Date(firstStaff.createdAt.getTime() + 5 * 60_000);
   const until = new Date(Date.now() - 15 * 60_000);
   if (from >= until) return 0;
+  // OLDEST FIRST, and bounded (A01's related recovery note, Sep 21 audit). This
+  // read had no ordering at all and took the first 200 rows Postgres happened to
+  // return — successful flushes included. A busy week could therefore fill the
+  // page with rows the outbox already owns and hide a genuine orphan behind
+  // them, indefinitely. Oldest-first means the orphan that has waited longest is
+  // always on the page, and each pass that recovers one frees its slot.
   const claimed = await prisma.pendingSms
-    .findMany({ where: { sentAt: { gt: from, lt: until }, skippedAt: null }, select: { id: true, teamMemberId: true, sentAt: true }, take: 200 })
+    .findMany({ where: { sentAt: { gt: from, lt: until }, skippedAt: null }, select: { id: true, teamMemberId: true, sentAt: true }, orderBy: { sentAt: "asc" }, take: 200 })
     .catch(() => [] as { id: string; teamMemberId: string; sentAt: Date | null }[]);
   if (claimed.length === 0) return 0;
   // One group per flush: the claim stamp names it, which is what makes the

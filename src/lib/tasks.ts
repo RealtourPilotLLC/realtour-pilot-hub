@@ -2881,6 +2881,29 @@ export async function mintEditTask(projectId: string): Promise<void> {
 // that never existed is minted through mintEditTask so the pin/routing rules
 // decide, exactly as for a first cut.
 // ---------------------------------------------------------------------------
+/**
+ * A stable key pair for pg_advisory_xact_lock, scoped to ONE edit card.
+ *
+ * Two FNV-1a passes with different seeds give the lock's two-int4 form: same
+ * card → same pair on every worker, different cards → different pairs, so two
+ * projects' rounds never wait on each other. A collision across cards would
+ * only ever cost a moment's waiting, never correctness. (Two int4s rather than
+ * one int8 because the build targets below ES2020 — no BigInt literals; and the
+ * ::int4 casts at the call site are load-bearing, because Prisma sends a JS
+ * number as a bigint and Postgres has no pg_advisory_xact_lock(bigint, bigint).)
+ */
+function editCardLockKey(taskId: string): [number, number] {
+  const fnv = (seed: number): number => {
+    let h = seed;
+    for (let i = 0; i < taskId.length; i++) {
+      h ^= taskId.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h | 0;
+  };
+  return [fnv(0x811c9dc5), fnv(0x9e3779b9)];
+}
+
 export async function addRoundToEditCard(
   projectId: string,
   opts: {
@@ -2904,9 +2927,6 @@ export async function addRoundToEditCard(
   const n = opts.notes.length;
   const header = `Round ${opts.round} — ${opts.reason}`;
   const block = [header, ...opts.notes.map((x) => (x.trim().startsWith("•") ? x.trim() : `• ${x.trim()}`))].join("\n");
-  let description = card.description ?? "";
-  if (!description.includes(block)) description = description ? `${description}\n\n${block}` : block;
-  if (description.length > 4000) description = "…" + description.slice(-4000);
   const summary = `Round ${opts.round} — ${n} note${n === 1 ? "" : "s"} to fix (${opts.reason}). The notes are below and on the cut at /edit/${projectId}; fix them and upload the next version.`.slice(0, 500);
   // Due: the same SLA−12h rule as a first cut, off the job's video deliverable
   // — unless the office set the due / priority on the job (Sep 13), which a
@@ -2925,16 +2945,49 @@ export async function addRoundToEditCard(
     promisedDueAt: p?.promisedDueAt ?? null,
   });
   const dueAt = p?.dueOverrideAt ?? rule.dueAt;
-  await prisma.smartTask.update({
-    where: { id: card.id },
-    data: {
-      status: "OPEN",
-      completedAt: null,
-      summary,
-      description,
-      dueAt,
-      priority: p?.priorityOverride ?? computePriority({ dueAt, status: "SHOT" }),
-    },
+
+  // ---------------------------------------------------------------------
+  // A05 (Sep 21 audit, fixed Sep 22 2026) — THE APPEND HAPPENS UNDER A LOCK.
+  //
+  // This used to read card.description into a local, append its own block in
+  // memory, and write the whole string back. On a multi-video job that is the
+  // ordinary case, not a freak one: two cuts of the same project are sent back
+  // within the same second, both calls read the same original description, and
+  // the second write erases the first one's notes. The audit reproduced it —
+  // "the final description contained Cut B's music instruction but not Cut A's
+  // crop instruction."
+  //
+  // The cut-level notes survive in their own rows, so nothing was lost
+  // outright. What was lost is the thing this card exists to be: the ONE brief
+  // the editor works from. An instruction that is only in a place the editor
+  // does not open is an instruction that does not get followed.
+  //
+  // So the read-modify-write happens inside one transaction, behind an advisory
+  // lock keyed on the CARD — same pattern, same ::int4 casts and same reason as
+  // the cut-slot lock in app/review/actions.ts. Different projects never wait on
+  // each other; two rounds on the same project queue for a moment and both
+  // survive.
+  // ---------------------------------------------------------------------
+  const [lockA, lockB] = editCardLockKey(card.id);
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}::int4, ${lockB}::int4)`;
+    // Re-read INSIDE the lock. The copy fetched before the lock is exactly the
+    // stale one this whole block exists to stop being written back.
+    const fresh = await tx.smartTask.findUnique({ where: { id: card!.id }, select: { description: true } });
+    let description = fresh?.description ?? "";
+    if (!description.includes(block)) description = description ? `${description}\n\n${block}` : block;
+    if (description.length > 4000) description = "…" + description.slice(-4000);
+    await tx.smartTask.update({
+      where: { id: card!.id },
+      data: {
+        status: "OPEN",
+        completedAt: null,
+        summary,
+        description,
+        dueAt,
+        priority: p?.priorityOverride ?? computePriority({ dueAt, status: "SHOT" }),
+      },
+    });
   });
   return { taskId: card.id, assignedKey: card.assignedKey, assignedManually: card.assignedManually };
 }

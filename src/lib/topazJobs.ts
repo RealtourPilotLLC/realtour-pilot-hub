@@ -2236,19 +2236,58 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
 
 /** Kyle's one tap after he has uploaded it to Aryeo: closes the card and closes
  *  the loop in the hub. */
-export async function markTopazDelivered(jobId: string, by?: string | null): Promise<{ ok: boolean; message: string }> {
+/**
+ * A04 (Sep 21 audit, fixed Sep 22 2026) — AN "ALREADY DELIVERED" CALL REPAIRS
+ * WHAT THE FIRST ONE DID NOT FINISH.
+ *
+ * This used to stamp the job, suppress a task-closure error, and return early
+ * on every later call once deliveredAt was set. So a first call that stamped
+ * the job and then failed to close Kyle's upload task left that task open
+ * FOREVER: the second call saw the stamp and returned "Already marked
+ * delivered" without ever retrying the step that failed. The audit reproduced
+ * exactly that — "a second call returned through 'already sent' without a
+ * second Topaz attempt".
+ *
+ * The historical stamp stays immutable (deliveredAt/deliveredBy are written
+ * once and never rewritten). What changes is that the ASSOCIATED state is
+ * reconciled on every call, and a failure to close the task is now reported
+ * rather than swallowed, so the caller can say "press again".
+ */
+export async function markTopazDelivered(jobId: string, by?: string | null): Promise<{ ok: boolean; message: string; repaired?: boolean; incomplete?: string }> {
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, taskId: true, projectId: true, deliveredAt: true, finalPath: true } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
-  if (job.deliveredAt) return { ok: true, message: "Already marked delivered." };
-  await prisma.topazJob.update({ where: { id: jobId }, data: { deliveredAt: new Date(), deliveredBy: by ?? null } });
+  const first = !job.deliveredAt;
+
+  // The historical fact, written once. `deliveredAt: null` in the filter is
+  // what makes a repeat call leave the original timestamp alone.
+  if (first) {
+    await prisma.topazJob.updateMany({ where: { id: jobId, deliveredAt: null }, data: { deliveredAt: new Date(), deliveredBy: by ?? null } });
+  }
+
+  // The associated state, reconciled EVERY time. An open task on a delivered
+  // job is the mismatch A04 is about, and this is the only thing that closes it.
+  let repaired = false;
+  let incomplete: string | undefined;
   if (job.taskId) {
-    await prisma.smartTask
-      .updateMany({ where: { id: job.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: new Date() } })
+    try {
+      const closed = await prisma.smartTask.updateMany({
+        where: { id: job.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: { status: "COMPLETED", completedAt: new Date() },
+      });
+      if (closed.count > 0 && !first) repaired = true;
+    } catch (e) {
+      incomplete = `the upload task did not close (${e instanceof Error ? e.message.slice(0, 120) : "unknown"}) — press again to retry it`;
+    }
+  }
+
+  if (first) {
+    await prisma.activity
+      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video uploaded to Aryeo and delivered${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
       .catch(() => {});
   }
-  await prisma.activity
-    .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video uploaded to Aryeo and delivered${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
-    .catch(() => {});
+
+  if (incomplete) return { ok: true, message: `Marked delivered, but ${incomplete}.`, incomplete };
+  if (!first) return { ok: true, message: repaired ? "Already marked delivered — the upload task it left open is now closed." : "Already marked delivered." };
   return { ok: true, message: "Marked delivered." };
 }
 

@@ -617,8 +617,18 @@ async function closeKylesUploadCards(
   // client complained after its 1080p file landed cannot be proven by a video
   // on the listing: that video may be the complaint. Same rule, same helper and
   // same reasoning as the cut-level pass below — see UploadJob.contested.
+  //
+  // A02 (Sep 21 audit, fixed Sep 22 2026). When that read FAILS, "no complaints
+  // on file" is not established — and this matcher refuses a contested item, so
+  // treating a failed read as an empty one removes a guard and makes the pass
+  // MORE permissive. Nothing is stamped on unavailable evidence; the cards stay
+  // open with the reason on the log, and the next hourly pass tries again.
   const asks = await clientChangeRequestsFor(listingProjectIds);
-  const askList = [...asks.values()].flat().sort((a, b) => a.at.getTime() - b.at.getTime());
+  if (!asks.known) {
+    console.info(`[aryeo] held every upload card on ${projectId}: could not read the revision history (${asks.error ?? "unknown"}). Nothing stamped; the next pass retries.`);
+    return { closed: 0, held: waiting.filter((r) => r.projectId === projectId).length, heldJobIds: new Set(waiting.map((r) => r.id)), wouldClose: [] };
+  }
+  const askList = asks.all;
   const open: UploadJob[] = waiting.flatMap((r) => {
     const readyAt = filedAt(r);
     return readyAt
@@ -945,8 +955,16 @@ async function stampCutsTheDeliveryCovers(
   // complaint is about the LISTING's video, so it counts whichever project it
   // was filed against — see UploadJob.contested for why this is the fact that
   // holds 322 N 62nd St when nothing else can.
+  //
+  // A02, same rule as closeKylesUploadCards: an unreadable revision history is
+  // not an empty one, and this pass refuses contested cuts — so a failed read
+  // would let one through. Hold everything and say why.
   const asks = await clientChangeRequestsFor(listingProjectIds);
-  const askList = [...asks.values()].flat().sort((a, b) => a.at.getTime() - b.at.getTime());
+  if (!asks.known) {
+    console.info(`[aryeo] stamped no cut on ${projectId}: could not read the revision history (${asks.error ?? "unknown"}). The next pass retries.`);
+    return { stamped: 0, held: onCard.size, wouldStamp: [] };
+  }
+  const askList = asks.all;
 
   const claimants: CutClaimant[] = [];
   for (const r of rows) {
