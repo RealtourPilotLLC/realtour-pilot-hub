@@ -183,7 +183,8 @@ export async function seedTopicBank(enrollmentId: string, perPillar?: number | n
 // which reads CONFIRMED ProgramTranscriptSource rows by callRecordId (never
 // ContentMonth.transcriptText), never touches the job row, and runs its AI
 // unattended behind ai_runs. Outcome mapping: resultJson → produced;
-// reviewReason → needsReview; error → error, retryable only for transport /
+// paused → paused (requeued, attempt refunded); reviewReason → needsReview;
+// error → error, retryable only for transport /
 // rate-limit failures (everything else goes to a person, not a retry loop).
 // ---------------------------------------------------------------------------
 const RETRYABLE_RE = /\b(429|503|529|rate.?limit|overloaded|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|socket hang up|network)\b/i;
@@ -193,6 +194,9 @@ function transcriptHandler(kind: "ANALYZE" | "STRATEGY_DRAFT" | "SCRIPT_DRAFT" |
     const { runTranscriptJob } = await import("@/lib/contentGeneration");
     const r = await runTranscriptJob({ id: job.id, kind, callRecordId: job.callRecordId, transcriptSourceId: job.transcriptSourceId, enrollmentId: job.enrollmentId, requestedBy: job.requestedBy, heartbeat: ctx.heartbeat });
     if (r.ok) return { ok: true, produced: r.resultJson, aiRunId: r.aiRunId ?? null };
+    // A closed owner switch is carried through as a PAUSE, never folded into
+    // needsReview — the driver puts the job back on the queue untouched.
+    if ("paused" in r) return { ok: false, paused: r.paused };
     if (r.reviewReason) return { ok: false, needsReview: r.reviewReason };
     const error = r.error ?? "unknown failure";
     return { ok: false, error, retryable: RETRYABLE_RE.test(error) };

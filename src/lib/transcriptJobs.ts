@@ -59,6 +59,10 @@ export type TranscriptJobRow = {
 export type TranscriptJobOutcome =
   | { ok: true; produced?: Record<string, unknown>; aiRunId?: string | null }
   | { ok: false; needsReview: string; produced?: Record<string, unknown> }
+  /** The work did not happen because an owner switch is off. NOT a failure:
+   *  the job goes back on the queue with its attempt given back, so the moment
+   *  the switch returns it runs. See the sweep's `paused` branch. */
+  | { ok: false; paused: string }
   | { ok: false; error: string; retryable?: boolean };
 
 export type TranscriptJobContext = {
@@ -175,7 +179,7 @@ export async function availableHandlers(): Promise<TranscriptJobHandlers> {
 // The driver.
 // ---------------------------------------------------------------------------
 export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: number; leaseBy?: string; now?: Date } = {}): Promise<
-  { skipped: string } | { ran: number; succeeded: number; failed: number; needsReview: number; waitingForHandler: number; recovered: number }
+  { skipped: string } | { ran: number; succeeded: number; failed: number; needsReview: number; paused: string | null; waitingForHandler: number; recovered: number }
 > {
   if (!(await isAutomationEnabled("transcript_jobs"))) return { skipped: "transcript_jobs is off" };
   const now = opts.now ?? new Date();
@@ -224,6 +228,7 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
 
   let ran = 0, succeeded = 0, failed = 0, needsReview = 0;
   let lastError: string | null = null;
+  let paused: string | null = null;
   while (ran < max && Date.now() - started < budget && runnable.length > 0) {
     // Oldest first, INGEST before the kinds that depend on it.
     const candidate = await prisma.programTranscriptJob.findFirst({
@@ -259,6 +264,18 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
         data: { state: "SUCCEEDED", finishedAt, leaseUntil: null, leaseBy: null, lastError: null, lastErrorAt: null, resultJson: outcome.produced ? JSON.stringify(outcome.produced) : null, aiRunId: outcome.aiRunId ?? undefined },
       });
       succeeded++;
+    } else if ("paused" in outcome) {
+      // Give the attempt back. The claim incremented it, and an attempt that
+      // was refused by a switch is not an attempt the job used up — without
+      // this, three hourly ticks with `ai_runs` off exhaust maxAttempts and
+      // park the job in NEEDS_REVIEW permanently.
+      await prisma.programTranscriptJob.update({
+        where: { id: job.id },
+        data: { state: "QUEUED", leaseUntil: null, leaseBy: null, startedAt: null, attempts: { decrement: 1 }, nextAttemptAt: null, lastError: null, lastErrorAt: null },
+      });
+      paused = outcome.paused.slice(0, 300);
+      ran--;
+      break; // the switch is global — every remaining job would refuse the same way
     } else if ("needsReview" in outcome) {
       await prisma.programTranscriptJob.update({
         where: { id: job.id },
@@ -286,8 +303,10 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
       lastError = outcome.error;
     }
   }
+  // `paused` is not passed: a stop the owner asked for is not a failed run, and
+  // programMonitoring turns a stamped lastError into an hourly alert.
   await recordAutomationRun("transcript_jobs", lastError);
-  return { ran, succeeded, failed, needsReview, waitingForHandler, recovered };
+  return { ran, succeeded, failed, needsReview, paused, waitingForHandler, recovered };
 }
 
 /** For the monitoring view: counts per state × kind, plus which kinds have a handler in this build. */

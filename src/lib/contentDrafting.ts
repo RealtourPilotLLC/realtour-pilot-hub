@@ -168,7 +168,7 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
 export type DraftOutcome = {
   topicId: string;
   title: string;
-  /** drafted · skipped (already claimed / not ready) · failed */
+  /** drafted · skipped (already claimed / not ready / the switch closed) · failed */
   result: "drafted" | "skipped" | "failed";
   readiness: ScriptReadiness;
   path?: "answers" | "topic";
@@ -195,11 +195,12 @@ export type DraftOpts = {
  * script and one skip, not two scripts. No advisory lock needed and no claim
  * of our own to leak on a crash.
  */
-export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; outcomes: DraftOutcome[] }> {
+export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; paused: string | null; outcomes: DraftOutcome[] }> {
   const work = await scriptWorkForMonth(monthId);
   const todo = work.filter((w) => (opts.includeThin ? w.readiness === "THIN" || isAutoDraftable(w.readiness) : isAutoDraftable(w.readiness)));
   const outcomes: DraftOutcome[] = [];
   const limit = opts.max ?? 8;
+  let pausedBy: string | null = null;
 
   for (const w of todo.slice(0, limit)) {
     try {
@@ -223,10 +224,16 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
       const msg = e instanceof Error ? e.message : String(e);
       // Losing the dedupe race is not a failure — somebody else is drafting it.
       const raced = /already (running|in progress)|Unique constraint|dedupe/i.test(msg);
-      outcomes.push({ topicId: w.topicId, title: w.title, result: raced ? "skipped" : "failed", readiness: w.readiness, note: msg.slice(0, 300) });
-      // An automation-disabled error means the switch went off mid-sweep: stop,
-      // do not burn the rest of the month against a closed gate.
-      if (e instanceof Error && e.name === "AutomationDisabledError") break;
+      // NEITHER IS A CLOSED SWITCH. `ai_runs` off is Jordan's stop button, and
+      // the whole point of a stop button is that pressing it is not an incident.
+      // Counted as a failure it became one: every hourly tick stamped lastError
+      // on the script_drafting row and programMonitoring.ts turned that into
+      // `Automation "script_drafting" last run failed`, retryable:false, on the
+      // monitoring screen — hourly, for as long as the stop was held, burying
+      // the real failures it exists to show. A refusal we asked for is a skip.
+      const paused = e instanceof Error && e.name === "AutomationDisabledError";
+      outcomes.push({ topicId: w.topicId, title: w.title, result: raced || paused ? "skipped" : "failed", readiness: w.readiness, note: msg.slice(0, 300) });
+      if (paused) { pausedBy = msg.slice(0, 300); break; }
     }
   }
 
@@ -234,6 +241,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
     drafted: outcomes.filter((o) => o.result === "drafted").length,
     skipped: outcomes.filter((o) => o.result === "skipped").length,
     failed: outcomes.filter((o) => o.result === "failed").length,
+    paused: pausedBy,
     outcomes,
   };
 }
@@ -246,7 +254,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
  * outlast a cron step on their own.
  */
 export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; now?: Date } = {}): Promise<
-  { skipped: string } | { months: number; drafted: number; skipped: number; failed: number; waiting: number; thin: number; detail: { monthKey: string; client: string | null; drafted: number; failed: number }[] }
+  { skipped: string } | { months: number; drafted: number; skipped: number; failed: number; waiting: number; thin: number; paused: string | null; detail: { monthKey: string; client: string | null; drafted: number; failed: number }[] }
 > {
   if (!(await isAutomationEnabled("script_drafting"))) return { skipped: "script_drafting is off" };
   const started = Date.now();
@@ -271,6 +279,7 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   let drafted = 0, skipped = 0, failed = 0, waiting = 0, thin = 0, touched = 0;
   const detail: { monthKey: string; client: string | null; drafted: number; failed: number }[] = [];
   let lastError: string | null = null;
+  let paused: string | null = null;
 
   for (const m of months) {
     if (drafted >= maxScripts || Date.now() - started > budgetMs) break;
@@ -292,10 +301,17 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
     failed += r.failed;
     if (r.failed) lastError = r.outcomes.find((o) => o.result === "failed")?.note ?? lastError;
     if (r.drafted || r.failed) detail.push({ monthKey: m.monthKey, client: names.get(m.clientId) ?? null, drafted: r.drafted, failed: r.failed });
+    // The gate is global, not per-month: once it is closed every remaining
+    // month would refuse in the same way. Stop, rather than walking forty
+    // months to collect forty identical refusals.
+    if (r.paused) { paused = r.paused; break; }
   }
 
+  // `paused` is deliberately NOT passed as the error: a stop Jordan asked for
+  // must not light up the monitoring screen as a fault. lastError still carries
+  // a real one, and a clean run still clears it.
   await recordAutomationRun("script_drafting", lastError).catch(() => {});
-  return { months: touched, drafted, skipped, failed, waiting, thin, detail };
+  return { months: touched, drafted, skipped, failed, waiting, thin, paused, detail };
 }
 
 // ---------------------------------------------------------------------------
@@ -312,21 +328,21 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
 // interview is not "waiting on them" in scriptWorkForMonth — it falls through
 // to the call-excerpt check exactly as a missing one did.
 // ---------------------------------------------------------------------------
-export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: number } = {}): Promise<{ skipped: string } | { planned: number; alreadyPlanned: number; failed: number; lastError: string | null }> {
+export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: number } = {}): Promise<{ skipped: string } | { planned: number; alreadyPlanned: number; failed: number; paused: string | null; lastError: string | null }> {
   if (!(await isAutomationEnabled("script_drafting"))) return { skipped: "script_drafting is off" };
   const started = Date.now();
   const budgetMs = opts.budgetMs ?? 45_000;
   const max = opts.max ?? 5;
 
   const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
-  if (!live.length) return { planned: 0, alreadyPlanned: 0, failed: 0, lastError: null };
+  if (!live.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
   const months = await prisma.contentMonth.findMany({
     where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },
     select: { id: true },
     orderBy: { monthKey: "desc" },
     take: 40,
   });
-  if (!months.length) return { planned: 0, alreadyPlanned: 0, failed: 0, lastError: null };
+  if (!months.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
 
   // Committed topics only. A call's PROPOSED suggestion is not the month's plan,
   // and phrasing questions for a topic nobody has agreed to is spent credit.
@@ -335,7 +351,7 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
     select: { topicId: true, monthId: true },
     take: 200,
   });
-  if (!selections.length) return { planned: 0, alreadyPlanned: 0, failed: 0, lastError: null };
+  if (!selections.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
 
   // Topics that already have this month's script need no questions.
   const scripted = new Set(
@@ -347,6 +363,7 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   const { planInterviewQuestions } = await import("@/lib/contentGeneration");
   let planned = 0, alreadyPlanned = 0, failed = 0;
   let lastError: string | null = null;
+  let paused: string | null = null;
 
   for (const sel of selections) {
     if (planned >= max || Date.now() - started > budgetMs) break;
@@ -360,10 +377,11 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/already (running|in progress)|Unique constraint|dedupe/i.test(msg)) { alreadyPlanned++; continue; }
+      // Same rule as the drafting sweep: a closed switch is not a failure.
+      if (e instanceof Error && e.name === "AutomationDisabledError") { paused = msg.slice(0, 300); break; }
       failed++;
       lastError = msg.slice(0, 300);
-      if (e instanceof Error && e.name === "AutomationDisabledError") break;
     }
   }
-  return { planned, alreadyPlanned, failed, lastError };
+  return { planned, alreadyPlanned, failed, paused, lastError };
 }

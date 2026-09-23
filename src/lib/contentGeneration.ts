@@ -458,7 +458,7 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
 // --- the transcript-job handler registry (for W1-B's driver) ------------------------------------
 
 export type TranscriptJobInput = { id: string; kind: string; callRecordId: string; transcriptSourceId?: string | null; enrollmentId?: string | null; requestedBy?: string | null; /** Refresh the driver's lease between long AI calls. */ heartbeat?: () => Promise<void> };
-export type TranscriptJobOutcome = { ok: true; resultJson: Record<string, unknown>; aiRunId?: string | null } | { ok: false; reviewReason?: string; error?: string; aiRunId?: string | null };
+export type TranscriptJobOutcome = { ok: true; resultJson: Record<string, unknown>; aiRunId?: string | null } | { ok: false; paused: string } | { ok: false; reviewReason?: string; error?: string; aiRunId?: string | null };
 
 async function callAndTranscript(job: TranscriptJobInput) {
   const call = await prisma.programCallRecord.findUnique({ where: { id: job.callRecordId } });
@@ -528,7 +528,14 @@ export async function runTranscriptJob(job: TranscriptJobInput): Promise<Transcr
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.name === "AutomationDisabledError") return { ok: false, reviewReason: msg };
+    // A CLOSED SWITCH IS NOT A JOB THAT NEEDS A PERSON. This used to return
+    // reviewReason, which parked the job in NEEDS_REVIEW and stamped the CALL
+    // RECORD's transcriptState NEEDS_REVIEW with the error. Turning `ai_runs`
+    // off — the stop button — therefore manufactured a queue of manual work
+    // that did NOT resume when the switch came back on, and told Kyle three
+    // calls needed him when none of them did. It is a pause: give the attempt
+    // back and leave the job queued.
+    if (e instanceof Error && e.name === "AutomationDisabledError") return { ok: false, paused: msg };
     return { ok: false, error: msg };
   }
 }
