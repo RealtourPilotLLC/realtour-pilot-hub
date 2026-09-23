@@ -80,11 +80,53 @@ The audit asked for this distinction and it is worth keeping:
   which means off, including `script_drafting`. A manually driven test is not
   evidence the scheduled path runs.
 
-**Not yet established, and not claimed:** one controlled scheduled journey with
-`script_drafting` + `ai_runs` on; any real Aryeo provider write; a real
+**Not yet established, and not claimed:** any real Aryeo provider write; a real
 OpenPhone incident against the new send rail; the disposition of the four
 library rows that could not be re-keyed; script length against the 20–30s
-target on real examples.
+target on real examples; the hourly route's HTTP shell executed end to end (see
+below for why, and what stands in its place).
+
+### The scheduled journey (Sep 23) — established, with one stated limit
+
+`scripts/_drill/scheduled-journey.ts`, **88 checks**, against a real Postgres
+with the switches thrown. This is the item three documents in a row had to
+leave open. What is now proven:
+
+- production's state today — no `ProgramAutomation` rows — draws no work at all;
+- `script_drafting` on with `ai_runs` off writes nothing, opens no run ledger
+  row, and calls no model: the two gates are independent;
+- with both on, the sweep drafts from the client's written answers **and** from
+  the call excerpts, leaves `PROPOSED` and `THIN` alone, never reaches a paused
+  client's month, and shares nothing with anyone;
+- the next tick drafts nothing and makes no model call;
+- a run in flight holds `script:<topicId>:<monthId>` with a lease — observed
+  live, inside the model call — and an abandoned lease is reclaimed rather than
+  blocking the topic;
+- a stop mid-sweep lets the draft already with the model finish and attempts
+  nothing after it;
+- the drafting path makes **no outbound call of its own** and enqueues nothing.
+
+**The limit, stated plainly.** The route's HTTP shell was not executed. PGlite's
+socket server closes the connection on any unique violation, and an hourly cron
+run hits them by design (the notification dedupe key collided on the first
+attempt and every later query in the process failed). Production Postgres
+handles those; this harness cannot. So the step's wiring is read from
+`src/app/api/cron/sync/route.ts` at runtime — same two functions, same bounds,
+questions before scripts — and the route's auth gate is executed (401 with no
+token, 401 with a wrong one). Where the shell meets the sweep is an assertion
+about source text, and the drill labels it as one.
+
+**What running it found (`4b8658e`).** A closed switch was being recorded as a
+fault. `script_drafting` on with `ai_runs` off — the ordinary shape of a
+cautious first day — stamped the gate's own message on the switch row every
+hour, and `programMonitoring` turned that into `Automation "script_drafting"
+last run failed`, `retryable:false`, burying the real failures that screen
+exists for. On the transcript side it was worse: the same refusal came back as
+a `reviewReason`, parking the job in `NEEDS_REVIEW` and stamping the **call
+record**, and `NEEDS_REVIEW` does not resume when the switch returns — so
+pressing stop manufactured manual work that outlived the stop. A closed switch
+is now a pause: skipped, reported with its reason, never written to `lastError`,
+attempt refunded, job requeued.
 
 ### Verified on the Jordan test account (Sep 22)
 
