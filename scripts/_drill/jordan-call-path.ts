@@ -118,7 +118,11 @@ async function main() {
   ok("a confirmed transcript is on the call", !!source.id);
 
   // ---- ANALYZE, for real --------------------------------------------------
-  const before = await prisma.contentTopicSelection.count({ where: { monthId: month.id } });
+  // The set, not the count: on a re-run the analysis recognises topics it has
+  // already proposed and adds none, and a count comparison then reads as a
+  // failure. What is being claimed is that whatever it proposes ANEW arrives as
+  // PROPOSED — so measure the new rows, and say plainly when there are none.
+  const beforeIds = new Set((await prisma.contentTopicSelection.findMany({ where: { monthId: month.id }, select: { topicId: true } })).map((s) => s.topicId));
   const { analyzeTranscriptText } = await import("../../src/lib/contentGeneration");
   const r = await analyzeTranscriptText({
     enrollmentId: enrollment.id, clientId: client.id, monthId: month.id, monthKey: month.monthKey,
@@ -133,8 +137,9 @@ async function main() {
   console.log("\n  topics the call put on October:");
   for (const s of sels) console.log(`    · [${s.status}] ${topics.find((t) => t.id === s.topicId)?.title ?? s.topicId} (${s.source}, ${s.evidenceJson ? "with excerpts" : "no excerpts"})`);
 
-  ok("the call proposed topics", sels.length > before, `${sels.length} selection(s)`);
-  ok("they are PROPOSED, not silently committed", sels.every((s) => s.status === "PROPOSED"), sels.map((s) => s.status).join(","));
+  const fresh = sels.filter((s) => !beforeIds.has(s.topicId));
+  ok("the call put topics on October", sels.length > 0, `${sels.length} selection(s), ${fresh.length} new this run`);
+  ok("anything NEW it proposed arrived as PROPOSED, never silently committed", fresh.every((s) => s.status === "PROPOSED"), fresh.length ? fresh.map((s) => s.status).join(",") : "none new — the analysis recognised its own earlier proposals");
   ok("each one carries the excerpt that supports it", sels.every((s) => !!s.evidenceJson));
 
   // THE CONFIDENTIALITY RULE, which is the one that matters most here.
@@ -152,16 +157,30 @@ async function main() {
   // ---- a person reconciles, then the scripts follow -----------------------
   const { reconcileSelection } = await import("../../src/lib/contentTopics");
   const keep = sels.slice(0, month.videosOwed);
+  // RE-RUNNABLE ON PURPOSE. This used to assert `RECONCILED === keep.length`,
+  // which only held the FIRST time: a second run starts from the state the
+  // first one left, every selection is already RECONCILED, and the drill
+  // reported two failures that were not failures. The transition is the claim,
+  // so measure the DELTA — which also catches a reconcile that moves a row it
+  // was never handed.
+  const statusBefore = new Map(
+    (await prisma.contentTopicSelection.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true } })).map((s) => [s.topicId, s.status]),
+  );
   for (const s of keep) await reconcileSelection(s.topicId, month.id, true, { kind: "STAFF", staffUserId: RUN_BY });
-  const after = await prisma.contentTopicSelection.findMany({ where: { monthId: month.id }, select: { status: true } });
-  ok("a person's reconcile commits only what they kept", after.filter((s) => s.status === "RECONCILED").length === keep.length, after.map((s) => s.status).join(","));
+  const after = await prisma.contentTopicSelection.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true } });
+  const keptIds = new Set(keep.map((s) => s.topicId));
+  ok("everything the person kept is RECONCILED", after.filter((s) => keptIds.has(s.topicId)).every((s) => s.status === "RECONCILED"), after.filter((s) => keptIds.has(s.topicId)).map((s) => s.status).join(","));
+  const movedUnasked = after.filter((s) => !keptIds.has(s.topicId) && statusBefore.get(s.topicId) !== s.status);
+  ok("and nothing the person did not keep was moved by it", movedUnasked.length === 0, movedUnasked.map((s) => `${s.topicId.slice(0, 6)}:${statusBefore.get(s.topicId)}→${s.status}`).join(",") || "none moved");
 
   const { scriptWorkForMonth } = await import("../../src/lib/contentDrafting");
   const work = await scriptWorkForMonth(month.id);
   console.log("\n  what October now owes:");
   for (const w of work) console.log(`    · [${w.readiness}] ${w.title} — ${w.why}`);
   ok("the reconciled topics are ready to draft from the call", work.some((w) => w.readiness === "FROM_CALL"), work.map((w) => w.readiness).join(","));
-  ok("anything still only PROPOSED waits for a person", work.filter((w) => w.readiness === "WAITING_ON_PLANNING").length === sels.length - keep.length);
+  const stillProposed = after.filter((s) => s.status === "PROPOSED").map((s) => s.topicId);
+  ok("anything still only PROPOSED waits for a person", stillProposed.every((id) => work.find((w) => w.topicId === id)?.readiness === "WAITING_ON_PLANNING"), `${stillProposed.length} still proposed`);
+  ok("and nothing a person kept is waiting on planning", !work.some((w) => keptIds.has(w.topicId) && w.readiness === "WAITING_ON_PLANNING"));
 
   console.log(`\n${pass} passed, ${fail} failed\n`);
   await prisma.$disconnect();
