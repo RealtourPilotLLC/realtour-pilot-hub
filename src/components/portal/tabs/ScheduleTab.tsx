@@ -111,7 +111,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
                 <span className="flex items-center gap-1.5"><CalendarClock className={cn("size-4", s.shootDate! >= now ? "text-brand" : "text-muted-2")} /> {fmtDate(s.shootDate!, tz)}</span>
                 <span className="flex items-center gap-1.5 text-muted"><Clock className="size-4" /> {fmtTime(s.shootDate!, tz)} {tzName}</span>
                 {streetOf(s.title, s.addressLine) && <span className="flex items-center gap-1.5 text-muted"><MapPin className="size-4" /> {streetOf(s.title, s.addressLine)}</span>}
-                {s.shootDate! >= now ? <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">upcoming</span> : s.status === "DELIVERED" ? <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span> : <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">filmed</span>}
+                {s.shootDate! >= now ? <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">upcoming</span> : s.status === "DELIVERED" ? <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span> : <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">held</span>}
               </li>
             ))}
           </ul>

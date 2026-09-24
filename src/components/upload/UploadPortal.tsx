@@ -332,7 +332,12 @@ export function UploadPortal({
    */
   sessionTopics: {
     owed: number;
-    topics: { topicId: string; title: string; pillarName: string | null; scriptTitle: string | null; clientApproved: boolean; filmedConfirmedAtISO: string | null; filmedConfirmedBy: string | null }[];
+    topics: {
+      topicId: string; title: string; pillarName: string | null; scriptTitle: string | null; clientApproved: boolean;
+      filmedConfirmedAtISO: string | null; filmedConfirmedBy: string | null;
+      /** CP-09: the session (project) the topic was confirmed at — null until somebody confirms it. */
+      confirmedOnProjectId: string | null;
+    }[];
   } | null;
   /** owner/admin — the reopen button reads "Edit this upload" for them */
   viewerIsOffice: boolean;
@@ -374,6 +379,9 @@ export function UploadPortal({
   // re-submit lands on this page, then "you" without a reload.
   const [lastEdited, setLastEdited] = useState(submission.lastEdited);
   const [err, setErr] = useState<string | null>(null);
+  // CP-09: the footage went in but the filmed topics have not been recorded
+  // yet (saved, and retried by the hub). Said plainly after the submit.
+  const [topicsPending, setTopicsPending] = useState<string | null>(null);
   const [processNote, setProcessNote] = useState("");
   const [processNoteSent, setProcessNoteSent] = useState(false);
 
@@ -417,12 +425,19 @@ export function UploadPortal({
   // F12: the topics this session is for. Pre-ticked ONLY where somebody has
   // already confirmed one — never a helpful default, because a pre-ticked box
   // the photographer skims past is the hub inventing a production fact.
+  // CP-09: and only when it was confirmed at THIS session. A Pro month's second
+  // session used to inherit the first session's ticks (and their count); a
+  // topic confirmed elsewhere is that session's video, shown but not tickable.
+  const confirmedElsewhere = (t: { confirmedOnProjectId: string | null }) =>
+    !!t.confirmedOnProjectId && t.confirmedOnProjectId !== project.id;
   const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(
-    () => (sessionTopics?.topics ?? []).filter((t) => t.filmedConfirmedAtISO).map((t) => t.topicId),
+    () => (sessionTopics?.topics ?? []).filter((t) => t.confirmedOnProjectId === project.id).map((t) => t.topicId),
   );
   const hasTopics = (sessionTopics?.topics.length ?? 0) > 0;
-  const toggleTopic = (id: string) =>
+  const toggleTopic = (id: string) => {
+    if (sessionTopics?.topics.some((t) => t.topicId === id && confirmedElsewhere(t))) return;
     setFilmedTopicIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  };
   // With a topic list, the count IS the number of ticks — asking for it twice
   // invites two different answers about the same shoot.
   const videosFilmedNum = hasTopics
@@ -691,6 +706,7 @@ export function UploadPortal({
           return;
         }
         if (res.pdfPath) setPdfPath(res.pdfPath);
+        setTopicsPending(res.topicsPending?.message ?? null);
         if (done) setLastEdited({ by: "you", atISO: new Date().toISOString() });
         setDone(true);
         setReopened(false); // collapse back to the confirmation after a re-submit
@@ -876,6 +892,15 @@ export function UploadPortal({
           has to stay reachable. */}
       {collapsed ? (
         <>
+          {/* CP-09: the submit landed, the topic record did not (yet). Not an
+              error — nothing for the photographer to redo — so it reads as a
+              note, and the hub's hourly retry finishes the job. */}
+          {topicsPending && (
+            <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <div className="font-medium">{topicsPending}</div>
+            </div>
+          )}
           {/* The read-back (Jordan, Sep 15: "see ... what was uploaded and
               the notes for them"): every answer verbatim, above the reopen
               button, so nobody reopens a 1,300px form just to read it. Item
@@ -1324,12 +1349,15 @@ export function UploadPortal({
                 <ul className="mt-1.5 space-y-1.5">
                   {sessionTopics!.topics.map((t) => {
                     const on = filmedTopicIds.includes(t.topicId);
+                    const elsewhere = confirmedElsewhere(t);
                     return (
                       <li key={t.topicId}>
                         <button
                           type="button"
                           onClick={() => toggleTopic(t.topicId)}
-                          className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left ${on ? "border-brand bg-brand-soft" : "border-border bg-surface-2"}`}
+                          disabled={elsewhere}
+                          aria-disabled={elsewhere}
+                          className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left ${on ? "border-brand bg-brand-soft" : "border-border bg-surface-2"} ${elsewhere ? "cursor-not-allowed opacity-60" : ""}`}
                         >
                           <span className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${on ? "border-brand bg-brand text-white" : "border-border"}`}>
                             {on ? <Check className="size-3" /> : null}
@@ -1339,7 +1367,11 @@ export function UploadPortal({
                             <span className="block text-[11px] text-muted">
                               {t.pillarName ? `${t.pillarName} · ` : ""}
                               {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script written") : "no script yet"}
-                              {t.filmedConfirmedAtISO ? ` · already confirmed by ${t.filmedConfirmedBy ?? "the office"}` : ""}
+                              {elsewhere
+                                ? " · filmed at another session this month"
+                                : t.filmedConfirmedAtISO
+                                  ? ` · already confirmed by ${t.filmedConfirmedBy ?? "the office"}`
+                                  : ""}
                             </span>
                           </span>
                         </button>

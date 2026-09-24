@@ -15,14 +15,21 @@ import type { CaptionView } from "@/lib/postingKit";
 // which the server refuses with a reason while the assistant is off, and the
 // two client-recorded facts — Downloaded / Marked as posted by me — which are
 // never a verified publication.
+//
+// `access` is the server's release rule (cutEntitlement, CP-01): until the
+// client has approved the version in front of them (or it was delivered to
+// them another way), there is no Download, no Draft, no Write/Edit — one line
+// says why instead. The server refuses those actions anyway; the page simply
+// stops offering buttons it would refuse.
 // ---------------------------------------------------------------------------
 
 const KIND_LABEL: Record<string, string> = { CAPTION: "Caption", SHORT_CAPTION: "Shorter caption", CTA: "Call to action", COVER_TITLE: "Cover title" };
 const fmt = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, captions, assistant, postedAtISO, downloadedAtISO, canEdit, transcriptGap }: {
+export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, captions, assistant, postedAtISO, downloadedAtISO, canEdit, transcriptGap, access }: {
   videoId: string;
   downloadHref: string | null;
+  access: { download: boolean; captions: boolean; why: string | null };
   finalLabel: string | null;
   finalNote: string | null;
   captions: CaptionView[];
@@ -33,6 +40,8 @@ export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, 
   transcriptGap: string | null;
 }) {
   const router = useRouter();
+  // Captions are drafted and written only for the file the client may have.
+  const captionsOpen = canEdit && access.captions;
   const [editing, setEditing] = useState<{ kind: string; body: string; basedOnId: string | null } | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -60,22 +69,26 @@ export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, 
             <span className="text-xs text-muted">{downloadedAtISO ? `Downloaded ${fmt(downloadedAtISO)}` : "Not downloaded yet"}</span>
           </div>
         ) : (
-          <p className="mt-1.5 flex items-start gap-1.5 text-sm text-muted"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /> {finalNote ?? "No file yet."}</p>
+          <p className="mt-1.5 flex items-start gap-1.5 text-sm text-muted"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /> {finalNote ?? access.why ?? "No file yet."}</p>
         )}
-        <p className="mt-1.5 text-[11px] text-muted-2">If a download fails on your phone, open this page on a computer or text us — we&rsquo;ll send the file another way.</p>
+        {/* An earlier approved version is being served while a newer one waits for review — say which. */}
+        {downloadHref && access.why && <p className="mt-1.5 text-xs text-muted">{access.why}</p>}
+        {downloadHref && <p className="mt-1.5 text-[11px] text-muted-2">If a download fails on your phone, open this page on a computer or text us — we&rsquo;ll send the file another way.</p>}
       </div>
 
       {/* Caption & CTA */}
       <div className="rounded-xl border border-border bg-surface p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Caption &amp; CTA</div>
-          {canEdit && (
+          {captionsOpen && (
             <button type="button" onClick={draft} disabled={busy} title={assistant.why ?? undefined} className={cn("inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", assistant.enabled ? "border-brand/30 text-brand hover:bg-brand-soft" : "border-border text-muted-2")}>
               {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Draft a caption
             </button>
           )}
         </div>
-        {!assistant.enabled && <p className="mt-1 text-[11px] text-muted-2">{assistant.why}</p>}
+        {!access.captions ? (
+          <p className="mt-1 text-[11px] text-muted-2">{access.why ?? "Captions unlock once this version is approved."}</p>
+        ) : !assistant.enabled && <p className="mt-1 text-[11px] text-muted-2">{assistant.why}</p>}
         {/* Only say what a draft was made from when a draft exists — otherwise
             this claimed a drafting that never happened, above "No caption yet". */}
         {transcriptGap && captions.some((c) => c.authorKind === "AI") && <p className="mt-1 text-[11px] text-muted-2">These drafts were made from the script — no transcript yet ({transcriptGap}).</p>}
@@ -104,13 +117,13 @@ export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, 
                     {c.alternatives.length > 0 && <ul className="mt-1 space-y-0.5 text-xs text-muted">{c.alternatives.map((a, i) => <li key={i}>· {a}</li>)}</ul>}
                     <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
                       <button type="button" onClick={() => copy(c.body, c.id)} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Copy className="size-3" /> {copied === c.id ? "Copied" : "Copy"}</button>
-                      {canEdit && <button type="button" onClick={() => setEditing({ kind: k, body: c.body, basedOnId: c.id })} className="rounded-md border border-border px-2 py-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Edit</button>}
+                      {captionsOpen && <button type="button" onClick={() => setEditing({ kind: k, body: c.body, basedOnId: c.id })} className="rounded-md border border-border px-2 py-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Edit</button>}
                     </div>
                   </>
                 ) : (
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted">
                     <span>No caption yet.</span>
-                    {canEdit && <button type="button" onClick={() => setEditing({ kind: k, body: "", basedOnId: null })} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Write one</button>}
+                    {captionsOpen && <button type="button" onClick={() => setEditing({ kind: k, body: "", basedOnId: null })} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Write one</button>}
                   </div>
                 )}
               </div>

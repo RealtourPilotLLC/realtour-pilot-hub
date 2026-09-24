@@ -729,11 +729,14 @@ function ScriptItem({ script }: { script: ScriptRow }) {
             {/* Approve signs the version shown above (v{n}); it disappears once that version is approved. */}
             {needsReview && (
               <button disabled={busy} onClick={() => start(async () => {
-                const r = await approveScript(script.id);
+                // The version this card shows (v{n}, or the unversioned legacy
+                // body): the server refuses if a newer one was written since.
+                const shown = script.versionNo ?? null;
+                const r = await approveScript(script.id, shown);
                 if (!r.ok && /^Format check:/.test(r.message)) {
                   // Blocking format findings: the approver may override with a written reason.
                   const why = window.prompt(`${r.message}\n\nApprove anyway? Say why (this is recorded):`) ?? "";
-                  if (why.trim()) { const r2 = await approveScript(script.id, why.trim()); setNote(r2.ok ? null : r2.message); return; }
+                  if (why.trim()) { const r2 = await approveScript(script.id, shown, why.trim()); setNote(r2.ok ? null : r2.message); return; }
                 }
                 setNote(r.ok ? null : r.message);
               })}

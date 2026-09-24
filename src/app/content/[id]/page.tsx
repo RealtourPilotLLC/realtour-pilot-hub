@@ -14,7 +14,7 @@ import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { parseStoredSections } from "@/lib/contentStrategy";
 import { customerNote } from "@/lib/clientNotes";
-import { fmtDay } from "@/lib/contentStatus";
+import { monthProgress, staffMonthView } from "@/lib/monthProgress";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import { MonthJourney } from "@/components/content/MonthJourney";
@@ -112,9 +112,7 @@ export default async function ContentClientPage({
           where: { contentMonthId: month.id },
           select: {
             id: true, title: true, status: true, shootDate: true,
-            photographer: { select: { name: true } },
             reviewSubmissions: { select: { status: true } },
-            deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } },
           },
           orderBy: { shootDate: "asc" },
         })
@@ -143,7 +141,6 @@ export default async function ContentClientPage({
     const v = versionOf(s);
     return v ? v.status === "DRAFT" || v.status === "INTERNAL_REVIEW" : s.status === "INTERNAL_REVIEW" || s.status === "DRAFT";
   };
-  const scriptReady = (s: (typeof scripts)[number]) => !s.historical && (s.approvedVersionId ? !scriptAwaiting(s) : ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"].includes(s.status));
 
   // Tab data — loaded only for the tab being shown.
   const [topicsData, strategyData, scriptsData, factsData, importData, settingsData, brandData, contentData] = await Promise.all([
@@ -157,26 +154,20 @@ export default async function ContentClientPage({
     tab === "content" ? loadContentTab(id, client.id, null) : Promise.resolve(null),
   ]);
 
-  // The month's counts — same status filters as the dashboard roster, so the
-  // tracker here always matches the client's card out front.
-  const now = new Date();
-  const liveProjects = projects.filter((p) => p.status !== "CANCELLED");
-  const videoUnits = (p: { deliverables: { type: string; quantity: number | null }[] }) =>
-    p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL").reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+  // THE MONTH'S PROGRESS — the one reader the roster, the overview, portal
+  // Home and the reminders share (CP-10). This page used to count its own:
+  // non-cancelled projects as booked sessions, a passed shoot date as filmed,
+  // a DELIVERED project's reel quantity as videos delivered — and its comment
+  // claimed that matched the roster, which by then read the library instead.
+  const progress = month ? await monthProgress(id, month.id) : null;
+  const view = progress ? staffMonthView(progress) : null;
   const owedRaw = month?.videosOwed ?? enrollment.videosPerMonth;
-  const owed = Math.max(owedRaw, 1);
-  const counts = {
-    topicsSelected: topics.filter((t) => ["SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED"].includes(t.status)).length,
-    scriptsReady: scripts.filter(scriptReady).length,
-    scriptsAwaiting: scripts.filter(scriptAwaiting).length,
-    sessionsScheduled: liveProjects.length,
-    shotCount: liveProjects.filter((p) => p.shootDate && p.shootDate < now).length,
-    delivered: liveProjects.filter((p) => p.status === "DELIVERED").reduce((s, p) => s + Math.max(1, videoUnits(p)), 0),
-    inReview: liveProjects.reduce((s, p) => s + p.reviewSubmissions.filter((r) => r.status === "PENDING").length, 0),
-  };
-  const nextShoot = liveProjects
-    .filter((p) => p.shootDate && p.shootDate >= now)
-    .sort((a, b) => a.shootDate!.getTime() - b.shootDate!.getTime())[0] ?? null;
+  const scriptsAwaiting = progress ? progress.scripts.drafting + progress.scripts.needsJordan : scripts.filter(scriptAwaiting).length;
+  // Jobs on the month that are not a session at all — no date and no
+  // appointment, or cancelled. Listed so Kyle can see them; never counted.
+  const sessionProjectIds = new Set(progress?.sessions.list.map((f) => f.projectId).filter((x): x is string => !!x) ?? []);
+  const shells = projects.filter((p) => !sessionProjectIds.has(p.id));
+  const projectById = new Map(projects.map((p) => [p.id, p]));
 
   // The client's OPEN portal suggestions, keyed by script.
   const openSuggestions = scripts.length
@@ -192,38 +183,15 @@ export default async function ContentClientPage({
     arr.push({ id: sg.id, body: sg.body, createdAtISO: sg.createdAt.toISOString() });
     suggByScript.set(sg.scriptId, arr);
   }
-  const needsMe = counts.scriptsAwaiting + openSuggestions.length;
+  const needsMe = scriptsAwaiting + openSuggestions.length;
 
-  // ---- The next step: walk the loop, first unfinished stage speaks. ----
-  const muted = !!month?.historical || month?.status === "SKIPPED";
-  const callDone = !enrollment.strategyCallRequired ||
-    ["COMPLETED", "SKIPPED", "NOT_REQUIRED"].includes(month?.strategyCallStatus ?? "");
-  const topicsDone = enrollment.clientSuppliesTopics || counts.topicsSelected >= owed;
-  const scriptsDone = counts.scriptsReady >= owed && counts.scriptsAwaiting === 0;
-  const filmedDone = counts.shotCount > 0 && counts.sessionsScheduled >= enrollment.sessionsPerMonth;
-  const deliveredDone = owedRaw > 0 && counts.delivered >= owedRaw;
+  // ---- The next step — the reader walks the loop; the first unfinished stage speaks. ----
+  const muted = !!progress?.muted;
+  const deliveredDone = !!view?.deliveredDone;
+  const nextStep = view?.nextAction ?? null;
 
   const monthName = month ? monthLabel(month.monthKey) : monthLabel(activeKey);
   const monthShort = monthName.split(" ")[0];
-
-  const nextStep: { text: string; cta: string; href: string } | null = muted || deliveredDone ? null
-    : !callDone
-      ? month?.strategyCallStatus === "SCHEDULED"
-        ? { text: `Strategy call is booked${month.strategyCallAt ? ` for ${fmtDay(month.strategyCallAt.toISOString())}` : ""} — paste the transcript after`, cta: "Open the call", href: "#call" }
-        : { text: "The strategy call isn't booked yet", cta: "Handle the call", href: "#call" }
-    : !topicsDone
-      ? { text: `Pick ${monthShort}'s topics`, cta: "Pick topics", href: "#topics" }
-    : !scriptsDone
-      ? counts.scriptsAwaiting > 0
-        ? { text: `${counts.scriptsAwaiting} script${counts.scriptsAwaiting === 1 ? "" : "s"} waiting on your OK`, cta: "Review the scripts", href: "#scripts" }
-        : { text: `${counts.scriptsReady} of ${owed} scripts ready — the rest are being drafted`, cta: "See the scripts", href: "#scripts" }
-    : !filmedDone
-      ? nextShoot?.shootDate
-        ? { text: `Filming ${fmtDay(nextShoot.shootDate.toISOString())}${nextShoot.photographer?.name ? ` with ${nextShoot.photographer.name}` : ""}`, cta: "See the session", href: "#sessions" }
-        : { text: "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions" }
-    : counts.inReview > 0
-      ? { text: `${counts.inReview} video${counts.inReview === 1 ? "" : "s"} waiting in the Review Room`, cta: "Open the Review Room", href: "/review" }
-      : { text: `${counts.delivered} of ${owedRaw} videos delivered — the rest are in editing`, cta: "See the sessions", href: "#sessions" };
 
   const hrefFor = (t: Tab, mKey?: string) => {
     const q = new URLSearchParams();
@@ -301,27 +269,20 @@ export default async function ContentClientPage({
             {/* THE TRACKER — where the month is in the pipeline, front and center. */}
             <div className="panel-shadow rounded-2xl border bg-surface p-6">
               <div className="mx-auto max-w-2xl">
-                <MonthJourney
-                  size="hero"
-                  input={{
-                    callStatus: month.strategyCallStatus,
-                    topicsSelected: counts.topicsSelected,
-                    scriptsReady: counts.scriptsReady,
-                    scriptsAwaiting: counts.scriptsAwaiting,
-                    videosOwed: month.videosOwed,
-                    sessionsScheduled: counts.sessionsScheduled,
-                    sessionsRequired: enrollment.sessionsPerMonth,
-                    shotCount: counts.shotCount,
-                    delivered: counts.delivered,
-                    inReview: counts.inReview,
-                    muted,
-                  }}
-                />
+                {view ? <MonthJourney size="hero" input={view.journey} /> : <p className="text-sm text-warning">Couldn&rsquo;t read this month&rsquo;s progress — refresh to try again.</p>}
               </div>
-              {/* The one next step, spelled out. */}
+              {/* What the facts cannot answer — each with who holds it and what to do. */}
+              {view && view.unknownLines.length > 0 && (
+                <ul className="mt-5 space-y-1 border-t border-border pt-3 text-[13px] text-muted">
+                  {view.unknownLines.map((line, i) => (
+                    <li key={i} className="flex items-start gap-1.5"><span className="mt-px inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-2 text-[10px] font-semibold" aria-hidden>?</span><span>{line}</span></li>
+                  ))}
+                </ul>
+              )}
+              {/* The one next step, spelled out, with the person who holds it. */}
               {nextStep ? (
                 <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-                  <p className="text-[15px] font-medium">{nextStep.text}</p>
+                  <p className="text-[15px] font-medium">{nextStep.text}<span className="ml-2 text-[12px] font-normal text-muted-2">{nextStep.owner} · {nextStep.ownerDuty}</span></p>
                   <a
                     href={nextStep.href}
                     className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
@@ -350,27 +311,49 @@ export default async function ContentClientPage({
                 />
               </div>
               <div id="sessions" className="scroll-mt-20">
-                <Section icon={Camera} title="Filming sessions" count={`${liveProjects.length}/${enrollment.sessionsPerMonth}`} flush>
+                {/* One row per DISTINCT session (a Pro order's two appointments are
+                    two rows), each with what we actually know about it. */}
+                <Section icon={Camera} title="Filming sessions" count={view?.sessionsCount ?? `0/${enrollment.sessionsPerMonth}`} flush>
                   <div className="divide-y divide-border">
-                    {projects.map((p) => {
-                      const s = stageMeta(p.status as never);
-                      const pending = p.reviewSubmissions.filter((r) => r.status === "PENDING").length;
+                    {view?.sessionRows.map((r) => {
+                      const p = r.projectId ? projectById.get(r.projectId) ?? null : null;
+                      const pending = p ? p.reviewSubmissions.filter((x) => x.status === "PENDING").length : 0;
+                      const chipTone = r.tone === "success" ? "bg-success/15 text-success" : r.tone === "warning" ? "border border-dashed border-warning/60 text-warning" : "bg-brand/15 text-brand";
+                      return (
+                        <Link key={r.key} href={p ? `/edit/${p.id}` : "#sessions"} className="flex items-center gap-3 px-5 py-3.5 hover:bg-surface-2/60">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[15px] font-medium">{r.title}</div>
+                            <div className="mt-0.5 text-[13px] text-muted">
+                              {r.when}
+                              {r.photographer ? ` · ${r.photographer}` : ""}
+                              {pending > 0 ? ` · ${pending} in review` : ""}
+                              {r.evidence ? ` · ${r.evidence}` : ""}
+                            </div>
+                          </div>
+                          {p && <SessionMonthMover projectId={p.id} currentKey={month.monthKey} monthKeys={months.map((mm) => mm.monthKey)} />}
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${chipTone}`}>{r.chip}</span>
+                        </Link>
+                      );
+                    })}
+                    {shells.map((p) => {
+                      const st = stageMeta(p.status as never);
                       return (
                         <Link key={p.id} href={`/edit/${p.id}`} className="flex items-center gap-3 px-5 py-3.5 hover:bg-surface-2/60">
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-[15px] font-medium">{p.title}</div>
-                            <div className="mt-0.5 text-[13px] text-muted">
-                              {p.shootDate ? fmtDay(p.shootDate.toISOString()) : "unscheduled"}
-                              {p.photographer?.name ? ` · ${p.photographer.name}` : ""}
-                              {pending > 0 ? ` · ${pending} in review` : ""}
-                            </div>
+                            <div className="mt-0.5 text-[13px] text-muted">{p.status === "CANCELLED" ? "cancelled — not counted as a session" : "no date and no appointment — not counted as a session"}</div>
                           </div>
                           <SessionMonthMover projectId={p.id} currentKey={month.monthKey} monthKeys={months.map((mm) => mm.monthKey)} />
-                          <Badge color={s.color} soft={s.soft} className="px-2 py-0.5 text-xs">{s.short}</Badge>
+                          <Badge color={st.color} soft={st.soft} className="px-2 py-0.5 text-xs">{st.short}</Badge>
                         </Link>
                       );
                     })}
-                    {projects.length === 0 && (
+                    {view && view.missing > 0 && (
+                      <p className="px-5 py-3 text-[13px] text-warning">
+                        {view.missing} of {enrollment.sessionsPerMonth} session{enrollment.sessionsPerMonth === 1 ? "" : "s"} still to book
+                      </p>
+                    )}
+                    {projects.length === 0 && (view?.sessionRows.length ?? 0) === 0 && (
                       <p className="px-5 py-4 text-sm text-muted">
                         Nothing on the calendar for {monthName} yet — when the Aryeo booking lands it attaches here on its own.
                       </p>
@@ -388,10 +371,10 @@ export default async function ContentClientPage({
                 count={scripts.length}
                 flush
                 action={
-                  counts.scriptsAwaiting > 0 || openSuggestions.length > 0 ? (
+                  scriptsAwaiting > 0 || openSuggestions.length > 0 ? (
                     <span className="text-[13px] font-medium text-brand">
                       {[
-                        counts.scriptsAwaiting > 0 ? `${counts.scriptsAwaiting} need your OK` : null,
+                        scriptsAwaiting > 0 ? `${scriptsAwaiting} need your OK` : null,
                         openSuggestions.length > 0 ? `${openSuggestions.length} client note${openSuggestions.length === 1 ? "" : "s"}` : null,
                       ].filter(Boolean).join(" · ")}
                     </span>

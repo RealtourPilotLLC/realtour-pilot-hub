@@ -234,6 +234,8 @@ export default async function UploadProjectPage({
         topics: session.topics.map((t) => ({
           topicId: t.topicId, title: t.title, pillarName: t.pillarName, scriptTitle: t.scriptTitle,
           clientApproved: t.clientApproved, filmedConfirmedAtISO: t.filmedConfirmedAtISO, filmedConfirmedBy: t.filmedConfirmedBy,
+          // CP-09: which session confirmed it — the page pre-ticks only its own.
+          confirmedOnProjectId: t.confirmedOnProjectId,
         })),
       }
     : null;

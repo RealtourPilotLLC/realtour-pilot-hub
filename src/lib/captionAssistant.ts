@@ -38,6 +38,12 @@ import { buildCaptionPrompt, type Gap } from "@/lib/contentPolicy";
 // row = off. A staff or client button is a user action and is allowed while
 // the switch is off (still gated by ai_runs quotas and logged).
 // Nothing here publishes anything.
+//
+// NOTE (CP-01, Sep 24 2026): nothing imports this module today — the portal's
+// "Draft a caption" is postingKit.draftCaptionForVideo, which is gated by the
+// switch even for a click. The paragraph above describes THIS file only. And
+// whichever path runs, a caption is drafted only for a cut the client may
+// have (cutEntitlement.cutDownloadableFor) — never an unapproved review cut.
 // ---------------------------------------------------------------------------
 
 export const CAPTION_KEY = "caption_assistant" as const;
@@ -107,6 +113,10 @@ async function scriptVersionFor(video: { scriptVersionId: string | null; scriptI
 export async function draftCaption(o: DraftCaptionOpts): Promise<DraftCaptionResult> {
   if (o.unattended && !(await isAutomationEnabled(CAPTION_KEY))) throw new AutomationDisabledError("The caption assistant is switched off for unattended runs (Settings → Automations). A person can still click Draft.");
   const { cut, project, enrollment, video, hash } = await cutContext(o.submissionId);
+  const { cutDownloadableFor } = await import("@/lib/cutEntitlement");
+  if (!(await cutDownloadableFor({ id: enrollment.id, clientId: enrollment.clientId }, cut.id))) {
+    throw new Error("This cut isn't the client's approved (or delivered) version, so it has no caption yet — captions unlock with the client's approval.");
+  }
   const [transcript, sv, built] = await Promise.all([
     transcriptForCut(cut.id),
     scriptVersionFor(video),

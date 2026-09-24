@@ -370,24 +370,46 @@ export async function generateMonthScripts(monthId: string): Promise<Result> {
 }
 
 /**
- * The month tab's Approve: approves the CURRENT version — the text that tab
- * renders (page.tsx reads the current version's body, not the legacy mirror),
- * so what Jordan sees is what he signs. `note` is the override for a version
- * with blocking format findings.
+ * The month tab's Approve: approves EXACTLY the version the tab rendered.
+ *
+ * It used to take only the script id and sign whatever version was current at
+ * the moment of the click — so a tab opened on v2, with v3 drafted since (an AI
+ * revise, a hand edit, a client suggestion applied), approved v3: words Jordan
+ * had never read (completion audit UI-02, pulled forward with CP-02). The
+ * caller now says which version it showed — `shownVersionNo`, unique per
+ * script, or null for a legacy body not yet versioned — and a stale one is
+ * refused. The version-exact path (approveScriptVersionAction) does the rest.
+ * `note` is the override for a version with blocking format findings.
  */
-export async function approveScript(scriptId: string, note?: string): Promise<Result> {
+export async function approveScript(scriptId: string, shownVersionNo: number | null, note?: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
+  // A tab still running the old bundle sends (scriptId) or (scriptId, note):
+  // it never said which version it showed, so it may not approve anything.
+  if (shownVersionNo !== null && !(typeof shownVersionNo === "number" && Number.isInteger(shownVersionNo) && shownVersionNo > 0)) {
+    return { ok: false, message: "Reload the page — this approve button doesn't say which version you were reading." };
+  }
   try {
-    const { ensureScriptVersioned, approveScriptVersion } = await import("@/lib/contentScripts");
-    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, monthId: true, historical: true } });
+    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true, currentVersionId: true } });
     if (!s) return { ok: false, message: "That script no longer exists." };
     if (s.historical) return { ok: false, message: "Imported scripts are history — nothing to approve." };
-    const me = await actor();
-    await assertDutyOwner("SCRIPTS", s.enrollmentId, s.monthId, me);
-    const versionId = await ensureScriptVersioned(scriptId);
-    const r = await approveScriptVersion(versionId, { email: me.email, appUserId: me.id }, note?.trim() || null);
-    revalidatePath("/content");
-    return { ok: true, message: r.alreadyApproved ? "Already approved — nothing changed." : "Approved (recorded under your name). Release it to the portal from the Scripts tab when you want the client to see it." };
+    let versionId: string;
+    if (shownVersionNo === null) {
+      // The tab showed the legacy body. Only while there is STILL no version
+      // is that body what gets versioned and signed.
+      if (s.currentVersionId) return { ok: false, message: "This script changed since the page loaded — reload and approve the version you can see." };
+      const { ensureScriptVersioned } = await import("@/lib/contentScripts");
+      versionId = await ensureScriptVersioned(scriptId);
+    } else {
+      const v = await prisma.contentScriptVersion.findUnique({ where: { scriptId_versionNo: { scriptId, versionNo: shownVersionNo } }, select: { id: true } });
+      if (!v) return { ok: false, message: "That version no longer exists — reload the page." };
+      if (v.id !== s.currentVersionId) return { ok: false, message: `A newer version has been written since you opened v${shownVersionNo} — reload and read it before approving.` };
+      versionId = v.id;
+    }
+    const r = await approveScriptVersionAction(versionId, note);
+    if (r.ok) revalidatePath("/content");
+    return r.ok && !/Already approved/.test(r.message)
+      ? { ok: true, message: "Approved (recorded under your name). Release it to the portal from the Scripts tab when you want the client to see it." }
+      : r;
   } catch (e) { return fail(e); }
 }
 
@@ -1194,4 +1216,60 @@ export async function runProgramMigrations(): Promise<Result> {
     revalidatePath("/content");
     return { ok: true, message: `Strategies → v1: ${a.migrated} (${a.skipped} already)${a2.repaired ? ` · identity rows repaired: ${a2.repaired}` : ""} · imports marked historical: ${b.stamped} of ${b.total} · script versions lifted: ${c.created} · notes → facts: ${d.created} created, ${d.skipped} already, ${d.confidential} confidential locked, ${d.monthScoped} month-scoped.` };
   } catch (e) { return fail(e); }
+}
+
+// ---------------------------------------------------------------------------
+// CLIENT REVIEW WINDOWS + REVISION ROUNDS (CP-02, Sep 24 2026) — the office's
+// controls on the client's Content tab. OWNER/ADMIN only: the fee lives here
+// and on Kyle's card, never on an editor surface. Nothing here bills anyone.
+// Each has a plain form variant (the library panel is a server component).
+// ---------------------------------------------------------------------------
+
+export async function decideRevisionFeeAction(roundId: string, decision: "CHARGE" | "WAIVE", note?: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { decideRevisionFee } = await import("@/lib/reviewWindows");
+    const r = await decideRevisionFee(roundId, decision, me.name ?? me.email, note ?? null);
+    const round = await prisma.contentRevisionRound.findUnique({ where: { id: roundId }, select: { enrollmentId: true } });
+    if (round) path(round.enrollmentId);
+    return r;
+  } catch (e) { return fail(e); }
+}
+
+export async function restartReviewClockAction(windowId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { restartReviewClock } = await import("@/lib/reviewWindows");
+    const r = await restartReviewClock(windowId, me.name ?? me.email);
+    const w = await prisma.contentReviewWindow.findUnique({ where: { id: windowId }, select: { enrollmentId: true } });
+    if (w) path(w.enrollmentId);
+    return r;
+  } catch (e) { return fail(e); }
+}
+
+export async function holdReviewWindowAction(windowId: string, hold: boolean, reason?: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { holdReviewWindow, releaseReviewHold } = await import("@/lib/reviewWindows");
+    const r = hold ? await holdReviewWindow(windowId, me.name ?? me.email, reason ?? "") : await releaseReviewHold(windowId);
+    const w = await prisma.contentReviewWindow.findUnique({ where: { id: windowId }, select: { enrollmentId: true } });
+    if (w) path(w.enrollmentId);
+    return r;
+  } catch (e) { return fail(e); }
+}
+
+/** Form variants: <form action={…}> with hidden inputs. */
+export async function decideRevisionFeeForm(formData: FormData): Promise<void> {
+  const d = String(formData.get("decision") ?? "");
+  await decideRevisionFeeAction(String(formData.get("roundId") ?? ""), d === "CHARGE" ? "CHARGE" : "WAIVE", String(formData.get("note") ?? "") || undefined);
+}
+export async function restartReviewClockForm(formData: FormData): Promise<void> {
+  await restartReviewClockAction(String(formData.get("windowId") ?? ""));
+}
+export async function holdReviewWindowForm(formData: FormData): Promise<void> {
+  const hold = String(formData.get("hold") ?? "") === "1";
+  await holdReviewWindowAction(String(formData.get("windowId") ?? ""), hold, String(formData.get("reason") ?? "") || (hold ? "Held from the Content tab" : undefined));
 }

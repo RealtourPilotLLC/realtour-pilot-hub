@@ -38,6 +38,10 @@ export const AUTOMATION_KEYS = [
   "cut_transcripts", // §9 (no speech-to-text provider exists today)
   "caption_assistant", // §10
   "fact_extraction", // §23 auto-accept rules for extracted facts
+  // CP-02 (Sep 24 2026). Windows and revision rounds are RECORDED with both
+  // off; these only decide what the client is shown and what expiry may do.
+  "revision_policy", // §8 portal deadline, rounds used, extra-round fee acknowledgement, late refusal, expiry → staff task
+  "review_auto_approve", // §8 an expired review window may write the automatic approval (needs revision_policy too)
 ] as const;
 export type AutomationKey = (typeof AUTOMATION_KEYS)[number];
 

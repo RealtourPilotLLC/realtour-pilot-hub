@@ -126,7 +126,10 @@ export function PortalScheduler({
 
   const openRequests = month ? month.requests.filter((r) => OPEN.has(r.status)) : [];
   const booked = !!month && (!!month.bookedShootISO || month.requests.some((r) => r.status === "CONFIRMED"));
-  const filmed = !!month?.bookedShootISO && new Date(month.bookedShootISO) < new Date();
+  // A passed date means the session was HELD, not that we know it was filmed —
+  // Home says "Session held" until the photographer confirms (CP-10), and this
+  // card must not contradict it.
+  const held = !!month?.bookedShootISO && new Date(month.bookedShootISO) < new Date();
   const writtenPath = !!month && month.planningMode === "WRITTEN";
   const monthFull = !!month && month.capacity.remaining <= 0;
   const showPicker = !!month && !readOnly && !month.locked && !monthFull && !done;
@@ -198,7 +201,7 @@ export function PortalScheduler({
           <div className="mt-3 border-t border-border pt-3">
             {booked ? (
               <StatusRow icon={CheckCircle2} tone="ok">
-                {filmed ? `Filming session — filmed ${whenLabel(month.bookedShootISO!, tz)} ${tzName(tz)}` : `Filming session — booked${month.bookedShootISO ? ` for ${whenLabel(month.bookedShootISO, tz)} ${tzName(tz)}` : ""}`}
+                {held ? `Filming session — held ${whenLabel(month.bookedShootISO!, tz)} ${tzName(tz)}` : `Filming session — booked${month.bookedShootISO ? ` for ${whenLabel(month.bookedShootISO, tz)} ${tzName(tz)}` : ""}`}
               </StatusRow>
             ) : month.locked ? (
               <StatusRow icon={Lock} tone="muted">{month.reason}</StatusRow>

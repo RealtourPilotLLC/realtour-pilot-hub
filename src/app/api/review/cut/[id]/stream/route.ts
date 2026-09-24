@@ -62,6 +62,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const media = req.nextUrl.searchParams.get("m");
   const token = req.nextUrl.searchParams.get("t");
   let allowed = false;
+  // Set when a CLIENT-side proof admitted this request (a non-staff media
+  // token, the legacy ?t= link, or the client's own sign-in): the enrollment
+  // that proof speaks for. A download (dl=1) through a portal proof must also
+  // pass the release rule — see below.
+  let portalPair: { id: string; clientId: string } | null = null;
   if (media) {
     const { verifyMediaToken, mediaScopeLive } = await import("@/lib/portalMedia");
     // Three proofs, not two. The signature proves the portal page minted this
@@ -85,6 +90,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
                 .findUnique({ where: { id: v.scope.id }, select: { enrollmentId: true, clientId: true } })
                 .then((seat) => (seat ? { id: seat.enrollmentId, clientId: seat.clientId } : null));
         allowed = !!pair && !!(await submissionForEnrollment(pair, id));
+        if (allowed) portalPair = pair;
       }
     }
   } else if (token) {
@@ -94,6 +100,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     // Released content stays playable for a paused/ended client (READ_ONLY);
     // a revoked or expired link plays nothing.
     allowed = r.ok && r.viewer.access !== "NONE" && !!(await submissionForEnrollment(r.viewer.enrollment, id));
+    if (allowed && r.ok) portalPair = { id: r.viewer.enrollment.id, clientId: r.viewer.enrollment.clientId };
   } else {
     if (req.cookies.get("rtp_client")?.value) {
       const { currentClientUser, liveMemberships, submissionForEnrollment } = await import("@/lib/portal");
@@ -102,7 +109,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         // liveMemberships already drops a seat whose clientId disagrees with
         // its enrollment's, so the pair passed here is the enrollment's own.
         for (const seat of await liveMemberships(person.id)) {
-          if (await submissionForEnrollment({ id: seat.enrollmentId, clientId: seat.clientId }, id)) { allowed = true; break; }
+          if (await submissionForEnrollment({ id: seat.enrollmentId, clientId: seat.clientId }, id)) { allowed = true; portalPair = { id: seat.enrollmentId, clientId: seat.clientId }; break; }
         }
       }
     }
@@ -146,6 +153,27 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // Ready-to-send card's Download button) asks for an attachment so the browser
   // saves the file instead of playing it.
   const wantsFile = req.nextUrl.searchParams.get("dl") === "1";
+
+  // THE SIDE DOOR, CLOSED (CP-01, Sep 24 2026). Every review <video src> on the
+  // portal carries a per-cut media token, and until today adding `&dl=1` to it
+  // saved the file as an attachment — an unapproved review cut downloaded
+  // without going near /api/portal/download and its checks. Playing is still
+  // what a portal proof buys; SAVING needs the release rule's yes for this exact
+  // cut (the door itself redirects here with dl=1 only after that yes). Staff
+  // (a staff media token, or the hub session with no portal proof) and plain
+  // playback are unchanged, so the Review Room and the Ready-to-send card's
+  // Download keep working. A staff member who is ALSO signed into a TEST
+  // client's portal in this browser was admitted by the cookie above; the
+  // hub's own guard still speaks for them.
+  if (wantsFile && portalPair) {
+    const { cutDownloadableFor } = await import("@/lib/cutEntitlement");
+    let mayDownload = await cutDownloadableFor(portalPair, id);
+    if (!mayDownload && !media && !token) {
+      const { canViewProject } = await import("@/lib/auth/guards");
+      mayDownload = await canViewProject(sub.projectId);
+    }
+    if (!mayDownload) return NextResponse.json({ error: "This version can be downloaded once it's approved — approve it on your page first." }, { status: 403 });
+  }
   if (sub.blobUrl) {
     const res = await proxyBlob(req, sub.blobUrl, sub.fileName, wantsFile);
     // The store accepted the read and the body is on its way back. Everything

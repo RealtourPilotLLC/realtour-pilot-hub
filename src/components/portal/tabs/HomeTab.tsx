@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clapperboard, Clock, Compass, Download, Lightbulb, ListChecks, MapPin, PenLine, PlayCircle, Video } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
-import type { PortalPlanning, PortalScheduleMonth, PortalTopicsData } from "@/lib/portal";
+import { homeSessionView, type PortalPlanning, type PortalScheduleMonth, type PortalTopicsData } from "@/lib/portal";
 import type { LibraryAttention, VideoListRow } from "@/lib/contentVideos";
+import type { ClientMonthProgress } from "@/lib/monthProgress";
 import { Card, CardTitle, LoadFailed, RowLink, fmtDate, fmtShort, fmtTime, tzShort } from "@/components/portal/ui";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,8 @@ export type HomeData = {
   program: { delivered: number; total: number } | null;
   /** The month's counts did not load. A failed count is NEVER shown as zero. */
   countsFailed: boolean;
+  /** This month through lib/monthProgress — the reader every staff screen uses (CP-10). */
+  progress: ClientMonthProgress | null;
   planning: PortalPlanning | null;
   planningFailed: boolean;
   schedule: PortalScheduleMonth | null;
@@ -54,8 +57,15 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
   const selectedTopics = d.topics ? d.topics.groups.flatMap((g) => g.topics).filter((t) => t.selection && currentMonth && t.selection.monthId === currentMonth.id) : [];
   const interviewsToFinish = selectedTopics.filter((t) => t.state !== "FILMED" && (!t.interview || t.interview.status !== "SUBMITTED"));
   const sessionRequests = d.schedule?.requests.filter((r) => ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"].includes(r.status)) ?? [];
-  const sessionBooked = !!d.schedule?.bookedShootISO || sessionRequests.some((r) => r.status === "CONFIRMED");
-  const sessionRequested = !sessionBooked && sessionRequests.some((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED");
+  // Sessions from the month-progress reader: one card per DISTINCT session,
+  // "Filmed" only when somebody confirmed it, and "Book your filming session"
+  // whenever a session the package owes is still missing (CP-10) — a Pro month
+  // with one of two booked used to hide it.
+  const sv = homeSessionView(d.progress, d.schedule, { canBook: d.perms.session, readOnly: d.readOnly });
+  const pendingAsks = sessionRequests.filter((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED");
+  const locationFor = (startISO: string | null) =>
+    sessionRequests.find((r) => r.locationText && r.slotStartISO && startISO && r.slotStartISO === startISO)?.locationText
+      ?? (sv.cards.length === 1 ? sessionRequests.find((r) => r.locationText)?.locationText : null) ?? null;
 
   // The action list — derived, in the order a client should do them.
   const actions: { href: string; icon: typeof ListChecks; text: string; tone?: "brand" }[] = [];
@@ -64,7 +74,7 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
     if (needReviewCount) actions.push({ href: href("videos"), icon: PlayCircle, text: `Review ${needReviewCount} video${needReviewCount === 1 ? "" : "s"} waiting on you`, tone: "brand" });
     if (currentMonth && currentMonth.selected < currentMonth.owed && d.perms.suggest) actions.push({ href: href("topics"), icon: Lightbulb, text: `Pick ${currentMonth.owed - currentMonth.selected} more topic${currentMonth.owed - currentMonth.selected === 1 ? "" : "s"} for ${monthLabel(currentMonth.monthKey)}` });
     if (p?.planningMode === "WRITTEN" && interviewsToFinish.length && d.perms.suggest) actions.push({ href: href("topics"), icon: PenLine, text: `Answer the questions for ${interviewsToFinish.length === 1 ? `“${interviewsToFinish[0].title}”` : `${interviewsToFinish.length} topics`}` });
-    if (d.schedule && !d.schedule.locked && !sessionBooked && !sessionRequested && d.schedule.capacity.remaining > 0 && d.perms.session) actions.push({ href: href("schedule"), icon: Camera, text: "Book your filming session" });
+    if (sv.offerBooking) actions.push({ href: href("schedule"), icon: Camera, text: sv.required > 1 && sv.missing < sv.required ? `Book your next filming session (${sv.required - sv.missing} of ${sv.required} booked)` : "Book your filming session" });
     if (readyCount && readyWithFile) actions.push({ href: href("videos"), icon: Download, text: `Download and post ${readyCount === 1 && readyRows.length === 1 ? `“${readyRows[0].title}”` : `${readyCount} finished video${readyCount === 1 ? "" : "s"}`}` });
   }
 
@@ -135,35 +145,57 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
             </div>
           )}
         </Card>
-        <Card>
-          <CardTitle icon={Camera}>Content session</CardTitle>
-          {d.scheduleFailed ? (
+        {d.scheduleFailed || (!d.progress && d.countsFailed) ? (
+          <Card>
+            <CardTitle icon={Camera}>Content session</CardTitle>
             <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your session state — refresh to try again.</p>
-          ) : !d.schedule ? (
+          </Card>
+        ) : !d.schedule && sv.cards.length === 0 ? (
+          <Card>
+            <CardTitle icon={Camera}>Content session</CardTitle>
             <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
-          ) : d.schedule.bookedShootISO ? (
-            <div className="mt-2 text-sm">
-              <div className={cn("inline-block rounded-md px-1.5 py-0.5 text-[10px] font-semibold", new Date(d.schedule.bookedShootISO) < new Date() ? "bg-success-soft text-success" : "bg-success-soft text-success")}>{new Date(d.schedule.bookedShootISO) < new Date() ? "Filmed" : "Booked"}</div>
-              <div className="mt-1 font-medium">{fmtDate(d.schedule.bookedShootISO, tz)}</div>
-              <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(d.schedule.bookedShootISO, tz)} {tzName}</div>
-              {sessionRequests.find((r) => r.locationText)?.locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {sessionRequests.find((r) => r.locationText)!.locationText}</div>}
-              {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Reschedule or cancel →</Link>}
-            </div>
-          ) : sessionRequests.length ? (
-            <div className="mt-2 text-sm">
-              <div className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">{sessionRequests[0].label}</div>
-              {sessionRequests[0].slotStartISO && <div className="mt-1 font-medium">{fmtDate(sessionRequests[0].slotStartISO, tz)} · {fmtTime(sessionRequests[0].slotStartISO, tz)} {tzName}</div>}
-              {sessionRequests[0].locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {sessionRequests[0].locationText}</div>}
-              {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Change or cancel →</Link>}
-            </div>
-          ) : (
-            <div className="mt-2 text-sm">
-              <div className="text-muted">{d.schedule.locked ? d.schedule.reason : "Not booked yet"}</div>
-              {!d.schedule.locked && !d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the session <ChevronRight className="size-3.5" /></Link>}
-              {d.schedule.locked && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">See scheduling →</Link>}
-            </div>
-          )}
-        </Card>
+          </Card>
+        ) : (
+          <>
+            {sv.cards.map((c, i) => {
+              const loc = c.state === "BOOKED" ? locationFor(c.startsAtISO) : null;
+              return (
+                <Card key={i}>
+                  <CardTitle icon={Camera}>{sv.required > 1 ? `Content session ${i + 1} of ${sv.required}` : "Content session"}</CardTitle>
+                  <div className="mt-2 text-sm">
+                    <div className={cn("inline-block rounded-md px-1.5 py-0.5 text-[10px] font-semibold", c.state === "BOOKED" || c.state === "FILMED" ? "bg-success-soft text-success" : "bg-brand-soft text-brand")}>{c.label}</div>
+                    {c.startsAtISO && <div className="mt-1 font-medium">{fmtDate(c.startsAtISO, tz)}</div>}
+                    {c.startsAtISO && <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(c.startsAtISO, tz)} {tzName}</div>}
+                    {c.note && <p className="mt-0.5 text-xs text-muted">{c.note}</p>}
+                    {loc && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {loc}</div>}
+                    {c.state === "BOOKED" && !d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Reschedule or cancel →</Link>}
+                  </div>
+                </Card>
+              );
+            })}
+            {sv.missing > 0 && (
+              <Card>
+                <CardTitle icon={Camera}>{sv.required > 1 ? (sv.missing === 1 ? `Content session ${sv.required} of ${sv.required}` : `Content sessions — ${sv.missing} of ${sv.required} to book`) : "Content session"}</CardTitle>
+                {pendingAsks.length ? (
+                  <div className="mt-2 text-sm">
+                    <div className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">{pendingAsks[0].label}</div>
+                    {pendingAsks[0].slotStartISO && <div className="mt-1 font-medium">{fmtDate(pendingAsks[0].slotStartISO, tz)} · {fmtTime(pendingAsks[0].slotStartISO, tz)} {tzName}</div>}
+                    {pendingAsks[0].locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {pendingAsks[0].locationText}</div>}
+                    {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Change or cancel →</Link>}
+                  </div>
+                ) : !d.schedule ? (
+                  <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
+                ) : (
+                  <div className="mt-2 text-sm">
+                    <div className="text-muted">{d.schedule.locked ? d.schedule.reason : "Not booked yet"}</div>
+                    {sv.offerBooking && <Link href={href("schedule")} className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the session <ChevronRight className="size-3.5" /></Link>}
+                    {d.schedule.locked && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">See scheduling →</Link>}
+                  </div>
+                )}
+              </Card>
+            )}
+          </>
+        )}
       </div>
 
       {/* 3. What are we creating this month? */}
@@ -191,6 +223,13 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
                   <div className="h-full rounded-full bg-gradient-to-r from-brand to-orange-400" style={{ width: `${Math.min(100, (d.program.delivered / Math.max(1, d.videosOwed)) * 100)}%` }} />
                 </div>
                 {d.program.total > d.program.delivered && <p className="mt-1 text-xs text-muted">{d.program.total - d.program.delivered} in production or review.</p>}
+                {/* Released videos waiting on THEIR approval: say so, and where. It is
+                    not the library catching up — no sync closes it; their approval does. */}
+                {d.progress && d.progress.production.awaitingYou > 0 && (
+                  <p className="mt-1 text-xs text-muted">{d.progress.production.awaitingYou === 1 ? "1 video is" : `${d.progress.production.awaitingYou} videos are`} waiting on your approval. <Link href={href("videos")} className="font-medium text-brand hover:underline">Review in My Videos</Link></p>
+                )}
+                {/* The library is behind what was delivered: say the count will catch up, never present it as final. */}
+                {d.progress && !d.progress.production.known && <p className="mt-1 text-xs text-muted">We&rsquo;re still adding this month&rsquo;s delivered videos to your library — this count will catch up shortly.</p>}
               </>
             )}
           </>

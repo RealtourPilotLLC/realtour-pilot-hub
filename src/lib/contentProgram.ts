@@ -9,6 +9,7 @@ import {
   type PromiseRules,
   type SessionLeg,
 } from "@/lib/turnaround";
+import type { MonthProgress } from "@/lib/monthProgress";
 
 // ---------------------------------------------------------------------------
 // Content Creator Program — domain layer (Phase 1).
@@ -324,8 +325,14 @@ export async function contentProgramSweep() {
 
 // ---------------------------------------------------------------------------
 // The roster read — one row per enrollment with this month's live state and
-// the needs-attention flags (spec §42–43). Production truth comes from the
-// attached Projects (the pipeline), not a parallel status field.
+// the needs-attention flags (spec §42–43).
+//
+// CP-10 (Sep 24 2026): every number here now comes from lib/monthProgress —
+// the one reader the overview, the client file, portal Home and the reminders
+// share. It used to count attached PROJECTS as booked sessions, a project
+// whose date had passed as filmed, and a DELIVERED project's reel quantity as
+// delivered videos, so a Pro month booked the right way (two appointments on
+// one order) read "Needs 1 more session" and a job shell read booked.
 // ---------------------------------------------------------------------------
 export type ProgramRow = {
   enrollmentId: string;
@@ -337,11 +344,13 @@ export type ProgramRow = {
   monthKey: string;
   videosOwed: number;
   strategyCallStatus: string;
-  sessionsScheduled: number; // attached projects with a future/any shoot date this month
+  sessionsScheduled: number; // DISTINCT confirmed sessions (monthProgress.sessions.confirmed) — never a project count
   sessionsRequired: number;
-  shotCount: number; // attached projects past shoot date
-  delivered: number; // videos delivered (DELIVERED projects' video count, capped)
-  inReview: number; // pending review submissions on attached projects
+  sessionsMissing: number; // sessions still to book (the capacity check's and the chaser's number)
+  shotCount: number; // sessions somebody CONFIRMED were filmed — never "the date has passed"
+  delivered: number; // videos delivered, from the library (isDeliveredProgramVideo)
+  clientApproved: number; // videos the client approved on their current version
+  inReview: number; // cuts waiting in the Review Room
   topicsSelected: number;
   scriptsReady: number;
   scriptsAwaiting: number; // drafts sitting in INTERNAL_REVIEW/DRAFT — Jordan's approve queue
@@ -354,10 +363,13 @@ export type ProgramRow = {
   attention: string[]; // human-readable exception flags, worst first
   trial: boolean; // hand-set ACTIVE on a one-month trial
   lastMonthKey: string | null; // latest month with any program content
+  /** The reader's whole answer — the card's journey and meter draw from it. */
+  progress: MonthProgress | null;
 };
 
-export async function getProgramRoster(): Promise<ProgramRow[]> {
-  const key = etMonthKey();
+export async function getProgramRoster(opts: { now?: Date } = {}): Promise<ProgramRow[]> {
+  const now = opts.now ?? new Date();
+  const key = etMonthKey(now);
   const enrollments = await prisma.contentEnrollment.findMany({
     where: { status: { in: ["ACTIVE", "PAUSED"] } },
     select: {
@@ -381,10 +393,9 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
 
   const months = await prisma.contentMonth.findMany({
     where: { enrollmentId: { in: enrollments.map((e) => e.id) }, monthKey: key },
-    select: { id: true, enrollmentId: true, videosOwed: true, strategyCallStatus: true, strategyCallAt: true },
+    select: { id: true, enrollmentId: true },
   });
   const monthOf = new Map(months.map((m) => [m.enrollmentId, m]));
-  const monthIds = months.map((m) => m.id);
 
   // LAST month, for the behind-flag (Jordan, Aug 28: "sometimes clients get a
   // month behind or miss a month" — Marcee's July was filmed in August). A
@@ -393,106 +404,46 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
   const prevKey = mm === 1 ? `${y - 1}-12` : `${y}-${String(mm - 1).padStart(2, "0")}`;
   const prevMonths = await prisma.contentMonth.findMany({
     where: { enrollmentId: { in: enrollments.map((e) => e.id) }, monthKey: prevKey, historical: false, status: { notIn: ["SKIPPED", "IMPORTED"] } },
-    select: { id: true, enrollmentId: true, videosOwed: true },
+    select: { id: true, enrollmentId: true },
   });
   const prevOf = new Map(prevMonths.map((m) => [m.enrollmentId, m]));
-  const prevDelivered = new Map<string, number>();
-  if (prevMonths.length) {
-    const prevProjects = await prisma.project.findMany({
-      where: { contentMonthId: { in: prevMonths.map((m) => m.id) }, status: "DELIVERED" },
-      select: { contentMonthId: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } } },
-    });
-    for (const p of prevProjects) {
-      const units = Math.max(1, p.deliverables
-        .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
-        .reduce((s2, d) => s2 + Math.max(1, d.quantity ?? 1), 0));
-      prevDelivered.set(p.contentMonthId!, (prevDelivered.get(p.contentMonthId!) ?? 0) + units);
-    }
-  }
 
-  const [projects, topics, scripts] = await Promise.all([
-    prisma.project.findMany({
-      where: { contentMonthId: { in: monthIds } },
-      select: {
-        id: true, contentMonthId: true, status: true, shootDate: true,
-        deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
-        reviewSubmissions: { select: { status: true } },
-      },
-    }),
-    prisma.contentTopic.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, status: { in: ["SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED"] } }, _count: true }),
-    prisma.contentScript.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, status: { in: ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"] } }, _count: true }),
-  ]);
-  // Jordan's approve queue + the client's open portal suggestions — the two
-  // counts that make "what needs you" answerable without opening each client.
-  const [awaitingScripts, monthScripts] = await Promise.all([
-    prisma.contentScript.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, status: { in: ["INTERNAL_REVIEW", "DRAFT"] } }, _count: true }),
-    prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true } }),
-  ]);
-  const awaitingCount = new Map(awaitingScripts.map((t) => [t.monthId, t._count]));
-  // ScriptSuggestion carries only scriptId (no relation) — map via the scripts.
-  const monthOfScript = new Map(monthScripts.map((s) => [s.id, s.monthId]));
-  const suggestionCount = new Map<string, number>();
-  if (monthScripts.length) {
-    const openSugg = await prisma.scriptSuggestion.groupBy({
-      by: ["scriptId"],
-      where: { status: "OPEN", scriptId: { in: monthScripts.map((s) => s.id) } },
-      _count: true,
-    });
-    for (const s of openSugg) {
-      const mid = monthOfScript.get(s.scriptId);
-      if (mid) suggestionCount.set(mid, (suggestionCount.get(mid) ?? 0) + s._count);
-    }
-  }
-  const topicCount = new Map(topics.map((t) => [t.monthId, t._count]));
-  const scriptCount = new Map(scripts.map((t) => [t.monthId, t._count]));
-  const projByMonth = new Map<string, typeof projects>();
-  for (const p of projects) {
-    if (!p.contentMonthId) continue;
-    const arr = projByMonth.get(p.contentMonthId) ?? [];
-    arr.push(p);
-    projByMonth.set(p.contentMonthId, arr);
-  }
+  // ONE batched read for this month and last month, every client at once.
+  // Dynamic import: monthProgress → programOwners → this module.
+  const { monthProgressMany, progressKey, unknownLine } = await import("@/lib/monthProgress");
+  const progress = await monthProgressMany([
+    ...enrollments.map((e) => ({ enrollmentId: e.id, monthId: monthOf.get(e.id)?.id ?? null, monthKey: key })),
+    ...prevMonths.map((pm) => ({ enrollmentId: pm.enrollmentId, monthId: pm.id, monthKey: prevKey })),
+  ], { now });
 
-  const now = new Date();
-  // Video units on a project — the meter's currency is VIDEOS, not sessions
-  // (audit Aug 25: "1/5" was the best a healthy month could ever show).
-  const videoUnits = (p: { deliverables: { type: string; quantity: number | null }[] }) =>
-    p.deliverables
-      .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
-      .reduce((s, d) => s + Math.max(1, d.quantity ?? 1), 0);
   const rows: ProgramRow[] = [];
   for (const e of enrollments) {
     const m = monthOf.get(e.id) ?? null;
-    // A session cancelled AFTER it attached still had contentMonthId — it must
-    // not count as booked, or the no-session alarm never fires (audit).
-    const ps = (m ? projByMonth.get(m.id) ?? [] : []).filter((p) => p.status !== "CANCELLED");
-    const sessionsScheduled = ps.length;
-    const shotCount = ps.filter((p) => p.shootDate && p.shootDate < now).length;
-    const delivered = ps.filter((p) => p.status === "DELIVERED").reduce((s, p) => s + Math.max(1, videoUnits(p)), 0);
-    const inReview = ps.reduce((s, p) => s + p.reviewSubmissions.filter((r) => r.status === "PENDING").length, 0);
-    const topicsSelected = m ? topicCount.get(m.id) ?? 0 : 0;
-    const scriptsReady = m ? scriptCount.get(m.id) ?? 0 : 0;
-    const scriptsAwaiting = m ? awaitingCount.get(m.id) ?? 0 : 0;
-    const openSuggestions = m ? suggestionCount.get(m.id) ?? 0 : 0;
-    const upcoming = ps
-      .filter((p) => p.shootDate && p.shootDate >= now)
-      .sort((a, b) => a.shootDate!.getTime() - b.shootDate!.getTime())[0];
-
+    const p = progress.get(progressKey(e.id, m?.id ?? null, key)) ?? null;
+    const s = p?.sessions;
     const attention: string[] = [];
     let behind: { monthKey: string; delivered: number; owed: number } | null = null;
     if (e.status === "PAUSED") attention.push("Paused — no longer flagged in Aryeo");
-    else if (m) {
-      if (m.strategyCallStatus === "NOT_SCHEDULED") attention.push("Strategy call not scheduled");
-      if (sessionsScheduled === 0) attention.push("No content session on the calendar");
-      else if (sessionsScheduled < e.sessionsPerMonth) attention.push(`Needs ${e.sessionsPerMonth - sessionsScheduled} more session${e.sessionsPerMonth - sessionsScheduled === 1 ? "" : "s"}`);
-      if (topicsSelected === 0 && !e.clientSuppliesTopics) attention.push("No topics selected");
+    else if (m && p && s) {
+      if (p.call.status === "NOT_SCHEDULED") attention.push("Strategy call not scheduled");
+      // A project shell (no date, no appointment) is not a session, and a
+      // dated job with no appointment is not "missing" — it is UNVERIFIED,
+      // and says so below with Kyle's action.
+      if (s.count.accountedFor === 0) attention.push("No content session on the calendar");
+      else if (s.missing > 0) attention.push(`Needs ${s.missing} more session${s.missing === 1 ? "" : "s"}`);
+      for (const u of p.unknowns) attention.push(unknownLine(u));
+      if (p.topics.selected === 0 && !e.clientSuppliesTopics) attention.push("No topics selected");
+      const inReview = p.production.awaitingInternalReview;
       if (inReview > 0) attention.push(`${inReview} video${inReview === 1 ? "" : "s"} awaiting review`);
       const prev = prevOf.get(e.id);
-      if (prev && prev.videosOwed > 0) {
-        const got = prevDelivered.get(prev.id) ?? 0;
-        if (got < prev.videosOwed) {
-          attention.push(`Behind — ${monthLabel(prevKey)} delivered ${got}/${prev.videosOwed}`);
-          behind = { monthKey: prevKey, delivered: got, owed: prev.videosOwed };
+      const pp = prev ? progress.get(progressKey(e.id, prev.id, prevKey)) ?? null : null;
+      if (pp && pp.videosOwed > 0) {
+        const got = pp.production.delivered;
+        // An understated library is an unknown, not a shortfall to accuse anyone of.
+        if (!pp.production.known) attention.push(`Unknown: ${monthLabel(prevKey)} delivered count — the pipeline shows ${pp.production.pipelineDelivered}, the library ${got} — the hub: Sync now`);
+        else if (got < pp.videosOwed) {
+          attention.push(`Behind — ${monthLabel(prevKey)} delivered ${got}/${pp.videosOwed}`);
+          behind = { monthKey: prevKey, delivered: got, owed: pp.videosOwed };
         }
       }
     }
@@ -505,25 +456,28 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
       status: e.status,
       monthId: m?.id ?? null,
       monthKey: key,
-      videosOwed: m?.videosOwed ?? 0,
-      strategyCallStatus: m?.strategyCallStatus ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"),
-      sessionsScheduled,
+      videosOwed: p?.videosOwed ?? 0,
+      strategyCallStatus: p?.call.status ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"),
+      sessionsScheduled: s?.confirmed ?? 0,
       sessionsRequired: e.sessionsPerMonth,
-      shotCount,
-      delivered,
-      inReview,
-      topicsSelected,
-      scriptsReady,
-      scriptsAwaiting,
-      openSuggestions,
-      strategyCallAt: m?.strategyCallAt?.toISOString() ?? null,
-      nextShootDate: upcoming?.shootDate?.toISOString() ?? null,
+      sessionsMissing: s?.missing ?? 0,
+      shotCount: s?.filmedConfirmed ?? 0,
+      delivered: p?.production.delivered ?? 0,
+      clientApproved: p?.production.clientApproved ?? 0,
+      inReview: p?.production.awaitingInternalReview ?? 0,
+      topicsSelected: p?.topics.selected ?? 0,
+      scriptsReady: p?.scripts.ready ?? 0,
+      scriptsAwaiting: p ? p.scripts.drafting + p.scripts.needsJordan : 0,
+      openSuggestions: p?.scripts.openSuggestions ?? 0,
+      strategyCallAt: p?.call.atISO ?? null,
+      nextShootDate: s?.nextAtISO ?? null,
       strategyCallRequired: e.strategyCallRequired,
       clientSuppliesTopics: e.clientSuppliesTopics,
       behind,
       attention,
       trial: e.status === "ACTIVE" && (e.billingType === "TRIAL" || (e.statusManual && /trial/i.test(e.notes ?? ""))),
       lastMonthKey: lastMonthOf.get(e.id) ?? null,
+      progress: p,
     });
   }
   // Worst problems first, then by name.

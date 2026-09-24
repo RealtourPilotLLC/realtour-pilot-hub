@@ -177,15 +177,29 @@ export async function portalDeleteComment(auth: PortalAuth, commentId: string): 
 
 /**
  * "Submit change request": every OPEN note on the cut (plus an optional
- * overall note) becomes ONE revision through the same machinery a text or
- * call uses, and a ClientDecision(REQUEST_CHANGES) keyed to the exact cut
- * records it. A second submit while that request is open joins it — one job.
+ * overall note) becomes ONE revision round for this video, through the same
+ * machinery a text or call uses, and a ClientDecision(REQUEST_CHANGES) keyed
+ * to the exact cut records it. A second submit while that request is open is
+ * an addendum to it — the same editor request, no second job (CP-03).
+ *
+ * `opts.requestKey` is the browser's id for this attempt (a retry returns the
+ * same receipt); `opts.acknowledgeExtraFee` is the fee checkbox, which only an
+ * OWNER seat or staff can give — enforced in clientDecisions, not here.
  */
-export async function portalRequestRevision(auth: PortalAuth, submissionId: string, generalNote: string): Promise<R & { duplicate?: boolean }> {
+export async function portalRequestRevision(
+  auth: PortalAuth,
+  submissionId: string,
+  generalNote: string,
+  opts: { requestKey?: string | null; acknowledgeExtraFee?: boolean } = {},
+): Promise<R & { duplicate?: boolean; needsFeeAck?: boolean; ackText?: string | null }> {
   const v = await viewerFor(auth, "requestChanges");
   if (typeof v === "string") return fail(v);
-  const r = await requestChangesOnCut(v, submissionId, generalNote);
-  if (!r.ok) return fail(r.message);
+  const r = await requestChangesOnCut(v, submissionId, generalNote, {
+    requestKey: typeof opts?.requestKey === "string" ? opts.requestKey : null,
+    acknowledgeExtraFee: opts?.acknowledgeExtraFee === true,
+  });
+  if (!r.ok) return { ok: false, message: r.message, needsFeeAck: r.needsFeeAck, ackText: r.ackText ?? null };
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
   return { ok: true, message: r.message, duplicate: r.duplicate };
 }
 

@@ -99,6 +99,15 @@ export async function GET(req: NextRequest) {
     const { sweepPortalLibraries } = await import("@/lib/portalLibrary");
     return sweepPortalLibraries();
   });
+  // CP-09: a photographer's filmed-topic report that did not land at submit
+  // (ContentFilmingReport FAILED / PENDING / a dead lease) is retried here
+  // until it does. BEFORE contentLibrary, so the videos it confirms and binds
+  // to their slots are on file when the library rebuilds. Database-only and
+  // contacts nobody, so no switch — the same reasoning as contentLibrary.
+  await step("filmingReports", async () => {
+    const { sweepFilmingReports } = await import("@/lib/filmedTopics");
+    return sweepFilmingReports();
+  });
   await step("contentLibrary", async () => {
     // The NEW video library (ContentVideo), which the staff overview counts
     // production from. Without this it only ever filled when a client opened
@@ -295,7 +304,15 @@ export async function GET(req: NextRequest) {
     // card is Kyle's ordinary chase card and must not be closed.
     const { repairIncompleteDeliveries } = await import("@/lib/readyToSend");
     const deliveries = await repairIncompleteDeliveries({ sinceDays: 30, max: 200 });
-    return { library, changes, deliveries };
+    // CP-02: a content cut released since the review windows shipped whose
+    // window write failed gets it now, from the TRUE release time. CP-03: a
+    // client's change request whose routing failed after it was recorded — or
+    // notes a racing submit left open beside it — reach the editor.
+    const { repairReviewWindows } = await import("@/lib/reviewWindows");
+    const reviewWindows = await repairReviewWindows({ max: 100 });
+    const { repairPortalRevisionRequests } = await import("@/lib/clientDecisions");
+    const portalRequests = await repairPortalRevisionRequests({ max: 50 });
+    return { library, changes, deliveries, reviewWindows, portalRequests };
   }, { maxMs: 30_000 });
   await step("scriptDrafting", async () => {
     const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
@@ -370,6 +387,15 @@ export async function GET(req: NextRequest) {
       throw e;
     }
   }, { maxMs: 30_000 });
+  // CLIENT REVIEW EXPIRY (CP-02). Behind `revision_policy` (off at the
+  // database — the step reports `skipped`). When on: an expired review window
+  // becomes a task for Kyle, or — only with `review_auto_approve` on too, only
+  // for windows opened after it was, TEST clients only by default, and only
+  // with no hold — the automatic approval. Never a client message.
+  await step("reviewWindows", async () => {
+    const { sweepReviewWindows } = await import("@/lib/reviewWindows");
+    return sweepReviewWindows({ max: 25 });
+  }, { maxMs: 20_000 });
   await step("shareNotices", async () => {
     const { isAutomationEnabled, recordAutomationRun } = await import("@/lib/programAutomation");
     if (!(await isAutomationEnabled("script_share_email"))) return { skipped: "script_share_email is off" };

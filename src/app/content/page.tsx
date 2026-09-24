@@ -16,6 +16,7 @@ import { MonthJourney, VideoMeter } from "@/components/content/MonthJourney";
 import { SweepButton } from "@/components/content/SweepButton";
 import { BadgeDollarSign, BookOpen, ChevronDown, Activity, LayoutGrid, ListChecks, Rows3, Settings2 } from "lucide-react";
 import { programOverview, ALL_OPEN, OVERVIEW_FILTERS, type OverviewFilterKey } from "@/lib/programOverview";
+import { journeyInputFrom, progressKey, type MonthProgress } from "@/lib/monthProgress";
 import { OverviewRow } from "@/components/content/OverviewRow";
 import { allAutomations } from "@/lib/programAutomation";
 
@@ -25,8 +26,8 @@ export const dynamic = "force-dynamic";
 // Aug 25 per Jordan: one visual CARD per client instead of a spreadsheet table.
 // Each card is the client's month at a glance — the journey tracker (Call →
 // Topics → Scripts → Shoot → Delivered), the delivered-videos meter, and any
-// exceptions. Everything reads from the SAME pipeline data as the Editor Queue
-// and Review Room, so this page can't disagree with them.
+// exceptions. Cards and overview rows both read lib/monthProgress (CP-10), so
+// the two views cannot disagree with each other or with the client file.
 export default async function ContentProgramPage({
   searchParams,
 }: {
@@ -48,7 +49,8 @@ export default async function ContentProgramPage({
   const monthParam = sp.month === ALL_OPEN ? ALL_OPEN : sp.month;
   const filter = OVERVIEW_FILTERS.some((f) => f.key === sp.filter) ? (sp.filter as OverviewFilterKey) : null;
 
-  const rows = await getProgramRoster();
+  const now = new Date();
+  const rows = await getProgramRoster({ now });
   const active = rows.filter((r) => r.status === "ACTIVE" && !r.trial);
   const trials = rows.filter((r) => r.status === "ACTIVE" && r.trial);
   const inactive = rows.filter((r) => r.status !== "ACTIVE");
@@ -73,7 +75,14 @@ export default async function ContentProgramPage({
     // count for rows, the older roster's pipeline count for cards — so the same
     // screen read "1/51 · 11" and "0/51 · 12" depending on a toggle that is
     // supposed to change the layout, not the facts (review, Sep 17).
-    programOverview({ monthKey: monthParam, includeEnded }),
+    //
+    // CP-10: and the per-client facts are one calculation too — the roster
+    // read monthProgress for every card, and the overview reuses those very
+    // objects for the same (client, month) rather than counting again.
+    programOverview({
+      monthKey: monthParam, includeEnded, now,
+      progress: new Map(rows.filter((r): r is typeof r & { progress: MonthProgress } => !!r.progress).map((r) => [progressKey(r.enrollmentId, r.monthId, r.monthKey), r.progress])),
+    }),
     allAutomations().catch(() => []),
   ]);
   const switchedOn = switches.filter((s) => s.enabled);
@@ -334,7 +343,7 @@ export default async function ContentProgramPage({
 
         <p className="text-xs text-muted-2">
           <Clapperboard className="mr-1 inline size-3.5" />
-          Enrollment follows the Aryeo &ldquo;Social Client&rdquo; flag automatically; sessions and videos read from the same pipeline as the Editor Queue and Review Room.
+          Enrollment follows the Aryeo &ldquo;Social Client&rdquo; flag automatically; sessions are distinct confirmed appointments and videos are counted from the library — the same month-progress reader the client file, their portal and the reminders use.
         </p>
       </div>
     </div>
@@ -363,21 +372,20 @@ function ClientCard({ r }: { r: ProgramRow }) {
         </div>
       </div>
 
+      {/* The same reader the overview rows, the client file and portal Home use. */}
       <MonthJourney
-        input={{
-          callStatus: r.strategyCallStatus,
-          topicsSelected: r.topicsSelected,
-          scriptsReady: r.scriptsReady,
-          videosOwed: r.videosOwed,
-          sessionsScheduled: r.sessionsScheduled,
-          sessionsRequired: r.sessionsRequired,
-          shotCount: r.shotCount,
-          delivered: r.delivered,
-          inReview: r.inReview,
+        input={r.progress ? journeyInputFrom(r.progress) : {
+          callStatus: r.strategyCallStatus, topicsSelected: r.topicsSelected, scriptsReady: r.scriptsReady, videosOwed: r.videosOwed,
+          sessionsRequired: r.sessionsRequired, sessionsConfirmed: r.sessionsScheduled, sessionsFilmedConfirmed: r.shotCount, delivered: r.delivered, inReview: r.inReview,
         }}
       />
 
-      <VideoMeter delivered={r.delivered} owed={r.videosOwed} inReview={r.inReview} />
+      <VideoMeter
+        delivered={r.delivered}
+        owed={r.videosOwed}
+        inReview={r.inReview}
+        unknown={r.progress && !r.progress.production.known ? `the pipeline shows ${r.progress.production.pipelineDelivered} delivered; the library holds ${r.delivered}` : null}
+      />
 
       {worry ? (
         <div className="space-y-0.5 border-t border-border pt-2.5">

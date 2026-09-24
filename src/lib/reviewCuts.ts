@@ -1632,7 +1632,14 @@ async function correctionStillOwed(
    *  closed. The brief is matched to THIS lane so a photo-lane ask cannot gate
    *  a video ask (below). */
   laneTaskIds: readonly string[],
+  /** CP-03: portal revision rounds still OPEN on OTHER videos of this job
+   *  (their labels). The ledger says it outright, so no brief is consulted. */
+  otherOpenRounds: readonly string[] = [],
 ): Promise<string | null> {
+  if (otherOpenRounds.length > 0) {
+    const names = [...new Set(otherOpenRounds)];
+    return `the client's change request on ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""} is still open.`;
+  }
   const since = await prisma.reviewSubmission.findMany({
     where: { projectId, kind: "video", createdAt: { gte: raisedAt }, status: { notIn: ["WITHDRAWN", "UPLOAD_FAILED"] } },
     select: { deliverableId: true, slot: true, assetPath: true, id: true, status: true },
@@ -1658,10 +1665,13 @@ async function correctionStillOwed(
   // production carries a taskId, so scoping to the lane loses nothing.
   // The minute of slack absorbs the gap between stamping revisionRequestedAt
   // and writing the brief row.
+  // A PORTAL brief (roundId set) is answered by its round on the ledger, per
+  // video — it is not "the newest brief on the lane". Letting it stand in for
+  // the whole job is how approving video 4's fix used to close video 1's ask.
   const brief = laneTaskIds.length === 0
     ? null
     : await prisma.revisionBrief.findFirst({
-        where: { projectId, taskId: { in: [...laneTaskIds] }, createdAt: { gte: new Date(raisedAt.getTime() - 60_000) } },
+        where: { projectId, taskId: { in: [...laneTaskIds] }, roundId: null, createdAt: { gte: new Date(raisedAt.getTime() - 60_000) } },
         orderBy: { createdAt: "desc" },
         select: { itemsJson: true, doneJson: true },
       });
@@ -1693,6 +1703,45 @@ async function correctionStillOwed(
     return `${waiting} other video${waiting === 1 ? "" : "s"} on this job ${waiting === 1 ? "has a corrected cut" : "have corrected cuts"} still waiting on a verdict.`;
   }
   return null;
+}
+
+/**
+ * The per-video revision ledger around one approval (CP-03). The approved
+ * video's OPEN rounds asked before this cut was made are ANSWERED by it
+ * (openReviewWindow has usually done this already at release — idempotent),
+ * and the answer is when this video's own ask was made plus which OTHER
+ * videos still have one open. A job with no portal rounds answers
+ * { null, [] } and behaves exactly as before.
+ */
+async function portalRoundsAt(
+  projectId: string,
+  cut: { id: string },
+  cutCreatedAt: Date,
+): Promise<{ ownAskAt: Date | null; otherOpen: string[] }> {
+  const rounds = await prisma.contentRevisionRound.findMany({
+    where: { projectId, state: { in: ["OPEN", "ANSWERED"] } },
+    select: { id: true, videoKey: true, state: true, createdAt: true, answeredBySubmissionId: true, submissionId: true },
+  }).catch(() => []);
+  if (rounds.length === 0) return { ownAskAt: null, otherOpen: [] };
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: cut.id }, select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, fileName: true } });
+  if (!row) return { ownAskAt: null, otherOpen: [] };
+  // Dynamic: reviewWindows imports this module for the slot list.
+  const { videoKeyOf, videoLabelOf } = await import("@/lib/reviewWindows");
+  const key = videoKeyOf(row);
+  const answer = rounds.filter((r) => r.videoKey === key && r.state === "OPEN" && r.createdAt.getTime() <= cutCreatedAt.getTime());
+  if (answer.length) {
+    await prisma.contentRevisionRound.updateMany({ where: { id: { in: answer.map((r) => r.id) }, state: "OPEN" }, data: { state: "ANSWERED", answeredBySubmissionId: row.id, answeredAt: new Date() } }).catch(() => {});
+  }
+  const own = rounds.filter((r) => r.videoKey === key && (r.state === "OPEN" || r.answeredBySubmissionId === row.id || answer.some((a) => a.id === r.id)));
+  const ownAskAt = own.length ? new Date(Math.min(...own.map((r) => r.createdAt.getTime()))) : null;
+  const others = rounds.filter((r) => r.videoKey !== key && r.state === "OPEN");
+  const subs = others.length ? await prisma.reviewSubmission.findMany({ where: { id: { in: [...new Set(others.map((r) => r.submissionId))] } }, select: { id: true, projectId: true, deliverableId: true, slot: true, fileName: true, round: true } }) : [];
+  const otherOpen: string[] = [];
+  for (const r of others) {
+    const s = subs.find((x) => x.id === r.submissionId);
+    otherOpen.push(s ? await videoLabelOf(s) : "another video");
+  }
+  return { ownAskAt, otherOpen };
 }
 
 /** The shape correctionStillOwed needs out of itemsJson. Structurally the same
@@ -1729,8 +1778,6 @@ export async function correctedCutApproved(
   // the correction (a re-version, or any cut on a delivered / one-video job)
   // — a fresh video on a never-delivered batch is not (cutAnswersAsk).
   const raisedAt = project.revisionRequestedAt ?? new Date(Math.min(...lane.map((t) => t.createdAt.getTime())));
-  if (opts.cutCreatedAt.getTime() < raisedAt.getTime()) return { closed: 0, resolved: false };
-  if (!(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) return { closed: 0, resolved: false };
   // WHICH video this approval is about. The row itself when the caller handed
   // one over, else the row it names, else nothing — and nothing is honest, not
   // permissive: an unidentified approval closes only the items no video is
@@ -1742,6 +1789,15 @@ export async function correctedCutApproved(
           .findUnique({ where: { id: opts.submissionId }, select: { id: true, deliverableId: true, slot: true, assetPath: true } })
           .catch(() => null)
       : null);
+  // THE PORTAL'S ASKS ARE PER VIDEO (CP-03). Every portal ask refreshes the
+  // job's revisionRequestedAt, so a fix for video 1 cut BEFORE video 4 was
+  // asked about looked "older than the ask" and closed nothing. The approved
+  // video's OWN round dates its ask; rounds on OTHER videos still open hold the
+  // lane (correctionStillOwed).
+  const portal = cut ? await portalRoundsAt(projectId, cut, opts.cutCreatedAt) : { ownAskAt: null, otherOpen: [] as string[] };
+  const askAt = portal.ownAskAt ?? raisedAt;
+  if (opts.cutCreatedAt.getTime() < askAt.getTime()) return { closed: 0, resolved: false };
+  if (!(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) return { closed: 0, resolved: false };
   // This approval answers the work it answers — not the whole conversation,
   // and not the other lane's. The lane is handed over with its CLOSED tasks
   // too: the brief belongs to the lane it was raised on, and a task that was
@@ -1752,7 +1808,7 @@ export async function correctedCutApproved(
       .findMany({ where: videoLaneRevisionWhere(projectId, { anyStatus: true }), select: { id: true } })
       .catch(() => lane.map((t) => ({ id: t.id })))
   ).map((t) => t.id);
-  const owed = await correctionStillOwed(projectId, raisedAt, cut, laneTaskIds);
+  const owed = await correctionStillOwed(projectId, raisedAt, cut, laneTaskIds, portal.otherOpen);
   if (owed) {
     await prisma.activity
       .create({ data: { projectId, type: "SYSTEM", body: `Corrected cut approved. The revision stays open: ${owed}`.slice(0, 500) } })

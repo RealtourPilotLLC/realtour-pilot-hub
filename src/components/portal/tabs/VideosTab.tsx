@@ -165,7 +165,7 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
         ) : d.kit ? (
           <div className="mt-2">
             <PostingKitPanel
-              videoId={d.video.id} downloadHref={d.kit.final?.hashOk ? d.downloadHref : null} finalLabel={d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
+              videoId={d.video.id} downloadHref={d.kit.access.download ? d.downloadHref : null} access={d.kit.access} finalLabel={d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
               captions={d.kit.captions} assistant={d.kit.assistant} postedAtISO={d.kit.postedAtISO} downloadedAtISO={d.kit.downloadedAtISO}
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />

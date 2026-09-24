@@ -488,7 +488,7 @@ export function askMedium(note: string): AskMedium {
   return "unclear";
 }
 
-export async function raiseRevision(opts: {
+export type RaiseRevisionOpts = {
   projectId: string;
   clientId?: string | null;
   clientName?: string | null;
@@ -500,12 +500,37 @@ export async function raiseRevision(opts: {
   /** The whole conversation, when `note` is only the client's half of it. */
   fullText?: string | null;
   qcCategories?: string[]; // QC labels to reopen for re-QC, e.g. ["Reel"]
-}): Promise<boolean> {
+};
+
+/** THE EXACT CUT a portal ask is about (CP-03). The portal knows it, so the
+ *  brief is pinned to it instead of asking a model to guess which video. */
+export type RevisionPin = {
+  submissionId: string;
+  outputId: string | null;
+  /** slotKeyOf(deliverableId, slot) — null for a legacy folder cut, which
+   *  keeps today's job-level brief (documented limit). */
+  cutKey: string | null;
+  decisionId: string;
+  roundId: string | null;
+  /** "Video 2 of 4" — how the editor's card names this video. */
+  videoLabel: string;
+};
+
+/** The same revision, with the ids behind it. raiseRevision (the boolean
+ *  every text / email / call path calls) is this with the ids dropped; only
+ *  the portal passes a pin — and an addendum when new notes join a request
+ *  that is already with the editor. */
+export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
+  pin?: RevisionPin;
+  /** Notes added to an OPEN request: a new brief on the SAME task, no new round. */
+  addendum?: { n: number; requestKey?: string | null };
+}): Promise<{ ok: boolean; taskId: string | null; briefId: string | null; wasAlreadyOpen: boolean }> {
+  const none = { ok: false, taskId: null, briefId: null, wasAlreadyOpen: false };
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
     select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, statusPinnedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
   });
-  if (!project) return false;
+  if (!project) return none;
 
   // Delegate the revision to the editor who actually MADE that deliverable —
   // deterministic (from the real deliverable), not guessed from the request
@@ -520,7 +545,9 @@ export async function raiseRevision(opts: {
   // front-lawn photo" on a photos+reel job went to the video editor (audit).
   // Video terms in the ask (or a video-only job) → the video lane; otherwise
   // Kyle triages it like any photo/3D/floor-plan revision.
-  const medium = askMedium(opts.note);
+  // A portal ask is pinned to a video cut: that IS the medium, whatever words
+  // the client used ("the photo at 0:12 is dark" is about the video).
+  const medium: AskMedium = opts.pin ? "video" : askMedium(opts.note);
   // A clearly-photo ask never goes to the video lane on a mixed job, and a
   // video-only job still routes to video when the wording is neutral.
   const primary =
@@ -596,12 +623,15 @@ export async function raiseRevision(opts: {
   // matches and gets appended to, instead of every job growing a duplicate.
   const photoLane = !primaryIsVideoWork && medium === "photo";
   const key = dedupeKey(photoLane ? [project.id, "revision", "photo"] : [project.id, "revision"]);
-  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  let existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  // Which video, on the editor's card: every pinned ask carries its label, so
+  // four videos asked about back to back read as four lines, not one blur.
+  const tagged = opts.pin ? `[${opts.pin.videoLabel}] ${taskNote}` : taskNote;
   const data = {
     taskType: "revision",
     title: `${photoLane ? "Photo revision" : primaryIsVideoWork ? "Video revision" : "Revision"} — ${project.title}`,
     summary: `Client asked for changes after delivery: “${clip(taskNote, 240)}” — confirm exactly what needs to change, make the edits/reshoot, then re-upload to Aryeo and re-deliver.`,
-    description: taskNote,
+    description: tagged,
     reasonCreated: `Client requested changes via ${opts.source} after delivery`,
     checklist: JSON.stringify([
       // "…in Communications" pointed editors at a page their role can't open
@@ -628,8 +658,20 @@ export async function raiseRevision(opts: {
     assignedKey,
     dedupeKey: key,
   };
+  // THE CREATE CANNOT RACE ITSELF (CP-03). findUnique-then-create let two
+  // first asks on one job — four portal videos submitted back to back — both
+  // miss the row and the second hit P2002 on the dedupe key. createMany +
+  // skipDuplicates makes the loser a no-op; it re-reads the winner's row and
+  // takes the append path below like any later ask.
+  let taskId: string | null = null;
+  if (!existing) {
+    const made = await prisma.smartTask.createMany({ data: [data], skipDuplicates: true });
+    const row = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+    if (!row) return none;
+    if (made.count === 1) taskId = row.id;
+    else existing = row;
+  }
   const wasAlreadyOpen = !!existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
-  let taskId: string;
   if (existing) {
     // A second ask must ADD to the work order, not replace it — overwriting
     // description with only the newest message made earlier asks vanish from
@@ -637,8 +679,10 @@ export async function raiseRevision(opts: {
     // a task re-raised after completion starts a fresh list.
     let description = data.description;
     if (wasAlreadyOpen && existing.description && !existing.description.includes(taskNote)) {
-      description = `${existing.description}\n\nNew request: ${taskNote}`;
+      description = opts.pin ? `${existing.description}\n\n[${opts.pin.videoLabel}] New request: ${taskNote}` : `${existing.description}\n\nNew request: ${taskNote}`;
       if (description.length > 4000) description = "…" + description.slice(-4000);
+    } else if (wasAlreadyOpen && existing.description) {
+      description = existing.description;
     }
     await prisma.smartTask.update({
       where: { id: existing.id },
@@ -647,10 +691,8 @@ export async function raiseRevision(opts: {
       data: { ...data, description, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), status: "OPEN", completedAt: null },
     });
     taskId = existing.id;
-  } else {
-    const created = await prisma.smartTask.create({ data });
-    taskId = created.id;
   }
+  if (!taskId) return none;
 
   // THE WORK ORDER. The task description above is a clipped paragraph by
   // necessity (it has to fit a task card); the brief keeps the client's ask
@@ -658,6 +700,7 @@ export async function raiseRevision(opts: {
   // the ask came out of a call we hand the analyser the two-sided transcript —
   // our own questions are what make the client's answers legible. Best-effort:
   // a brief that fails to write or analyse never blocks the revision.
+  let briefId: string | null = null;
   try {
     const { createRevisionBrief } = await import("@/lib/revisionBrief");
     const dialogue = (opts.fullText ?? "").trim();
@@ -665,24 +708,69 @@ export async function raiseRevision(opts: {
     // a transcript that dropped their side would otherwise brief the editor on
     // our own words.
     const useDialogue = dialogue.length > opts.note.trim().length;
-    await createRevisionBrief({
+    // A pinned brief says which decision it answers: the first ask is
+    // `decision:<id>`, each set of notes added to it `decision:<id>:addendum:<n>`
+    // (with the browser's request key, so a retried submit is recognised).
+    const pinnedDetail = opts.pin
+      ? `decision:${opts.pin.decisionId}${opts.addendum ? `:addendum:${opts.addendum.n}${opts.addendum.requestKey ? `:rk:${opts.addendum.requestKey}` : ""}` : ""}`
+      : null;
+    briefId = await createRevisionBrief({
       projectId: project.id,
       taskId,
       source: opts.source,
-      sourceDetail: opts.threadRef ?? null,
+      sourceDetail: pinnedDetail ?? opts.threadRef ?? null,
       text: useDialogue ? dialogue : opts.note,
       twoSided: useDialogue,
       clientName: opts.clientName ?? null,
       propertyAddress: opts.propertyAddress ?? project.title,
       deliverables: project.deliverables.map((d) => d.label || d.type).filter(Boolean),
+      pin: opts.pin ? { submissionId: opts.pin.submissionId, outputId: opts.pin.outputId, cutKey: opts.pin.cutKey, decisionId: opts.pin.decisionId, roundId: opts.pin.roundId, label: opts.pin.videoLabel } : undefined,
+      skipAnalysis: !!opts.addendum,
     });
   } catch { /* the revision itself already landed */ }
+
+  // EVERY PORTAL ROUND AND EVERY ADDENDUM RINGS THE EDITOR (CP-03). The
+  // !wasAlreadyOpen rule below kept a repeat TEXT quiet, which is right for a
+  // client re-sending the same message — but on a four-video batch it meant
+  // videos 2-4 appended silently to a task the editor had already seen, and
+  // notes added to an open request rang nobody at all. A pinned ask is a new
+  // piece of work by construction, deduped per round and per addendum.
+  if (opts.pin) {
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
+      const inHouse = (k: string | null | undefined): k is string => !!k && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(k);
+      const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+      const holder = existing?.assignedManually ? existing.assignedKey : assignedKey;
+      if (inHouse(holder)) targets.push({ roles: ["EDITOR"], userKey: `editor:${holder}`, href: `/edit/${project.id}` });
+      // The editor carrying THIS video, when it is not the job's editor.
+      const owner = opts.pin.outputId
+        ? (await prisma.deliverableOutput.findUnique({ where: { id: opts.pin.outputId }, select: { ownerKey: true } }).catch(() => null))?.ownerKey ?? null
+        : null;
+      if (inHouse(owner) && owner !== holder) targets.push({ roles: ["EDITOR"], userKey: `editor:${owner}`, href: `/edit/${project.id}` });
+      await notifyInApp({
+        kind: opts.addendum ? "revision_addendum" : "revision_raised",
+        title: `${opts.addendum ? "More notes" : "Revision"} — ${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`,
+        body: clip(taskNote, 140),
+        href: `/projects/${project.id}`,
+        targets,
+        dedupeKey: opts.addendum ? `portal-addendum-${opts.pin.decisionId}-${opts.addendum.n}` : `portal-round-${opts.pin.roundId ?? opts.pin.decisionId}`,
+      });
+    } catch { /* non-fatal */ }
+  }
 
   // A revision request shouldn't wait for someone to open the hub — Slack-ping
   // when the task is NEWLY raised (a repeat text about an already-open revision
   // stays quiet), mirrored to the in-app bell for ops + the editor it's delegated
-  // to. Best-effort: never breaks the revision itself.
-  if (!wasAlreadyOpen) {
+  // to. Best-effort: never breaks the revision itself. (A pinned portal ask
+  // rang its own bell above; only the Slack ping is left for it here.)
+  if (!wasAlreadyOpen && opts.pin) {
+    try {
+      const { notifyUrgent } = await import("@/lib/notify");
+      await notifyUrgent(`${data.title}: “${clip(note, 140)}”`);
+    } catch { /* non-fatal */ }
+  }
+  if (!wasAlreadyOpen && !opts.pin) {
     try {
       const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
       await notifyUrgent(`${data.title}: “${clip(note, 140)}”`);
@@ -721,7 +809,12 @@ export async function raiseRevision(opts: {
     await reflectRevisionInQc(project.id, opts.qcCategories ?? [], note);
   } catch { /* QC reflection is best-effort */ }
 
-  return true;
+  return { ok: true, taskId, briefId, wasAlreadyOpen };
+}
+
+/** Every text / email / call path: the revision, as a yes or no. */
+export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
+  return (await raiseRevisionDetailed(opts)).ok;
 }
 
 // Where a resolved revision GENUINELY puts the job back.

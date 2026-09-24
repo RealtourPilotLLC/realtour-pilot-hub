@@ -8,7 +8,7 @@ import { assetRegistry, assetVersions, brandSources, ASSET_TYPES, ASSET_TYPE_WOR
 import { factsForPrompt } from "@/lib/clientFacts";
 import type { SettingsUi, BillingUi, OwnersUi, HistoryUi } from "@/components/content/SettingsPanel";
 import type { AssetUi, AssetVersionUi, SourcesUi, ProvenanceUi } from "@/components/content/BrandAssetsPanel";
-import type { LibraryVideoUi } from "@/components/content/ContentLibraryPanel";
+import type { LibraryVideoUi, LibraryWindowUi, LibraryRoundUi } from "@/components/content/ContentLibraryPanel";
 
 // Server loaders for the three tabs W2-E added to the client file: Content,
 // Brand & Assets, Settings. One function per tab so a tab pays only for its
@@ -129,18 +129,54 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
     return { rows: [] as LibraryVideoUi[], pipelineOnly: projects.map((p) => ({ id: p.id, title: p.title, status: p.status, monthKey: p.contentMonthId ? keyOf.get(p.contentMonthId) ?? null : null, shootDateISO: iso(p.shootDate) })) };
   }
   const ids = videos.map((v) => v.id);
-  const [cuts, decisions, pillars, sources] = await Promise.all([
+  const projectIds = videos.map((v) => v.projectId).filter((x): x is string => !!x);
+  // The fee is OWNER/ADMIN business (CP-02): anyone else granted this tab sees
+  // the rounds, never the amount or the charge/waive controls.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const { authEnforced } = await import("@/lib/auth/guards");
+  const me = await getCurrentUser().catch(() => null);
+  const moneyEyes = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  const [cuts, decisions, pillars, sources, windows, rounds] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: { OR: [{ videoId: { in: ids } }, { projectId: { in: videos.map((v) => v.projectId).filter((x): x is string => !!x) } }] },
       orderBy: [{ round: "asc" }],
       select: { id: true, videoId: true, projectId: true, round: true, status: true, fileName: true, submittedByName: true, submittedByKey: true, createdAt: true, decidedAt: true, decidedBy: true, clientReleasedAt: true, clientRequestedAt: true, withdrawnAt: true, note: true, slot: true },
     }),
-    prisma.clientDecision.findMany({ where: { enrollmentId, videoId: { in: ids } }, select: { videoId: true, submissionId: true, decision: true, createdAt: true } }),
+    prisma.clientDecision.findMany({ where: { enrollmentId, OR: [{ videoId: { in: ids } }, { projectId: { in: projectIds } }] }, select: { id: true, videoId: true, submissionId: true, decision: true, createdAt: true, actorLabel: true, basis: true } }),
     prisma.contentPillar.findMany({ where: { enrollmentId }, select: { id: true, name: true } }),
     prisma.contentVideoSource.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, kind: true, isFinal: true, label: true } }),
+    // CP-02: every review window and revision round, staff-side — the client's
+    // page shows only the current version; this shows the whole history.
+    prisma.contentReviewWindow.findMany({ where: { enrollmentId, projectId: { in: projectIds } }, orderBy: { openedAt: "asc" } }),
+    prisma.contentRevisionRound.findMany({ where: { enrollmentId, projectId: { in: projectIds } }, orderBy: { createdAt: "asc" } }),
   ]);
+  const decisionById = new Map(decisions.map((d) => [d.id, d]));
   const rows: LibraryVideoUi[] = videos.map((v) => {
     const mine = cuts.filter((c) => (c.videoId ? c.videoId === v.id : c.projectId === v.projectId));
+    const cutIds = new Set(mine.map((c) => c.id));
+    const reviewWindows: LibraryWindowUi[] = windows
+      .filter((w) => (w.videoId ? w.videoId === v.id : cutIds.has(w.submissionId)))
+      .map((w) => {
+        let evidence: string | null = null;
+        try { evidence = w.closeEvidenceJson ? Object.entries(JSON.parse(w.closeEvidenceJson) as Record<string, unknown>).filter(([k]) => k !== "policy" && k !== "holds").map(([k, x]) => `${k}: ${String(x)}`).join(" · ") : null; } catch { /* unreadable evidence stays off the card */ }
+        return {
+          id: w.id, submissionId: w.submissionId, round: w.round, state: w.state, source: w.source,
+          openedAtISO: w.openedAt.toISOString(), deadlineISO: w.deadlineAt.toISOString(), originalDeadlineISO: iso(w.originalDeadlineAt),
+          restartedBy: w.restartedBy, notifiedAtISO: iso(w.clientNotifiedAt), viewedAtISO: iso(w.firstViewedAt),
+          heldReason: w.heldAt ? `${w.holdReason ?? "held"}${w.heldBy ? ` (${w.heldBy})` : ""}` : null,
+          expiryOutcome: w.expiryOutcome, closedReason: w.closedReason, evidence,
+          decidedBy: w.decisionId ? decisionById.get(w.decisionId)?.actorLabel ?? null : null,
+        };
+      });
+    const windowIds = new Set(reviewWindows.map((w) => w.id));
+    const revisionRounds: LibraryRoundUi[] = rounds
+      .filter((r) => windowIds.has(r.windowId) || (r.videoId ? r.videoId === v.id : false))
+      .map((r) => ({
+        id: r.id, ordinal: r.ordinal, included: r.included, includedRounds: r.includedRounds, state: r.state,
+        requestedBy: decisionById.get(r.decisionId)?.actorLabel ?? null, createdAtISO: r.createdAt.toISOString(),
+        feeAckBy: r.feeAckBy, feeAckAtISO: iso(r.feeAckAt), feeDecision: r.feeDecision, feeDecidedBy: r.feeDecidedBy,
+        feeCents: moneyEyes ? r.feeCents : null, lateOverrideBy: r.lateOverrideBy, answeredAtISO: iso(r.answeredAt),
+      }));
     return {
       id: v.id, title: v.title ?? "Video", monthKey: v.monthKey, kind: v.kind, countsTowardAllowance: v.countsTowardAllowance,
       status: v.status, format: v.format, pillarName: pillars.find((p) => p.id === v.pillarId)?.name ?? null,
@@ -155,6 +191,7 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
         releasedToClientAtISO: iso(c.clientReleasedAt), withdrawn: !!c.withdrawnAt, note: c.note,
         clientDecision: decisions.find((d) => d.submissionId === c.id)?.decision ?? null,
       })),
+      reviewWindows, revisionRounds, moneyEyes,
     };
   });
   return { rows, pipelineOnly: [] as { id: string; title: string; status: string; monthKey: string | null; shootDateISO: string | null }[] };

@@ -12,11 +12,21 @@ export const dynamic = "force-dynamic";
 // with a media token minted over the VIDEO id (the same HMAC + scope machinery
 // every <video src> uses — src/lib/portalMedia.ts — so no second gate exists);
 // this route re-checks that the seat / link / staff login is still live,
-// proves the video belongs to that scope's enrollment, resolves WHICH file is
-// the final (postingKit.resolveFinalFile) and refuses to serve a cut whose
-// bytes no longer match the approval it is served under (409, never a
-// different file). Every successful download is recorded as a PortalVisit on
-// /portal/download/<videoId> — the client-recorded "Downloaded" fact.
+// proves the video belongs to that scope's enrollment, and asks the release
+// rule (cutEntitlement, through postingKit.resolveFinalFile) whether the client
+// may have the file at all. Every successful download is recorded as a
+// PortalVisit on /portal/download/<videoId> — the client-recorded
+// "Downloaded" fact; a refusal records nothing.
+//
+// CP-01 (Sep 24 2026): until today the only file checks were "is there one"
+// and "does the hash match the approval, IF the served cut is the approved
+// one" — so an internally approved cut the client had never decided on
+// downloaded here, and so did a replacement round. Refusals now say which:
+//   403  the client has not approved this version, or asked for changes to it
+//   409  the bytes changed since they approved (never a different file)
+//   404  there is no file to give (yet, or it is being re-issued)
+// The STAFF scope gets the same answer: this door shows the client's truth.
+// Staff keep the Review Room and the Ready-to-send card for the raw file.
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest, ctx: { params: Promise<{ videoId: string }> }) {
   const { videoId } = await ctx.params;
@@ -46,9 +56,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ videoId: st
   }
   if (!allowed || !video) return NextResponse.json({ error: "You don't have access to this download." }, { status: 403 });
 
-  const { final, note } = await resolveFinalFile(video);
-  if (!final) return NextResponse.json({ error: note ?? "No file yet." }, { status: 404 });
-  if (!final.hashOk) return NextResponse.json({ error: note ?? "The file changed since it was approved." }, { status: 409 });
+  const { final, note, entitlement: e } = await resolveFinalFile(video);
+  if (!final) {
+    const status = e.blockedBy === "AWAITING_DECISION" || e.blockedBy === "CHANGES_REQUESTED" ? 403 : e.blockedBy === "HASH_DRIFT" ? 409 : 404;
+    return NextResponse.json({ error: note ?? "No file yet." }, { status });
+  }
 
   await recordDownload({ enrollmentId: video.enrollmentId, clientUserId, staffUserId, via }, video.id, final.submissionId);
   const target = final.kind === "cut" && final.submissionId

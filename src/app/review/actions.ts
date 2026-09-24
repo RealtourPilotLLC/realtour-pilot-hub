@@ -835,6 +835,7 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   }
 
   const { authorName } = await sessionAuthor();
+  const decidedAt = new Date();
   // COMPARE-AND-SET on the status this request read, the shape reassignCut has
   // used since Sep 16 (:2282, "two presses must not both run the source-job
   // release"). Every refusal above is a read-then-write, which two overlapping
@@ -846,7 +847,7 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   // this is the part that has to hold when the presses overlap.)
   const won = await prisma.reviewSubmission.updateMany({
     where: { id: submissionId, status: submission.status },
-    data: { status: "APPROVED", decidedAt: new Date(), decidedBy: authorName },
+    data: { status: "APPROVED", decidedAt, decidedBy: authorName },
   });
   if (won.count === 0) {
     return {
@@ -865,6 +866,17 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     const { addApprovedCutToLibrary } = await import("@/lib/portalLibrary");
     await addApprovedCutToLibrary(submissionId);
   } catch { /* library is best-effort */ }
+
+  // …and THIS is the release (CP-02): the client's review window opens now,
+  // with its deadline frozen, and clientReleasedAt is finally stamped. It runs
+  // BEFORE correctedCutApproved below, because releasing a video's next version
+  // is what answers the client's open round on it — the per-video ledger the
+  // revision close reads. Best-effort: the libraryRepair cron step opens any
+  // window this misses, from the true release time.
+  try {
+    const { openReviewWindow } = await import("@/lib/reviewWindows");
+    await openReviewWindow(submissionId, { at: decidedAt, by: authorName });
+  } catch { /* the repair covers it */ }
 
   // Approved → the file goes to the job's Final folder on Dropbox and this
   // cut is COMPLETE (Jordan: "if it's approved, it automatically gets
@@ -2164,6 +2176,11 @@ async function removeCutInner(
     };
   }
   const at = new Date();
+  // The client's review window on it stops with it (CP-02) — the row it named is gone.
+  try {
+    const { closeReviewWindow } = await import("@/lib/reviewWindows");
+    await closeReviewWindow(sub.id, "REMOVED");
+  } catch { /* bookkeeping only */ }
 
   // THE JOB GOES FIRST, before any of the file cleanup below (reviewer,
   // Sep 16). Everything from here to the end is best-effort network work, and
@@ -2413,6 +2430,10 @@ async function reassignCutInner(
         status: "PENDING",
         decidedAt: null,
         decidedBy: null,
+        // Released to the SOURCE client, not to this one: on the target job it
+        // is an unreleased cut until someone rules on it there (CP-02).
+        clientReleasedAt: null,
+        clientReleasedBy: null,
         ...(stranded ? { strandedFinalPath: stranded, finalPath: null, completedAt: null, dropboxJobId: null } : {}),
         movedFromProjectId: sub.projectId,
         movedAt,
@@ -2429,6 +2450,12 @@ async function reassignCutInner(
     throw e;
   }
   if (moved === 0) return { ok: false, message: "That version has already been moved or withdrawn." };
+  // Its review window on the source job stops; released on the target, the
+  // same row is re-homed there (reviewWindows.openReviewWindow).
+  try {
+    const { closeReviewWindow } = await import("@/lib/reviewWindows");
+    await closeReviewWindow(sub.id, "MOVED");
+  } catch { /* bookkeeping only */ }
   // The cut keeps its notes: they are keyed by the cut's own asset URL, which
   // is unique per submission, so the whole thread (roots and replies) follows
   // the video to the job it now belongs to. The CLIENT's portal comments do

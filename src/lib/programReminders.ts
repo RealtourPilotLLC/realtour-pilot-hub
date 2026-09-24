@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
-import { recalcProgramMonth, addBusinessDaysET, monthSessionCount, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
+import { recalcProgramMonth, addBusinessDaysET, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef } from "@/lib/outbox";
@@ -562,6 +562,12 @@ export type EvaluatedState = {
   sessionLostAt: string | null;
   releasedCutsAwaiting: number;
   oldestReleaseAt: string | null;
+  /** CP-02: the earliest OPEN review window's PERSISTED deadline — the same
+   *  instant the portal shows and enforcement uses. Never recomputed here. */
+  reviewDeadlineAt?: string | null;
+  /** CP-02: `r<YYYYMMDD>` of the earliest open window's release. The review
+   *  cadence belongs to that batch of releases, not to the month. */
+  reviewTag?: string | null;
   snoozedUntil: string | null;
   enrollmentStatus: string;
   schedulerSync: { fresh: boolean; detail: string };
@@ -620,6 +626,8 @@ export type ReminderCandidate = {
   kyleFollowUp: { due: boolean; reason: string } | null;
   /** The extra paragraph this particular milestone adds to the template's body. */
   extraParagraph: string | null;
+  /** REVIEW lane (CP-02): the release batch this candidate chases, `r<YYYYMMDD>`. */
+  reviewTag?: string | null;
   state: EvaluatedState;
 };
 
@@ -767,7 +775,12 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
     // on chasing a session that was already booked. The rule now lives in
     // programMonths.countDistinctSessions and the portal's capacity reads the
     // same function, so the chaser and the client's own screen cannot disagree.
-    monthSessionCount(monthId, clientId, now),
+    // CP-10: read through the one month-progress reader, so the chaser counts
+    // exactly what the roster, the client file and portal Home show. Held
+    // semantics are unchanged; an UNCONFIRMED filming is a staff-only unknown
+    // there and never a client reminder here. (Dynamic: that reader pulls in
+    // the library and the release rule, which this module must not load eagerly.)
+    import("@/lib/monthProgress").then((m) => m.monthBookedSessions(monthId, clientId, now)),
     // WHEN A SESSION WAS LAST LOST (Jordan, Sep 21 2026: the reminders "must
     // stop when the condition actually resolves, including a cancellation that
     // takes a month back to one confirmed session"). Stopping is the easy half;
@@ -806,13 +819,15 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
       !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
   ).length;
   const cancelRequested = requests.filter((r) => r.status === "CANCEL_REQUESTED").length;
-  const released = projects.length
-    ? await prisma.reviewSubmission.findMany({
-        where: { projectId: { in: projects.map((p) => p.id) }, clientReleasedAt: { not: null }, clientApprovedDecisionId: null, clientRequestedAt: null, withdrawnAt: null },
-        select: { clientReleasedAt: true },
-      })
-    : [];
-  const oldest = released.reduce<Date | null>((m, r) => (r.clientReleasedAt && (!m || r.clientReleasedAt < m) ? r.clientReleasedAt : m), null);
+  // THE REVIEW LANE READS THE REVIEW WINDOWS (CP-02, Sep 24 2026). It used to
+  // select ReviewSubmission rows with clientReleasedAt set — a column nothing
+  // wrote — so it counted zero, always, and review reminders could never fire.
+  // The windows are OPEN until the client decides, carry their deadline frozen
+  // at release, and a LAZY window (released before windows were recorded) is
+  // never chased: nobody told that client about a clock.
+  const { reviewLaneFacts } = await import("@/lib/reviewWindows");
+  const review = await reviewLaneFacts(projects.map((p) => p.id));
+  const oldest = review.oldestOpenedAt;
   // A cancelled APPOINTMENT is the other way a month loses a session, and
   // dating it is where the first version of this went wrong.
   //
@@ -856,8 +871,11 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
     sessionLostAt,
     pendingSessionRequests,
     carryoverUnclassified: carryover,
-    releasedCutsAwaiting: released.length,
+    releasedCutsAwaiting: review.count,
     oldestReleaseAt: oldest,
+    reviewDeadlineAt: review.deadlineAt,
+    reviewTag: review.tag,
+    reviewWindows: review.windows,
     /** Upcoming sessions and where they say they are — the ADDRESS lane's input.
      *  PER SESSION, not per project: a Pro month's two four-hour legs are two
      *  filming days at two addresses, and one row for the order would have asked
@@ -943,10 +961,12 @@ export const secondSessionParagraph = (ordinal: number, required: number, videos
 };
 
 /** Which sub-lane of the ledger a row belongs to. The dedupeKey carries it:
- *  `enrollment:month:action[:sN][:mid|:copy|:retry]:sequence`. Rows written
- *  before Sep 21 2026 have no tag at all, which reads correctly as session 1 on
- *  the ordinary cadence. */
-function ledgerLaneOf(dedupeKey: string | null, enrollmentId: string, monthKey: string, action: string): { midMonth: boolean; sessionTag: string; manual: boolean } {
+ *  `enrollment:month:action[:sN][:rYYYYMMDD][:mid|:copy|:retry]:sequence`. Rows
+ *  written before Sep 21 2026 have no tag at all, which reads correctly as
+ *  session 1 on the ordinary cadence. A REVIEW_WORK row written before CP-02
+ *  (Sep 24 2026) has no review tag and reads as "legacy" — which the review
+ *  cadence counts against EVERY batch, so a month in flight cannot re-send. */
+function ledgerLaneOf(dedupeKey: string | null, enrollmentId: string, monthKey: string, action: string): { midMonth: boolean; sessionTag: string; manual: boolean; reviewTag: string } {
   const prefix = `${enrollmentId}:${monthKey}:${action}:`;
   const rest = dedupeKey && dedupeKey.startsWith(prefix) ? dedupeKey.slice(prefix.length) : "";
   const segs = rest.split(":");
@@ -954,6 +974,7 @@ function ledgerLaneOf(dedupeKey: string | null, enrollmentId: string, monthKey: 
     midMonth: segs.includes("mid"),
     sessionTag: segs.find((s) => /^s\d+$/.test(s)) ?? "s1",
     manual: segs[0] === "copy" || segs[0] === "retry",
+    reviewTag: segs.find((s) => /^r\d{8}$/.test(s)) ?? "legacy",
   };
 }
 
@@ -995,6 +1016,7 @@ async function evaluateMonth(
     sessionsAccountedFor: facts.sessionsAccountedFor, sessionsMissing: facts.sessionsMissing, pendingSessionRequests: facts.pendingSessionRequests,
     fullyScheduled: facts.fullyScheduled, sessionLostAt: facts.sessionLostAt?.toISOString() ?? null,
     releasedCutsAwaiting: facts.releasedCutsAwaiting, oldestReleaseAt: facts.oldestReleaseAt?.toISOString() ?? null,
+    reviewDeadlineAt: facts.reviewDeadlineAt?.toISOString() ?? null, reviewTag: facts.reviewTag,
     snoozedUntil: month.remindersSnoozedUntil?.toISOString() ?? null, enrollmentStatus: e.status,
     schedulerSync: feeds.call, sessionFeed: feeds.session, firstCycle, carryoverUnclassified: facts.carryoverUnclassified,
   };
@@ -1115,13 +1137,31 @@ async function evaluateMonth(
   const sameSession = (k: string | null) => laneOf(k).sessionTag === sessionTag;
   const isCounted = (r: { state: string; leaseUntil: Date | null }) =>
     r.state === "SENT" || r.state === "UNKNOWN" || r.state === "QUEUED" || r.state === "BOUNCED" || (r.state === "PENDING" && !!r.leaseUntil && r.leaseUntil > now);
-
   // A mid-month row is read by ITS OWN action (the dedupeKey carries it), so a
   // BOOK_CALL milestone still counts while we are evaluating BOOK_SESSION. The
   // session tag deliberately does not scope this either: one 15th, one message.
   const isMidRow = (r: { dedupeKey: string | null; action: string }) => ledgerLaneOf(r.dedupeKey, e.id, month.monthKey, r.action).midMonth;
+  // CP-02, REVIEWED Sep 24: the review cadence is counted PER WINDOW. Every
+  // review reminder counted every window open when it went, so a window's
+  // attempts are the lane's sends since its release (any tag, legacy rows
+  // too), and the cadence chases the oldest window with attempts left
+  // (reviewWindows.reviewCadenceTarget). Keyed on the earliest open window's
+  // release day instead, approving Monday's videos reset a Tuesday video
+  // already chased twice to "attempt 1", and one undecided Monday video kept a
+  // Friday batch from ever being chased. The tag still names the ledger rows —
+  // it is the target window's release day.
+  const reviewSends = lane === "REVIEW" ? prior.filter((r) => !isMidRow(r) && isCounted(r)) : [];
+  const { reviewCadenceTarget } = await import("@/lib/reviewWindows");
+  const reviewTarget = lane === "REVIEW" ? reviewCadenceTarget(facts.reviewWindows, reviewSends.map((r) => r.sentAt ?? r.createdAt), p.reviewMaxAttempts) : null;
+  const reviewTag = lane === "REVIEW" ? reviewTarget?.tag ?? facts.reviewTag ?? null : null;
+  if (reviewTarget) {
+    // What this reminder is about — and the one deadline it may quote.
+    state.reviewTag = reviewTarget.tag;
+    state.reviewDeadlineAt = reviewTarget.window.deadlineAt.toISOString();
+  }
+  const sameBatch = (k: string | null) => !reviewTag || laneOf(k).reviewTag === reviewTag || laneOf(k).reviewTag === "legacy";
   const midRows = monthRows.filter(isMidRow);
-  const cadenceRows = prior.filter((r) => sameSession(r.dedupeKey) && !isMidRow(r));
+  const cadenceRows = prior.filter((r) => sameSession(r.dedupeKey) && sameBatch(r.dedupeKey) && !isMidRow(r));
   const midSpent = midRows.some(isCounted);
   // A CANCELLATION RE-OPENS THE ASK (Jordan, Sep 21 2026). Stopping when the
   // condition resolves was already true — a booked session yields no action at
@@ -1149,9 +1189,11 @@ async function evaluateMonth(
   const lostAt = action === "BOOK_SESSION" ? facts.sessionLostAt : null;
   const afterLoss = (r: { sentAt: Date | null; createdAt: Date }) => !lostAt || (r.sentAt ?? r.createdAt) > lostAt;
   const counted = cadenceRows.filter((r) => isCounted(r) && afterLoss(r));
-  const attemptsMade = counted.length;
+  // REVIEW: the target window's own count, and spacing from the lane's last
+  // send whatever batch it was tagged with.
+  const attemptsMade = reviewTarget ? reviewTarget.attempts : counted.length;
   const reopened = !!lostAt && cadenceRows.filter(isCounted).length > attemptsMade;
-  const lastSentAt = counted.reduce<Date | null>((m, r) => (r.sentAt && (!m || r.sentAt > m) ? r.sentAt : m), null);
+  const lastSentAt = (reviewTarget ? reviewSends : counted).reduce<Date | null>((m, r) => (r.sentAt && (!m || r.sentAt > m) ? r.sentAt : m), null);
 
   // MID_MONTH is the 15th's own milestone, with its own single attempt. It wins
   // a day it shares with an ordinary follow-up, because it is the message that
@@ -1179,9 +1221,12 @@ async function evaluateMonth(
   // and only when Jordan has set it.
   let quotedDeadlineAt: Date | null = null;
   if (lane === "REVIEW") {
-    laneReadyAt = facts.oldestReleaseAt ? addBusinessDaysET(facts.oldestReleaseAt, p.reviewWorkAfterBusinessDays) : now;
+    const releasedAt = reviewTarget?.window.openedAt ?? facts.oldestReleaseAt;
+    laneReadyAt = releasedAt ? addBusinessDaysET(releasedAt, p.reviewWorkAfterBusinessDays) : now;
     // §8: four business days for each released version.
-    deadlineAt = facts.oldestReleaseAt ? endOfBusinessDaysET(facts.oldestReleaseAt, 4) : addBusinessDaysET(now, 4);
+    // The PERSISTED deadline of the window being chased (CP-02) — the one the
+    // portal shows and enforcement uses — never a recompute from the release.
+    deadlineAt = reviewTarget?.window.deadlineAt ?? facts.reviewDeadlineAt ?? (releasedAt ? endOfBusinessDaysET(releasedAt, 4) : addBusinessDaysET(now, 4));
   } else if (action === "BOOK_SESSION") {
     const prepAt = d.planningMode === "CALL" ? d.strategyCallAt : d.preparationCompletedAt;
     // Never before the 1st, and never before the month was actually planned.
@@ -1248,7 +1293,16 @@ async function evaluateMonth(
   const failedRetry = laneRows.find((r) => r.action === action && r.state === "FAILED" && (!r.nextAttemptAt || r.nextAttemptAt <= now)) ?? null;
   // One escalation per (month, action): the ESCALATION ledger row carries the
   // client action it escalated in its templateKey.
-  const escalated = (await prisma.programReminder.count({ where: { monthId: month.id, action: "ESCALATION", templateKey: `escalation:${action}` } })) > 0;
+  const escalated = (await prisma.programReminder.count({
+    where: {
+      monthId: month.id, action: "ESCALATION", templateKey: `escalation:${action}`,
+      // REVIEW: an escalation filed after the chased window was released
+      // already covered it (whatever batch it was tagged with) — so closing
+      // Monday's videos cannot earn a Tuesday video a second one.
+      ...(reviewTarget ? { createdAt: { gte: reviewTarget.window.openedAt } }
+        : reviewTag ? { OR: [{ dedupeKey: { endsWith: `:${reviewTag}` } }, { dedupeKey: `${e.id}:${month.monthKey}:ESCALATION:${action}` }] } : {}),
+    },
+  })) > 0;
   // The review window is FOUR business days end to end (§8), so the planning
   // lane's three-day escalation threshold would fire on the very first review
   // reminder and put a task on Kyle for every cut we share. The review lane
@@ -1264,7 +1318,7 @@ async function evaluateMonth(
     : null;
 
   const to = await recipientFor(e);
-  const common = { ...withMid, action, noCallEligible, digestSession, answersStarted, escalation, to: to ? maskToRef("email", to.email) : null };
+  const common = { ...withMid, action, noCallEligible, digestSession, answersStarted, escalation, to: to ? maskToRef("email", to.email) : null, reviewTag };
   if (rowCeilingHit) {
     return out({ ...common, attempt: laneAttemptsMade, decision: escalation ? "escalate" : "none", reason: `${laneRows.length} reminder rows already written for this month and action (only ${laneAttemptsMade} sent) — stopping so a person looks` });
   }
@@ -1283,7 +1337,7 @@ async function evaluateMonth(
   // key, one wins on P2002) while letting a consumed-but-unsent row step aside.
   // The tags in the middle are what keep the lanes apart: `s2` is the second Pro
   // session's cadence, `mid` is the 15th's single milestone.
-  const tags = [sessionTag === "s1" ? null : sessionTag, milestone === "MID_MONTH" ? "mid" : null].filter(Boolean).join(":");
+  const tags = [sessionTag === "s1" ? null : sessionTag, reviewTag, milestone === "MID_MONTH" ? "mid" : null].filter(Boolean).join(":");
   const dedupeKey = failedRetry
     ? (failedRetry.dedupeKey ?? `${e.id}:${month.monthKey}:${action}:retry:${failedRetry.id}`)
     : `${e.id}:${month.monthKey}:${action}:${tags ? `${tags}:` : ""}${laneRows.length + 1}`;
@@ -1348,7 +1402,10 @@ async function escalate(c: ReminderCandidate, p: ReminderPolicy, now: Date, why:
   // assignment rows on first use, and "what would go out now?" must not write.
   if (dryRun) return { created: false, owner: "(not resolved in a dry run)" };
   const owner = await escalationOwner(c.enrollmentId, c.monthId, p.escalationOwnerDuty);
-  const dedupeKey = `${c.enrollmentId}:${c.monthKey}:ESCALATION:${c.action}`;
+  // One escalation per (month, action) — and per review BATCH on the review
+  // lane (CP-02), or a second release in the month could never escalate.
+  const batch = c.lane === "REVIEW" && c.reviewTag ? `:${c.reviewTag}` : "";
+  const dedupeKey = `${c.enrollmentId}:${c.monthKey}:ESCALATION:${c.action}${batch}`;
   try {
     const row = await prisma.programReminder.create({
       data: {
@@ -1368,7 +1425,7 @@ async function escalate(c: ReminderCandidate, p: ReminderPolicy, now: Date, why:
         summary: `${why}. Reminders sent: ${Math.max(0, c.attempt - 1)}. Owner: ${owner.label}.`.slice(0, 500),
         description: `The reminder evaluator stopped nudging the client and handed this to you.\n\n${why}.\nMonth ${c.monthKey} — ${actionLabel(c.action)}.\nLast evaluated state: ${JSON.stringify(c.state)}\n\nOpen the client file on /content/${c.enrollmentId} to call, text, or snooze the reminders.`,
         reasonCreated: "Content-program reminder escalation (spec §24)",
-        clientId: c.clientId, assignedKey: owner.assignedKey, dedupeKey: `program-reminder-escalation:${c.monthId}:${c.action}`,
+        clientId: c.clientId, assignedKey: owner.assignedKey, dedupeKey: `program-reminder-escalation:${c.monthId}:${c.action}${batch}`,
         dueAt: new Date(now.getTime() + 864e5),
       },
       select: { id: true },
@@ -1459,7 +1516,15 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
     { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey(c.action, reminderId, c.monthKey), clientId: c.clientId, requestedBy: opts.requestedBy },
     { workerId: leaseBy },
   );
-  return recordSendResult(reminderId, r, now);
+  const result = await recordSendResult(reminderId, r, now);
+  // A review reminder that actually went out is the evidence the client was
+  // told (CP-02): the open windows it was about carry clientNotifiedAt, which
+  // an automatic approval needs.
+  if (c.lane === "REVIEW" && result.outcome === "sent") {
+    const { markReviewWindowsNotified } = await import("@/lib/reviewWindows");
+    await markReviewWindowsNotified(c.monthId, now).catch(() => 0);
+  }
+  return result;
 }
 
 async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLink: string, fresh: ReminderCandidate | null): Promise<TemplateVars> {
@@ -1483,7 +1548,19 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
     // move with it, so it is a separate, deliberately-set value and it is null
     // unless Jordan has set one (F20 review, Sep 21 2026).
     deadline: c.quotedDeadlineAt && c.quotedDeadlineAt > new Date() ? c.quotedDeadlineAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" }) : null,
+    // CP-02: the review window's own deadline, quoted only while the policy
+    // that shows it in the portal is on (and the auto sentence only with
+    // automatic approval on) — the email never promises what the page does not.
+    ...(c.lane === "REVIEW" ? await reviewTemplateVars(fresh?.state.reviewDeadlineAt ?? c.state.reviewDeadlineAt ?? null, c.isTest) : {}),
   };
+}
+
+async function reviewTemplateVars(deadlineISO: string | null, isTest: boolean): Promise<Pick<TemplateVars, "reviewDeadline" | "reviewAutoApprove">> {
+  const { revisionPolicy, deadlineLabel } = await import("@/lib/reviewWindows");
+  const p = await revisionPolicy();
+  if (!p.on || !deadlineISO) return { reviewDeadline: null, reviewAutoApprove: false };
+  // Only promise automatic approval to a client it can actually happen to.
+  return { reviewDeadline: deadlineLabel(new Date(deadlineISO)), reviewAutoApprove: p.autoApprove.on && (!p.autoApprove.testClientsOnly || isTest) };
 }
 
 /** Write the outbox's verdict on the ledger row. Exported so the share-notice

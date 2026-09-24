@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { Clapperboard, Eye, EyeOff, Film, Layers } from "lucide-react";
+import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { cn } from "@/lib/utils";
+import { decideRevisionFeeForm, holdReviewWindowForm, restartReviewClockForm } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // CONTENT — the shared video library, seen with STAFF permissions (spec §17).
@@ -21,6 +22,20 @@ export type LibraryCutUi = {
   createdAtISO: string; decidedAtISO: string | null; decidedBy: string | null; releasedToClientAtISO: string | null;
   withdrawn: boolean; note: string | null; clientDecision: string | null;
 };
+/** One client review window (CP-02): a released version's deadline and what became of it. */
+export type LibraryWindowUi = {
+  id: string; submissionId: string; round: number; state: string; source: string;
+  openedAtISO: string; deadlineISO: string; originalDeadlineISO: string | null; restartedBy: string | null;
+  notifiedAtISO: string | null; viewedAtISO: string | null; heldReason: string | null;
+  expiryOutcome: string | null; closedReason: string | null; evidence: string | null; decidedBy: string | null;
+};
+/** One revision round on the per-video ledger. `feeCents` is null unless the
+ *  viewer is OWNER/ADMIN — the fee never reaches anyone else's screen. */
+export type LibraryRoundUi = {
+  id: string; ordinal: number; included: boolean; includedRounds: number; state: string; requestedBy: string | null; createdAtISO: string;
+  feeAckBy: string | null; feeAckAtISO: string | null; feeDecision: string | null; feeDecidedBy: string | null; feeCents: number | null;
+  lateOverrideBy: string | null; answeredAtISO: string | null;
+};
 export type LibraryVideoUi = {
   id: string; title: string; monthKey: string | null; kind: string; countsTowardAllowance: boolean; status: string;
   format: string | null; pillarName: string | null; filmedAtISO: string | null; deliveredAtISO: string | null;
@@ -28,9 +43,15 @@ export type LibraryVideoUi = {
   finalVersionLabel: string | null; source: string;
   sources: { kind: string; isFinal: boolean; label: string | null }[];
   cuts: LibraryCutUi[];
+  reviewWindows?: LibraryWindowUi[];
+  revisionRounds?: LibraryRoundUi[];
+  /** OWNER/ADMIN: may see the fee, charge or waive it, and restart or hold a
+   *  client's review clock (the actions behind these refuse anyone else). */
+  moneyEyes?: boolean;
 };
 
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null);
+const when = (isoStr: string | null) => (isoStr ? `${new Date(isoStr).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET` : null);
 
 const STATUS_TONE: Record<string, string> = {
   PLANNED: "bg-surface-2 text-muted-2", FILMED: "bg-brand-soft text-brand", EDITING: "bg-brand-soft text-brand",
@@ -136,12 +157,109 @@ export function ContentLibraryPanel({
                       </tbody>
                     </table>
                   )}
+                  <ClientReview v={v} />
                 </div>
               </details>
             );
           })}
         </div>
       </Section>
+    </div>
+  );
+}
+
+const WINDOW_TONE: Record<string, string> = {
+  OPEN: "text-brand", CHANGES_REQUESTED: "text-warning", APPROVED: "text-success", AUTO_APPROVED: "text-success", SUPERSEDED: "text-muted-2", REMOVED: "text-muted-2",
+};
+
+/**
+ * The client's review of this video, staff-side (CP-02): every window — when
+ * it opened, its deadline, whether they were told and whether they looked,
+ * and how it closed — and every revision round on the ledger. The office's
+ * controls live here: restart a client's clock, hold a window from automatic
+ * approval, and (OWNER/ADMIN) charge or waive an extra round. Plain forms:
+ * nothing on this panel needs the browser to do more than submit.
+ */
+function ClientReview({ v }: { v: LibraryVideoUi }) {
+  const windows = v.reviewWindows ?? [];
+  const rounds = v.revisionRounds ?? [];
+  if (windows.length === 0 && rounds.length === 0) return null;
+  const used = rounds.filter((r) => r.state !== "CANCELLED").length;
+  return (
+    <div className="space-y-2 rounded-lg border border-border/70 bg-surface px-3 py-2">
+      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+        <CalendarClock className="size-3" /> Client review · rounds used {used}{rounds[0] ? ` of ${rounds[0].includedRounds} included` : ""}
+      </p>
+      {windows.length > 0 && (
+        <ul className="space-y-1">
+          {windows.map((w) => (
+            <li key={w.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="font-medium">v{w.round}</span>
+              <span className={cn("font-semibold", WINDOW_TONE[w.state] ?? "text-muted")}>{w.state.toLowerCase().replace(/_/g, " ")}</span>
+              <span className="text-muted">opened {when(w.openedAtISO)} · due {when(w.deadlineISO)}{w.originalDeadlineISO ? ` (was ${when(w.originalDeadlineISO)}, restarted by ${w.restartedBy ?? "staff"})` : ""}</span>
+              <span className="text-muted-2">{w.source === "LAZY" ? "released before windows were recorded" : w.source.toLowerCase()}</span>
+              <span className="text-muted-2">{w.notifiedAtISO ? `told ${day(w.notifiedAtISO)}` : "not emailed"} · {w.viewedAtISO ? `opened by them ${day(w.viewedAtISO)}` : "not opened yet"}</span>
+              {w.decidedBy && <span className="text-muted">· {w.decidedBy}</span>}
+              {w.heldReason && <span className="text-warning">on hold: {w.heldReason}</span>}
+              {w.expiryOutcome && <span className="text-muted-2">expiry: {w.expiryOutcome.toLowerCase()}</span>}
+              {w.evidence && <span className="basis-full text-[11px] text-muted-2">evidence — {w.evidence}</span>}
+              {w.state === "OPEN" && v.moneyEyes && (
+                <span className="flex gap-1.5">
+                  <form action={restartReviewClockForm}>
+                    <input type="hidden" name="windowId" value={w.id} />
+                    <button type="submit" className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">Restart clock</button>
+                  </form>
+                  <form action={holdReviewWindowForm}>
+                    <input type="hidden" name="windowId" value={w.id} />
+                    <input type="hidden" name="hold" value={w.heldReason ? "0" : "1"} />
+                    <button type="submit" className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">{w.heldReason ? "Release hold" : "Hold"}</button>
+                  </form>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {rounds.length > 0 && (
+        <table className="w-full text-left">
+          <thead className="text-[10px] uppercase tracking-wide text-muted-2">
+            <tr><th className="py-1 pr-2">Round</th><th className="pr-2">Asked by</th><th className="pr-2">State</th><th>Extra round</th></tr>
+          </thead>
+          <tbody>
+            {rounds.map((r) => (
+              <tr key={r.id} className="border-t border-border/50 align-top">
+                <td className="py-1 pr-2 font-medium">{r.ordinal}{r.included ? "" : " (extra)"}</td>
+                <td className="pr-2 text-muted">{r.requestedBy ?? "—"} · {day(r.createdAtISO)}{r.lateOverrideBy ? ` · late, let through by ${r.lateOverrideBy}` : ""}</td>
+                <td className="pr-2">{r.state.toLowerCase()}{r.answeredAtISO ? ` ${day(r.answeredAtISO)}` : ""}</td>
+                <td>
+                  {r.included ? <span className="text-muted-2">included</span> : (
+                    <span className="space-y-1">
+                      <span className="block text-muted">
+                        {r.feeAckBy ? `acknowledged by ${r.feeAckBy} ${day(r.feeAckAtISO)}` : "no acknowledgement (policy was off)"}
+                        {v.moneyEyes && r.feeCents != null ? ` · $${(r.feeCents / 100).toFixed(0)} may apply` : ""}
+                      </span>
+                      {r.feeDecision && r.feeDecision !== "PENDING" && <span className="block font-semibold">{r.feeDecision.toLowerCase()}{r.feeDecidedBy ? ` (${r.feeDecidedBy})` : ""}</span>}
+                      {r.feeDecision === "PENDING" && v.moneyEyes && (
+                        <span className="flex gap-1.5">
+                          {(["CHARGE", "WAIVE"] as const).map((d) => (
+                            <form key={d} action={decideRevisionFeeForm}>
+                              <input type="hidden" name="roundId" value={r.id} />
+                              <input type="hidden" name="decision" value={d} />
+                              <button type="submit" className={cn("rounded-md px-2 py-0.5 text-[11px] font-semibold", d === "CHARGE" ? "bg-warning/15 text-warning hover:bg-warning/25" : "border border-border text-muted hover:bg-surface-2")}>{d === "CHARGE" ? "Charge" : "Waive"}</button>
+                            </form>
+                          ))}
+                        </span>
+                      )}
+                      {r.feeDecision === "PENDING" && !v.moneyEyes && <span className="block text-muted-2">waiting on the office</span>}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {v.moneyEyes && rounds.some((r) => r.feeDecision === "PENDING") && <p className="text-[11px] text-muted-2">Charge records the decision only — the hub bills nothing. Invoice it the usual way.</p>}
     </div>
   );
 }

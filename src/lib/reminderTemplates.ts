@@ -58,6 +58,12 @@ export type TemplateVars = {
    *  caller passes it only when Jordan has deliberately set one
    *  (quotedPlanningDeadlineDayOfMonth, F20 review, Sep 21 2026). */
   deadline: string | null;
+  /** REVIEW_WORK (CP-02): the earliest open review window's PERSISTED deadline,
+   *  in words ("Thu, Oct 1, 5:00 PM ET") — the same instant the portal shows and
+   *  enforcement uses. Set only while revision_policy is on; null = no sentence. */
+  reviewDeadline?: string | null;
+  /** REVIEW_WORK: review_auto_approve is on, so the email says what expiry does. */
+  reviewAutoApprove?: boolean;
 };
 
 export type ReminderTemplate = {
@@ -159,6 +165,27 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
         SIGN_OFF,
       ].join("\n"),
   },
+  // v2 (CP-02): quotes the review deadline — only when the caller hands one
+  // over, which it does only while revision_policy is on — and, only when
+  // automatic approval is on, what happens if nobody answers. With neither it
+  // says what v1 said. No em dashes: a client reads it.
+  "reminder.review_work.v2": {
+    id: "reminder.review_work.v2",
+    action: "REVIEW_WORK",
+    version: "2",
+    purpose: "Cuts have been shared for approval and are waiting on the client (quotes the review deadline when review deadlines are on).",
+    render: (v) =>
+      [
+        `Hi ${v.firstName},`,
+        "",
+        `${v.itemCount === 1 ? "A new cut is" : `${v.itemCount} new cuts are`} waiting for your review in your portal. Approve ${v.itemCount === 1 ? "it" : "them"} or tell us what to change, and we'll take it from there: ${v.portalLink}`,
+        ...(v.reviewDeadline
+          ? ["", `Please review by ${v.reviewDeadline} (review windows count business days, Monday to Friday).${v.reviewAutoApprove ? ` If we haven't heard from you by then, ${v.itemCount === 1 ? "that version is" : "those versions are"} approved automatically.` : ""}`]
+          : []),
+        "",
+        SIGN_OFF,
+      ].join("\n"),
+  },
   "scripts_ready.v1": {
     id: "scripts_ready.v1",
     action: "SCRIPTS_READY",
@@ -199,7 +226,7 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   BOOK_CALL: "reminder.book_call.v1",
   COMPLETE_ANSWERS: "reminder.complete_answers.v1",
   BOOK_SESSION: "reminder.book_session.v1",
-  REVIEW_WORK: "reminder.review_work.v1",
+  REVIEW_WORK: "reminder.review_work.v2",
   SCRIPTS_READY: "scripts_ready.v1",
   STRATEGY_READY: "strategy_ready.v1",
 };

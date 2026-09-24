@@ -1,42 +1,14 @@
 // ---------------------------------------------------------------------------
-// The plain-English status engine (redesign, Aug 28) — every Content Program
-// surface speaks through this instead of enum chips and fractions. One
-// sentence per client per month, derived from the SAME counts the roster and
-// workspace already share, so the words can never disagree with the numbers.
-// Tones: "action" = waiting on Jordan (the only thing that gets brand orange),
-// "moving" = in motion, "ok" = wrapped, "quiet" = paused/history.
+// Content Program words and the month journey's step logic — pure, no prisma,
+// so client components, server pages and the drills all import the same rules.
+//
+// CP-10 (Sep 24 2026): statusSentence / needsYouItems used to live here. They
+// took the roster's proxy counts (a project = a booked session, a past shoot
+// date = filmed, a DELIVERED project = its whole quantity delivered) and had
+// no callers left, so they were removed rather than left to be re-wired onto
+// the numbers the completion audit showed were wrong. The journey below reads
+// lib/monthProgress's facts instead.
 // ---------------------------------------------------------------------------
-
-export type StatusTone = "action" | "moving" | "ok" | "quiet";
-
-// Pure copy of contentProgram's monthLabel — this module must stay importable
-// from client components, and contentProgram pulls in prisma.
-export function monthWords(monthKey: string): string {
-  const [y, m] = monthKey.split("-").map(Number);
-  return new Date(Date.UTC(y, (m ?? 1) - 1, 15)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
-}
-
-export type StatusInput = {
-  status: string; // enrollment status: ACTIVE | PAUSED | ENDED
-  monthKey: string;
-  videosOwed: number;
-  strategyCallStatus: string;
-  strategyCallAt: string | null;
-  strategyCallRequired: boolean;
-  clientSuppliesTopics: boolean;
-  topicsSelected: number;
-  scriptsReady: number;
-  scriptsAwaiting: number;
-  openSuggestions: number;
-  sessionsScheduled: number;
-  sessionsRequired: number;
-  shotCount: number;
-  delivered: number;
-  inReview: number;
-  nextShootDate: string | null;
-  behind: { monthKey: string; delivered: number; owed: number } | null;
-  lastMonthKey?: string | null;
-};
 
 const ET = "America/New_York";
 
@@ -48,83 +20,77 @@ export function fmtDayTime(iso: string): string {
   return new Date(iso).toLocaleString("en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
+// ---------------------------------------------------------------------------
+// THE MONTH JOURNEY (Call → Topics → Scripts → Shoot → Delivered), as data.
+// MonthJourney.tsx draws it; monthProgress.journeyInputFrom fills it, so the
+// roster card and the client file's hero tracker cannot compute it two ways.
+// ---------------------------------------------------------------------------
 
-// The one sentence. Priority: waiting-on-you beats in-motion beats done.
-export function statusSentence(r: StatusInput): { text: string; tone: StatusTone } {
-  if (r.status === "PAUSED") {
-    return { text: r.lastMonthKey ? `Paused — last active ${monthWords(r.lastMonthKey)}` : "Paused", tone: "quiet" };
-  }
-  const owed = Math.max(r.videosOwed, 1);
-  const suffix = r.behind
-    ? ` · still owes ${plural(r.behind.owed - r.behind.delivered, "video")} from ${monthWords(r.behind.monthKey)}`
-    : "";
+export type JourneyInput = {
+  callStatus: string; // NOT_REQUIRED | NOT_SCHEDULED | SCHEDULED | COMPLETED | SKIPPED
+  topicsSelected: number;
+  scriptsReady: number;
+  /** drafts sitting on Jordan's desk — when set, the Scripts node says "N to review" instead of a 0/4 that lies */
+  scriptsAwaiting?: number;
+  videosOwed: number;
+  sessionsRequired: number;
+  /** DISTINCT confirmed sessions (an appointment, a confirmed request, or one whose filming was confirmed) — never a project count */
+  sessionsConfirmed: number;
+  /** sessions somebody confirmed were FILMED — never "the date has passed" */
+  sessionsFilmedConfirmed: number;
+  delivered: number;
+  /** videos the client approved on their own current version */
+  clientApproved?: number;
+  inReview: number;
+  /** A step the facts cannot answer: the sentence says why, and the node draws as "unknown", never as a confident state. */
+  unknown?: Partial<Record<"shoot" | "delivered", string>>;
+  /** historical/imported months read as record-keeping, never as warnings */
+  muted?: boolean;
+};
 
-  // Month wrapped — nothing else matters once everything owed is delivered.
-  if (r.videosOwed > 0 && r.delivered >= r.videosOwed) {
-    return { text: `All ${plural(r.videosOwed, "video")} delivered — ${monthWords(r.monthKey)} is wrapped${suffix}`, tone: suffix ? "action" : "ok" };
-  }
-  // Cuts sitting in the Review Room ARE Jordan's queue.
-  if (r.inReview > 0) {
-    return { text: `${plural(r.inReview, "video")} waiting in the Review Room${suffix}`, tone: "action" };
-  }
-  // Scripts on his desk.
-  if (r.scriptsAwaiting > 0) {
-    const notes = r.openSuggestions > 0 ? ` · ${plural(r.openSuggestions, "client note")}` : "";
-    return { text: `${plural(r.scriptsAwaiting, "script")} waiting on your OK${notes}${suffix}`, tone: "action" };
-  }
-  if (r.openSuggestions > 0) {
-    return { text: `${plural(r.openSuggestions, "client note")} on their scripts${suffix}`, tone: "action" };
-  }
-  // The call gate.
-  if (r.strategyCallStatus === "NOT_SCHEDULED" && r.strategyCallRequired) {
-    return { text: `Waiting to book the strategy call${suffix}`, tone: "action" };
-  }
-  if (r.strategyCallStatus === "SCHEDULED") {
-    const when = r.strategyCallAt ? ` ${fmtDay(r.strategyCallAt)}` : "";
-    return { text: `Strategy call${when ? ` —${when}` : " booked"}${suffix}`, tone: "moving" };
-  }
-  // A booked shoot is the month's anchor — say it, with script readiness beside it.
-  if (r.nextShootDate) {
-    const scripts = r.scriptsReady < owed ? ` · ${r.scriptsReady} of ${owed} scripts ready` : " · scripts ready";
-    return { text: `Filming ${fmtDay(r.nextShootDate)}${scripts}${suffix}`, tone: "moving" };
-  }
-  // Call handled, planning the month.
-  if (r.topicsSelected === 0 && !r.clientSuppliesTopics) {
-    return { text: `Call handled — pick ${monthWords(r.monthKey).split(" ")[0]}'s topics${suffix}`, tone: "action" };
-  }
-  if (r.scriptsReady < owed) {
-    const text = r.scriptsReady === 0 ? `Topics picked — scripts up next${suffix}` : `${r.scriptsReady} of ${owed} scripts ready to film${suffix}`;
-    return { text, tone: "moving" };
-  }
-  // Scripts done, no session on the books.
-  if (r.sessionsScheduled === 0) {
-    return { text: `Scripts ready — no filming session booked yet${suffix}`, tone: "action" };
-  }
-  if (r.shotCount > 0) {
-    return { text: `Filmed — ${r.delivered} of ${owed} videos delivered${suffix}`, tone: "moving" };
-  }
-  return { text: `${r.delivered} of ${owed} videos delivered${suffix}`, tone: "moving" };
-}
+export type JourneyStepKey = "call" | "topics" | "scripts" | "shoot" | "delivered";
+export type JourneyStepState = "done" | "active" | "warn" | "todo" | "unknown";
+export type JourneyStep = { key: JourneyStepKey; label: string; state: JourneyStepState; detail: string; why: string | null };
 
-// The cross-client "Needs you" inbox: each row is ONE thing waiting on Jordan.
-// Derived from the same fields as the sentence, worst-first per client.
-export type NeedsYouItem = { text: string; anchor: "scripts" | "month" | "review" | "prev" };
-
-export function needsYouItems(r: StatusInput): NeedsYouItem[] {
-  if (r.status !== "ACTIVE") return [];
-  const items: NeedsYouItem[] = [];
-  if (r.scriptsAwaiting > 0) items.push({ text: `${plural(r.scriptsAwaiting, "script")} waiting on your OK`, anchor: "scripts" });
-  if (r.openSuggestions > 0) items.push({ text: `left ${plural(r.openSuggestions, "note")} on their scripts`, anchor: "scripts" });
-  if (r.inReview > 0) items.push({ text: `${plural(r.inReview, "video")} waiting in the Review Room`, anchor: "review" });
-  if (r.strategyCallStatus === "NOT_SCHEDULED" && r.strategyCallRequired) items.push({ text: "strategy call isn't booked yet", anchor: "month" });
-  if (r.sessionsScheduled === 0 && r.strategyCallStatus !== "NOT_SCHEDULED" && r.strategyCallStatus !== "SCHEDULED") {
-    items.push({ text: "no filming session on the calendar", anchor: "month" });
-  }
-  if (r.behind) items.push({ text: `still owes ${plural(r.behind.owed - r.behind.delivered, "video")} from ${monthWords(r.behind.monthKey)}`, anchor: "prev" });
-  return items;
+export function journeySteps(j: JourneyInput): JourneyStep[] {
+  const owed = Math.max(j.videosOwed, 1);
+  const step = (key: JourneyStepKey, label: string, state: JourneyStepState, detail: string, why: string | null = null): JourneyStep => ({ key, label, state, detail, why });
+  const call: JourneyStep =
+    j.callStatus === "NOT_REQUIRED" ? step("call", "Call", "done", "not needed")
+    : j.callStatus === "SKIPPED" ? step("call", "Call", "done", "skipped")
+    : j.callStatus === "COMPLETED" ? step("call", "Call", "done", "done")
+    : j.callStatus === "SCHEDULED" ? step("call", "Call", "active", "booked")
+    : step("call", "Call", "warn", "not booked");
+  const topics = step("topics", "Topics",
+    j.topicsSelected >= owed ? "done" : j.topicsSelected > 0 ? "active" : call.state === "done" ? "warn" : "todo",
+    `${j.topicsSelected}/${owed}`);
+  // Drafts on Jordan's desk mean NOT done, even with enough approved — the
+  // node must agree with its own "N to review" caption and the next-step line.
+  const scripts = step("scripts", "Scripts",
+    (j.scriptsAwaiting ?? 0) > 0 ? "warn"
+    : j.scriptsReady >= owed ? "done"
+    : j.scriptsReady > 0 ? "active"
+    : topics.state === "done" ? "warn" : "todo",
+    (j.scriptsAwaiting ?? 0) > 0 ? `${j.scriptsAwaiting} to review` : `${j.scriptsReady}/${owed}`);
+  // DONE ONLY WHEN EVERY OWED SESSION WAS CONFIRMED FILMED (CP-10). It used to
+  // be "one project's date has passed and there are as many projects as
+  // sessions" — so a Pro month read filmed after one of its two sessions, and
+  // a dated job nobody had confirmed read filmed the day after its date.
+  const req = Math.max(j.sessionsRequired, 1);
+  const shootUnknown = j.sessionsFilmedConfirmed < req ? j.unknown?.shoot ?? null : null;
+  const shoot = step("shoot", "Shoot",
+    j.sessionsFilmedConfirmed >= req ? "done" : shootUnknown ? "unknown" : j.sessionsConfirmed > 0 ? "active" : "warn",
+    shootUnknown ? "unknown" : j.sessionsFilmedConfirmed > 0 ? `${j.sessionsFilmedConfirmed}/${req} filmed` : `${j.sessionsConfirmed}/${req} booked`,
+    shootUnknown);
+  const deliveredUnknown = j.unknown?.delivered ?? null;
+  const delivered = step("delivered", "Delivered",
+    j.videosOwed > 0 && j.delivered >= j.videosOwed ? "done" : deliveredUnknown ? "unknown" : j.delivered > 0 ? "active" : "todo",
+    `${j.delivered}/${owed}${deliveredUnknown ? "?" : ""}`,
+    deliveredUnknown);
+  const steps = [call, topics, scripts, shoot, delivered];
+  // Imported history: show what happened, never nag about what didn't.
+  if (j.muted) for (const s of steps) if (s.state === "warn" || s.state === "unknown") s.state = "todo";
+  return steps;
 }
 
 // Plain words for a script's status — enum text never renders anywhere.

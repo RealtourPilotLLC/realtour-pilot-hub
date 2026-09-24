@@ -394,6 +394,12 @@ export type OutputRowView = {
   priorDelivery: { at: Date; round: number | null } | null;
   /** The current version is finished and has NOT gone out. */
   awaitingSend: boolean;
+  /** CP-09: the content topic this slot was filmed for, bound from the photographer's confirmation. */
+  topicId: string | null;
+  /** That topic's title as it reads NOW — a rename shows here the moment it is made. */
+  topicTitle: string | null;
+  /** The photographer's note to the editor about this video. */
+  filmingNote: string | null;
 };
 
 /** "v3 " when there is more than one version, "" otherwise. */
@@ -440,7 +446,7 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       orderBy: [{ slot: "asc" }],
       select: {
         id: true, deliverableId: true, slot: true, title: true, ownerName: true, ownerKey: true, promisedAt: true, targetAt: true,
-        waivedAt: true, removedFromOrderAt: true, deliveredAt: true, deliveredVia: true,
+        waivedAt: true, removedFromOrderAt: true, deliveredAt: true, deliveredVia: true, topicId: true, filmingNote: true,
       },
     }),
     prisma.reviewSubmission.findMany({
@@ -455,10 +461,17 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
   // (cutSlots' whole reason for existing). A row whose slot is no longer in
   // that list — a retired one — sorts after the live ones rather than
   // disappearing.
-  const [slots, planning] = await Promise.all([
+  // CP-09: the TOPIC's title is read live rather than copied onto the row, so
+  // a topic renamed after filming renames its video everywhere this is read.
+  const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((x): x is string => !!x))];
+  const [slots, planning, topics] = await Promise.all([
     cutSlots(projectId, { includeWaived: true }).catch(() => []),
     jobPlanningFor(projectId),
+    topicIds.length
+      ? prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }).catch(() => [])
+      : Promise.resolve([] as { id: string; title: string }[]),
   ]);
+  const topicTitleOf = new Map(topics.map((t) => [t.id, t.title]));
   const labelByKey = new Map(slots.map((s) => [slotKeyOf(s.deliverableId, s.slot), s.label]));
   const orderByKey = new Map(slots.map((s, i) => [slotKeyOf(s.deliverableId, s.slot), i]));
   const roundsByKey = new Map<string, typeof rounds>();
@@ -526,10 +539,13 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
                     : "No cut uploaded yet";
     const owner = ownerForOutput(o, planning, o.deliverableId);
     const isLive = !o.waivedAt && !o.removedFromOrderAt;
+    const topicTitle = o.topicId ? topicTitleOf.get(o.topicId)?.trim() || null : null;
     return {
       id: o.id,
       key,
-      label: o.title?.trim() || labelByKey.get(key) || `Video ${o.slot}`,
+      // A name somebody typed on the row, then the topic it was filmed for,
+      // then the slot's own name ("Personal Branding Reel — Video 2 of 4").
+      label: o.title?.trim() || topicTitle || labelByKey.get(key) || `Video ${o.slot}`,
       index: live.findIndex((l) => l.id === o.id) + 1 || i + 1,
       total: live.length,
       ownerName: owner.name,
@@ -547,6 +563,9 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       priorDelivery: prior,
       awaitingSend: state === "approved",
       detail,
+      topicId: o.topicId,
+      topicTitle,
+      filmingNote: o.filmingNote,
     };
   });
 }
@@ -698,6 +717,175 @@ export async function ensureOutputsSafely(projectId: string, source: string): Pr
     console.warn(`[deliverable-outputs] ${source} could not materialise ${projectId}: ${error}`);
     return { ok: false, error, result: null };
   }
+}
+
+// ===========================================================================
+// CP-09 — A FILMED TOPIC IS ONE OF THE EDITOR'S OWED VIDEOS (Sep 24 2026).
+//
+// The photographer's confirmation made a ContentVideo with a topic and no slot,
+// and the editor's work is slots: "Personal Branding Reel — Video 2 of 4". The
+// two never met. So the first cut uploaded for a slot made a SECOND logical
+// video with no topic (the library keys cut chains by project × deliverable ×
+// slot — contentVideos.ts videoBySlot), the topic → script link was lost on the
+// way to the client, and the editor was told "Video 2 of 4" and nothing about
+// which of the client's topics that is.
+//
+// bindTopicVideosToSlots gives each confirmed video a slot on the job's monthly
+// video row: ContentVideo gets (deliverableId, slot, outputId), and the slot's
+// DeliverableOutput gets the topic and the photographer's note. The library's
+// videoBySlot then hands that slot's first cut to the topic's own video.
+//
+// NEVER A GUESS. Only a slot with nothing in it is used — no topic, no bound
+// video, no review round. A slot an editor has already uploaded to is somebody
+// else's video until a person says otherwise, so a video with no free slot
+// (the office's videos-owed number is lower than what was filmed, or the cuts
+// came first) is returned as unbound for the caller to flag. No Deliverable row
+// is created, so editor routing — the monthly row goes to personal branding
+// (Kim) — is exactly what it was.
+// ===========================================================================
+
+/**
+ * "CP09" in ASCII. The namespace half of the per-project filming lock; the
+ * other half is hashtext(projectId). Every writer of a filmed topic's video or
+ * of its slot binding takes this lock first, so two submits, a submit and the
+ * hourly sweep, or two sweeps can never each make or bind the same video.
+ */
+const FILMING_LOCK_NS = 0x43503039;
+
+/**
+ * Take the project's filming lock inside `tx`. ::int4 IS NOT DECORATION (Topaz
+ * drill, Sep 18): Prisma sends a JS number as a bigint, Postgres has no
+ * pg_advisory_xact_lock(bigint, bigint), and without the casts every call
+ * raises 42883.
+ */
+export async function lockFilmingForProject(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${FILMING_LOCK_NS}::int4, hashtext(${projectId})::int4)`;
+}
+
+export type BindResult = {
+  /** videos given a slot by this call */
+  bound: number;
+  /** titles of confirmed videos that could not be given one — the caller flags them */
+  unbound: string[];
+  /** bound slots whose note to the editor changed */
+  notesUpdated: number;
+};
+
+/**
+ * Bind every confirmed filmed video on this job to a free owed-video slot, in
+ * the month's rank order. Idempotent: a bound video keeps its slot, and a second
+ * run binds nothing new. `notes` (topicId → the photographer's note) is written
+ * onto the slot, and updates a note on a slot already bound.
+ */
+export async function bindTopicVideosToSlots(projectId: string, opts: { notes?: Record<string, string> } = {}): Promise<BindResult> {
+  const out: BindResult = { bound: 0, unbound: [], notesUpdated: 0 };
+  const confirmed = await prisma.contentVideo.findMany({
+    where: { projectId, filmedConfirmedAt: { not: null }, status: { not: "ARCHIVED" } },
+    select: { id: true },
+  });
+  if (!confirmed.length) return out;
+  // The slots are sized from videosFilmed (reviewCuts.cutSlots: the monthly
+  // row's count is at least the number filmed), and finalizeUpload writes that
+  // number before any report is applied — so the rows exist by the time this
+  // asks for them, provided materialisation itself works.
+  // A failure here THROWS: binding against slots that were never made would
+  // report every video as unbound, and the report's retry is the right answer.
+  const ensured = await ensureOutputsSafely(projectId, "filmed-topics");
+  if (!ensured.ok) throw new Error(`The job's video slots could not be materialised: ${ensured.error}`);
+  // THE MONTHLY ROW — the first live video row by creation, which is the row
+  // cutSlots sizes from videosFilmed. The same query cutSlots makes.
+  const row = await prisma.deliverable.findFirst({
+    where: { projectId, removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, waivedAt: true },
+  });
+  const notes = opts.notes ?? {};
+
+  await prisma.$transaction(
+    async (tx) => {
+      await lockFilmingForProject(tx, projectId);
+      // Everything re-read INSIDE the lock — a run that got here first has
+      // bound some of these already.
+      const videos = await tx.contentVideo.findMany({
+        where: { projectId, filmedConfirmedAt: { not: null }, status: { not: "ARCHIVED" } },
+        select: { id: true, topicId: true, selectionId: true, title: true, outputId: true, deliverableId: true, slot: true, createdAt: true },
+      });
+      const outputs =
+        row && !row.waivedAt
+          ? await tx.deliverableOutput.findMany({
+              where: { deliverableId: row.id, removedFromOrderAt: null, waivedAt: null },
+              orderBy: { slot: "asc" },
+              select: { id: true, slot: true, topicId: true, filmingNote: true },
+            })
+          : [];
+      const outputIds = outputs.map((o) => o.id);
+      const [holders, rounds, selections] = await Promise.all([
+        // Any live video already holding one of these slots, whoever made it.
+        outputs.length
+          ? tx.contentVideo.findMany({
+              where: { status: { not: "ARCHIVED" }, OR: [{ outputId: { in: outputIds } }, { projectId, deliverableId: row!.id }] },
+              select: { id: true, outputId: true, slot: true },
+            })
+          : Promise.resolve([] as { id: string; outputId: string | null; slot: number | null }[]),
+        outputs.length
+          ? tx.reviewSubmission.findMany({ where: { projectId, deliverableId: row!.id }, select: { slot: true } })
+          : Promise.resolve([] as { slot: number | null }[]),
+        tx.contentTopicSelection.findMany({
+          where: { id: { in: videos.map((v) => v.selectionId).filter((x): x is string => !!x) } },
+          select: { id: true, rank: true },
+        }),
+      ]);
+      const takenOutput = new Set(holders.map((h) => h.outputId).filter((x): x is string => !!x));
+      const takenSlot = new Set([...holders.filter((h) => h.slot != null).map((h) => h.slot as number), ...rounds.map((r) => r.slot ?? 1)]);
+      const rankOf = new Map(selections.map((s) => [s.id, s.rank ?? 9_999]));
+      const noteFor = (topicId: string | null) => (topicId && notes[topicId]?.trim() ? notes[topicId].trim().slice(0, 1000) : null);
+
+      // A slot already bound keeps it; only its note can move.
+      for (const v of videos.filter((x) => x.outputId)) {
+        const o = outputs.find((x) => x.id === v.outputId);
+        const note = noteFor(v.topicId);
+        if (o && note && note !== o.filmingNote) {
+          await tx.deliverableOutput.update({ where: { id: o.id }, data: { filmingNote: note } });
+          out.notesUpdated++;
+        }
+      }
+
+      // The rest, in the month's rank order, then the order they were filmed.
+      const waiting = videos
+        .filter((x) => !x.outputId)
+        .sort((a, b) => (rankOf.get(a.selectionId ?? "") ?? 9_999) - (rankOf.get(b.selectionId ?? "") ?? 9_999) || a.createdAt.getTime() - b.createdAt.getTime());
+      for (const v of waiting) {
+        // A video that already names a slot (a staff mapping) is bound to THAT
+        // slot or not at all — moving it, or binding it on another row, would
+        // be a guess. Only a video with no slot of its own takes a free one.
+        let free: (typeof outputs)[number] | null = null;
+        if (v.deliverableId) {
+          const own = row && v.deliverableId === row.id ? outputs.find((o) => o.slot === (v.slot ?? 1)) ?? null : null;
+          free = own && !takenOutput.has(own.id) && (!own.topicId || own.topicId === v.topicId) ? own : null;
+        } else {
+          free = outputs.find((o) => !o.topicId && !takenOutput.has(o.id) && !takenSlot.has(o.slot)) ?? null;
+        }
+        if (!free) {
+          out.unbound.push(v.title?.trim() || "(untitled video)");
+          continue;
+        }
+        const moved = await tx.contentVideo.updateMany({
+          where: { id: v.id, outputId: null },
+          data: { deliverableId: row!.id, slot: free.slot, outputId: free.id },
+        });
+        if (!moved.count) continue;
+        await tx.deliverableOutput.updateMany({
+          where: { id: free.id, topicId: null },
+          data: { topicId: v.topicId, filmingNote: noteFor(v.topicId) },
+        });
+        takenOutput.add(free.id);
+        takenSlot.add(free.slot);
+        out.bound++;
+      }
+    },
+    { maxWait: 15_000, timeout: 30_000 },
+  );
+  return out;
 }
 
 const SWEEP_HEALTH_KEY = "deliverable_outputs_sweep";

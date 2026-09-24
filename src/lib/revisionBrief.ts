@@ -369,6 +369,24 @@ async function standDownNonRevision(briefId: string): Promise<void> {
   } catch { /* the brief and the client's words are already saved */ }
 }
 
+/** The exact cut a portal ask is about (comms.RevisionPin, minus the bell's
+ *  needs). `cutKey` is slotKeyOf(deliverableId, slot), or null for a legacy
+ *  folder cut — which keeps the job-level brief it always had. */
+export type BriefPin = { submissionId: string; outputId: string | null; cutKey: string | null; decisionId: string; roundId: string | null; label?: string | null };
+
+/**
+ * PINNED ITEMS, WITH NO MODEL (CP-03). The portal knows the cut, so every note
+ * line becomes an item scoped to it — `named`, `cuts: [cutKey]`. Under 240
+ * characters the brief used to carry NO items at all, and with no items the
+ * approval rule fell back to "any corrected cut since the ask", which let the
+ * fix for video B close video A's ask. Pure.
+ */
+export function pinnedItems(text: string, cutKey: string): RevisionItem[] {
+  const bullets = text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("•")).map((l) => l.replace(/^•\s*/, "").trim()).filter(Boolean);
+  const lines = bullets.length ? bullets : [text.trim()];
+  return lines.map((ask, i) => ({ id: `i${i + 1}`, area: "Other", ask: ask.slice(0, 1000), detail: null, quote: null, scope: "named" as const, cuts: [cutKey] }));
+}
+
 export async function createRevisionBrief(opts: {
   projectId: string;
   taskId?: string | null;
@@ -379,12 +397,19 @@ export async function createRevisionBrief(opts: {
   clientName?: string | null;
   propertyAddress?: string | null;
   deliverables?: string[];
+  pin?: BriefPin;
+  /** No model call: a portal ADDENDUM joins a request the editor already has,
+   *  its pinned items are the work order, and a client re-sending notes must
+   *  not be able to buy a model call per submit. */
+  skipAnalysis?: boolean;
 }): Promise<string | null> {
   const text = (opts.text ?? "").trim();
   if (!text) return null;
   // Don't spend a model call on "can you brighten the kitchen photo" — a short
   // ask is already a work order. The card renders it as one item.
-  const worthAnalyzing = text.length >= 240;
+  const worthAnalyzing = text.length >= 240 && !opts.skipAnalysis;
+  const pin = opts.pin;
+  const items = pin?.cutKey ? pinnedItems(text, pin.cutKey) : null;
 
   let brief;
   try {
@@ -396,6 +421,13 @@ export async function createRevisionBrief(opts: {
         sourceDetail: opts.sourceDetail ?? null,
         originalText: text,
         twoSided: !!opts.twoSided,
+        ...(pin
+          ? {
+              submissionId: pin.submissionId, decisionId: pin.decisionId, roundId: pin.roundId,
+              ...(pin.cutKey ? { outputId: pin.outputId } : {}),
+              ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: [], questions: [] }), analyzedAt: new Date() } : {}),
+            }
+          : {}),
       },
       select: { id: true },
     });
@@ -404,7 +436,7 @@ export async function createRevisionBrief(opts: {
   }
 
   if (!worthAnalyzing) return brief.id;
-  await analyzeBrief(brief.id, opts);
+  await analyzeBrief(brief.id, { ...opts, pin });
   return brief.id;
 }
 
@@ -432,10 +464,17 @@ export async function briefCutsFor(projectId: string): Promise<BriefCut[]> {
   });
 }
 
+/** The slot key of a pinned brief's output, for a re-analysis that was not
+ *  handed the pin (the card's retry button). */
+async function pinnedKeyOf(outputId: string): Promise<string | null> {
+  const o = await prisma.deliverableOutput.findUnique({ where: { id: outputId }, select: { deliverableId: true, slot: true } }).catch(() => null);
+  return o ? slotKeyOf(o.deliverableId, o.slot) : null;
+}
+
 /** Run (or re-run) the analysis for one brief. Never throws. */
 export async function analyzeBrief(
   briefId: string,
-  ctx?: { clientName?: string | null; propertyAddress?: string | null; deliverables?: string[] },
+  ctx?: { clientName?: string | null; propertyAddress?: string | null; deliverables?: string[]; pin?: BriefPin },
 ): Promise<boolean> {
   const brief = await prisma.revisionBrief.findUnique({
     where: { id: briefId },
@@ -444,6 +483,10 @@ export async function analyzeBrief(
       projectId: true,
       originalText: true,
       twoSided: true,
+      // A pinned brief (CP-03) keeps its cut through a re-analysis too.
+      submissionId: true,
+      outputId: true,
+      itemsJson: true,
       project: {
         select: {
           title: true,
@@ -468,6 +511,28 @@ export async function analyzeBrief(
         (brief.project?.deliverables ?? []).map((d) => d.label || d.type).filter(Boolean),
       cuts,
     });
+    // PINNED: the portal already said which video. Every item the model found
+    // is scoped to it — the model never gets to move an ask to another video —
+    // and if it found none, the deterministic items stay: a client who pressed
+    // "Submit change request" asked for a change, whatever the model thinks.
+    const pinKey = ctx?.pin?.cutKey ?? (brief.submissionId && brief.outputId ? await pinnedKeyOf(brief.outputId) : null);
+    if (pinKey) {
+      let kept: RevisionItem[] = [];
+      try { kept = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItem[] }).items ?? []) : []; } catch { /* rebuilt below */ }
+      const items = analysis.items.length
+        ? analysis.items.map((i) => ({ ...i, scope: "named" as const, cuts: [pinKey] }))
+        : kept.length ? kept : pinnedItems(brief.originalText, pinKey);
+      await prisma.revisionBrief.update({
+        where: { id: briefId },
+        data: {
+          headline: analysis.items.length ? analysis.headline.slice(0, 300) : undefined,
+          itemsJson: JSON.stringify({ items, keep: analysis.keep, references: analysis.references, questions: analysis.questions }),
+          analyzedAt: new Date(),
+          analysisError: null,
+        },
+      });
+      return true;
+    }
     // When every item lands on the SAME one video, the brief itself is about
     // that video — the pointer the edit card follows to open the right cut
     // (Jordan, Sep 16: "When I click the revisions… It should go directly to

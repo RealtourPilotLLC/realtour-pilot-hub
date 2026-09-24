@@ -1235,6 +1235,83 @@ export async function createProjectFollowupTask(opts: {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// CP-09 — A VIDEO NOBODY PLANNED FOR (Sep 24 2026).
+//
+// The photographer filmed more than the month's plan: a topic added on site, a
+// selection already beyond the package's allowance, or a confirmed video the
+// job has no free slot for. The audit's rule is that such a video goes into
+// normal editing and the OFFICE decides what it counts toward — this month,
+// next month, or billed as an extra. Nothing is charged automatically and
+// nothing is blocked; this is the one place that decision is asked for.
+//
+// One card per job (dedupe [projectId, "filmed_extra"]), on Kyle's desk. A later
+// report on the same job ADDS its lines to the open card rather than stacking a
+// second one, and re-opens a handled card only when it brings a line the card
+// has not already listed. Internal only: a bell for the office, nothing to the
+// client or the photographer.
+// ---------------------------------------------------------------------------
+export async function fileCapacityReview(projectId: string, extras: { title: string; reason: string }[]): Promise<boolean> {
+  if (!extras.length) return false;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true, client: { select: { name: true } } } });
+  if (!p) return false;
+  const key = dedupe([projectId, "filmed_extra"]);
+  const street = (p.title ?? "this job").split(",")[0];
+  const lineOf = (x: { title: string; reason: string }) => `• ${clip(x.title, 120)} — ${clip(x.reason, 200)}`;
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  // Twice at most: a concurrent first call can win the create between our read
+  // and our insert, and then this call's lines merge into its row instead.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+    const listed = (existing?.description ?? "").split("\n").filter((l) => l.startsWith("• "));
+    const fresh = [...new Set(extras.map(lineOf))].filter((l) => !listed.includes(l));
+    if (existing && fresh.length === 0) return false;
+    const lines = [...listed, ...fresh];
+    const summary = `${lines.length} filmed video${lines.length === 1 ? "" : "s"} beyond ${p.client?.name ?? "the client"}'s plan for this session. They go to the editor as normal — decide for each whether it counts toward this month, next month, or is billed as an extra. Nothing is charged automatically.`;
+    const data = {
+      taskType: "content_capacity_review",
+      title: `Filmed beyond the plan — ${street}`.slice(0, 120),
+      summary: summary.slice(0, 500),
+      description: lines.join("\n").slice(0, 4000),
+      reasonCreated: "The photographer's filming report included videos beyond the month's plan",
+      checklist: JSON.stringify(["Count it toward this month", "Count it toward next month", "Bill it as an extra"]),
+      source: "system",
+      priority: "MEDIUM",
+      dueAt: new Date(Date.now() + DAY),
+      clientId: p.clientId,
+      projectId,
+      propertyAddress: p.title,
+      ownerId: kyle?.id ?? null,
+      assignedKey: "kyle",
+      dedupeKey: key,
+    };
+    if (existing) {
+      const open = existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
+      await prisma.smartTask.update({
+        where: { id: existing.id },
+        data: open ? { summary: data.summary, description: data.description } : { ...data, status: "OPEN", completedAt: null },
+      });
+    } else {
+      // createMany + skipDuplicates: a lost race is a no-op, not a P2002.
+      const made = await prisma.smartTask.createMany({ data: [data], skipDuplicates: true });
+      if (!made.count) continue;
+    }
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      await notifyInApp({
+        kind: "content_capacity_review",
+        title: `Filmed beyond the plan — ${street}`,
+        body: fresh.map((l) => l.slice(2)).join(" · "),
+        href: `/projects/${projectId}`,
+        targets: [{ roles: ["OWNER", "ADMIN"] }],
+        dedupeKey: `capacity-review-${key}-${crypto.createHash("sha1").update(fresh.join("\n")).digest("hex").slice(0, 12)}`,
+      });
+    } catch { /* the card is the record; the bell is a courtesy */ }
+    return true;
+  }
+  return false;
+}
+
 // Close a client's open "reply" task once we've responded. With per-order reply
 // tasks, pass the projectId to close ONLY that order's reply task; omit it to
 // close all of the client's open reply tasks (used when we can't tell which order

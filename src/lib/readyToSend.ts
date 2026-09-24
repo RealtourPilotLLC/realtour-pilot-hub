@@ -786,8 +786,18 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   // "released to the portal" only closes a row for a client who has a way in —
   // see wentOut. A membership is the concrete test: it is what a sign-in
   // resolves to, and it is what will start existing when the portal launches.
+  //
+  // Since the release gate (CP-01, Sep 24 2026) a released cut is only the
+  // client's once someone who CAN APPROVE it is able to: a live OWNER seat on
+  // an ACTIVE program whose access is not revoked. A revoked seat, a
+  // collaborator- or viewer-only account, or a paused/ended program can watch
+  // at most — the cut would sit at "awaiting approval" for good while leaving
+  // this card, the only place Kyle can Mark it sent.
+  const activeEnrollmentIds = (await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", accessRevokedAt: null }, select: { id: true } }).catch(() => [])).map((e) => e.id);
   const portalClientIds = new Set(
-    (await prisma.clientMembership.findMany({ select: { clientId: true } }).catch(() => [])).map((m) => m.clientId),
+    activeEnrollmentIds.length
+      ? (await prisma.clientMembership.findMany({ where: { role: "OWNER", revokedAt: null, enrollmentId: { in: activeEnrollmentIds } }, select: { clientId: true } }).catch(() => [])).map((m) => m.clientId)
+      : [],
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
   if (open.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []) };

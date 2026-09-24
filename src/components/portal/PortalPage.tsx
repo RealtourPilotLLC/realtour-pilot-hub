@@ -7,12 +7,12 @@ import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import {
-  recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy,
+  recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress,
   type PortalViewer, type PortalScheduleMonth, type PortalSlotDay, type PortalTopicsData, type PortalInterviewView, type PortalStrategyView, type PortalPlanning,
 } from "@/lib/portal";
 import { can } from "@/lib/portalAccess";
 import { withMediaToken, mediaScopeOf, mediaToken } from "@/lib/portalMedia";
-import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, programCountsByMonth, libraryAttention, videoState, type VideoListPage } from "@/lib/contentVideos";
+import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, libraryAttention, videoState, type VideoListPage } from "@/lib/contentVideos";
 import { cutHistory, type CutVersion } from "@/lib/clientDecisions";
 import { postingKitFor, type PostingKit } from "@/lib/postingKit";
 import { publishedResources, type ResourceGroupView } from "@/lib/portalResources";
@@ -146,20 +146,23 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
     await attempt("video sync", () => syncEnrollmentVideos(enrollment));
   }
   if (tab === "home") {
-    const [planning, schedule, videos, topics, released, month, counts, attention] = await Promise.all([
+    const [planning, schedule, videos, topics, released, month, progress, attention] = await Promise.all([
       attempt("planning", () => portalPlanning(enrollment)),
       attempt("schedule", () => portalScheduleMonths(enrollment)),
       attempt("videos", () => portalVideoList(enrollment, { page: 1, perPage: 24 })),
       attempt("topics", () => portalTopics(enrollment)),
       attempt("strategy", () => prisma.contentStrategyVersion.count({ where: { enrollmentId: enrollment.id, releasedAt: { not: null } } })),
       prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { videosOwed: true } }),
-      attempt("counts", () => programCountsByMonth(enrollment.id, [monthKey])),
+      // The month through lib/monthProgress (CP-10): sessions and the meter
+      // read the same facts Jordan's roster and the client file do.
+      attempt("progress", () => portalMonthProgress(enrollment, monthKey)),
       // Library-wide, not page one: "N waiting on you" is a library fact.
       attempt("attention", () => libraryAttention(enrollment)),
     ]);
     home = {
       first, monthKey, videosOwed: month?.videosOwed ?? enrollment.videosPerMonth,
-      program: counts.ok ? counts.data.get(monthKey) ?? { delivered: 0, total: 0 } : null, countsFailed: !counts.ok,
+      program: progress.ok ? { delivered: progress.data.production.delivered, total: progress.data.production.total } : null, countsFailed: !progress.ok,
+      progress: progress.ok ? progress.data : null,
       planning: planning.ok ? planning.data : null, planningFailed: !planning.ok,
       schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === monthKey) ?? schedule.data[0] ?? null : null, scheduleFailed: !schedule.ok,
       bookingUrl: STRATEGY_CALL_BOOKING_URL,
@@ -183,6 +186,11 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
             .then(async (s) => (s?.portalVideoId ? prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { playback: true, thumb: true } }) : null)).catch(() => null),
         ]);
         const versions = hist.ok ? hist.data.map((v) => ({ ...v, assetUrl: v.assetUrl ? withMediaToken(v.assetUrl, scope) : null })) : [];
+        // CP-02: the review deadline and rounds used ride on the CURRENT version
+        // into CutReview — from the window the server enforces; null (nothing
+        // shown) while revision_policy is off.
+        const reviewing = versions.find((x) => x.isCurrent);
+        if (reviewing) reviewing.review = await import("@/lib/reviewWindows").then((m) => m.reviewPanelFor(viewer, reviewing.submissionId)).catch(() => null);
         const pillar = video.pillarId ? await prisma.contentPillar.findUnique({ where: { id: video.pillarId }, select: { name: true } }).catch(() => null) : null;
         const kitData: PostingKit | null = kit.ok ? kit.data : null;
         // The state comes from the video row itself, through the one derivation
@@ -198,7 +206,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
           // A delivered (Aryeo/Mux) file plays directly — it is a CDN URL, not a hub cut, so no token applies.
           delivered: deliveredSrc?.playback && !/^\/api\/review\/cut\//.test(deliveredSrc.playback) ? { playback: deliveredSrc.playback, thumb: deliveredSrc.thumb } : null,
           // The download door: a media token over the VIDEO id, scoped to this viewer.
-          downloadHref: kitData?.final ? `/api/portal/download/${video.id}?m=${encodeURIComponent(mediaToken(video.id, scope))}` : null,
+          downloadHref: kitData?.access.download ? `/api/portal/download/${video.id}?m=${encodeURIComponent(mediaToken(video.id, scope))}` : null,
           perms: { comment: perms.comment, request: perms.request, approve: perms.approve, suggest: perms.suggest }, readOnly,
           // Only the emailed-link seat can never approve; point it at the door
           // that leads to one that can — when that door actually opens.

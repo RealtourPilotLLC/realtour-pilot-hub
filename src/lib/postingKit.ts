@@ -1,13 +1,14 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { cutIdentityHash, transcriptForCut } from "@/lib/cutTranscripts";
+import { transcriptForCut } from "@/lib/cutTranscripts";
 import { canonicalFromParts, partsFromBody, pointsFromJson } from "@/lib/contentScripts";
 import { renderScript, buildCaptionPrompt, type CanonicalScript } from "@/lib/contentPolicy";
 import { videoForEnrollment } from "@/lib/contentVideos";
-import { actorLabel } from "@/lib/portalAccess";
-import { streamUrlFor } from "@/lib/reviewCuts";
+import { actorLabel, can } from "@/lib/portalAccess";
+import { WHY, captionTarget, videoEntitlement, type Entitlement, type EntitlementBasis, type EntitlementBlock, type EntitlementVideo, type FinalFile } from "@/lib/cutEntitlement";
 import { CLIENT_VISIBLE_SCRIPT, type PortalViewer } from "@/lib/portal";
+import { URGENT_CONTACT } from "@/lib/reviewWindows";
 import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +25,11 @@ import { clip } from "@/lib/text";
 // ai_runs master switch does not gate it but the feature switch does. When
 // transcriptForCut reports a gap the draft is made from the script and the
 // kit says so in plain words — it never pretends a transcript existed.
+//
+// WHICH FILE, AND WHETHER THE CLIENT MAY HAVE IT (CP-01, Sep 24 2026), is not
+// decided here any more: the download, the caption target and the kit's
+// `access` all come from cutEntitlement's one rule. Internal completion is not
+// client approval, and a replacement never inherits the approval before it.
 // ---------------------------------------------------------------------------
 
 export type CaptionView = {
@@ -41,18 +47,8 @@ export type CaptionView = {
   sourceNote: string | null;
 };
 
-export type FinalFile = {
-  kind: "cut" | "delivered";
-  /** Raw URL: a hub stream URL (the page mints the media token) or an Aryeo CDN file. */
-  url: string;
-  submissionId: string | null;
-  fileName: string | null;
-  label: string; // "v2 (final, approved by Cara TEST on Sep 17)"
-  approvedByLabel: string | null;
-  approvedAtISO: string | null;
-  /** The bytes behind the approval still match. False = do not serve under that approval. */
-  hashOk: boolean;
-};
+// Moved to cutEntitlement with the rule that produces it; re-exported for the page.
+export type { FinalFile };
 
 export type PostingKit = {
   videoId: string;
@@ -68,52 +64,26 @@ export type PostingKit = {
   postedAtISO: string | null;
   downloadedAtISO: string | null;
   assistant: { enabled: boolean; why: string | null };
+  /** What the client may do with this video's file right now — the release
+   *  rule's answer (cutEntitlement), so the page never offers a button the
+   *  server would refuse. */
+  access: { download: boolean; captions: boolean; why: string | null; blockedBy: EntitlementBlock | null; basis: EntitlementBasis };
 };
 
 const DOWNLOAD_PATH = (videoId: string) => `/portal/download/${videoId}`;
 
-async function approvalFor(submissionId: string | null): Promise<{ label: string; atISO: string; contentHash: string | null } | null> {
-  if (!submissionId) return null;
-  const d = await prisma.clientDecision.findFirst({ where: { submissionId, decision: "APPROVE" }, orderBy: { decidedAt: "desc" }, select: { actorLabel: true, decidedAt: true, contentHash: true } });
-  return d ? { label: d.actorLabel, atISO: d.decidedAt.toISOString(), contentHash: d.contentHash } : null;
-}
-
 /**
- * Which file is "the final" for this video, and whether it may be served.
- * Order: the completed (Dropbox-copied) cut, else the client-approved cut,
- * else the delivered Aryeo file. A cut is served under an approval ONLY when
- * its current identity hash equals the hash recorded on that approval —
- * "never silently serve a different file under an old approval" (§8).
+ * Which file is "the final" for this video, and whether the client may have
+ * it — cutEntitlement's answer, in the shape the page and the download door
+ * read. It used to serve `finalSubmissionId ?? approvedSubmissionId`, i.e. the
+ * newest cut the Review Room had copied to Dropbox, with no client approval at
+ * all; and it checked the approval hash only when approvedSubmissionId pointed
+ * at that same cut, so a replacement round downloaded under nobody's approval.
+ * `final` is set exactly when the file may be served (hashOk is always true).
  */
-export async function resolveFinalFile(video: { id: string; finalSubmissionId: string | null; approvedSubmissionId: string | null; currentSubmissionId: string | null }): Promise<{ final: FinalFile | null; note: string | null }> {
-  const cutId = video.finalSubmissionId ?? video.approvedSubmissionId;
-  if (cutId) {
-    const sub = await prisma.reviewSubmission.findUnique({ where: { id: cutId }, select: { id: true, round: true, fileName: true, assetUrl: true, assetPath: true, contentHash: true, blobUrl: true, blobPathname: true, sizeBytes: true, completedAt: true } });
-    // assetUrl is the STABLE playback address, not proof there are bytes behind
-    // it. A cut whose file was moved or withdrawn (the Sep 17 Topaz
-    // remediation moved a silent render out of the Final folder) keeps its
-    // assetUrl and its approval, so the button rendered and the stream answered
-    // raw JSON with a 404 in the client's tab (review, Sep 17). A final needs a
-    // file: Dropbox path or hub copy.
-    if (sub?.assetUrl && (sub.assetPath || sub.blobUrl)) {
-      const approval = await approvalFor(video.approvedSubmissionId === sub.id ? sub.id : null);
-      const hashOk = !approval?.contentHash || approval.contentHash === cutIdentityHash(sub);
-      const label = `v${sub.round}${sub.completedAt ? " (final)" : approval ? " (approved)" : ""}`;
-      return {
-        final: { kind: "cut", url: sub.assetUrl ?? streamUrlFor(sub.id), submissionId: sub.id, fileName: sub.fileName, label, approvedByLabel: approval?.label ?? null, approvedAtISO: approval?.atISO ?? null, hashOk },
-        note: hashOk ? null : "The file behind your approval has changed since you approved it — we're re-issuing it for approval before it can be downloaded.",
-      };
-    }
-  }
-  const delivered = await prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO", isFinal: true }, select: { portalVideoId: true, label: true } });
-  const row = delivered?.portalVideoId ? await prisma.portalVideo.findUnique({ where: { id: delivered.portalVideoId }, select: { download: true, playback: true, title: true } }) : null;
-  if (row?.download || row?.playback) {
-    return { final: { kind: "delivered", url: (row.download ?? row.playback)!, submissionId: null, fileName: row.title, label: "Delivered file", approvedByLabel: null, approvedAtISO: null, hashOk: true }, note: null };
-  }
-  // Told apart on purpose: "the file we had is not there" is not the same news
-  // as "there is no file yet", and only one of them needs someone to act.
-  if (cutId) return { final: null, note: "We're re-issuing this video's file — it'll be back here shortly. Text us if you need it now." };
-  return { final: null, note: video.currentSubmissionId ? "The final file lands here once this version is approved and finished." : "No file yet — it appears here once the video is edited and delivered." };
+export async function resolveFinalFile(video: EntitlementVideo): Promise<{ final: FinalFile | null; note: string | null; entitlement: Entitlement }> {
+  const e = await videoEntitlement(video);
+  return { final: e.file, note: e.why, entitlement: e };
 }
 
 export type ScriptVisibility = "released" | "historical";
@@ -220,11 +190,22 @@ const captionView = (c: { id: string; kind: string; body: string; alternativesJs
 
 /** The kit for one of the viewer's videos (ownership already proven by the caller). */
 export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awaited<ReturnType<typeof videoForEnrollment>>>): Promise<PostingKit> {
-  const { final, note } = await resolveFinalFile(video);
-  const kitSubmissionId = final?.submissionId ?? video.approvedSubmissionId ?? video.currentSubmissionId ?? null;
+  const { final, note, entitlement: e } = await resolveFinalFile(video);
+  // The transcript shown is the ENTITLED cut's — the one a caption would be
+  // drafted from. Stale-marking compares against the decisive round too, so
+  // drafts of a replaced cut go STALE as soon as the replacement is released.
+  const kitSubmissionId = final?.submissionId ?? null;
+  const staleAgainst = kitSubmissionId ?? e.current?.submissionId ?? null;
+  // "Approve this version above" is only true for a seat that can approve —
+  // and on a paused or ended program NO seat can (every viewer is READ_ONLY,
+  // staff included), so "once the account owner approves" would promise
+  // something that cannot happen. Kyle can send the file instead.
+  const why = e.blockedBy === "AWAITING_DECISION" && viewer.access !== "FULL"
+    ? `Your program is ${viewer.enrollment.status === "ENDED" ? "ended" : "paused"}, so this version can't be approved here and its download isn't open. Call or text Kyle at ${URGENT_CONTACT} and he'll get you the file.`
+    : e.blockedBy === "AWAITING_DECISION" && !can(viewer, "approveEdits") ? WHY.AWAITING_OWNER : note;
   const [captions, transcript, script, lastDownload, cover, assistantOn] = await Promise.all([
     prisma.contentCaptionDraft.findMany({ where: { videoId: video.id, enrollmentId: viewer.enrollment.id, status: { not: "ARCHIVED" } }, orderBy: [{ kind: "asc" }, { versionNo: "desc" }] }),
-    kitSubmissionId ? transcriptForCut(kitSubmissionId).catch(() => ({ text: null, source: null, gap: "The transcript couldn't be read just now.", transcriptId: null, contentHash: null, language: null })) : Promise.resolve({ text: null, source: null, gap: "No cut of this video is on file, so there is no transcript.", transcriptId: null, contentHash: null, language: null }),
+    kitSubmissionId ? transcriptForCut(kitSubmissionId).catch(() => ({ text: null, source: null, gap: "The transcript couldn't be read just now.", transcriptId: null, contentHash: null, language: null })) : Promise.resolve({ text: null, source: null, gap: e.current && !e.file ? "it comes with the approved version" : "No cut of this video is on file, so there is no transcript.", transcriptId: null, contentHash: null, language: null }),
     scriptForVideo(video).catch(() => null),
     prisma.portalVisit.findFirst({ where: { enrollmentId: viewer.enrollment.id, path: { startsWith: DOWNLOAD_PATH(video.id) } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, select: { portalVideoId: true } }).then(async (s) => (s?.portalVideoId ? (await prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { thumb: true } }))?.thumb ?? null : null)),
@@ -232,7 +213,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
   ]);
   // Any AI draft tied to a cut that is no longer the final is STALE (spec §10):
   // stamp it rather than serving it as if it described the current file.
-  const stale = captions.filter((c) => c.status !== "STALE" && kitSubmissionId && c.submissionId !== kitSubmissionId && !c.submissionId.startsWith("portal-video:"));
+  const stale = captions.filter((c) => c.status !== "STALE" && staleAgainst && c.submissionId !== staleAgainst && !c.submissionId.startsWith("portal-video:"));
   if (stale.length) {
     await prisma.contentCaptionDraft.updateMany({ where: { id: { in: stale.map((c) => c.id) } }, data: { status: "STALE", staleReason: "cut changed" } }).catch(() => {});
     for (const c of stale) { c.status = "STALE"; c.staleReason = "cut changed"; }
@@ -240,7 +221,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
   return {
     videoId: video.id,
     title: video.title ?? "Video",
-    final, finalNote: note, cover,
+    final, finalNote: why, cover,
     captions: captions.map(captionView),
     // NEITHER IS MONEY-CLAMPED, on purpose. stripMoneySentences DELETES whole
     // sentences, and text.ts:108 scopes it to the case it was written for —
@@ -262,6 +243,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     postedAtISO: video.postedByClientAt?.toISOString() ?? null,
     downloadedAtISO: lastDownload?.createdAt.toISOString() ?? null,
     assistant: { enabled: assistantOn, why: assistantOn ? null : "Caption drafting is switched off until the program launches — we'll write your caption with the script for now, or you can write one below." },
+    access: { download: !!e.file, captions: !!e.captionRef, why, blockedBy: e.blockedBy, basis: e.basis },
   };
 }
 
@@ -295,8 +277,12 @@ export async function saveCaptionEdit(viewer: PortalViewer, videoId: string, inp
   const kind = CAPTION_KINDS.has(input.kind) ? input.kind : "CAPTION";
   const body = clip((input.body ?? "").trim(), 2200);
   if (body.length < 2) return { ok: false, message: "Write the caption first." };
-  const submissionId = v.finalSubmissionId ?? v.approvedSubmissionId ?? v.currentSubmissionId ?? (await portalVideoRef(v.id));
-  if (!submissionId) return { ok: false, message: "This video has no file on record yet, so a caption can't be tied to it." };
+  // Tied to the entitled file — the same target a draft uses. It fell back to
+  // the current (unapproved) review cut, so a caption could be written against
+  // a version the client had not approved and might never get.
+  const target = await captionTarget(viewer, v);
+  if (!target.ok) return { ok: false, message: target.message };
+  const submissionId = target.ref;
   const based = input.basedOnId && /^[a-z0-9]{10,40}$/i.test(input.basedOnId) ? await prisma.contentCaptionDraft.findFirst({ where: { id: input.basedOnId, videoId: v.id }, select: { id: true, versionNo: true, kind: true, strategyVersionId: true, transcriptId: true, scriptVersionId: true } }) : null;
   const last = await prisma.contentCaptionDraft.findFirst({ where: { videoId: v.id, kind }, orderBy: { versionNo: "desc" }, select: { versionNo: true } });
   const a = viewer.actor;
@@ -315,11 +301,10 @@ export async function saveCaptionEdit(viewer: PortalViewer, videoId: string, inp
   return { ok: true, message: "Saved as your caption.", id: row.id };
 }
 
-/** For a video delivered before the Review Room (no cut on file), the draft is tied to the delivered file's library row. Documented deviation: `submissionId` carries "portal-video:<PortalVideo.id>". */
-async function portalVideoRef(videoId: string): Promise<string | null> {
-  const s = await prisma.contentVideoSource.findFirst({ where: { videoId, kind: "PORTAL_VIDEO", isFinal: true }, select: { portalVideoId: true } });
-  return s?.portalVideoId ? `portal-video:${s.portalVideoId}` : null;
-}
+// For a video delivered before the Review Room (no cut on file), a caption is
+// tied to the delivered file's library row: `submissionId` carries
+// "portal-video:<PortalVideo.id>" (documented deviation). cutEntitlement's
+// captionRef is that value for an Aryeo file.
 
 type CaptionOut = { caption: string; shorterCaption?: string | null; ctaOptions?: string[] | null; coverTitles?: string[] | null; captionCta?: string | null; gaps?: { text?: string }[] };
 
@@ -332,10 +317,16 @@ type CaptionOut = { caption: string; shorterCaption?: string | null; ctaOptions?
 export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string): Promise<R & { drafted?: number }> {
   const v = await videoForEnrollment(viewer.enrollment, videoId);
   if (!v) return { ok: false, message: "That video isn't on your page." };
+  // The release rule first, the switch second: a caption for a version the
+  // client has not approved is refused whether or not the assistant is on.
+  // It used to draft from `final ?? approved ?? CURRENT` — the unapproved
+  // review cut — gated by the switch alone.
+  const target = await captionTarget(viewer, v);
+  if (!target.ok) return { ok: false, message: target.message };
   if (!(await isAutomationEnabled("caption_assistant"))) {
     return { ok: false, message: "Caption drafting is switched off until the program launches — write your caption below and it's saved with this video, or text us and we'll draft one." };
   }
-  const submissionId = v.finalSubmissionId ?? v.approvedSubmissionId ?? v.currentSubmissionId ?? null;
+  const submissionId = target.submissionId;
   const [script, transcript] = await Promise.all([
     scriptForVideo(v).catch(() => null),
     submissionId ? transcriptForCut(submissionId).catch(() => null) : Promise.resolve(null),
@@ -385,8 +376,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   } catch (e) {
     return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit — try again tomorrow, or write one below." : "The caption assistant couldn't draft just now — try again in a moment, or write one below." };
   }
-  const draftSubmissionId = submissionId ?? (await portalVideoRef(v.id));
-  if (!draftSubmissionId) return { ok: false, message: "This video has no file on record yet, so a caption can't be tied to it." };
+  const draftSubmissionId = target.ref;
   const rows: { kind: string; body: string; options: string[] }[] = [
     { kind: "CAPTION", body: out.caption, options: [] },
     ...(out.shorterCaption ? [{ kind: "SHORT_CAPTION", body: out.shorterCaption, options: [] }] : []),

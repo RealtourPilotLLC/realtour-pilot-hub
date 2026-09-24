@@ -293,6 +293,13 @@ export async function createPublishingJob(input: CreatePublishingJobInput): Prom
 
   // The exact cut. Must be APPROVED in the Review Room (Jordan's QC) — a
   // client-visible portal approval is recorded separately (ClientDecision).
+  //
+  // TODO(CP-01, before §12 is enabled): internal QC is NOT the client's
+  // approval. Replace the status check below with
+  // cutEntitlement.cutDownloadableFor({ id: enrollmentId, clientId }, cut.id),
+  // the one rule the portal's download and captions use, so nothing is ever
+  // published that the client could not have downloaded. Left as is while
+  // publishing is disabled (no path reaches this today).
   const cut = await prisma.reviewSubmission.findUnique({
     where: { id: input.submissionId },
     select: { id: true, projectId: true, status: true, contentHash: true, blobUrl: true, blobPathname: true, sizeBytes: true, fileName: true, sourceWidth: true, sourceHeight: true, videoId: true, clientApprovedDecisionId: true },

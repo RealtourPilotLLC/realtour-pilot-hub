@@ -92,4 +92,14 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
     onEffect: "Facts extracted from calls on the documented low-risk fields are ACCEPTED without a person reading them, which means they reach generators and the editor brief on their own.",
     reaches: "internal",
   },
+  revision_policy: {
+    title: "Review deadlines and revision rounds",
+    onEffect: "CLIENTS SEE a review deadline (four business days, Mon to Fri) and how many of their two included revision rounds each video has used. A third round asks the account owner to acknowledge that an extra round may carry a $50 fee; the office then charges or waives it, and nothing is ever charged automatically. A change request after the deadline is refused and Kyle is asked to reopen it, and an expired review becomes a task for Kyle. Only reviews opened after you turn this on are held to a deadline.",
+    reaches: "clients",
+  },
+  review_auto_approve: {
+    title: "Automatic approval on expiry",
+    onEffect: "When a review deadline passes with no answer, no open notes and no other hold, the hub records the approval itself (\"Automatic approval\") instead of handing it to Kyle. Needs Review deadlines on too, applies only to reviews opened after you turn this on, and by default only to TEST clients (testClientsOnly).",
+    reaches: "clients",
+  },
 };

@@ -4,7 +4,7 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { callModeOf, deriveMonthState, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
-import { isDeliveredProgramVideo } from "@/lib/contentVideos";
+import { monthProgressMany, progressKey, type MonthProgress } from "@/lib/monthProgress";
 
 // ---------------------------------------------------------------------------
 // THE MONTHLY PORTFOLIO OVERVIEW (spec §16). One row per (client, program
@@ -91,7 +91,11 @@ export type OverviewRow = {
     problem: string | null; // set when the call is done but the evidence is not
   };
 
-  session: { state: SessionState; dateISO: string | null; detail: string | null; requestedCount: number };
+  session: {
+    state: SessionState; dateISO: string | null; detail: string | null; requestedCount: number;
+    /** monthProgress's counts (CP-10) — the same numbers every other screen shows */
+    required: number; confirmed: number; missing: number; filmedConfirmed: number; unverified: number; heldUnconfirmed: number;
+  };
 
   work: {
     topicsSelected: number;
@@ -105,6 +109,10 @@ export type OverviewRow = {
 
   production: {
     filmed: number; editing: number; clientReview: number; delivered: number; owed: number; carriedIn: number;
+    /** the per-video stages (CP-10): produced → internally approved → released → client approved → downloadable */
+    produced: number; internallyApproved: number; released: number; releasedInferred: number; clientApproved: number; downloadable: number;
+    /** false when the delivered number is understated (the library is behind the pipeline) */
+    known: boolean;
     /** how many ContentVideo rows exist for this month at all */
     libraryRows: number;
     /** what the PIPELINE (attached projects) says was delivered — shown only to expose a library that has not been built */
@@ -143,15 +151,6 @@ export type OverviewRow = {
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
-/**
- * "This video is delivered." THE SAME FUNCTION contentVideos uses, imported
- * rather than copied: the overview reads the whole book in one query while
- * programCountsByMonth is per-enrollment, and a hand-copy of the rule drifted
- * once inside a single day — which would have shown Jordan a different
- * delivered count from the one the client sees in their portal.
- */
-const deliveredVideo = isDeliveredProgramVideo;
-
 const REQUIREMENT_WORD: Record<CallMode, string> = {
   REQUIRED: "Call required",
   OPTIONAL_WRITTEN: "Call optional — written path allowed",
@@ -179,6 +178,11 @@ export type OverviewOptions = {
   monthKey?: string;
   /** include ENDED enrollments (a filter Jordan turns on, never the default). */
   includeEnded?: boolean;
+  now?: Date;
+  /** Progress already read for some of these rows (the roster's, on the same
+   *  page) — keyed by monthProgress.progressKey. Reused, not recomputed, so
+   *  the cards and the rows are literally one calculation. */
+  progress?: Map<string, MonthProgress>;
 };
 
 export const ALL_OPEN = "ALL_OPEN";
@@ -194,7 +198,7 @@ export type OverviewResult = {
 };
 
 export async function programOverview(opts: OverviewOptions = {}): Promise<OverviewResult> {
-  const now = new Date();
+  const now = opts.now ?? new Date();
   const thisMonth = etMonthKey(now);
   const allOpen = opts.monthKey === ALL_OPEN;
   const monthKey = allOpen ? ALL_OPEN : opts.monthKey && /^\d{4}-\d{2}$/.test(opts.monthKey) ? opts.monthKey : thisMonth;
@@ -261,17 +265,23 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   const clientIds = [...new Set(rowsSpec.map((r) => r.enrollment.clientId))];
   const keysInScope = [...new Set(rowsSpec.map((r) => r.key))];
 
+  // SESSIONS, PRODUCTION AND TOPICS come from the one month-progress reader
+  // (CP-10) — the roster, the client file, portal Home and the reminders read
+  // the same object. This screen used to call any attached project CONFIRMED
+  // and one past shoot date COMPLETED, without ever comparing with the
+  // package's sessionsPerMonth, so a half-booked Pro month never raised
+  // missing_appointment. Progress the caller already read is reused.
+  const pairs = rowsSpec.map((r) => ({ enrollmentId: r.enrollment.id, monthId: r.month?.id ?? null, monthKey: r.key }));
+  const given = opts.progress ?? new Map<string, MonthProgress>();
+  const toRead = pairs.filter((p) => !given.has(progressKey(p.enrollmentId, p.monthId, p.monthKey)));
+
   const [
-    clients, owners, selections, monthTopics, interviews, scripts, strategyVersions,
-    calls, sessionRequests, projects, videos, reminders, failures, jobs,
+    clients, owners, progressRead, interviews, scripts, strategyVersions,
+    calls, sessionRequests, reminders, failures, jobs,
   ] = await Promise.all([
     prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true } }),
     ownersForMany(rowsSpec.map((r) => ({ enrollmentId: r.enrollment.id, monthId: r.month?.id ?? null }))),
-    monthIds.length ? prisma.contentTopicSelection.findMany({ where: { monthId: { in: monthIds }, status: { in: ["SELECTED", "CARRIED", "RECONCILED"] } }, select: { monthId: true, topicId: true, overflow: true } }) : [],
-    // ContentTopic.status is still where most selections live (957 rows vs 12
-    // selection rows on Sep 17) — counting only the new model would show every
-    // client as "no topics picked". Counted as a UNION keyed by topic id.
-    monthIds.length ? prisma.contentTopic.findMany({ where: { monthId: { in: monthIds }, status: { in: ["SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED"] } }, select: { id: true, monthId: true } }) : [],
+    toRead.length ? monthProgressMany(toRead, { now }) : Promise.resolve(new Map<string, MonthProgress>()),
     monthIds.length ? prisma.contentInterview.findMany({ where: { monthId: { in: monthIds } }, select: { monthId: true, status: true, answeredCount: true, submittedAt: true } }) : [],
     monthIds.length ? prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, status: true, historical: true, currentVersionId: true, approvedVersionId: true } }) : [],
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId: { in: enrollmentIds }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { enrollmentId: true, status: true } }),
@@ -281,17 +291,14 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       orderBy: { scheduledStart: "desc" },
     }),
     monthIds.length ? prisma.programSessionRequest.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, status: true, slotStart: true, bookingState: true, lastError: true } }) : [],
-    monthIds.length ? prisma.project.findMany({ where: { contentMonthId: { in: monthIds } }, select: { id: true, contentMonthId: true, status: true, shootDate: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } } } }) : [],
-    // The LIBRARY read (rule 1). One query for every row on screen; the
-    // delivered predicate is PROGRAM_VIDEO_DELIVERED, the same one
-    // programCountsByMonth uses, so this page and the portal cannot disagree.
-    prisma.contentVideo.findMany({ where: { enrollmentId: { in: enrollmentIds }, monthKey: { in: keysInScope }, status: { not: "ARCHIVED" } }, select: { enrollmentId: true, monthKey: true, status: true, countsTowardAllowance: true, kind: true, filmedAt: true, deliveredAt: true, finalSubmissionId: true } }),
     prisma.programReminder.findMany({ where: { enrollmentId: { in: enrollmentIds } }, orderBy: { createdAt: "desc" }, take: 400, select: { enrollmentId: true, monthKey: true, action: true, state: true, createdAt: true, sentAt: true, nextEligibleAt: true, suppressionReason: true, lastError: true, outcome: true } }),
     failedAutomationIndex(),
     monthIds.length ? prisma.programTranscriptJob.findMany({ where: { enrollmentId: { in: enrollmentIds } }, select: { callRecordId: true, kind: true, state: true, reviewReason: true, lastError: true }, orderBy: { updatedAt: "desc" }, take: 300 }) : [],
   ]);
 
   const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  const progressOf = (enrollmentId: string, monthId: string | null, key: string): MonthProgress | null =>
+    given.get(progressKey(enrollmentId, monthId, key)) ?? progressRead.get(progressKey(enrollmentId, monthId, key)) ?? null;
   // Only the versions the rows actually point at — a script's CURRENT version
   // is what its status must be read from (the row's own `status` is the legacy
   // mirror and goes stale the moment an editor saves a new draft).
@@ -308,12 +315,11 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const key = spec.key;
     const mid = m?.id ?? null;
     const callMode = callModeOf(e);
+    const progress = progressOf(e.id, mid, key);
 
     // ---- planning + preparation -------------------------------------------------
-    const selectedIds = new Set<string>();
-    for (const s of selections) if (s.monthId === mid && !s.overflow) selectedIds.add(s.topicId);
-    for (const t of monthTopics) if (t.monthId === mid) selectedIds.add(t.id);
-    const topicsSelected = selectedIds.size;
+    // Selection rows ∪ ContentTopic.status, keyed by topic id — counted once, in the reader.
+    const topicsSelected = progress?.topics.selected ?? 0;
     const myInterviews = interviews.filter((i) => i.monthId === mid);
     const answersOutstanding = myInterviews.filter((i) => i.status !== "SUFFICIENT" && i.status !== "SUPERSEDED" && !i.submittedAt).length;
     // ARE THEY PLANNING THIS MONTH IN WRITING? (Sep 22 2026, §25 scenario 4.)
@@ -417,54 +423,65 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       : callMode === "NOT_INCLUDED" ? "no call — written preparation"
       : "not started";
 
-    // ---- the content session (appointment) ----------------------------------------
-    const myProjects = projects.filter((p) => p.contentMonthId === mid && p.status !== "CANCELLED");
+    // ---- the content session(s), from the reader (CP-10) ----------------------------
     const myRequests = sessionRequests.filter((s) => s.monthId === mid);
     const liveRequest = myRequests.find((s) => s.status === "REQUESTED" || s.status === "RESCHEDULE_REQUESTED") ?? null;
-    const confirmedProject = myProjects.sort((a, b) => (a.shootDate?.getTime() ?? 0) - (b.shootDate?.getTime() ?? 0))[0] ?? null;
-    const shotProject = myProjects.find((p) => p.shootDate && p.shootDate < now) ?? null;
-    const cancelledOnly = myRequests.length > 0 && myProjects.length === 0 && myRequests.every((s) => ["CANCELLED", "DECLINED", "EXPIRED"].includes(s.status));
+    const ps = progress?.sessions ?? null;
+    const accounted = ps?.count.accountedFor ?? 0;
+    // COMPLETED only when EVERY owed session was confirmed filmed; a month with
+    // any session on the calendar (booked, held, or dated-but-unverified) is
+    // CONFIRMED, and the detail says exactly how much of it is.
     const sessionState: SessionState =
-      shotProject ? "COMPLETED"
-      : confirmedProject ? "CONFIRMED"
-      : liveRequest ? "REQUESTED"
-      : cancelledOnly ? "CANCELLED"
+      ps && ps.filmedConfirmed >= ps.required ? "COMPLETED"
+      : accounted > 0 ? "CONFIRMED"
+      : ps && ps.pendingRequests > 0 ? "REQUESTED"
+      : ps?.cancelledOnly ? "CANCELLED"
       : "NOT_SCHEDULED";
-    const sessionDate = shotProject?.shootDate ?? confirmedProject?.shootDate ?? liveRequest?.slotStart ?? null;
+    const upcoming = ps?.list.filter((f) => !f.past && f.startsAtISO).sort((a, b) => a.startsAtISO!.localeCompare(b.startsAtISO!))[0] ?? null;
+    const lastHeld = ps?.list.filter((f) => f.past && f.startsAtISO).sort((a, b) => b.startsAtISO!.localeCompare(a.startsAtISO!))[0] ?? null;
+    const sessionDateISO = upcoming?.startsAtISO ?? lastHeld?.startsAtISO ?? (liveRequest?.slotStart ? liveRequest.slotStart.toISOString() : null);
+    const sessionDate = sessionDateISO ? new Date(sessionDateISO) : null;
+    const detailParts: string[] = [];
+    if (ps && sessionState === "CONFIRMED") {
+      detailParts.push(`${ps.confirmed} of ${ps.required} confirmed`);
+      if (ps.filmedConfirmed > 0) detailParts.push(`${ps.filmedConfirmed} filmed`);
+      if (ps.unverified > 0) detailParts.push(`${ps.unverified} dated with no Aryeo appointment — unverified`);
+      if (ps.heldUnconfirmed > 0) detailParts.push(`${ps.heldUnconfirmed} held, filming not confirmed`);
+      if (ps.missing > 0) detailParts.push(`${ps.missing} still to book`);
+    }
     const sessionDetail =
       sessionState === "REQUESTED" ? "the client asked — Kyle has not confirmed a slot"
       : sessionState === "CANCELLED" ? "every request on this month was cancelled or declined"
       : sessionState === "NOT_SCHEDULED" ? "nothing on the calendar"
+      : detailParts.length ? detailParts.join(" · ")
       : null;
 
-    // ---- production, counted from the LIBRARY (rule 1) ------------------------------
-    const myVideos = videos.filter((v) => v.enrollmentId === e.id && v.monthKey === key);
-    const counted = myVideos.filter((v) => v.countsTowardAllowance);
-    const delivered = counted.filter(deliveredVideo).length;
-    // The PIPELINE reading, kept beside the library one. It is NOT added to the
-    // library count — it exists so a client whose library has not been built
-    // shows "0 (the library is behind)" instead of a confident, wrong 0.
-    const videoUnits = (p: { deliverables: { type: string; quantity: number | null }[] }) =>
-      p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL").reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
-    const pipelineDelivered = myProjects.filter((p) => p.status === "DELIVERED").reduce((n, p) => n + Math.max(1, videoUnits(p)), 0);
+    // ---- production, from the reader: the LIBRARY (rule 1), per video ----------------
+    const pp = progress?.production ?? null;
     const production = {
-      filmed: counted.filter((v) => !!v.filmedAt || ["FILMED", "EDITING", "CLIENT_REVIEW", "APPROVED", "DELIVERED"].includes(v.status)).length,
-      editing: counted.filter((v) => v.status === "EDITING").length,
-      clientReview: counted.filter((v) => v.status === "CLIENT_REVIEW").length,
-      delivered,
+      filmed: pp?.filmed ?? 0,
+      editing: pp?.editing ?? 0,
+      clientReview: pp?.clientReview ?? 0,
+      delivered: pp?.delivered ?? 0,
       // A month that does not exist because the client is paused/ended owes
       // nothing — "0/4" on a paused client reads as the agency being behind.
-      owed: m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0),
-      carriedIn: myVideos.filter((v) => v.kind === "CARRYOVER").length,
-      libraryRows: myVideos.length,
-      pipelineDelivered,
-      libraryBehind: pipelineDelivered > delivered,
+      owed: progress?.videosOwed ?? m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0),
+      carriedIn: pp?.carriedIn ?? 0,
+      produced: pp?.produced ?? 0,
+      internallyApproved: pp?.internallyApproved ?? 0,
+      released: pp?.released ?? 0,
+      releasedInferred: pp?.releasedInferred ?? 0,
+      clientApproved: pp?.clientApproved ?? 0,
+      downloadable: pp?.downloadable ?? 0,
+      known: pp?.known ?? true,
+      libraryRows: pp?.libraryRows ?? 0,
+      // The PIPELINE reading, kept beside the library one — never added to it.
+      pipelineDelivered: pp?.pipelineDelivered ?? 0,
+      libraryBehind: !!pp && !pp.known,
       // Only the UNDERSTATED direction was ever detected, so a month that
       // counted the same delivery twice printed a confident "7 of 2" with no
-      // warning at all (review blocker, Sep 17). Over the allowance can be
-      // genuine (we sometimes deliver extra); over the allowance AND over what
-      // the attached orders carry is a number to check.
-      libraryAhead: pipelineDelivered > 0 && delivered > pipelineDelivered && delivered > (m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0)),
+      // warning at all (review blocker, Sep 17).
+      libraryAhead: pp?.libraryAhead ?? false,
     };
     const topicsNeeded = Math.max(0, production.owed - topicsSelected);
 
@@ -538,8 +555,21 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Confirm the slot" };
     } else if (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED") {
       next = { text: "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Book the session" };
-    } else if (sessionState === "CONFIRMED") {
+    } else if (ps && sessionState === "CONFIRMED" && ps.missing > 0) {
+      // One Pro booking does not complete a two-session month.
+      next = ps.pendingRequests > 0
+        ? { text: `${accounted} of ${ps.required} sessions on the calendar — they asked for another, nothing confirmed`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Confirm the slot" }
+        : { text: `${accounted} of ${ps.required} sessions on the calendar — ${ps.missing} still to book`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Book the session" };
+    } else if (ps && sessionState === "CONFIRMED" && ps.unverified > 0) {
+      const u = ps.list.find((f) => f.state === "UNVERIFIED")!;
+      next = { text: `A job dated ${u.startsAtISO ? new Date(u.startsAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "(undated)"} has no Aryeo appointment — confirm it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Confirm the appointment" };
+    } else if (sessionState === "CONFIRMED" && upcoming) {
       next = { text: `Filming ${sessionDate ? sessionDate.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "soon"}`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "nobody", deadlineISO: iso(sessionDate), href: href(), cta: "Open the month" };
+    } else if (ps && sessionState === "CONFIRMED" && ps.heldUnconfirmed > 0 && production.produced === 0) {
+      // Held, and nobody has said it was filmed. Once edits exist the footage
+      // plainly does, and the ladder moves on to production.
+      const h = ps.list.find((f) => f.state === "HELD_UNCONFIRMED")!;
+      next = { text: "The session was held — nobody has confirmed what was filmed", owner: h.photographer ?? owner.SCHEDULING.label, ownerDuty: h.photographer ? "photographer" : "scheduling", blocked: "us", deadlineISO: deadline, href: h.projectId ? `/upload/${h.projectId}` : href(), cta: "Submit the upload page" };
     } else if (production.clientReview > 0) {
       next = { text: `${production.clientReview} cut${production.clientReview === 1 ? "" : "s"} waiting on the client`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: "/review", cta: "Open the Review Room" };
     } else if (production.delivered < production.owed) {
@@ -558,7 +588,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // Jordan reaches for on his morning page mostly false alarms.
     const live = e.status === "ACTIVE";
     if (live && (!m || (callMode !== "NOT_INCLUDED" && !callHeld && !callSkipped && !bookedCall && planningMode === "UNDECIDED") || !!blockingCallProblem)) flags.push("missing_planning");
-    if (live && m && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED")) flags.push("missing_appointment");
+    // Compared with the PACKAGE (CP-10): a half-booked Pro month is missing an appointment.
+    if (live && m && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED" || (ps?.missing ?? 0) > 0)) flags.push("missing_appointment");
     if (next.blocked === "client") flags.push("awaiting_client");
     // "Ready to film" must agree with the preparation reading: a month whose
     // scripts are approved but whose call evidence never landed is NOT ready,
@@ -604,7 +635,11 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
         atISO: iso(call?.scheduledStart ?? m?.strategyCallAt ?? null), status: call?.status ?? null,
         transcriptState: call?.transcriptState ?? null, evidence, processing: jobWord, problem: callProblem,
       },
-      session: { state: sessionState, dateISO: iso(sessionDate), detail: sessionDetail, requestedCount: myRequests.length },
+      session: {
+        state: sessionState, dateISO: iso(sessionDate), detail: sessionDetail, requestedCount: myRequests.length,
+        required: ps?.required ?? Math.max(1, e.sessionsPerMonth || 1), confirmed: ps?.confirmed ?? 0, missing: ps?.missing ?? Math.max(1, e.sessionsPerMonth || 1),
+        filmedConfirmed: ps?.filmedConfirmed ?? 0, unverified: ps?.unverified ?? 0, heldUnconfirmed: ps?.heldUnconfirmed ?? 0,
+      },
       work: { topicsSelected, topicsNeeded, answersOutstanding, scriptsDrafting: drafting, scriptsReviewNeeded: reviewNeeded, scriptsApproved: approved, strategyReviewNeeded },
       production,
       nextAction: next,

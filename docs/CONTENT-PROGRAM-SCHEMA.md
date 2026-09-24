@@ -119,6 +119,8 @@ Human's steps, once, after review: `npx tsx scripts/backup-content-program.ts` t
 | **ProgramPublishingAccount** | §12 | account identity, secure credentials, connect / disconnect / consent revoked; disconnect stops queued jobs | Instagram phase (later) |
 | **ProgramPublishingJob** | §12, §10 | explicit publication approval; timezone; job status; retries without duplicate posts (`dedupeKey`, provider ids); success only on confirmed receipt (`providerMediaId`); new cut/caption after approval invalidates | same, gated by `ProgramAutomation("publishing")` |
 | **PortalResource** | §11 | owner, last-reviewed, platform/device context; grouped; staff-editable without redeploy; unpublished placeholders never shown | staff editor under Resources; portal Resources page |
+| **ContentFilmingReport** (CP-09, Sep 24) | §9 | the photographer's filmed-topic answer (ticks, per-topic notes, on-site extras) survives any downstream failure and lands exactly once, without anybody re-entering it; a failure is visible (`state`, `lastError`, a FLAG) and retried, and gives up to a person after 6 attempts | `upload/actions.ts finalizeUpload` (writes it in the debrief's transaction); `lib/filmedTopics.ts` applyFilmingReport / sweepFilmingReports (cron/sync `filmingReports`) — see §9 |
+| **ContentTopicFolder** (CP-09, batch C) | §9 | a per-topic raw folder under 02-RAW-Video keyed by the topic's stable id, so a renamed topic never orphans its clips | `lib/dropboxFolders.ts ensureTopicFolders`, behind `topic_folders` (not built yet) |
 
 ### Existing models extended (87 nullable/defaulted columns)
 
@@ -189,6 +191,8 @@ The move is a **read-through then cut-over**, never a bulk edit of ContentNote:
 | ProgramPublishingAccount | [provider, providerAccountId] | |
 | ProgramPublishingJob | dedupeKey | no duplicate posts after retries |
 | PortalResource | slug | |
+| ContentFilmingReport | [projectId, payloadHash] | the same answer submitted twice (a double tap, a reloaded page) is ONE report; written with `createMany({ skipDuplicates: true })` so a duplicate is a no-op, not a P2002 that fails the footage submit |
+| ContentTopicFolder | [projectId, topicId] | one raw folder per topic per session (batch C) |
 
 **Where Postgres does NOT stop the duplicate (code must):** `ContentTopic.dedupeHash` is an INDEX, not a unique — the live table has 944 rows, all null, and a unique would be a NOT-NULL-shaped promise on a table we cannot backfill in the push. So spec §5 "repeating an import creates no duplicate topics" is enforced at three levels: (1) the SAME file → `ContentImportBatch @@unique([kind, contentHash])` re-opens the batch; (2) the same item inside a batch → `ContentImportItem @@unique([batchId, sourceHash])`; (3) the same topics arriving in a DIFFERENT file → the importer looks up `ContentTopic` by `[enrollmentId, dedupeHash]` (indexed) and proposes `LINK` / `UPDATE_PROPOSAL` instead of `CREATE`. A builder must not assume Postgres blocks case (3). The same applies to `ContentTopicSuggestion.dedupeHash` (index; the refresh run checks it against archived/rejected topics before it suggests).
 
@@ -258,3 +262,29 @@ Every section §2–§14, §16–§24, §26, §27 has models whose fields satisf
 | Coverage gaps | §7 above; AgentProfile note also placed in the schema beside ContentStrategyProposal. |
 
 Post-fix verification is the table in §0. Human's steps are unchanged: `npx tsx scripts/backup-content-program.ts` then `npm run db:push`.
+
+## 9. CP-09 — the filming report and the topic → slot binding (Sep 24 2026, batch A)
+
+**The defect.** `finalizeUpload` wrote the project, then called `confirmFilmedTopics` inside a catch that swallowed everything; the ticks were stored nowhere else, so one failed write lost the photographer's only report of what was filmed, silently. Confirmed topic videos also had no slot, so the first cut for a slot minted a second, topic-less video.
+
+**Additive columns (already pushed in 9defa7a).** `ContentFilmingReport` (new table), `ContentTopicFolder` (new table, batch C), `DeliverableOutput.topicId` + `.filmingNote` (+ index on topicId).
+
+**Report lifecycle.**
+
+| State | Meaning | Who moves it |
+|---|---|---|
+| PENDING | written in the SAME transaction as the debrief (`prisma.$transaction([createMany(skipDuplicates), project.update])`) | `finalizeUpload` |
+| APPLYING | claimed by one runner: `updateMany` where state ∈ {PENDING, FAILED} (or APPLYING with an expired lease); `leaseUntil` = now + 5 min, `attempts + 1`. Every later write is fenced on that exact lease | `applyFilmingReport` |
+| APPLIED | extras created, topics confirmed, videos bound, capacity review filed; `resultJson` records what happened | `applyFilmingReport` |
+| FAILED | `lastError`, `nextAttemptAt` = now + 15 min · 2^(attempt − 1); `resultJson` keeps partial progress (extra key → topic id) so a retry never makes a second topic | `applyFilmingReport`; retried by `sweepFilmingReports` (cron/sync step `filmingReports`, BEFORE `contentLibrary`; DB-only, no switch) |
+| NEEDS_REVIEW | 6 attempts failed: no more retries; Kyle gets a `content_filming_report` SmartTask listing what was filmed, and the office an in-app bell | `applyFilmingReport` |
+
+`payloadHash` = sha256 of the sorted topic ids, the extras by lower-cased title + note (NOT the page's key, so a reloaded page is the same report) and the notes. The submit returns `topicsPending` whenever the report is not APPLIED, and the job gets ONE Activity FLAG per report.
+
+**Applying.** (1) Each on-site extra → `createTopic` (PROPOSED, `sourceRef` `FilmingReport:<id>#<key>`) + `selectTopicForMonth` (its capacity check sets `overflow`); a same-titled topic the office REJECTED/ARCHIVED is not reintroduced — the footage becomes a topic-less EXTRA video and a FLAG. (2) `confirmFilmedTopics` — one interactive transaction under `pg_advisory_xact_lock(0x43503039::int4, hashtext(projectId)::int4)`; find-or-create per topic read inside the lock; kind EXTRA / `countsTowardAllowance` false for an overflow selection; `selectionId`; `scriptVersionId` = the shared version when `scriptDecisionsFor` says APPROVED; `filmedConfirmedBy` = the email; the date from the report's own leg, else the latest leg that has STARTED (≤ now + 6 h), else a past shoot date, else unverified. (3) `bindTopicVideosToSlots` (deliverableOutputs.ts) — same lock; each confirmed video, in rank order, takes the lowest slot on the monthly video row with no topic, no bound video and no review round; ContentVideo gets `(deliverableId, slot, outputId)`, the DeliverableOutput gets `topicId` + `filmingNote`. No free slot → never guessed: FLAG + the capacity task. No Deliverable row is created, so the monthly row still routes to personal branding (Kim). (4) `fileCapacityReview` (tasks.ts) — one SmartTask per job (`dedupe([projectId, "filmed_extra"])`, Kyle, MEDIUM) listing every extra / overflow / unbound video: count toward this month, next month, or bill as an extra. Nothing is charged automatically.
+
+**Readers.** `topicsForSession` now unions selections with topics held on the month by `ContentTopic.monthId` (SELECTED..DELIVERED), ignores ARCHIVED videos, and returns per topic `confirmedOnProjectId`, `overflow`, `selectionId`, `folderPath`, the latest `note`, plus the project's `pendingReport`. The upload page pre-ticks only topics confirmed on THIS project. `outputsForProject` labels a slot with the topic's CURRENT title (so a rename shows at once) and carries `topicId`, `topicTitle`, `filmingNote`.
+
+**Not in batch A.** Topic folders (`ContentTopicFolder`, `topic_folders` switch), the per-topic note / add-an-extra UI, `filmingBriefFor` and the editor PDF / project brief lines — batch C. The library-sweep survivor exemption for confirmed rows is CP-01's change in `contentVideos.ts`.
+
+Drill: `scripts/_drill/cp09-filming-handoff.ts` (loads the 9defa7a `finalizeUpload` and `filmedTopics` from git to show the old behaviour first).

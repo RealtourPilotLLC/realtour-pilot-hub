@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { etMonthKey, aryeoProductFor } from "@/lib/contentProgram";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
+import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28; identity layer,
@@ -731,6 +732,58 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// HOME'S MONTH PROGRESS (CP-10, Sep 24 2026). Home used to read the first
+// project's shoot date: "Booked" before it, "Filmed" the day after — nobody
+// had to confirm anything — and `!sessionBooked` hid "Book your filming
+// session" on a Pro month with one of its two sessions on the calendar. It
+// now reads the SAME month-progress reader Jordan's roster, the client file
+// and the reminders read, reduced to what a client may see (no names, no
+// internal states).
+// ---------------------------------------------------------------------------
+
+/** This enrollment's month through lib/monthProgress, client-safe. */
+export async function portalMonthProgress(enrollment: { id: string; clientId: string }, monthKey: string, opts: { now?: Date } = {}): Promise<ClientMonthProgress> {
+  const month = await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, monthKey }, select: { id: true } });
+  const { monthProgressMany, progressKey, clientMonthProgress } = await import("@/lib/monthProgress");
+  const map = await monthProgressMany([{ enrollmentId: enrollment.id, monthId: month?.id ?? null, monthKey }], { now: opts.now, owners: false });
+  const p = map.get(progressKey(enrollment.id, month?.id ?? null, monthKey));
+  if (!p || p.clientId !== enrollment.clientId) throw new Error("month progress unavailable");
+  return clientMonthProgress(p);
+}
+
+export type HomeSessionView = {
+  /** One card per DISTINCT session (a Pro order's two appointments are two cards). */
+  cards: ClientSessionCard[];
+  required: number;
+  /** Sessions still to book — the capacity check's and the reminder chaser's number. */
+  missing: number;
+  /** Every owed session is on the calendar. */
+  sessionBooked: boolean;
+  /** They asked; the office has not confirmed. */
+  requested: boolean;
+  /** Home offers "Book your filming session". */
+  offerBooking: boolean;
+};
+
+/**
+ * What Home shows about sessions — pure, so the drill holds it to the same
+ * numbers as every staff screen. With the progress unreadable nothing is
+ * offered: an unknown is not a reason to ask the client to book again.
+ */
+export function homeSessionView(progress: ClientMonthProgress | null, schedule: PortalScheduleMonth | null, opts: { canBook: boolean; readOnly: boolean }): HomeSessionView {
+  const required = progress?.sessions.required ?? 1;
+  const missing = progress?.sessions.missing ?? 0;
+  const sessionBooked = !!progress && missing === 0;
+  const open = schedule?.requests.filter((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") ?? [];
+  const requested = !sessionBooked && open.length > 0;
+  return {
+    cards: progress?.sessions.cards ?? [],
+    required, missing, sessionBooked, requested,
+    offerBooking: !!progress && !opts.readOnly && opts.canBook && !!schedule && !schedule.locked && missing > 0 && !requested && schedule.capacity.remaining > 0,
+  };
 }
 
 // ===========================================================================

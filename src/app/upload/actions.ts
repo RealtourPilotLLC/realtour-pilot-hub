@@ -359,10 +359,25 @@ export async function finalizeUpload(
      * which is why absence and emptiness are not folded together.
      */
     filmedTopicIds?: string[];
+    /** CP-09: topicId → the photographer's note to the editor about that video (≤1000 chars each). */
+    topicNotes?: Record<string, string>;
+    /** CP-09: topics filmed on site that were not on the month's list (≤10; title ≤200). */
+    extraTopics?: { key: string; title: string; note?: string }[];
     /** premium packages with no Studio script: the script typed on site */
     providedScript?: string | null;
   },
-): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string; blocked?: string }> {
+): Promise<{
+  pdfPath?: string;
+  needsConfirm?: boolean;
+  warning?: string;
+  blocked?: string;
+  /**
+   * CP-09: the footage is in, but the filmed topics have not been recorded
+   * yet. They are saved (ContentFilmingReport) and the hub retries on its own;
+   * the page says so rather than reporting a success that has not happened.
+   */
+  topicsPending?: { count: number; message: string };
+}> {
   await requireShootAccess(projectId);
   // First finalize or a re-submit? The debrief gates and the raws-landed
   // handoff below only fire on the FIRST human submit (the transition), never
@@ -450,6 +465,23 @@ export async function finalizeUpload(
   // already on the Admin's QC card / timeline for a human to resolve.
   const liveDeliverables = (prior?.deliverables ?? []).filter((d) => !d.notCompletedReason);
   const anyVideoOrdered = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+
+  // CP-09 — WHICH TOPICS WERE FILMED, made durable. The ticks (plus any note
+  // per topic and any topic filmed on site) become a ContentFilmingReport row
+  // written in the SAME transaction as the debrief below, so the footage submit
+  // and the photographer's word about what it contains commit together or not
+  // at all. Applying it is a separate, retryable step (lib/filmedTopics.ts).
+  // The number the editor cuts to is the SERVER's count from the same answer —
+  // the videos already confirmed on this project, the ticks, and the extras —
+  // never a second number the browser sends that could disagree with it.
+  const filming = Array.isArray(data.filmedTopicIds)
+    ? await (await import("@/lib/filmedTopics")).prepareFilmingReport(
+        projectId,
+        { filmedTopicIds: data.filmedTopicIds, topicNotes: data.topicNotes, extraTopics: data.extraTopics },
+        { name: submitterName, email: me?.email ?? null },
+      )
+    : null;
+  const videosFilmedIn = filming ? filming.videosFilmed : data.videosFilmed;
 
   // ---- The debrief gates (Jordan, Aug 31): the job is not done until the
   // cull is confirmed, removal notes are answered, and video jobs carry the
@@ -547,8 +579,8 @@ export async function finalizeUpload(
         spec.requireVideoCount &&
         // undefined = a pre-update tab; never trap those. Anything else must be
         // a real positive integer (0 used to pass the gate then be dropped).
-        data.videosFilmed !== undefined &&
-        !(typeof data.videosFilmed === "number" && Number.isInteger(data.videosFilmed) && data.videosFilmed > 0) &&
+        videosFilmedIn !== undefined &&
+        !(typeof videosFilmedIn === "number" && Number.isInteger(videosFilmedIn) && videosFilmedIn > 0) &&
         prior.videosFilmed == null
       ) {
         return { blocked: "Tell us how many videos you filmed — the editor cuts to that count." };
@@ -682,7 +714,7 @@ export async function finalizeUpload(
   // the script — an office notes edit must not move it to the edit date.
   const scriptAnswerChanged =
     !prior?.scriptConfirmedAt || scriptTextChanged || (nextConfirmNote !== undefined && nextConfirmNote !== priorNote);
-  await prisma.project.update({
+  const projectWrite = prisma.project.update({
     where: { id: projectId },
     data: {
       // Only overwrite the brief when the finalize actually carries one — a
@@ -721,8 +753,8 @@ export async function finalizeUpload(
       ...(anyVideoOrdered && data.videoInstructions?.trim()
         ? { videoInstructions: data.videoInstructions.trim().slice(0, 6000) }
         : {}),
-      ...(typeof data.videosFilmed === "number" && data.videosFilmed > 0
-        ? { videosFilmed: Math.min(data.videosFilmed, 999) }
+      ...(typeof videosFilmedIn === "number" && videosFilmedIn > 0
+        ? { videosFilmed: Math.min(videosFilmedIn, 999) }
         : {}),
       ...(data.scriptConfirm
         ? {
@@ -761,26 +793,61 @@ export async function finalizeUpload(
       ...(prior?.uploadedAt ? {} : { uploadedAt: new Date() }),
     },
   });
+  // The report and the debrief commit together. createMany + skipDuplicates:
+  // the same answer submitted twice is the one row (unique projectId +
+  // payloadHash), and a duplicate is a no-op rather than a P2002 that would
+  // fail the whole submit.
+  let reportIsNew = false;
+  if (filming) {
+    const [made] = await prisma.$transaction([
+      prisma.contentFilmingReport.createMany({ data: [filming.row], skipDuplicates: true }),
+      projectWrite,
+    ]);
+    reportIsNew = made.count > 0;
+  } else {
+    await projectWrite;
+  }
 
-  // F12 — WHICH TOPICS WERE FILMED, from the only person who was there.
+  // F12 / CP-09 — APPLY IT NOW, and say so when it did not land.
   //
-  // After the project write, because it must not be able to fail the submit:
-  // the photographer's footage is in either way, and losing their whole debrief
-  // over a topic link would be the wrong trade. It is idempotent, so a
-  // re-submit neither duplicates nor re-stamps.
-  if (Array.isArray(data.filmedTopicIds)) {
+  // After the commit, and never able to fail the submit: the footage is in,
+  // and the photographer's answer is on file whatever happens next. A failure
+  // leaves the report FAILED (lib/filmedTopics.ts applyFilmingReport, which
+  // now also raises the unverified-date flag this block used to), and the
+  // hourly sweep (cron/sync filmingReports) retries it until it lands, without
+  // anybody re-entering anything. The page hears `topicsPending` instead of a
+  // success that has not happened, and the job's timeline gets ONE flag per
+  // report — not one per re-submit.
+  let topicsPending: { count: number; message: string } | undefined;
+  if (filming) {
+    let state = "FAILED";
+    let error: string | null = null;
     try {
-      const { confirmFilmedTopics } = await import("@/lib/filmedTopics");
-      const r = await confirmFilmedTopics(projectId, data.filmedTopicIds, submitterName, {});
-      if (r.dateUnverified && r.confirmed > 0) {
-        // Jordan, Sep 21: never invent a production date. Filming happened; the
-        // appointment has no end time, so the date is flagged rather than guessed.
+      const { applyFilmingReport } = await import("@/lib/filmedTopics");
+      const report = await prisma.contentFilmingReport.findUnique({
+        where: { projectId_payloadHash: { projectId, payloadHash: filming.payloadHash } },
+        select: { id: true },
+      });
+      if (report) ({ state, error } = await applyFilmingReport(report.id));
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    if (state !== "APPLIED") {
+      topicsPending = {
+        count: filming.topicCount,
+        message: "Your footage is in and the editors have it. The topics you ticked are saved, but the hub has not finished recording them yet — it retries on its own, so there is nothing more you need to do.",
+      };
+      if (reportIsNew) {
         await prisma.activity
-          .create({ data: { projectId, type: "FLAG", body: `${r.confirmed} topic(s) confirmed filmed by ${submitterName}, but this session's appointment has no start or end time — the production date needs verification.` } })
+          .create({
+            data: {
+              projectId,
+              type: ActivityType.FLAG,
+              body: `Filmed topics from ${submitterName} are saved but not recorded yet (${filming.topicCount} topic${filming.topicCount === 1 ? "" : "s"}) — the hub retries hourly.${error ? ` Last error: ${error.slice(0, 300)}` : ""}`,
+            },
+          })
           .catch(() => {});
       }
-    } catch {
-      /* the debrief stands; the hourly sweep still sees the project */
     }
   }
 
@@ -898,7 +965,7 @@ export async function finalizeUpload(
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");
   revalidatePath("/");
-  return { pdfPath };
+  return { pdfPath, ...(topicsPending ? { topicsPending } : {}) };
 }
 
 // ---------------------------------------------------------------------------
