@@ -871,10 +871,16 @@ model DeliverableOutput {
 
   revisionBriefs RevisionBrief[]
 
+
+  // CP-09: the content topic this owed video was filmed for, and the
+  // photographer's note to the editor about it.
+  topicId     String?
+  filmingNote String?
   @@unique([deliverableId, slot])
   @@index([projectId])
   @@index([ownerKey])
   @@index([promisedAt])
+  @@index([topicId])
 }
 
 // A file uploaded through the photographer portal. The actual bytes live in
@@ -1200,9 +1206,16 @@ model RevisionBrief {
   analysisError String?
   createdAt     DateTime  @default(now())
 
+
+  // CP-03: a portal brief is pinned to the exact cut, decision and round it
+  // answers, so approving one video's fix can never close another video's ask.
+  submissionId  String?
+  decisionId    String?
+  roundId       String?
   @@index([projectId])
   @@index([taskId])
   @@index([outputId])
+  @@index([decisionId])
 }
 
 // Per-person read watermark for a project's message thread — powers the
@@ -3606,8 +3619,16 @@ model ClientDecision {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+
+  // Completion audit CP-02/03 (Sep 24 2026): the review window this decision
+  // settled, who settled it (CLIENT | STAFF | AUTO_EXPIRY), and the browser's
+  // idempotency key for a change request, so a retry returns the same receipt.
+  windowId        String?
+  basis           String?
+  requestKey      String?
   @@index([submissionId])
   @@index([enrollmentId, decidedAt])
+  @@index([requestKey])
   @@index([videoId])
   @@index([projectId])
   @@index([clientUserId])
@@ -4493,4 +4514,143 @@ model PortalResource {
   updatedAt      DateTime  @updatedAt
 
   @@index([groupKey, published, sortOrder])
+}
+
+// ---------------------------------------------------------------------------
+// COMPLETION AUDIT, BATCH A (Sep 24 2026). Additive only: four new tables, no
+// existing column altered. Uniques below are on NEW, empty tables.
+// ---------------------------------------------------------------------------
+
+// CP-02: one client review window per cut released to the client. Its state
+// changes ONLY by compare-and-set (updateMany), which is what makes approve,
+// request-changes and expiry mutually exclusive without a lock. deadlineAt is
+// frozen when the window opens and is the only deadline any surface reads.
+model ContentReviewWindow {
+  id                 String    @id @default(cuid())
+  submissionId       String    @unique // the released cut (ReviewSubmission)
+  videoKey           String // `${projectId}:${cutKey}` — the same grouping cutHistory uses
+  videoId            String?
+  outputId           String?
+  projectId          String
+  enrollmentId       String
+  clientId           String
+  round              Int
+  source             String    @default("RELEASE") // RELEASE | REPAIR | LAZY
+  openedAt           DateTime
+  businessDays       Int       @default(4)
+  deadlineAt         DateTime
+  originalDeadlineAt DateTime?
+  restartedAt        DateTime?
+  restartedBy        String?
+  state              String    @default("OPEN") // OPEN | CHANGES_REQUESTED | APPROVED | AUTO_APPROVED | SUPERSEDED | REMOVED
+  decisionId         String?
+  closedAt           DateTime?
+  closedReason       String?
+  holdReason         String?
+  heldBy             String?
+  heldAt             DateTime?
+  clientNotifiedAt   DateTime?
+  firstViewedAt      DateTime?
+  expiryClaimedAt    DateTime?
+  expiryOutcome      String?
+  expiryTaskId       String?
+  closeEvidenceJson  String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([state, deadlineAt])
+  @@index([videoKey])
+  @@index([enrollmentId, state])
+  @@index([projectId])
+}
+
+// CP-02/03: the per-video revision ledger. Two rounds are included; a third
+// needs the client's acknowledgement that a fee MAY apply, and the office
+// decides CHARGE or WAIVE. Nothing here ever charges anyone.
+model ContentRevisionRound {
+  id                     String    @id @default(cuid())
+  videoKey               String
+  videoId                String?
+  outputId               String?
+  projectId              String
+  enrollmentId           String
+  clientId               String
+  submissionId           String
+  windowId               String
+  decisionId             String    @unique
+  ordinal                Int
+  includedRounds         Int
+  included               Boolean
+  feeCents               Int?
+  feeAckAt               DateTime?
+  feeAckBy               String?
+  feeAckClientUserId     String?
+  feeAckText             String?
+  feeDecision            String? // null | PENDING | CHARGE | WAIVE
+  feeDecidedAt           DateTime?
+  feeDecidedBy           String?
+  feeDecisionNote        String?
+  feeTaskId              String?
+  lateOverrideBy         String?
+  revisionTaskId         String?
+  revisionBriefId        String?
+  state                  String    @default("OPEN") // OPEN | ANSWERED | CANCELLED
+  answeredBySubmissionId String?
+  answeredAt             DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@unique([videoKey, ordinal]) // production backstop only; the flow never reaches it
+  @@index([projectId, state])
+  @@index([enrollmentId, createdAt])
+  @@index([feeDecision])
+}
+
+// CP-09: what the photographer said they filmed, written in the SAME
+// transaction as the upload submit, then applied (and retried) durably. The
+// selections can no longer be lost to a swallowed downstream error.
+model ContentFilmingReport {
+  id               String    @id @default(cuid())
+  projectId        String
+  monthId          String?
+  enrollmentId     String?
+  appointmentId    String? // Appointment.aryeoId of the leg that was filmed
+  submittedBy      String
+  submittedByEmail String?
+  topicIdsJson     String
+  extrasJson       String?
+  notesJson        String?
+  payloadHash      String
+  state            String    @default("PENDING") // PENDING | APPLYING | APPLIED | FAILED | NEEDS_REVIEW
+  attempts         Int       @default(0)
+  nextAttemptAt    DateTime?
+  leaseUntil       DateTime?
+  lastError        String?
+  appliedAt        DateTime?
+  resultJson       String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([projectId, payloadHash])
+  @@index([state, nextAttemptAt])
+  @@index([projectId, createdAt])
+  @@index([monthId])
+}
+
+// CP-09 (batch C): a per-topic raw footage folder under 02-RAW-Video, keyed by
+// the topic's stable id so a renamed topic never orphans its clips.
+model ContentTopicFolder {
+  id          String   @id @default(cuid())
+  projectId   String
+  topicId     String
+  dropboxPath String
+  dropboxId   String?
+  label       String
+  state       String   @default("CREATED")
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, topicId])
+  @@index([topicId])
 }
