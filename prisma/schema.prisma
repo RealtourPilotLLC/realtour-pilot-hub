@@ -2410,6 +2410,10 @@ model ProgramSignup {
   note             String? // why NEEDS_REVIEW, package conflicts, etc.
   createdAt        DateTime @default(now())
 
+
+  // CP-14: poll | webhook | manual, and the Stripe billing anchor (owner-only).
+  activatedVia    String?
+  billingAnchorAt DateTime?
   @@index([enrollmentId])
 }
 
@@ -2464,6 +2468,10 @@ model ContentEnrollment {
   noCallEligible       Boolean?
   timezone             String? // IANA, for appointment display + reminder hours; null = America/New_York
 
+
+  // CP-06: {skipped:{[itemKey]:iso}} — what the client chose to skip in setup.
+  // Never read as completion; completion is always derived from real data.
+  setupStateJson String?
   @@index([status])
 }
 
@@ -2568,6 +2576,11 @@ model ContentTopic {
   dedupeHash        String? // normalized title hash inside one enrollment
   lastEventAt       DateTime?
 
+
+  // CP-07: the client said "not interested" (with an optional reason).
+  clientDeclinedAt    DateTime?
+  clientDeclinedBy    String?
+  clientDeclineReason String?
   @@index([clientId])
   @@index([monthId])
   @@index([status])
@@ -2624,6 +2637,9 @@ model ContentScript {
   importItemId      String? // -> ContentImportItem
   videoId           String? // -> ContentVideo, once filmed (scripts live with their video)
 
+
+  // CP-07: the month this script was carried forward from, if any.
+  carriedFromMonthId String?
   @@index([clientId])
   @@index([monthId])
   @@index([topicId])
@@ -3131,9 +3147,16 @@ model ContentStrategyProposal {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+
+  // CP-11: the exact profile/strategy target a call-knowledge proposal would
+  // change, and the record it produced when a person applied it.
+  targetKey            String?
+  appliedAt            DateTime?
+  resultAssetVersionId String?
   @@index([enrollmentId, status])
   @@index([callRecordId])
   @@index([strategyId])
+  @@index([clientId, targetKey, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -3236,6 +3259,12 @@ model ContentTopicSelection {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+
+  // CP-07: a carried-over, unfilmed script and what replaced it.
+  carriedFromMonthId String?
+  carriedScriptId    String?
+  removedReason      String?
+  replacedByTopicId  String?
   @@unique([topicId, monthId])
   @@index([monthId, status])
   @@index([enrollmentId])
@@ -3352,6 +3381,11 @@ model ContentInterview {
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
+
+  // CP-08: targeted gap questions, and a client who chose to send anyway.
+  gapQuestionsAskedAt        DateTime?
+  sentWithGapsAt             DateTime?
+  sentWithGapsByClientUserId String?
   @@unique([topicId, monthId])
   @@index([enrollmentId, status])
   @@index([monthId])
@@ -3551,6 +3585,10 @@ model ContentVideo {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
+
+  // CP-12: a person confirmed this video's title/topic/file pairing.
+  identityConfirmedAt DateTime?
+  identityConfirmedBy String?
   @@index([enrollmentId, monthKey])
   @@index([monthId])
   @@index([projectId])
@@ -3584,6 +3622,11 @@ model ContentVideoSource {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+
+  // CP-12: how this file was paired to its video (cut|own|known|name|index|staff).
+  matchBasis  String?
+  confirmedAt DateTime?
+  confirmedBy String?
   @@unique([kind, ref])
   @@index([videoId])
   @@index([submissionId])
@@ -3794,6 +3837,16 @@ model ProgramSessionRequest {
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
+
+  // CP-04: what the hub asked Aryeo for, and what Aryeo confirmed back.
+  productId            String?
+  variantId            String?
+  creativeTeamMemberId String?
+  creativeName         String?
+  aryeoAddressId       String?
+  currentAttemptId     String?
+  providerConfirmedAt  DateTime?
+  pendingChangeJson    String?
   @@index([enrollmentId, status])
   @@index([monthId])
   @@index([projectId])
@@ -3873,8 +3926,12 @@ model ClientAsset {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+
+  // CP-06: identifies a single-valued text slot (fonts, website, social, music).
+  profileKey String?
   @@index([clientId, type])
   @@index([enrollmentId])
+  @@index([clientId, profileKey])
 }
 
 // One version of an asset's file or value, with where it came from.
@@ -4653,4 +4710,169 @@ model ContentTopicFolder {
 
   @@unique([projectId, topicId])
   @@index([topicId])
+}
+
+// ---------------------------------------------------------------------------
+// COMPLETION AUDIT, BATCHES B–D (Sep 24 2026). Additive only.
+// ---------------------------------------------------------------------------
+
+// CP-06: the history of every client-owned brand field, and the alert that
+// told the assigned editor about it. Also the missing history for
+// Client.brandColors / portalVideoStyle / portalPreferences.
+model ClientBrandChange {
+  id              String    @id @default(cuid())
+  clientId        String
+  enrollmentId    String?
+  fieldKey        String // brandColors | portalVideoStyle | portalPreferences | slot:<key> | asset:<type>
+  label           String
+  kind            String // SET | CLEARED | FILE_ADDED | FILE_REPLACED | APPLIED_FROM_CALL
+  fromText        String?
+  toText          String?
+  assetId         String?
+  assetVersionId  String?
+  source          String // client_portal | staff | fact
+  factId          String?
+  proposalId      String?
+  clientUserId    String?
+  staffUserId     String?
+  actorLabel      String?
+  alertClaim      String?
+  alertedAt       DateTime?
+  alertEditorKeys String?
+  alertChannel    String? // slack | sms | bell | none | no_editor | skipped_test
+  taskId          String?
+  ackAt           DateTime?
+  ackBy           String?
+  createdAt       DateTime  @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([clientId, ackAt])
+  @@index([alertedAt])
+  @@index([alertClaim])
+}
+
+// CP-04: one attempt to create / cancel / reschedule a session in Aryeo. The
+// marker is written into the Aryeo order's internal notes, so a timeout after
+// Aryeo accepted can be recovered by finding the order rather than booking twice.
+model ProgramBookingAttempt {
+  id                   String    @id @default(cuid())
+  requestId            String
+  kind                 String // CREATE | CANCEL | RESCHEDULE
+  attemptNo            Int
+  marker               String    @unique // hub-session:<requestId>:<n>
+  state                String    @default("INTENT") // INTENT|RECHECKED|ORDER_SENT|ORDER_UNKNOWN|ORDER_CREATED|APPT_SENT|APPT_UNKNOWN|CONFIRMED|REJECTED|CONFLICT|MISMATCH|ABANDONED
+  creativeTeamMemberId String?
+  slotStart            DateTime?
+  slotEnd              DateTime?
+  aryeoAddressId       String?
+  aryeoOrderId         String?
+  aryeoAppointmentId   String?
+  requestJson          String?
+  responseJson         String?
+  readbackJson         String?
+  recoveryScans        Int       @default(0)
+  nextCheckAt          DateTime?
+  lastError            String?
+  lastErrorAt          DateTime?
+  settledAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([requestId, kind, attemptNo])
+  @@index([state, nextCheckAt])
+  @@index([aryeoOrderId])
+}
+
+// CP-05: a session booked with only a general area, the client's exact
+// address when it arrives, and its sync to the Aryeo order.
+model ProgramSessionAddress {
+  id                 String    @id @default(cuid())
+  sessionKey         String    @unique // countDistinctSessions key: appt:<aryeoId> | project:<id>
+  enrollmentId       String
+  clientId           String
+  monthId            String
+  projectId          String?
+  aryeoAppointmentId String?
+  aryeoOrderId       String?
+  requestId          String?
+  shootStartAt       DateTime?
+  areaText           String?
+  linkTokenHash      String?   @unique
+  linkExpiresAt      DateTime?
+  streetNumber       String?
+  streetName         String?
+  unitNumber         String?
+  city               String?
+  stateCode          String?
+  postalCode         String?
+  latitude           Float?
+  longitude          Float?
+  submittedAt        DateTime?
+  submittedBy        String?
+  version            Int       @default(0)
+  syncState          String    @default("NONE") // NONE|PENDING|RUNNING|SYNCED|UNKNOWN|FAILED|CONFLICT|DESK
+  syncAttempts       Int       @default(0)
+  aryeoAddressId     String?
+  leaseUntil         DateTime?
+  leaseBy            String?
+  nextAttemptAt      DateTime?
+  lastError          String?
+  lastErrorAt        DateTime?
+  syncedAt           DateTime?
+  readbackJson       String?
+  taskId             String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([monthId])
+  @@index([syncState, nextAttemptAt])
+}
+
+// CP-12: every staff correction to a library video's title/topic/file pairing.
+model ContentVideoCorrection {
+  id           String   @id @default(cuid())
+  videoId      String
+  enrollmentId String
+  field        String
+  fromValue    String?
+  toValue      String?
+  by           String
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  @@index([videoId])
+  @@index([enrollmentId, createdAt])
+}
+
+// CP-13: the client's one program conversation with the office. Video
+// revision comments stay on the video; this is everything else.
+model ProgramMessage {
+  id                String    @id @default(cuid())
+  enrollmentId      String
+  clientId          String
+  authorKind        String // CLIENT | STAFF
+  clientUserId      String?
+  staffUserId       String?
+  authorLabel       String
+  body              String
+  replyToId         String?
+  refKind           String?
+  refId             String?
+  assignedAppUserId String?
+  handledAt         DateTime?
+  handledBy         String?
+  createdAt         DateTime  @default(now())
+
+  @@index([enrollmentId, createdAt])
+  @@index([assignedAppUserId, handledAt])
+}
+
+// CP-13: per-reader "seen up to" watermark for the program conversation.
+model ProgramMessageRead {
+  id           String   @id @default(cuid())
+  enrollmentId String
+  readerKey    String
+  seenAt       DateTime @default(now())
+
+  @@unique([enrollmentId, readerKey])
 }
