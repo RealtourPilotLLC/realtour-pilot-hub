@@ -17,16 +17,25 @@
 // `scriptDrafting` step, with the arguments the route passes it, against a real
 // Postgres, with the switches thrown the way Jordan would throw them.
 //
-// WHAT IT DOES NOT DO, AND WHY. It does not execute the route's HTTP shell. I
-// tried; the 33-step body cannot survive this harness. PGlite's socket server
-// closes the connection on ANY unique violation (SQLSTATE 23505), and a cron
-// run hits them routinely by design — the notification dedupe key collided on
-// the first attempt and every later query in the process failed with "Server
-// has closed the connection". Production Postgres handles those collisions;
-// PGlite's wire server does not. So the shell is proven by READING the route
-// (section 8, at runtime, not from memory) and by exercising its auth gate,
-// and the behaviour is proven by running what the step runs. Where the two meet
-// is an assertion about source text, and it is labelled as one.
+// THE ROUTE'S HTTP SHELL, NOW RUN (Sep 24 2026). This file first went out
+// saying it could not execute GET /api/cron/sync: the stock PGlite socket
+// server lost the connection on ANY unique violation (SQLSTATE 23505), a cron
+// run hits them by design, and the notification dedupe key collided on the
+// first attempt. The cause turned out to be on the wire — PGlite sends a
+// premature ReadyForQuery after an extended-protocol error, and Prisma drops
+// the connection on the duplicate — and _harness.ts's DrillSocketServer fixes
+// it at runtime (harness-selftest.ts proves both the fault and the fix).
+// So section 10 now calls the real GET, bearer token and all, every step of
+// it, and asserts it drafts exactly what scriptWorkForMonth says is owed — and
+// that a second tick, whose dedupe keys collide with the first's, drafts
+// nothing twice. Sections 1-7 still drive the step body directly, because
+// that is where the switches can be thrown between ticks; section 8 still
+// reads the route source, and is now a cross-check rather than the only proof.
+//
+// STILL NOT PROVEN HERE: a model call that really takes 20-60 s (the stub
+// answers at once, so the step's 90 s cap and the sweeps' budgets are never
+// approached), and providers that answer: every provider step fails fast at
+// the fence or on a missing credential, never slowly.
 //
 // WHAT IS ASSERTED, IN ORDER (each one states the OLD behaviour first):
 //   1. Production's state today — no ProgramAutomation rows — draws no work at
@@ -40,15 +49,19 @@
 //   6. The switch going off mid-sweep stops it; it does not burn the month.
 //   7. The route's scriptDrafting step is wired to these two functions, read
 //      from the route source at runtime rather than asserted from memory.
+//   8. (section 10) The REAL GET, end to end: 200, every step reported, only
+//      provider steps errored, the owed topics drafted through it and nothing
+//      else, and a second tick through it duplicates nothing.
 //
 // ISOLATION. PGlite in-process Postgres, pinned to DATABASE_URL before any app
-// module loads. Production Neon is never opened. Every outbound HTTP call is
-// fenced to loopback and counted. The MODEL is stubbed at aiJsonWithUsage —
+// module loads, with every .env secret blanked. Production Neon is never
+// opened. Every outbound call — fetch and raw socket — is fenced to loopback
+// and counted. The MODEL is stubbed at aiJsonWithUsage —
 // the boundary inside runAiJson — so the real run ledger, lease, dedupe and
 // ai_runs gate all execute; only the tokens are fake.
 // ---------------------------------------------------------------------------
 import { PGlite } from "@electric-sql/pglite";
-import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { DrillSocketServer, fenceFetch, pinDrillEnv } from "./_harness";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import Module from "node:module";
@@ -108,23 +121,14 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
 };
 
 const exec = promisify(execFile);
-const PORT = 5494;
-const URL_ = `postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres?sslmode=disable`;
-process.env.DATABASE_URL = URL_;
-process.env.DIRECT_URL = URL_;
-process.env.CRON_SECRET = "drill-secret";
-delete process.env.AUTH_ENFORCE;
-delete process.env.SLACK_ALERT_CHANNEL;
-delete process.env.VERCEL;
-
-const outbound: string[] = [];
-const realFetch = globalThis.fetch;
-globalThis.fetch = (async (input: unknown, init?: unknown) => {
-  const url = typeof input === "string" ? input : (input as { url?: string })?.url ?? String(input);
-  if (/^https?:\/\/(127\.0\.0\.1|localhost)\b/.test(url)) return realFetch(input as string, init as RequestInit);
-  outbound.push(url);
-  throw new Error(`OUTBOUND BLOCKED BY DRILL: ${url}`);
-}) as typeof fetch;
+// DRILL_PORT lets a builder run this on the port they were assigned.
+const PORT = Number(process.env.DRILL_PORT ?? 5494);
+// The harness pins DATABASE_URL to loopback, blanks every .env secret (Prisma
+// would otherwise load BLOB_READ_WRITE_TOKEN and the Script Studio key into this
+// process — which matters now that section 10 runs every step of the route),
+// and fences fetch AND raw sockets, so an SDK on node:https cannot leave either.
+pinDrillEnv(PORT);
+const outbound = fenceFetch().blocked;
 
 let pass = 0, fail = 0;
 const ok = (label: string, good: boolean, detail = "") => {
@@ -135,7 +139,9 @@ const head = (s: string) => console.log(`\n${s}\n${"─".repeat(s.length)}`);
 
 async function main() {
   const db = await PGlite.create();
-  const server = new PGLiteSocketServer({ db, port: PORT, host: "127.0.0.1", maxConnections: 30 });
+  // The harness's server, not the stock one: it survives a unique violation
+  // (see _harness.ts for what the stock one actually does wrong on the wire).
+  const server = new DrillSocketServer({ db, port: PORT, host: "127.0.0.1", maxConnections: 30 });
   await server.start();
   await exec("npx", ["prisma", "db", "push", "--skip-generate", "--accept-data-loss"], { env: { ...process.env } });
 
@@ -335,10 +341,10 @@ async function main() {
   const schema = fs.readFileSync(path.resolve(__dirname, "../../prisma/schema.prisma"), "utf8");
   const aiRunModel = /model ProgramAiRun \{[\s\S]*?\n\}/.exec(schema)?.[0] ?? "";
   ok("the database — not the application — enforces one run per key", /dedupeKey\s+String\?\s+@unique/.test(aiRunModel));
-  // NOT ASSERTED HERE, and the file says so: the live collision. PGlite's socket
-  // server closes the connection on 23505, so a genuine race cannot be run in
-  // this harness. What is asserted is the identity of the claim, the lease, the
-  // release, and that Postgres holds the constraint.
+  // The live collision itself — two runs racing for this key, one P2002 — is
+  // proven in harness-selftest.ts section 3 on the same socket server. What is
+  // asserted here is the identity of the claim, the lease, the release, and
+  // that Postgres holds the constraint.
   const tLease = await mkTopic("The inspection contingency people waive too fast");
   await select(tLease.id, "SELECTED", JSON.stringify({ excerpts: [{ speaker: "client", source: "call", text: "Waiving the inspection to win a bid is the most expensive sentence in this market." }] }));
   await prisma.programAiRun.create({
@@ -466,6 +472,91 @@ async function main() {
   console.log(`    blocked hosts: ${hosts.join(", ") || "(none — nothing tried to leave)"}`);
   const suggestions = await prisma.scriptSuggestion.count();
   ok("the sweep opened no work item for staff either — it only drafts", suggestions === 0, `${suggestions}`);
+
+  head("10 · the hourly route itself — GET /api/cron/sync, every step of it");
+  // The same choices section 3 gave the step body, fresh: an answered topic, a
+  // call topic, and a PROPOSED and a THIN one that must be left. Section 6's
+  // unfinished topic is still owed too, and the route should pick it up.
+  const tRouteAnswers = await mkTopic("What a home warranty does not cover");
+  await select(tRouteAnswers.id, "SELECTED");
+  const routeInterviewId = await getOrCreateInterview(tRouteAnswers.id, month.id, {});
+  for (const [key, role, text] of answers) {
+    await prisma.contentInterviewAnswer.create({
+      data: { interviewId: routeInterviewId, questionKey: key, questionRole: role, questionText: `House question: ${key}`, answerText: text, answerKind: "TYPED", sourceKind: "CLIENT" },
+    });
+  }
+  await prisma.contentInterview.update({ where: { id: routeInterviewId }, data: { status: "SUBMITTED", submittedAt: new Date(), answeredCount: answers.length } });
+  const tRouteCall = await mkTopic("Why a price cut in week three costs more than one in week one");
+  await select(tRouteCall.id, "RECONCILED", JSON.stringify({ excerpts: [{ speaker: "client", source: "call", text: "A cut in week three tells every buyer you blinked; a cut in week one just looks like a correction." }] }));
+  const tRouteProposed = await mkTopic("Open houses that sell the neighbour's house");
+  await select(tRouteProposed.id, "PROPOSED");
+  const tRouteThin = await mkTopic("The market, one more time");
+  await select(tRouteThin.id, "SELECTED");
+  await setSwitch("script_drafting", true); // section 7 left it off; ai_runs is on since 7b
+  // The first run of this section drafted NOTHING, and running the whole route
+  // is what showed why: its contentProgram step (syncEnrollments) reads
+  // Client.socialClient — Aryeo's "Social Client" flag — and PAUSES any ACTIVE
+  // enrollment whose client lacks it, as a lapsed subscription. This fixture
+  // never set the flag, and sections 1-7 never ran that step, so they never
+  // noticed. A live program client carries it; so does this one now.
+  await prisma.client.update({ where: { id: client.id }, data: { socialClient: true, socialPlan: "Accelerator" } });
+
+  const owed = (await scriptWorkForMonth(month.id)).filter((w) => w.readiness === "FROM_ANSWERS" || w.readiness === "FROM_CALL");
+  const owedIds = new Set(owed.map((w) => w.topicId));
+  ok("the workspace says what is owed: both new topics, and section 6's unfinished one", owedIds.has(tRouteAnswers.id) && owedIds.has(tRouteCall.id) && owedIds.has(tStop2.id), owed.map((w) => `${w.title} (${w.readiness})`).join(" | "));
+
+  const runRoute = async () => {
+    const res = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer drill-secret" } }));
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const erroredSteps = (body: Record<string, unknown>) => Object.keys(body).filter((k) => k.endsWith("Error"));
+  const aiBefore10 = aiCalls;
+  const outBefore10 = outbound.length;
+  const t10 = new Date();
+  const r10 = await runRoute();
+  const wall10 = Date.now() - t10.getTime();
+  const ms10 = (r10.body.ms ?? {}) as Record<string, number>;
+  const errored10 = erroredSteps(r10.body);
+  console.log(`    route: ${r10.status} in ${(wall10 / 1000).toFixed(1)}s · ${Object.keys(ms10).length} steps · errored: ${errored10.map((k) => `${k.slice(0, -5)} (${String(r10.body[k]).slice(0, 50)})`).join("; ") || "none"}`);
+  ok("the route answered 200 with ok:true", r10.status === 200 && r10.body.ok === true, String(r10.status));
+  ok("every step reported — none skipped for budget, none timed out", ((r10.body.skipped ?? []) as string[]).length === 0 && !r10.body.timedOut && Object.keys(ms10).length >= 30, `${Object.keys(ms10).length} steps`);
+  ok("the only steps that errored are providers with nothing on file", errored10.every((k) => /not connected|OUTBOUND BLOCKED/i.test(String(r10.body[k]))), errored10.join(", ") || "none");
+  const liveAfter = await prisma.contentEnrollment.findMany({ where: { id: { in: [enrollment.id, pausedEnrollment.id] } }, select: { id: true, status: true } });
+  const statusOf = (id: string) => liveAfter.find((e) => e.id === id)?.status;
+  ok("the route's enrollment sync kept the flagged client ACTIVE", statusOf(enrollment.id) === "ACTIVE", String(statusOf(enrollment.id)));
+  ok("and left the paused client paused", statusOf(pausedEnrollment.id) === "PAUSED", String(statusOf(pausedEnrollment.id)));
+  const step10 = r10.body.scriptDrafting as { drafts?: { drafted?: number; failed?: number } } | undefined;
+  ok("its scriptDrafting step ran without error", !!step10 && !("scriptDraftingError" in r10.body), String(r10.body.scriptDraftingError ?? "clean"));
+  ok("and drafted exactly what the workspace said was owed", step10?.drafts?.drafted === owed.length && step10?.drafts?.failed === 0, JSON.stringify(step10?.drafts).slice(0, 180));
+  const scripts10 = await prisma.contentScript.findMany({ where: { monthId: month.id }, select: { id: true, topicId: true } });
+  const byTopic10 = new Map(scripts10.map((x) => [x.topicId, x.id]));
+  ok("every owed topic now has a script", owed.every((w) => byTopic10.has(w.topicId)), `${owed.filter((w) => byTopic10.has(w.topicId)).length} of ${owed.length}`);
+  ok("the PROPOSED topic still does not", !byTopic10.has(tRouteProposed.id));
+  ok("nor either THIN one", !byTopic10.has(tRouteThin.id) && !byTopic10.has(tThin.id));
+  ok("the PAUSED client's month is still untouched", (await prisma.contentScript.count({ where: { clientId: paused.id } })) === 0);
+  const v10 = await prisma.contentScriptVersion.findMany({
+    where: { scriptId: { in: [byTopic10.get(tRouteAnswers.id), byTopic10.get(tRouteCall.id)].filter((x): x is string => !!x) } },
+    select: { scriptId: true, status: true, interviewId: true },
+  });
+  ok("the answered topic took the answers path: a DRAFT tied to its interview", v10.some((v) => v.interviewId === routeInterviewId && v.status === "DRAFT"), JSON.stringify(v10.map((v) => v.status)));
+  ok("the call topic took the excerpt path: INTERNAL_REVIEW", v10.some((v) => v.scriptId === byTopic10.get(tRouteCall.id) && v.status === "INTERNAL_REVIEW"), JSON.stringify(v10.map((v) => v.status)));
+  ok("nothing the route drafted was shared with the client", (await prisma.contentScript.count({ where: { sharedVersionId: { not: null } } })) === 0);
+  const runs10 = await prisma.programAiRun.findMany({ where: { kind: "script_draft", createdAt: { gte: t10 } }, select: { status: true, dedupeKey: true, requestedBy: true } });
+  ok("one run per draft, each finished, released and signed by the cron", runs10.length === owed.length && runs10.every((r) => r.status === "SUCCEEDED" && r.dedupeKey === null && r.requestedBy === "cron"), JSON.stringify(runs10.map((r) => `${r.status}/${r.requestedBy}`)));
+  ok("the model was reached through the route", aiCalls - aiBefore10 >= owed.length, `${aiCalls - aiBefore10} calls`);
+
+  // The next hourly tick: its dedupe keys collide with this one's by design —
+  // the collision that ended the first attempt at this section on Sep 23.
+  const s10 = await scriptCount();
+  const v10n = await versionCount();
+  const collisionsBefore = server.patchStats.strippedReady;
+  const r10b = await runRoute();
+  console.log(`    second tick: ${server.patchStats.strippedReady - collisionsBefore} unique violations met and survived`);
+  ok("a second tick through the route answers 200 again", r10b.status === 200 && r10b.body.ok === true, String(r10b.status));
+  ok("and drafts nothing twice — no new script, no new version", (await scriptCount()) === s10 && (await versionCount()) === v10n, `${await scriptCount()}/${await versionCount()} vs ${s10}/${v10n}`);
+  const blocked10 = outbound.slice(outBefore10);
+  console.log(`    blocked at the fence during section 10: ${[...new Set(blocked10.map((u) => { try { return new globalThis.URL(u).host; } catch { return u.slice(0, 40); } }))].join(", ") || "none — nothing tried to leave"}`);
+  ok("the route queued no outbound message either", (await prisma.outboxMessage.count()) === 0);
 
   console.log(`\n${pass} passed, ${fail} failed\n`);
   await server.stop();
