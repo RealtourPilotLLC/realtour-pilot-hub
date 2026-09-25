@@ -47,6 +47,17 @@ Jordan account and approves rollout.
 | 4e | `611714c` | **A send floor under the outbox**, so a synthetic client cannot text a real handset. Narrow by design: real clients untouched. 17 checks against the live database on a read-only connection. |
 | — | `(this)` | The board asks for the strategy call unless the client is visibly planning the month in writing. Blast radius measured: 3 of 31 live months, all TEST. |
 
+### Completion audit (Sep 24–25, pinned at `5fb89d3`) — CP-01…CP-15, UI-01/02
+
+All 15 findings and the UI section verified against HEAD (all confirmed, most
+understated), built in six batches, reviewed and fixed. Deployed at `46e109e`.
+**Nothing is enabled**: every client-facing behaviour, provider write and new
+message is behind a switch with no row. No real Aryeo write has been made.
+Full record — commits, per-finding state, tests, limits, what waits on
+Jordan: [`docs/handoff-2026-09-25-completion-audit.md`](handoff-2026-09-25-completion-audit.md).
+Private end-to-end demo: `scripts/demo/run-demo-dev.sh`, walkthrough in
+[`docs/demo.md`](demo.md).
+
 ### Follow-up audit (Sep 22, pinned at `4547f68`) — R1–R5
 
 The audit's snapshot matched this working tree exactly (`d1119a59`), so there
