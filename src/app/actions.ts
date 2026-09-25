@@ -95,7 +95,7 @@ export async function rescheduleAppointmentAction(
     await Aryeo.rescheduleAppointment(appt.aryeoId, {
       start_at: start.toISOString(),
       end_at: end.toISOString(),
-      notify_customer: notifyCustomer,
+      notify: notifyCustomer,
     });
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Reschedule failed." };
@@ -129,7 +129,7 @@ export async function cancelAppointmentAction(
   if (refused) return { ok: false, message: refused };
 
   try {
-    await Aryeo.cancelAppointment(appt.aryeoId, { notify_customer: notifyCustomer });
+    await Aryeo.cancelAppointment(appt.aryeoId, { notify: notifyCustomer });
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Cancel failed." };
   }

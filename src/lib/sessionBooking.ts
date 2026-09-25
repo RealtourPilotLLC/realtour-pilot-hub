@@ -613,7 +613,7 @@ export type ChangeOutcome = { ok: boolean; state: "DONE" | "PENDING" | "DESK" | 
 
 /**
  * Cancel a session the hub booked. The PUT carries `notify: false` (the
- * documented key — the staff wrapper's `notify_customer` is not in the docs),
+ * documented key, which the staff wrapper also sends since Sep 24 2026),
  * then the appointment is READ BACK: CANCELED is the only proof. A timeout is
  * settled by the next tick's readback; a second PUT happens only if that
  * readback shows it still scheduled.

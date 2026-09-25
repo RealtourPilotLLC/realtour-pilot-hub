@@ -154,9 +154,13 @@ export const Aryeo = {
     aryeoRequest<{ data: AryeoAppointment }>(`/appointments/${id}`, { query: { include: "users,order" } }).then(
       (r) => r.data,
     ),
-  rescheduleAppointment: (id: string, body: { start_at: string; end_at: string; notify_customer?: boolean }) =>
+  // `notify` is Aryeo's documented key for both calls: it emails the order's
+  // CUSTOMER. This used to send `notify_customer`, which Aryeo does not define,
+  // so the staff "notify customer" box did nothing. Jordan, Sep 24 2026: make
+  // it really email the client when ticked.
+  rescheduleAppointment: (id: string, body: { start_at: string; end_at: string; notify?: boolean }) =>
     aryeoRequest(`/appointments/${id}/reschedule`, { method: "PUT", body }),
-  cancelAppointment: (id: string, body: { notify_customer?: boolean } = {}) =>
+  cancelAppointment: (id: string, body: { notify?: boolean } = {}) =>
     aryeoRequest(`/appointments/${id}/cancel`, { method: "PUT", body }),
   availableDates: (q?: Query) => aryeoRequest("/scheduling/available-dates", { query: q }),
   availableTimeslots: (q?: Query) => aryeoRequest("/scheduling/available-timeslots", { query: q }),

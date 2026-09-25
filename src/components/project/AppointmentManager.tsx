@@ -68,7 +68,10 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
   const [showReschedule, setShowReschedule] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [newStart, setNewStart] = useState(toLocalInput(appt.startAt));
-  const [notify, setNotify] = useState(true);
+  // Unticked by default. Until Sep 24 2026 this box sent a field Aryeo does not
+  // recognise and emailed nobody; now it really emails the client (Jordan's
+  // call), so it must be a deliberate tick, not something to remember to undo.
+  const [notify, setNotify] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) =>
