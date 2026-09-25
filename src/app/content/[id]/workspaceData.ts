@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { monthLabel, etMonthKey, PACKAGE_RULES, ownersFor, OWNER_DUTIES } from "@/lib/contentProgram";
 import { callModeOf } from "@/lib/programMonths";
 import { DUTY_WORDS, staffChoices } from "@/lib/programOwners";
-import { billingTruth, enrollmentHistory, readOverrides, nextMonth } from "@/lib/enrollmentChanges";
+import { billingTruth, enrollmentHistory, readOverrides, nextMonth, termsInMonth } from "@/lib/enrollmentChanges";
 import { assetRegistry, assetVersions, brandSources, ASSET_TYPES, ASSET_TYPE_WORDS, TEXT_ASSET_TYPES } from "@/lib/clientAssets";
 import { factsForPrompt } from "@/lib/clientFacts";
 import type { SettingsUi, BillingUi, OwnersUi, HistoryUi } from "@/components/content/SettingsPanel";
@@ -25,12 +25,16 @@ export async function loadSettingsTab(enrollmentId: string, ownerEyes: boolean) 
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId } });
   if (!e) return null;
   const nowKey = etMonthKey();
-  const [month, owners, staff, history, billing] = await Promise.all([
+  const [month, owners, staff, history, billing, nextTerms] = await Promise.all([
     prisma.contentMonth.findFirst({ where: { enrollmentId, monthKey: nowKey }, select: { videosOwed: true } }),
     ownersFor(enrollmentId, null),
     staffChoices(),
     enrollmentHistory(enrollmentId, 80),
     ownerEyes ? billingTruth(enrollmentId) : Promise.resolve(null),
+    // Next month's terms WITH scheduled changes folded in: the package forms
+    // compare against these, so a scheduled decision reads as already made
+    // and re-submitting it is not offered (it used to cancel it — Sep 24).
+    termsInMonth(enrollmentId, nextMonth(nowKey)),
   ]);
   const settings: SettingsUi = {
     enrollmentId, clientId: e.clientId, pkg: e.package, status: e.status, packageSource: e.packageSource,
@@ -40,6 +44,7 @@ export async function loadSettingsTab(enrollmentId: string, ownerEyes: boolean) 
     currentMonthKey: nowKey, currentMonthLabel: monthLabel(nowKey),
     nextMonthKey: nextMonth(nowKey), nextMonthLabel: monthLabel(nextMonth(nowKey)),
     currentMonthOwed: month?.videosOwed ?? null,
+    nextTerms,
     packages: Object.entries(PACKAGE_RULES).map(([name, r]) => ({ name, ...r })),
   };
   const ownersUi: OwnersUi = OWNER_DUTIES.map((d) => ({ duty: d, word: DUTY_WORDS[d], label: owners[d].label, appUserId: owners[d].appUserId, scope: owners[d].scope }));
@@ -330,3 +335,99 @@ async function loadLibraryIdentity(
   }
   return { byVideo, options: { enrollmentId, topics, scripts } };
 }
+
+// ---------------------------------------------------------------------------
+// OVERVIEW (UI-02) — the client's ONE roster row, read through programOverview
+// with the enrollment filter, so the Overview says exactly what the roster card
+// and the dense table say about this client-month. Plus the onboarding ladder
+// (discovery → strategy → bank) while it is still running, and the latest
+// word on the program conversation.
+// ---------------------------------------------------------------------------
+export async function loadOverviewTab(enrollmentId: string, monthKey: string, progress?: Map<string, import("@/lib/monthProgress").MonthProgress>) {
+  const { programOverview } = await import("@/lib/programOverview");
+  const { onboardingView } = await import("@/lib/programOnboarding");
+  const [ov, onboarding, lastMessage] = await Promise.all([
+    programOverview({ monthKey, enrollmentIds: [enrollmentId], includeEnded: true, progress }),
+    onboardingView(enrollmentId).catch(() => null),
+    prisma.programMessage.findFirst({
+      where: { enrollmentId }, orderBy: { createdAt: "desc" },
+      select: { authorKind: true, authorLabel: true, body: true, createdAt: true, handledAt: true },
+    }).catch(() => null),
+  ]);
+  return { row: ov.rows[0] ?? null, onboarding, lastMessage };
+}
+
+// ---------------------------------------------------------------------------
+// PRODUCTION (UI-02) — sessions, the videos library, revisions. One loader per
+// view, so the tab pays only for the view on screen.
+// ---------------------------------------------------------------------------
+
+/** The month's jobs, with the topics a person confirmed were filmed at each (CP-09). */
+export async function loadSessionsView(month: { id: string } | null) {
+  if (!month) return { projects: [] as SessionProjectUi[] };
+  const projects = await prisma.project.findMany({
+    where: { contentMonthId: month.id },
+    select: { id: true, title: true, status: true, shootDate: true, reviewSubmissions: { select: { status: true } } },
+    orderBy: { shootDate: "asc" },
+  });
+  const { topicsForSession } = await import("@/lib/filmedTopics");
+  const out: SessionProjectUi[] = [];
+  for (const p of projects) {
+    const t = p.status === "CANCELLED" ? null : await topicsForSession(p.id).catch(() => null);
+    out.push({
+      id: p.id, title: p.title, status: p.status, shootDateISO: iso(p.shootDate),
+      pendingReview: p.reviewSubmissions.filter((x) => x.status === "PENDING").length,
+      topicsPlanned: t?.topics.length ?? 0,
+      // Confirmed AT THIS SESSION — a Pro month's second job must not count the first job's topics.
+      topicsConfirmedHere: t ? t.topics.filter((x) => x.filmedConfirmedAtISO && x.confirmedOnProjectId === p.id).length : 0,
+      reportPending: t?.pendingReport ? { state: t.pendingReport.state, lastError: t.pendingReport.lastError } : null,
+    });
+  }
+  return { projects: out };
+}
+export type SessionProjectUi = {
+  id: string; title: string; status: string; shootDateISO: string | null; pendingReview: number;
+  topicsPlanned: number; topicsConfirmedHere: number; reportPending: { state: string; lastError: string | null } | null;
+};
+
+/** Revision asks and cuts in motion across this client's program jobs — every month, newest first. */
+export async function loadRevisionsView(enrollmentId: string) {
+  const months = await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } });
+  const projects = months.length
+    ? await prisma.project.findMany({ where: { contentMonthId: { in: months.map((m) => m.id) } }, select: { id: true, title: true, contentMonthId: true } })
+    : [];
+  const ids = projects.map((p) => p.id);
+  const keyOf = new Map(months.map((m) => [m.id, m.monthKey]));
+  const projectOf = new Map(projects.map((p) => [p.id, { title: p.title, monthKey: p.contentMonthId ? keyOf.get(p.contentMonthId) ?? null : null }]));
+  const [briefs, cuts] = ids.length
+    ? await Promise.all([
+        prisma.revisionBrief.findMany({
+          where: { projectId: { in: ids } }, orderBy: { createdAt: "desc" }, take: 40,
+          select: { id: true, projectId: true, source: true, headline: true, originalText: true, itemsJson: true, doneJson: true, createdAt: true },
+        }),
+        prisma.reviewSubmission.findMany({
+          where: { projectId: { in: ids }, status: { in: ["PENDING", "CHANGES_REQUESTED"] } }, orderBy: { createdAt: "desc" }, take: 60,
+          select: { id: true, projectId: true, fileName: true, round: true, status: true, createdAt: true },
+        }),
+      ])
+    : [[], []];
+  const briefRows: RevisionBriefUi[] = briefs.map((b) => {
+    let total = 0, done = 0;
+    try { total = ((JSON.parse(b.itemsJson ?? "{}") as { items?: unknown[] }).items ?? []).length; } catch { total = 0; }
+    try { done = (JSON.parse(b.doneJson ?? "[]") as unknown[]).length; } catch { done = 0; }
+    const p = projectOf.get(b.projectId);
+    return {
+      id: b.id, projectId: b.projectId, projectTitle: p?.title ?? "Job", monthKey: p?.monthKey ?? null, source: b.source,
+      headline: b.headline ?? b.originalText.slice(0, 140), total, done,
+      // An ask nobody itemised is still open: "0 of 0" must never read as finished.
+      open: total === 0 || done < total, createdAtISO: b.createdAt.toISOString(),
+    };
+  });
+  const cutRows: RevisionCutUi[] = cuts.map((c) => {
+    const p = projectOf.get(c.projectId);
+    return { id: c.id, projectId: c.projectId, projectTitle: p?.title ?? "Job", monthKey: p?.monthKey ?? null, fileName: c.fileName, round: c.round, status: c.status, createdAtISO: c.createdAt.toISOString() };
+  });
+  return { briefs: briefRows, cuts: cutRows };
+}
+export type RevisionBriefUi = { id: string; projectId: string; projectTitle: string; monthKey: string | null; source: string; headline: string; total: number; done: number; open: boolean; createdAtISO: string };
+export type RevisionCutUi = { id: string; projectId: string; projectTitle: string; monthKey: string | null; fileName: string | null; round: number; status: string; createdAtISO: string };

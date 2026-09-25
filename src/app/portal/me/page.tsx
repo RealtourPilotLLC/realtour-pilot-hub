@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import { BrandWordmark } from "@/components/Brand";
 import { ChevronRight, LogOut } from "lucide-react";
 import { resolvePortalViewer, currentClientUser, liveMemberships } from "@/lib/portal";
-import { PortalPage, portalTabOf, type PortalQuery } from "@/components/portal/PortalPage";
+import { PortalPage, type PortalQuery } from "@/components/portal/PortalPage";
+import { firstQueryValues } from "@/lib/portalNav";
 import { signOutPortal } from "@/app/portal/login/actions";
 
 export const dynamic = "force-dynamic";
@@ -17,8 +18,9 @@ export const metadata = {
 // here, not on cookie expiry). One seat → straight in. Several → pick, and
 // `?e=<enrollmentId>` carries the choice through every tab link.
 export default async function PortalMePage({ searchParams }: { searchParams: Promise<PortalQuery & { e?: string }> }) {
-  const query = await searchParams;
-  const { tab: rawTab, e } = query;
+  // A repeated param arrives as string[]; one string per key (portalNav).
+  const query = firstQueryValues<PortalQuery & { e?: string }>(await searchParams);
+  const { e } = query;
   const person = await currentClientUser();
   if (!person) redirect("/portal/login");
   const seats = await liveMemberships(person.id);
@@ -27,7 +29,7 @@ export default async function PortalMePage({ searchParams }: { searchParams: Pro
 
   const r = await resolvePortalViewer({ enrollmentId: e ?? null });
   if (!r.ok) redirect(`/portal/login?reason=${r.reason === "revoked" ? "revoked" : "noaccess"}`);
-  return <PortalPage viewer={r.viewer} tab={portalTabOf(rawTab)} path="/portal/me" baseQuery={e ? `e=${encodeURIComponent(e)}` : ""} query={query} />;
+  return <PortalPage viewer={r.viewer} path="/portal/me" baseQuery={e ? `e=${encodeURIComponent(e)}` : ""} query={query} />;
 }
 
 function Picker({ name, seats }: { name: string; seats: { enrollmentId: string; clientName: string; status: string; role: string }[] }) {

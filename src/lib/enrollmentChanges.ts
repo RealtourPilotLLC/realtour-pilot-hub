@@ -74,13 +74,23 @@ const FIELD_WORDS: Partial<Record<ChangeField, string>> = {
   package: "package", videosPerMonth: "videos per month", sessionsPerMonth: "sessions per month", sessionHours: "session hours",
 };
 
-async function supersedePending(enrollmentId: string, field: ChangeField, fromMonthKey: string, byId: string | null, keep: Set<string> = new Set()): Promise<SupersededChange[]> {
+// WHICH pending rows a decision replaces (Sep 24 fix). A decision "X from
+// month M" replaces what was scheduled from M on — but only where it actually
+// SAYS something new. When it wrote a row for this field, every other pending
+// row from M on is replaced (`inclusive`). When it wrote none — the field
+// already reads X in M, very often BECAUSE of a pending row — the rows that
+// put it there must survive, so only rows strictly AFTER M go. The old rule
+// superseded from M inclusive either way: pressing "Pro from October" twice,
+// or re-typing the Pro count after a KEEP upgrade, cancelled the very rows
+// that made it Pro, and the client stayed on the old numbers for good.
+async function supersedePending(enrollmentId: string, field: ChangeField, fromMonthKey: string, byId: string | null, keep: Set<string>, inclusive: boolean): Promise<SupersededChange[]> {
   const pending = await prisma.programEnrollmentChange.findMany({ where: { enrollmentId, field, appliedAt: null }, select: { id: true, effectiveMonthKey: true, reason: true, toValue: true } });
   const done: SupersededChange[] = [];
   for (const p of pending) {
     if (keep.has(p.id)) continue; // the decision we are recording right now
     if (isSupersededChange(p)) continue;
-    if ((p.effectiveMonthKey ?? "") < fromMonthKey) continue;
+    const m = p.effectiveMonthKey ?? "";
+    if (inclusive ? m < fromMonthKey : m <= fromMonthKey) continue;
     await prisma.programEnrollmentChange.update({
       where: { id: p.id },
       data: { appliedAt: new Date(), reason: `${SUPERSEDED_PREFIX}${byId ? ` (replaced by ${byId})` : ""}${p.reason ? ` · was: ${p.reason}` : ""}`.slice(0, 900) },
@@ -114,6 +124,23 @@ async function valueInForce<T>(enrollmentId: string, field: ChangeField, monthKe
     v = (r.toValue == null ? null : JSON.parse(r.toValue)) as T;
   }
   return v;
+}
+
+/**
+ * The package terms a month will run on, scheduled changes included — the
+ * same fold changePackage compares against, so a settings form can start from
+ * (and compare with) what next month will really be rather than today's
+ * column, which after a KEEP upgrade still reads the old quantities.
+ */
+export async function termsInMonth(enrollmentId: string, monthKey: string): Promise<{ pkg: string; videosPerMonth: number; sessionsPerMonth: number; sessionHours: number }> {
+  const e = await enrollment(enrollmentId);
+  const [pkg, videosPerMonth, sessionsPerMonth, sessionHours] = await Promise.all([
+    valueInForce(enrollmentId, "package", monthKey, e.package),
+    valueInForce(enrollmentId, "videosPerMonth", monthKey, e.videosPerMonth),
+    valueInForce(enrollmentId, "sessionsPerMonth", monthKey, e.sessionsPerMonth),
+    valueInForce(enrollmentId, "sessionHours", monthKey, e.sessionHours),
+  ]);
+  return { pkg, videosPerMonth, sessionsPerMonth, sessionHours };
 }
 
 /** The ledger write. Returns the row id. Never touches the enrollment. */
@@ -187,13 +214,17 @@ export async function changePackage(enrollmentId: string, input: PackageChangeIn
     valueInForce(enrollmentId, "sessionsPerMonth", obligationMonthKey, e.sessionsPerMonth),
     valueInForce(enrollmentId, "sessionHours", obligationMonthKey, e.sessionHours),
   ]);
-  if (pkgNow !== input.package) ids.push(await recordEnrollmentChange({ ...base, field: "package", from: pkgNow, to: input.package, effectiveMonthKey }));
+  const wrote = new Set<ChangeField>();
+  const put = async (c: NewChange) => { ids.push(await recordEnrollmentChange(c)); wrote.add(c.field); };
+  if (pkgNow !== input.package) await put({ ...base, field: "package", from: pkgNow, to: input.package, effectiveMonthKey });
   const qty = { ...base, effectiveAt: qtyEffectiveAt, effectiveMonthKey: obligationMonthKey } as const;
-  if (vNow !== videos) ids.push(await recordEnrollmentChange({ ...qty, field: "videosPerMonth", from: vNow, to: videos }));
-  if (sNow !== sessions) ids.push(await recordEnrollmentChange({ ...qty, field: "sessionsPerMonth", from: sNow, to: sessions }));
-  if (hNow !== rules.sessionHours) ids.push(await recordEnrollmentChange({ ...qty, field: "sessionHours", from: hNow, to: rules.sessionHours }));
-  // Any change still scheduled for the effective month or later has been
-  // replaced by this decision and must not fire on its own.
+  if (vNow !== videos) await put({ ...qty, field: "videosPerMonth", from: vNow, to: videos });
+  if (sNow !== sessions) await put({ ...qty, field: "sessionsPerMonth", from: sNow, to: sessions });
+  if (hNow !== rules.sessionHours) await put({ ...qty, field: "sessionHours", from: hNow, to: rules.sessionHours });
+  // A change still scheduled for the effective month or later has been
+  // replaced by this decision and must not fire on its own — for a field this
+  // decision wrote; for one it left alone, only rows AFTER the month (see
+  // supersedePending: the rows that already make it read this way survive).
   const newest = ids[ids.length - 1] ?? null;
   const keep = new Set(ids);
   // Retiring a future decision is a decision. It is RETURNED so the caller can
@@ -201,10 +232,10 @@ export async function changePackage(enrollmentId: string, input: PackageChangeIn
   // rewrite, and "Recorded" alone would hide that an Accelerator-from-November
   // he had already agreed has just been cancelled.
   const superseded = (await Promise.all([
-    supersedePending(enrollmentId, "package", effectiveMonthKey, newest, keep),
-    supersedePending(enrollmentId, "videosPerMonth", obligationMonthKey, newest, keep),
-    supersedePending(enrollmentId, "sessionsPerMonth", obligationMonthKey, newest, keep),
-    supersedePending(enrollmentId, "sessionHours", obligationMonthKey, newest, keep),
+    supersedePending(enrollmentId, "package", effectiveMonthKey, newest, keep, wrote.has("package")),
+    supersedePending(enrollmentId, "videosPerMonth", obligationMonthKey, newest, keep, wrote.has("videosPerMonth")),
+    supersedePending(enrollmentId, "sessionsPerMonth", obligationMonthKey, newest, keep, wrote.has("sessionsPerMonth")),
+    supersedePending(enrollmentId, "sessionHours", obligationMonthKey, newest, keep, wrote.has("sessionHours")),
   ])).flat();
   if (ids.length === 0) return { applied: false, effectiveMonthKey, obligationMonthKey, changeIds: [], superseded };
   const r = await applyDueEnrollmentChanges(enrollmentId);

@@ -44,6 +44,8 @@ export type SettingsUi = {
   nextMonthKey: string;
   nextMonthLabel: string;
   currentMonthOwed: number | null;
+  /** What next month runs on, scheduled changes included (enrollmentChanges.termsInMonth). */
+  nextTerms: { pkg: string; videosPerMonth: number; sessionsPerMonth: number; sessionHours: number };
   packages: { name: string; videosPerMonth: number; sessionsPerMonth: number; sessionHours: number }[];
 };
 
@@ -64,8 +66,13 @@ const money = (n: number | null | undefined) => (n == null ? "—" : `$${Math.ro
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "—");
 
 export function SettingsPanel({
-  s, billing, owners, history, staff, isOwner,
-}: { s: SettingsUi; billing: BillingUi | null; owners: OwnersUi; history: HistoryUi; staff: { id: string; name: string }[]; isOwner: boolean }) {
+  s, billing, owners, history, staff, isOwner, packageHandledAbove = false,
+}: {
+  s: SettingsUi; billing: BillingUi | null; owners: OwnersUi; history: HistoryUi; staff: { id: string; name: string }[]; isOwner: boolean;
+  /** Kyle's view: EnrollmentControls above already carries package + status (Jordan, Sep 24), so this panel
+   *  drops its read-only copies — they told him only Jordan could change it, under a card that lets him. */
+  packageHandledAbove?: boolean;
+}) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const say = (r: { ok: boolean; message: string }) => setNote(`${r.ok ? "" : "Couldn't do that — "}${r.message}`);
@@ -74,7 +81,7 @@ export function SettingsPanel({
     <div className="space-y-5">
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[13px]">{note}</p>}
 
-      <PackageCard s={s} isOwner={isOwner} busy={busy} start={start} say={say} />
+      {!packageHandledAbove && <PackageCard s={s} isOwner={isOwner} busy={busy} start={start} say={say} />}
 
       {/* CALL REQUIREMENT — the §19 planning path, per client. */}
       <Section icon={CalendarClock} title="Planning & call requirement">
@@ -106,7 +113,7 @@ export function SettingsPanel({
       </Section>
 
       {/* ENROLLMENT STATUS. */}
-      <Section icon={Settings2} title="Enrollment status">
+      {!packageHandledAbove && <Section icon={Settings2} title="Enrollment status">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span>Currently <span className="font-semibold">{s.status.toLowerCase()}</span>.</span>
           {isOwner && (["ACTIVE", "PAUSED", "ENDED"] as const).filter((x) => x !== s.status).map((x) => (
@@ -119,7 +126,7 @@ export function SettingsPanel({
           Pausing or ending is a hub setting only. It cancels nothing with a payment processor, and the client keeps read-only access
           to the work already released to them until somebody revokes it on the Portal access card.
         </p>
-      </Section>
+      </Section>}
 
       {/* WORKFLOW FLAGS. */}
       <Section icon={Settings2} title="Workflow">
@@ -174,12 +181,17 @@ export function SettingsPanel({
 function PackageCard({
   s, isOwner, busy, start, say,
 }: { s: SettingsUi; isOwner: boolean; busy: boolean; start: (fn: () => void) => void; say: (r: { ok: boolean; message: string }) => void }) {
-  const [pkg, setPkg] = useState(s.pkg);
+  // Starts from, and compares with, NEXT month's terms (scheduled changes
+  // included) — comparing with today's column left the button armed after a
+  // scheduled change, and a second press used to cancel it (Sep 24).
+  const [pkg, setPkg] = useState(s.nextTerms.pkg);
   const [when, setWhen] = useState<"now" | "next">("next");
   const [choice, setChoice] = useState<CurrentMonthChoice | "">("");
   const [reason, setReason] = useState("");
   const rule = s.packages.find((p) => p.name === pkg) ?? null;
-  const changed = pkg !== s.pkg;
+  const scheduled = s.nextTerms.pkg !== s.pkg;
+  const changed = when === "next" ? pkg !== s.nextTerms.pkg : pkg !== s.pkg || pkg !== s.nextTerms.pkg;
+  const showWhen = pkg !== s.pkg || pkg !== s.nextTerms.pkg;
   const needsChoice = changed && when === "now";
   const ready = changed && (!needsChoice || choice !== "");
 
@@ -194,9 +206,14 @@ function PackageCard({
         {s.sessionsPerMonth} session{s.sessionsPerMonth === 1 ? "" : "s"} ({s.sessionHours}h) a month.
         {s.currentMonthOwed != null && <span className="text-muted"> {s.currentMonthLabel} was minted owing {s.currentMonthOwed}.</span>}
       </p>
+      {scheduled && (
+        <p className="mt-1 text-[12px] font-medium text-brand">
+          Scheduled from {s.nextMonthLabel}: {s.nextTerms.pkg} — {s.nextTerms.videosPerMonth} videos / {s.nextTerms.sessionsPerMonth} session{s.nextTerms.sessionsPerMonth === 1 ? "" : "s"}.
+        </p>
+      )}
 
       {!isOwner ? (
-        <p className="mt-2 text-[12px] text-muted">Only Jordan changes a package.</p>
+        <p className="mt-2 text-[12px] text-muted">Jordan or Kyle changes a package — every change is recorded in the history below.</p>
       ) : (
         <div className="mt-3 space-y-3 border-t border-border pt-3">
           <label className="flex flex-wrap items-center gap-2 text-sm">
@@ -206,7 +223,7 @@ function PackageCard({
             </select>
           </label>
 
-          {changed && (
+          {showWhen && (
             <>
               {/* THE EFFECTIVE DATE — never implicit. */}
               <div className="text-sm">
@@ -220,6 +237,8 @@ function PackageCard({
                   {s.currentMonthLabel} (this month)
                 </label>
               </div>
+
+              {!changed && <p className="text-[12px] text-muted-2">{when === "next" ? s.nextMonthLabel : s.currentMonthLabel} already runs on {pkg} — nothing to record.</p>}
 
               {/* THE CURRENT-MONTH CHOICE — required, and stated in plain words. */}
               {needsChoice && (
@@ -251,6 +270,7 @@ function PackageCard({
                       reason: reason.trim() || null,
                     });
                     say(r);
+                    if (r.ok) { setReason(""); setChoice(""); setWhen("next"); }
                   })}
                 >
                   Record the package change

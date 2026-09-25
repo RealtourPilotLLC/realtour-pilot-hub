@@ -11,6 +11,7 @@ import {
   EXTRA_ROUND_ROUTES_IMMEDIATELY, URGENT_CONTACT, type ReviewPanel,
 } from "@/lib/reviewWindows";
 import { clip } from "@/lib/text";
+import { TEXT_KYLE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // CLIENT DECISIONS (spec §8, Sep 17 2026). The client's verdict on ONE
@@ -569,7 +570,7 @@ export async function requestChangesOnCut(
   const staff = viewer.actor.kind === "STAFF";
   const owner = { enrollmentId: viewer.enrollment.id, clientId: viewer.enrollment.clientId };
   const w = await ensureWindow(submissionId, owner);
-  if (!w) return { ok: false, message: "That version isn't open for review — text us and we'll sort it out." };
+  if (!w) return { ok: false, message: `That version isn't open for review — ${TEXT_KYLE} and we'll sort it out.` };
   const policy = await revisionPolicy();
   const overall = clip((generalNote ?? "").trim(), 1000);
   const by = actorLabel(viewer);
@@ -589,7 +590,7 @@ export async function requestChangesOnCut(
   if (reopening && !staff) {
     return {
       ok: false,
-      message: w.state === "AUTO_APPROVED" ? stateWords("AUTO_APPROVED") : "You've already approved this version. If something still needs changing, text us and we'll sort it out.",
+      message: w.state === "AUTO_APPROVED" ? stateWords("AUTO_APPROVED") : `You've already approved this version. If something still needs changing, ${TEXT_KYLE} and we'll sort it out.`,
     };
   }
   // (b) Something to send: a note on the video, or an overall note. An
@@ -625,7 +626,7 @@ export async function requestChangesOnCut(
   if (!staff) {
     const recent = await prisma.contentRevisionRound.count({ where: { enrollmentId: viewer.enrollment.id, createdAt: { gte: new Date(now.getTime() - 3_600_000) } } });
     if (recent >= Math.max(policy.maxNewRoundsPerHour, (viewer.enrollment.videosPerMonth || 0) * 2)) {
-      return { ok: false, message: "We've had a lot of change requests from your account in the last hour. Your notes are saved: send this one again shortly, or text us if it's urgent." };
+      return { ok: false, message: `We've had a lot of change requests from your account in the last hour. Your notes are saved: send this one again shortly, or ${TEXT_KYLE} if it's urgent.` };
     }
   }
 
@@ -668,7 +669,7 @@ export async function requestChangesOnCut(
       return addToOpenRequest(ctx, w.id);
     }
     await giveBack(null);
-    return { ok: false, message: "That didn't send — try again in a moment, or text us." };
+    return { ok: false, message: `That didn't send — try again in a moment, or ${TEXT_KYLE}.` };
   }
   // The pointer is written only onto the window THIS request holds. A request
   // that stalled past the repair's two minutes finds its window given back
@@ -713,7 +714,7 @@ export async function requestChangesOnCut(
   if (!round) {
     await withdraw(decision.id);
     await giveBack(decision.id);
-    return { ok: false, message: "That didn't send — try again in a moment, or text us." };
+    return { ok: false, message: `That didn't send — try again in a moment, or ${TEXT_KYLE}.` };
   }
 
   // Only now, with the request on record, does a staff reopen set the
@@ -822,7 +823,7 @@ async function addToOpenRequest(ctx: RequestCtx, windowId: string): Promise<Requ
     // Nothing is claimed: the notes stay saved on the video and go with the
     // next send.
     if (recent.length >= ADDENDA_PER_HOUR || Date.now() - last < ADDENDUM_SPACING_MS) {
-      return { ok: false, message: "You just added notes to this request. Your notes are saved: send again in a couple of minutes and they'll join it, or text us if it's urgent." };
+      return { ok: false, message: `You just added notes to this request. Your notes are saved: send again in a couple of minutes and they'll join it, or ${TEXT_KYLE} if it's urgent.` };
     }
   }
   const claimed = await claimNotes(submissionId, viewer.enrollment.id, d.id);

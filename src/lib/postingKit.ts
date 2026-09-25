@@ -10,6 +10,7 @@ import { WHY, captionTarget, videoEntitlement, type Entitlement, type Entitlemen
 import { CLIENT_VISIBLE_SCRIPT, type PortalViewer } from "@/lib/portal";
 import { URGENT_CONTACT } from "@/lib/reviewWindows";
 import { clip } from "@/lib/text";
+import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE POSTING KIT (spec §10, Sep 17 2026). Per video: the final file (which
@@ -419,7 +420,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   const target = await captionTarget(viewer, v);
   if (!target.ok) return { ok: false, message: target.message };
   if (!(await isAutomationEnabled("caption_assistant"))) {
-    return { ok: false, message: "Caption drafting is switched off until the program launches — write your caption below and it's saved with this video, or text us and we'll draft one." };
+    return { ok: false, message: `Caption drafting is switched off until the program launches — write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
   }
   const submissionId = target.submissionId;
   const [script, transcript] = await Promise.all([
@@ -443,7 +444,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   try {
     bundle = buildCaptionPrompt(built.ctx, canonical);
   } catch {
-    return { ok: false, message: "We can't draft this one automatically — the records behind this video don't line up. Text us and we'll write the caption with you." };
+    return { ok: false, message: `We can't draft this one automatically — the records behind this video don't line up. ${TEXT_KYLE_START} and we'll write the caption with you.` };
   }
   const scriptWord = script?.historical ? "an earlier script we have on file" : "the script";
   const sourceNote = transcriptText

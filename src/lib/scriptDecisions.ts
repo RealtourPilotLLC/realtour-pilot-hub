@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import type { PortalViewer } from "@/lib/portal";
 import { actorLabel } from "@/lib/portalAccess";
 import { clip } from "@/lib/text";
+import { contentHref } from "@/lib/contentNav";
+import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT'S VERDICT ON A SCRIPT (spec §22, F09) — Sep 22 2026.
@@ -207,7 +209,7 @@ const stampActor = (v: PortalViewer) => ({
  * the second press says so rather than pretending a second approval happened.
  */
 export async function clientApproveScript(viewer: PortalViewer, scriptId: string, readVersionId: string): Promise<Outcome> {
-  if (viewer.access !== "FULL") return { ok: false, message: "Your access is read-only right now — text us and we'll sort it." };
+  if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now — ${TEXT_KYLE} and we'll sort it.` };
   const s = await sharedScriptFor(viewer, scriptId);
   if (!s) return { ok: false, message: "That script isn't on your page." };
   const versionId = s.sharedVersionId!;
@@ -326,7 +328,7 @@ async function bellForChangeRequest(
       kind: "script_change_request",
       title: `${reason === "repair" ? "Script change RE-FILED" : "Script change asked for"} — ${viewer.enrollment.clientName || "a client"}`,
       body: `${reason === "repair" ? "This request was missing from the queue and has been put back. " : ""}${by} on "${s.title}": ${clip(body, 140)}`,
-      href: `/content/${s.enrollmentId}?tab=scripts`,
+      href: contentHref(s.enrollmentId, { tab: "plan", view: "scripts" }),
       targets: [{ roles: ["OWNER", "ADMIN"] }],
       // Keyed on the WORDS as well as the version: a burst of identical text
       // rings once, but a second, different instruction on the same version is
@@ -347,7 +349,7 @@ async function bellForChangeRequest(
  * brief is an instruction that can be overwritten by the next one.
  */
 export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId: string, note: string, readVersionId: string): Promise<Outcome> {
-  if (viewer.access !== "FULL") return { ok: false, message: "Your access is read-only right now — text us and we'll sort it." };
+  if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now — ${TEXT_KYLE} and we'll sort it.` };
   const s = await sharedScriptFor(viewer, scriptId);
   if (!s) return { ok: false, message: "That script isn't on your page." };
   const body = clip((note ?? "").trim(), 2000);
@@ -367,7 +369,7 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
     where: { enrollmentId: s.enrollmentId, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
   });
   if (openCount >= OPEN_SCRIPT_REQUEST_CAP) {
-    return { ok: false, message: "You have a lot of change requests in already — we're on them! Text us if this one is urgent." };
+    return { ok: false, message: `You have a lot of change requests in already — we're on them! ${TEXT_KYLE_START} if this one is urgent.` };
   }
 
   // R2 — THE DUPLICATE GUARD IS NOW A REPAIR PATH.

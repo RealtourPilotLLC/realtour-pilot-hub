@@ -5,6 +5,7 @@ import { cutIdentityHash } from "@/lib/cutTranscripts";
 import { DELIVERED_STAMP, NOT_A_CUT, streamUrlFor } from "@/lib/reviewCuts";
 import { cutReleasedAt, sameVideoTitle, videoCutKey } from "@/lib/contentVideos";
 import type { PortalViewer } from "@/lib/portal";
+import { TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE ONE RELEASE RULE (completion audit CP-01, Sep 24 2026).
@@ -196,8 +197,8 @@ export const WHY = {
   AWAITING_OWNER: "The download and captions unlock once the account owner approves this version.",
   CHANGES: "You asked for changes to this version — the new one will ask for its own approval, and the download and captions unlock with it.",
   DRIFT: "The file behind your approval has changed since you approved it — we're re-issuing it for approval before it can be downloaded.",
-  REISSUE: "We're re-issuing this video's file — it'll be back here shortly. Text us if you need it now.",
-  UNPAIRED: "We're confirming which delivered file belongs to this video — it'll be here once we've matched it. Text us if you need it now.",
+  REISSUE: `We're re-issuing this video's file — it'll be back here shortly. ${TEXT_KYLE_START} if you need it now.`,
+  UNPAIRED: `We're confirming which delivered file belongs to this video — it'll be here once we've matched it. ${TEXT_KYLE_START} if you need it now.`,
   NOT_YET_CUT: "The final file lands here once this version is approved and finished.",
   NOT_YET: "No file yet — it appears here once the video is edited and delivered.",
   PRIOR: "This is the version you approved. The newer version is waiting for your review above; its download unlocks once you approve it.",

@@ -375,6 +375,10 @@ export type ProgramRow = {
   progress: MonthProgress | null;
 };
 
+// UI-02 (Sep 24 2026): the /content page no longer reads this — its cards and
+// its table both draw programOverview rows now, so the two views cannot differ.
+// Kept because the CP-10 drill holds this roster to the same reader; no screen
+// should start reading it again (a second engine is how the views drifted).
 export async function getProgramRoster(opts: { now?: Date } = {}): Promise<ProgramRow[]> {
   const now = opts.now ?? new Date();
   const key = etMonthKey(now);

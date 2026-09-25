@@ -4,6 +4,7 @@ import { etMonthKey, aryeoProductFor, RESUBSCRIBE_URL } from "@/lib/contentProgr
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
+import { TEXT_KYLE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28; identity layer,
@@ -734,8 +735,14 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
   const shoots = await prisma.project.findMany({
     where: { contentMonthId: { in: months.map((m) => m.id) }, clientId: enrollment.clientId, status: { not: "CANCELLED" }, shootDate: { not: null } },
     orderBy: { shootDate: "asc" },
-    select: { contentMonthId: true, shootDate: true },
+    select: { id: true, contentMonthId: true, shootDate: true },
   });
+  // A free-text ask the office confirmed onto a job that has already been
+  // filmed is HELD, not booked: the Sessions list shows it, and it offers no
+  // "Change time" / "Cancel" (Sep 24). With no slot of its own there was no
+  // time for the 24-hour rule to read, so it stayed changeable forever beside
+  // the held session it was.
+  const filmedJobs = new Set(shoots.filter((s) => s.shootDate && s.shootDate < now).map((s) => s.id));
   const out: PortalScheduleMonth[] = [];
   for (const m of months) {
     const [gate, capacity, rows] = await Promise.all([
@@ -763,7 +770,10 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
         id: r.id, status: r.status, label: r.label, bookingState: r.bookingState, creativeName: r.creativeName,
         canChange: (r.status === "REQUESTED" || r.status === "CONFIRMED") && !r.changePending &&
           !(r.status === "REQUESTED" && (IN_FLIGHT_STATES as readonly string[]).includes(r.bookingState)) &&
-          !(r.slotStart && within24hElapsed(r.slotStart, now)),
+          !(r.slotStart && within24hElapsed(r.slotStart, now)) &&
+          // Slotted requests keep the 24-hour rule above: one Pro job carries
+          // both sessions, so its shoot date says nothing about the second.
+          !(r.status === "CONFIRMED" && !r.slotStart && r.projectId && filmedJobs.has(r.projectId)),
         slotStartISO: r.slotStart ? r.slotStart.toISOString() : null,
         slotEndISO: r.slotEnd ? r.slotEnd.toISOString() : null,
         locationText: r.locationText, notes: notes.get(r.id) ?? null, createdAtISO: r.createdAt.toISOString(),
@@ -1459,7 +1469,7 @@ export function readOnlyNotice(status: string): ReadOnlyNotice {
   const paused = status === "PAUSED";
   return {
     title: paused ? "Your program is paused" : "Your program has ended",
-    body: `Everything we\u2019ve delivered stays here for you to watch and download. New requests, notes, captions and bookings are off until it ${paused ? "resumes" : "restarts"} — text us any time.`,
+    body: `Everything we\u2019ve delivered stays here for you to watch and download. New requests, notes, captions and bookings are off until it ${paused ? "resumes" : "restarts"} — ${TEXT_KYLE} any time.`,
     cta: { label: paused ? "Resume your program" : "Restart your program", href: RESUBSCRIBE_URL },
   };
 }

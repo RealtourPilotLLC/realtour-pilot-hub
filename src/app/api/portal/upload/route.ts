@@ -5,6 +5,7 @@ import { can, refusalMessage } from "@/lib/portalAccess";
 import { dropboxUpload } from "@/lib/integrations/dropbox";
 import { ensureClientBrandFolder } from "@/lib/clientFolders";
 import { isPortalUploadKind, recordPortalAssetUpload, replaceableAsset } from "@/lib/brandProfile";
+import { TEXT_KYLE } from "@/lib/portalWords";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, message: "That file type isn't supported — images, PDFs, fonts, zips and videos work." }, { status: 400 });
   }
   if (file.size > MAX_BYTES) {
-    return NextResponse.json({ ok: false, message: "Max 25MB per file — text us for anything bigger." }, { status: 400 });
+    return NextResponse.json({ ok: false, message: `Max 25MB per file — ${TEXT_KYLE} for anything bigger.` }, { status: 400 });
   }
 
   // Daily flood counter — ATOMIC increment-then-check (review: the read-check-
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
     const used = parseInt(rows[0]?.value ?? "", 10);
     if (!Number.isFinite(used)) throw new Error("counter unreadable");
     if (used > DAILY_CAP) {
-      return NextResponse.json({ ok: false, message: "That's the daily upload limit — text us and we'll add the rest." }, { status: 429 });
+      return NextResponse.json({ ok: false, message: `That's the daily upload limit — ${TEXT_KYLE} and we'll add the rest.` }, { status: 429 });
     }
   } catch {
     return NextResponse.json({ ok: false, message: "Uploads are briefly unavailable — try again in a minute." }, { status: 503 });
@@ -87,14 +88,14 @@ export async function POST(req: NextRequest) {
 
   const folder = await ensureClientBrandFolder(enrollment.clientId);
   if (!folder.ok || !folder.path) {
-    return NextResponse.json({ ok: false, message: "We couldn't reach the asset folder — text us the file instead." }, { status: 502 });
+    return NextResponse.json({ ok: false, message: `We couldn't reach the asset folder — ${TEXT_KYLE} and send the file there instead.` }, { status: 502 });
   }
   let landedAt: string;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     landedAt = (await dropboxUpload(`${folder.path}/${file.name}`, bytes)).pathDisplay; // autorename on collision
   } catch {
-    return NextResponse.json({ ok: false, message: "The upload didn't stick — try again, or text us the file." }, { status: 502 });
+    return NextResponse.json({ ok: false, message: `The upload didn't stick — try again, or ${TEXT_KYLE} and send the file there.` }, { status: 502 });
   }
   const landedName = landedAt.slice(landedAt.lastIndexOf("/") + 1) || file.name;
 
@@ -122,7 +123,7 @@ export async function POST(req: NextRequest) {
   } catch { /* bell is best-effort */ }
 
   if (!recorded.ok) {
-    return NextResponse.json({ ok: true, registered: false, message: `${landedName} is in your brand folder, where your editor can find it, but it didn't show up on your profile. Refresh, and text us if it's still missing.` });
+    return NextResponse.json({ ok: true, registered: false, message: `${landedName} is in your brand folder, where your editor can find it, but it didn't show up on your profile. Refresh, and ${TEXT_KYLE} if it's still missing.` });
   }
   return NextResponse.json({ ok: true, registered: true, message: recorded.message, assetId: recorded.assetId, versionId: recorded.versionId, kind, fileName: landedName });
 }

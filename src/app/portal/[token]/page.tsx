@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { resolvePortalViewer } from "@/lib/portal";
 import { portalLoginEmailEnabled } from "@/lib/portalAccess";
-import { PortalPage, portalTabOf, type PortalQuery } from "@/components/portal/PortalPage";
+import { PortalPage, type PortalQuery } from "@/components/portal/PortalPage";
 import { PortalSignIn } from "@/components/portal/PortalSignIn";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +30,6 @@ export default async function ClientPortalPage({ params, searchParams }: {
 }) {
   const { token } = await params;
   const query = await searchParams;
-  const { tab } = query;
   if (!/^[a-zA-Z0-9_-]{20,}$/.test(token)) notFound();
   const r = await resolvePortalViewer({ token });
   if (!r.ok) {
@@ -43,5 +42,7 @@ export default async function ClientPortalPage({ params, searchParams }: {
     const reason = r.reason === "expired_token" ? "expired" : r.reason === "revoked" ? "revoked" : "unknown";
     return <PortalSignIn reason={reason} emailSignIn={await portalLoginEmailEnabled().catch(() => false)} />;
   }
-  return <PortalPage viewer={r.viewer} tab={portalTabOf(tab)} path="/portal/[token]" query={query} />;
+  // The page reads the tab from the address itself (lib/portalNav): old and new
+  // ?tab= keys both land, in whichever layout this visit gets (UI-01).
+  return <PortalPage viewer={r.viewer} path="/portal/[token]" query={query} />;
 }

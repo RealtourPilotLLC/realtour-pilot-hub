@@ -7,6 +7,7 @@ import {
   portalLoginEmailEnabled,
 } from "@/lib/portalAccess";
 import { isAutomationEnabled } from "@/lib/programAutomation";
+import { TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ===========================================================================
 // THE CLIENT'S OWN TEAM (F19 / §4.9-4.10, Sep 21 2026; moved here CP-06,
@@ -211,7 +212,7 @@ export async function accountHolderSeatIds(enrollmentId: string): Promise<Set<st
   return new Set(first ? [first.id] : []);
 }
 
-const HOLDER_REFUSAL = "That's the account holder's own access, so only they or our office can change it. Text us and we'll help.";
+const HOLDER_REFUSAL = `That's the account holder's own access, so only they or our office can change it. ${TEXT_KYLE_START} and we'll help.`;
 
 async function lastOwnerSeat(enrollmentId: string, exceptId: string): Promise<boolean> {
   const others = await prisma.clientMembership.count({ where: { enrollmentId, revokedAt: null, role: "OWNER", id: { not: exceptId } } });
@@ -250,7 +251,7 @@ export async function revokeTeammate(v: PortalViewer, membershipId: string): Pro
   // that can approve. Either would leave a paying client unable to use their
   // own account, and only staff could undo it.
   if (v.actor.kind === "CLIENT" && seat.clientUserId === v.actor.clientUserId) {
-    return fail("You can't remove your own access. Text us and we'll help you hand the account over.");
+    return fail(`You can't remove your own access. ${TEXT_KYLE_START} and we'll help you hand the account over.`);
   }
   if (seat.role === "OWNER" && (await lastOwnerSeat(v.enrollment.id, seat.id))) {
     return fail("That's the only person who can approve videos on this account. Give someone else owner access first.");

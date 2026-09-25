@@ -1,12 +1,17 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useSyncExternalStore, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeftRight, Ban, CheckCircle2, CheckCheck, ChevronRight, Lightbulb, Loader2, MessageSquare, PencilLine, Plus, Undo2, X } from "lucide-react";
+import { ArrowLeftRight, Ban, CheckCircle2, ChevronRight, Lightbulb, Loader2, MessageSquare, Plus, ScrollText, Undo2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalApproveScript, portalDeclineTopic, portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalRequestScriptChanges, portalSelectTopic, portalSuggestTopic, portalSwapCarriedTopic, portalUndeclineTopic } from "@/app/portal/actions";
+import { portalDeclineTopic, portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalSelectTopic, portalSuggestTopic, portalSwapCarriedTopic, portalUndeclineTopic } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { ScriptBody } from "@/components/portal/ScriptBody";
+import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
+import { StatusChip } from "@/components/portal/ui";
+import { awaitingScript, inBank } from "@/lib/portalHome";
+import { SCRIPT_WORDS, TEXT_KYLE, TOPIC_WORDS } from "@/lib/portalWords";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
 
 // ---------------------------------------------------------------------------
@@ -24,11 +29,26 @@ import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/port
 // can be used for a month. "Not interested" (with an optional reason) sets a
 // suggestion aside, with undo in the strip below the bank. Your own idea can
 // go straight into a month and on to its questions.
+//
+// UI-01 (Sep 24 2026): `view` splits the one long page for the v2 layout's
+// My Plan — "month" is one month's selections (and what carried into it),
+// "bank" is everything not on an open month's plan, filtered to Suggested
+// by default. Both keep scripts folded unless a #topic-<id> link points at
+// one, put each action's result INSIDE the topic card that produced it, and
+// give phones 44px buttons. "all" (the default) is today's page, unchanged.
 // ---------------------------------------------------------------------------
+
+const subscribeHash = (cb: () => void) => { window.addEventListener("hashchange", cb); return () => window.removeEventListener("hashchange", cb); };
+const readHash = () => window.location.hash;
 
 const FILTERS: { key: PortalTopicState | "ALL"; label: string }[] = [
   { key: "ALL", label: "All" }, { key: "SUGGESTED", label: "Suggested" }, { key: "SELECTED", label: "Selected for a month" }, { key: "PREPARING", label: "Preparing" }, { key: "FILMED", label: "Filmed" },
 ];
+// The v2 bank is everything NOT on an open month's plan, so "Selected for a
+// month" and "Preparing" there were always 0 while the month held four — and
+// tapping one told a client with four topics chosen that they had none
+// (Sep 24). The bank offers what can be in it; the month view holds the rest.
+const BANK_FILTER_KEYS: readonly (PortalTopicState | "ALL")[] = ["ALL", "SUGGESTED", "FILMED"];
 const monthLabel = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" }); };
 const shortMonth = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short" }); };
 const STATE_CHIP: Record<PortalTopicState, { label: string; cls: string }> = {
@@ -38,7 +58,7 @@ const STATE_CHIP: Record<PortalTopicState, { label: string; cls: string }> = {
   FILMED: { label: "Filmed", cls: "bg-success-soft text-success" },
 };
 
-export function TopicBank({ groups, months, archivedCount, total, strategyLabel, canAct, readOnly, initialFilter, tabHref }: {
+export function TopicBank({ groups, months, archivedCount, total, strategyLabel, canAct, readOnly, initialFilter, tabHref, view = "all", initialMonthId = null, scriptsHref = null }: {
   groups: { pillarId: string | null; pillarName: string; purpose: string | null; topics: PortalTopic[] }[];
   months: PortalTopicMonth[];
   archivedCount: number;
@@ -49,18 +69,28 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   initialFilter: string | undefined;
   /** Base href of this tab (query-only), to which `&topic=` is appended for the interview. */
   tabHref: string;
+  /** "all" = the v1 page; "month" / "bank" = My Plan's subviews (v2). */
+  view?: "all" | "month" | "bank";
+  /** The month the month view opens on (v2: this ET month). */
+  initialMonthId?: string | null;
+  /** My Plan's Scripts view, where a script waiting on the client is read and answered (v2). */
+  scriptsHref?: string | null;
 }) {
   const router = useRouter();
+  const v2 = view !== "all";
   const [filter, setFilter] = useState<PortalTopicState | "ALL">(FILTERS.some((f) => f.key === initialFilter) ? (initialFilter as PortalTopicState | "ALL") : "ALL");
-  const [monthId, setMonthId] = useState<string | null>(months.find((m) => m.selected < m.owed)?.id ?? months[0]?.id ?? null);
+  const [monthId, setMonthId] = useState<string | null>((initialMonthId && months.some((m) => m.id === initialMonthId) ? initialMonthId : null) ?? months.find((m) => m.selected < m.owed)?.id ?? months[0]?.id ?? null);
   const [openTopic, setOpenTopic] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [idea, setIdea] = useState({ title: "", concept: "", pillarId: "" });
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  /** Which script's "what should change?" box is open, and what is in it. */
-  const [changing, setChanging] = useState<string | null>(null);
-  const [changeNote, setChangeNote] = useState("");
+  /** The last result, and (v2) the topic whose card it belongs in. */
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; topicId?: string | null } | null>(null);
+  /** The topic the running action belongs to — its card says "Saving…". */
+  const [pending, setPending] = useState<string | null>(null);
+  /** A #topic-<id> link names a topic: its script opens, and the bank shows it whatever the filter. */
+  const hash = useSyncExternalStore(subscribeHash, readHash, () => "");
+  const [filterTouched, setFilterTouched] = useState(false);
   /** Which suggestion's "not interested" box is open, and the optional reason. */
   const [declining, setDeclining] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState("");
@@ -72,48 +102,61 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   const [justAdded, setJustAdded] = useState<{ topicId: string; monthId: string } | null>(null);
   const [busy, start] = useTransition();
   const month = months.find((m) => m.id === monthId) ?? null;
-  const done = (r: { ok: boolean; message: string }) => { setMsg({ ok: r.ok, text: r.message }); if (r.ok) router.refresh(); };
+  const done = (r: { ok: boolean; message: string }, topicId: string | null = null) => { setMsg({ ok: r.ok, text: r.message, topicId }); if (r.ok) router.refresh(); };
+  const act = (topicId: string | null, fn: () => Promise<void>) => { setPending(topicId); start(fn); };
+  const openIds = useMemo(() => new Set(months.map((m) => m.id)), [months]);
+  const targetId = v2 && hash.startsWith("#topic-") ? hash.slice("#topic-".length) : null;
 
   // Topics they set aside live in their pillar's group flagged `declined`: the
   // bank and its counts leave them out; the strip below the bank lists them.
   const active = useMemo(() => groups.map((g) => ({ ...g, topics: g.topics.filter((t) => !t.declined) })), [groups]);
   const setAside = useMemo(() => groups.flatMap((g) => g.topics.filter((t) => t.declined)), [groups]);
-  const scriptedNotFilmed = useMemo(() => active.flatMap((g) => g.topics.filter((t) => t.scriptedNotFilmed)), [active]);
+  // Which "Scripted, not filmed" rows this view shows: the month view the ones
+  // carried into its month, the bank the ones not on any open month.
+  const scriptedNotFilmed = useMemo(() => active.flatMap((g) => g.topics.filter((t) => t.scriptedNotFilmed && (view === "all" || (view === "month" ? t.selection?.monthId === monthId : inBank(t, openIds))))), [active, view, monthId, openIds]);
   /** What a carried script can be swapped for: unplanned topics still in the bank. */
   const swapOptions = useMemo(() => active.flatMap((g) => g.topics.filter((t) => !t.selection && !t.scriptedNotFilmed && t.state !== "FILMED")), [active]);
-  const visible = useMemo(() => active.map((g) => ({ ...g, topics: g.topics.filter((t) => !t.scriptedNotFilmed && (filter === "ALL" || t.state === filter)) })).filter((g) => g.topics.length > 0), [active, filter]);
-  const counts = useMemo(() => { const c: Record<string, number> = { ALL: 0 }; for (const g of active) for (const t of g.topics) { c.ALL++; c[t.state] = (c[t.state] ?? 0) + 1; } return c; }, [active]);
+  // The bank view keeps a topic a #topic- link points at in view: the filter
+  // steps back to All until the client picks one themselves.
+  const filters = view === "bank" ? FILTERS.filter((f) => BANK_FILTER_KEYS.includes(f.key)) : FILTERS;
+  // An address asking the bank for a month-only filter (?filter=SELECTED) lands on All.
+  const bankFilter: PortalTopicState | "ALL" = view === "bank" && !BANK_FILTER_KEYS.includes(filter) ? "ALL" : filter;
+  const effFilter: PortalTopicState | "ALL" = view === "bank" && !filterTouched && targetId && active.some((g) => g.topics.some((t) => t.id === targetId && !t.scriptedNotFilmed && !(bankFilter === "ALL" || (t.state === bankFilter && inBank(t, openIds))))) ? "ALL" : bankFilter;
+  // v2 KEEPS THE CARD THE CLIENT JUST ACTED ON (Sep 24): its "Selected for
+  // September" / "Removed" line lives inside the card, and the refresh that
+  // follows moves the topic out of the view it was in — so the card, and the
+  // only confirmation, vanished. It stays until they change the filter or month.
+  const justActed = (t: PortalTopic) => v2 && !!msg?.topicId && msg.topicId === t.id;
+  const shows = (t: PortalTopic) =>
+    !t.scriptedNotFilmed && (justActed(t) || (view === "month" ? !!month && t.selection?.monthId === month.id : view === "bank" ? (inBank(t, openIds) || t.id === targetId) && (effFilter === "ALL" || t.state === effFilter) : filter === "ALL" || t.state === filter));
+  const visible = active.map((g) => ({ ...g, topics: g.topics.filter(shows) })).filter((g) => g.topics.length > 0);
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { ALL: 0 };
+    for (const g of active) for (const t of g.topics) {
+      // The bank counts only what is IN the bank, so its chips add up.
+      if (view === "bank" && (t.scriptedNotFilmed || !inBank(t, openIds))) continue;
+      c.ALL++; c[t.state] = (c[t.state] ?? 0) + 1;
+    }
+    return c;
+  }, [active, view, openIds]);
+  /** The bank view's pointer to what is chosen: those topics live on the month view. */
+  const chosenThisMonth = view === "bank" && month ? active.reduce((n, g) => n + g.topics.filter((t) => !t.scriptedNotFilmed && t.selection?.monthId === month.id).length, 0) : 0;
 
-  const select = (topicId: string) => { if (!month) return; start(async () => done(await portalSelectTopic(portalAuthFromLocation(), topicId, month.id).catch(() => ({ ok: false, message: "That didn't save — try again." })))); };
-  const remove = (t: PortalTopic) => { if (!t.selection) return; start(async () => done(await portalRemoveSelection(portalAuthFromLocation(), t.id, t.selection!.monthId).catch(() => ({ ok: false, message: "That didn't save — try again." })))); };
-  const discuss = (topicId: string) => start(async () => { const r = await portalDiscussTopic(portalAuthFromLocation(), topicId, note).catch(() => ({ ok: false, message: "That didn't send — try again." })); if (r.ok) { setNote(""); setOpenTopic(null); } done(r); });
+  const select = (topicId: string) => { if (!month) return; act(topicId, async () => done(await portalSelectTopic(portalAuthFromLocation(), topicId, month.id).catch(() => ({ ok: false, message: "That didn't save — try again." })), topicId)); };
+  const remove = (t: PortalTopic) => { if (!t.selection) return; act(t.id, async () => done(await portalRemoveSelection(portalAuthFromLocation(), t.id, t.selection!.monthId).catch(() => ({ ok: false, message: "That didn't save — try again." })), t.id)); };
+  const discuss = (topicId: string) => act(topicId, async () => { const r = await portalDiscussTopic(portalAuthFromLocation(), topicId, note).catch(() => ({ ok: false, message: "That didn't send — try again." })); if (r.ok) { setNote(""); setOpenTopic(null); } done(r, topicId); });
   const openQuestions = (t: PortalTopic) => {
     const mId = t.selection?.monthId ?? month?.id;
     if (!mId) return;
-    start(async () => {
+    act(t.id, async () => {
       const r = await portalOpenInterview(portalAuthFromLocation(), t.id, mId).catch(() => ({ ok: false, message: "Couldn't open the questions — try again." }));
       if (r.ok && "id" in r && r.id) router.push(`${tabHref}&iv=${encodeURIComponent(r.id)}`);
-      else setMsg({ ok: false, text: r.message });
+      else setMsg({ ok: false, text: r.message, topicId: t.id });
     });
   };
-  // R1 — the decision carries the version THIS PAGE rendered. If a newer one
-  // has been released since, the server refuses and `done` refreshes, so the
-  // client lands on the words we would actually film instead of approving
-  // something they have not read.
-  const approveScript = (scriptId: string, versionId: string | null) =>
-    start(async () =>
-      done(
-        await portalApproveScript(portalAuthFromLocation(), scriptId, versionId ?? "").catch(() => ({ ok: false, message: "That didn't save — try again." })),
-      ),
-    );
-  const sendChanges = (scriptId: string, versionId: string | null) => start(async () => {
-    const r = await portalRequestScriptChanges(portalAuthFromLocation(), scriptId, changeNote, versionId ?? "").catch(() => ({ ok: false, message: "That didn't send — try again." }));
-    // A stale refusal keeps their words in the box: they are about to read a
-    // new version and may well want to say the same thing about it.
-    if (r.ok) { setChangeNote(""); setChanging(null); }
-    done(r);
-  });
-  const suggest = () => start(async () => {
+  // R1 — the script decision lives in ScriptApprovalCard, which sends the
+  // version THIS PAGE rendered; the bank only lends it its status line.
+  const suggest = () => act(null, async () => {
     const r: { ok: boolean; message: string; id?: string; monthId?: string | null; selected?: boolean } = await portalSuggestTopic(portalAuthFromLocation(), { title: idea.title, concept: idea.concept, pillarId: idea.pillarId || null, monthId: useForMonth && month ? month.id : null }).catch(() => ({ ok: false, message: "That didn't save — try again." }));
     if (r.ok) { setIdea({ title: "", concept: "", pillarId: "" }); setSuggesting(false); }
     setJustAdded(r.ok && r.selected && r.id && r.monthId ? { topicId: r.id, monthId: r.monthId } : null);
@@ -121,23 +164,33 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   });
   const answerJustAdded = () => {
     if (!justAdded) return;
-    start(async () => {
+    act(null, async () => {
       const r = await portalOpenInterview(portalAuthFromLocation(), justAdded.topicId, justAdded.monthId).catch(() => ({ ok: false, message: "Couldn't open the questions — try again." }));
       if (r.ok && "id" in r && r.id) router.push(`${tabHref}&iv=${encodeURIComponent(r.id)}`);
       else setMsg({ ok: false, text: r.message });
     });
   };
-  const decline = (topicId: string) => start(async () => {
+  const decline = (topicId: string) => act(topicId, async () => {
     const r = await portalDeclineTopic(portalAuthFromLocation(), topicId, declineReason).catch(() => ({ ok: false, message: "That didn't save — try again." }));
     if (r.ok) { setDeclining(null); setDeclineReason(""); }
-    done(r);
+    // A topic set aside leaves the list, so its result has no card to sit in.
+    done(r, r.ok ? null : topicId);
   });
-  const undecline = (topicId: string) => start(async () => done(await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
-  const swap = (selectionId: string) => start(async () => {
+  const undecline = (topicId: string) => act(null, async () => done(await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
+  const swap = (selectionId: string, topicId: string) => act(topicId, async () => {
     const r = await portalSwapCarriedTopic(portalAuthFromLocation(), selectionId, swapTo).catch(() => ({ ok: false, message: "That didn't save — try again." }));
     if (r.ok) { setSwapping(null); setSwapTo(""); }
-    done(r);
+    done(r, r.ok ? null : topicId);
   });
+  /** v2: bigger targets on a phone, today's size from sm up. */
+  const tap = v2 ? "min-h-11 px-3 text-xs sm:min-h-0 sm:px-2 sm:text-[11px]" : "";
+  /** v2: the result of an action on THIS topic, inside its card. */
+  const cardStatus = (topicId: string) => v2 && (
+    <>
+      {busy && pending === topicId && <p role="status" className="mt-1.5 inline-flex items-center gap-1 text-xs text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</p>}
+      {!busy && msg?.topicId === topicId && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+    </>
+  );
 
   return (
     <div className="space-y-4">
@@ -149,7 +202,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
             {months.length > 1 && (
               <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
                 {months.map((m) => (
-                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => setMonthId(m.id)} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>{monthLabel(m.monthKey)}</button>
+                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
                 ))}
               </div>
             )}
@@ -173,10 +226,11 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       )}
       {months.length === 0 && <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Your next program month isn&rsquo;t open yet — you can still read and discuss your topics; selecting opens when the month does.</p>}
 
-      {/* Filters */}
+      {/* Filters (the month view is one month's plan: nothing to filter) */}
+      {view !== "month" && (
       <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter topics">
-        {FILTERS.map((f) => (
-          <button key={f.key} type="button" role="tab" aria-selected={filter === f.key} onClick={() => setFilter(f.key)} className={cn("rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", filter === f.key ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+        {filters.map((f) => (
+          <button key={f.key} type="button" role="tab" aria-selected={effFilter === f.key} onClick={() => { setFilter(f.key); setFilterTouched(true); setMsg(null); }} className={cn("rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", effFilter === f.key ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>
             {/* Every chip carries its count, zero included — one chip without
                 a number beside five with one reads as "unknown", not "none". */}
             {f.label} · {counts[f.key] ?? 0}
@@ -184,10 +238,18 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
         ))}
         {archivedCount > 0 && <span className="self-center text-[11px] text-muted-2">{archivedCount} set aside — we keep those so we never re-suggest them</span>}
       </div>
+      )}
+      {chosenThisMonth > 0 && month && (
+        <p className="text-xs text-muted">
+          {chosenThisMonth} chosen for {monthLabel(month.monthKey)} —{" "}
+          <Link href={tabHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">see them on this month <ChevronRight className="size-3" aria-hidden /></Link>
+        </p>
+      )}
 
-      {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+      {/* v1: every result here. v2: only results that have no topic card to sit in. */}
+      {msg && (!v2 || !msg.topicId) && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
       {justAdded && canAct && !readOnly && (
-        <button type="button" onClick={answerJustAdded} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Answer the questions for it now <ChevronRight className="size-3.5" /></button>
+        <button type="button" onClick={answerJustAdded} disabled={busy} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>Answer the questions for it now <ChevronRight className="size-3.5" /></button>
       )}
 
       {/* SCRIPTED, NOT FILMED — first, because each one is a decision: film it
@@ -213,19 +275,20 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     {t.swappable && (swapping === t.swappable ? (
                       <>
-                        <select value={swapTo} onChange={(e) => setSwapTo(e.target.value)} aria-label="Swap it for" className="min-w-0 max-w-full rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-brand">
+                        <select value={swapTo} onChange={(e) => setSwapTo(e.target.value)} aria-label="Swap it for" className={cn("min-w-0 max-w-full rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-brand", v2 && "min-h-11 sm:min-h-0")}>
                           <option value="">Swap it for…</option>
                           {swapOptions.map((o) => <option key={o.id} value={o.id}>{o.title}{o.mine ? " (your idea)" : ""}</option>)}
                         </select>
-                        <button type="button" onClick={() => swap(t.swappable!)} disabled={busy || !swapTo} className="rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Swap</button>
-                        <button type="button" onClick={() => { setSwapping(null); setSwapTo(""); }} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
+                        <button type="button" onClick={() => swap(t.swappable!, t.id)} disabled={busy || !swapTo} className={cn("rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Swap</button>
+                        <button type="button" onClick={() => { setSwapping(null); setSwapTo(""); }} className={cn("rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Cancel</button>
                       </>
                     ) : (
-                      <button type="button" onClick={() => { setSwapping(t.swappable); setSwapTo(""); }} disabled={busy || swapOptions.length === 0} className="inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><ArrowLeftRight className="size-3" /> Swap for another topic</button>
+                      <button type="button" onClick={() => { setSwapping(t.swappable); setSwapTo(""); }} disabled={busy || swapOptions.length === 0} className={cn("inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ArrowLeftRight className="size-3" /> Swap for another topic</button>
                     ))}
-                    {!t.carried && month && <button type="button" onClick={() => select(t.id)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Plus className="size-3" /> Use for {shortMonth(month.monthKey)}</button>}
+                    {!t.carried && month && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> Use for {shortMonth(month.monthKey)}</button>}
                   </div>
                 )}
+                {cardStatus(t.id)}
               </li>
             ))}
           </ul>
@@ -239,7 +302,11 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
           <p className="mt-2">Your topic bank is being built from your strategy. Meanwhile, add any idea you already have below.</p>
         </div>
       ) : visible.length === 0 ? (
-        <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Nothing under &ldquo;{FILTERS.find((f) => f.key === filter)?.label}&rdquo; yet.</p>
+        view === "month" ? (
+          <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">{month ? <>No topics chosen for {monthLabel(month.monthKey)} yet{canAct && !readOnly ? " — pick them from your topic bank, or suggest your own idea below." : "."}</> : "Your next program month isn’t open yet."}</p>
+        ) : (
+          <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Nothing under &ldquo;{filters.find((f) => f.key === effFilter)?.label}&rdquo; yet{v2 && effFilter !== "ALL" ? " — try All, or suggest an idea of your own below." : "."}</p>
+        )
       ) : (
         visible.map((g) => (
           <section key={g.pillarId ?? "none"} className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
@@ -260,7 +327,8 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="text-sm font-semibold">{t.title}</span>
-                          <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", chip.cls)}>{chip.label}</span>
+                          {v2 ? <StatusChip word={TOPIC_WORDS[t.state]} /> : <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", chip.cls)}>{chip.label}</span>}
+                          {v2 && awaitingScript(t) && <StatusChip word={SCRIPT_WORDS.AWAITING} />}
                           {t.mine && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">your idea</span>}
                           {t.selection && <span className="text-[11px] text-muted-2">{t.selection.status === "PROPOSED" ? "proposed on your call for" : "for"} {shortMonth(t.selection.monthKey)}{t.selection.overflow ? " (extra)" : ""}</span>}
                         </div>
@@ -290,7 +358,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                             old script we hold is not this topic's script and
                             must never be mistaken for one (Jordan's ruling). */}
                         {t.scriptText && (
-                          <details className="mt-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2" open={!t.scriptText.historical}>
+                          <details className="mt-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2" open={v2 ? targetId === t.id : !t.scriptText.historical}>
                             <summary className="cursor-pointer text-xs font-bold">
                               {t.scriptText.historical ? "An earlier script we have on file" : "Your script"}
                               <span className="ml-1 text-[10px] font-normal text-muted-2">
@@ -305,53 +373,36 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                                 hold as history is not theirs to approve, and a
                                 draft they cannot see has nothing to approve. */}
                             {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
-                              <div className="mt-2 border-t border-border pt-2">
-                                {t.script.decision === "APPROVED" ? (
-                                  <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><CheckCheck className="size-3.5" /> You signed off on this one{t.script.decidedAtISO ? ` on ${new Date(t.script.decidedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}.</p>
-                                ) : t.script.decision === "CHANGES_REQUESTED" ? (
-                                  <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes — we&rsquo;re reworking it and the new version lands here.</p>
-                                ) : (
-                                  <>
-                                    {t.script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it — have another read.</p>}
-                                    <div className="flex flex-wrap items-center gap-1.5">
-                                      <button type="button" onClick={() => approveScript(t.script!.id, t.script!.sharedVersionId)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><CheckCheck className="size-3" /> I&rsquo;ll film this</button>
-                                      <button type="button" onClick={() => { setChanging(changing === t.script!.id ? null : t.script!.id); setChangeNote(""); }} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><PencilLine className="size-3" /> Change something</button>
-                                    </div>
-                                    {changing === t.script.id && (
-                                      <div className="mt-1.5 flex items-start gap-2">
-                                        <textarea value={changeNote} onChange={(e) => setChangeNote(e.target.value)} rows={2} placeholder="What should change? A line, a word, the whole angle&hellip;" aria-label="What should change about this script" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                                        <button type="button" onClick={() => sendChanges(t.script!.id, t.script!.sharedVersionId)} disabled={busy || changeNote.trim().length < 3} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Send</button>
-                                      </div>
-                                    )}
-                                  </>
-                                )}
-                              </div>
+                              <ScriptApprovalCard script={t.script} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large={v2} />
                             )}
                           </details>
                         )}
                         {/* Actions */}
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Plus className="size-3" /> Select for {shortMonth(month!.monthKey)}</button>}
-                          {t.selection && t.selection.removable && canAct && !readOnly && <button type="button" onClick={() => remove(t)} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-danger disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><X className="size-3" /> Remove from {shortMonth(t.selection.monthKey)}</button>}
-                          {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> committed — text us to change it</span>}
+                          {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> Select for {shortMonth(month!.monthKey)}</button>}
+                          {t.selection && t.selection.removable && canAct && !readOnly && <button type="button" onClick={() => remove(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-danger disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><X className="size-3" /> Remove from {shortMonth(t.selection.monthKey)}</button>}
+                          {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> {v2 ? "committed — send us a message to change it" : `committed — ${TEXT_KYLE} to change it`}</span>}
                           {(t.selection || selectedHere) && t.state !== "FILMED" && canAct && !readOnly && (
-                            <button type="button" onClick={() => openQuestions(t)} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                            <button type="button" onClick={() => openQuestions(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>
                               {t.interview ? (t.interview.status === "SUBMITTED" ? "Your answers" : t.interview.answered > 0 ? "Continue the questions" : "Answer the questions") : "Answer the questions"} <ChevronRight className="size-3" />
                             </button>
                           )}
-                          {canAct && !readOnly && <button type="button" onClick={() => { setOpenTopic(openTopic === t.id ? null : t.id); setNote(""); }} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><MessageSquare className="size-3" /> Discuss</button>}
-                          {canAct && !readOnly && t.state === "SUGGESTED" && !t.selection && <button type="button" onClick={() => { setDeclining(declining === t.id ? null : t.id); setDeclineReason(""); }} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Ban className="size-3" /> Not interested</button>}
+                          {canAct && !readOnly && <button type="button" onClick={() => { setOpenTopic(openTopic === t.id ? null : t.id); setNote(""); }} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><MessageSquare className="size-3" /> Discuss</button>}
+                          {canAct && !readOnly && t.state === "SUGGESTED" && !t.selection && <button type="button" onClick={() => { setDeclining(declining === t.id ? null : t.id); setDeclineReason(""); }} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Ban className="size-3" /> Not interested</button>}
+                          {/* v2: a script waiting on them is answered in My Plan › Scripts, with the words in front of them. */}
+                          {v2 && scriptsHref && awaitingScript(t) && canAct && !readOnly && <Link href={`${scriptsHref}#script-${t.id}`} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ScrollText className="size-3" /> Read &amp; approve the script</Link>}
                         </div>
+                        {cardStatus(t.id)}
                         {declining === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
                             <input value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="Why not? (optional — it helps us suggest better)" aria-label="Why this topic isn't for you (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                            <button type="button" onClick={() => decline(t.id)} disabled={busy} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Set aside</button>
+                            <button type="button" onClick={() => decline(t.id)} disabled={busy} className={cn("shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11 sm:min-h-0")}>Set aside</button>
                           </div>
                         )}
                         {openTopic === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
                             <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="A thought on this topic — an angle, a story, a doubt…" aria-label="Note on this topic" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                            <button type="button" onClick={() => discuss(t.id)} disabled={busy || note.trim().length < 2} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Send</button>
+                            <button type="button" onClick={() => discuss(t.id)} disabled={busy || note.trim().length < 2} className={cn("shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11 sm:min-h-0")}>Send</button>
                           </div>
                         )}
                       </div>
@@ -375,7 +426,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                   <div className="text-sm">{t.title}</div>
                   {t.declined?.reason && <div className="text-[11px] text-muted-2">&ldquo;{t.declined.reason}&rdquo;</div>}
                 </div>
-                {canAct && !readOnly && <button type="button" onClick={() => undecline(t.id)} disabled={busy} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Undo2 className="size-3" /> Undo</button>}
+                {canAct && !readOnly && <button type="button" onClick={() => undecline(t.id)} disabled={busy} className={cn("inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Undo2 className="size-3" /> Undo</button>}
               </li>
             ))}
           </ul>
@@ -386,7 +437,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       {canAct && !readOnly && (
         <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
           {!suggesting ? (
-            <button type="button" onClick={() => setSuggesting(true)} className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Lightbulb className="size-4" /> Suggest a video idea of your own</button>
+            <button type="button" onClick={() => setSuggesting(true)} className={cn("inline-flex items-center gap-1.5 text-sm font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}><Lightbulb className="size-4" /> Suggest a video idea of your own</button>
           ) : (
             <div className="space-y-2">
               <div className="text-sm font-semibold">Your idea</div>
@@ -405,8 +456,8 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                 </label>
               )}
               <div className="flex gap-2">
-                <button type="button" onClick={suggest} disabled={busy || idea.title.trim().length < 3} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} {useForMonth && month ? `Add it for ${shortMonth(month.monthKey)}` : "Add to my bank"}</button>
-                <button type="button" onClick={() => setSuggesting(false)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
+                <button type="button" onClick={suggest} disabled={busy || idea.title.trim().length < 3} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>{busy && <Loader2 className="size-3.5 animate-spin" />} {useForMonth && month ? `Add it for ${shortMonth(month.monthKey)}` : "Add to my bank"}</button>
+                <button type="button" onClick={() => setSuggesting(false)} className={cn("rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>Cancel</button>
               </div>
             </div>
           )}

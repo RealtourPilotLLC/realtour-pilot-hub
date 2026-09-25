@@ -2,6 +2,7 @@ import { CalendarClock, Camera, Check, FileText, Film, Lightbulb } from "lucide-
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { journeySteps, type JourneyInput, type JourneyStepKey, type JourneyStepState } from "@/lib/contentStatus";
+import type { OverviewRow } from "@/lib/programOverview";
 
 // ---------------------------------------------------------------------------
 // The month journey — one visual language for "where is this client's month?"
@@ -15,6 +16,32 @@ import { journeySteps, type JourneyInput, type JourneyStepKey, type JourneyStepS
 // ---------------------------------------------------------------------------
 
 export type { JourneyInput };
+
+/**
+ * The tracker for one roster row (UI-02). The row carries the SAME
+ * journeyInputFrom(MonthProgress) the client file's hero draws, so a card and
+ * the Overview it opens cannot show two different months. Only when the
+ * reader returned nothing is it rebuilt from the row's own counts — and then
+ * the Shoot node says it does not know, rather than guessing from a proxy.
+ */
+export function journeyFromOverview(r: OverviewRow): JourneyInput {
+  if (r.journey) return r.journey;
+  return {
+    callStatus: r.planning.callStatus,
+    topicsSelected: r.work.topicsSelected,
+    scriptsReady: r.work.scriptsApproved,
+    scriptsAwaiting: r.work.scriptsDrafting + r.work.scriptsReviewNeeded,
+    videosOwed: r.production.owed,
+    sessionsRequired: r.session.required,
+    sessionsConfirmed: r.session.confirmed,
+    sessionsFilmedConfirmed: r.session.filmedConfirmed,
+    delivered: r.production.delivered,
+    clientApproved: r.production.clientApproved,
+    inReview: r.production.awaitingInternalReview,
+    unknown: { shoot: "the month's progress could not be read — refresh to try again" },
+    muted: r.historical || r.monthStatus === "SKIPPED",
+  };
+}
 
 const ICON: Record<JourneyStepKey, LucideIcon> = { call: CalendarClock, topics: Lightbulb, scripts: FileText, shoot: Camera, delivered: Film };
 

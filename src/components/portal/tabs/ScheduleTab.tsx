@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 // by the derived preparation window, requests durable). "Plan without a
 // call" appears ONLY when the enrollment is eligible, and it never cancels a
 // booked call; the real cancellation lives on Calendly / the request row.
-export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref }: {
+export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref, topicsLabel = "Video Topics" }: {
   planning: PortalPlanning | null;
   planningFailed: boolean;
   months: PortalScheduleMonth[];
@@ -25,6 +25,8 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
   readOnly: boolean;
   /** Where "Video Topics" points — the tab link the rest of the portal uses. */
   topicsHref: string;
+  /** What that page is called in this layout: v1 "Video Topics"; v2 has no such page (Sep 24), so it says "your plan". */
+  topicsLabel?: string;
 }) {
   const p = planning;
   const tz = p?.timezone ?? "America/New_York";
@@ -48,7 +50,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             {p.planningMode === "WRITTEN" ? (
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>
-                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers under <Link href={topicsHref} className="font-medium text-brand hover:underline">Video Topics</Link>.</> : <>Pick your topics under <Link href={topicsHref} className="font-medium text-brand hover:underline">Video Topics</Link> and answer the questions — session booking opens a few business days after.</>}</p>
+                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions — session booking opens a few business days after.</>}</p>
                 {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {tzName} — cancel it on Calendly if you no longer need it.</p>}
                 {/* Not a one-way door: the same eligibility that offered the
                     written path offers the call back (review, Sep 17). */}

@@ -7,6 +7,7 @@ import { draftStrategyFromTranscript } from "@/lib/contentGeneration";
 import { queueStrategyReadyNotice } from "@/lib/scriptShare";
 import { isTestClientName } from "@/lib/testClients";
 import { openProgramDeskTask } from "@/lib/programDeskTasks";
+import { contentHref } from "@/lib/contentNav";
 
 // ---------------------------------------------------------------------------
 // ONBOARDING (spec §21) — W2-F, Sep 17 2026.
@@ -365,7 +366,7 @@ export async function advanceOnboarding(enrollmentId: string, opts: { now?: Date
           kind: "strategy_draft_ready",
           title: `Strategy draft ready — ${client?.name ?? "client"}`.slice(0, 90),
           body: `Drafted from the discovery call${missing.length ? ` · ${missing.length} gap(s) listed, not filled` : ""}. Review, edit and approve on the client file.`,
-          href: `/content/${enrollmentId}?tab=strategy`,
+          href: contentHref(enrollmentId, { tab: "plan", view: "strategy" }),
           targets: [{ roles: ["OWNER"] }],
           dedupeKey: `strategy-draft:${draft.id}`,
         }).catch(() => {});

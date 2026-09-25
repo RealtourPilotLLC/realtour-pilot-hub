@@ -12,6 +12,7 @@ import type { PortalViewer } from "@/lib/portal";
 import { isTestClientName } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
+import { TEXT_KYLE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE BRAND PROFILE — one spine for every change to what a client's videos
@@ -279,7 +280,7 @@ export async function saveClientBrandProfile(viewer: PortalViewer, patch: BrandP
   const changeIds: string[] = [];
 
   const onFile = await prisma.client.findUnique({ where: { id: clientId }, select: { brandColors: true, portalVideoStyle: true, portalPreferences: true } });
-  if (!onFile) return { ok: false, message: "We couldn't find your account — text us and we'll sort it out.", ...none };
+  if (!onFile) return { ok: false, message: `We couldn't find your account — ${TEXT_KYLE} and we'll sort it out.`, ...none };
   const data: Record<string, string> = {};
   const rows: BrandChangeInput[] = [];
   for (const f of COLUMN_FIELDS) {

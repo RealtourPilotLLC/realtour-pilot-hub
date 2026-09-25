@@ -65,7 +65,14 @@ export async function changePackageAction(
       ? ` It replaces ${r.superseded.length} decision${r.superseded.length === 1 ? "" : "s"} that had been scheduled and will now never take effect: ${r.superseded.map((x) => x.sentence).join("; ")}. ${r.superseded.length === 1 ? "That row is" : "Those rows are"} kept in the history, marked superseded.`
       : "";
     if (r.changeIds.length === 0) {
-      return { ok: true, message: `Nothing changed — those are already this client's terms.${cancelled}` };
+      // A true no-op cancels nothing now (enrollmentChanges.supersedePending);
+      // a revert that only retires a LATER scheduled decision says so.
+      return {
+        ok: true,
+        message: r.superseded.length
+          ? `The current terms stay.${cancelled}`
+          : "Nothing changed — those are already this client's terms from that month, and nothing scheduled was cancelled.",
+      };
     }
     return {
       ok: true,

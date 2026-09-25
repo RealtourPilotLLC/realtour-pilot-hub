@@ -4,7 +4,8 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn, nameColor } from "@/lib/utils";
-import type { OverviewRow as Row, SessionState } from "@/lib/programOverview";
+import { contentHref } from "@/lib/contentNav";
+import { overviewFacts, type OverviewRow as Row, type OverviewFacts } from "@/lib/programOverview";
 
 // ---------------------------------------------------------------------------
 // ONE CLIENT-MONTH, as a row (spec §16). Server-rendered on purpose: it is a
@@ -22,15 +23,14 @@ const fmt = (isoStr: string | null | undefined) =>
 const fmtFull = (d: Date | null | undefined) =>
   d ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null;
 
-const SESSION_WORDS: Record<SessionState, { label: string; tone: string }> = {
-  NOT_SCHEDULED: { label: "Not scheduled", tone: "text-warning" },
-  REQUESTED: { label: "Requested", tone: "text-brand" },
-  CONFIRMED: { label: "Confirmed", tone: "text-foreground" },
-  COMPLETED: { label: "Filmed", tone: "text-success" },
-  CANCELLED: { label: "Cancelled", tone: "text-warning" },
+// The session words and the delivered/owner/due readings come from
+// programOverview.overviewFacts — the card view (ClientMonthCard) and the
+// client file's Overview draw the very same object (UI-02).
+export const SESSION_TONE: Record<OverviewFacts["sessionTone"], string> = {
+  warning: "text-warning", brand: "text-brand", foreground: "text-foreground", success: "text-success",
 };
 
-function BlockedChip({ blocked }: { blocked: Row["nextAction"]["blocked"] }) {
+export function BlockedChip({ blocked }: { blocked: Row["nextAction"]["blocked"] }) {
   // "We owe work" and "waiting on the client" are different problems and must
   // never be one amber blob (Jordan's rule).
   if (blocked === "client") return <span className="shrink-0 rounded-full bg-[#8b93e6]/20 px-2 py-0.5 text-[10px] font-semibold text-[#8b93e6]">waiting on them</span>;
@@ -51,7 +51,7 @@ function Cell({ icon: Icon, label, children }: { icon: typeof Users; label: stri
 
 export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
   const worry = r.nextAction.blocked === "us" || r.flags.includes("overdue") || r.failures.length > 0;
-  const session = SESSION_WORDS[r.session.state];
+  const f = overviewFacts(r);
   return (
     <details className={cn("group border-b border-border last:border-b-0", worry && "bg-warning-soft/20")}>
       {/* SUMMARY — at 375px this is the whole row: who, and what is next. */}
@@ -60,21 +60,24 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
         <Avatar name={r.clientName} color={nameColor(r.clientName)} size={26} />
         <div className="min-w-0 flex-1 basis-40">
           <div className="flex items-center gap-1.5">
-            <Link href={r.nextAction.href} className="truncate text-[13px] font-semibold hover:text-brand hover:underline">{r.clientName}</Link>
+            {/* The name opens the client file on this row's month; the button on the right is the next action. */}
+            <Link href={contentHref(r.enrollmentId, { month: r.monthKey })} className="truncate text-[13px] font-semibold hover:text-brand hover:underline">{r.clientName}</Link>
             {r.trial && <span className="shrink-0 rounded bg-brand-soft px-1 text-[10px] font-medium text-brand">Trial</span>}
             {r.enrollmentStatus !== "ACTIVE" && <span className="shrink-0 rounded bg-surface-2 px-1 text-[10px] font-medium text-muted-2">{r.enrollmentStatus.toLowerCase()}</span>}
           </div>
           <div className="truncate text-[11px] text-muted-2">
             {r.pkg}
             {showMonth && ` · ${r.monthName}`}
-            {` · ${r.owners.STRATEGY.label.split(" ")[0]}/${r.owners.SCHEDULING.label.split(" ")[0]}`}
+            {` · ${f.sessionLabel}`}
+            {` · ${f.owner.split(" ")[0]}`}
+            {f.dueLabel && ` · due ${f.dueLabel}`}
           </div>
         </div>
         {/* Videos delivered vs owed — the one number that says whether the month landed. */}
-        <span className={cn("shrink-0 text-[12px] font-semibold tabular-nums", r.production.delivered >= r.production.owed ? "text-success" : "text-muted")}>
-          {r.production.delivered}/{r.production.owed}
-          {r.production.libraryBehind && <span className="ml-0.5 text-warning" title="the video library is behind the pipeline">*</span>}
-          {r.production.libraryAhead && <span className="ml-0.5 text-warning" title="the library counts more delivered than this month owes or the orders carry">!</span>}
+        <span className={cn("shrink-0 text-[12px] font-semibold tabular-nums", f.deliveredDone ? "text-success" : "text-muted")} title={f.countWarning ?? undefined}>
+          {f.delivered}/{f.owed}
+          {r.production.libraryBehind && <span className="ml-0.5 text-warning">*</span>}
+          {r.production.libraryAhead && <span className="ml-0.5 text-warning">!</span>}
         </span>
         <div className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto sm:flex-1">
           <BlockedChip blocked={r.nextAction.blocked} />
@@ -112,7 +115,7 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
         </Cell>
 
         <Cell icon={CalendarDays} label="Content session">
-          <div className={session.tone}>{session.label}{r.session.dateISO ? ` · ${fmt(r.session.dateISO)}` : ""}</div>
+          <div className={SESSION_TONE[f.sessionTone]}>{f.sessionLabel}{r.session.dateISO ? ` · ${fmt(r.session.dateISO)}` : ""}</div>
           {r.session.detail && <div className="text-muted">{r.session.detail}</div>}
           {r.session.requestedCount > 0 && <div className="text-muted-2">{r.session.requestedCount} request{r.session.requestedCount === 1 ? "" : "s"} on record</div>}
         </Cell>
@@ -147,9 +150,9 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
         <Cell icon={Clock} label="Next action">
           <div className="font-medium">{r.nextAction.text}</div>
           <div className="text-muted">
-            {r.nextAction.blocked === "client" ? "waiting on the client" : r.nextAction.blocked === "us" ? "we owe this" : "nothing blocked"} · {r.nextAction.owner} ({r.nextAction.ownerDuty})
+            {f.blocked === "client" ? "waiting on the client" : f.blocked === "us" ? "we owe this" : "nothing blocked"} · {f.owner} ({f.ownerDuty})
           </div>
-          {r.nextAction.deadlineISO && <div className="text-muted-2">by {fmt(r.nextAction.deadlineISO)}</div>}
+          {f.dueLabel && <div className="text-muted-2">by {f.dueLabel}</div>}
         </Cell>
 
         <Cell icon={MessageSquare} label="Communication">

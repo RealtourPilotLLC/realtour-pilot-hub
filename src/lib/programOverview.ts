@@ -4,7 +4,9 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { callModeOf, deriveMonthState, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
-import { monthProgressMany, progressKey, type MonthProgress } from "@/lib/monthProgress";
+import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } from "@/lib/monthProgress";
+import { contentHref, type StaffTab } from "@/lib/contentNav";
+import type { JourneyInput } from "@/lib/contentStatus";
 
 // ---------------------------------------------------------------------------
 // THE MONTHLY PORTFOLIO OVERVIEW (spec §16). One row per (client, program
@@ -105,6 +107,8 @@ export type OverviewRow = {
     scriptsReviewNeeded: number;
     scriptsApproved: number;
     strategyReviewNeeded: number;
+    /** the client's OPEN script change requests on this month (the reader's count) */
+    openScriptRequests: number;
   };
 
   production: {
@@ -121,6 +125,8 @@ export type OverviewRow = {
     libraryBehind: boolean;
     /** the other direction: the library counts MORE delivered than the month owes and more than the attached orders carry — a confident "7 of 2" is a number to check, not to trust */
     libraryAhead: boolean;
+    /** cuts waiting in the Review Room (staff's queue) — the reader's count */
+    awaitingInternalReview: number;
   };
 
   nextAction: {
@@ -150,6 +156,9 @@ export type OverviewRow = {
   flags: OverviewFilterKey[];
   /** lower = more urgent; the default sort */
   priority: number;
+  /** UI-02: the month tracker's input, from the SAME MonthProgress the client
+   *  file's hero draws — null only when the reader returned nothing. */
+  journey: JourneyInput | null;
 };
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
@@ -186,6 +195,9 @@ export type OverviewOptions = {
    *  page) — keyed by monthProgress.progressKey. Reused, not recomputed, so
    *  the cards and the rows are literally one calculation. */
   progress?: Map<string, MonthProgress>;
+  /** UI-02: only these enrollments — the client file's Overview reads its ONE
+   *  row through here, so it cannot say something the roster does not. */
+  enrollmentIds?: string[];
 };
 
 export const ALL_OPEN = "ALL_OPEN";
@@ -208,7 +220,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 
   const statuses = opts.includeEnded ? ["ACTIVE", "PAUSED", "ENDED"] : ["ACTIVE", "PAUSED"];
   const enrollments = await prisma.contentEnrollment.findMany({
-    where: { status: { in: statuses } },
+    where: { status: { in: statuses }, ...(opts.enrollmentIds ? { id: { in: opts.enrollmentIds } } : {}) },
     select: {
       id: true, clientId: true, package: true, status: true, videosPerMonth: true, sessionsPerMonth: true,
       strategyCallRequired: true, callMode: true, noCallEligible: true, clientSuppliesTopics: true, billingType: true, notes: true,
@@ -493,6 +505,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       // counted the same delivery twice printed a confident "7 of 2" with no
       // warning at all (review blocker, Sep 17).
       libraryAhead: pp?.libraryAhead ?? false,
+      awaitingInternalReview: pp?.awaitingInternalReview ?? 0,
     };
     const topicsNeeded = Math.max(0, production.owed - topicsSelected);
 
@@ -521,7 +534,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const monthOver = key < thisMonth;
 
     // ---- THE NEXT ACTION: walk the loop; the first unfinished stage speaks. ---------
-    const href = (tab?: string) => `/content/${e.id}?${new URLSearchParams({ ...(key !== thisMonth ? { month: key } : {}), ...(tab ? { tab } : {}) }).toString()}`.replace(/\?$/, "");
+    // Every link lands on the tab that holds the work (UI-02's contentHref),
+    // never on an old ?tab= key that would have to redirect.
+    const href = (tab?: StaffTab, view?: string) => contentHref(e.id, { tab: tab ?? null, view: view ?? null, month: key, now });
     let next: OverviewRow["nextAction"];
     if (!m && e.status !== "ACTIVE") {
       // A PAUSED (or ENDED) enrollment has no workspace BY DESIGN: the sweep's
@@ -544,40 +559,40 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (blockingCallProblem) {
       next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: "Fix the transcript" };
     } else if (callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall && m.strategyCallStatus !== "SCHEDULED" && !planningInWriting) {
-      next = { text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href(), cta: "Chase the booking" };
+      next = { text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Chase the booking" };
     } else if (callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" && !callHeld && !callSkipped && !bookedCall) {
-      next = { text: "They have not chosen a call or the written path", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href(), cta: "Ask them to choose" };
+      next = { text: "They have not chosen a call or the written path", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Ask them to choose" };
     } else if (bookedCall?.scheduledStart && !callHeld) {
-      next = { text: `Strategy call booked for ${bookedCall.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: iso(bookedCall.scheduledStart), href: href(), cta: "Open the month" };
+      next = { text: `Strategy call booked for ${bookedCall.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: iso(bookedCall.scheduledStart), href: href("plan", "calls"), cta: "Open the call" };
     } else if (answersOutstanding > 0) {
       const overtook = planningInWriting && callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall;
       next = {
         text: `${answersOutstanding} topic${answersOutstanding === 1 ? "" : "s"} still waiting on their answers${overtook ? " — they are planning this month in writing rather than on a call" : ""}`,
-        owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: deadline, href: href("ideas"), cta: "See the questions",
+        owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: deadline, href: href("plan", "topics"), cta: "See the questions",
       };
     } else if (topicsNeeded > 0 && !e.clientSuppliesTopics) {
-      next = { text: `${topicsNeeded} more topic${topicsNeeded === 1 ? "" : "s"} to pick for ${monthLabel(key)}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("ideas"), cta: "Pick topics" };
+      next = { text: `${topicsNeeded} more topic${topicsNeeded === 1 ? "" : "s"} to pick for ${monthLabel(key)}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan", "topics"), cta: "Pick topics" };
     } else if (strategyReviewNeeded > 0) {
-      next = { text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("strategy"), cta: "Review the strategy" };
+      next = { text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("plan", "strategy"), cta: "Review the strategy" };
     } else if (reviewNeeded > 0) {
-      next = { text: `${reviewNeeded} script${reviewNeeded === 1 ? "" : "s"} waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("scripts"), cta: "Review the scripts" };
+      next = { text: `${reviewNeeded} script${reviewNeeded === 1 ? "" : "s"} waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
     } else if (drafting > 0 || (approved < production.owed && myScripts.length < production.owed)) {
       const missing = Math.max(drafting, production.owed - myScripts.length);
-      next = { text: `${missing} script${missing === 1 ? "" : "s"} still to be written`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("scripts"), cta: "Open scripts" };
+      next = { text: `${missing} script${missing === 1 ? "" : "s"} still to be written`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
     } else if (sessionState === "REQUESTED") {
-      next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Confirm the slot" };
+      next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
     } else if (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED") {
-      next = { text: "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Book the session" };
+      next = { text: "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
     } else if (ps && sessionState === "CONFIRMED" && ps.missing > 0) {
       // One Pro booking does not complete a two-session month.
       next = ps.pendingRequests > 0
-        ? { text: `${accounted} of ${ps.required} sessions on the calendar — they asked for another, nothing confirmed`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Confirm the slot" }
-        : { text: `${accounted} of ${ps.required} sessions on the calendar — ${ps.missing} still to book`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Book the session" };
+        ? { text: `${accounted} of ${ps.required} sessions on the calendar — they asked for another, nothing confirmed`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" }
+        : { text: `${accounted} of ${ps.required} sessions on the calendar — ${ps.missing} still to book`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
     } else if (ps && sessionState === "CONFIRMED" && ps.unverified > 0) {
       const u = ps.list.find((f) => f.state === "UNVERIFIED")!;
-      next = { text: `A job dated ${u.startsAtISO ? new Date(u.startsAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "(undated)"} has no Aryeo appointment — confirm it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Confirm the appointment" };
+      next = { text: `A job dated ${u.startsAtISO ? new Date(u.startsAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "(undated)"} has no Aryeo appointment — confirm it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the appointment" };
     } else if (sessionState === "CONFIRMED" && upcoming) {
-      next = { text: `Filming ${sessionDate ? sessionDate.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "soon"}`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "nobody", deadlineISO: iso(sessionDate), href: href(), cta: "Open the month" };
+      next = { text: `Filming ${sessionDate ? sessionDate.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "soon"}`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "nobody", deadlineISO: iso(sessionDate), href: href("production", "sessions"), cta: "See the session" };
     } else if (ps && sessionState === "CONFIRMED" && ps.heldUnconfirmed > 0 && production.produced === 0) {
       // Held, and nobody has said it was filmed. Once edits exist the footage
       // plainly does, and the ladder moves on to production.
@@ -587,9 +602,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: `${production.clientReview} cut${production.clientReview === 1 ? "" : "s"} waiting on the client`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: "/review", cta: "Open the Review Room" };
     } else if (production.delivered < production.owed) {
       const left = production.owed - production.delivered;
-      next = { text: `${left} of ${production.owed} video${production.owed === 1 ? "" : "s"} still in production`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: href("content"), cta: "See the videos" };
+      next = { text: `${left} of ${production.owed} video${production.owed === 1 ? "" : "s"} still in production`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: href("production", "videos"), cta: "See the videos" };
     } else {
-      next = { text: `All ${production.owed} videos delivered`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href("content"), cta: "Open" };
+      next = { text: `All ${production.owed} videos delivered`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href("production", "videos"), cta: "Open" };
     }
 
     // ---- filters ------------------------------------------------------------------
@@ -653,13 +668,14 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
         required: ps?.required ?? Math.max(1, e.sessionsPerMonth || 1), confirmed: ps?.confirmed ?? 0, missing: ps?.missing ?? Math.max(1, e.sessionsPerMonth || 1),
         filmedConfirmed: ps?.filmedConfirmed ?? 0, unverified: ps?.unverified ?? 0, heldUnconfirmed: ps?.heldUnconfirmed ?? 0,
       },
-      work: { topicsSelected, topicsNeeded, answersOutstanding, scriptsDrafting: drafting, scriptsReviewNeeded: reviewNeeded, scriptsApproved: approved, strategyReviewNeeded },
+      work: { topicsSelected, topicsNeeded, answersOutstanding, scriptsDrafting: drafting, scriptsReviewNeeded: reviewNeeded, scriptsApproved: approved, strategyReviewNeeded, openScriptRequests: progress?.scripts.openSuggestions ?? 0 },
       production,
       nextAction: next,
       comms,
       failures: myFailures,
       flags,
       priority,
+      journey: progress ? journeyInputFrom(progress) : null,
     });
   }
 
@@ -675,4 +691,81 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 
 function emptyCounts(): Record<OverviewFilterKey, number> {
   return { needs_approval: 0, missing_planning: 0, missing_appointment: 0, awaiting_client: 0, ready_to_film: 0, in_production: 0, awaiting_review: 0, failed_automation: 0, overdue: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// ONE ROW, READ ONE WAY (UI-02). The roster's cards and its dense table used
+// to be two engines — the cards drew getProgramRoster, the table this module —
+// and disagreed by construction. Both now render a row from this function, so
+// "delivered", the session line, the owner and the due date are the same
+// characters on both, and on the client file's Overview, which reads the same
+// row through the enrollmentIds filter.
+// ---------------------------------------------------------------------------
+
+export type OverviewException = { kind: "overdue" | "failed_automation" | "needs_approval" | "awaiting_client"; label: string };
+
+export type OverviewFacts = {
+  delivered: number;
+  owed: number;
+  /** "1/4" — with a marker when the library disagrees with the pipeline */
+  deliveredLabel: string;
+  deliveredDone: boolean;
+  /** why the delivered number is not to be trusted, when it is not */
+  countWarning: string | null;
+  sessionWord: string;
+  sessionTone: "warning" | "brand" | "foreground" | "success";
+  /** "On the calendar · 1/2 confirmed" */
+  sessionLabel: string;
+  owner: string;
+  ownerDuty: string;
+  blocked: "us" | "client" | "nobody";
+  dueISO: string | null;
+  /** "Sep 30", ET — null when nothing is due */
+  dueLabel: string | null;
+  /** the one exception worth a glance, icon + words on screen (never colour alone) */
+  exception: OverviewException | null;
+};
+
+// A CONFIRMED session state means "something is on the calendar" — booked,
+// held, or a dated job not yet tied to an appointment — so the word is not
+// "Confirmed": the count beside it says how many actually are.
+const SESSION_FACT_WORDS: Record<SessionState, { word: string; tone: OverviewFacts["sessionTone"] }> = {
+  NOT_SCHEDULED: { word: "Not scheduled", tone: "warning" },
+  REQUESTED: { word: "Requested", tone: "brand" },
+  CONFIRMED: { word: "On the calendar", tone: "foreground" },
+  COMPLETED: { word: "Filmed", tone: "success" },
+  CANCELLED: { word: "Cancelled", tone: "warning" },
+};
+
+export function overviewFacts(r: OverviewRow): OverviewFacts {
+  const p = r.production;
+  const s = SESSION_FACT_WORDS[r.session.state];
+  const exception: OverviewException | null =
+    r.flags.includes("overdue") ? { kind: "overdue", label: "Overdue" }
+    : r.failures.length > 0 ? { kind: "failed_automation", label: "Failed automation" }
+    : r.flags.includes("needs_approval") ? { kind: "needs_approval", label: "Needs approval" }
+    : r.nextAction.blocked === "client" ? { kind: "awaiting_client", label: "Waiting on client" }
+    : null;
+  return {
+    delivered: p.delivered,
+    owed: p.owed,
+    deliveredLabel: `${p.delivered}/${p.owed}${p.libraryBehind ? "*" : p.libraryAhead ? "!" : ""}`,
+    deliveredDone: p.owed > 0 && p.delivered >= p.owed,
+    countWarning: p.libraryBehind
+      ? `the pipeline says ${p.pipelineDelivered} delivered — the library is behind, so ${p.delivered} is understated`
+      : p.libraryAhead
+        ? `the library counts ${p.delivered} delivered but the orders carry ${p.pipelineDelivered} — check for a video counted twice`
+        : null,
+    sessionWord: s.word,
+    sessionTone: s.tone,
+    sessionLabel: `${s.word} · ${r.session.confirmed}/${r.session.required} confirmed`,
+    owner: r.nextAction.owner,
+    ownerDuty: r.nextAction.ownerDuty,
+    blocked: r.nextAction.blocked,
+    dueISO: r.nextAction.deadlineISO,
+    dueLabel: r.nextAction.deadlineISO
+      ? new Date(r.nextAction.deadlineISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })
+      : null,
+    exception,
+  };
 }

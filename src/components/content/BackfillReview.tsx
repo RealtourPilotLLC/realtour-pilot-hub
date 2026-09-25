@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, FileSearch, Undo2 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { markReviewItemAction, unmarkReviewItemAction } from "@/app/content/resources/actions";
 import { cn } from "@/lib/utils";
+import { contentHref } from "@/lib/contentNav";
 
 // ---------------------------------------------------------------------------
 // BACKFILL REVIEW (spec §14) — every client's mis-filed-looking record in one
@@ -66,7 +67,7 @@ function Row({
   i, busy, start, say,
 }: { i: ReviewItemUi; busy: boolean; start: (fn: () => void) => void; say: (r: { ok: boolean; message: string }) => void }) {
   const [why, setWhy] = useState("");
-  const href = `/content/${i.enrollmentId}?tab=import${i.monthKey ? `&month=${i.monthKey}` : ""}`;
+  const href = contentHref(i.enrollmentId, { tab: "import", month: i.monthKey ?? null });
   return (
     <div className={cn("px-5 py-2.5 text-[13px]", i.handled && "opacity-60")}>
       <div className="flex flex-wrap items-center gap-2">

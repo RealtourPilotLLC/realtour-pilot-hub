@@ -131,4 +131,9 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
     onEffect: "When someone on the team replies on a client's Messages tab, each person on that account (owner and assistant seats, not view-only) gets ONE email saying who replied, with the reply and the sign-in link, unless they already read it on the portal. A second reply before they read the first does not send another. Sent only Mon to Fri before 4:30pm ET; a reply written later goes out the next working morning. Replies from the last three days that nobody has read yet are sent within the hour of turning this on. With this off, replies still appear on the client's page; only the email waits.",
     reaches: "clients",
   },
+  portal_layout_v2: {
+    title: "New portal layout for every client",
+    onEffect: "EVERY CLIENT'S PORTAL switches to the new layout on their next page load: Home with one next step, My Plan (this month, scripts to approve, topic bank, strategy), Content Library (videos to review first, search and filters), Schedule, and More (Brand Profile, Messages, Resources, Settings & Team, Terms), with a bottom bar on phones. Nothing is sent and no data changes; old links keep working. TEST clients already see it, and staff can preview any client with ?layout=v2. Turning it off puts everyone back on today's layout.",
+    reaches: "clients",
+  },
 };

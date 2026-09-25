@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
-import { contentProgramSweep, PACKAGE_RULES, etMonthKey, assertDutyOwner, setOwnerOverride, type OwnerDuty } from "@/lib/contentProgram";
+import { contentProgramSweep, etMonthKey, assertDutyOwner, setOwnerOverride, type OwnerDuty } from "@/lib/contentProgram";
 import type { ImportKind, ImportPreview, ItemMode } from "@/lib/contentImport";
 import type { FactCategory, FactScope } from "@/lib/clientFacts";
 import type { VersionParts } from "@/lib/contentScripts";
@@ -59,76 +59,92 @@ export async function runProgramSweep(): Promise<Result> {
 }
 
 // ---------------------------------------------------------------------------
-// Enrollment settings (package override + per-client workflow flags, spec §3)
+// PACKAGE AND STATUS, FOR KYLE TOO — through the ledger (UI-02, Sep 24 2026).
+//
+// The old Client-file card saved package, status and a custom videos-per-month
+// straight onto ContentEnrollment through `saveEnrollmentSettings`: gated only
+// by requireAdmin, no ProgramEnrollmentChange row, and a mid-month count change
+// silently rewrote the month in flight. Meanwhile the Settings tab's ledgered
+// actions (workspaceActions.ts) were owner-only — so the one path Kyle had was
+// the unrecorded one.
+//
+// Jordan's decision: Kyle KEEPS pause / end / package change. So these two
+// open the SAME ledgered setters (enrollmentChanges.changePackage and
+// setEnrollmentStatus) to OWNER and ADMIN: a ledger row first, an explicit
+// effective month and a KEEP/APPLY choice for the month in flight, the actor's
+// name on every row. Billing terms stay owner-only (setBillingTermsAction), and
+// nothing here touches Stripe, QuickBooks or Aryeo. saveEnrollmentSettings is
+// gone: its call-mode and topics flags already live on the Settings tab.
 // ---------------------------------------------------------------------------
-export async function saveEnrollmentSettings(
+export async function staffChangePackageAction(
   enrollmentId: string,
-  s: {
-    package?: string; strategyCallRequired?: boolean; clientSuppliesTopics?: boolean; status?: string; notes?: string;
-    videosPerMonth?: number;
-    billingType?: string | null; billingRate?: number | null; billingMonths?: number | null;
-  },
+  input: { package: string; effectiveMonthKey: string | null; currentMonthChoice: "KEEP" | "APPLY" | null; videosPerMonth?: number | null; sessionsPerMonth?: number | null; reason?: string | null },
 ): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
-  const data: Record<string, unknown> = {};
-  // Billing terms are the OWNER's alone — an admin session can save every other
-  // field on this card but never money.
-  const touchesBilling = s.billingType !== undefined || s.billingRate !== undefined || s.billingMonths !== undefined;
-  if (touchesBilling) {
-    try { await requireOwner(); } catch (e) { return fail(e); }
-    if (s.billingType !== undefined) {
-      if (s.billingType !== null && !["PAID_IN_FULL", "MONTHLY_CONTRACT", "MONTH_TO_MONTH", "TRIAL"].includes(s.billingType)) {
-        return { ok: false, message: "Unknown billing type." };
-      }
-      data.billingType = s.billingType;
+  try {
+    const me = await actor();
+    const { changePackage } = await import("@/lib/enrollmentChanges");
+    const r = await changePackage(enrollmentId, input, me.email);
+    path(enrollmentId);
+    const cancelled = r.superseded.length
+      ? ` It replaces ${r.superseded.length} scheduled decision${r.superseded.length === 1 ? "" : "s"} that will now never take effect: ${r.superseded.map((x) => x.sentence).join("; ")}.`
+      : "";
+    // Nothing new recorded: either a true no-op (it cancels nothing now — the
+    // rows that already say this survive), or a revert that only retires a
+    // LATER scheduled decision. Say which, in those words.
+    if (r.changeIds.length === 0) {
+      return {
+        ok: true,
+        message: r.superseded.length
+          ? `The current terms stay.${cancelled}`
+          : "Nothing changed — those are already this client's terms from that month, and nothing scheduled was cancelled.",
+      };
     }
-    if (s.billingRate !== undefined) {
-      if (s.billingRate !== null && (!Number.isFinite(s.billingRate) || s.billingRate < 0)) return { ok: false, message: "Bad rate." };
-      data.billingRate = s.billingRate;
-    }
-    if (s.billingMonths !== undefined) {
-      if (s.billingMonths !== null && (!Number.isInteger(s.billingMonths) || s.billingMonths < 1 || s.billingMonths > 60)) return { ok: false, message: "Bad term length." };
-      data.billingMonths = s.billingMonths;
-    }
-  }
-  if (s.package !== undefined) {
-    const rules = PACKAGE_RULES[s.package];
-    if (!rules) return { ok: false, message: "Unknown package." };
-    // A hand-set package is an override — the Aryeo sync must stop following the plan field.
-    // PRESERVE a custom videosPerMonth: Marcee/Erica/Bernadette's 5-video deals
-    // are hand-set numbers, and the stock rule silently shrank them to 4 when
-    // anyone touched this dropdown (audit Aug 25).
-    const cur = await prisma.contentEnrollment.findUnique({
-      where: { id: enrollmentId },
-      select: { package: true, videosPerMonth: true },
-    });
-    const curRule = cur ? PACKAGE_RULES[cur.package] : null;
-    const isCustom = cur && curRule && cur.videosPerMonth !== curRule.videosPerMonth;
-    Object.assign(data, { package: s.package, ...rules, ...(isCustom ? { videosPerMonth: cur.videosPerMonth } : {}), packageSource: "manual" });
-  }
-  // Owner-set videos-per-month (the custom-deal control — no more direct DB edits).
-  if (s.videosPerMonth !== undefined) {
-    if (!Number.isInteger(s.videosPerMonth) || s.videosPerMonth < 1 || s.videosPerMonth > 31) return { ok: false, message: "Bad video count." };
-    data.videosPerMonth = s.videosPerMonth;
-    // The CURRENT month was minted with the old number — update its owed figure
-    // too, or a mid-month change is invisible until next month (review finding).
-    const { etMonthKey } = await import("@/lib/contentProgram");
-    await prisma.contentMonth.updateMany({
-      where: { enrollmentId, monthKey: etMonthKey(), historical: false },
-      data: { videosOwed: s.videosPerMonth },
-    });
-  }
-  if (s.strategyCallRequired !== undefined) data.strategyCallRequired = s.strategyCallRequired;
-  if (s.clientSuppliesTopics !== undefined) data.clientSuppliesTopics = s.clientSuppliesTopics;
-  if (s.status !== undefined && ["ACTIVE", "PAUSED", "ENDED"].includes(s.status)) {
-    // A hand-set status is an override — the Aryeo sweep stops managing it.
-    data.status = s.status;
-    data.statusManual = true;
-  }
-  if (s.notes !== undefined) data.notes = s.notes.trim().slice(0, 4000) || null;
-  await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data });
-  revalidatePath("/content");
-  return { ok: true, message: "Saved." };
+    return {
+      ok: true,
+      message: `Recorded under your name. The package changes from ${r.effectiveMonthKey}; the video/session quantities apply from ${r.obligationMonthKey}.${cancelled} No invoice, subscription or payment was touched.`,
+    };
+  } catch (e) { return fail(e); }
+}
+
+export async function staffSetEnrollmentStatusAction(enrollmentId: string, status: "ACTIVE" | "PAUSED" | "ENDED", reason?: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  if (!["ACTIVE", "PAUSED", "ENDED"].includes(status)) return { ok: false, message: "Unknown status." };
+  try {
+    const me = await actor();
+    const { setEnrollmentStatus } = await import("@/lib/enrollmentChanges");
+    await setEnrollmentStatus(enrollmentId, status, me.email, reason);
+    path(enrollmentId);
+    // Jordan's rule: paused/ended KEEP read-only portal access to released
+    // work unless a person explicitly revokes it on the access card.
+    return {
+      ok: true,
+      message: status === "ACTIVE"
+        ? "Back to active — recorded under your name."
+        : `Marked ${status.toLowerCase()} and recorded under your name. Their portal still opens, read-only, on work already released. No subscription was cancelled.`,
+    };
+  } catch (e) { return fail(e); }
+}
+
+// The roster's cards/table choice, remembered per browser (UI-02). A cookie,
+// because a Server Component can read one but only a Server Function may set
+// it. The return URL is rebuilt from the three known params — never echoed
+// from the form — so this cannot be turned into an open redirect.
+export async function setRosterView(form: FormData): Promise<void> {
+  const { cookies } = await import("next/headers");
+  const { redirect } = await import("next/navigation");
+  const { ROSTER_VIEW_COOKIE, resolveRosterView } = await import("@/lib/contentNav");
+  const view = resolveRosterView(String(form.get("view") ?? ""), null);
+  (await cookies()).set(ROSTER_VIEW_COOKIE, view, { path: "/content", maxAge: 60 * 60 * 24 * 365, sameSite: "lax", httpOnly: true });
+  const q = new URLSearchParams();
+  const month = String(form.get("month") ?? "");
+  const filter = String(form.get("filter") ?? "");
+  if (/^(\d{4}-\d{2}|ALL_OPEN)$/.test(month)) q.set("month", month);
+  if (/^[a-z_]{1,40}$/.test(filter)) q.set("filter", filter);
+  if (form.get("ended") === "1") q.set("ended", "1");
+  const qs = q.toString();
+  // Outside any try: redirect() throws to do its work (Next 16 docs).
+  redirect(`/content${qs ? `?${qs}` : ""}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +396,13 @@ export async function generateMonthScripts(monthId: string): Promise<Result> {
  * script, or null for a legacy body not yet versioned — and a stale one is
  * refused. The version-exact path (approveScriptVersionAction) does the rest.
  * `note` is the override for a version with blocking format findings.
+ *
+ * UI-02 (Sep 24 2026): NO SCREEN CALLS THIS ANY MORE. Its only caller was the
+ * Overview's script list (ScriptReview), retired so that the Scripts view's
+ * ScriptsPanel — which hands approveScriptVersionAction a version id — is the
+ * one staff approval surface. It is kept, still version-exact and still
+ * refusing a call that does not say which version it showed, because a tab
+ * running the old bundle may post to it, and the CP-02 drill holds that rule.
  */
 export async function approveScript(scriptId: string, shownVersionNo: number | null, note?: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }

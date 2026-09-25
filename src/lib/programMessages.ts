@@ -65,9 +65,13 @@ const NOTICE_MAX_TRIES = 3;
 const NOTICE_BY = "program-message-notice";
 const TASK_DONE = ["COMPLETED", "CANCELLED", "DONE", "CLOSED"];
 
-/** Shown under the composer, always, and repeated after a send that reads like a video change. */
+/**
+ * Shown under the composer, always, and repeated after a send that reads like
+ * a video change. Names no page (Sep 24): v1 calls the list "My Videos", v2
+ * "Content Library", and this line is written once for both.
+ */
 export const VIDEO_CHANGES_HINT =
-  "Changes to a video go on the video itself: open it under My Videos, pause where you want the change and leave a note. That sends it straight to your editor.";
+  "Changes to a video go on the video itself: open the video, pause where you want the change and leave a note. That sends it straight to your editor.";
 
 export type ProgramMessageRef = { kind: "TOPIC" | "SCRIPT" | "VIDEO"; id: string };
 type Result = { ok: boolean; message: string; id?: string };

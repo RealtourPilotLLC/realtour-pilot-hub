@@ -1,19 +1,17 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import {
-  CalendarClock, Check, Compass, FileText, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
+  CalendarClock, Check, FileText, Loader2, NotebookPen, Settings2, Sparkles,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
-import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
-import { ScriptBody } from "@/components/portal/ScriptBody";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
-  addContentNote, addTopic, analyzeTranscript, approveScript, buildProfile, generateTopicIdeas, previewStrategyBackfill,
-  reviseScriptAI, saveEnrollmentSettings, saveMonthTranscript, saveProfileSection,
+  addContentNote, analyzeTranscript, buildProfile, generateTopicIdeas,
+  saveMonthTranscript, saveProfileSection,
   applyScriptSuggestion, dismissScriptSuggestion,
-  saveScriptText, saveStrategyBackfill, setStrategyCallStatus, setTopicStatus,
-  type StrategyPreview,
+  setStrategyCallStatus,
+  staffChangePackageAction, staffSetEnrollmentStatusAction,
 } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
@@ -163,90 +161,9 @@ export function StrategyCallCard({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Topic bank / month plan — add, promote to month, reject.
-// ---------------------------------------------------------------------------
-type TopicRow = { id: string; title: string; concept: string | null; pillar: string | null; status: string; source: string };
-
-export function TopicBank({
-  enrollmentId, monthId, topics, mode, monthName,
-}: {
-  enrollmentId: string; monthId: string | null; topics: TopicRow[]; mode: "month" | "bank"; monthName?: string | null;
-}) {
-  const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
-  const [concept, setConcept] = useState("");
-  const [note, setNote] = useState<string | null>(null);
-  const [busy, start] = useTransition();
-
-  return (
-    <div>
-      <div className="divide-y divide-border">
-        {topics.map((t) => (
-          <div key={t.id} className="flex items-start gap-3 px-5 py-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[15px] font-medium">{t.title}</span>
-                {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && (
-                  <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
-                    {TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}
-                  </span>
-                )}
-              </div>
-              {t.concept && <p className="mt-1 text-[13px] leading-relaxed text-muted">{t.concept}</p>}
-            </div>
-            {mode === "bank" && monthId && (
-              <button disabled={busy} title="Plan into the selected month"
-                onClick={() => start(async () => { const r = await setTopicStatus(t.id, "SELECTED", monthId); if (!r.ok) setNote(r.message); })}
-                className="shrink-0 rounded-lg border border-brand/40 px-2.5 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft">
-                Use for {monthName ?? "this month"}
-              </button>
-            )}
-            {mode === "month" && (
-              <button disabled={busy} title="Back to the bank"
-                onClick={() => start(async () => { const r = await setTopicStatus(t.id, "SAVED", null); if (!r.ok) setNote(r.message); })}
-                className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2">
-                <X className="size-3" />
-              </button>
-            )}
-            <button disabled={busy} title="Reject"
-              onClick={() => start(async () => { const r = await setTopicStatus(t.id, "REJECTED"); if (!r.ok) setNote(r.message); })}
-              className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger">
-              <Trash2 className="size-3" />
-            </button>
-          </div>
-        ))}
-        {topics.length === 0 && <p className="px-5 py-4 text-sm text-muted">{mode === "month" ? "No topics planned yet." : "No video topics here yet — add one, or refresh from the strategy on the Video Topics tab."}</p>}
-      </div>
-
-      <div className="border-t border-border px-5 py-3">
-        {adding ? (
-          <div className="space-y-1.5">
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Topic title — specific enough that the hook is obvious"
-              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-            <AutoTextarea value={concept} onChange={(e) => setConcept(e.target.value)} minRows={2} placeholder="Angle / why it works (optional)"
-              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs outline-none focus:border-brand" />
-            <div className="flex gap-1.5">
-              <button disabled={busy || !title.trim()} onClick={() => start(async () => {
-                const r = await addTopic(enrollmentId, { title, concept, monthId: mode === "month" ? monthId : null });
-                setNote(r.ok ? null : r.message);
-                if (r.ok) { setTitle(""); setConcept(""); setAdding(false); }
-              })} className="rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
-                {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Add topic"}
-              </button>
-              <button onClick={() => setAdding(false)} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Cancel</button>
-            </div>
-          </div>
-        ) : (
-          <button onClick={() => setAdding(true)} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
-            <Plus className="size-3.5" /> Add a topic
-          </button>
-        )}
-        {note && <p className="mt-1.5 text-[11px] text-danger">{note}</p>}
-      </div>
-    </div>
-  );
-}
+// (TopicBank — the Overview's copy of the month's topic list — was retired
+// with UI-02: Plan › Topics' TopicsPanel holds the month's selections, the
+// bank, add-a-topic and reject, with the capacity rules this copy never had.)
 
 // ---------------------------------------------------------------------------
 // Agent profile — six sections of labeled key/value pairs over JSON columns.
@@ -374,246 +291,181 @@ export function NotesCard({
 }
 
 // ---------------------------------------------------------------------------
-// Enrollment settings — package override + workflow flags (spec §3).
+// PACKAGE, STATUS AND A CUSTOM DEAL'S COUNT — ledgered, and Kyle's too (UI-02).
+//
+// Replaces the Client file's EnrollmentSettingsCard, which saved all three
+// straight onto the enrollment with no ProgramEnrollmentChange row. Every
+// change here goes through staffChangePackageAction / staffSetEnrollmentStatus
+// Action → enrollmentChanges: a ledger row first, an explicit effective month,
+// and for the month already underway an explicit KEEP-or-APPLY choice (the
+// button stays disabled until one is picked). Its call-requirement and
+// own-topics flags already live on the Settings panel beside it, and billing
+// terms stay the owner's (SettingsPanel, requireOwner) — Jordan's rule.
+//
+// `packageAndStatus` is false for the owner, whose SettingsPanel already
+// carries those controls; the custom count (the 5-video Accelerators) is shown
+// to both, because SettingsPanel has no field for it.
+//
+// THE FORM STARTS FROM NEXT MONTH'S TERMS (Sep 24 fix). It used to start from
+// today's columns and compare with them — but a scheduled decision does not
+// move the columns until its month begins, so after "Pro from October" (or a
+// KEEP upgrade, which leaves this month's count) the card stayed armed, and a
+// second press, or re-typing the Pro count, cancelled the decision it had just
+// recorded. Now "next month" is compared with `nextTerms` (scheduled changes
+// folded in, enrollmentChanges.termsInMonth), a scheduled change is named on
+// the card, and a success resets the form.
 // ---------------------------------------------------------------------------
-export function EnrollmentSettingsCard({
-  enrollmentId, pkg, status, packageSource, strategyCallRequired, clientSuppliesTopics, notes, billing, videosPerMonth = 4,
+export function EnrollmentControls({
+  enrollmentId, pkg, status, videosPerMonth, sessionsPerMonth, nextTerms, packages, currentMonthKey, currentMonthLabel, nextMonthKey, nextMonthLabel, currentMonthOwed, packageAndStatus,
 }: {
-  enrollmentId: string; pkg: string; status: string; packageSource: string;
-  strategyCallRequired: boolean; clientSuppliesTopics: boolean; notes: string | null;
-  videosPerMonth?: number;
-  // Owner-only: the page passes this ONLY for the owner; the action re-checks.
-  billing?: { type: string | null; rate: number | null; months: number | null };
+  enrollmentId: string; pkg: string; status: string; videosPerMonth: number; sessionsPerMonth: number;
+  nextTerms: { pkg: string; videosPerMonth: number; sessionsPerMonth: number };
+  packages: { name: string; videosPerMonth: number; sessionsPerMonth: number }[];
+  currentMonthKey: string; currentMonthLabel: string; nextMonthKey: string; nextMonthLabel: string; currentMonthOwed: number | null;
+  packageAndStatus: boolean;
 }) {
-  const [state, setState] = useState({ pkg, status, strategyCallRequired, clientSuppliesTopics, notes: notes ?? "" });
-  const [note, setNote] = useState<string | null>(null);
+  const [nextPkg, setNextPkg] = useState(nextTerms.pkg);
+  const [videos, setVideos] = useState(String(nextTerms.videosPerMonth));
+  const [when, setWhen] = useState<"now" | "next">("next");
+  const [choice, setChoice] = useState<"KEEP" | "APPLY" | "">("");
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
-  const [bill, setBill] = useState({
-    type: billing?.type ?? "",
-    rate: billing?.rate != null ? String(billing.rate) : "",
-    months: billing?.months != null ? String(billing.months) : "",
-  });
-  const saveBilling = (partial: Partial<typeof bill>) => {
-    const next = { ...bill, ...partial };
-    setBill(next);
-    start(async () => {
-      const r = await saveEnrollmentSettings(enrollmentId, {
-        billingType: next.type || null,
-        billingRate: next.rate.trim() === "" ? null : Number(next.rate.replace(/[$,\s]/g, "")),
-        billingMonths: next.months.trim() === "" ? null : Number(next.months),
-      });
-      setNote(r.message);
-    });
-  };
-
-  function save(partial: Partial<typeof state>) {
-    const next = { ...state, ...partial };
-    setState(next);
-    start(async () => {
-      const r = await saveEnrollmentSettings(enrollmentId, {
-        package: next.pkg,
-        status: next.status,
-        strategyCallRequired: next.strategyCallRequired,
-        clientSuppliesTopics: next.clientSuppliesTopics,
-        notes: next.notes,
-      });
-      setNote(r.message);
-    });
-  }
+  const rule = packages.find((p) => p.name === nextPkg) ?? null;
+  const n = Number(videos);
+  const videosOk = Number.isInteger(n) && n >= 1 && n <= 31;
+  // A custom count survives a package change only when somebody types it: a
+  // blank-or-rule number means "the package's own quantity".
+  const customVideos = videosOk && (!rule || n !== rule.videosPerMonth) ? n : null;
+  const differsFrom = (t: { pkg: string; videosPerMonth: number }) => nextPkg !== t.pkg || (videosOk && n !== t.videosPerMonth);
+  const today = { pkg, videosPerMonth };
+  const scheduled = nextTerms.pkg !== pkg || nextTerms.videosPerMonth !== videosPerMonth || nextTerms.sessionsPerMonth !== sessionsPerMonth;
+  // "Next month" is a change only against what next month already runs on.
+  // "This month" is one against today's terms OR next month's — undoing a
+  // scheduled raise matches today's numbers and is still a decision.
+  const changed = when === "next" ? differsFrom(nextTerms) : differsFrom(today) || differsFrom(nextTerms);
+  const showWhen = differsFrom(today) || differsFrom(nextTerms);
+  const needsChoice = changed && when === "now";
+  const ready = changed && videosOk && (!needsChoice || choice !== "");
 
   return (
-    <Section icon={Settings2} title="Program settings"
-      action={packageSource === "manual" ? <span className="text-[11px] text-warning">package set by hand — Aryeo no longer overrides it</span> : <span className="text-[11px] text-muted-2">package follows Aryeo</span>}>
+    <Section icon={Settings2} title={packageAndStatus ? "Package, videos & status" : "Custom video count"}
+      action={<span className="text-[11px] text-muted-2">every change is recorded in the history below</span>}>
       <div className="space-y-3 text-sm">
-        <div className="flex items-center gap-2">
-          <label className="w-28 text-xs text-muted">Package</label>
-          <select value={state.pkg} onChange={(e) => save({ pkg: e.target.value })}
-            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
-            <option>Starter</option><option>Accelerator</option><option>Pro</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="w-28 text-xs text-muted">Status</label>
-          <select value={state.status} onChange={(e) => save({ status: e.target.value })}
-            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
-            <option value="ACTIVE">Active</option><option value="PAUSED">Paused</option><option value="ENDED">Ended</option>
-          </select>
-        </div>
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <input type="checkbox" checked={state.strategyCallRequired} onChange={(e) => save({ strategyCallRequired: e.target.checked })} className="accent-[var(--brand)]" />
-          Monthly strategy call required
-        </label>
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <input type="checkbox" checked={state.clientSuppliesTopics} onChange={(e) => save({ clientSuppliesTopics: e.target.checked })} className="accent-[var(--brand)]" />
-          Client supplies their own topics
-        </label>
-        <div className="flex items-center gap-2">
-          <label className="w-28 text-xs text-muted">Videos / month</label>
-          <input
-            defaultValue={videosPerMonth}
-            onBlur={(e) => {
-              const n = Number(e.target.value);
-              if (Number.isInteger(n) && n >= 1 && n <= 31 && n !== videosPerMonth) {
-                start(async () => { const r = await saveEnrollmentSettings(enrollmentId, { videosPerMonth: n }); setNote(r.message); });
-              }
-            }}
-            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-            inputMode="numeric"
-            className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 text-right text-xs tabular-nums outline-none focus:border-brand"
-            title="Custom deals (the 5-video clients) set their real number here — it survives package changes"
-          />
-        </div>
-
-        {/* Billing terms — rendered only for the owner (the action re-checks). */}
-        {billing !== undefined && (
-          <div className="space-y-2 border-t border-border pt-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Billing · owner only</p>
-            <div className="flex items-center gap-2">
-              <label className="w-28 text-xs text-muted">How they pay</label>
-              <select value={bill.type} onChange={(e) => saveBilling({ type: e.target.value })}
+        <div className="flex flex-wrap items-center gap-2">
+          {packageAndStatus && (
+            <label className="flex items-center gap-2">
+              <span className="text-xs text-muted">Package</span>
+              <select value={nextPkg} disabled={busy} onChange={(e) => { setNextPkg(e.target.value); const r = packages.find((p) => p.name === e.target.value); if (r) setVideos(String(r.videosPerMonth)); }}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
-                <option value="">Not set</option>
-                <option value="PAID_IN_FULL">Paid in full</option>
-                <option value="MONTHLY_CONTRACT">Monthly · contract</option>
-                <option value="MONTH_TO_MONTH">Month to month</option>
-                <option value="TRIAL">Trial</option>
+                {packages.map((p) => <option key={p.name} value={p.name}>{p.name} — {p.videosPerMonth} videos / {p.sessionsPerMonth} session{p.sessionsPerMonth === 1 ? "" : "s"}</option>)}
               </select>
+            </label>
+          )}
+          <label className="flex items-center gap-2" title="Custom deals (the 5-video clients) set their real number here">
+            <span className="text-xs text-muted">Videos a month</span>
+            <input value={videos} onChange={(e) => setVideos(e.target.value)} inputMode="numeric" disabled={busy}
+              className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 text-right text-xs tabular-nums outline-none focus:border-brand" />
+          </label>
+          <span className="text-[11px] text-muted-2">now {pkg} · {videosPerMonth} videos / {sessionsPerMonth} session{sessionsPerMonth === 1 ? "" : "s"}</span>
+        </div>
+        {scheduled && (
+          <p className="text-[11px] font-medium text-brand">
+            Scheduled from {nextMonthLabel}: {nextTerms.pkg} · {nextTerms.videosPerMonth} videos / {nextTerms.sessionsPerMonth} session{nextTerms.sessionsPerMonth === 1 ? "" : "s"} — see the history below.
+          </p>
+        )}
+
+        {showWhen && (
+          <div className="space-y-2 border-t border-border pt-3">
+            <div>
+              <p className="mb-1 text-xs font-medium">From when?</p>
+              <label className="mr-4 inline-flex items-center gap-1.5 text-xs">
+                <input type="radio" name={`when-${enrollmentId}`} checked={when === "next"} onChange={() => { setWhen("next"); setChoice(""); }} /> {nextMonthLabel} (next month)
+              </label>
+              <label className="inline-flex items-center gap-1.5 text-xs">
+                <input type="radio" name={`when-${enrollmentId}`} checked={when === "now"} onChange={() => setWhen("now")} /> {currentMonthLabel} (this month)
+              </label>
             </div>
-            <div className="flex items-center gap-2">
-              <label className="w-28 text-xs text-muted">{bill.type === "PAID_IN_FULL" || bill.type === "TRIAL" ? "Amount" : "Rate / month"}</label>
-              <input value={bill.rate} onChange={(e) => setBill((b) => ({ ...b, rate: e.target.value }))}
-                onBlur={() => saveBilling({})} onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                inputMode="decimal" placeholder="$"
-                className="w-24 rounded-lg border border-border bg-surface-2 px-2 py-1 text-right text-xs tabular-nums outline-none focus:border-brand" />
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="w-28 text-xs text-muted">Term (months)</label>
-              <input value={bill.months} onChange={(e) => setBill((b) => ({ ...b, months: e.target.value }))}
-                onBlur={() => saveBilling({})} onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                inputMode="numeric" placeholder="12, or blank for open-ended"
-                className="w-40 rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand" />
-            </div>
+            {!changed && (
+              <p className="text-[11px] text-muted-2">{when === "next" ? nextMonthLabel : currentMonthLabel} already runs on these terms — nothing to record.</p>
+            )}
+            {needsChoice && (
+              <div className="rounded-xl border border-warning/40 bg-warning-soft/40 p-3 text-xs">
+                <p className="mb-1 font-medium text-warning">{currentMonthLabel} is already underway — what happens to this month?</p>
+                <label className="block"><input type="radio" name={`choice-${enrollmentId}`} checked={choice === "KEEP"} onChange={() => setChoice("KEEP")} />{" "}
+                  Keep {currentMonthLabel} as it was minted{currentMonthOwed != null ? ` (${currentMonthOwed} videos)` : ""} — the new number starts {nextMonthLabel}.
+                </label>
+                <label className="block"><input type="radio" name={`choice-${enrollmentId}`} checked={choice === "APPLY"} onChange={() => setChoice("APPLY")} />{" "}
+                  Apply {videosOk ? `${n} videos` : "the new number"} to {currentMonthLabel} as well.
+                </label>
+              </div>
+            )}
+            {changed && <input className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand" placeholder="Why (optional — it goes in the history)" value={reason} onChange={(e) => setReason(e.target.value)} />}
+            {changed && <button disabled={busy || !ready} onClick={() => start(async () => {
+              const r = await staffChangePackageAction(enrollmentId, {
+                package: nextPkg,
+                effectiveMonthKey: when === "now" ? currentMonthKey : nextMonthKey,
+                currentMonthChoice: when === "now" ? (choice as "KEEP" | "APPLY") : null,
+                videosPerMonth: customVideos,
+                reason: reason.trim() || null,
+              });
+              setNote({ ok: r.ok, text: r.message });
+              // Disarm: back to the default month. The revalidated nextTerms
+              // now hold what was just recorded, so the same values read as
+              // "nothing to record" instead of offering to record them again.
+              if (r.ok) { setReason(""); setChoice(""); setWhen("next"); }
+            })} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+              {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Record the change"}
+            </button>}
+            {!videosOk && <p className="text-[11px] text-warning">Videos a month must be a whole number from 1 to 31.</p>}
           </div>
         )}
-        {busy && <Loader2 className="size-3.5 animate-spin text-muted" />}
-        {note && !busy && <p className="text-[11px] text-muted">{note}</p>}
+
+        {packageAndStatus && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+            <span className="text-xs">Currently <span className="font-semibold">{status.toLowerCase()}</span>.</span>
+            {(["ACTIVE", "PAUSED", "ENDED"] as const).filter((x) => x !== status).map((x) => (
+              <button key={x} disabled={busy} onClick={() => start(async () => {
+                if (x === "ENDED" && !window.confirm("End this client's program? Their portal stays open, read-only, on work already released. It is recorded in the history and can be undone by marking them active.")) return;
+                const r = await staffSetEnrollmentStatusAction(enrollmentId, x, reason.trim() || undefined);
+                setNote({ ok: r.ok, text: r.message });
+              })} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
+                {x === "ACTIVE" ? "Mark active" : x === "PAUSED" ? "Pause" : "End"}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-muted-2">A hub setting only — nothing is billed, cancelled or charged.</p>
+        {note && <p className={`text-[11px] ${note.ok ? "text-success" : "text-danger"}`}>{note.ok ? note.text : `Couldn't do that — ${note.text}`}</p>}
       </div>
     </Section>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Content strategy — the active strategy's sections + the backfill upload.
+// THE CLIENT'S SCRIPT CHANGE REQUESTS (UI-02). These OPEN ScriptSuggestion rows
+// were only ever shown inside the Overview's ScriptReview list — which also
+// carried a second, by-id Approve button. That list is retired (the Scripts
+// view's version-exact ScriptsPanel is the one approval surface); the queue of
+// client asks moves here, above it, with the same Apply-with-AI / Dismiss.
 // ---------------------------------------------------------------------------
-export function StrategyCard({
-  enrollmentId, strategy,
-}: {
-  enrollmentId: string;
-  strategy: { sections: Record<string, string>; sourceFile: string | null; updatedAt: string } | null;
-}) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [preview, setPreview] = useState<StrategyPreview | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [busy, start] = useTransition();
+export type ScriptRequestGroup = { scriptId: string; title: string; versionNo: number | null; requests: { id: string; body: string; createdAtISO: string }[] };
 
-  // Sep 17: the strategy is VERSIONED (Strategy tab). This card keeps the
-  // legacy read of the active row for the Client file; uploads become the next
-  // version for approval — never a replacement.
+export function ScriptRequestsPanel({ groups }: { groups: ScriptRequestGroup[] }) {
+  const total = groups.reduce((n, g) => n + g.requests.length, 0);
+  if (total === 0) return null;
   return (
-    <Section icon={Compass} title="Content strategy (legacy view — see the Strategy tab)"
-      action={strategy ? <span className="text-[11px] text-muted-2">{strategy.sourceFile ? `from ${strategy.sourceFile}` : "active"}</span> : undefined}>
-      <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={(e) => {
-        const f = e.target.files?.[0]; if (!f) return;
-        const fd = new FormData(); fd.append("file", f);
-        setNote(null);
-        start(async () => {
-          const p = await previewStrategyBackfill(fd);
-          if (!p.ok) { setNote(p.message); return; }
-          setPreview(p);
-        });
-        e.target.value = "";
-      }} />
-
-      {preview ? (
-        <div className="space-y-3">
-          <p className="text-sm"><Sparkles className="mr-1 inline size-3.5 text-brand" />{preview.message} Review, then save — it becomes the NEXT VERSION for approval on the Strategy tab; nothing is replaced.</p>
-          <div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-3">
-            {Object.entries(preview.sections!).map(([k, v]) => (
-              <details key={k} open>
-                <summary className="cursor-pointer text-xs font-semibold">{k}</summary>
-                <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/80">{v.slice(0, 2000)}{v.length > 2000 ? "…" : ""}</p>
-              </details>
-            ))}
+    <Section icon={FileText} title="The client asked for changes" count={total}
+      action={<span className="text-[11px] text-muted-2">apply rewrites it as a new version for review</span>}>
+      <div className="space-y-3">
+        {groups.map((g) => (
+          <div key={g.scriptId}>
+            <p className="mb-1 text-[13px] font-semibold">{g.title}{g.versionNo != null && <span className="ml-1.5 text-[11px] font-normal text-muted-2">now v{g.versionNo}</span>}</p>
+            {g.requests.map((sg) => <SuggestionRow key={sg.id} suggestion={sg} />)}
           </div>
-          <div className="flex gap-1.5">
-            <button disabled={busy} onClick={() => start(async () => {
-              const r = await saveStrategyBackfill(enrollmentId, preview.sections!, preview.rawText ?? "", preview.sourceFile ?? "upload");
-              setNote(r.message);
-              if (r.ok) setPreview(null);
-            })} className="rounded-md bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-              {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save as the next version"}
-            </button>
-            <button onClick={() => setPreview(null)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:bg-surface-2">Discard</button>
-          </div>
-        </div>
-      ) : strategy ? (
-        <div className="space-y-2">
-          {Object.entries(strategy.sections).map(([k, v]) => (
-            <details key={k} className="rounded-xl border border-border px-3 py-2">
-              <summary className="cursor-pointer text-sm font-medium">{k}</summary>
-              <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{v}</p>
-            </details>
-          ))}
-          <button onClick={() => fileRef.current?.click()} disabled={busy}
-            className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline disabled:opacity-50">
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
-            {busy ? "Reading the document…" : "Upload a newer strategy document (new version)"}
-          </button>
-        </div>
-      ) : (
-        <button onClick={() => fileRef.current?.click()} disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-2.5 text-sm text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-          {busy ? "Reading the document…" : "Upload their content strategy"}
-        </button>
-      )}
-      {note && <p className="mt-2 text-[11px] text-muted">{note}</p>}
+        ))}
+      </div>
     </Section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Script review — Jordan's loop: approve each script, ask the AI to revise
-// with instructions, or edit it by hand. Everything stays internal until
-// approved; the portal (Phase 5) will only ever show approved scripts.
-// ---------------------------------------------------------------------------
-export type ScriptRow = {
-  id: string; title: string; body: string; status: string; source: string;
-  sourceFile: string | null; productionIdeas: string[];
-  // Sep 17: the body is the CURRENT version's text; needsApproval = that
-  // version is a draft (Approve signs exactly what is shown); historical
-  // imports are read-only records.
-  versionNo?: number | null; historical?: boolean; needsApproval?: boolean;
-  // OPEN portal suggestions from the client (interactive layer, Aug 28).
-  suggestions?: { id: string; body: string; createdAtISO: string }[];
-};
-
-const SCRIPT_STATUS: Record<string, { label: string; tone: "warn" | "ok" | "muted" }> = {
-  DRAFT: { label: "needs your OK", tone: "warn" },
-  INTERNAL_REVIEW: { label: "needs your OK", tone: "warn" },
-  NEW_DRAFT: { label: "new draft since approval — needs your OK", tone: "warn" },
-  APPROVED: { label: "approved", tone: "ok" },
-  CLIENT_VISIBLE: { label: "live in their portal", tone: "ok" },
-  READY_TO_FILM: { label: "ready to film", tone: "ok" },
-  HISTORICAL: { label: "imported history", tone: "muted" },
-};
-
-export function ScriptReview({ scripts }: { scripts: ScriptRow[] }) {
-  return (
-    <div className="divide-y divide-border">
-      {scripts.map((s) => <ScriptItem key={s.id} script={s} />)}
-      {scripts.length === 0 && <p className="px-5 py-4 text-sm text-muted">No scripts for this month yet — analyze the call transcript or add topics and generate.</p>}
-    </div>
   );
 }
 
@@ -645,120 +497,6 @@ function SuggestionRow({ suggestion }: { suggestion: { id: string; body: string;
     </div>
   );
 }
-
-function ScriptItem({ script }: { script: ScriptRow }) {
-  const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
-  const [body, setBody] = useState(script.body);
-  const [instructions, setInstructions] = useState("");
-  const [note, setNote] = useState<string | null>(null);
-  const [busy, start] = useTransition();
-  const st = SCRIPT_STATUS[script.status] ?? { label: script.status.toLowerCase(), tone: "muted" as const };
-  const needsReview = script.needsApproval ?? (script.status === "INTERNAL_REVIEW" || script.status === "DRAFT");
-  const historical = script.historical === true;
-
-  return (
-    <details className="group px-5 py-3" open={needsReview}>
-      <summary className="flex cursor-pointer items-center gap-2 marker:content-none">
-        <FileText className="size-3.5 shrink-0 text-muted-2" />
-        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{script.title}</span>
-        {script.versionNo != null && <span className="text-[11px] text-muted-2">v{script.versionNo}</span>}
-        <span className={
-          st.tone === "warn" ? "shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"
-          : st.tone === "ok" ? "shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-xs font-medium text-success"
-          : "shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted"
-        }>{st.label}</span>
-      </summary>
-
-      <div className="mt-2">
-        {/* The client's own asks, from their portal — apply runs the AI rewrite
-            with their words and drops the script back to needs-your-review. */}
-        {(script.suggestions ?? []).map((sg) => (
-          <SuggestionRow key={sg.id} suggestion={sg} />
-        ))}
-        {mode === "edit" ? (
-          <div>
-            <AutoTextarea value={body} onChange={(e) => setBody(e.target.value)} minRows={6}
-              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs leading-relaxed outline-none focus:border-brand" />
-            <div className="mt-1.5 flex gap-1.5">
-              <button disabled={busy} onClick={() => start(async () => {
-                const r = await saveScriptText(script.id, body);
-                setNote(r.message); if (r.ok) setMode("read");
-              })} className="rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">Save</button>
-              <button onClick={() => { setBody(script.body); setMode("read"); }} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Cancel</button>
-            </div>
-          </div>
-        ) : (
-          /* Same bold-label rendering the client sees in the portal — Jordan's
-             side reads the script the way it ships, not as a wall of text. */
-          <ScriptBody body={body} size="sm" />
-        )}
-
-        {script.productionIdeas.length > 0 && mode === "read" && (
-          <div className="mt-2 rounded-lg bg-surface-2/60 px-2.5 py-1.5">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">Production ideas (not spoken)</div>
-            <ul className="mt-0.5 list-inside list-disc text-[11px] text-muted">
-              {script.productionIdeas.map((p, i) => <li key={i}>{p}</li>)}
-            </ul>
-          </div>
-        )}
-
-        {mode === "revise" && (
-          <div className="mt-2">
-            <AutoTextarea value={instructions} onChange={(e) => setInstructions(e.target.value)} minRows={2}
-              placeholder="Tell the AI what to change — e.g. 'hook is too generic, lead with the 1987 kitchen story' or 'shorter, punchier, drop the stats'…"
-              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs outline-none focus:border-brand" />
-            <div className="mt-1.5 flex gap-1.5">
-              <button disabled={busy || !instructions.trim()} onClick={() => start(async () => {
-                setNote("Revising…");
-                const r = await reviseScriptAI(script.id, instructions);
-                setNote(r.message);
-                if (r.ok) { setMode("read"); setInstructions(""); }
-              })} className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
-                {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />} Revise
-              </button>
-              <button onClick={() => setMode("read")} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Cancel</button>
-            </div>
-          </div>
-        )}
-
-        {mode === "read" && historical && (
-          <p className="mt-2 text-[11px] text-muted-2">Imported history — not edited, revised or approved here.{script.sourceFile ? ` From ${script.sourceFile}.` : ""}</p>
-        )}
-        {mode === "read" && !historical && (
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {/* Approve signs the version shown above (v{n}); it disappears once that version is approved. */}
-            {needsReview && (
-              <button disabled={busy} onClick={() => start(async () => {
-                // The version this card shows (v{n}, or the unversioned legacy
-                // body): the server refuses if a newer one was written since.
-                const shown = script.versionNo ?? null;
-                const r = await approveScript(script.id, shown);
-                if (!r.ok && /^Format check:/.test(r.message)) {
-                  // Blocking format findings: the approver may override with a written reason.
-                  const why = window.prompt(`${r.message}\n\nApprove anyway? Say why (this is recorded):`) ?? "";
-                  if (why.trim()) { const r2 = await approveScript(script.id, shown, why.trim()); setNote(r2.ok ? null : r2.message); return; }
-                }
-                setNote(r.ok ? null : r.message);
-              })}
-                className="inline-flex items-center gap-1 rounded-md bg-success/15 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success/25 disabled:opacity-50">
-                <Check className="size-3" /> Approve{script.versionNo != null ? ` v${script.versionNo}` : ""}
-              </button>
-            )}
-            <button onClick={() => setMode("revise")} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-              <Sparkles className="size-3" /> Ask AI to revise
-            </button>
-            <button onClick={() => setMode("edit")} className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-              Edit myself
-            </button>
-            {script.sourceFile && <span className="text-[10px] text-muted-2">from {script.sourceFile}</span>}
-          </div>
-        )}
-        {note && <p className="mt-1.5 text-[11px] text-muted">{note}</p>}
-      </div>
-    </details>
-  );
-}
-
 
 // One-click generators with result note — used by the bank + profile headers.
 export function GenerateButton({ label, busyLabel, run }: { label: string; busyLabel: string; run: () => Promise<{ ok: boolean; message: string }> }) {

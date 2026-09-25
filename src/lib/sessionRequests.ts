@@ -5,6 +5,7 @@ import { isAutomationEnabled } from "@/lib/programAutomation";
 import { monthSessionCount, recalcProgramMonth, replacesPendingMove, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
 import { aryeoProductFor, etMonthKey } from "@/lib/contentProgram";
+import { TEXT_KYLE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // SESSION REQUESTS (spec §4), Sep 16 2026.
@@ -144,7 +145,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   if (!enrollment) return { ok: false, reason: "This program membership is not active." };
   if (!month || month.enrollmentId !== enrollment.id) return { ok: false, reason: "Pick one of your program months." };
   if (month.historical) return { ok: false, reason: "That month is closed." };
-  if (enrollment.status !== "ACTIVE") return { ok: false, reason: "Your program is paused — text us and we'll sort the next session together." };
+  if (enrollment.status !== "ACTIVE") return { ok: false, reason: `Your program is paused — ${TEXT_KYLE} and we'll sort the next session together.` };
 
   const start = input.slot.startISO ? new Date(input.slot.startISO) : null;
   if (input.slot.startISO && (!start || !Number.isFinite(start.getTime()))) return { ok: false, reason: "Pick a time from the list." };

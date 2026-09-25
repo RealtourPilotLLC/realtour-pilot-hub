@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { AlertTriangle, CheckCircle2, Clapperboard, Film, FlaskConical, PauseCircle, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -8,26 +9,30 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { cn, nameColor } from "@/lib/utils";
-import { getProgramRoster, monthLabel, etMonthKey, type ProgramRow } from "@/lib/contentProgram";
+import { monthLabel, etMonthKey } from "@/lib/contentProgram";
 import { programRevenue, billingLabel, agreementValue, type RevenueRow } from "@/lib/contentBilling";
 import { signupsNeedingReview } from "@/lib/stripeSignups";
-import { dismissSignupReview } from "@/app/content/actions";
-import { MonthJourney, VideoMeter } from "@/components/content/MonthJourney";
+import { dismissSignupReview, setRosterView } from "@/app/content/actions";
 import { SweepButton } from "@/components/content/SweepButton";
 import { BadgeDollarSign, BookOpen, ChevronDown, Activity, LayoutGrid, ListChecks, Rows3, Settings2 } from "lucide-react";
-import { programOverview, ALL_OPEN, OVERVIEW_FILTERS, type OverviewFilterKey } from "@/lib/programOverview";
-import { journeyInputFrom, progressKey, type MonthProgress } from "@/lib/monthProgress";
+import { programOverview, ALL_OPEN, OVERVIEW_FILTERS, type OverviewFilterKey, type OverviewRow as Row } from "@/lib/programOverview";
 import { OverviewRow } from "@/components/content/OverviewRow";
+import { ClientMonthCard, PkgChip } from "@/components/content/ClientMonthCard";
+import { contentHref, resolveRosterView, ROSTER_VIEW_COOKIE } from "@/lib/contentNav";
 import { allAutomations } from "@/lib/programAutomation";
 
 export const dynamic = "force-dynamic";
 
-// Content Creator Program — the internal command view (spec §42–43), redesigned
-// Aug 25 per Jordan: one visual CARD per client instead of a spreadsheet table.
-// Each card is the client's month at a glance — the journey tracker (Call →
-// Topics → Scripts → Shoot → Delivered), the delivered-videos meter, and any
-// exceptions. Cards and overview rows both read lib/monthProgress (CP-10), so
-// the two views cannot disagree with each other or with the client file.
+// Content Creator Program — the internal command view (spec §42–43).
+//
+// UI-02 (Sep 24 2026): CARDS are the default again — one per client-month,
+// with the compact month tracker, the next action, who holds it, when it is
+// due and the one exception worth a glance — and Kyle's dense TABLE is one
+// click away (and remembered). Both views draw the SAME programOverview rows
+// through the same overviewFacts(), so switching the layout can never change
+// a number. The Aug-25 cards used to come from a second engine
+// (getProgramRoster) and disagreed with the rows by construction; the month
+// selector, the filters and the header numbers now serve both views.
 export default async function ContentProgramPage({
   searchParams,
 }: {
@@ -41,23 +46,15 @@ export default async function ContentProgramPage({
   // (The page-open full sweep was removed Aug 25 — the hourly cron owns it and
   // the header's "Sync now" button covers on-demand; running it per view was
   // why the tab felt slow — audit.)
-  // The MONTHLY PORTFOLIO OVERVIEW (spec §16) is the default view; the Aug-25
-  // card roster Jordan asked for is kept as `?view=cards` — a view, never
-  // deleted (his rule: preserve every workflow).
-  const view = sp.view === "cards" ? "cards" : "rows";
+  const remembered = (await cookies()).get(ROSTER_VIEW_COOKIE)?.value ?? null;
+  const view = resolveRosterView(sp.view, remembered);
+  // A bookmarked ?view= keeps winning while you click around the page.
+  const explicitView = sp.view ? view : null;
   const includeEnded = sp.ended === "1";
   const monthParam = sp.month === ALL_OPEN ? ALL_OPEN : sp.month;
   const filter = OVERVIEW_FILTERS.some((f) => f.key === sp.filter) ? (sp.filter as OverviewFilterKey) : null;
 
   const now = new Date();
-  const rows = await getProgramRoster({ now });
-  const active = rows.filter((r) => r.status === "ACTIVE" && !r.trial);
-  const trials = rows.filter((r) => r.status === "ACTIVE" && r.trial);
-  const inactive = rows.filter((r) => r.status !== "ACTIVE");
-  const live = [...active, ...trials];
-  const attention = live.filter((r) => r.attention.length > 0);
-  const delivered = live.reduce((s, r) => s + r.delivered, 0);
-  const owed = live.reduce((s, r) => s + r.videosOwed, 0);
   // Money is the OWNER's view alone — admins and creatives never see billing.
   // (Open local dev counts as the owner, same as the feedback board's rule.)
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
@@ -67,57 +64,62 @@ export default async function ContentProgramPage({
   // billing terms.
   const reviewSignups = ownerEyes ? await signupsNeedingReview().catch(() => []) : [];
 
-  // The overview read + the automation switches (a banner when ANY is on, so
-  // nobody is surprised that something is acting on its own).
+  // THE one read, for both views, plus the automation switches (a banner when
+  // ANY is on, so nobody is surprised that something is acting on its own).
   const [overview, switches] = await Promise.all([
-    // Read in BOTH views. The four numbers at the top of this page used to come
-    // from whichever engine the view happened to use — the overview's library
-    // count for rows, the older roster's pipeline count for cards — so the same
-    // screen read "1/51 · 11" and "0/51 · 12" depending on a toggle that is
-    // supposed to change the layout, not the facts (review, Sep 17).
-    //
-    // CP-10: and the per-client facts are one calculation too — the roster
-    // read monthProgress for every card, and the overview reuses those very
-    // objects for the same (client, month) rather than counting again.
-    programOverview({
-      monthKey: monthParam, includeEnded, now,
-      progress: new Map(rows.filter((r): r is typeof r & { progress: MonthProgress } => !!r.progress).map((r) => [progressKey(r.enrollmentId, r.monthId, r.monthKey), r.progress])),
-    }),
+    programOverview({ monthKey: monthParam, includeEnded, now }),
     allAutomations().catch(() => []),
   ]);
   const switchedOn = switches.filter((s) => s.enabled);
-  const shown = overview ? (filter ? overview.rows.filter((r) => r.flags.includes(filter)) : overview.rows) : [];
-  // ONE engine for the header, whichever view is on screen.
-  const statDelivered = overview ? overview.rows.reduce((n, r) => n + r.production.delivered, 0) : delivered;
-  const statOwed = overview ? overview.rows.reduce((n, r) => n + r.production.owed, 0) : owed;
-  const statAttention = overview ? overview.rows.filter((r) => r.flags.length > 0).length : attention.length;
-  const selectedMonth = overview?.monthKey ?? etMonthKey();
+  const rows = overview.rows;
+  const shown = filter ? rows.filter((r) => r.flags.includes(filter)) : rows;
+  // Enrollment facts, counted once per client (an "all open months" view can
+  // hold two rows for one client).
+  const clientsWhere = (pred: (r: Row) => boolean) => new Set(rows.filter(pred).map((r) => r.enrollmentId)).size;
+  const activeCount = clientsWhere((r) => r.enrollmentStatus === "ACTIVE" && !r.trial);
+  const trialCount = clientsWhere((r) => r.enrollmentStatus === "ACTIVE" && r.trial);
+  const statDelivered = rows.reduce((n, r) => n + r.production.delivered, 0);
+  const statOwed = rows.reduce((n, r) => n + r.production.owed, 0);
+  const statAttention = rows.filter((r) => r.flags.length > 0).length;
+  const selectedMonth = overview.monthKey;
   const allOpenView = selectedMonth === ALL_OPEN;
   const hrefFor = (patch: Record<string, string | null>) => {
     const q = new URLSearchParams();
     const base: Record<string, string | null> = {
-      month: monthParam ?? null, view: view === "cards" ? "cards" : null, filter, ended: includeEnded ? "1" : null, ...patch,
+      month: monthParam ?? null, view: explicitView, filter, ended: includeEnded ? "1" : null, ...patch,
     };
     for (const [k, v] of Object.entries(base)) if (v) q.set(k, v);
     const qs = q.toString();
     return `/content${qs ? `?${qs}` : ""}`;
   };
+  const showMonthOf = (r: Row) => allOpenView || r.monthKey !== selectedMonth;
+  // Card groups — only when no filter narrows the list (a filter is one flat answer).
+  const liveActive = shown.filter((r) => r.enrollmentStatus === "ACTIVE" && !r.trial);
+  const liveTrials = shown.filter((r) => r.enrollmentStatus === "ACTIVE" && r.trial);
+  const dormant = shown.filter((r) => r.enrollmentStatus !== "ACTIVE");
 
   return (
     <div>
       <PageHeader
         eyebrow="Monthly content clients"
         title="Content Program"
-        subtitle={view === "rows" ? (allOpenView ? "every open month" : monthLabel(selectedMonth)) : monthLabel(etMonthKey())}
+        subtitle={allOpenView ? "every open month" : monthLabel(selectedMonth)}
         actions={
           <div className="flex items-center gap-1.5">
-            <Link
-              href={hrefFor({ view: view === "cards" ? null : "cards" })}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-              title={view === "cards" ? "Switch to the portfolio overview" : "Switch to the client cards"}
-            >
-              {view === "cards" ? <><Rows3 className="size-3.5" /> <span className="hidden sm:inline">Overview</span></> : <><LayoutGrid className="size-3.5" /> <span className="hidden sm:inline">Cards</span></>}
-            </Link>
+            {/* The layout switch is a tiny form: the choice is remembered (a
+                cookie, set by a server action) so Kyle's table stays his. */}
+            <form action={setRosterView}>
+              <input type="hidden" name="view" value={view === "cards" ? "table" : "cards"} />
+              {monthParam && <input type="hidden" name="month" value={monthParam} />}
+              {filter && <input type="hidden" name="filter" value={filter} />}
+              {includeEnded && <input type="hidden" name="ended" value="1" />}
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                title={view === "cards" ? "Switch to the dense table" : "Switch to the client cards"}
+              >
+                {view === "cards" ? <><Rows3 className="size-3.5" /> <span className="hidden sm:inline">Table</span></> : <><LayoutGrid className="size-3.5" /> <span className="hidden sm:inline">Cards</span></>}
+              </button>
+            </form>
             <Link href="/content/resources" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
               <BookOpen className="size-3.5" /> <span className="hidden sm:inline">Resources</span>
             </Link>
@@ -146,7 +148,7 @@ export default async function ContentProgramPage({
                     paid {sg.paidAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
                   </span>
                   {sg.enrollmentId && (
-                    <Link href={`/content/${sg.enrollmentId}`} className="text-xs font-medium text-brand hover:underline">Open →</Link>
+                    <Link href={contentHref(sg.enrollmentId)} className="text-xs font-medium text-brand hover:underline">Open →</Link>
                   )}
                   <form action={dismissSignupReview}>
                     <input type="hidden" name="id" value={sg.id} />
@@ -175,234 +177,178 @@ export default async function ContentProgramPage({
           </div>
         )}
 
-        {/* THE MONTH IN FOUR NUMBERS — from the SAME read as the list below.
-            Two counting engines on one screen is the disagreement the overview
-            exists to prevent: the roster counts production from attached
-            pipeline projects, the overview from the video library, and a
-            header that said "1/51" above rows summing to something else made
-            both numbers untrustworthy. Active/trial are roster-wide facts
-            about enrollments and do not depend on the month. */}
+        {/* THE MONTH IN FOUR NUMBERS — from the SAME read as the list below,
+            whichever layout is on screen. */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat icon={Users} label="Active clients" value={String(active.length)} />
-          <Stat icon={FlaskConical} label="On trial" value={String(trials.length)} tone={trials.length > 0 ? "brand" : undefined} />
+          <Stat icon={Users} label="Active clients" value={String(activeCount)} />
+          <Stat icon={FlaskConical} label="On trial" value={String(trialCount)} tone={trialCount > 0 ? "brand" : undefined} />
           <Stat
             icon={Film}
             // Named only when it is NOT the current month — a two-up tile on a
             // phone should not wrap for the common case.
-            label={overview && allOpenView ? "Videos, open months" : overview && selectedMonth !== etMonthKey() ? `Videos · ${monthLabel(selectedMonth)}` : "Videos this month"}
+            label={allOpenView ? "Videos, open months" : selectedMonth !== etMonthKey() ? `Videos · ${monthLabel(selectedMonth)}` : "Videos this month"}
             value={`${statDelivered}/${statOwed}`}
             tone={statOwed > 0 && statDelivered >= statOwed ? "success" : undefined}
           />
           <Stat icon={AlertTriangle} label="Need attention" value={String(statAttention)} tone={statAttention > 0 ? "warning" : "success"} />
         </div>
 
-        {/* ---------- THE PORTFOLIO OVERVIEW (spec §16) ---------- */}
-        {view === "rows" && overview && (
-          <>
-            {/* MONTH SELECTOR — the row you open keeps the month you chose. */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Month</span>
-              {overview.monthKeys.slice(0, 6).map((k) => (
-                <Link
-                  key={k}
-                  href={hrefFor({ month: k === etMonthKey() ? null : k })}
-                  className={cn(
-                    "rounded-lg px-2.5 py-1 text-xs font-medium",
-                    selectedMonth === k ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
-                  )}
-                >
-                  {monthLabel(k)}
-                </Link>
-              ))}
-              <Link
-                href={hrefFor({ month: ALL_OPEN })}
-                title="every month that still carries an obligation — an August shortfall does not vanish because September started"
-                className={cn(
-                  "rounded-lg px-2.5 py-1 text-xs font-medium",
-                  allOpenView ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
-                )}
-              >
-                All open months
-              </Link>
-              <Link
-                href={hrefFor({ ended: includeEnded ? null : "1" })}
-                className={cn(
-                  "ml-auto rounded-lg px-2.5 py-1 text-xs font-medium",
-                  includeEnded ? "bg-surface-2 text-foreground" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
-                )}
-              >
-                {includeEnded ? "Hide ended clients" : "Show ended clients"}
-              </Link>
-            </div>
-
-            {/* FILTERS — every one is a real count, so a zero is an answer. */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Link
-                href={hrefFor({ filter: null })}
-                className={cn("rounded-full px-2.5 py-1 text-xs font-medium", !filter ? "bg-foreground text-background" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground")}
-              >
-                Everything <span className="ml-1 opacity-70">{overview.rows.length}</span>
-              </Link>
-              {OVERVIEW_FILTERS.map((f) => (
-                <Link
-                  key={f.key}
-                  href={hrefFor({ filter: filter === f.key ? null : f.key })}
-                  title={f.hint}
-                  className={cn(
-                    "rounded-full px-2.5 py-1 text-xs font-medium",
-                    filter === f.key ? "bg-foreground text-background" : overview.counts[f.key] > 0 ? "border border-border text-foreground/80 hover:bg-surface-2" : "border border-border text-muted-2 hover:bg-surface-2",
-                  )}
-                >
-                  {f.label} <span className="ml-1 opacity-70">{overview.counts[f.key]}</span>
-                </Link>
-              ))}
-            </div>
-
-            <Section
-              icon={ListChecks}
-              title={filter ? OVERVIEW_FILTERS.find((f) => f.key === filter)!.label : allOpenView ? "Every open month" : monthLabel(selectedMonth)}
-              count={shown.length}
-              flush
-              action={<span className="hidden text-[11px] text-muted-2 sm:inline">highest-priority first · open a row for the whole month</span>}
+        {/* MONTH SELECTOR — the card or row you open keeps the month you chose. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Month</span>
+          {overview.monthKeys.slice(0, 6).map((k) => (
+            <Link
+              key={k}
+              href={hrefFor({ month: k === etMonthKey() ? null : k })}
+              className={cn(
+                "rounded-lg px-2.5 py-1 text-xs font-medium",
+                selectedMonth === k ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+              )}
             >
-              <div>
-                {/* the month is named on the row whenever it is not the one selected — an ended client is shown against their LAST month, not an empty September. */}
-                {shown.map((r) => <OverviewRow key={`${r.enrollmentId}:${r.monthKey}`} r={r} showMonth={allOpenView || r.monthKey !== selectedMonth} />)}
-                {shown.length === 0 && (
-                  <p className="px-5 py-6 text-sm text-muted">
-                    {filter ? "Nothing matches that filter — which is the good answer." : "No client-months in view."}
-                  </p>
-                )}
-              </div>
-            </Section>
-
-            {overview.globalFailures.length > 0 && (
-              <div className="rounded-2xl border border-warning/40 bg-warning/5 p-4 text-[13px]">
-                <div className="mb-1 flex items-center gap-2 font-semibold text-warning"><AlertTriangle className="size-4" /> Failures not tied to one client</div>
-                <ul className="space-y-0.5">
-                  {overview.globalFailures.slice(0, 5).map((f) => (
-                    <li key={f.ref}><Link href={f.href} className="hover:underline">{f.title}</Link> <span className="text-muted-2">— {f.error.slice(0, 100)}</span></li>
-                  ))}
-                </ul>
-              </div>
+              {monthLabel(k)}
+            </Link>
+          ))}
+          <Link
+            href={hrefFor({ month: ALL_OPEN })}
+            title="every month that still carries an obligation — an August shortfall does not vanish because September started"
+            className={cn(
+              "rounded-lg px-2.5 py-1 text-xs font-medium",
+              allOpenView ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
             )}
-          </>
-        )}
-
-        {/* ---------- THE CARD ROSTER (Aug 25, kept as a view) ---------- */}
-        {view === "cards" && (<>
-        {/* ACTIVE CLIENTS — one card per client, problems sorted first */}
-        <div>
-          <SectionLabel icon={Users} text={`Active clients — ${monthLabel(etMonthKey())}`} count={active.length} />
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {active.map((r) => <ClientCard key={r.enrollmentId} r={r} />)}
-          </div>
-          {active.length === 0 && <p className="text-sm text-muted">No active clients this month.</p>}
+          >
+            All open months
+          </Link>
+          <Link
+            href={hrefFor({ ended: includeEnded ? null : "1" })}
+            className={cn(
+              "ml-auto rounded-lg px-2.5 py-1 text-xs font-medium",
+              includeEnded ? "bg-surface-2 text-foreground" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+            )}
+          >
+            {includeEnded ? "Hide ended clients" : "Show ended clients"}
+          </Link>
         </div>
 
-        {/* TRIAL CLIENTS — their own row so trial QC gets its own focus */}
-        {trials.length > 0 && (
-          <div>
-            <SectionLabel icon={FlaskConical} text="Trial clients" count={trials.length} hint="one-month trials — make these land" />
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {trials.map((r) => <ClientCard key={r.enrollmentId} r={r} />)}
+        {/* FILTERS — every one is a real count, so a zero is an answer. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Link
+            href={hrefFor({ filter: null })}
+            className={cn("rounded-full px-2.5 py-1 text-xs font-medium", !filter ? "bg-foreground text-background" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground")}
+          >
+            Everything <span className="ml-1 opacity-70">{rows.length}</span>
+          </Link>
+          {OVERVIEW_FILTERS.map((f) => (
+            <Link
+              key={f.key}
+              href={hrefFor({ filter: filter === f.key ? null : f.key })}
+              title={f.hint}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-xs font-medium",
+                filter === f.key ? "bg-foreground text-background" : overview.counts[f.key] > 0 ? "border border-border text-foreground/80 hover:bg-surface-2" : "border border-border text-muted-2 hover:bg-surface-2",
+              )}
+            >
+              {f.label} <span className="ml-1 opacity-70">{overview.counts[f.key]}</span>
+            </Link>
+          ))}
+        </div>
+
+        {/* ---------- THE DENSE TABLE (Kyle's view) ---------- */}
+        {view === "table" && (
+          <Section
+            icon={ListChecks}
+            title={filter ? OVERVIEW_FILTERS.find((f) => f.key === filter)!.label : allOpenView ? "Every open month" : monthLabel(selectedMonth)}
+            count={shown.length}
+            flush
+            action={<span className="hidden text-[11px] text-muted-2 sm:inline">highest-priority first · open a row for the whole month</span>}
+          >
+            <div>
+              {/* the month is named on the row whenever it is not the one selected — an ended client is shown against their LAST month, not an empty September. */}
+              {shown.map((r) => <OverviewRow key={`${r.enrollmentId}:${r.monthKey}`} r={r} showMonth={showMonthOf(r)} />)}
+              {shown.length === 0 && (
+                <p className="px-5 py-6 text-sm text-muted">
+                  {filter ? "Nothing matches that filter — which is the good answer." : "No client-months in view."}
+                </p>
+              )}
             </div>
+          </Section>
+        )}
+
+        {/* ---------- THE CARDS (the default) ---------- */}
+        {view === "cards" && (filter ? (
+          <div>
+            <SectionLabel icon={ListChecks} text={OVERVIEW_FILTERS.find((f) => f.key === filter)!.label} count={shown.length} />
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {shown.map((r) => <ClientMonthCard key={`${r.enrollmentId}:${r.monthKey}`} r={r} showMonth={showMonthOf(r)} />)}
+            </div>
+            {shown.length === 0 && <p className="text-sm text-muted">Nothing matches that filter — which is the good answer.</p>}
+          </div>
+        ) : (
+          <>
+            {/* ACTIVE CLIENTS — highest priority first (the overview's own sort). */}
+            <div>
+              <SectionLabel icon={Users} text={`Active clients — ${allOpenView ? "every open month" : monthLabel(selectedMonth)}`} count={liveActive.length} />
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {liveActive.map((r) => <ClientMonthCard key={`${r.enrollmentId}:${r.monthKey}`} r={r} showMonth={showMonthOf(r)} />)}
+              </div>
+              {liveActive.length === 0 && <p className="text-sm text-muted">No active clients in view.</p>}
+            </div>
+
+            {/* TRIAL CLIENTS — their own row so trial QC gets its own focus */}
+            {liveTrials.length > 0 && (
+              <div>
+                <SectionLabel icon={FlaskConical} text="Trial clients" count={liveTrials.length} hint="one-month trials — make these land" />
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {liveTrials.map((r) => <ClientMonthCard key={`${r.enrollmentId}:${r.monthKey}`} r={r} showMonth={showMonthOf(r)} />)}
+                </div>
+              </div>
+            )}
+
+            {liveActive.length + liveTrials.length > 0 && [...liveActive, ...liveTrials].every((r) => r.flags.length === 0) && (
+              <p className="flex items-center gap-2 text-sm text-success"><CheckCircle2 className="size-4" /> Every enrolled client is on track this month.</p>
+            )}
+
+            {/* PAUSED & ENDED — the same rows (paused always, ended when asked for), kept compact. */}
+            {dormant.length > 0 && (
+              <Section icon={PauseCircle} title={includeEnded ? "Paused & ended clients" : "Paused clients"} count={dormant.length} flush
+                action={<span className="text-[11px] text-muted-2">full history inside each</span>}>
+                <div className="divide-y divide-border">
+                  {dormant.map((r) => (
+                    <Link key={`${r.enrollmentId}:${r.monthKey}`} href={contentHref(r.enrollmentId, { month: r.monthKey })} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2/60">
+                      <Avatar name={r.clientName} color={nameColor(r.clientName)} size={24} />
+                      <span className="min-w-0 flex-1 truncate text-sm text-foreground/75">{r.clientName}</span>
+                      <PkgChip pkg={r.pkg} />
+                      <span className="hidden w-32 shrink-0 text-right text-xs text-muted-2 sm:block">{r.monthStatus === "NONE" ? "no workspace" : r.monthName}</span>
+                      <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{r.enrollmentStatus === "ENDED" ? "Ended" : "Paused"}</span>
+                    </Link>
+                  ))}
+                </div>
+              </Section>
+            )}
+          </>
+        ))}
+
+        {overview.globalFailures.length > 0 && (
+          <div className="rounded-2xl border border-warning/40 bg-warning/5 p-4 text-[13px]">
+            <div className="mb-1 flex items-center gap-2 font-semibold text-warning"><AlertTriangle className="size-4" /> Failures not tied to one client</div>
+            <ul className="space-y-0.5">
+              {overview.globalFailures.slice(0, 5).map((f) => (
+                <li key={f.ref}><Link href={f.href} className="hover:underline">{f.title}</Link> <span className="text-muted-2">— {f.error.slice(0, 100)}</span></li>
+              ))}
+            </ul>
           </div>
         )}
-
-        {live.length > 0 && attention.length === 0 && (
-          <p className="flex items-center gap-2 text-sm text-success"><CheckCircle2 className="size-4" /> Every enrolled client is on track this month.</p>
-        )}
-
-        </>)}
 
         {/* REVENUE & BILLING — owner-only, collapsed until asked for (Jordan
             Aug 25: "how much we are making off each person and if they paid in
             full, paid monthly, or monthly with a 1yr contract"). */}
         {revenue && revenue.length > 0 && <RevenuePanel rows={revenue} />}
 
-        {/* PAUSED & PAST — history stays one click away without cluttering the month */}
-        {view === "cards" && inactive.length > 0 && (
-          <Section icon={PauseCircle} title="Paused & past clients" count={inactive.length} flush
-            action={<span className="text-[11px] text-muted-2">full history inside each</span>}>
-            <div className="divide-y divide-border">
-              {inactive.map((r) => (
-                <Link key={r.enrollmentId} href={`/content/${r.enrollmentId}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2/60">
-                  <Avatar name={r.clientName} color={nameColor(r.clientName)} size={24} />
-                  <span className="min-w-0 flex-1 truncate text-sm text-foreground/75">{r.clientName}</span>
-                  <PkgChip pkg={r.pkg} />
-                  <span className="hidden w-32 shrink-0 text-right text-xs text-muted-2 sm:block">
-                    {r.lastMonthKey ? `last: ${monthLabel(r.lastMonthKey)}` : "no content yet"}
-                  </span>
-                  <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">Paused</span>
-                </Link>
-              ))}
-            </div>
-          </Section>
-        )}
-
         <p className="text-xs text-muted-2">
           <Clapperboard className="mr-1 inline size-3.5" />
-          Enrollment follows the Aryeo &ldquo;Social Client&rdquo; flag automatically; sessions are distinct confirmed appointments and videos are counted from the library — the same month-progress reader the client file, their portal and the reminders use.
+          Enrollment follows the Aryeo &ldquo;Social Client&rdquo; flag automatically; sessions are distinct confirmed appointments and videos are counted from the library — the same month-progress reader the client file, their portal and the reminders use. Cards and table are one calculation.
         </p>
       </div>
     </div>
-  );
-}
-
-// One client's month, as a card: identity → journey → meter → exceptions.
-function ClientCard({ r }: { r: ProgramRow }) {
-  const worry = r.attention.length > 0;
-  return (
-    <Link
-      href={`/content/${r.enrollmentId}`}
-      className={cn(
-        "panel-shadow group flex flex-col gap-3.5 rounded-2xl border bg-surface p-4 transition-colors hover:border-brand/40",
-        worry && "border-warning/35",
-      )}
-    >
-      <div className="flex items-center gap-2.5">
-        <Avatar name={r.clientName} color={nameColor(r.clientName)} size={34} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold group-hover:text-brand">{r.clientName}</div>
-          <div className="mt-0.5 flex items-center gap-1.5">
-            <PkgChip pkg={r.pkg} />
-            {r.trial && <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-medium text-brand">Trial</span>}
-          </div>
-        </div>
-      </div>
-
-      {/* The same reader the overview rows, the client file and portal Home use. */}
-      <MonthJourney
-        input={r.progress ? journeyInputFrom(r.progress) : {
-          callStatus: r.strategyCallStatus, topicsSelected: r.topicsSelected, scriptsReady: r.scriptsReady, videosOwed: r.videosOwed,
-          sessionsRequired: r.sessionsRequired, sessionsConfirmed: r.sessionsScheduled, sessionsFilmedConfirmed: r.shotCount, delivered: r.delivered, inReview: r.inReview,
-        }}
-      />
-
-      <VideoMeter
-        delivered={r.delivered}
-        owed={r.videosOwed}
-        inReview={r.inReview}
-        unknown={r.progress && !r.progress.production.known ? `the pipeline shows ${r.progress.production.pipelineDelivered} delivered; the library holds ${r.delivered}` : null}
-      />
-
-      {worry ? (
-        <div className="space-y-0.5 border-t border-border pt-2.5">
-          {r.attention.slice(0, 2).map((a, i) => (
-            <p key={i} className="flex items-start gap-1.5 text-[11px] text-warning">
-              <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-              <span>{a}</span>
-            </p>
-          ))}
-          {r.attention.length > 2 && <p className="pl-4.5 text-[11px] text-warning/80">+{r.attention.length - 2} more</p>}
-        </div>
-      ) : (
-        <p className="flex items-center gap-1.5 border-t border-border pt-2.5 text-[11px] text-success">
-          <CheckCircle2 className="size-3" /> On track
-        </p>
-      )}
-    </Link>
   );
 }
 
@@ -435,7 +381,7 @@ function RevenuePanel({ rows }: { rows: RevenueRow[] }) {
         {rows.map((r) => {
           const value = agreementValue(r.billingType, r.billingRate, r.billingMonths);
           return (
-            <Link key={r.enrollmentId} href={`/content/${r.enrollmentId}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 hover:bg-surface-2/60">
+            <Link key={r.enrollmentId} href={contentHref(r.enrollmentId, { tab: "settings" })} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 hover:bg-surface-2/60">
               <Avatar name={r.clientName} color={nameColor(r.clientName)} size={24} />
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{r.clientName}</span>
               <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", TYPE_CHIP[r.billingType ?? ""] ?? "bg-surface-2 text-muted-2")}>
@@ -451,7 +397,7 @@ function RevenuePanel({ rows }: { rows: RevenueRow[] }) {
         })}
       </div>
       <p className="border-t border-border px-5 py-2 text-[11px] text-muted-2">
-        Collected = every QuickBooks payment from this person in {new Date().getFullYear()} (all services, not just content). $0 on a trial = not invoiced or not paid yet. Edit terms inside the client&rsquo;s Notes &amp; settings tab.
+        Collected = every QuickBooks payment from this person in {new Date().getFullYear()} (all services, not just content). $0 on a trial = not invoiced or not paid yet. Edit terms on the client&rsquo;s Settings tab.
       </p>
     </details>
   );
@@ -478,14 +424,5 @@ function SectionLabel({ icon: Icon, text, count, hint }: { icon: typeof Users; t
       <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{count}</span>
       {hint && <span className="ml-auto text-[11px] text-muted-2">{hint}</span>}
     </div>
-  );
-}
-
-function PkgChip({ pkg }: { pkg: string }) {
-  const color = pkg === "Pro" ? "#a78bfa" : pkg === "Starter" ? "#38bdf8" : "#f59e0b";
-  return (
-    <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ backgroundColor: `${color}26`, color }}>
-      {pkg}
-    </span>
   );
 }

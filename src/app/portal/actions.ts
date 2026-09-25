@@ -7,6 +7,7 @@ import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/po
 import { approveCut, requestChangesOnCut, replyToComment, setCommentResolved, isMine, type OpenNotesChoice } from "@/lib/clientDecisions";
 import { setPostedByClient, saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
+import { contentHref } from "@/lib/contentNav"; // UI-02: the one builder of staff client-file links
 
 // ---------------------------------------------------------------------------
 // PORTAL ACTIONS — the client's interactive layer (Aug 28; identity layer
@@ -68,7 +69,7 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
   const open = await prisma.scriptSuggestion.count({
     where: { enrollmentId: enrollment.id, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
   });
-  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already — we're on them! If it's urgent, send us a message from Messages in the menu.");
+  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already — we're on them! If it's urgent, send us a message on the Messages page.");
   await prisma.scriptSuggestion.create({
     data: { scriptId, enrollmentId: enrollment.id, body: clip(text, 2000), ...stamp(v) },
   });
@@ -81,7 +82,7 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
     "portal_suggestion",
     `Script suggestion — ${enrollment.clientName || "a client"}`,
     `${actorLabel(v)} on "${script.title}": ${clip(text, 120)}`,
-    `/content/${enrollment.id}?tab=scripts${scriptMonth ? `&month=${scriptMonth.monthKey}` : ""}`,
+    contentHref(enrollment.id, { tab: "plan", view: "scripts", month: scriptMonth?.monthKey ?? null }),
     // Hour-bucketed: several suggestions in one sitting ring once.
     `portal-sugg-${enrollment.id}-${new Date().toISOString().slice(0, 13)}`,
   );
@@ -109,7 +110,7 @@ export async function portalApproveScript(auth: PortalAuth, scriptId: string, re
       "portal_script_approved",
       `Script signed off — ${v.enrollment.clientName || "a client"}`,
       `${actorLabel(v)} approved "${script?.title ?? "a script"}" as written.`,
-      `/content/${v.enrollment.id}?tab=scripts`,
+      contentHref(v.enrollment.id, { tab: "plan", view: "scripts" }),
       `portal-script-ok-${scriptId}`,
     );
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
@@ -219,7 +220,7 @@ export async function portalApproveCut(auth: PortalAuth, submissionId: string, c
     "portal_approval",
     `Video approved — ${v.enrollment.clientName || "a client"}`,
     `${actorLabel(v)} approved a cut${c === "INCLUDE" ? " (with notes attached)" : ""}.`,
-    `/content/${v.enrollment.id}?tab=videos`,
+    contentHref(v.enrollment.id, { tab: "production", view: "videos" }),
     `portal-approve-${submissionId}`,
   );
   return { ok: true, message: r.message, duplicate: r.duplicate };
@@ -517,7 +518,7 @@ export async function portalSelectTopic(auth: PortalAuth, topicId: string, month
     const r = await selectTopicForMonth(topic.id, month.id, { source: "client", actor: topicActor(v), status: "SELECTED" });
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     const { monthLabel } = await import("@/lib/contentProgram");
-    if (r.outcome === "WITHHELD") return fail("That topic was set aside earlier. Send us a message from Messages in the menu if you'd like it back on the table.");
+    if (r.outcome === "WITHHELD") return fail("That topic was set aside earlier. Send us a message on the Messages page if you'd like it back on the table.");
     return {
       ok: true, overflow: r.overflow, capacity: r.capacity,
       message: r.overflow
@@ -566,7 +567,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
     pillarId = p?.id ?? null;
   }
   const recent = await prisma.contentTopic.count({ where: { enrollmentId: v.enrollment.id, source: "client", createdAt: { gte: new Date(Date.now() - 86_400_000) } } });
-  if (recent >= 20) return fail("That's a lot of ideas for one day — we love it, but let's talk them through. Send us a message from Messages in the menu!");
+  if (recent >= 20) return fail("That's a lot of ideas for one day — we love it, but let's talk them through. Send us a message on the Messages page!");
   const { createTopic, selectTopicForMonth, undeclineTopicForClient, flagClientTopicAlignment, adoptTopicAsClientIdea } = await import("@/lib/contentTopics");
   const month = input.monthId ? await openMonthForEnrollment(v.enrollment.id, input.monthId) : null;
   if (input.monthId && !month) return fail("Pick one of your open program months.");
@@ -603,7 +604,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
       const { monthLabel } = await import("@/lib/contentProgram");
       try {
         const sel = await selectTopicForMonth(r.id, month.id, { source: "client", actor, status: "SELECTED" });
-        if (sel.outcome === "WITHHELD") message = "Added to your bank, but that one was set aside earlier. Send us a message from Messages in the menu if you'd like it for this month.";
+        if (sel.outcome === "WITHHELD") message = "Added to your bank, but that one was set aside earlier. Send us a message on the Messages page if you'd like it for this month.";
         else {
           selected = true;
           message = sel.overflow
@@ -614,7 +615,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
         return { ok: false, message: `Your idea is saved in your bank, but it couldn't be added to ${monthLabel(month.monthKey)}: ${e instanceof Error ? e.message : "try selecting it again"}`, id: r.id };
       }
     }
-    await ownerBell("portal_topic", `Topic idea — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(title, 120)}${selected && month ? ` (selected for ${month.monthKey})` : ""}`, `/content/${v.enrollment.id}?tab=topics`, `portal-topic-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
+    await ownerBell("portal_topic", `Topic idea — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(title, 120)}${selected && month ? ` (selected for ${month.monthKey})` : ""}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return { ok: true, message, id: r.id, monthId: selected ? month!.id : null, selected };
   } catch (e) {
@@ -632,7 +633,7 @@ export async function portalDeclineTopic(auth: PortalAuth, topicId: string, reas
   const why = clip((reason ?? "").trim(), 500) || null;
   try {
     await declineTopicForClient(topic.id, topicActor(v), why);
-    await ownerBell("portal_topic_declined", `Topic set aside — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: not interested in "${clip(topic.title, 100)}"${why ? ` — ${clip(why, 120)}` : ""}`, `/content/${v.enrollment.id}?tab=ideas`, `portal-topic-declined-${topic.id}`);
+    await ownerBell("portal_topic_declined", `Topic set aside — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: not interested in "${clip(topic.title, 100)}"${why ? ` — ${clip(why, 120)}` : ""}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-declined-${topic.id}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return { ok: true, message: "Set aside — we won't suggest it again. You can undo this below." };
   } catch (e) {
@@ -668,14 +669,14 @@ export async function portalSwapCarriedTopic(auth: PortalAuth, selectionId: stri
   const sel = await prisma.contentTopicSelection.findUnique({ where: { id: selectionId }, select: { id: true, enrollmentId: true, monthId: true } });
   if (!sel || sel.enrollmentId !== v.enrollment.id) return fail("That isn't on your plan.");
   const month = await openMonthForEnrollment(v.enrollment.id, sel.monthId);
-  if (!month) return fail("That month is closed. Send us a message from Messages in the menu if something needs to change.");
+  if (!month) return fail("That month is closed. Send us a message on the Messages page if something needs to change.");
   const repl = await topicForEnrollment(v.enrollment.id, replacementTopicId);
   if (!repl) return fail("Pick a topic from your bank to swap in.");
   const { swapCarriedTopic } = await import("@/lib/contentTopics");
   try {
     await swapCarriedTopic(sel.id, repl.id, topicActor(v));
     const { monthLabel } = await import("@/lib/contentProgram");
-    await ownerBell("portal_topic", `Carried script swapped — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} swapped a carried-over script for "${clip(repl.title, 100)}" in ${month.monthKey}.`, `/content/${v.enrollment.id}?tab=ideas`, `portal-topic-swap-${sel.id}`);
+    await ownerBell("portal_topic", `Carried script swapped — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} swapped a carried-over script for "${clip(repl.title, 100)}" in ${month.monthKey}.`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-swap-${sel.id}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return { ok: true, message: `Swapped — "${clip(repl.title, 80)}" is on ${monthLabel(month.monthKey)} now. The earlier script is kept under "Scripted, not filmed".` };
   } catch (e) {
@@ -693,7 +694,7 @@ export async function portalDiscussTopic(auth: PortalAuth, topicId: string, note
   if (text.length < 2) return fail("Write a quick note first.");
   const { discussTopic } = await import("@/lib/contentTopics");
   await discussTopic(topic.id, text, topicActor(v), "portal");
-  await ownerBell("portal_topic_note", `Topic note — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} on "${topic.title}": ${clip(text, 120)}`, `/content/${v.enrollment.id}?tab=topics`, `portal-topic-note-${topic.id}-${new Date().toISOString().slice(0, 13)}`);
+  await ownerBell("portal_topic_note", `Topic note — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} on "${topic.title}": ${clip(text, 120)}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-note-${topic.id}-${new Date().toISOString().slice(0, 13)}`);
   return { ok: true, message: "Noted — it's on the topic's history for us to read." };
 }
 
@@ -765,7 +766,7 @@ export async function portalSubmitInterview(auth: PortalAuth, interviewId: strin
       "portal_interview",
       gaps ? `Planning answers sent with gaps — ${v.enrollment.clientName || "a client"}` : `Planning answers in — ${v.enrollment.clientName || "a client"}`,
       gaps ? `${actorLabel(v)} sent what they have for "${topic?.title ?? "a topic"}" — not enough to draft yet; Kyle has the follow-up.` : `${actorLabel(v)} answered the questions for "${topic?.title ?? "a topic"}" — ready to draft.`,
-      `/content/${v.enrollment.id}?tab=ideas`,
+      contentHref(v.enrollment.id, { tab: "plan", view: "topics" }),
       `portal-interview-${iv.id}${gaps ? "-gaps" : ""}`,
     );
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
@@ -784,7 +785,7 @@ export async function portalProposeStrategyCorrection(auth: PortalAuth, input: {
   const summary = clip((input.summary ?? "").trim(), 500);
   if (summary.length < 3) return fail("Tell us what to correct.");
   const open = await prisma.contentStrategyProposal.count({ where: { enrollmentId: v.enrollment.id, status: "PROPOSED", sourceKind: "client" } });
-  if (open >= 10) return fail("You have a few corrections in already — we'll go through them with you. If it's urgent, send us a message from Messages in the menu.");
+  if (open >= 10) return fail("You have a few corrections in already — we'll go through them with you. If it's urgent, send us a message on the Messages page.");
   const { createStrategyProposal } = await import("@/lib/contentStrategy");
   try {
     const section = clip((input.section ?? "").trim(), 120);
@@ -799,7 +800,7 @@ export async function portalProposeStrategyCorrection(auth: PortalAuth, input: {
       clientUserId: v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, impact: "Client correction from the portal — review against the released version before accepting.",
       ...(hit ? { targetKey: `${SECTION_TARGET_PREFIX}${hit.id}`, diff: [{ path: `${SECTION_TARGET_PREFIX}${hit.id}`, from: hit.text, to: "" }] } : {}),
     });
-    await ownerBell("portal_strategy_proposal", `Strategy correction — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(summary, 120)}`, `/content/${v.enrollment.id}?tab=strategy`, `portal-strategy-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
+    await ownerBell("portal_strategy_proposal", `Strategy correction — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(summary, 120)}`, contentHref(v.enrollment.id, { tab: "plan", view: "strategy" }), `portal-strategy-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return { ok: true, message: "Got it — we'll review the correction and update your strategy if it changes anything. Your current version stays as is until then." };
   } catch (e) {

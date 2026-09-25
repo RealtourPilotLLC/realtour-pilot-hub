@@ -4,10 +4,10 @@ import {
   BookOpen, CalendarClock, Clapperboard, Compass, Eye, Home, KeyRound, Lightbulb, LogOut, MessageSquare, MoreHorizontal, PauseCircle, ScrollText, Settings, UserRound,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
-import { etMonthKey } from "@/lib/contentProgram";
+import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import {
-  recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress, readOnlyNotice,
+  recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress, readOnlyNotice, homeSessionView,
   type PortalViewer, type PortalScheduleMonth, type PortalSlotDay, type PortalTopicsData, type PortalInterviewView, type PortalStrategyView, type PortalPlanning,
 } from "@/lib/portal";
 import { can } from "@/lib/portalAccess";
@@ -29,6 +29,16 @@ import { ResourcesTab } from "@/components/portal/tabs/ResourcesTab";
 import { MessagesTab, type MessagesTabData } from "@/components/portal/tabs/MessagesTab";
 import { ContactTeam } from "@/components/portal/ContactTeam";
 import { cn } from "@/lib/utils";
+// UI-01 — the v2 layout (lib/portalLayout.ts decides who gets it).
+import { resolvePortalRoute, portalHref, v2HrefFor, baseQueryPairs, portalNav, firstQueryValues, type PlanView } from "@/lib/portalNav";
+import { portalLayoutDecision, libraryRows, reviewDeadlines } from "@/lib/portalLayout";
+import { homeActions, planModel, libraryView, type HomeAction } from "@/lib/portalHome";
+import { isLibraryFilter } from "@/lib/portalWords";
+import { PortalShell } from "@/components/portal/PortalShell";
+import { HomeV2 } from "@/components/portal/tabs/HomeTab";
+import { LibraryV2, VideoDetailV2, type LibraryV2Data } from "@/components/portal/tabs/VideosTab";
+import { PlanTab } from "@/components/portal/tabs/PlanTab";
+import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT PORTAL PAGE — one component, two routes. /portal/<token> (the
@@ -47,6 +57,14 @@ import { cn } from "@/lib/utils";
 // query-only, <video src> and download hrefs carry a six-hour media token
 // bound to that one cut/video and this viewer's seat/link, and the client
 // components read the address bar when they call an action.
+//
+// TWO LAYOUTS (UI-01, Sep 24 2026). The layout above is "v1" and is what every
+// real client sees until Jordan turns on `portal_layout_v2`; its render below
+// is deliberately left exactly as it was. "v2" — Home · My Plan · Content
+// Library · Schedule · More, in PortalShell — is served to TEST clients, to
+// everyone once the switch is on, and to staff who add ?layout=v2. Both read
+// the same address (lib/portalNav.resolvePortalRoute: old ?tab= links land in
+// either layout) and load their data through the same per-tab blocks below.
 // ---------------------------------------------------------------------------
 
 export type PortalTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms";
@@ -59,12 +77,13 @@ const MAIN_TABS: { key: PortalTab; label: string; short: string; icon: typeof Ho
   { key: "resources", label: "Resources", short: "Resources", icon: BookOpen },
 ];
 const PHONE_BAR: PortalTab[] = ["home", "videos", "topics", "strategy"];
-// Old links (`?tab=library`, `?tab=ideas`) keep landing somewhere sensible.
-const LEGACY_TABS: Record<string, PortalTab> = { library: "videos", ideas: "topics", home: "home", videos: "videos", topics: "topics", strategy: "strategy", schedule: "schedule", resources: "resources", messages: "messages", profile: "profile", settings: "settings", team: "settings", terms: "terms" };
-export const portalTabOf = (raw: string | undefined): PortalTab => LEGACY_TABS[raw ?? ""] ?? "home";
+// Old links (`?tab=library`, `?tab=ideas`) keep landing somewhere sensible, and
+// the v2 keys (plan, brand, team, more) degrade to the nearest v1 tab — one
+// map for both layouts, in lib/portalNav.ts.
+export const portalTabOf = (raw: string | undefined): PortalTab => resolvePortalRoute({ tab: raw }).v1Tab;
 
-/** Everything the address bar may carry besides the tab. */
-export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string; page?: string; filter?: string; r?: string };
+/** Everything the address bar may carry besides the tab. `pv` is My Plan's subview, `q`/`st` the Library's search and status filter, `layout=v2` a staff preview (all v2). */
+export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string; page?: string; filter?: string; r?: string; pv?: string; q?: string; st?: string; layout?: string };
 
 // Client-facing program terms. The AppSetting `portal-terms` overrides this
 // default wholesale (blank lines split paragraphs; "## " starts a heading) —
@@ -90,9 +109,8 @@ async function attempt<T>(what: string, fn: () => Promise<T>): Promise<{ ok: tru
   try { return { ok: true, data: await fn() }; } catch (e) { console.error(`[portal] ${what} failed`, e); return { ok: false }; }
 }
 
-export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {} }: {
+export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery = {} }: {
   viewer: PortalViewer;
-  tab: PortalTab;
   /** What PortalVisit records — the pathname, never the query. */
   path: string;
   /** Query that must survive tab changes (`e=<enrollmentId>` on /portal/me). */
@@ -100,9 +118,18 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
   query?: PortalQuery;
 }) {
   const { enrollment, actor, access } = viewer;
+  // One string per key, whatever the address repeats (portalNav.firstQueryValues).
+  const query = firstQueryValues<PortalQuery>(rawQuery);
   await recordPortalVisit(viewer, path);
 
   const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { name: true, brandColors: true, portalVideoStyle: true, portalPreferences: true } });
+  // Where this address lands, and in which layout.
+  const route = resolvePortalRoute({ tab: query.tab, pv: query.pv });
+  const tab: PortalTab = route.v1Tab;
+  const { layout, why } = await portalLayoutDecision(viewer, client?.name, query);
+  const v2 = layout === "v2";
+  /** What this visit loads: v1's tab, or nothing tab-specific for v2's More page. */
+  const dataTab: PortalTab | "more" = v2 && route.dest === "more" ? "more" : tab;
   const readOnly = access !== "FULL";
   const perms = {
     request: can(viewer, "requestChanges"),
@@ -119,6 +146,12 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
   // (review, Sep 17). The link seat has no person, so it keeps the account's.
   const first = ((actor.kind === "CLIENT" ? actor.name : null) || client?.name || "there").split(/\s+/)[0];
   const href = (t: string, extra?: string) => `?${baseQuery ? `${baseQuery}&` : ""}tab=${t}${extra ? `&${extra}` : ""}`;
+  // v2 links carry `layout=v2` only on a staff preview — a TEST client and the
+  // switch need nothing in the address. `tabHref` is the one the shared data
+  // below builds links with: v1's href in v1 (unchanged), v2 addresses in v2.
+  const v2Base = [baseQuery, why === "STAFF_PREVIEW" ? "layout=v2" : ""].filter(Boolean).join("&");
+  const v2Href = v2HrefFor(v2Base);
+  const tabHref = v2 ? v2Href : href;
   const who = actor.kind === "CLIENT" ? (actor.name || actor.email) : actor.kind === "STAFF" ? (actor.staffName || "Staff") : null;
   // "Set up your sign-in" — a link visit on a program that already has a person
   // with a seat (transition Stage B). Offered ONLY while the magic-link email
@@ -143,12 +176,12 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
   let sessions: { id: string; shootDate: Date | null; title: string | null; addressLine: string | null; status: string }[] = [];
   let resourcesRes: { ok: true; data: ResourceGroupView[] } | { ok: false } | null = null;
 
-  if (tab === "home" || tab === "videos") {
+  if (dataTab === "home" || dataTab === "videos") {
     // The library's logical videos are built from the cuts and delivery rows
     // (idempotent, additive) before they are read.
     await attempt("video sync", () => syncEnrollmentVideos(enrollment));
   }
-  if (tab === "home") {
+  if (dataTab === "home") {
     const [planning, schedule, videos, topics, released, month, progress, attention] = await Promise.all([
       attempt("planning", () => portalPlanning(enrollment)),
       attempt("schedule", () => portalScheduleMonths(enrollment)),
@@ -180,10 +213,10 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
     // for someone who can act on it, and never on a paused/ended program.
     if (!readOnly && perms.profile) {
       const setup = await attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer));
-      if (setup.ok) home.setup = { ...setup.data, items: setup.data.items.map((i) => ({ ...i, href: `${href(i.tab)}#${i.anchor}` })) };
+      if (setup.ok) home.setup = { ...setup.data, items: setup.data.items.map((i) => ({ ...i, href: `${tabHref(i.tab)}#${i.anchor}` })) };
     }
   }
-  if (tab === "videos") {
+  if (dataTab === "videos") {
     const vId = query.v && ID_RE.test(query.v) ? query.v : null;
     if (vId) {
       const video = await videoForEnrollment(enrollment, vId).catch(() => null);
@@ -227,19 +260,19 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
         };
       }
     }
-    if (!detail) {
+    if (!detail && !v2) {
       const year = query.year && /^\d{4}$/.test(query.year) ? Number(query.year) : null;
       const page = query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1;
       // CP-12: `filter=previous` is the flat "Previous content" section.
       videosPage = await attempt("videos", () => portalVideoList(enrollment, { year, page, section: query.filter === "previous" ? "previous" : null }));
     }
   }
-  if (tab === "topics") {
+  if (dataTab === "topics") {
     const ivId = query.iv && ID_RE.test(query.iv) ? query.iv : null;
     if (ivId) interviewRes = await attempt("interview", () => portalInterview(enrollment, ivId));
     if (!ivId || (interviewRes?.ok && !interviewRes.data)) topicsRes = await attempt("topics", () => portalTopics(enrollment));
   }
-  if (tab === "strategy") {
+  if (dataTab === "strategy") {
     const [s, m] = await Promise.all([
       attempt("strategy", () => portalStrategy(enrollment)),
       prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { prioritiesJson: true } }).catch(() => null),
@@ -247,7 +280,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
     strategyRes = s;
     if (m?.prioritiesJson) { const { monthPriorities } = await import("@/lib/contentStrategy"); priorities = monthPriorities(m.prioritiesJson); }
   }
-  if (tab === "schedule") {
+  if (dataTab === "schedule") {
     const [p, s, sess] = await Promise.all([
       attempt("planning", () => portalPlanning(enrollment)),
       attempt("schedule months", () => portalScheduleMonths(enrollment)),
@@ -268,7 +301,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
       slotDays = await companySlotDays({ package: pkg }).catch(() => []);
     }
   }
-  if (tab === "resources") resourcesRes = await attempt("resources", () => publishedResources());
+  if (dataTab === "resources") resourcesRes = await attempt("resources", () => publishedResources());
 
   // CP-13 — THE PROGRAM CONVERSATION and how to reach the office. The unread
   // count rides on every tab (the menu badge and Home's "new reply" row read
@@ -279,9 +312,9 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
   const contact = await pm.portalContact();
   const canMessage = can(viewer, "message");
   const readerKey = pm.readerKeyFor(viewer);
-  const messagesUnread = tab === "messages" ? 0 : await pm.unreadForReader(enrollment.id, readerKey).catch(() => 0);
+  const messagesUnread = dataTab === "messages" ? 0 : await pm.unreadForReader(enrollment.id, readerKey).catch(() => 0);
   let messagesRes: { ok: true; data: MessagesTabData } | { ok: false } | null = null;
-  if (tab === "messages") {
+  if (dataTab === "messages") {
     messagesRes = await attempt("messages", async () => {
       const t = await pm.threadFor(enrollment.id, readerKey, { audience: "client" });
       await pm.markThreadRead(enrollment.id, readerKey).catch(() => {});
@@ -293,7 +326,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
       };
     });
   }
-  if (home) home.messages = messagesUnread > 0 ? { unread: messagesUnread, href: href("messages") } : null;
+  if (home) home.messages = messagesUnread > 0 ? { unread: messagesUnread, href: tabHref("messages") } : null;
 
   // THE BRAND PROFILE (CP-06). Prefill — Jordan: seed from what we already
   // know; the client overwrites — applies ONLY to a column that was never set
@@ -302,7 +335,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
   let brand: import("@/lib/brandProfile").PortalBrandView | null = null;
   let brandFailed = false;
   const suggested = { brandColors: "", videoStyle: "", preferences: "" };
-  if (tab === "profile") {
+  if (dataTab === "profile") {
     const view = await attempt("brand profile", async () => (await import("@/lib/brandProfile")).portalBrandProfileView(enrollment.clientId));
     if (view.ok) brand = view.data; else brandFailed = true;
     if (brand && (brand.columns.videoStyle == null || brand.columns.preferences == null)) {
@@ -318,7 +351,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
     }
   }
   let settings: SettingsData | null = null;
-  if (tab === "settings") {
+  if (dataTab === "settings") {
     const { teamSeats } = await import("@/lib/portalTeam");
     const team = can(viewer, "manageTeam") ? await attempt("team", () => teamSeats(viewer)) : null;
     settings = {
@@ -328,12 +361,135 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
       team: team && team.ok && team.data.ok ? { seats: team.data.seats, invitationsOn: team.data.invitationsOn } : null,
       teamFailed: !!team && (!team.ok || !team.data.ok),
       signInEmailOn: emailSignInLive,
-      profileHref: href("profile"),
+      profileHref: tabHref("profile"),
+      // v2 names the page as its nav does, and the office line comes from the
+      // owner-editable contact. v1 passes neither (its element tree stays
+      // HEAD's) and SettingsTab falls back to its own words and Kyle's line.
+      ...(v2 ? { profileLabel: "Brand Profile", contactLine: `call or text ${contact.name} at ${contact.display}` } : {}),
     };
   }
-  const termsSetting = tab === "terms" ? await prisma.appSetting.findUnique({ where: { key: "portal-terms" } }).catch(() => null) : null;
+  const termsSetting = dataTab === "terms" ? await prisma.appSetting.findUnique({ where: { key: "portal-terms" } }).catch(() => null) : null;
   const terms = (termsSetting?.value?.trim() || DEFAULT_TERMS).split(/\n\s*\n/);
 
+  if (v2) {
+    // ---- v2: what the navigation counts, from the readers the tabs use ----
+    // Loaded on every page so a badge never appears on one tab and vanishes on
+    // the next; each is wrapped, and an unreadable count is no badge, not zero.
+    const [attn, topicsAll, guides, setupMore] = await Promise.all([
+      home?.attention ? Promise.resolve({ ok: true as const, data: home.attention }) : attempt("attention", () => libraryAttention(enrollment)),
+      topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : attempt("topics", () => portalTopics(enrollment)),
+      resourcesRes ?? attempt("resources", () => publishedResources()),
+      dataTab === "more" && !readOnly && perms.profile
+        ? attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer, { folder: false }))
+        : Promise.resolve(null),
+    ]);
+    const plan = topicsAll.ok ? planModel(topicsAll.data, monthKey) : null;
+    const published = guides.ok ? guides.data.reduce((n, g) => n + g.resources.length, 0) : 0;
+    const nav = portalNav({ publishedResources: published, badges: { plan: plan?.scripts.length, library: attn.ok ? attn.data.needReview : 0, messages: messagesUnread } });
+    const linked = { primary: nav.primary.map((i) => ({ ...i, href: portalHref(v2Base, i.dest) })), more: nav.more.map((i) => ({ ...i, href: portalHref(v2Base, i.dest) })) };
+
+    // ---- Home: the one next step ----
+    let actions: { primary: HomeAction | null; more: HomeAction[] } = { primary: null, more: [] };
+    if (home) {
+      const pageRows = home.videos?.rows ?? [];
+      let waiting = pageRows.filter((r) => r.state === "FOR_REVIEW");
+      // The count is library-wide; page one may not hold every one of them.
+      if ((home.attention?.needReview ?? 0) > waiting.length) {
+        const all = await attempt("library", () => libraryRows(enrollment));
+        if (all.ok) waiting = all.data.rows.filter((r) => r.state === "FOR_REVIEW");
+      }
+      const deadlines = await reviewDeadlines(viewer, waiting).catch(() => new Map<string, { iso: string; label: string }>());
+      const soonest = [...deadlines.values()].sort((a, b) => a.iso.localeCompare(b.iso))[0] ?? null;
+      const reviewCount = home.attention?.needReview ?? waiting.length;
+      const readyPage = pageRows.filter((r) => (r.state === "APPROVED" || r.state === "DELIVERED") && r.downloadable);
+      const readyCount = home.attention?.readyToUse ?? readyPage.length;
+      const sv = homeSessionView(home.progress, home.schedule, { canBook: perms.session, readOnly });
+      const hp = home.topics ? planModel(home.topics, monthKey) : plan;
+      actions = homeActions({
+        status: enrollment.status, readOnly, perms,
+        review: { count: reviewCount, single: reviewCount === 1 && waiting.length === 1 ? { id: waiting[0].id, title: waiting[0].title } : null, soonestDeadlineLabel: soonest?.label ?? null },
+        scripts: (hp?.scripts ?? []).map((t) => ({ topicId: t.id, title: t.title })),
+        unread: messagesUnread,
+        planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus } : null,
+        month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
+        toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title })),
+        session: { offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing },
+        addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
+        setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
+        ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
+      }, v2Base);
+    }
+
+    // ---- Content Library: search + filters over the whole library ----
+    let library: LibraryV2Data | null = null;
+    let libraryFailed = false;
+    if (route.dest === "library" && !detail) {
+      const all = await attempt("library", () => libraryRows(enrollment));
+      if (all.ok) {
+        const view = libraryView(all.data.rows, { q: query.q, st: isLibraryFilter(query.st) ? query.st : "all", page: query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1 });
+        const deadlines = await reviewDeadlines(viewer, view.review).catch(() => new Map<string, { iso: string; label: string }>());
+        library = { view, deadlines: Object.fromEntries([...deadlines].map(([id, d]) => [id, d.label])), hidden: baseQueryPairs(v2Base), incomplete: !all.data.complete };
+      } else libraryFailed = true;
+    }
+
+    const planHrefs: Record<PlanView, string> = {
+      month: portalHref(v2Base, "plan"), scripts: portalHref(v2Base, "plan", "pv=scripts"), bank: portalHref(v2Base, "plan", "pv=bank"), strategy: portalHref(v2Base, "plan", "pv=strategy"),
+    };
+    const setupLeft = setupMore?.ok && !setupMore.data.complete ? Math.max(0, setupMore.data.total - setupMore.data.done) : null;
+    return (
+      <PortalShell
+        clientName={client?.name ?? null}
+        dest={route.dest}
+        nav={linked}
+        notices={{
+          readOnly: readOnly ? readOnlyNotice(enrollment.status) : null,
+          staff: actor.kind === "STAFF" ? { who: who ?? "Staff", clientName: client?.name ?? "", exitHref: why === "STAFF_PREVIEW" ? href(tab) : null } : null,
+          offerSignIn,
+          viewOnlySeat: actor.kind === "CLIENT" && actor.membershipRole === "VIEWER" && !readOnly,
+        }}
+        // CP-13: the conversation when this viewer may use it, the office line always.
+        footer={route.dest !== "messages" ? <ContactTeam contact={contact} messagesHref={canMessage ? v2Href("messages") : null} className="mt-8" /> : null}
+      >
+        {route.dest === "home" && home && <HomeV2 d={home} actions={actions} href={v2Href} />}
+        {route.dest === "plan" && route.planView && (
+          <PlanTab d={{
+            view: route.planView,
+            topics: topicsAll.ok ? topicsAll.data : null, topicsFailed: !topicsAll.ok,
+            interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
+            strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
+            monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs,
+          }} />
+        )}
+        {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={v2Href} /> : <LibraryV2 d={library} failed={libraryFailed} href={v2Href} />)}
+        {route.dest === "schedule" && (
+          <ScheduleTab
+            planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
+            months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
+            slotDays={slotDays} bookingUrl={STRATEGY_CALL_BOOKING_URL} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
+            topicsHref={planHrefs.month} topicsLabel="your plan"
+          />
+        )}
+        {route.dest === "more" && (
+          <MoreTab d={{
+            items: linked.more, setupLeft, who, staff: actor.kind === "STAFF", clientFirst: (client?.name || "the client").split(/\s+/)[0],
+            canSignOut: actor.kind === "CLIENT", offerSignIn,
+          }} />
+        )}
+        {route.dest === "brand" && (
+          <div className="mt-6 space-y-4">
+            <h1 className="text-xl font-semibold tracking-tight">Brand Profile</h1>
+            {brand ? <PortalProfile view={brand} suggested={suggested} readOnly={!perms.profile} /> : brandFailed ? <LoadFailed what="your brand profile" /> : null}
+          </div>
+        )}
+        {route.dest === "messages" && <MessagesTab d={messagesRes?.ok ? messagesRes.data : null} failed={!!messagesRes && !messagesRes.ok} />}
+        {route.dest === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} contact={contact} messagesHref={canMessage ? v2Href("messages") : null} />}
+        {route.dest === "team" && settings && <SettingsTab d={settings} />}
+        {route.dest === "terms" && <TermsCard blocks={terms} />}
+      </PortalShell>
+    );
+  }
+
+  // ======================== v1 — today's page, unchanged ========================
   const account = { who, staff: actor.kind === "STAFF", first, profileHref: href("profile"), settingsHref: href("settings"), termsHref: href("terms"), messagesHref: href("messages"), unread: messagesUnread, tab, canSignOut: actor.kind === "CLIENT", offerSignIn };
 
   return (
@@ -388,7 +544,9 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
         {actor.kind === "STAFF" && (
           <div className="mt-5 flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
             <Eye className="mt-0.5 size-4 shrink-0 text-warning" />
-            <div className="text-xs">You&rsquo;re viewing this as <span className="font-semibold">{who}</span>, on {client?.name}&rsquo;s behalf. Anything you submit here is recorded as <span className="font-semibold">you, on their behalf</span> — never as them.</div>
+            <div className="text-xs">You&rsquo;re viewing this as <span className="font-semibold">{who}</span>, on {client?.name}&rsquo;s behalf. Anything you submit here is recorded as <span className="font-semibold">you, on their behalf</span> — never as them.
+              {/* UI-01: staff only. The client keeps this layout until portal_layout_v2 is on. */}
+              {" "}<Link href={`${href(tab)}&layout=v2`} className="font-semibold text-brand hover:underline">Preview the new layout</Link></div>
           </div>
         )}
         {offerSignIn && (

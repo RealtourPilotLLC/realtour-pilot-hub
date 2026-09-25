@@ -175,3 +175,52 @@ export async function loadImportTab(enrollmentId: string) {
   const r: ReviewUi[] = reviewItems.map((x) => ({ kind: x.kind, monthKey: x.monthKey, title: x.title, detail: x.detail }));
   return { batches: b, reviewItems: r, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), migrationDone: migrated > 0 };
 }
+
+// ---------------------------------------------------------------------------
+// PLAN › CALLS and PLAN › SCRIPTS extras (UI-02).
+// ---------------------------------------------------------------------------
+
+/** Every call record on the enrollment, newest first, with what we hold from it. */
+export async function loadCallsTab(enrollmentId: string) {
+  const [calls, months] = await Promise.all([
+    prisma.programCallRecord.findMany({
+      where: { enrollmentId }, orderBy: { scheduledStart: "desc" }, take: 40,
+      select: { id: true, callType: true, status: true, scheduledStart: true, transcriptState: true, matchState: true, lastError: true, monthId: true, targetMonthKey: true },
+    }),
+    prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } }),
+  ]);
+  const keyOf = new Map(months.map((m) => [m.id, m.monthKey]));
+  return calls.map((c) => ({
+    id: c.id, callType: c.callType, status: c.status, scheduledStartISO: iso(c.scheduledStart), transcriptState: c.transcriptState, matchState: c.matchState,
+    lastError: c.lastError, monthKey: (c.monthId ? keyOf.get(c.monthId) : null) ?? c.targetMonthKey ?? null,
+  }));
+}
+export type CallRowUi = Awaited<ReturnType<typeof loadCallsTab>>[number];
+
+/**
+ * The client's OPEN script change requests on the month, grouped per script —
+ * the queue the Overview's retired ScriptReview list used to hold (and the
+ * only place staff ever saw it; see scriptDecisions.ts).
+ */
+export async function loadScriptRequests(month: { id: string } | null) {
+  if (!month) return [];
+  const scripts = await prisma.contentScript.findMany({ where: { monthId: month.id }, orderBy: { createdAt: "asc" }, select: { id: true, title: true, currentVersionId: true } });
+  if (scripts.length === 0) return [];
+  const [open, versions] = await Promise.all([
+    prisma.scriptSuggestion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) }, status: "OPEN" }, orderBy: { createdAt: "asc" }, select: { id: true, scriptId: true, body: true, createdAt: true } }),
+    prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId).filter((x): x is string => !!x) } }, select: { id: true, versionNo: true } }),
+  ]);
+  const vno = new Map(versions.map((v) => [v.id, v.versionNo]));
+  return scripts
+    .map((s) => ({
+      scriptId: s.id, title: s.title, versionNo: s.currentVersionId ? vno.get(s.currentVersionId) ?? null : null,
+      requests: open.filter((o) => o.scriptId === s.id).map((o) => ({ id: o.id, body: o.body, createdAtISO: o.createdAt.toISOString() })),
+    }))
+    .filter((g) => g.requests.length > 0);
+}
+
+/** The legacy free-text notes, shown under Knowledge while they migrate to facts. */
+export async function loadLegacyNotes(clientId: string) {
+  const notes = await prisma.contentNote.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: 30 });
+  return notes.map((n) => ({ id: n.id, body: n.body, authorName: n.authorName, intelligence: n.intelligence, at: n.createdAt.toISOString() }));
+}
