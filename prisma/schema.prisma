@@ -663,6 +663,13 @@ model Project {
   evidenceSucceededAt DateTime?
   evidenceError       String?
 
+
+  // §7.2 O05: photo and video hand off independently under one job. Readers
+  // coalesce with debriefSubmittedAt; pay semantics are unchanged.
+  photosHandoffAt DateTime?
+  photosHandoffBy String?
+  videoHandoffAt  DateTime?
+  videoHandoffBy  String?
   @@index([status])
   @@index([clientId])
   @@index([photographerId])
@@ -876,6 +883,11 @@ model DeliverableOutput {
   // photographer's note to the editor about it.
   topicId     String?
   filmingNote String?
+
+  // §7.5: the per-output brief (format, script, direction, references, limits).
+  briefJson      String?
+  briefUpdatedAt DateTime?
+  briefUpdatedBy String?
   @@unique([deliverableId, slot])
   @@index([projectId])
   @@index([ownerKey])
@@ -1212,6 +1224,13 @@ model RevisionBrief {
   submissionId  String?
   decisionId    String?
   roundId       String?
+
+  // §9 A52: reopened / undated work carries an explicit due date and who set it.
+  targetAt  DateTime?
+  dueAt     DateTime?
+  dueSource String?
+  dueSetBy  String?
+  dueSetAt  DateTime?
   @@index([projectId])
   @@index([taskId])
   @@index([outputId])
@@ -1737,6 +1756,21 @@ model ReviewSubmission {
 
   // One row per (file, round): the sweep and the editor's button can race on
   // the same new file; Postgres treats the legacy NULL-path rows as distinct.
+
+  // Unified handoff §8 (Sep 25 2026): one active responsible reviewer per cut
+  // (James primary, Kyle backup, Jordan fallback), the editor's version-bound
+  // self-check, and the evidence that the client was told.
+  reviewerTeamMemberId String?
+  reviewerAssignedAt   DateTime?
+  reviewerAssignedBy   String?
+  reviewerRole         String? // PRIMARY | BACKUP | FALLBACK | MANUAL | COVER
+  selfCheckId          String?
+  selfCheckedAt        DateTime?
+  sourceRev            String?
+  clientNoticeAt       DateTime?
+  clientNoticeVia      String?
+  clientNoticeBy       String?
+  clientNoticeRef      String?
   @@unique([projectId, assetPath, round])
   @@index([status])
   @@index([projectId, round])
@@ -1744,6 +1778,7 @@ model ReviewSubmission {
   @@index([videoId])
   @@index([clientReleasedAt])
   @@index([outputId])
+  @@index([reviewerTeamMemberId, status])
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.
@@ -2472,6 +2507,10 @@ model ContentEnrollment {
   // CP-06: {skipped:{[itemKey]:iso}} — what the client chose to skip in setup.
   // Never read as completion; completion is always derived from real data.
   setupStateJson String?
+
+  // §9 A42: the approved-cut → program-library write failed; visible and retried.
+  librarySyncFailedAt DateTime?
+  librarySyncError    String?
   @@index([status])
 }
 
@@ -2521,6 +2560,12 @@ model ContentMonth {
   remindersSnoozedBy         String?
   remindersSnoozeReason      String?
 
+
+  // §6.4: which guided route the client chose, and "Schedule later".
+  planningChosenAt     DateTime?
+  planningChosenBy     String?
+  schedulingDeferredAt DateTime?
+  schedulingDeferredBy String?
   @@unique([enrollmentId, monthKey])
   @@index([clientId])
   @@index([monthKey])
@@ -2946,6 +2991,20 @@ model TopazJob {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
+
+  // §5 O02: a processed file whose audio/integrity could not be verified is
+  // HELD, never silently trusted; a person resolves it (processed or original).
+  sourceHasAudio   Boolean?
+  sourceAudioCodec String?
+  outputCheck      String? // verified | unverified | resolved-processed | resolved-original; null = legacy row
+  outputCheckedAt  DateTime?
+  outputCheckJson  String?
+  heldPath         String?
+  heldAt           DateTime?
+  resolvedAt       DateTime?
+  resolvedBy       String?
+  resolution       String?
+  resolutionNote   String?
   @@index([state, nextAttemptAt])
   @@index([acceptedAt])
   @@index([projectId])
@@ -3339,6 +3398,9 @@ model ContentTopicSuggestion {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
+
+  // §6.3: a short, client-friendly reason the topic is recommended.
+  clientReason String?
   @@index([refreshRunId])
   @@index([enrollmentId, disposition])
   @@index([enrollmentId, dedupeHash])
@@ -3847,6 +3909,19 @@ model ProgramSessionRequest {
   currentAttemptId     String?
   providerConfirmedAt  DateTime?
   pendingChangeJson    String?
+
+  // §6.6: which session of the month, the gate it was offered under (snapshot),
+  // and the exact-address plan and travel evidence it was checked against.
+  sessionIndex       Int?
+  gateRoute          String?
+  gateAnchorRef      String?
+  gateAnchorAt       DateTime?
+  gateWindowHours    Int?
+  gateEarliestAt     DateTime?
+  planId             String?
+  planAddressVersion Int?
+  travelCheck        String?
+  travelEvidenceJson String?
   @@index([enrollmentId, status])
   @@index([monthId])
   @@index([projectId])
@@ -4032,6 +4107,10 @@ model ProgramCallRecord {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
+
+  // §5 W03: a call booked from inside the portal.
+  bookingSource String?
+  portalToken   String?
   @@index([enrollmentId, scheduledStart])
   @@index([clientId])
   @@index([monthId])
@@ -4778,6 +4857,13 @@ model ProgramBookingAttempt {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
+
+  // §5 R02/R03: the permit scope a write ran under (fixture | pilot), and what
+  // Aryeo reported for the order's money, so prepaid treatment is evidence.
+  permitScope        String?
+  orderTotalCents    Int?
+  orderBalanceCents  Int?
+  orderPaymentStatus String?
   @@unique([requestId, kind, attemptNo])
   @@index([state, nextCheckAt])
   @@index([aryeoOrderId])
@@ -4875,4 +4961,321 @@ model ProgramMessageRead {
   seenAt       DateTime @default(now())
 
   @@unique([enrollmentId, readerKey])
+}
+
+// ---------------------------------------------------------------------------
+// UNIFIED IMPLEMENTATION HANDOFF, BATCHES 1–4 (Sep 25 2026). Additive only.
+// ---------------------------------------------------------------------------
+
+// §7.1: what an editor has ACTUALLY chosen to work on. Only an explicit
+// Start/Resume makes a row ACTIVE; activeFor is the editorKey while ACTIVE and
+// NULL otherwise, so the database itself allows one active project per editor.
+model EditorWorkItem {
+  id             String    @id @default(cuid())
+  editorKey      String
+  projectId      String
+  outputId       String?
+  state          String // ACTIVE | PAUSED | CLOSED
+  activeFor      String?   @unique
+  firstStartedAt DateTime?
+  activeSince    DateTime?
+  pausedAt       DateTime?
+  closedAt       DateTime?
+  closeReason    String?
+  lastEventAt    DateTime
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([editorKey, projectId])
+  @@index([projectId])
+  @@index([state])
+}
+
+// §7.1: declared work-status history (not keyboard time, not payroll).
+model EditorWorkEvent {
+  id          String   @id @default(cuid())
+  itemId      String
+  editorKey   String
+  projectId   String
+  outputId    String?
+  kind        String // START | RESUME | PAUSE | AUTO_PAUSE | SUBMIT | CLOSE | CONFIRM | CONFIRM_PAUSED
+  at          DateTime @default(now())
+  actorUserId String?
+  actorName   String
+  actorRole   String // EDITOR | OWNER | ADMIN | SYSTEM
+  onBehalf    Boolean  @default(false)
+  switchedTo  String?
+  reason      String?
+  requestId   String?  @unique
+
+  @@index([editorKey, at])
+  @@index([projectId, at])
+}
+
+// §8.1: every change of a cut's responsible reviewer, with the reason.
+model CutReviewerEvent {
+  id               String   @id @default(cuid())
+  submissionId     String
+  projectId        String
+  fromTeamMemberId String?
+  toTeamMemberId   String
+  reason           String
+  actorName        String
+  actorUserId      String?
+  note             String?
+  at               DateTime @default(now())
+
+  @@index([submissionId, at])
+  @@index([toTeamMemberId, at])
+}
+
+// §8.2: the editor's attestation, bound to the exact file/version. New bytes
+// VOID it even under the same name.
+model CutSelfCheck {
+  id                    String    @id @default(cuid())
+  submissionId          String
+  projectId             String
+  outputId              String?
+  deliverableId         String?
+  slot                  Int?
+  round                 Int
+  editorKey             String?
+  actorUserId           String?
+  actorName             String
+  onBehalfOf            String?
+  checklistKey          String
+  itemsJson             String
+  addressedIssueIdsJson String?
+  attestedFileName      String?
+  attestedSize          Int?
+  fileIdentity          String?
+  sourceRev             String?
+  state                 String    @default("PENDING_BYTES") // PENDING_BYTES | VALID | VOID
+  voidReason            String?
+  voidedAt              DateTime?
+  createdAt             DateTime  @default(now())
+
+  @@index([submissionId])
+  @@index([editorKey, createdAt])
+}
+
+// §8.3: one actionable issue against an output and exact version, with a
+// cause a reviewer confirms. Client changes are not editor errors.
+model RevisionIssue {
+  id                      String    @id @default(cuid())
+  projectId               String
+  outputId                String?
+  deliverableId           String?
+  slot                    Int?
+  raisedOnSubmissionId    String?
+  sourceKind              String // REVIEW_NOTE | BRIEF_ITEM | MANUAL
+  sourceId                String
+  sourceChannel           String?
+  sourceDetail            String?
+  raisedByKey             String?
+  raisedByName            String?
+  originalText            String
+  summary                 String?
+  timeSec                 Float?
+  timeEndSec              Float?
+  category                String    @default("Other")
+  severity                String    @default("NORMAL") // MINOR | NORMAL | MAJOR
+  versionEditorKey        String?
+  assignedEditorKey       String?
+  cause                   String    @default("UNCLASSIFIED")
+  causeSuggested          String?
+  causeConfirmedBy        String?
+  causeConfirmedAt        DateTime?
+  foundAfterApproval      Boolean   @default(false)
+  reviewMiss              Boolean?
+  state                   String    @default("OPEN") // OPEN | ADDRESSED | VERIFIED | REOPENED | NOT_APPLICABLE | DUPLICATE
+  duplicateOfId           String?
+  splitFromId             String?
+  addressedAt             DateTime?
+  addressedBy             String?
+  addressedInSubmissionId String?
+  verifiedAt              DateTime?
+  verifiedBy              String?
+  verifiedInSubmissionId  String?
+  missedInSubmissionId    String?
+  contentRoundId          String?
+  imported                Boolean   @default(false)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([sourceKind, sourceId])
+  @@index([projectId, state])
+  @@index([outputId])
+  @@index([assignedEditorKey, state])
+  @@index([versionEditorKey, cause])
+}
+
+model RevisionIssueEvent {
+  id           String   @id @default(cuid())
+  issueId      String
+  kind         String
+  fromValue    String?
+  toValue      String?
+  submissionId String?
+  actorName    String
+  actorUserId  String?
+  note         String?
+  at           DateTime @default(now())
+
+  @@index([issueId, at])
+}
+
+// §6.6 W02: the exact-address plan for one session of a month, required
+// before confirmable slots are offered.
+model ProgramSessionPlan {
+  id                   String    @id @default(cuid())
+  enrollmentId         String
+  clientId             String
+  monthId              String
+  sessionIndex         Int
+  streetNumber         String?
+  streetName           String?
+  unitNumber           String?
+  city                 String?
+  stateCode            String?
+  postalCode           String?
+  latitude             Float?
+  longitude            Float?
+  geocodeSource        String?
+  addressValidatedAt   DateTime?
+  addressVersion       Int       @default(0)
+  schedulingDeferredAt DateTime?
+  schedulingDeferredBy String?
+  lastStep             String?
+  requestId            String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([monthId, sessionIndex])
+  @@index([enrollmentId])
+}
+
+// §6.6 A23: a short hold on a creative's slot while a booking is confirmed.
+model ProgramCreativeHold {
+  id                   String    @id @default(cuid())
+  creativeTeamMemberId String
+  startAt              DateTime
+  endAt                DateTime
+  requestId            String    @unique
+  state                String
+  createdAt            DateTime  @default(now())
+  releasedAt           DateTime?
+
+  @@index([creativeTeamMemberId, startAt])
+}
+
+// §6.6 A25: a moved/cancelled call or changed address needs a person to
+// reassess the session — never a silent move.
+model ProgramSessionReassessment {
+  id           String    @id @default(cuid())
+  enrollmentId String
+  monthId      String
+  sessionKey   String
+  anchorRef    String
+  kind         String
+  reason       String
+  state        String    @default("OPEN") // OPEN | RESOLVED
+  taskId       String?
+  createdAt    DateTime  @default(now())
+  resolvedAt   DateTime?
+
+  @@unique([sessionKey, anchorRef, kind])
+}
+
+// §5 W03: a strategy call booked inside the portal.
+model ProgramCallBooking {
+  id                 String   @id @default(cuid())
+  enrollmentId       String
+  clientId           String
+  monthId            String
+  eventTypeUri       String
+  startAt            DateTime
+  endAt              DateTime?
+  token              String
+  state              String
+  calendlyEventUri   String?  @unique
+  calendlyInviteeUri String?
+  lastError          String?
+  attempts           Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([monthId, startAt])
+}
+
+// §7.1 O04: a photographer's unsubmitted upload form, saved as they go.
+// Saving never finalises, notifies or satisfies a pay/debrief gate.
+model UploadDraft {
+  id          String    @id @default(cuid())
+  projectId   String
+  authorKey   String
+  authorName  String?
+  payloadJson String
+  revision    Int       @default(1)
+  baseHash    String?
+  savedAt     DateTime  @default(now())
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([projectId, authorKey])
+  @@index([projectId])
+}
+
+// §7.6: a missing output or shot, why, the recovery, who owns it and by when.
+model ProductionGap {
+  id                String    @id @default(cuid())
+  projectId         String
+  deliverableId     String?
+  outputId          String?
+  kind              String
+  what              String
+  reason            String
+  raisedBy          String
+  raisedAt          DateTime  @default(now())
+  recovery          String?
+  ownerKey          String?
+  dueAt             DateTime?
+  shotListJson      String?
+  scopeNote         String?
+  state             String    @default("OPEN")
+  resolvedBy        String?
+  resolvedAt        DateTime?
+  resolutionNote    String?
+  taskId            String?
+  followUpProjectId String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([projectId, state])
+}
+
+// §7.7: a versioned packet sent to an external editor, with acknowledgment.
+// A file in Dropbox or a task label is not dispatch evidence.
+model EditorDispatch {
+  id             String    @id @default(cuid())
+  projectId      String
+  vendorKey      String
+  recipient      String
+  channel        String
+  outputIdsJson  String?
+  packetVersion  Int
+  packetHash     String
+  manifestJson   String
+  missingJson    String?
+  dispatchedBy   String
+  dispatchedAt   DateTime  @default(now())
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+  ackSource      String?
+  supersededById String?
+  createdAt      DateTime  @default(now())
+
+  @@unique([projectId, packetVersion])
+  @@index([projectId])
 }
