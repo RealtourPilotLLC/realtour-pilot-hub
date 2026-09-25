@@ -12,6 +12,8 @@ import { startCutUpload, finishCutUpload, abandonCutUpload, cutTakeBackFlags } f
 import { saveCutMessage } from "@/components/editing/cutMessage.actions";
 import { CutTakeBack, CutTakeBackFlags } from "@/components/review/CutTakeBack";
 import type { CutTakeBackInfo } from "@/components/review/types";
+import { SelfCheckDialog, type SelfCheckContextView } from "@/components/editing/SelfCheckDialog";
+import type { SelfCheckInput } from "@/lib/selfCheck";
 
 // ---------------------------------------------------------------------------
 // "Upload version N" — the editor's way into the Review Room (Jordan, Sep 1:
@@ -61,6 +63,9 @@ export type CutRow = {
     id: string; round: number; status: string; fileName: string | null; completedAt: string | null; note: string | null;
     /** What that version actually was, when we could measure it (Sep 16). */
     sourceWidth: number | null; sourceHeight: number | null;
+    /** §8.2: uploaded but waiting on the send-for-review check — not in
+     *  front of the reviewer yet. */
+    held?: boolean;
   } | null;
   openNotes: number;
   /**
@@ -158,6 +163,9 @@ function StatusPill({ latest, reopened }: { latest: CutRow["latest"]; reopened?:
   // free again for the right file.
   if (latest.status === "WITHDRAWN") {
     return <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted"><Undo2 className="size-3" /> v{latest.round} withdrawn</span>;
+  }
+  if (latest.status === "PENDING" && latest.held) {
+    return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">v{latest.round} waiting on your check</span>;
   }
   return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">v{latest.round} in review</span>;
 }
@@ -287,10 +295,26 @@ function CutMessage({
 // this prop only decides whether it is DRAWN: startCutUpload checks the real
 // role and records the override with a name on it (a browser's claim about who
 // it is has never been worth anything).
+// checks (§8.2): the send-for-review checklist per slot, keyed
+// `${deliverableId}:${slot}` — the list in force for that product, whether it
+// is a revision, and the notes still open on it. onBehalfOf: the office is
+// uploading for an editor or a vendor; the dialog says so and the server
+// records it.
 export function CutUploader({
-  projectId, cuts, canUpload, revisionOpen = false, canOverrideExport = false,
-}: { projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean; canOverrideExport?: boolean }) {
+  projectId, cuts, canUpload, revisionOpen = false, canOverrideExport = false, checks = {}, onBehalfOf = null,
+}: {
+  projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean; canOverrideExport?: boolean;
+  checks?: Record<string, SelfCheckContextView>; onBehalfOf?: string | null;
+}) {
   const router = useRouter();
+  // THE CHECK COMES BEFORE THE BYTES (§8.2). A file picked for a slot opens
+  // the checklist first; the answers ride up with startCutUpload and the
+  // server binds them to what lands. They are kept per slot for the SAME file
+  // only, so the approved-cut reason box or an owner's "send it anyway" does
+  // not ask twice — and a different export always asks again.
+  type Pending = { cut: CutRow; file: File; dim: { width: number; height: number } | null; override: boolean; reopenReason?: string; notice?: string | null };
+  const [checking, setChecking] = useState<Pending | null>(null);
+  const [checked, setChecked] = useState<Record<string, { input: SelfCheckInput; name: string; size: number }>>({});
   const inputs = useRef<Record<string, HTMLInputElement | null>>({});
   const [busy, setBusy] = useState<Record<string, { pct: number; label: string }>>({});
   const [err, setErr] = useState<Record<string, string>>({});
@@ -376,18 +400,35 @@ export function CutUploader({
   // `dim` is what the browser measured (null = it couldn't); `override` is an
   // owner/admin knowingly sending an over-spec file. Both ride up to the server
   // so the row records what arrived and who waved it through.
-  async function send(cut: CutRow, file: File, dim: { width: number; height: number } | null, override: boolean, reopenReason?: string) {
+  async function send(cut: CutRow, file: File, dim: { width: number; height: number } | null, override: boolean, reopenReason?: string, selfCheck?: SelfCheckInput) {
     const key = `${cut.deliverableId}:${cut.slot}`;
+    const kept = checked[key];
+    const check = selfCheck ?? (kept && kept.name === file.name && kept.size === file.size ? kept.input : null);
+    if (!check) {
+      // No check for THIS file yet: the list first, the bytes after. The row
+      // is not busy while the list is open (begin() set "Checking the export…").
+      setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+      setChecking({ cut, file, dim, override, reopenReason });
+      return;
+    }
     setErr((e) => ({ ...e, [key]: "" }));
     setBusy((b) => ({ ...b, [key]: { pct: 0, label: "Starting…" } }));
     const started = await startCutUpload({
       projectId, deliverableId: cut.deliverableId, slot: cut.slot, fileName: file.name, sizeBytes: file.size,
       width: dim?.width ?? null, height: dim?.height ?? null, overrideExportSpec: override,
       ...(reopenReason ? { reopenReason } : {}),
+      selfCheck: check,
     })
       .catch(() => ({ ok: false as const, message: "Couldn't start the upload — try again." }));
     if (!started.ok) {
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+      // The server would not take the check (a note arrived on this video
+      // meanwhile, or the list changed): back to the list, with its reason.
+      if ("needsSelfCheck" in started && started.needsSelfCheck) {
+        setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
+        setChecking({ cut, file, dim, override, reopenReason, notice: started.message });
+        return;
+      }
       // The video is approved and nobody has asked for changes: hold the file
       // and ask why, rather than sending the editor away with a refusal. The
       // override the server was already sent rides along, so an owner who
@@ -430,7 +471,18 @@ export function CutUploader({
       landed = blob.url;
       setBusy((b) => ({ ...b, [key]: { pct: 100, label: "Checking the file…" } }));
       const done = await finishCutUpload({ submissionId: started.submissionId, url: blob.url, pathname: blob.pathname });
+      // HELD, NOT FAILED (§8.2): the bytes are safe in the store, they just are
+      // not the file that was checked. Throwing here would abandon — and
+      // delete — an upload the editor can still finish with a fresh check.
+      if (!done.ok && done.held) {
+        setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
+        setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+        setErr((e) => ({ ...e, [key]: done.message }));
+        router.refresh();
+        return;
+      }
       if (!done.ok) throw new Error(done.message);
+      setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
       // The message the editor typed BEFORE the file existed now has a version
       // to belong to. Best-effort: the cut is already safely in review, so a
       // failure here keeps the draft and says so rather than losing the words.
@@ -777,9 +829,40 @@ export function CutUploader({
         })}
       </ul>
       <p className="border-t border-border px-4 py-2 text-[11px] text-muted-2 sm:px-5">
-        The file goes straight to the hub in resumable parts and lands in the Review Room as the next version, with your
+        Before a version goes, you watch the export and complete a short check — it is recorded against that exact file.
+        The file then goes straight to the hub in resumable parts and lands in the Review Room as the next version, with your
         message beside it. Once a cut is approved it is copied to the job&apos;s Final folder in Dropbox automatically.
       </p>
+      {checking && (() => {
+        const key = `${checking.cut.deliverableId}:${checking.cut.slot}`;
+        const ctx = checks[key];
+        if (!ctx) {
+          return (
+            <p className="border-t border-border px-4 py-2 text-xs text-danger sm:px-5">
+              The checklist for {checking.cut.label} didn&apos;t load — reload the page and pick the file again.
+            </p>
+          );
+        }
+        return (
+          <SelfCheckDialog
+            context={ctx}
+            file={{ name: checking.file.name, size: checking.file.size, lastModified: checking.file.lastModified }}
+            title={`Before ${checking.cut.label} goes to review`}
+            onBehalfOf={onBehalfOf}
+            notice={checking.notice ?? null}
+            onCancel={() => setChecking(null)}
+            onSubmit={async (input) => {
+              const p = checking;
+              setChecked((s) => ({ ...s, [key]: { input, name: p.file.name, size: p.file.size } }));
+              setChecking(null);
+              // The upload runs under the row's own progress bar; a refusal of
+              // the check brings this list back with the reason (send above).
+              void send(p.cut, p.file, p.dim, p.override, p.reopenReason, input);
+              return { ok: true, message: "" };
+            }}
+          />
+        );
+      })()}
     </section>
   );
 }

@@ -78,6 +78,8 @@ export function CutReviewPanel({
   takeBack,
   cutLabel,
   canDecide = true,
+  heldForCheck = false,
+  fixesToCheck = [],
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -92,8 +94,17 @@ export function CutReviewPanel({
    * and the server refuses every one of these from them.
    */
   canDecide?: boolean;
+  /** §8.2: the version is PENDING but held for the editor's send-for-review
+   *  check — approveCut and requestCutChanges refuse it, so no verdict buttons. */
+  heldForCheck?: boolean;
+  /** §8.3: the earlier asks the editor's check said were FIXED in this version.
+   *  The reviewer unticks any that aren't: sending back then records them as
+   *  missed in this version (the missed-correction count), and approving is
+   *  refused until they are fixed or marked not needed. */
+  fixesToCheck?: { id: string; text: string }[];
 }) {
   const router = useRouter();
+  const [notFixed, setNotFixed] = useState<Set<string>>(() => new Set());
   const videoRef = useRef<HTMLVideoElement>(null);
   const [now, setNow] = useState(0);
   const [composing, setComposing] = useState(false);
@@ -220,6 +231,8 @@ export function CutReviewPanel({
             {submission.status === "APPROVED" ? <ThumbsUp className="size-4" /> : <Undo2 className="size-4" />}
             {submission.status === "APPROVED" ? "Approved" : `Changes requested — waiting on ${editorLabel}`}
           </span>
+        ) : heldForCheck ? (
+          <span className="text-xs text-muted">Waiting on {editorLabel}&rsquo;s check — nothing to rule on yet.</span>
         ) : !canDecide ? (
           <span className="text-xs text-muted">
             {editorLabel} is cutting this and the office rules on it — you can leave a capture note, or ask{" "}
@@ -228,7 +241,7 @@ export function CutReviewPanel({
         ) : (
           <>
             <button
-              onClick={() => run(() => requestCutChanges(submission.id))}
+              onClick={() => run(() => requestCutChanges(submission.id, notFixed.size ? { notFixedIssueIds: [...notFixed] } : undefined))}
               disabled={pending || openEditorNotes === 0}
               title={openEditorNotes === 0 ? "Add at least one editor note first" : `Send ${openEditorNotes} open note${openEditorNotes === 1 ? "" : "s"} back to ${editorLabel}`}
               className="inline-flex items-center gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-1.5 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50"
@@ -237,7 +250,8 @@ export function CutReviewPanel({
             </button>
             <button
               onClick={() => run(() => approveCut(submission.id))}
-              disabled={pending}
+              disabled={pending || notFixed.size > 0}
+              title={notFixed.size > 0 ? "A fix is marked not done — send it back, or tick it once it's right" : undefined}
               className="inline-flex items-center gap-1.5 rounded-lg bg-success px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-4 animate-spin" /> : <ThumbsUp className="size-4" />} Approve cut
@@ -245,6 +259,36 @@ export function CutReviewPanel({
           </>
         )}
       </div>
+      {/* The fixes this version's check claimed — the reviewer's one chance to
+          say "not actually fixed" (§8.3). Only while there is a verdict to give. */}
+      {canDecide && !decided && !heldForCheck && fixesToCheck.length > 0 && (
+        <div className="rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs">
+          <p className="font-medium text-foreground">The editor says these earlier asks are fixed in this version — untick any that aren&rsquo;t:</p>
+          <ul className="mt-1.5 space-y-1">
+            {fixesToCheck.map((f) => (
+              <li key={f.id}>
+                <label className="inline-flex items-start gap-1.5 text-muted">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={!notFixed.has(f.id)}
+                    disabled={pending}
+                    onChange={(e) =>
+                      setNotFixed((cur) => {
+                        const next = new Set(cur);
+                        if (e.target.checked) next.delete(f.id);
+                        else next.add(f.id);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className={notFixed.has(f.id) ? "text-warning" : ""}>{f.text}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {msg && <p className="text-xs text-success">{msg}</p>}
       {err && <p className="text-xs text-danger">{err}</p>}
 

@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { videoTier } from "@/lib/projectStatus";
+import { isHeldForSelfCheck } from "@/lib/selfCheck";
 
 // ---------------------------------------------------------------------------
 // Read layer for the STANDALONE Review Room (/review) — the owner's quality
@@ -34,6 +35,12 @@ export type QueueSubmission = {
   createdAt: string;
   decidedAt: string | null;
   openEditorNotes: number;
+  /** §8.1: the ONE person a waiting cut is waiting on (ReviewSubmission.
+   *  reviewerTeamMemberId). Null = nobody holds it — "the office". */
+  reviewer: { id: string; name: string } | null;
+  /** §8.2: PENDING but held for the editor's send-for-review check — nothing
+   *  to rule on yet (approveCut and requestCutChanges refuse it). */
+  heldForCheck: boolean;
 };
 
 export type QueuePhotoQc = {
@@ -56,7 +63,10 @@ export type QueueFollowUp = {
 };
 
 export type ReviewQueue = {
+  /** checked (or pre-gate) cuts waiting on a verdict — the only rows anybody can rule on */
   pending: QueueSubmission[];
+  /** handed in but held for the editor's own check (§8.2): the editor's move, listed apart */
+  waitingOnCheck: QueueSubmission[];
   waitingOnEditor: QueueSubmission[];
   recentlyApproved: QueueSubmission[];
   photoQc: QueuePhotoQc[];
@@ -199,6 +209,9 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     }
   }
 
+  // Who each cut waits on (§8.1) — one read for every row's name.
+  const { reviewerNamesFor } = await import("@/lib/reviewerAssignment");
+  const reviewerNames = await reviewerNamesFor(subs.map((s) => s.reviewerTeamMemberId)).catch(() => new Map<string, string>());
   const toView = (s: (typeof subs)[number]): QueueSubmission => ({
     id: s.id,
     projectId: s.projectId,
@@ -215,6 +228,8 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     createdAt: s.createdAt.toISOString(),
     decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
     openEditorNotes: editorOpenByProject.get(s.projectId) ?? 0,
+    reviewer: s.reviewerTeamMemberId ? { id: s.reviewerTeamMemberId, name: reviewerNames.get(s.reviewerTeamMemberId) ?? "someone" } : null,
+    heldForCheck: isHeldForSelfCheck(s),
   });
 
   // Only the LATEST round per CUT belongs in the queue lists — older rounds
@@ -276,7 +291,13 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   }
 
   return {
-    pending: latest.filter((s) => s.status === "PENDING").map(toView),
+    // A cut HELD for the editor's check is not waiting on a verdict (§8.2) —
+    // the same test videoStatesFor, the editor queue and the exceptions board
+    // apply (selfCheck.isHeldForSelfCheck). It is listed on its own, so the
+    // desk's count agrees with the notices and nobody opens a cut expecting
+    // an Approve button that the server would refuse.
+    pending: latest.filter((s) => s.status === "PENDING" && !isHeldForSelfCheck(s)).map(toView),
+    waitingOnCheck: latest.filter((s) => isHeldForSelfCheck(s)).map(toView),
     waitingOnEditor: latest.filter((s) => s.status === "CHANGES_REQUESTED").map(toView),
     recentlyApproved: latest.filter((s) => s.status === "APPROVED").map(toView),
     photoQc: qcTasks.map((t) => ({
@@ -448,6 +469,8 @@ export type CutSubmission = {
   // a cut is meant to be reached (RTP-01 handover, Sep 16).
   hasHubCopy: boolean;
   completedAt: string | null;
+  /** §8.2: PENDING but held for the editor's check — nothing to rule on yet. */
+  heldForCheck: boolean;
 };
 
 export type CutNote = {
@@ -580,6 +603,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
     source: s.source,
     hasHubCopy: !!s.blobUrl,
     completedAt: s.completedAt ? s.completedAt.toISOString() : null,
+    heldForCheck: isHeldForSelfCheck(s),
   }));
   // A WITHDRAWN round is history, not the thing to rule on (Sep 16) — it is
   // still reachable by ?cut=<id> (the Earlier-rounds list links to it) but it
@@ -589,6 +613,9 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
   // looking at one cut under another cut's notes (reviewer, Sep 16).
   const active =
     (cutId ? submissions.find((s) => s.id === cutId) : null) ??
+    // A cut the reviewer can actually rule on before one held for the
+    // editor's check (§8.2) — a held redo must not become the default view.
+    submissions.find((s) => s.status === "PENDING" && !s.heldForCheck) ??
     submissions.find((s) => s.status === "PENDING") ??
     submissions.find((s) => s.status !== "WITHDRAWN") ??
     submissions[0] ??

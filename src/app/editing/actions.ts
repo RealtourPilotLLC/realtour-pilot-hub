@@ -121,6 +121,22 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
     },
   }).catch(() => {});
 
+  // Whoever was ON the job (§7.1) is not any more: their active or paused work
+  // closes as reassigned, recorded as the office. The new editor is never
+  // started for them — they press Start. A co-editor who still owns one of
+  // the job's videos keeps theirs. Never throws.
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    const by = me?.name ?? me?.email ?? "the office";
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    await closeGhostWork(projectId, {
+      reason: unassign ? "UNASSIGNED" : "REASSIGNED",
+      actor: { userId: me?.id ?? null, name: by, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      detail: unassign ? `unassigned by ${by}` : `reassigned to ${editorName} by ${by}`,
+    });
+  } catch { /* the hourly card refresh closes it too */ }
+
   // Live work changed hands → tell whoever now owns it. An upcoming job's pick
   // is silent on purpose: there's nothing to edit yet, the bell comes with
   // raws. An unassign rings nobody — there is nobody to ring.
@@ -182,10 +198,13 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 // Sep 10 (Jordan: "the video projects should not automatically be in editing,
 // it should say ready for editing and the editor should be able to change the
 // status to in editing"): the add used to land the job straight on In editing;
-// now nothing does — only the editor's own click on the queue pill
-// (setQueueStatus "In editing") writes EDITING. The sweep's anti-demotion
-// guard (shootHappened, projectStatus.ts) keeps a past-shoot SHOT job from
-// sliding back to Scheduled/Booked.
+// now it lands on Ready for editing. (This comment used to say "only the
+// editor's own click writes EDITING" — it was never true: the override pin,
+// the pipeline board and a withdrawn cut wrote it too. Sep 25, §7.1: EDITING
+// is now the LIFECYCLE only, and whether anyone is editing is the editor's own
+// Start, recorded per editor in lib/editorWork — no automatic path can make
+// one.) The sweep's anti-demotion guard (shootHappened, projectStatus.ts)
+// keeps a past-shoot SHOT job from sliding back to Scheduled/Booked.
 // ---------------------------------------------------------------------------
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
@@ -692,7 +711,15 @@ async function officeIsClosingAHandDelivery(projectId: string): Promise<boolean>
   }
 }
 
-export async function setQueueStatus(projectId: string, label: string): Promise<{ ok: boolean; message: string }> {
+export async function setQueueStatus(projectId: string, label: string, requestId?: string): Promise<{ ok: boolean; message: string }> {
+  // PAUSED IS A WORK MOVE, NOT A STAGE (§7.1, Sep 25). It changes nothing about
+  // the job — not the status, the card, the due date or the asks — only that
+  // this editor is not on it right now. lib/editorWork authorizes it (the
+  // editor's own work, or the office recorded as the office).
+  if (label === "Paused") {
+    const { pauseEditing } = await import("@/lib/editorWork");
+    return pauseEditing({ projectId, requestId });
+  }
   const target = QUEUE_STATUS[label];
   if (!target) return { ok: false, message: "That status is set automatically from upload/delivery evidence." };
   // The job's edit card comes first, the revision lane second: the card is
@@ -776,6 +803,18 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     }
   }
 
+  // "In editing" IS START (§7.1, Sep 25). One door with the edit page's Start
+  // button: startEditing pauses whatever this editor was on in the same
+  // transaction, moves Ready for editing to EDITING (a revision or a cut in
+  // review keeps its stage — this used to write EDITING over REVISION), pins
+  // the card to them, and logs the real actor — the office clicking for Kim is
+  // recorded as the office, not as Kim. The access check above still stands in
+  // front of it.
+  if (target === "EDITING") {
+    const { startEditing } = await import("@/lib/editorWork");
+    return startEditing({ projectId, requestId });
+  }
+
   // ---- WAITING (Jordan, Sep 11: "I should also be able to change projects
   // back to waiting but its blocked off"). Only from Ready for editing / In
   // editing with NOTHING handed in: a cut in the Review Room, a client
@@ -846,6 +885,16 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       where: { projectId, taskType: "edit_video", status: "IN_PROGRESS" },
       data: { status: "OPEN" },
     }).catch(() => {});
+    // Nobody can be editing a job with no footage (§7.1): whoever was on it
+    // is closed as put back, recorded as the office. Never throws.
+    {
+      const { closeActiveWork } = await import("@/lib/editorWork");
+      await closeActiveWork(projectId, {
+        reason: "PUT_BACK",
+        actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+        detail: `put back to Waiting by ${actor}`,
+      });
+    }
     // Park the QC card the way the reconciler parks a re-shoot (Sep 11
     // review): the media_qa spec is emitted for SHOT/EDITING/REVIEW/REVISION
     // only, so on a held SCHEDULED job the hourly "no longer expected" sweep
@@ -1148,9 +1197,14 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
           // the delivered close-out below are what a Completed click always does.
         } else {
           const { submitCutForReview } = await import("@/app/review/actions");
-          const sent = await submitCutForReview(projectId).catch(() => ({ ok: false as const, message: "" }));
+          const sent: { ok: boolean; message: string; needsSelfCheck?: boolean } = await submitCutForReview(projectId).catch(() => ({ ok: false as const, message: "" }));
           if (sent.ok) {
             return done(wantsReview, `Sent to the Review Room — ${street} has a client revision open, so it reads Ready for review until Jordan rules and Completed once he approves the corrected cut.`);
+          }
+          // §8.2: the corrected cut is there, but nothing reaches review without
+          // the editor's check — and a queue pill has nowhere to ask it.
+          if (sent.needsSelfCheck) {
+            return done(false, `${street}: the corrected cut is in the Final folder — open the edit page (/edit/${projectId}); the send-for-review check comes first, then it reads Ready for review.`);
           }
           return done(false, `${street} has a client revision open and nothing new has been uploaded since it came in. Press Upload version N on the edit page (it takes a new version even on an approved cut while the revision is open) — or drop a NEW file in 05-Final-Video and hit "Done — send to review" — and it reads Ready for review, then Completed once Jordan approves it.`);
         }
@@ -1203,55 +1257,36 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}${missingClause}` },
   }).catch(() => {});
 
-  // THE EDITOR STARTS IT / THE OFFICE PUTS IT BACK (Jordan, Sep 10). The job's
-  // edit_video card follows the pill — IN_PROGRESS while the editor is in the
-  // edit, back to OPEN when the office returns the job to Ready for editing —
-  // so /tasks and the QC card agree with the queue. Everything else on the job
+  // THE OFFICE PUTS IT BACK (Jordan, Sep 10). The job's edit_video card goes
+  // back to OPEN when the office returns the job to Ready for editing, so
+  // /tasks and the QC card agree with the queue. Everything else on the job
   // (the editor assignment, cuts in the Review Room, revision asks) is left
-  // exactly as it was. The card move itself is idempotent; the timeline line
-  // and the bell fire only when the job was NOT already started — judged by
-  // the card as well as the status, because the status is not the only thing
-  // that can move (the pipeline board, an engine) while the card keeps the
-  // truth: a re-click, or an "In editing" on a job whose card already sits
-  // IN_PROGRESS, must never re-ring the office for the same start (Sep 10
-  // review). The revision lane is deliberately untouched: a revision task's
-  // own IN_PROGRESS means "corrected cut submitted — waiting on review".
-  if (status === "EDITING" || status === "SHOT") {
+  // exactly as it was. The revision lane is deliberately untouched: a revision
+  // task's own IN_PROGRESS means "corrected cut submitted — waiting on review".
+  // "In editing" no longer reaches this block (§7.1, Sep 25): it returned
+  // through startEditing above, which moves the card, writes the timeline line
+  // with the REAL actor and rings the office once per start. The old line here
+  // named the card's assignee even when the office clicked.
+  if (status === "SHOT") {
     const started = editCard?.status === "IN_PROGRESS";
     const { getCurrentUser } = await import("@/lib/auth/user");
-    const { editorMeta } = await import("@/lib/editors");
     const me = await getCurrentUser().catch(() => null);
     const actor = me?.name ?? me?.email ?? "The office";
-    const street = (proj.title || "this job").split(",")[0].trim();
-    if (status === "EDITING") {
-      await prisma.smartTask.updateMany({
-        where: { projectId, taskType: "edit_video", status: "OPEN" },
-        data: { status: "IN_PROGRESS" },
-      }).catch(() => {});
-      if (proj.status !== "EDITING" && !started) {
-        // "<Name> started editing." names the EDITOR: the click is usually
-        // theirs, but when the office sets it on their behalf the edit card's
-        // assignee is the person who actually started, not the one who typed it.
-        const editorName = me?.role === "EDITOR" ? actor : editorMeta(editCard?.assignedKey)?.name ?? actor;
-        await prisma.activity.create({
-          data: { projectId, type: "SYSTEM", body: `${editorName} started editing.` },
-        }).catch(() => {});
-        try {
-          const { notifyInApp } = await import("@/lib/notify");
-          await notifyInApp({
-            kind: "edit_started",
-            title: `${editorName} started editing ${street}`,
-            href: `/edit/${projectId}`,
-            targets: [{ roles: ["OWNER", "ADMIN"] }],
-            // No dedupeKey on purpose: a job put back and started again is news again.
-          });
-        } catch { /* bell is best-effort */ }
-      }
-    } else {
+    {
       await prisma.smartTask.updateMany({
         where: { projectId, taskType: "edit_video", status: "IN_PROGRESS" },
         data: { status: "OPEN" },
       }).catch(() => {});
+      // Put back = nobody is on it now (§7.1): whoever had pressed Start is
+      // closed as put back, recorded as the office. Never throws.
+      if (!onWaiting) {
+        const { closeActiveWork } = await import("@/lib/editorWork");
+        await closeActiveWork(projectId, {
+          reason: "PUT_BACK",
+          actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          detail: `put back to Ready for editing by ${actor}`,
+        });
+      }
       // From a Waiting row this is not an undo but the office moving the job
       // ON (Sep 11) — say so, and run the handoff now rather than in an hour:
       // ensureEditorHandoff is idempotent, and its raws-in bell rings again
@@ -1736,10 +1771,23 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
           await mintEditTask(projectId);
         } catch { /* the hourly handoff is the backstop */ }
       }
+      // An override to In editing is the office pinning the STAGE (§7.1): it
+      // does not say any editor started, so no work row is written and the
+      // row reads "In editing — not confirmed" until the editor presses Start.
       if (targetStatus === "EDITING") {
         await prisma.smartTask.updateMany({ where: { dedupeKey: EDIT_KEY, status: "OPEN" }, data: { status: "IN_PROGRESS" } }).catch(() => {});
       } else {
         await prisma.smartTask.updateMany({ where: { dedupeKey: EDIT_KEY, status: "IN_PROGRESS" }, data: { status: "OPEN" } }).catch(() => {});
+      }
+      // Back to Ready for editing or Waiting = nobody is on it now: whoever had
+      // pressed Start is closed as put back, recorded as the office.
+      if (targetStatus === "SHOT" || targetStatus === "SCHEDULED" || targetStatus === "BOOKED") {
+        const { closeActiveWork } = await import("@/lib/editorWork");
+        await closeActiveWork(projectId, {
+          reason: "PUT_BACK",
+          actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          detail: `put back by ${actor} (override)`,
+        });
       }
       if (targetStatus === "SCHEDULED" || targetStatus === "BOOKED") {
         // Park the QC card the way the pill's Waiting does (Sep 11): on a
@@ -1855,6 +1903,17 @@ export async function removeFromEditorQueue(projectId: string, note?: string): P
     await prisma.smartTask
       .update({ where: { id: task.id }, data: { status: "CANCELLED", completedAt: at } })
       .catch(() => null);
+  }
+  // The editor's declared work on it goes with the card (§7.1) — closed, not
+  // deleted: the history stays. A restore brings the CARD back only; the
+  // editor presses Resume if they pick it up again.
+  {
+    const { closeActiveWork } = await import("@/lib/editorWork");
+    await closeActiveWork(projectId, {
+      reason: "REMOVED",
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      detail: `taken off the Editing Room by ${actor}`,
+    });
   }
 
   const street = (project.title || "this job").split(",")[0].trim();
@@ -2117,6 +2176,16 @@ export async function mergeProjectWork(
     await ensureOutputsSafely(intoId, `merge-from#${fromId}`);
     await ensureOutputsSafely(fromId, `merge-away#${intoId}`);
   } catch { /* the hourly sweep repairs it */ }
+  // Work an editor had started on the donor closes as merged (§7.1). It does
+  // not follow the work to the survivor on its own — the editor presses Start
+  // there — because nobody said they are on the survivor.
+  {
+    const { closeActiveWork } = await import("@/lib/editorWork");
+    await closeActiveWork(fromId, {
+      reason: "MERGED",
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+    });
+  }
 
   const street = (t: string | null) => (t || "a job").split(",")[0].trim();
   const what = `${moved.deliverableIds.length} deliverable${moved.deliverableIds.length === 1 ? "" : "s"}${moved.submissionIds.length ? `, ${moved.submissionIds.length} cut${moved.submissionIds.length === 1 ? "" : "s"}` : ""}`;

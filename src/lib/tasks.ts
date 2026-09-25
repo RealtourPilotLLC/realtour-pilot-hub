@@ -1618,6 +1618,13 @@ export async function closeObsoleteTasks(
       const { releaseWaitingHold } = await import("@/lib/queueWaiting");
       await releaseWaitingHold(projectId);
     } catch { /* hygiene only — never blocks the close */ }
+    // Nobody is still "editing" a finished or cancelled job (§7.1). Every
+    // delivery and cancel path converges here — the board, the pill, the
+    // override, the sweep, the janitor, Aryeo's cancel — so this one line
+    // closes the editor's active/paused work for all of them, as the hub.
+    // closeActiveWork never throws.
+    const { closeActiveWork } = await import("@/lib/editorWork");
+    await closeActiveWork(projectId, { reason: projectStatus === "DELIVERED" ? "PROJECT_DELIVERED" : "PROJECT_CANCELLED" });
   }
   if (projectStatus === "CANCELLED") {
     const r = await prisma.smartTask.updateMany({
@@ -2600,43 +2607,39 @@ export async function mintCullTask(opts: {
 
 // ---------------------------------------------------------------------------
 // Push handoff when a shoot's raws land (audit crack #19). Flipping to SHOT
-// notified no one — the editor queue is pull-only — and a premium reel had no
-// "send raws + brief to Luma" task anywhere, so a forgotten dispatch surfaced
-// only as an overdue video days later. Called from the upload portal's
-// finalize + the Dropbox raw-detection sweep, on the actual transition only.
-// Idempotent: the Slack ping is keyed off a timeline marker, the Luma dispatch
-// task off its dedupe key. Best-effort by design — callers never let it throw.
+// notified no one — the editor queue is pull-only. Called from the upload
+// portal's finalize fallback, the Dropbox raw-detection sweep and step 1 of
+// ensureEditorHandoff. Idempotent: every notice is keyed off a timeline
+// marker, once per hold. Best-effort by design — callers never let it throw.
+//
+// RECEIPT IS NOT READINESS (unified handoff O01, Sep 25 2026). This used to
+// say "Raws in for <street> — ready for editing" the moment ANY file appeared,
+// before anybody had asked whether the edit could start. The commonest way it
+// fired was the hourly sweep finding the files the evening before the
+// photographer handed in the wrap-up: the editors in Manila were told "ready"
+// ~12 hours early, the same pass minted a card saying "Waiting on the flow and
+// vision for the edit from Harrison", and when the wrap-up finally landed the
+// marker was already spent, so NOTHING said the job had become workable. A
+// photo-only job pinged the editor bench too, though photos go to AutoHDR.
+//
+// So there are two notices now, each once per hold:
+//   · the RECEIPT (this function) says what actually arrived and, when the
+//     caller has evaluated it, what is still missing — in the same sentence
+//     the card carries, so the notice and the task cannot disagree. It pings
+//     no editor unless the job is ready right then;
+//   · the READY transition (notifyReadyToEdit) fires once, the first pass the
+//     handoff is complete AND the footage is in, and it is the one that DMs the
+//     routed editor. When a job is already ready at receipt the two are ONE
+//     notice and both markers are spent.
+// The receipt keeps the old marker prefix, so every live job already announced
+// stays announced on deploy — and since the old wording always said "ready",
+// an old-format marker counts as the ready notice too (no late duplicate).
 // ---------------------------------------------------------------------------
-export async function notifyRawsLanded(projectId: string): Promise<void> {
-  const p = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: {
-      title: true,
-      clientId: true,
-      editorManual: true,
-      editor: { select: { name: true } },
-      client: { select: { socialClient: true } },
-      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
-    },
-  });
-  if (!p) return;
-  const street = (p.title || "this job").split(",")[0].trim();
 
-  // Ping ops once per project — if either path (portal finalize / Dropbox sweep)
-  // already announced it, don't re-ping. Once per HOLD, that is (Sep 11): a
-  // job the office put back to Waiting (setQueueStatus → queueWaiting.ts) was
-  // announced off raws that were not really its footage, so when the hold
-  // releases (upload-page submit, or the office moving it on) the editors are
-  // owed a fresh "Raws in". Only a marker newer than the latest hold line
-  // counts as spent, and the bell's dedupe key carries that line's time so
-  // the row inserts again. The boundary is the newest of the "Put back to
-  // Waiting by" line (setQueueStatus) and, as the fallback, any line carrying
-  // "Waiting hold released" (the sweep, finalizeUpload, the office's Ready
-  // for editing) — every release path writes its line BEFORE the handoff
-  // runs, so a lost hold line still rings once (Sep 11 review). While the
-  // hold stands nothing calls this at all: the status sweep runs the handoff
-  // for SHOT/EDITING/REVIEW only, and a held job is kept on SCHEDULED/BOOKED.
-  const MARKER = `Raws in for ${street}`;
+/** The newest "Put back to Waiting" / "Waiting hold released" line: both
+ *  notices are once PER HOLD, measured from here. Every release path writes its
+ *  line BEFORE the handoff runs (Sep 11 review). */
+export async function holdBoundary(projectId: string): Promise<Date | null> {
   const lastHold = await prisma.activity.findFirst({
     where: {
       projectId,
@@ -2646,77 +2649,258 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     orderBy: { createdAt: "desc" },
     select: { createdAt: true },
   });
-  const already = await prisma.activity.findFirst({
-    where: { projectId, type: "SYSTEM", body: { startsWith: MARKER }, ...(lastHold ? { createdAt: { gt: lastHold.createdAt } } : {}) },
-    select: { id: true },
+  return lastHold?.createdAt ?? null;
+}
+
+/** The receipt marker's prefix (unchanged since Aug — see above). */
+const rawsMarker = (street: string) => `Raws in for ${street}`;
+/** What a receipt written by THIS code says right after the prefix. An older
+ *  marker without it was written by code that always said "ready". */
+const RECEIPT_TAG = "— received:";
+/** The ready transition's marker. Distinct from "Moved on to Ready for
+ *  editing by …" (the office's own line), which is matched by startsWith. */
+const readyMarker = (street: string) => `Ready for editing: ${street}`;
+
+/** A per-project advisory lock for the check-then-write on a marker, so two
+ *  passes at once (the upload submit's sync and the hourly sweep) cannot both
+ *  find nothing and both announce. Namespace = "RAWS". */
+const RAWS_NOTICE_LOCK = 0x52415753;
+function lockKeyOf(projectId: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < projectId.length; i++) h = Math.imul(h ^ projectId.charCodeAt(i), 0x01000193);
+  return h | 0; // a signed int4
+}
+
+/**
+ * Write a timeline marker unless one this matches already exists after the
+ * hold boundary. Returns the new row's id, or null when the notice is spent.
+ * The marker goes in FIRST (crash-safe: a re-run after a mid-flight crash must
+ * not re-ping) and the outcome is stamped on afterwards.
+ */
+async function claimNoticeMarker(
+  projectId: string,
+  since: Date | null,
+  spent: import("@prisma/client").Prisma.ActivityWhereInput[],
+  body: string,
+): Promise<string | null> {
+  const where = { projectId, type: "SYSTEM" as const, OR: spent, ...(since ? { createdAt: { gt: since } } : {}) };
+  // The hourly sweep asks this of every job in the editing lane, and on almost
+  // all of them the notice is long spent: answer that with one plain read, and
+  // take the lock only when there is something to write.
+  if (await prisma.activity.findFirst({ where, select: { id: true } })) return null;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RAWS_NOTICE_LOCK}::int4, ${lockKeyOf(projectId)}::int4)`;
+    const already = await tx.activity.findFirst({ where, select: { id: true } });
+    if (already) return null;
+    const row = await tx.activity.create({ data: { projectId, type: "SYSTEM", body }, select: { id: true } });
+    return row.id;
   });
-  if (!already) {
-    // Marker row FIRST (crash-safe idempotence: a re-run after a mid-flight
-    // crash must not re-ping) with neutral wording; the concrete outcome is
-    // stamped on after we know what the notify bridge actually did (the
-    // editor's own row on Settings → Team notifications decides Slack, text
-    // or bell — src/lib/notify.ts bridgePerson, Sep 15) — the old
-    // hard-coded "notified via Slack" claimed delivery that often never
-    // happened (John has no Slack/phone yet; audit #33 honesty residue).
-    const marker = await prisma.activity.create({
-      data: { projectId, type: "SYSTEM", body: `${MARKER} — announced to the editor bench.` },
-    });
-    try {
-      const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
-      const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
-      await notifyUrgent(`Raws in for ${street} — ready for editing`, "/editing");
-      // Bell mirror: ops + the whole editor bench (raws are pull-work — whoever
-      // it routes to sees it in /editing either way) + a PERSON-ADDRESSED row for
-      // the routed video editor (editor:<key>) so the notify bridge can DM/text
-      // them in Manila. Photos-only jobs route to Kyle (not a bench editor) — the
-      // editor:key row is only added for a real video route (kim/john/luma).
-      const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-      const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
-      let routedKey: string | null = null;
-      if (v) {
-        const { editorRouting } = await import("@/lib/settings");
-        const { editorKeyForTeamName } = await import("@/lib/editors");
-        // The owner's pinned editor gets the DM — same precedence as mintEditTask,
-        // so the person who's pinged is the person whose queue the task lands in.
-        const pin = pinnedEditorFor(p);
-        const key = pin.pinned ? pin.key : editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
-        // Only in-house editors have a reachable channel; Luma (external) has no
-        // bell/DM — its dispatch is the Kyle task below.
-        if (key === "kim" || key === "john") {
-          routedKey = key;
-          // Their brief — the one page the EDITOR role can act from.
-          targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` });
-        }
-      }
-      const { bridged } = await notifyInApp({
-        kind: "raws_landed",
-        title: `Raws in — ${street}`,
-        href: "/editing",
-        targets,
-        // After a hold the key changes, or the P2002 dedupe would swallow the
-        // second, real announcement.
-        dedupeKey: lastHold ? `raws-${projectId}-h${lastHold.createdAt.getTime()}` : `raws-${projectId}`,
-      });
-      // Stamp the truth onto the timeline row.
-      let outcome = "— posted to the editor bench (bell) + ops Slack.";
-      if (routedKey) {
-        const name = editorMeta(routedKey)?.name ?? routedKey;
-        const channel = bridged.find((b) => b.userKey === `editor:${routedKey}`)?.channel ?? "none";
-        outcome =
-          channel === "slack" ? `— ${name} pinged by Slack DM.`
-          : channel === "sms" ? `— ${name} texted (SMS).`
-          : channel === "relay" ? `— ${name} has no Slack/phone on file; relayed to ops Slack to pass along by hand.`
-          : channel === "quiet" ? `— bell posted for ${name}; ping held for their overnight quiet hours.`
-          : `— bell posted for ${name}; no direct ping went out.`;
-      }
-      await prisma.activity.update({ where: { id: marker.id }, data: { body: `${MARKER} ${outcome}` } }).catch(() => {});
-    } catch { /* never let a ping break the upload flow */ }
+}
+
+/** What the notice is allowed to claim, given what the caller knows. */
+type ReceiptState = "photos" | "video-missing" | "waiting" | "received" | "ready";
+
+export type RawsLandedOpts = {
+  /** This pass's readiness (ensureEditorHandoff evaluates it first). Absent =
+   *  the caller did not evaluate it — the upload portal's fallback and the
+   *  Dropbox status sweep — and the notice then says the files were received
+   *  and nothing about readiness. */
+  readiness?: import("@/lib/handoff").HandoffReadiness | null;
+  /** Raw VIDEO on a fresh read: true, false (a fresh zero), null (unknown). */
+  videoFound?: boolean | null;
+};
+
+type RawsProject = {
+  title: string | null;
+  editorManual: boolean;
+  editor: { name: string } | null;
+  deliverables: { type: string; label: string | null }[];
+};
+
+async function rawsProject(projectId: string): Promise<RawsProject | null> {
+  return prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true,
+      editorManual: true,
+      editor: { select: { name: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
+    },
+  });
+}
+
+export async function notifyRawsLanded(projectId: string, opts: RawsLandedOpts = {}): Promise<void> {
+  const p = await rawsProject(projectId);
+  if (!p) return;
+  const street = (p.title || "this job").split(",")[0].trim();
+  const since = await holdBoundary(projectId);
+  const MARKER = rawsMarker(street);
+
+  const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const r = opts.readiness ?? null;
+  let state: ReceiptState =
+    !v ? "photos"
+    : opts.videoFound === false ? "video-missing"
+    : r?.ready && opts.videoFound === true ? "ready"
+    : r && !r.ready ? "waiting"
+    : "received";
+  const WORDS: Record<ReceiptState, string> = {
+    photos: "photos only",
+    "video-missing": "photos in, video not found yet",
+    waiting: (r?.blockedReason ?? "waiting on the rest of the handoff").replace(/^Waiting/, "waiting").replace(/\.$/, ""),
+    received: "files received; readiness not checked yet",
+    ready: "ready for editing",
+  };
+
+  const markerId = await claimNoticeMarker(projectId, since, [{ body: { startsWith: MARKER } }], `${MARKER} ${RECEIPT_TAG} ${WORDS[state]}.`);
+  if (!markerId) return;
+
+  // Ready at receipt → this IS the ready notice as well, so spend that marker
+  // too. If it was somehow already spent, say only what was received.
+  let readyId: string | null = null;
+  if (state === "ready") {
+    readyId = await claimNoticeMarker(projectId, since, readySpent(street), `${readyMarker(street)} — announced with the raws.`);
+    if (!readyId) state = "received";
   }
 
-  // Luma dispatch task REMOVED (Aug 18 audit): the Luma engagement ended
-  // Aug 14 — premium reels cut in-house (John Mark) through the normal
-  // edit_video mint above; a "Send raws to Luma" card on Kyle's board was
-  // instructing him to ship footage to a vendor we no longer use.
+  try {
+    if (state === "ready") {
+      const outcome = await announceReady(projectId, p, street, since, { combined: true });
+      await prisma.activity.update({ where: { id: markerId }, data: { body: `${MARKER} ${RECEIPT_TAG} ready for editing ${outcome}` } }).catch(() => {});
+      await prisma.activity.update({ where: { id: readyId! }, data: { body: `${readyMarker(street)} — announced with the raws ${outcome}` } }).catch(() => {});
+      return;
+    }
+    const { opsAlert, notifyInApp } = await import("@/lib/notify");
+    const { appBase } = await import("@/lib/appUrl");
+    // What ops Slack and the bell say — the truth, and never "ready".
+    const line: Record<Exclude<ReceiptState, "ready">, { slack: string; bell: string; path: string }> = {
+      photos: { slack: `Photos in for ${street}`, bell: `Photos in — ${street}`, path: `/projects/${projectId}` },
+      "video-missing": {
+        slack: `Photos in for ${street} — the video isn't in Dropbox yet`,
+        bell: `Photos in — ${street} (video not found yet)`,
+        path: `/projects/${projectId}`,
+      },
+      waiting: {
+        slack: `Raws in for ${street} — ${(r?.blockedReason ?? "waiting on the brief").replace(/^Waiting/, "waiting")}`,
+        bell: `Raws in — ${street}: still waiting on the handoff`,
+        path: "/editing",
+      },
+      received: { slack: `Raws in for ${street} — files received`, bell: `Raws in — ${street}`, path: "/editing" },
+    };
+    const say = line[state];
+    const posted = await opsAlert(`🔔 ${say.slack} → ${appBase()}${say.path}`);
+    // Bell: ops, plus the bench for a video job (raws are pull-work). NO row is
+    // addressed to an editor — the person-addressed row is what DMs them in
+    // Manila, and that belongs to the ready notice alone. (raws_landed rings
+    // person rows only — notify.ts BELL_RULES — so these broadcasts are the
+    // honest record of who was told rather than a second ping.)
+    await notifyInApp({
+      kind: "raws_landed",
+      title: say.bell,
+      href: say.path,
+      targets: v ? [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }] : [{ roles: ["ADMIN"] }],
+      // After a hold the key changes, or the P2002 dedupe would swallow the
+      // second, real announcement.
+      dedupeKey: since ? `raws-${projectId}-h${since.getTime()}` : `raws-${projectId}`,
+    });
+    await prisma.activity
+      .update({
+        where: { id: markerId },
+        data: { body: `${MARKER} ${RECEIPT_TAG} ${WORDS[state]} — ${posted ? "posted to ops Slack" : "ops Slack not reached"}; no editor pinged.`.slice(0, 500) },
+      })
+      .catch(() => {});
+  } catch { /* never let a ping break the upload flow */ }
+}
+
+/** A ready notice is spent by its own marker, or by a receipt the OLD code
+ *  wrote (it always said "ready for editing"). */
+function readySpent(street: string): import("@prisma/client").Prisma.ActivityWhereInput[] {
+  const MARKER = rawsMarker(street);
+  return [
+    { body: { startsWith: readyMarker(street) } },
+    { AND: [{ body: { startsWith: MARKER } }, { NOT: { body: { startsWith: `${MARKER} ${RECEIPT_TAG}` } } }] },
+  ];
+}
+
+/**
+ * THE ONE LATER "READY FOR EDITING" (O01). Called by ensureEditorHandoff on a
+ * pass where the handoff is complete and the footage is in. Fires once per
+ * hold, only after a receipt for the same hold, and never when the receipt
+ * already said ready. Returns whether it announced.
+ */
+export async function notifyReadyToEdit(projectId: string): Promise<boolean> {
+  const p = await rawsProject(projectId);
+  if (!p) return false;
+  const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  if (!v) return false; // photos go to AutoHDR; there is no edit to be ready for
+  const street = (p.title || "this job").split(",")[0].trim();
+  const since = await holdBoundary(projectId);
+  // The second line, never the first: without a receipt for this hold the
+  // bench has not been told the files exist, and the receipt path decides.
+  const receipt = await prisma.activity.findFirst({
+    where: { projectId, type: "SYSTEM", body: { startsWith: rawsMarker(street) }, ...(since ? { createdAt: { gt: since } } : {}) },
+    select: { id: true },
+  });
+  if (!receipt) return false;
+  const markerId = await claimNoticeMarker(projectId, since, readySpent(street), `${readyMarker(street)} — announcing.`);
+  if (!markerId) return false;
+  try {
+    const outcome = await announceReady(projectId, p, street, since, { combined: false });
+    await prisma.activity.update({ where: { id: markerId }, data: { body: `${readyMarker(street)} ${outcome}` } }).catch(() => {});
+  } catch { /* the marker stands: a failed ping is not retried into a duplicate */ }
+  return true;
+}
+
+/**
+ * The ready notice itself: ops Slack, the bench bell and a PERSON-ADDRESSED
+ * row for the routed video editor, so the notify bridge can DM/text them in
+ * Manila (their own row on Settings → Team notifications decides the channel —
+ * src/lib/notify.ts bridgePerson, Sep 15). Returns the outcome sentence for the
+ * timeline, stamped from what the bridge actually did (audit #33: the old
+ * hard-coded "notified via Slack" claimed delivery that often never happened).
+ */
+async function announceReady(
+  projectId: string,
+  p: RawsProject,
+  street: string,
+  since: Date | null,
+  opts: { combined: boolean },
+): Promise<string> {
+  const { opsAlert, notifyInApp } = await import("@/lib/notify");
+  const { appBase } = await import("@/lib/appUrl");
+  const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
+  const posted = await opsAlert(
+    `🔔 ${opts.combined ? `Raws in for ${street} — ready for editing` : `Ready for editing — ${street} (the brief is complete)`} → ${appBase()}/editing`,
+  );
+  const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")!;
+  const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
+  const { editorRouting } = await import("@/lib/settings");
+  // The owner's pinned editor gets the DM — same precedence as mintEditTask,
+  // so the person who's pinged is the person whose queue the task lands in.
+  const pin = pinnedEditorFor(p);
+  const key = pin.pinned ? pin.key : editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
+  // Only in-house editors have a reachable channel.
+  const routedKey = key === "kim" || key === "john" ? key : null;
+  // Their brief — the one page the EDITOR role can act from.
+  if (routedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${routedKey}`, href: `/edit/${projectId}` });
+  const { bridged } = await notifyInApp({
+    kind: "raws_landed", // the editors' "job pings" switch, as it always was
+    title: opts.combined ? `Raws in — ${street}: ready for editing` : `Ready for editing — ${street}`,
+    href: "/editing",
+    targets,
+    dedupeKey: since ? `ready-${projectId}-h${since.getTime()}` : `ready-${projectId}`,
+  });
+  const slack = posted ? "ops Slack" : "ops Slack not reached";
+  if (!routedKey) return `— posted to the editor bench (bell); ${slack}.`;
+  const name = editorMeta(routedKey)?.name ?? routedKey;
+  const channel = bridged.find((b) => b.userKey === `editor:${routedKey}`)?.channel ?? "none";
+  return (
+    channel === "slack" ? `— ${name} pinged by Slack DM; ${slack}.`
+    : channel === "sms" ? `— ${name} texted (SMS); ${slack}.`
+    : channel === "relay" ? `— ${name} has no Slack/phone on file; relayed to ops Slack to pass along by hand.`
+    : channel === "quiet" ? `— bell posted for ${name}; ping held for their overnight quiet hours; ${slack}.`
+    : `— bell posted for ${name}; no direct ping went out; ${slack}.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2824,6 +3008,12 @@ export async function mintEditTask(projectId: string): Promise<void> {
     },
   });
   if (!p) return;
+  // Work an editor started on a job that has since left their hands (the task
+  // card's assignee changed, a merge, the evidence closed the card) closes
+  // here within the hour (§7.1) — the refresh can only CLOSE editor work, never
+  // start it. A no-op on the many jobs with no work rows; never throws.
+  const { closeGhostWork } = await import("@/lib/editorWork");
+  await closeGhostWork(projectId);
   // Only video/reel jobs get an editor task — photos are automated.
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   if (!v) return;
@@ -2890,6 +3080,16 @@ export async function mintEditTask(projectId: string): Promise<void> {
   if (existing) {
     if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return;
     const refreshedDue = late && existing.dueAt ? existing.dueAt : dueAt;
+    // STARTED WORK KEEPS ITS EDITOR (§7.1). An editor who pressed Start (or
+    // paused) holds open work on this job, and the rules must not route the
+    // card out from under them. This used to be done by stamping the card
+    // assignedManually at Start — which every other engine reads as "a human
+    // hand-picked this", so it also took started jobs out of the cancel and
+    // close paths (review fix, Sep 25). Asked here instead, where it matters.
+    const startedByHolder =
+      !existing.assignedManually && existing.assignedKey
+        ? (await prisma.editorWorkItem.count({ where: { projectId, editorKey: existing.assignedKey, state: { not: "CLOSED" } } }).catch(() => 0)) > 0
+        : false;
     const data = {
       // A human's editor choice (reassign / manual queue-add) outlives every
       // automatic refresh — only route when nobody picked by hand. And the
@@ -2897,7 +3097,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
       // (personal branding) must not un-assign work someone already owns.
       // A project-level pin (editorManual) is a human pick too — carry it
       // onto the task as assignedManually so every downstream engine sees it.
-      ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
+      ...(existing.assignedManually || startedByHolder || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
       dueAt: refreshedDue,
       priority: priorityFor(refreshedDue),
       // A bounce writes "Round N — …" here (addRoundToEditCard, Sep 8): that
@@ -3112,14 +3312,48 @@ export async function editCardCutSubmitted(
 // SCHEDULED→REVIEW) never got an editor task, and button-flipped SHOT never
 // re-transitioned so the handoff was skipped. Everything inside is deduped
 // (activity marker / dedupeKeys), so hourly re-calls are safe.
-//   1. raws in            → notifyRawsLanded (bench ping + Luma dispatch, once)
+//   1. raws in            → notifyRawsLanded: a truthful RECEIPT, once per
+//                           hold, worded from this pass's readiness (O01)
 //   2. video job          → persist Project.editorId for the tracker/reassign
 //   3. cut submitted/live → clear any raw-video nudge, done
 //   4. raw video missing  → ONE "find the raw video" task (folder mismatch or
 //                           forgotten card — either way a human must look)
 //   5. otherwise          → mint the edit_video work item; resurrect one that
-//                           was falsely auto-completed with no cut anywhere
+//                           was falsely auto-completed with no cut anywhere;
+//                           the first pass it is READY → notifyReadyToEdit
 // ---------------------------------------------------------------------------
+/** The handoff question for the fields ensureEditorHandoff selects — one
+ *  mapping, used for the receipt and the card alike (O01). */
+async function handoffReadinessOf(p: {
+  orderItems: { title: string | null }[];
+  deliverables: { type: string; label: string | null; productTitle: string | null }[];
+  packageName: string | null;
+  debriefSubmittedAt: Date | null;
+  videoInstructions: string | null;
+  editorBrief: string | null;
+  reelScript: string | null;
+  reelHook: string | null;
+  scriptConfirmedAt: Date | null;
+  videosFilmed: number | null;
+  photographer: { name: string } | null;
+}): Promise<import("@/lib/handoff").HandoffReadiness> {
+  const { handoffReadiness } = await import("@/lib/handoff");
+  return handoffReadiness({
+    titles: [...p.orderItems.map((o) => o.title), ...p.deliverables.map((d) => d.productTitle ?? d.label)],
+    hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
+    isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
+    debriefSubmittedAt: p.debriefSubmittedAt,
+    videoInstructions: p.videoInstructions,
+    editorBrief: p.editorBrief,
+    reelScript: p.reelScript,
+    reelHook: p.reelHook,
+    scriptConfirmedAt: p.scriptConfirmedAt,
+    videosFilmed: p.videosFilmed,
+    photographerName: p.photographer?.name ?? null,
+    photographerKey: p.photographer?.name ? slugForName(p.photographer.name) : null,
+  });
+}
+
 export async function ensureEditorHandoff(projectId: string): Promise<void> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
@@ -3170,10 +3404,39 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   const dropboxFresh = !!dropbox && !dropbox.stale;
   const anyRaw = !!dropbox && (dropbox.rawPhotos ?? 0) + (dropbox.rawVideo ?? 0) > 0;
 
-  // 1. Announce the raws once (marker-idempotent inside notifyRawsLanded).
-  if (anyRaw) await notifyRawsLanded(projectId);
-
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+
+  // A human hand-picked this job's editor (owner reassign / manual queue-add):
+  // don't overwrite their routing, and don't chase raw video — the owner just
+  // looked at the job (old footage / externally-held files are expected there).
+  // Read before the receipt (O01): on a hand-queued job an empty video folder
+  // is expected, so it is not announced as "video not found".
+  const manualTask = v
+    ? await prisma.smartTask.findFirst({
+        where: { projectId, taskType: "edit_video", assignedManually: true, status: { notIn: ["CANCELLED"] } },
+        select: { id: true },
+      })
+    : null;
+
+  // 1. Announce the RECEIPT once per hold — and say what is TRUE (O01). The
+  // readiness question used to be asked at the very end of this pass, after
+  // the bench had already been told "ready for editing"; it is pure and reads
+  // fields this select already carries, so it is asked here, first, and the
+  // same answer drives the card below. A video every line of which was marked
+  // "couldn't complete" owes no brief, so it is not asked about one.
+  const allVideoNotCompletable = !!v && p.deliverables
+    .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+    .every((d) => d.notCompletedReason);
+  let readiness: import("@/lib/handoff").HandoffReadiness | null = null;
+  if (v && !allVideoNotCompletable) {
+    try { readiness = await handoffReadinessOf(p); } catch { /* advisory — the receipt then claims nothing */ }
+  }
+  const videoFound = (dropbox?.rawVideo ?? 0) > 0 ? true : dropboxFresh && !manualTask ? false : null;
+  if (anyRaw) {
+    // A notice that fails must never stop the work item being minted.
+    try { await notifyRawsLanded(projectId, { readiness, videoFound }); } catch { /* best-effort */ }
+  }
+
   if (!v) return; // photos-only → AutoHDR, no human editor
 
   // Every video deliverable marked "couldn't complete + why" on the wrap-up →
@@ -3213,14 +3476,6 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       .catch(() => {});
     return;
   }
-
-  // A human hand-picked this job's editor (owner reassign / manual queue-add):
-  // don't overwrite their routing, and don't chase raw video — the owner just
-  // looked at the job (old footage / externally-held files are expected there).
-  const manualTask = await prisma.smartTask.findFirst({
-    where: { projectId, taskType: "edit_video", assignedManually: true, status: { notIn: ["CANCELLED"] } },
-    select: { id: true },
-  });
 
   // 2. Persist the routed editor for the tracker + one-click reassign (in-house
   // only). editorManual = the owner picked this job's editor by hand (queue-row
@@ -3401,22 +3656,9 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // have should not be stopped by the hub — the point is that everybody can see
   // what is missing, not that the work is frozen.
   try {
-    const { handoffReadiness } = await import("@/lib/handoff");
-    const { isMonthlyContentJob } = await import("@/lib/pipeline");
-    const r = handoffReadiness({
-      titles: [...p.orderItems.map((o) => o.title), ...p.deliverables.map((d) => d.productTitle ?? d.label)],
-      hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
-      isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
-      debriefSubmittedAt: p.debriefSubmittedAt,
-      videoInstructions: p.videoInstructions,
-      editorBrief: p.editorBrief,
-      reelScript: p.reelScript,
-      reelHook: p.reelHook,
-      scriptConfirmedAt: p.scriptConfirmedAt,
-      videosFilmed: p.videosFilmed,
-      photographerName: p.photographer?.name ?? null,
-      photographerKey: p.photographer?.name ? slugForName(p.photographer.name) : null,
-    });
+    // Asked once, at the top of the pass (O01), so the receipt the bench was
+    // sent and the blocker this card carries are the same sentence.
+    const r = readiness ?? (await handoffReadinessOf(p));
     // SAY NOTHING WHEN THERE IS NOTHING TO SAY (Sep 20 journey drill). The card
     // write below has read-then-diff discipline and this one did not, so a job
     // sitting quietly in the editing lane had its project row rewritten with
@@ -3442,6 +3684,14 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
           : { handoffBlockedReason: r.blockedReason, handoffOwnerKey: r.ownerKey },
       });
     }
+    // THE ONE LATER "READY FOR EDITING" (O01). This point is reached only with
+    // the footage in (or a hand-queued job), so a ready answer here is the job
+    // becoming workable. notifyReadyToEdit is once per hold, needs a receipt
+    // for the same hold, and is silent when the receipt already said ready — so
+    // asking it on every ready pass IS the transition detector, including the
+    // job that becomes ready again after a Waiting hold (handoffReadyAt is
+    // stamped once, ever, and could not detect that).
+    if (r.ready) await notifyReadyToEdit(projectId).catch(() => false);
     // The chase date lives on the CARD, in followUpAt rather than dueAt: a job
     // blocked on a missing brief still owes its delivery date, and moving dueAt
     // would move the clock the editor is scored on.

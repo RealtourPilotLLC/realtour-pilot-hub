@@ -835,7 +835,9 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
 // Both are owner-only — call this behind the same gate as the pulse/money strips.
 // ---------------------------------------------------------------------------
 export type OwnerDials = {
-  video: { inEditing: number; pastSla: number }; // in-flight video jobs / of those past SLA
+  // in-flight video jobs (every production stage — work OWED, not work
+  // happening) / of those past SLA / jobs an editor has pressed Start on now
+  video: { inEditing: number; pastSla: number; editingNow: number };
   qc: OwnerQcDial; // qcPasses === 0 → dashboard hides the QC dial (empty-state guard)
 };
 
@@ -975,6 +977,12 @@ export async function getOwnerDials(): Promise<OwnerDials> {
     }),
     ownerQcDial(30),
   ]);
+  // Being edited NOW (§7.1, A64): the Working-now panel's answer, so the dial
+  // never calls owed work "editing" (review fix, Sep 25).
+  const editingNow = await prisma.editorWorkItem
+    .findMany({ where: { state: "ACTIVE" }, select: { projectId: true }, distinct: ["projectId"] })
+    .then((r) => prisma.project.count({ where: { id: { in: r.map((x) => x.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED"] } } }))
+    .catch(() => 0);
 
   let inEditing = 0;
   let pastSla = 0;
@@ -997,7 +1005,7 @@ export async function getOwnerDials(): Promise<OwnerDials> {
     if (sla.overdue) pastSla++;
   }
 
-  return { video: { inEditing, pastSla }, qc };
+  return { video: { inEditing, pastSla, editingNow }, qc };
 }
 
 // Shoots happening today / tomorrow — driven off APPOINTMENTS, not the single

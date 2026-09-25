@@ -22,6 +22,8 @@ import { prisma } from "@/lib/prisma";
 import { etDate, etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 import { QualityTabs, type QualityTab } from "./QualityTabs";
+import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
+import { SelfCheckSettings, UnclassifiedIssues } from "@/components/editing/QualityDesk";
 import { HandledToggle } from "./HandledToggle";
 import { FeedbackReply } from "./FeedbackReply";
 import {
@@ -65,19 +67,34 @@ export default async function QualityPage({
   // Fail CLOSED: a transient null under enforcement is unauthenticated (or a
   // disabled account still holding a live JWT) — never the owner view.
   if (!me && authEnforced()) redirect("/login?next=/quality");
-  if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect(homeFor(me.role));
+  // WHO SEES WHAT (§8.4, Sep 25). Owner/admin: every tab, as before. A named
+  // review seat (§8.1) who is not an admin: the Editor quality tab — the team
+  // view is theirs to act on. An EDITOR: their OWN review results and nothing
+  // else on this page — no team comparison, no client or photographer tabs.
+  const officeView = !me || me.role === "OWNER" || me.role === "ADMIN";
+  let reviewSeat = officeView;
+  if (!reviewSeat && me && !me.impersonating) {
+    try {
+      const { canRuleOnCuts } = await import("@/lib/reviewerAssignment");
+      reviewSeat = (await canRuleOnCuts(me)).ok;
+    } catch { /* not a review seat */ }
+  }
+  const editorSelf = !!me && me.role === "EDITOR" && !reviewSeat;
+  if (me && !officeView && !reviewSeat && !editorSelf) redirect(homeFor(me.role));
 
   const sp = await searchParams;
-  const tab: QualityTab = sp.tab === "photographers" ? "photographers" : "clients";
+  const tab: QualityTab =
+    !officeView || sp.tab === "editors" ? "editors" : sp.tab === "photographers" ? "photographers" : "clients";
   const filter: ClientFilter =
     sp.filter === "unhappy" || sp.filter === "rated" || sp.filter === "open" ? sp.filter : "all";
 
   // Load ONLY the tab being viewed (the /users + /communications pattern) —
   // the photographer roll is four queries nobody asked for on a client view.
-  const [tabCounts, feed, board] = await Promise.all([
-    getTabCounts(),
+  const [tabCounts, feed, board, editors] = await Promise.all([
+    officeView ? getTabCounts() : Promise.resolve({ clients: 0, photographers: 0 }),
     tab === "clients" ? getClientFeedbackFeed(filter) : null,
     tab === "photographers" ? getPhotographerBoard() : null,
+    tab === "editors" ? loadEditorsTab(editorSelf ? (me?.editorKey ?? "__none__") : null) : null,
   ]);
 
   // Sessionless local dev (gate off) reads as the owner, same as /feedback.
@@ -98,9 +115,10 @@ export default async function QualityPage({
         subtitle="What clients said about the work, and how each photographer is doing. Requests and bugs about the hub itself live on Feedback & requests."
       />
       <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:px-6">
-        <QualityTabs active={tab} counts={tabCounts} />
+        <QualityTabs active={tab} counts={{ ...tabCounts, editors: editors?.unclassified.length }} only={officeView ? undefined : ["editors"]} />
         {feed && <ClientTab feed={feed} />}
         {board && <PhotographerTab board={board} mod={mod} />}
+        {editors && <EditorsTab data={editors} />}
       </div>
     </div>
   );
@@ -551,3 +569,56 @@ function PhotographerBlockCard({ b, mod }: { b: PhotographerBlock; mod: Moderati
   );
 }
 
+
+// ------------------------------- Editors tab --------------------------------
+// §8.4 (Sep 25): how each editor's versions fare in review, from the issue
+// ledger — never kpi.ts (the photographer bonus) and never Kyle's QC dial.
+// The team view is one card per editor in roster order, not a ranking; an
+// editor sees only their own. Plus the reviewer's two standing jobs: giving
+// issues a cause, and refining the send-for-review checklist per product.
+
+async function loadEditorsTab(ownKey: string | null) {
+  const { editorQuality, editorsWithWork } = await import("@/lib/editorQuality");
+  const now = new Date();
+  const from = new Date(now.getTime() - 90 * 24 * 3600_000);
+  if (ownKey) {
+    return { own: await editorQuality({ editorKey: ownKey, from, to: now }), team: null, cards: [], unclassified: [], profiles: [] };
+  }
+  const { unclassifiedIssues } = await import("@/lib/revisionIssues");
+  const { selfCheckOverrides } = await import("@/lib/selfCheckStore");
+  const { DEFAULT_SELF_CHECK, resolveSelfCheckProfile } = await import("@/lib/selfCheck");
+  const list = await editorsWithWork(from, now);
+  const [team, cards, unclassified, overrides] = await Promise.all([
+    editorQuality({ editorKey: null, from, to: now }),
+    Promise.all(list.map((e) => editorQuality({ editorKey: e.key, from, to: now }))),
+    unclassifiedIssues(40),
+    selfCheckOverrides().catch(() => ({})),
+  ]);
+  const profiles = Object.keys(DEFAULT_SELF_CHECK).filter((k) => k !== "default").map((k) => resolveSelfCheckProfile(k, overrides));
+  return { own: null, team, cards, unclassified, profiles };
+}
+
+function EditorsTab({ data }: { data: Awaited<ReturnType<typeof loadEditorsTab>> }) {
+  if (data.own) return <EditorQualityCard report={data.own} own />;
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-muted">
+        First-review results count only a cause a reviewer confirmed as the editor&rsquo;s — a client&rsquo;s change, new scope, a brief
+        gap, a capture or processing problem never counts against them, and an issue nobody has classified counts for nobody yet.
+        Every block shows its sample size; small samples say so instead of a percentage.
+      </p>
+      {data.team && <EditorQualityCard report={data.team} />}
+      {data.cards.map((r) => <EditorQualityCard key={r.editorKey ?? "team"} report={r} />)}
+      <Section icon={Flag} title={`Issues waiting on a cause (${data.unclassified.length})`}>
+        <div className="p-4">
+          <UnclassifiedIssues rows={data.unclassified} />
+        </div>
+      </Section>
+      <Section icon={CheckCircle2} title="Send-for-review checklist, by product">
+        <div className="p-4">
+          <SelfCheckSettings profiles={data.profiles} />
+        </div>
+      </Section>
+    </div>
+  );
+}

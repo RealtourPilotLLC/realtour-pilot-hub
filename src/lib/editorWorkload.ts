@@ -18,6 +18,9 @@ import { NOT_A_CUT } from "@/lib/reviewCuts";
 //
 //   waiting_footage  the photographer or the office   — nobody can edit yet
 //   editing          the EDITOR                       — the only real workload
+//                    (OWED to them — not "being edited": §7.1, Sep 25. Which
+//                    job an editor is on right now is lib/editorWork's answer,
+//                    shown in the Working-now panel; this lane is the pile.)
 //   in_review        the office (a verdict is owed)    — off the editor's desk
 //   awaiting_send    the office (a send is owed)       — finished work, not out
 //
@@ -47,7 +50,9 @@ export type WorkLane = "waiting_footage" | "editing" | "in_review" | "awaiting_s
 
 export const LANE_LABEL: Record<WorkLane, string> = {
   waiting_footage: "Waiting on footage",
-  editing: "In editing",
+  // Not "In editing" (§7.1): this lane folds Ready for editing, Paused,
+  // Revisions and anything unrecognised — work OWED, not work happening now.
+  editing: "Owed to the editor",
   in_review: "Waiting on a verdict",
   awaiting_send: "Approved, not sent",
 };
@@ -71,7 +76,7 @@ export function laneOf(status: string): WorkLane {
     case "Ready for review": return "in_review";
     case "Approved": return "awaiting_send";
     case "Completed": return "awaiting_send";
-    default: return "editing"; // Ready for editing · In editing · Revisions
+    default: return "editing"; // Ready for editing · In editing · Paused · Revisions · Extra video owed
   }
 }
 

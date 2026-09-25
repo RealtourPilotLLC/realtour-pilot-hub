@@ -291,7 +291,9 @@ async function main() {
   const queue2 = await buildEditorQueue();
   const row2 = [...queue2.notDone, ...queue2.done].find((r) => r.id === P2.id);
   ok("the job is on the board, and on John now", !!row2 && row2.editorKey === "john", row2?.editorKey ?? "(no row)");
-  ok("the job owes two videos, one of them already finished", row2?.videos === 2 && row2?.videoBreakdown === "1 approved · 1 more in editing", `videos=${row2?.videos} "${row2?.videoBreakdown}"`);
+  // "to edit", not "in editing" since Sep 25 (§7.1, A64): a video nobody has
+  // handed in is owed, and nothing says anyone is cutting it.
+  ok("the job owes two videos, one of them already finished", row2?.videos === 2 && row2?.videoBreakdown === "1 approved · 1 more to edit", `videos=${row2?.videos} "${row2?.videoBreakdown}"`);
   const load2 = await editingWorkload(rowsFor(queue2, [P2.id, ...others]));
   const john2 = load2.editors.find((e) => e.key === "john");
   const kim2 = load2.editors.find((e) => e.key === "kim");

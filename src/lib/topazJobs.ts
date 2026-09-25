@@ -8,6 +8,7 @@ import { aryeoJobUrl } from "@/lib/aryeoUrl";
 import { appBase } from "@/lib/appUrl";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { topazSettings, type TopazSettings } from "@/lib/settings";
+import { HELD_ATTESTATION, type HeldChoice } from "@/lib/topazHold";
 // The cut store's own rules about who may read these bytes (RTP-01). Every
 // read below goes through them: the header probes get a URL that carries its
 // own permission, and the one direct fetch carries the store's token.
@@ -76,6 +77,13 @@ export const TOPAZ_STATES = [
   "failed",
   "cancelled",
   "skipped",
+  // HELD (O02, Sep 25 2026): the render is finished, paid for and in Dropbox
+  // under unverified/, but its sound and picture could not be checked. It is
+  // NOT a live state — the driver never picks it up, so nothing re-renders or
+  // re-charges — and NOT a terminal one: readyToSend treats every state it does
+  // not list as terminal as "the lane still owes work", so a held cut can never
+  // be offered as the file to send. Only a person ends it (resolveHeldTopazJob).
+  "held",
 ] as const;
 export type TopazState = (typeof TOPAZ_STATES)[number];
 
@@ -97,6 +105,23 @@ const STALL_MS = 4 * 3600_000;
  *  least, so one megabyte is far under anything genuine and far over an empty
  *  file or an error page saved under a .mp4 name. */
 const MIN_SAVED_BYTES = 1_048_576;
+
+/**
+ * HOW FAR A FINISHED FILE MAY DRIFT FROM WHAT WAS SENT before it stops being
+ * the same video (O02). Topaz is asked for the source's frame rate with frame
+ * interpolation off, so the running time should match to a frame; a second or
+ * 2%, whichever is larger, covers container rounding and an audio track that
+ * outlasts the picture by a few hundred ms. The picture is checked on its SHORT
+ * side against what was planned, so a rotated phone export (1920×1080 stored,
+ * 1080×1920 shown) reads the same both ways; 8 px or 2% covers an encoder that
+ * pads to a macroblock. Anything past these is a different file, not a rounding.
+ */
+const OUTPUT_TOLERANCE = { durationSec: 1, durationRatio: 0.02, shortSidePx: 8, shortSideRatio: 0.02 } as const;
+
+/** Where an unchecked render waits in Dropbox: a subfolder of Final, so it is
+ *  never the file at the top of the folder that the one rule ("send the file
+ *  whose name ends in FINAL") points Kyle at. */
+const UNVERIFIED_DIR = "unverified";
 
 const streetOf = (title?: string | null) => (title || "this job").split(",")[0].trim();
 
@@ -843,6 +868,20 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       });
   }
 
+  // KEEP WHAT THE SOURCE SOUNDED LIKE (O02). The finished-file check used to
+  // re-read the source to learn whether it had audio, and a source that could
+  // not be re-read at that moment turned a SILENT render into "unreadable"
+  // rather than "lost" — so the one fact the check exists for was the fact it
+  // could not establish. Measured once here, on the row, it is still true when
+  // the render comes back. Only a real measurement is kept: a failed probe
+  // (audioUnreadable) is a guess and is left null, which the check reads as
+  // "unknown" exactly as before.
+  if (!audioUnreadable && (job.sourceHasAudio !== sourceAudio.present || job.sourceAudioCodec !== sourceAudio.codec)) {
+    await prisma.topazJob
+      .update({ where: { id: job.id }, data: { sourceHasAudio: sourceAudio.present, sourceAudioCodec: sourceAudio.codec } })
+      .catch(() => {});
+  }
+
   // AUDIO THE PASS WOULD LOSE IS A REASON NOT TO RUN IT. Topaz will neither
   // copy nor convert uncompressed audio into an mp4 — both settings were tried
   // on Stephen Kennedy's 322 N 62nd St cut on Sep 17 and both came back silent,
@@ -1399,41 +1438,121 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
   return "processing";
 }
 
-/** Did the sound survive the pass? Reads both files' headers over a few HTTP
- *  range requests (about a second each) and compares audio tracks.
- *  "ok" also covers a source that never had audio — there was nothing to lose.
- *  "unreadable" is deliberately NOT "ok": a file we cannot read is a file we
- *  cannot vouch for, and the caller retries before it decides. */
-async function audioSurvived(job: NonNullable<JobRow>, downloadUrl: string): Promise<"ok" | "lost" | "unreadable"> {
+// ---------------------------------------------------------------------------
+// IS THE FINISHED FILE THE VIDEO WE SENT? (O02/A39, Sep 25 2026)
+//
+// Nothing the pass produces is trusted until it has been read. The check used
+// to be audio-only, and it ended in three ways: "ok", "lost" (the job fails and
+// the editor's file stays the deliverable) and "unreadable" — which retried
+// three times and then went on to be FILED anyway, with a bell asking somebody
+// to play it. Filed meant everything after it: the editor's approved export
+// moved into superseded/, Kyle told to deliver the new file, and the ready card
+// presenting it as "the file to send". A file the hub could not read became the
+// only video in Final on the strength of nobody having looked at it.
+//
+// So there are four answers now, and only one of them is trusted:
+//   ok          the audio survived (or there was none to lose), the running
+//               time matches the approved cut and the picture is the size that
+//               was planned. Filed as FINAL (Topaz), exactly as before.
+//   lost        the source had sound and this file has none. Failed, never
+//               filed; the editor's file stays FINAL.
+//   mismatch    readable, and a different length or a different size from the
+//               one that was sent. Same outcome as lost — it is not this video.
+//   unreadable  could not be read. Retried; if it still cannot be read the file
+//               is saved to Dropbox under unverified/ and read AGAIN from there
+//               (a different host from Topaz's link). Readable there → judged
+//               like any other. Still unreadable → HELD for a person.
+//
+// The source's side comes off the row (sourceHasAudio / sourceDurationSec /
+// the planned output size, all measured when the job was set up), so the check
+// no longer depends on re-reading a file it has already used. A row queued
+// before those facts were kept falls back to re-reading, as it always did.
+// ---------------------------------------------------------------------------
+
+type OutputVerdict = "ok" | "lost" | "mismatch" | "unreadable";
+type OutputCheck = { verdict: OutputVerdict; reason: string | null; json: string };
+
+/** The source's audio, from the row when it was measured there, else read
+ *  again (legacy rows only). null = not known. */
+async function sourceAudioOf(job: NonNullable<JobRow>): Promise<{ present: boolean; codec: string | null } | null> {
+  if (job.sourceHasAudio !== null && job.sourceHasAudio !== undefined) {
+    return { present: job.sourceHasAudio, codec: job.sourceAudioCodec ?? null };
+  }
   const sub = job.submission;
-  if (!sub?.blobUrl) return "unreadable";
-  // Probed SEPARATELY, and the result recorded, because which of the two files
-  // could not be read decides everything and a combined try/catch threw that
-  // away. A source we cannot re-read while the OUTPUT reads fine and carries
-  // audio is not a doubt about the render — it is a doubt about a file we
-  // already used. The output is the one that must be readable, and until a real
-  // Topaz object has been read end to end this check has never been proven
-  // against one (review, Sep 17): the verdict now goes on the project's
-  // activity so the first real render answers it for free.
-  const src = await probeableUrl(sub.blobUrl)
+  if (!sub?.blobUrl) return null;
+  return probeableUrl(sub.blobUrl)
     .then((readable) => (readable ? probeVideoMetadata(readable, job.sourceSizeBytes ?? sub.sizeBytes ?? null) : null))
     .then((p) => p?.audio ?? null)
     .catch(() => null);
-  const out = await probeVideoMetadata(downloadUrl).then((p) => p.audio).catch(() => null);
-  const verdict: "ok" | "lost" | "unreadable" =
-    out === null ? "unreadable"
-    : src === null ? (out.present ? "ok" : "unreadable")
-    : !src.present ? "ok"
-    : out.present ? "ok" : "lost";
+}
+
+/**
+ * Read the finished file's header at `url` and judge it against what was sent.
+ * `where` says which copy was read — Topaz's download link, or the copy already
+ * in Dropbox — and goes on the record with the facts, so the first real
+ * disagreement explains itself. Writes a timeline line; the CALLER persists the
+ * returned json with whatever state it decides.
+ */
+async function verifyProcessedOutput(job: NonNullable<JobRow>, url: string | null, where: "topaz" | "dropbox"): Promise<OutputCheck> {
+  const src = await sourceAudioOf(job);
+  const out = url ? await probeVideoMetadata(url).catch(() => null) : null;
+
+  let verdict: OutputVerdict = "ok";
+  let reason: string | null = null;
+  if (!out) {
+    verdict = "unreadable";
+    reason = "the file couldn't be read";
+  } else if (src === null && !out.audio.present) {
+    // A silent output against a source nobody could measure: it might be a
+    // silent export, it might be lost sound. Not knowing is not "ok".
+    verdict = "unreadable";
+    reason = "the file has no sound and the original's couldn't be checked";
+  } else if (src?.present && !out.audio.present) {
+    verdict = "lost";
+    reason = "with no sound — the original's audio track didn't survive it";
+  } else {
+    const want = job.sourceDurationSec ?? 0;
+    const slack = Math.max(OUTPUT_TOLERANCE.durationSec, want * OUTPUT_TOLERANCE.durationRatio);
+    if (want > 0 && out.durationSec > 0 && Math.abs(out.durationSec - want) > slack) {
+      verdict = "mismatch";
+      reason = `${Math.round(out.durationSec)}s long where the approved cut runs ${Math.round(want)}s`;
+    } else if (job.outputWidth && job.outputHeight && out.width > 0 && out.height > 0) {
+      const planned = Math.min(job.outputWidth, job.outputHeight);
+      const got = Math.min(out.width, out.height);
+      if (Math.abs(got - planned) > Math.max(OUTPUT_TOLERANCE.shortSidePx, planned * OUTPUT_TOLERANCE.shortSideRatio)) {
+        verdict = "mismatch";
+        reason = `${out.width}×${out.height} where ${job.outputWidth}×${job.outputHeight} was asked for`;
+      }
+    }
+  }
+
+  const json = JSON.stringify({
+    verdict,
+    reason,
+    where,
+    at: new Date().toISOString(),
+    source: {
+      hasAudio: src?.present ?? null,
+      audioCodec: src?.codec ?? null,
+      durationSec: job.sourceDurationSec ?? null,
+      plannedOutput: job.outputWidth && job.outputHeight ? `${job.outputWidth}x${job.outputHeight}` : null,
+    },
+    output: out
+      ? { hasAudio: out.audio.present, audioCodec: out.audio.codec, durationSec: out.durationSec, size: `${out.width}x${out.height}` }
+      : null,
+  });
+  // The same line the audio-only check wrote, so a search for it still finds
+  // every check the pass has ever made — now with which copy was read.
   await prisma.activity
     .create({
       data: {
-        projectId: job.projectId, type: "SYSTEM",
-        body: `1080p pass audio check: ${verdict} (source ${src === null ? "unreadable" : src.present ? `${src.codec ?? "unknown codec"}` : "no audio"}, output ${out === null ? "unreadable" : out.present ? `${out.codec ?? "unknown codec"}` : "no audio"})`.slice(0, 500),
+        projectId: job.projectId,
+        type: "SYSTEM",
+        body: `1080p pass audio check: ${verdict} [${where === "topaz" ? "Topaz copy" : "Dropbox copy"}] (source ${src === null ? "unreadable" : src.present ? `${src.codec ?? "unknown codec"}` : "no audio"}, output ${out === null ? "unreadable" : out.audio.present ? `${out.audio.codec ?? "unknown codec"}` : "no audio"})${reason && verdict !== "ok" ? ` — ${reason}` : ""}`.slice(0, 500),
       },
     })
     .catch(() => {});
-  return verdict;
+  return { verdict, reason, json };
 }
 
 // ---- processing → saving ---------------------------------------------------
@@ -1449,29 +1568,32 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
     // THE SOUND HAS TO SURVIVE. What reaches Dropbox is what Kyle delivers, so
     // a render that came back silent must never be filed — we found the Sep 17
     // one because the client noticed, which is the wrong way round.
-    const verdict = await audioSurvived(job, st.downloadUrl);
-    if (verdict === "lost") {
+    const check = await verifyProcessedOutput(job, st.downloadUrl, "topaz");
+    const checked = { outputCheckJson: check.json, outputCheckedAt: new Date() };
+    if (check.verdict === "lost" || check.verdict === "mismatch") {
+      await prisma.topazJob.update({ where: { id: job.id }, data: checked }).catch(() => {});
       await fail(
         job,
-        "The 1080p pass came back with no sound — the original's audio track didn't survive it. Nothing was filed and the editor's file is untouched, so the original is still good to send. Worth a look before this one goes out.",
+        check.verdict === "lost"
+          ? "The 1080p pass came back with no sound — the original's audio track didn't survive it. Nothing was filed and the editor's file is untouched, so the original is still good to send. Worth a look before this one goes out."
+          : `The 1080p pass came back ${check.reason}, so it isn't the video that was approved. Nothing was filed and the editor's file is untouched, so the original is still good to send.`,
       );
       return "failed";
     }
-    if (verdict === "unreadable" && job.attempt < 3) {
+    if (check.verdict === "unreadable" && job.attempt < 3) {
       // Could not read one of the two files this minute. The render is finished
       // and paid for; try again shortly rather than file it unchecked.
-      await release(job, { attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 60_000) });
+      await release(job, { attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 60_000), ...checked });
       return "processing";
     }
-    if (verdict === "unreadable") {
-      await tellSomebody(
-        job,
-        `Couldn't check the sound on the 1080p file — ${streetOf(job.project.title)}`,
-        "The render finished and is being filed, but the file couldn't be read to confirm its audio survived. Worth playing it once before it goes out.",
-        `topaz-audio-unverified-${job.id}`,
-      );
-    }
+    // Still unreadable after the retries: it goes to Dropbox, but under
+    // unverified/ and not as the deliverable — stepSaving files it aside and
+    // reads it once more from there (O02). The bell that used to fire here
+    // ("being filed … worth playing it once") is gone with the behaviour it
+    // described: a person hears about this file only if it ends up HELD.
     await release(job, {
+      outputCheck: check.verdict === "ok" ? "verified" : "unverified",
+      ...checked,
       state: "saving",
       // The filing clock starts HERE. Measuring it from acceptedAt gave a
       // three-hour render half an hour to reach Dropbox and then re-failed it
@@ -1560,10 +1682,13 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
 const FINAL_TOPAZ = "FINAL (Topaz)";
 const FINAL_EDITOR = "FINAL (editor export)";
 const BEFORE_TOPAZ = "(before Topaz)";
+/** An unverified render's marker (O02) — it names a stage like the others, and
+ *  stageStem strips it like the others. */
+const UNCHECKED = "(Topaz - unchecked)"; // no comma: SAFE_NAME would turn one into "_"
 // Every marker this code has ever written, so a name can be stripped back to
 // its stem no matter which generation produced it. " - 1080p" is the old one
 // and it is in production on real jobs.
-const STAGE_MARKERS = /\s*(?:-\s*(?:FINAL \(Topaz\)|FINAL \(editor export\)|1080p)|\((?:before Topaz|before 1080p pass)\))\s*$/i;
+const STAGE_MARKERS = /\s*(?:-\s*(?:FINAL \(Topaz\)|FINAL \(editor export\)|1080p)|\((?:before Topaz|before 1080p pass|Topaz - unchecked)\))\s*$/i;
 
 /** A file name with any stage marker removed, applied repeatedly so a name that
  *  collected two of them over a re-run comes back clean. */
@@ -1636,10 +1761,18 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     return "failed";
   }
 
+  // A FILE NOBODY COULD READ IS NOT FILED AS THE DELIVERABLE (O02). It still
+  // comes to Dropbox — the render is paid for, and a second host is a second
+  // chance to read it — but into unverified/, recorded on heldPath and NEVER on
+  // finalPath/savedAt: those two columns are what every reader takes to mean
+  // "the 1080p file exists and is the one to send" (readyToSend.fileFor, the
+  // download route, supersedePriorEnhanced). finishSaving then reads it again.
+  const unverified = job.outputCheck === "unverified";
+
   // An in-flight save_url from a previous tick: finish that rather than start
   // a second copy of the same file.
   if (job.dropboxJobId && !job.savedAt) {
-    const state = await checkSaveJob(job.id, job.dropboxJobId);
+    const state = await checkSaveJob(job.id, job.dropboxJobId, { aside: unverified });
     if (state === "pending") {
       await release(job, { nextAttemptAt: new Date(Date.now() + 20_000) });
       return "saving";
@@ -1655,7 +1788,8 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     // Landed. Go straight to the tidy-up — `job` in hand is the row as it was
     // BEFORE checkSaveJob stamped savedAt, and falling through on that stale
     // copy would start a second copy of a file that is already there.
-    if (job.finalPath) return await finishSaving(job, s, job.finalPath);
+    const landed = unverified ? job.heldPath : job.finalPath;
+    if (landed) return await finishSaving(job, s, landed);
   }
 
   // A Dropbox copy that never lands must STOP, not poll every 20 seconds
@@ -1669,10 +1803,9 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   }
 
   const folder = actualFolderPaths(project).finalVideo;
-  // The original's own name is the truth when the hub knows it; otherwise the
-  // slot label names the file exactly the way startDropboxCopy would have.
-  const originalName = sub.finalPath?.split("/").pop() ?? derivedCutName(job);
-  const path = `${folder}/${enhancedNameFor(originalName, s.container)}`;
+  const path = unverified ? heldPathFor(job, s, folder) : enhancedPathFor(job, s, folder);
+  const landedAt = (p: string) =>
+    unverified ? { heldPath: p, dropboxJobId: null } : { finalPath: p, savedAt: new Date(), dropboxJobId: null };
 
   if (!job.savedAt) {
     let url = job.downloadUrl;
@@ -1687,7 +1820,7 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       }
       await prisma.topazJob.update({ where: { id: job.id }, data: { downloadUrl: url } });
     }
-    await dbx("files/create_folder_v2", { path: folder, autorename: false }).catch(() => {});
+    await dbx("files/create_folder_v2", { path: path.slice(0, path.lastIndexOf("/")), autorename: false }).catch(() => {});
     type SaveUrl = { ".tag": "complete" | "async_job_id"; async_job_id?: string };
     let r: SaveUrl;
     try {
@@ -1697,24 +1830,46 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       if (e instanceof DropboxError && /conflict/i.test(e.message)) {
         const meta = await dbx<{ size?: number }>("files/get_metadata", { path }).catch(() => null);
         if (meta) {
-          await prisma.topazJob.update({ where: { id: job.id }, data: { finalPath: path, savedAt: new Date(), dropboxJobId: null } });
+          await prisma.topazJob.update({ where: { id: job.id }, data: landedAt(path) });
           return await finishSaving(job, s, path);
         }
       }
       throw e;
     }
     if (r[".tag"] !== "complete") {
-      await release(job, { finalPath: path, dropboxJobId: r.async_job_id ?? null, nextAttemptAt: new Date(Date.now() + 20_000) });
+      await release(job, { ...(unverified ? { heldPath: path } : { finalPath: path }), dropboxJobId: r.async_job_id ?? null, nextAttemptAt: new Date(Date.now() + 20_000) });
       return "saving";
     }
-    await prisma.topazJob.update({ where: { id: job.id }, data: { finalPath: path, savedAt: new Date(), dropboxJobId: null } });
+    await prisma.topazJob.update({ where: { id: job.id }, data: landedAt(path) });
   }
 
-  return await finishSaving(job, s, job.finalPath ?? path);
+  return await finishSaving(job, s, unverified ? path : (job.finalPath ?? path));
 }
 
-/** Poll one in-flight save_url. */
-async function checkSaveJob(jobId: string, asyncJobId: string): Promise<"complete" | "pending" | "failed"> {
+/** The enhanced file's home: the top of Final, named FINAL (Topaz). */
+function enhancedPathFor(job: NonNullable<JobRow>, s: TopazSettings, folder: string): string {
+  // The original's own name is the truth when the hub knows it; otherwise the
+  // slot label names the file exactly the way startDropboxCopy would have.
+  const originalName = job.submission?.finalPath?.split("/").pop() ?? derivedCutName(job);
+  return `${folder}/${enhancedNameFor(originalName, s.container)}`;
+}
+
+/** Where an unchecked render waits: Final/unverified/, named so nobody could
+ *  take it for the file to send even when they find it by hand. */
+function heldPathFor(job: NonNullable<JobRow>, s: TopazSettings, folder: string): string {
+  const originalName = job.submission?.finalPath?.split("/").pop() ?? derivedCutName(job);
+  return `${folder}/${UNVERIFIED_DIR}/${SAFE_NAME(`${stageStem(originalName) || originalName} ${UNCHECKED}.${s.container}`)}`;
+}
+
+/** The Final folder a copy belongs to — one level up for an unchecked copy. */
+function finalFolderOf(path: string): string {
+  const aside = path.lastIndexOf(`/${UNVERIFIED_DIR}/`);
+  return aside > 0 ? path.slice(0, aside) : path.slice(0, path.lastIndexOf("/"));
+}
+
+/** Poll one in-flight save_url. An unchecked copy (`aside`) landing is NOT the
+ *  1080p file existing, so it never stamps savedAt. */
+async function checkSaveJob(jobId: string, asyncJobId: string, opts: { aside?: boolean } = {}): Promise<"complete" | "pending" | "failed"> {
   type Status = { ".tag": "in_progress" | "complete" | "failed"; failed?: { ".tag"?: string } };
   let st: Status;
   try {
@@ -1724,7 +1879,9 @@ async function checkSaveJob(jobId: string, asyncJobId: string): Promise<"complet
   }
   if (st[".tag"] === "in_progress") return "pending";
   if (st[".tag"] === "complete") {
-    await prisma.topazJob.update({ where: { id: jobId }, data: { savedAt: new Date(), dropboxJobId: null } }).catch(() => {});
+    await prisma.topazJob
+      .update({ where: { id: jobId }, data: opts.aside ? { dropboxJobId: null } : { savedAt: new Date(), dropboxJobId: null } })
+      .catch(() => {});
     return "complete";
   }
   return "failed";
@@ -1732,9 +1889,10 @@ async function checkSaveJob(jobId: string, asyncJobId: string): Promise<"complet
 
 /** Everything after the enhanced file is safely in Dropbox: set the older files
  *  aside, tidy up at Topaz, and ping Kyle. */
-async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: string): Promise<string> {
-  const sub = job.submission!;
-  const folder = path.slice(0, path.lastIndexOf("/"));
+async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: string): Promise<string> {
+  let path = landed;
+  const folder = finalFolderOf(path);
+  const unverified = job.outputCheck === "unverified";
 
   // 0. LOOK AT THE FILE BEFORE TRUSTING IT (Sep 16 review). Dropbox's "complete"
   //    tag says the transfer finished, not that what arrived is a video. Every
@@ -1774,7 +1932,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: st
       await dbx("files/create_folder_v2", { path: `${folder}/superseded`, autorename: false }).catch(() => {});
       await dbx("files/move_v2", { from_path: path, to_path: `${folder}/superseded/${path.split("/").pop()}`, autorename: true }).catch(() => {});
     }
-    await prisma.topazJob.update({ where: { id: job.id }, data: { savedAt: null, finalPath: null, dropboxJobId: null, downloadUrl: null } }).catch(() => {});
+    await prisma.topazJob.update({ where: { id: job.id }, data: { savedAt: null, finalPath: null, heldPath: null, dropboxJobId: null, downloadUrl: null } }).catch(() => {});
     await fail(
       job,
       saved
@@ -1783,6 +1941,52 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: st
     );
     return "failed";
   }
+
+  // 0b. THE SECOND LOOK (O02). Topaz's link could not be read; this is the
+  //     copy in Dropbox, read over a different host. Readable and right → it is
+  //     promoted to FINAL (Topaz) and everything below runs exactly as for a
+  //     file that passed first time. Anything else stops here, BEFORE the
+  //     editor's original is touched and before Kyle is told anything.
+  if (unverified) {
+    const settled = await settleUncheckedCopy(job, s, path);
+    if (settled.state !== "promoted") return settled.state;
+    path = settled.path;
+  }
+
+  const { taskId, originalMoved } = await fileAsFinal(job, path);
+
+  await release(job, {
+    state: "done",
+    finalPath: path,
+    savedAt: new Date(),
+    finishedAt: new Date(),
+    taskId,
+    attempt: 0,
+    error: null,
+    errorAt: null,
+    nextAttemptAt: null,
+  });
+  await prisma.activity
+    .create({
+      data: {
+        projectId: job.projectId,
+        type: "SYSTEM",
+        body: `1080p pass finished — ${path.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`,
+      },
+    })
+    .catch(() => {});
+  return "done";
+}
+
+/**
+ * The file at `path` is trusted and is becoming THE deliverable: set the
+ * editor's original and any earlier enhanced file aside, tidy up at Topaz, and
+ * hand Kyle the job. Shared by the driver (a file that passed) and by a person
+ * resolving a held file, so there is one tail and not two.
+ */
+async function fileAsFinal(job: NonNullable<JobRow>, path: string): Promise<{ taskId: string | null; originalMoved: boolean }> {
+  const sub = job.submission!;
+  const folder = finalFolderOf(path);
 
   // 1. The editor's original goes down into superseded/, keeping its bytes and
   //    gaining a name that says what it is. Only once the hub is sure its own
@@ -1815,31 +2019,348 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: st
 
   // 3. Hygiene: a client's property video has no reason to stay on Topaz's
   //    servers once it is safely filed. Best-effort, after the copy, never before.
-  if (job.requestId) await deleteVideoFiles(job.requestId);
+  //    A job that was HELD already did this when it was held.
+  if (job.requestId && !job.heldAt) await deleteVideoFiles(job.requestId);
 
   const taskId = await pingKyle(job, path, originalMoved);
+  return { taskId, originalMoved };
+}
 
-  await release(job, {
-    state: "done",
-    finalPath: path,
-    savedAt: new Date(),
-    finishedAt: new Date(),
-    taskId,
-    attempt: 0,
-    error: null,
-    errorAt: null,
-    nextAttemptAt: null,
+// ---------------------------------------------------------------------------
+// H. A FILE NOBODY COULD CHECK (O02/A39, Sep 25 2026).
+//
+// The three ways an unchecked copy leaves unverified/: read and right (it is
+// promoted), read and wrong (set aside, the job fails, the editor's file stays
+// the deliverable), or still unreadable — HELD, for a person to listen to and
+// decide. A held job keeps everything that matters: the editor's approved
+// original is untouched in Final, the processed file is in Dropbox, the credits
+// are spent once. Nothing re-renders it and nothing re-charges for it: the
+// driver never claims a held row, and the only things that move one are the
+// three functions below, each a compare-and-set on `state = held`.
+// ---------------------------------------------------------------------------
+
+type Settled = { state: "promoted"; path: string } | { state: "saving" | "failed" | "held" };
+
+/** Read the unchecked copy from Dropbox and act on the answer. */
+async function settleUncheckedCopy(job: NonNullable<JobRow>, s: TopazSettings, heldPath: string): Promise<Settled> {
+  const check = await verifyProcessedOutput(job, await dropboxReadUrl(heldPath), "dropbox");
+  const checked = { outputCheckJson: check.json, outputCheckedAt: new Date() };
+
+  if (check.verdict === "ok") {
+    const promoted = await promoteHeldCopy(heldPath, enhancedPathFor(job, s, finalFolderOf(heldPath)));
+    if (!promoted) {
+      // Dropbox would not move it this minute. The file is safe where it is;
+      // ask again shortly — the stall clock still bounds it.
+      await release(job, { nextAttemptAt: new Date(Date.now() + 60_000), ...checked });
+      return { state: "saving" };
+    }
+    await prisma.topazJob.update({
+      where: { id: job.id },
+      data: { finalPath: promoted, savedAt: new Date(), heldPath: null, outputCheck: "verified", ...checked },
+    });
+    return { state: "promoted", path: promoted };
+  }
+
+  if (check.verdict === "lost" || check.verdict === "mismatch") {
+    // Read, and not the video that was approved. Same rule as a render that
+    // came back silent from Topaz: never filed. It goes to superseded/ rather
+    // than staying in unverified/ looking like something still to decide.
+    const aside = await setAside(heldPath);
+    await prisma.topazJob.update({ where: { id: job.id }, data: { heldPath: aside.path ?? heldPath, ...checked } }).catch(() => {});
+    await fail(
+      job,
+      check.verdict === "lost"
+        ? "The 1080p pass came back with no sound — the original's audio track didn't survive it. It wasn't filed; the editor's file is untouched and is the one to send."
+        : `The 1080p pass came back ${check.reason}, so it isn't the video that was approved. It wasn't filed; the editor's file is untouched and is the one to send.`,
+    );
+    return { state: "failed" };
+  }
+
+  return { state: await holdForReview(job, heldPath, check) };
+}
+
+/** A read URL for a Dropbox file — the temporary link, which is a different
+ *  host from Topaz's download and honours range requests. null = none. */
+async function dropboxReadUrl(path: string): Promise<string | null> {
+  return dbx<{ link?: string }>("files/get_temporary_link", { path })
+    .then((r) => r.link ?? null)
+    .catch(() => null);
+}
+
+/** Move a checked copy to the FINAL (Topaz) name. Returns where it is, or null.
+ *  A move we lost track of (the file is already at `to` and gone from `from`)
+ *  counts as done rather than as a failure to retry forever. */
+async function promoteHeldCopy(from: string, to: string): Promise<string | null> {
+  const moved = await dbx("files/move_v2", { from_path: from, to_path: to, autorename: false })
+    .then(() => true)
+    .catch(() => false);
+  if (moved) return to;
+  const there = await dbx("files/get_metadata", { path: to }).then(() => true).catch(() => false);
+  const gone = await dbx("files/get_metadata", { path: from })
+    .then(() => false)
+    .catch((e: unknown) => e instanceof DropboxError && /not_found/i.test(e.message));
+  return there && gone ? to : null;
+}
+
+/** Move a file into its Final folder's superseded/ — never delete. `missing`
+ *  = it was not there to move (somebody moved it by hand), which is not a
+ *  reason to refuse a decision about it. */
+async function setAside(path: string): Promise<{ path: string | null; missing: boolean }> {
+  const folder = finalFolderOf(path);
+  await dbx("files/create_folder_v2", { path: `${folder}/superseded`, autorename: false }).catch(() => {});
+  const to = `${folder}/superseded/${path.split("/").pop()}`;
+  try {
+    const r = await dbx<{ metadata?: { path_display?: string } }>("files/move_v2", { from_path: path, to_path: to, autorename: true });
+    return { path: r?.metadata?.path_display ?? to, missing: false };
+  } catch (e) {
+    return { path: null, missing: e instanceof DropboxError && /not_found/i.test(e.message) };
+  }
+}
+
+/** Park the job as HELD and tell the person whose call it is. The bytes are
+ *  in Dropbox, so Topaz's copy goes; the editor's original is not touched and
+ *  Kyle is not asked to deliver anything. */
+async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: OutputCheck): Promise<"held" | "saving"> {
+  const now = new Date();
+  const won = await prisma.topazJob
+    .updateMany({
+      where: { id: job.id, state: "saving" },
+      data: {
+        state: "held",
+        heldPath,
+        heldAt: now,
+        outputCheck: "unverified",
+        outputCheckJson: check.json,
+        outputCheckedAt: now,
+        dropboxJobId: null,
+        leaseUntil: null,
+        leaseBy: null,
+        nextAttemptAt: null,
+        attempt: 0,
+        error: null,
+        errorAt: null,
+      },
+    })
+    .then((r) => r.count === 1)
+    .catch(() => false);
+  if (!won) return "saving"; // another tick moved it on; its outcome is the true one
+  if (job.requestId) await deleteVideoFiles(job.requestId);
+
+  const street = streetOf(job.project.title);
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const { creativeApprover } = await import("@/lib/opsExceptions");
+    // WHOSE CALL IT IS: the creative reviewer (James) — addressed by name only
+    // when his login would not already see the office broadcast, so he gets one
+    // row, not two. Jordan and Kyle see the broadcast. topaz_problem is bell-only
+    // by design (notifyPrefs has no switch for it), so nobody is paged at night.
+    const approver = await creativeApprover().catch(() => null);
+    await notifyInApp({
+      kind: "topaz_problem",
+      title: `1080p file held, not sent — ${street}`,
+      body: "Its sound couldn't be verified. Listen to it, then use it or keep the approved original.",
+      href: "/#video-review",
+      targets: [
+        { roles: ["OWNER", "ADMIN"] },
+        ...(approver && !approver.canApprove ? [{ roles: ["ADMIN" as const], userKey: `tm:${approver.id}` }] : []),
+      ],
+      dedupeKey: `topaz-held-${job.id}`,
+    });
+  } catch { /* the bell is best-effort; the row, the card and the exceptions board carry it */ }
+  await prisma.activity
+    .create({
+      data: {
+        projectId: job.projectId,
+        type: "SYSTEM",
+        body: `1080p file HELD — its sound couldn't be checked, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides: use it after listening, or keep the original.`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+  return "held";
+}
+
+/** A claim on a held job while a person's decision is carried out. Stale after
+ *  five minutes, so a decision that died half-way can be made again. */
+const HELD_CLAIM_STALE_MS = 5 * 60_000;
+
+async function claimHeld(jobId: string, by: string | null, resolution: string, note: string | null): Promise<boolean> {
+  const now = new Date();
+  const r = await prisma.topazJob
+    .updateMany({
+      where: { id: jobId, state: "held", OR: [{ resolvedAt: null }, { resolvedAt: { lt: new Date(now.getTime() - HELD_CLAIM_STALE_MS) } }] },
+      data: { resolvedAt: now, resolvedBy: by, resolution, resolutionNote: note },
+    })
+    .catch(() => ({ count: 0 }));
+  return r.count === 1;
+}
+
+async function unclaimHeld(jobId: string): Promise<void> {
+  await prisma.topazJob
+    .updateMany({ where: { id: jobId, state: "held" }, data: { resolvedAt: null, resolvedBy: null, resolution: null, resolutionNote: null } })
+    .catch(() => {});
+}
+
+/** Promote a held copy and finish the job as done — the shared end of "it
+ *  reads fine now" and "a person listened and it's right". */
+async function finishHeldAsProcessed(
+  job: NonNullable<JobRow>,
+  s: TopazSettings,
+  outcome: { outputCheck: "verified" | "resolved-processed"; json?: string },
+): Promise<{ ok: boolean; message: string }> {
+  // Normally the file is still in unverified/. A decision that died after the
+  // move but before the job was finished left it promoted (heldPath null,
+  // finalPath set) — the same press finishes the tail instead of refusing.
+  const to = job.heldPath
+    ? await promoteHeldCopy(job.heldPath, enhancedPathFor(job, s, finalFolderOf(job.heldPath)))
+    : job.finalPath;
+  if (!to) {
+    await unclaimHeld(job.id);
+    return { ok: false, message: "Dropbox wouldn't move the 1080p file into place just now — nothing changed. Try again in a minute." };
+  }
+  const now = new Date();
+  await prisma.topazJob.update({
+    where: { id: job.id },
+    data: {
+      finalPath: to,
+      savedAt: now,
+      heldPath: null,
+      outputCheck: outcome.outputCheck,
+      ...(outcome.json ? { outputCheckJson: outcome.json, outputCheckedAt: now } : {}),
+    },
+  });
+  const { taskId, originalMoved } = await fileAsFinal(job, to);
+  await prisma.topazJob.updateMany({
+    where: { id: job.id, state: "held" },
+    data: { state: "done", taskId, finishedAt: now, error: null, errorAt: null },
   });
   await prisma.activity
     .create({
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p pass finished — ${path.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`,
+        body: `1080p file released from hold — ${outcome.outputCheck === "verified" ? `it read correctly from Dropbox on a re-check${job.resolvedBy ? ` asked for by ${job.resolvedBy}` : ""}` : `${job.resolvedBy ?? "a reviewer"} listened to it and chose it`}. ${to.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`.slice(0, 500),
       },
     })
     .catch(() => {});
-  return "done";
+  return { ok: true, message: "Released — it's the file to send now, and Kyle has the upload card." };
+}
+
+/**
+ * A PERSON DECIDES A HELD 1080p FILE. The two answers, and nothing else:
+ *   use-original      the approved editor export is the deliverable (it is
+ *                     renamed FINAL (editor export), exactly as for a failed
+ *                     pass) and the unchecked file goes to superseded/ — moved,
+ *                     never deleted. The job ends `failed`, with the reason
+ *                     saying a reviewer chose it, so the ready card offers the
+ *                     original and nothing offers to render it again.
+ *   accept-processed  the person has played it and puts their name to it (the
+ *                     attestation must be the exact sentence they were shown).
+ *                     It is promoted and handed to Kyle like any passed file.
+ * Who, when and why are written on the row. A double press or two tabs: the
+ * claim is a compare-and-set, so exactly one decision lands.
+ */
+export async function resolveHeldTopazJob(
+  jobId: string,
+  choice: HeldChoice,
+  by: string | null,
+  opts: { attest?: string | null; why?: string | null } = {},
+): Promise<{ ok: boolean; message: string }> {
+  const job = await loadJob(jobId);
+  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  // Where the unchecked file is: unverified/, or already promoted by a decision
+  // that died half-way (see finishHeldAsProcessed).
+  const unchecked = job.heldPath ?? job.finalPath;
+  if (job.state !== "held" || !unchecked) return { ok: false, message: "That one isn't waiting on a decision any more." };
+  const why = (opts.why ?? "").trim().slice(0, 300) || null;
+
+  if (choice === "accept-processed") {
+    if ((opts.attest ?? "").trim() !== HELD_ATTESTATION) {
+      return { ok: false, message: "Play the 1080p file first, then tick that you listened to it — it can't be used on the hub's word, because the hub couldn't check it." };
+    }
+    // A MEASUREMENT BEATS AN ATTESTATION. If a later look read the file and
+    // found it silent or the wrong video, ticking a box does not change that.
+    const last = parseCheck(job.outputCheckJson);
+    if (last === "lost" || last === "mismatch") {
+      return { ok: false, message: "The last check read this file and found it isn't right — keep the approved original." };
+    }
+    const s = await topazSettings();
+    if (!(await claimHeld(jobId, by, "accept-processed", why ?? HELD_ATTESTATION))) {
+      return { ok: false, message: "Someone else is deciding this one right now — refresh in a moment." };
+    }
+    return await finishHeldAsProcessed({ ...job, resolvedBy: by }, s, { outputCheck: "resolved-processed" });
+  }
+
+  if (!(await claimHeld(jobId, by, "use-original", why))) {
+    return { ok: false, message: "Someone else is deciding this one right now — refresh in a moment." };
+  }
+  const aside = await setAside(unchecked);
+  if (!aside.path && !aside.missing) {
+    await unclaimHeld(jobId);
+    return { ok: false, message: "Dropbox wouldn't move the unchecked file aside just now — nothing changed. Try again in a minute." };
+  }
+  const moved = await prisma.topazJob.updateMany({
+    where: { id: jobId, state: "held" },
+    data: {
+      state: "failed",
+      outputCheck: "resolved-original",
+      heldPath: aside.path ?? unchecked,
+      finalPath: null, // only ever set here by a half-finished promotion; the original is the file now
+      savedAt: null,
+      error: `${by ?? "A reviewer"} kept the approved original — the 1080p file's sound couldn't be verified.`.slice(0, 400),
+      errorAt: null, // a decision, not a fault: stays out of the dashboard's failure count
+      finishedAt: new Date(),
+    },
+  });
+  if (moved.count !== 1) return { ok: false, message: "That one isn't waiting on a decision any more." };
+  await markEditorFileFinal(job);
+  await prisma.activity
+    .create({
+      data: {
+        projectId: job.projectId,
+        type: "SYSTEM",
+        body: `1080p file set aside by ${by ?? "a reviewer"}: the approved original is the file to send${why ? ` (${why})` : ""}. The unchecked render is in superseded/.`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+  return { ok: true, message: "Kept the approved original — it's on the ready card as the file to send." };
+}
+
+/**
+ * Read a held file again, from Dropbox only. Free by construction: it never
+ * speaks to Topaz, so it cannot re-render or re-charge. Readable and right →
+ * released exactly as if it had passed first time. Anything else → it stays
+ * held, with what was found on the row for the person deciding.
+ */
+export async function recheckHeldTopazJob(jobId: string, by: string | null): Promise<{ ok: boolean; message: string }> {
+  const job = await loadJob(jobId);
+  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  const unchecked = job.heldPath ?? job.finalPath;
+  if (job.state !== "held" || !unchecked) return { ok: false, message: "That one isn't waiting on a decision any more." };
+  if (!(await claimHeld(jobId, by, "rechecked", null))) {
+    return { ok: false, message: "Someone else is deciding this one right now — refresh in a moment." };
+  }
+  const check = await verifyProcessedOutput(job, await dropboxReadUrl(unchecked), "dropbox");
+  if (check.verdict === "ok") {
+    const s = await topazSettings();
+    return await finishHeldAsProcessed({ ...job, resolvedBy: by }, s, { outputCheck: "verified", json: check.json });
+  }
+  await unclaimHeld(jobId);
+  await prisma.topazJob.update({ where: { id: jobId }, data: { outputCheckJson: check.json, outputCheckedAt: new Date() } }).catch(() => {});
+  return {
+    ok: false,
+    message:
+      check.verdict === "unreadable"
+        ? "Still couldn't read it. Play it in Dropbox, then use it or keep the approved original."
+        : `It reads now, and it's ${check.verdict === "lost" ? "silent" : check.reason} — keep the approved original.`,
+  };
+}
+
+function parseCheck(json: string | null | undefined): OutputVerdict | null {
+  try {
+    return json ? ((JSON.parse(json) as { verdict?: OutputVerdict }).verdict ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1993,7 +2514,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     ``,
     originalMoved
       ? `That is the only video left in that folder — the editor's original is safe in the "superseded" subfolder underneath, in case it's ever needed.`
-      : `Deliver the file whose name ends in "- 1080p". The editor's original is still beside it.`,
+      : `Deliver the file whose name ends in "${FINAL_TOPAZ}". The editor's original is still beside it.`, // the "- 1080p" marker was retired on Sep 18 (O02 fix)
     ``,
     `Upload it to Aryeo and deliver (or re-deliver) the listing.`,
     aryeo ? `Aryeo: ${aryeo}` : `This job has no Aryeo listing or order on it, so it has to be found by address in Aryeo.`,
@@ -2179,10 +2700,21 @@ export async function cancelTopazJob(jobId: string, by?: string | null): Promise
  *     Trying again is free by construction, not by promise.
  */
 export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; message: string }> {
-  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true } });
+  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true, outputCheck: true } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
   if (LIVE_STATES.includes(job.state as TopazState)) return { ok: false, message: "That one is already on its way." };
   if (job.state === "done") return { ok: false, message: "That video already went through." };
+  // A HELD FILE IS FINISHED AND PAID FOR (O02). Sending it back through the
+  // lane would re-read Topaz for a file already in Dropbox and, once Topaz has
+  // dropped its copy, fail a render that exists. The decision is a person's.
+  if (job.state === "held") {
+    return { ok: false, message: "That 1080p file is finished and waiting for someone to listen to it — use it, or keep the approved original. Nothing needs to run again." };
+  }
+  // A reviewer already chose the original over this render. The button must
+  // not quietly undo a recorded decision.
+  if (job.outputCheck === "resolved-original") {
+    return { ok: false, message: "A reviewer chose the approved original for this cut, so the 1080p pass won't run on it again." };
+  }
 
   if (job.completeUploadAt) {
     await prisma.topazJob.update({
@@ -2318,6 +2850,10 @@ export type TopazJobView = {
   createdAt: Date;
   finishedAt: Date | null;
   nextAttemptAt: Date | null;
+  /** O02: where an unchecked render waits in Dropbox while it is held. */
+  heldPath: string | null;
+  /** O02: verified | unverified | resolved-processed | resolved-original; null = a row from before the check was kept. */
+  outputCheck: string | null;
 };
 
 /** Plain English for every state. No jargon, and always what happens next. */
@@ -2351,6 +2887,8 @@ export function topazSays(j: {
       return j.skipReason ?? "This one was left out.";
     case "cancelled":
       return j.error ?? "Stopped by hand.";
+    case "held":
+      return "Finished, but its sound couldn't be checked — held until someone listens and uses it or keeps the approved original.";
     default:
       return j.state;
   }
@@ -2395,6 +2933,8 @@ function toView(j: JobWithProject): TopazJobView {
     createdAt: j.createdAt,
     finishedAt: j.finishedAt,
     nextAttemptAt: j.nextAttemptAt,
+    heldPath: j.heldPath,
+    outputCheck: j.outputCheck,
   };
 }
 
@@ -2419,6 +2959,8 @@ export type TopazDashboard = {
   concurrencyCap: number;
   waitingOnKyle: number;
   recentFailures: number;
+  /** O02: finished renders held because their sound couldn't be checked. */
+  heldForReview: number;
   settings: TopazSettings;
   /** The sentence that must appear wherever this pipeline is explained. */
   aryeoNote: string;
@@ -2443,7 +2985,7 @@ export async function topazDashboard(): Promise<TopazDashboard> {
     }
   }
 
-  const [today, monthRenders, monthCredits, inFlight, waitingOnKyle, recentFailures] = await Promise.all([
+  const [today, monthRenders, monthCredits, inFlight, waitingOnKyle, recentFailures, heldForReview] = await Promise.all([
     prisma.topazJob.count({ where: { acceptedAt: { gte: dayStart } } }),
     prisma.topazJob.count({ where: { acceptedAt: { gte: monthStart } } }),
     // WHAT THIS MONTH HAS COST, per job and then added up — never two whole-
@@ -2456,6 +2998,7 @@ export async function topazDashboard(): Promise<TopazDashboard> {
     prisma.topazJob.count({ where: { state: { in: LIVE_STATES } } }),
     prisma.topazJob.count({ where: { state: "done", deliveredAt: null } }),
     prisma.topazJob.count({ where: { state: "failed", errorAt: { gte: new Date(Date.now() - 7 * 24 * 3600_000) } } }),
+    prisma.topazJob.count({ where: { state: "held" } }),
   ]);
 
   return {
@@ -2476,6 +3019,7 @@ export async function topazDashboard(): Promise<TopazDashboard> {
     concurrencyCap: s.maxConcurrent,
     waitingOnKyle,
     recentFailures,
+    heldForReview,
     settings: s,
     aryeoNote: ARYEO_MANUAL_NOTE,
   };

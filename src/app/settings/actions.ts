@@ -290,18 +290,15 @@ export async function saveTeamNotifyPrefs(teamMemberId: string, prefs: NotifyPre
 export async function saveReviewRoomRules(input: ReviewRoomRules): Promise<{ ok: boolean; message: string }> {
   try {
     const me = await requireSettingsActor();
-    // The approver is a PERSON, and a select can be stale or hand-rolled. Check
-    // the id against the roster before it is stored — a name on the exceptions
-    // board that points at nobody is worse than an empty field, which at least
-    // reads as "the office" and says so.
-    if (input.creativeApproverTeamMemberId) {
-      const { prisma } = await import("@/lib/prisma");
-      const exists = await prisma.teamMember.findFirst({
-        where: { id: input.creativeApproverTeamMemberId, active: true },
-        select: { id: true },
-      });
-      if (!exists) return { ok: false, message: "That person isn't on the roster any more — reload and pick again." };
-    }
+    // The seats are PEOPLE, and a select can be stale or hand-rolled. All three
+    // are checked against the roster before they are stored — a name on the
+    // exceptions board that points at nobody is worse than an empty field — and
+    // a new seat that would hand approval power to a login that isn't owner or
+    // admin is the owner's call, never an editor's (§8.1, review fix Sep 25).
+    const { validateReviewSeats } = await import("@/lib/reviewerAssignment");
+    const { authEnforced } = await import("@/lib/auth/guards");
+    const seats = await validateReviewSeats(await reviewRoomRules(), input, me ? me.realRole : authEnforced() ? "" : null);
+    if (!seats.ok) return seats;
     await putSetting("review_room", input, me?.email ?? null);
     revalidatePath("/settings");
     return { ok: true, message: "Saved — the next hourly run follows these rules." };

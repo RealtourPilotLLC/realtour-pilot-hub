@@ -276,6 +276,14 @@ export type RenderingVideo = {
   approvedAtISO: string;
   waitingHours: number;
   says: string;
+  /**
+   * O02: the pass FINISHED but its file could not be checked, so it is held for
+   * a person — the only rendering row with something to press. The unchecked
+   * file is named and linked (Dropbox's own preview, to listen to it); the
+   * approved original is still the editor's file, untouched. Absent on every
+   * other row.
+   */
+  held?: { jobId: string; fileName: string; dropboxUrl: string | null; heldAtISO: string | null; lastCheck: string | null } | null;
 };
 
 /** R5: a cut recorded as SENT whose own records did not finish. Survives a refresh. */
@@ -722,7 +730,9 @@ const CANDIDATE_SELECT = {
     // the 1080p pass was set up. It is the only length the hub holds for a cut,
     // and it is what tells a 60s correction from the 66s video beside it on the
     // listing (308 W Upsal St).
-    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true },
+    // heldPath/heldAt/outputCheckJson: only a HELD row reads them (O02), to name
+    // the unchecked file and say what the last look at it found.
+    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true },
   },
   project: {
     select: {
@@ -851,6 +861,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
         approvedAtISO: approvedAt.toISOString(),
         waitingHours,
         says: renderingSays(sub.topazJob.state),
+        held: sub.topazJob.state === "held" ? heldLine(sub.topazJob) : null,
       });
       continue;
     }
@@ -1063,11 +1074,37 @@ function listingLine(
 
 /** Where the 1080p pass has got to, in Kyle's words rather than the lane's. */
 function renderingSays(state: string): string {
+  // O02: finished, filed aside, and not trusted — the one rendering row that is
+  // waiting on a PERSON rather than on the lane.
+  if (state === "held") return "The 1080p file's sound couldn't be verified — waiting for a reviewer to listen to it or keep the original.";
   if (state === "queued" || state === "estimated") return "The 1080p pass is queued — nothing to send yet.";
   if (state === "saving") return "The 1080p file is being filed into Dropbox — nearly there.";
   if (state === "uploading" || state === "processing") return "The 1080p pass is running — nothing to send yet.";
   // An unknown state is still the lane's, and still not ours to send.
   return "The 1080p pass hasn't finished — nothing to send yet.";
+}
+
+/** What a held row shows: the unchecked file, a link to listen to it, and what
+ *  the last look at it found (topazJobs.verifyProcessedOutput's own record). */
+function heldLine(j: { id: string; heldPath: string | null; heldAt: Date | null; outputCheckJson: string | null }): NonNullable<RenderingVideo["held"]> {
+  let lastCheck: string | null = null;
+  try {
+    const c = j.outputCheckJson ? (JSON.parse(j.outputCheckJson) as { verdict?: string; reason?: string | null; where?: string }) : null;
+    if (c?.verdict === "unreadable") {
+      lastCheck = c.reason && c.reason !== "the file couldn't be read"
+        ? `Last check: ${c.reason}.`
+        : `Last check: couldn't be read${c.where === "dropbox" ? " from Topaz or from Dropbox" : ""}.`;
+    }
+    else if (c?.verdict === "lost") lastCheck = "The last check read it as silent — keep the original.";
+    else if (c?.verdict === "mismatch") lastCheck = `The last check found it ${c.reason ?? "isn't the approved video"} — keep the original.`;
+  } catch { /* an unreadable record says nothing rather than something wrong */ }
+  return {
+    jobId: j.id,
+    fileName: j.heldPath?.split("/").pop() ?? "the 1080p file",
+    dropboxUrl: j.heldPath ? dropboxFileUrl(j.heldPath) : null,
+    heldAtISO: j.heldAt?.toISOString() ?? null,
+    lastCheck,
+  };
 }
 
 /**

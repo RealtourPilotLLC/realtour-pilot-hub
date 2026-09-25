@@ -1989,6 +1989,20 @@ export async function syncProjectStatuses(
     }
   }
 
+  // WHO HOLDS EACH WAITING CUT (unified handoff §8.1, Sep 25) — once per hourly
+  // pass, never per job and never on a single-project re-sync: re-run the away
+  // move, label announced cuts nobody holds, offer the backup a cut the primary
+  // has held past the covered-hours line. The automatic move is off unless
+  // Jordan sets it. Best-effort: the statuses above never wait on it.
+  if (!opts.projectId) {
+    try {
+      const { reviewCoverSweep } = await import("@/lib/reviewerAssignment");
+      await reviewCoverSweep();
+    } catch (e) {
+      console.warn("review cover sweep failed (statuses unaffected)", e);
+    }
+  }
+
   return { checked: projects.length, changed, partials, byStatus, dropboxUnreadable, dropboxErrors };
 }
 

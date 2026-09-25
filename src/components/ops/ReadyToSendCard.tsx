@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Fi
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { RetryRender } from "@/components/ops/RetryRender";
+import { HeldRender } from "@/components/ops/HeldRender";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
 import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
@@ -105,6 +106,45 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
  *  No Download, no "Mark as sent" — the file to send does not exist yet. */
 function Rendering({ rows }: { rows: RenderingVideo[] }) {
   if (rows.length === 0) return null;
+  // HELD rows first, and apart (O02): the lane has finished with them and is
+  // waiting on a PERSON, so they carry the one decision on this footnote. Every
+  // other row is only the lane at work and stays unpressable.
+  const held = rows.filter((r) => r.held);
+  const running = rows.filter((r) => !r.held);
+  return (
+    <>
+      {held.length > 0 && <Held rows={held} />}
+      {running.length > 0 && <Running rows={running} />}
+    </>
+  );
+}
+
+/** Finished renders whose sound couldn't be verified. The approved original is
+ *  still the deliverable; the row asks somebody to listen and choose. */
+function Held({ rows }: { rows: RenderingVideo[] }) {
+  return (
+    <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
+      <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning">
+        <AlertTriangle className="size-3.5" /> Held — the 1080p file&rsquo;s sound couldn&rsquo;t be checked
+      </p>
+      <ul className="mt-1 space-y-2">
+        {rows.map((r) => (
+          <li key={r.submissionId} className="min-w-0 text-[11px] leading-snug text-muted-2">
+            <Link href={`/projects/${r.projectId}`} className="font-medium text-muted hover:text-brand">{r.street}</Link>
+            <span> · {r.cutLabel} · v{r.round}</span>
+            <span className={cn(r.waitingHours >= 24 && "font-semibold text-danger")}> · approved {waited(r.waitingHours)} ago</span>
+            <span className="block">{r.says}</span>
+            {r.held && (
+              <HeldRender jobId={r.held.jobId} street={r.street} fileName={r.held.fileName} dropboxUrl={r.held.dropboxUrl} lastCheck={r.held.lastCheck} />
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function Running({ rows }: { rows: RenderingVideo[] }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
       <p className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">

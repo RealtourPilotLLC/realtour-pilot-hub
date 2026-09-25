@@ -1356,7 +1356,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
               <h4 className="flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-muted-2">
                 In production right now
                 <span className="flex flex-wrap gap-1.5 text-[11px] font-medium normal-case tracking-normal">
-                  <Pill warn={false} label={`${d.pipeline.editing} editing`} href="/editing" />
+                  <Pill warn={false} label={`${d.pipeline.editing} being edited now`} href="/editing" />
                   <Pill warn={d.pipeline.review > 0} label={`${d.pipeline.review} in review`} href="/review" />
                   <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} in revision`} href="/tasks?tab=revisions" />
                 </span>

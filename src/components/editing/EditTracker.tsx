@@ -52,18 +52,40 @@ export function deriveEditStage(input: {
   revisionAfterApproval: boolean;
   latestRoundStatus: string | null;
   rawsLanded: boolean;
+  /** §8.1 (Sep 25): the ONE person the waiting cut is with. Left out — no
+   *  review chain named, or a cut from before one was — it reads as it always
+   *  did. */
+  reviewerName?: string | null;
+  /** §7.1: has an editor pressed Start on this job — "active", "paused", or
+   *  null for nobody. Left out, EDITING reads as not confirmed. */
+  work?: "active" | "paused" | null;
+  /** §8.2 (Sep 25): the newest version exists but waits on the editor's
+   *  send-for-review check — it is not in front of the reviewer yet. */
+  heldForCheck?: boolean;
 }): { stage: EditStage; label: string } {
   const { projectStatus, revisionOpen, revisionAfterApproval, latestRoundStatus, rawsLanded } = input;
+  const reviewerFirst = input.reviewerName ? input.reviewerName.split(/\s+/)[0] : null;
+  if (latestRoundStatus === "PENDING" && input.heldForCheck) {
+    return { stage: "editing", label: "Finished — waiting on the send-for-review check" };
+  }
   if (latestRoundStatus === "APPROVED" && !revisionAfterApproval)
     return { stage: "done", label: projectStatus === "DELIVERED" ? "Approved & delivered" : "Cut approved" };
   if (projectStatus === "DELIVERED" && !revisionOpen) return { stage: "done", label: "Approved & delivered" };
-  if (latestRoundStatus === "PENDING") return { stage: "review", label: "Ready for review — with Jordan" };
+  if (latestRoundStatus === "PENDING") return { stage: "review", label: `Ready for review — with ${reviewerFirst ?? "Jordan"}` };
   if (revisionOpen || latestRoundStatus === "CHANGES_REQUESTED")
     return { stage: "revision", label: "Changes requested — back with the editor" };
-  const started = projectStatus === "EDITING";
-  if (rawsLanded) return { stage: "editing", label: started ? "In the edit — footage is in" : "Ready for editing — footage is in" };
+  // §7.1 (Sep 25): "In the edit" only while an editor has pressed Start
+  // (lib/editorWork), not because the job's status says EDITING — that stays
+  // set through a pause, an office pin and a board move. An EDITING nobody
+  // has confirmed says so rather than guessing.
+  const lead =
+    input.work === "active" ? "In the edit"
+    : input.work === "paused" ? "Paused"
+    : projectStatus === "EDITING" ? "In the edit (not confirmed)"
+    : "Ready for editing";
+  if (rawsLanded) return { stage: "editing", label: `${lead} — footage is in` };
   if (["SHOT", "EDITING", "REVIEW"].includes(projectStatus))
-    return { stage: "editing", label: started ? "In the edit — footage on the way" : "Ready for editing — footage on the way" };
+    return { stage: "editing", label: `${lead} — footage on the way` };
   return { stage: "booked", label: "Edit booked — waiting on footage" };
 }
 

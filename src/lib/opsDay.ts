@@ -326,6 +326,7 @@ export type OpsDay = {
    *  job count), so the tower pill and the tab it opens are one number. The
    *  overdue / due-today task counts that used to sit here were never rendered
    *  — the home reads those off the Other tab's own query (offPageNumbers). */
+  /** editing = jobs being edited NOW (an editor pressed Start), not the EDITING stage */
   pipeline: { rows: PipelineRow[]; editing: number; review: number; revision: number };
   openLoops: OpsLoop[];
   /** The same list, counted — so a header can say "14 loops, none of them
@@ -605,7 +606,14 @@ export async function buildOpsDay(): Promise<OpsDay> {
         take: 25,
       }),
       Promise.all([
-        prisma.project.count({ where: { status: "EDITING" } }),
+        // BEING EDITED NOW (§7.1, A64 — review fix, Sep 25): jobs an editor has
+        // pressed Start on and not paused — the same answer the Editing Room's
+        // Working-now panel gives (one active job per editor at most). The
+        // EDITING stage alone also counts paused work and claims nobody
+        // confirmed, which is how "6 editing" sat beside "1 working now".
+        prisma.editorWorkItem
+          .findMany({ where: { state: "ACTIVE" }, select: { projectId: true }, distinct: ["projectId"] })
+          .then((r) => prisma.project.count({ where: { id: { in: r.map((x) => x.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED"] } } })),
         prisma.project.count({ where: { status: "REVIEW" } }),
         // The tower's "N open revisions" pill opens /tasks?tab=revisions, whose
         // badge is revisionsBoard's job count (ChecklistViews checklistCounts).

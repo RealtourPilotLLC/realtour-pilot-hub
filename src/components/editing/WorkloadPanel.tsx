@@ -98,6 +98,12 @@ export function WorkloadPanel({ view, mine }: { view: WorkloadView; mine?: boole
       flush
       tone={view.unassignedActive > 0 || view.overdue > 0 ? "warning" : "default"}
     >
+      {/* §7.1: these lanes are the PILE, not the desk. "Owed to the editor"
+          used to read "In editing" and swallowed every Ready-for-editing and
+          Revisions row, so the office read a backlog as work in progress. */}
+      <p className="border-b border-border px-5 py-2 text-[11px] text-muted-2">
+        Work owed, not work happening now{mine ? " — what you're on is the banner above." : " — who is actually on what is in Working now, above."}
+      </p>
       <div className="divide-y divide-border">
         {view.editors.length === 0 && <p className="px-5 py-4 text-sm text-muted">Nothing in the room.</p>}
         {view.editors.map((e) => <EditorRow key={e.key ?? "__none__"} e={e} />)}

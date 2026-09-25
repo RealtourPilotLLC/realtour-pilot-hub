@@ -207,6 +207,13 @@ const BELL_RULES: Record<string, BellRule> = {
   review_submitted: "all",
   review_changes: "all", // changes asked for on a cut (the editor must act)
   review_approved: "all", // the editor's loop closes here
+  // §8.1 (Sep 25): a cut's ONE reviewer changed — the FYI to the person it
+  // left, and the backup being OFFERED a cut the primary has held past the
+  // covered-hours line (lib/reviewerAssignment). Person-addressed and bell
+  // only: neither kind is in notifyPrefs.KIND_TO_EVENT, so no phone is used
+  // that nobody switched on. The new owner's own notice rides cut_ready.
+  review_reassigned: "all",
+  review_cover_offer: "all",
   // The photographer who shot the job asking for a change on the cut (Sep 18).
   // It is a REQUEST, not a verdict — nothing about the submission moves — so
   // the only thing that carries it to the people who can act is this row.
@@ -222,7 +229,7 @@ const BELL_RULES: Record<string, BellRule> = {
   cull: "all", // has to happen before the edit starts
   task_assigned: "all", // someone put a job on YOUR name
   edit_assigned: "all", // …the editor version of the same
-  edit_started: "all", // the editor set the queue to In editing (owner/admin hear it; Sep 10)
+  edit_started: "all", // an editor pressed Start (or the office started it for them, named as the office) — owner/admin hear it; a Resume is silent (§7.1, Sep 25)
   edit_finished: "all",
   shoot_add_on: "all", // sold in the field; it doesn't get invoiced unless someone sees it
   portal_suggestion: "all", // a client asked for a script change

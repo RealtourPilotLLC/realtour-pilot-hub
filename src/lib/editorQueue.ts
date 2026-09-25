@@ -13,6 +13,8 @@ import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
 import { removedProjectIds } from "@/lib/queueRemoved";
 import { OWES_AN_ADDITIONAL_SHOOT } from "@/lib/uploadHistory";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
+import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
+import { isHeldForSelfCheck } from "@/lib/selfCheck";
 import {
   computedVideosOwed,
   computedView,
@@ -37,6 +39,11 @@ import type { QueueRow } from "@/components/editing/SimpleQueue";
 // cut the job owes has passed review but the job hasn't been delivered yet.
 // Such a row must stop saying "Ready for review" — nobody is waiting on a
 // human any more, so an editor reading the queue would chase a ghost.
+//
+// EDITING's word here is the LIFECYCLE's ("editing has begun"). Whether anyone
+// is on the job right now is the work layer's answer (lib/editorWork, §7.1):
+// the queue rows below run both through workLabel, so a row reads "In editing"
+// only while an editor has actually pressed Start on it.
 export const STATUS_LABEL: Record<string, string> = {
   // Past-shoot BOOKED/SCHEDULED = shot but raws not in yet → Slack's "Waiting".
   BOOKED: "Waiting",
@@ -64,6 +71,17 @@ export const STATUS_LABEL: Record<string, string> = {
  * Room; the pill stays out of it.
  */
 export const EXTRA_SHOOT_STATUS = "Extra video owed";
+
+/**
+ * A cut is in, but it is HELD for the editor's send-for-review check (§8.2) —
+ * found by the folder sweep, an upload whose bytes were not the file checked,
+ * a cut moved here from another job. Nobody can rule on it (approveCut and
+ * requestCutChanges refuse it) and the Review Room does not list it, so
+ * "Ready for review" would send the editor to wait on a verdict that cannot
+ * come. It is the editor's move: laneOf counts it as editing, and it is not in
+ * WAITING_ON_OFFICE. Worn, not picked — the check is finished on /edit/<id>.
+ */
+export const CHECK_NEEDED_STATUS = "Check needed";
 
 export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[] }> {
   const rules = await editorRouting();
@@ -145,7 +163,7 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   // no task yet. Without this, every row showed the current rule's editor and
   // misattributed Kim's and Luma's in-flight work to John Mark.
   const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
-  const [openTasks, msgCounts, cutRows] = await Promise.all([
+  const [openTasks, msgCounts, cutRows, work] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
         projectId: { in: inflight.map((p) => p.id) },
@@ -176,8 +194,14 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"] },
       },
       orderBy: { round: "asc" },
-      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true },
+      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true, selfCheckId: true, selfCheckedAt: true },
     }),
+    // WHO IS ON IT RIGHT NOW (§7.1) — the editor's own Start/Pause, not the
+    // status. In-flight rows only: an upcoming shoot has nothing to start and
+    // a delivered one nothing left to edit. A failed read degrades to "nobody
+    // said so", which the row prints as Ready for editing / not confirmed,
+    // never as somebody's live work.
+    workStateFor(inflight.map((p) => p.id)).catch(() => new Map<string, ProjectWork>()),
   ]);
   // This queue narrates the VIDEO lane only. A photo-retouch revision (Kyle's)
   // also lives on the project — it must not flip the video row to "Revisions",
@@ -228,18 +252,22 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   // path — cutKeyOf, the identity every reader uses) speaks for it, or round
   // 1's "changes requested" would outvote the version 2 the editor already
   // sent back. Rows arrive round-ascending, so the last write per key wins.
-  type CutTally = { total: number; waiting: number; revising: number; approved: number };
-  const latestCut = new Map<string, { projectId: string; round: number; status: string }>();
+  // A PENDING cut HELD for the editor's check (§8.2) is not waiting on a
+  // reviewer — nobody can rule on it — so it is tallied as `checking`, the
+  // editor's move, the same way videoStatesFor and the Review Room skip it.
+  type CutTally = { total: number; waiting: number; checking: number; revising: number; approved: number };
+  const latestCut = new Map<string, { projectId: string; round: number; status: string; held: boolean }>();
   for (const s of cutRows) {
     const key = `${s.projectId}|${cutKeyOf(s)}`;
     const cur = latestCut.get(key);
-    if (!cur || s.round > cur.round) latestCut.set(key, { projectId: s.projectId, round: s.round, status: s.status });
+    if (!cur || s.round > cur.round) latestCut.set(key, { projectId: s.projectId, round: s.round, status: s.status, held: isHeldForSelfCheck(s) });
   }
   const cutTally = new Map<string, CutTally>();
   for (const c of latestCut.values()) {
-    const t = cutTally.get(c.projectId) ?? { total: 0, waiting: 0, revising: 0, approved: 0 };
+    const t = cutTally.get(c.projectId) ?? { total: 0, waiting: 0, checking: 0, revising: 0, approved: 0 };
     t.total++;
-    if (c.status === "PENDING") t.waiting++;
+    if (c.status === "PENDING" && c.held) t.checking++;
+    else if (c.status === "PENDING") t.waiting++;
     else if (c.status === "CHANGES_REQUESTED") t.revising++;
     else if (c.status === "APPROVED") t.approved++;
     cutTally.set(c.projectId, t);
@@ -360,10 +388,15 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         effectiveStatus =
           cut.revising > 0 || roundOwed.has(p.id) ? "REVISION"
           : cut.waiting > 0 ? "REVIEW"
+          // Handed in but held for the check: the editor's move, not a verdict's.
+          : cut.checking > 0 ? CHECK_NEEDED_STATUS
           : cut.approved >= Math.max(1, videosOwed) ? "APPROVED"
           // Part of the batch passed, the rest was never handed in — a
-          // 4-video month with cut 1 approved is progress, not done.
-          : "EDITING";
+          // 4-video month with cut 1 approved is progress, not done. It is
+          // NOT "In editing" by itself (§7.1): whether anyone is cutting the
+          // rest is the work layer's answer, applied below — SHOT here reads
+          // Ready for editing until an editor presses Start.
+          : "SHOT";
       } else if (p.status === "REVIEW" || (p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0 && !roundOwed.has(p.id))) {
         // The Room holds nothing for this job. Most jobs never pass through it
         // (folder discovery is off by default), so a file in the Final folder
@@ -388,6 +421,13 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // job reads what was pinned, wherever its shoot date sits.
     const pinned = statusPinned(p);
     if (pinned) effectiveStatus = p.status;
+    // THE SECOND AXIS (§7.1). SHOT/EDITING take their words from who has
+    // pressed Start ("In editing" / "Paused" / "Ready for editing", and an
+    // EDITING nobody confirmed says so); every other stage keeps its word and
+    // wears a chip naming who is on it. A pinned EDITING is still only the
+    // lifecycle — the office can pin a stage, not a person's afternoon.
+    const w = upcoming || p.status === "DELIVERED" ? undefined : work.get(p.id);
+    const wl = workLabel(effectiveStatus, w, { baseLabel: STATUS_LABEL[effectiveStatus] ?? effectiveStatus, now });
     // ---- FOUR VIDEOS, ONE WORD (Jordan, Sep 18) --------------------------
     //
     // "She has 4 videos. 1 is ready for review, and the rest are in editing.
@@ -409,11 +449,14 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     const notStarted = Math.max(0, videosOwed - started);
     const parts: string[] = [];
     if (cut?.waiting) parts.push(`${cut.waiting} ready for review`);
+    if (cut?.checking) parts.push(`${cut.checking} waiting on the editor's check`);
     if (cut?.revising) parts.push(`${cut.revising} in revisions`);
     if (cut?.approved) parts.push(`${cut.approved} approved`);
     // "more" only when something above it was said — "3 more in editing" reads
     // wrong as the first and only clause.
-    if (notStarted) parts.push(`${notStarted}${parts.length ? " more" : ""} in editing`);
+    // "to edit", not "in editing" (§7.1): a slot nobody has handed in is owed,
+    // and nothing says anyone is cutting it.
+    if (notStarted) parts.push(`${notStarted}${parts.length ? " more" : ""} to edit`);
     const videoBreakdown = videosOwed > 1 && parts.length > 1 ? parts.join(" · ") : null;
 
     const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
@@ -439,13 +482,19 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       typeDetail: effectiveTypeDetail(p, computedTypeDetail),
       status: upcoming && !pinned ? "Waiting"
         : reopened ? EXTRA_SHOOT_STATUS
-        : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
+        : wl.label,
+      // Who is on it, for the pill's Paused option and the row's chip (§7.1).
+      work: {
+        active: (w?.active ?? []).map((a) => ({ key: a.editorKey, name: a.name, sinceISO: a.sinceISO, outputTitle: a.outputTitle, onBehalfBy: a.onBehalfBy })),
+        paused: (w?.paused ?? []).map((a) => ({ key: a.editorKey, name: a.name, sinceISO: a.sinceISO, outputTitle: a.outputTitle, onBehalfBy: a.onBehalfBy })),
+      },
+      workChip: upcoming || reopened ? null : wl.chip,
       // The office is holding this job in Waiting (Sep 11): the pill on the
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job
       // that is no longer on Waiting is stale and does not count.
       held: heldSet.has(p.id) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
-      // "1 ready for review · 3 more in editing" — null on a one-video job.
+      // "1 ready for review · 3 more to edit" — null on a one-video job.
       videoBreakdown,
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       // The key behind the name, for the row's reassign select. Same truth
@@ -637,11 +686,16 @@ export async function teamChatConversations(scope: ChatScope): Promise<ChatConve
       client: { select: { name: true } },
     },
   });
+  // The same two axes as the queue rows: an EDITING job nobody has pressed
+  // Start on does not read "In editing" here either (§7.1).
+  const work = await workStateFor(projects.filter((p) => p.status === "SHOT" || p.status === "EDITING").map((p) => p.id)).catch(
+    () => new Map<string, ProjectWork>(),
+  );
   return projects.map((p) => ({
     id: p.id,
     street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
     client: p.client.name,
-    status: STATUS_LABEL[p.status] ?? p.status,
+    status: workLabel(p.status, work.get(p.id), { baseLabel: STATUS_LABEL[p.status] ?? p.status, now }).label,
     sortAt: p.deliveryDue ?? p.shootDate ?? null,
   }));
 }

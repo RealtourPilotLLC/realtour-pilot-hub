@@ -2,7 +2,9 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { Check, Loader2 } from "lucide-react";
-import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates, loadCreativeApproverCandidates } from "@/app/settings/actions";
+import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates } from "@/app/settings/actions";
+import { loadCutReviewerSeats, setCutReviewerAway } from "@/app/review/actions";
+import type { ReviewerSeat } from "@/components/review/reviewerTypes";
 import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
@@ -318,6 +320,50 @@ export function TextTemplateSettings({ initial }: { initial: TextTemplates }) {
 
 
 // ---- Review Room ------------------------------------------------------------
+type SeatKey = "creativeApproverTeamMemberId" | "backupReviewerTeamMemberId" | "fallbackReviewerTeamMemberId";
+const REVIEW_SEATS: { key: SeatKey; label: string; hint: string }[] = [
+  { key: "creativeApproverTeamMemberId", label: "Reviewer", hint: "owns routine review — James" },
+  { key: "backupReviewerTeamMemberId", label: "First backup", hint: "covers when they're away or offered — Kyle" },
+  { key: "fallbackReviewerTeamMemberId", label: "Final fallback", hint: "only when both are out — Jordan" },
+];
+
+/** "Away until" for one saved seat. Saves on its own press, not with the card:
+ *  away moves that person's waiting cuts on at once, and a stale Save of the
+ *  card must never undo it (it lives in its own setting for that reason). */
+function SeatAway({ seat, onChanged }: { seat: ReviewerSeat; onChanged: () => void }) {
+  const [day, setDay] = useState("");
+  const [busy, start] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+  const run = (until: string | null) =>
+    start(async () => {
+      const res = await setCutReviewerAway(seat.id, until).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
+      setMsg(res.message);
+      if (res.ok) { setDay(""); onChanged(); }
+    });
+  const first = seat.name.split(/\s+/)[0];
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {seat.awayUntil ? (
+        <>
+          <span className="text-[13px] text-warning">{first} is away until {new Date(seat.awayUntil).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" })}</span>
+          <button type="button" disabled={busy} onClick={() => run(null)} className="rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50">
+            Mark back
+          </button>
+        </>
+      ) : (
+        <>
+          <input type="date" value={day} onChange={(e) => setDay(e.target.value)} aria-label={`${first} away until`} className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand" />
+          <button type="button" disabled={busy || !day} onClick={() => run(day)} className="rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50">
+            Away until then
+          </button>
+        </>
+      )}
+      {busy && <Loader2 className="size-3.5 animate-spin text-muted" />}
+      {msg && <span className="w-full text-[12px] text-muted">{msg}</span>}
+    </span>
+  );
+}
+
 export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
   const [r, setR] = useState(initial);
   const [busy, start] = useTransition();
@@ -325,9 +371,11 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
   const set = (patch: Partial<ReviewRoomRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
   // Fetched, not passed in — the same reason the on-call picker fetches its
   // roster: /settings should not wait on a query most visits do not need.
-  const [roster, setRoster] = useState<{ id: string; name: string; role: string; canApprove: boolean }[] | null>(null);
-  useEffect(() => { loadCreativeApproverCandidates().then(setRoster).catch(() => setRoster([])); }, []);
-  const approver = roster?.find((m) => m.id === r.creativeApproverTeamMemberId) ?? null;
+  const [roster, setRoster] = useState<ReviewerSeat[] | null>(null);
+  const loadRoster = () => { loadCutReviewerSeats().then(setRoster).catch(() => setRoster([])); };
+  useEffect(() => { loadCutReviewerSeats().then(setRoster).catch(() => setRoster([])); }, []);
+  const seatOf = (id: string | null) => (id ? roster?.find((m) => m.id === id) ?? null : null);
+  const autoMove = r.coverTransferHours != null;
   return (
     <div className="space-y-3">
       <p className="text-[13px] text-muted">
@@ -358,49 +406,87 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
         </div>
       </div>
 
-      {/* WHOSE VERDICT IT IS (R08). Not a permission — an OWNER or ADMIN could
-          always approve — but a NAME, so routine work stops being implicitly
-          Jordan's on every screen that asks who is holding it up. */}
+      {/* WHO REVIEWS CUTS (§3 / §8.1, Sep 25). Was one "creative approver"
+          NAME (R08); now three seats and ONE owner per cut: the first seat
+          that can act and is not away gets it, the others hear about it, and
+          nobody has to approve twice. Owner/admin can still rule on any cut —
+          that is recorded as covering it. */}
       <div className="rounded-lg border border-border p-3">
-        <p className="text-sm font-semibold">Who approves cuts</p>
+        <p className="text-sm font-semibold">Who reviews cuts</p>
         <p className="text-[13px] text-muted">
-          Any owner or admin can approve a cut. Naming somebody here says who is <i>expected</i> to, so a cut
-          waiting on a verdict shows up as theirs on the exceptions board instead of quietly waiting for Jordan.
+          Every cut waits on <i>one</i> person — the first of these who can act and isn&rsquo;t away. The others get an
+          FYI; nobody approves twice. Anyone here, or any owner or admin, can take a cut or rule on it, and that is
+          recorded as covering it. Editors can&rsquo;t hold a seat, and seating anyone who isn&rsquo;t an owner or admin is
+          Jordan&rsquo;s call — it gives them the power to approve.
         </p>
-        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
-          <span className="text-[13px] text-muted">Creative approver</span>
-          <select
-            value={r.creativeApproverTeamMemberId ?? ""}
-            onChange={(e) => set({ creativeApproverTeamMemberId: e.target.value || null })}
-            disabled={roster === null}
-            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand disabled:opacity-50"
-          >
-            <option value="">Nobody named — the office</option>
-            {(roster ?? []).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}{m.canApprove ? "" : " — login can't approve yet"}
-              </option>
-            ))}
-          </select>
-          {/* THE SAME FLAG DOES THREE THINGS, AND ONLY ONE OF THEM IS VISIBLE
-              HERE (Sep 18, after Jordan asked why James was pinged about
-              Harrison's missing video files). TeamMember.creativeManager is
-              read by the shoot-bonus basis, by tasks.creativeAlertTargets —
-              which copies that person on every chase aimed at a photographer —
-              and, when nobody is named above, by this picker. Somebody
-              changing one of them should know about the other two. */}
-          {!r.creativeApproverTeamMemberId && (
-            <p className="w-full text-[11px] leading-relaxed text-muted-2">
-              With nobody named, this falls back to whoever carries the creative-manager flag. That
-              same flag sets their shoot-bonus basis and copies them on every &ldquo;chase the
-              photographer&rdquo; alert — so it is worth checking it is on the right person.
+        {REVIEW_SEATS.map((seat) => {
+          const picked = seatOf(r[seat.key]);
+          const saved = seatOf(initial[seat.key]);
+          const first = picked?.name.split(/\s+/)[0] ?? "";
+          return (
+            <div key={seat.key} className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+              <span className="w-28 text-[13px] text-muted" title={seat.hint}>{seat.label}</span>
+              <select
+                value={r[seat.key] ?? ""}
+                onChange={(e) => set({ [seat.key]: e.target.value || null } as Partial<ReviewRoomRules>)}
+                disabled={roster === null}
+                className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand disabled:opacity-50"
+              >
+                <option value="">Nobody</option>
+                {(roster ?? []).map((m) => (
+                  // An editor login can never review (they'd rule on their own
+                  // cuts) — listed, greyed, so the reason is on the screen.
+                  <option key={m.id} value={m.id} disabled={m.hasLogin && !m.canRuleIfDesignated && m.id !== r[seat.key]}>
+                    {m.name}
+                    {!m.hasLogin ? " — no login yet" : !m.canRuleIfDesignated ? " — editor login, can't review" : m.loginRole !== "OWNER" && m.loginRole !== "ADMIN" ? " — only Jordan can seat" : ""}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-muted-2">{seat.hint}</span>
+              {picked && !picked.canRuleIfDesignated && (
+                <span className="w-full text-[13px] text-warning">
+                  {picked.hasLogin
+                    ? <>{first} signs in as an editor, so they can&rsquo;t rule on a cut — cuts skip to the next seat.</>
+                    : <>{first} has no active login, so they can&rsquo;t rule on a cut — cuts skip to the next seat until one is set up.</>}
+                </span>
+              )}
+              {/* THEIR switch, never flipped from here: James's "video in
+                  review" is bell-only by an earlier consent decision. Saying so
+                  next to his name is the whole of what this card does about it. */}
+              {picked && picked.canRuleIfDesignated && !picked.reviewReady.slack && !picked.reviewReady.sms && (
+                <span className="w-full text-[12px] text-muted-2">
+                  {first}&rsquo;s &ldquo;video in review&rdquo; notices are bell-only — they hear about a cut in the hub, not by
+                  Slack or text. Change it for them under Team notifications if they should.
+                </span>
+              )}
+              {saved && saved.id === picked?.id && <SeatAway seat={saved} onChanged={loadRoster} />}
+            </div>
+          );
+        })}
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          <span className="text-[13px] text-muted">Offer the backup a cut the reviewer hasn&rsquo;t reached after</span>
+          <Num value={r.coverOfferHours} onChange={(n) => set({ coverOfferHours: n })} min={1} max={90} suffix="covered hours" />
+          <span className="w-full text-[11px] leading-relaxed text-muted-2">
+            Covered hours are the rota above (Mon–Fri 9–6 ET by default). All three seats are told about every cut and
+            can rule on it at any time; this is when the backup is nudged that the reviewer hasn&rsquo;t got to one. After
+            two covered days a cut is on Jordan&rsquo;s exceptions board.
+          </span>
+        </div>
+        <div className="mt-2 flex items-start justify-between gap-3 border-t border-border pt-2">
+          <div>
+            <p className="text-[13px] font-medium">Move it automatically</p>
+            <p className="text-[12px] text-muted">
+              Off: only marking someone away moves a cut on its own. On, a cut the reviewer hasn&rsquo;t ruled on moves to
+              the next seat after the hours below — a change of owner nobody accepted, so it stays off until Jordan
+              decides.
             </p>
-          )}
-          {approver && !approver.canApprove && (
-            <span className="text-[13px] text-warning">
-              {approver.name.split(/\s+/)[0]} has no owner/admin login, so the button they are being pointed at is one they cannot press.
-            </span>
-          )}
+            {autoMove && (
+              <div className="mt-1.5">
+                <Num value={r.coverTransferHours ?? 18} onChange={(n) => set({ coverTransferHours: n })} min={1} max={200} suffix="covered hours" />
+              </div>
+            )}
+          </div>
+          <Toggle on={autoMove} onChange={(v) => set({ coverTransferHours: v ? 18 : null })} label="Move cuts automatically" />
         </div>
       </div>
 

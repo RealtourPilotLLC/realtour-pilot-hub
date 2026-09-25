@@ -31,9 +31,15 @@ import { canReplaceApprovedCut } from "@/app/review/actions";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
-import { SubmitCutCard } from "@/components/editing/EditorActions";
+// §8.2: the Final-folder submit and the held cuts both go through the check.
+import { FolderSendForReview, HeldCutsCard } from "@/components/editing/SelfCheckSend";
+import { RevisionIssuesPanel, type AttestationView } from "@/components/editing/RevisionIssuesPanel";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
+// §7.1: the editor's own Start / Pause / Resume, on the screen they work from.
+import { WorkStateBar } from "@/components/editing/WorkStateBar";
+// §8.1: the ONE person each waiting cut is waiting on, and the desk's doors.
+import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { EditOverridesButton } from "@/components/editing/EditOverridesDialog";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
@@ -202,6 +208,50 @@ export default async function EditBriefPage({
   const strictOwnerAdmin = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
   const briefs = await getRevisionBriefs(id, !strictOwnerAdmin).catch(() => []);
   const canTickBrief = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
+  // §8.2 / §8.3 (Sep 25): the send-for-review checklist per video, the cuts
+  // waiting on a check, and the job's revision issues — read BY THE JOB, so an
+  // editor who inherits it sees what the last one was asked. Reviewers
+  // (owner/admin or a named review seat) also get the controls and the checks
+  // each version came in with. Each read fails soft: the page never breaks
+  // over its own quality bookkeeping.
+  const quality = await (async () => {
+    const { checkContextsForProject, heldCutsFor, attestationFor } = await import("@/lib/selfCheckStore");
+    const { issuesForProject } = await import("@/lib/revisionIssues");
+    let canReview = strictOwnerAdmin && !viewer?.impersonating;
+    if (!canReview && viewer && !viewer.impersonating) {
+      try {
+        const { canRuleOnCuts } = await import("@/lib/reviewerAssignment");
+        canReview = (await canRuleOnCuts(viewer)).ok;
+      } catch { /* not a review seat */ }
+    }
+    const [checks, held, issues] = await Promise.all([
+      checkContextsForProject(id).catch(() => ({})),
+      heldCutsFor(id).catch(() => []),
+      // Off the desk (an editor), a cause verdict shows on their own versions
+      // only, and no reviewer history leaves the server (§8.4).
+      issuesForProject(id, { scrub: !strictOwnerAdmin, viewer: canReview ? null : { editorKey: editorScope } }).catch(() => []),
+    ]);
+    const attestations: AttestationView[] = [];
+    if (canReview) {
+      for (const s of submissions.filter((x) => x.status !== "WITHDRAWN")) {
+        const a = await attestationFor(s.id).catch(() => null);
+        if (!a) continue;
+        const slotLabel = slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot)?.label ?? s.fileName ?? "Video";
+        attestations.push({
+          submissionId: s.id, round: s.round, label: slotLabel, actorName: a.actorName, onBehalfOf: a.onBehalfOf, atISO: a.at.toISOString(), checklistKey: a.checklistKey,
+          notApplicable: a.items.filter((i) => i.answer === "NA").map((i) => ({ label: i.label, reason: i.reason })),
+          notAddressed: Object.entries(a.declarations.notAddressed).map(([issueId, reason]) => ({ text: issues.find((i) => i.id === issueId)?.summary ?? issues.find((i) => i.id === issueId)?.text ?? "an earlier note", reason })),
+        });
+      }
+    }
+    // Whom the office is checking for when it uploads (vendor / editor cuts).
+    let onBehalfOf: string | null = null;
+    if (strictOwnerAdmin) {
+      const card = await prisma.smartTask.findUnique({ where: { dedupeKey: `edit-video-${id}` }, select: { assignedKey: true } }).catch(() => null);
+      onBehalfOf = editorMeta(card?.assignedKey)?.name ?? "the editor or vendor who made it";
+    }
+    return { checks, held, issues, attestations, canReview, onBehalfOf };
+  })();
   // The client's asset shelf (logos, endcards, brand kit) — folder truth from
   // Dropbox; editors upload here too.
   const assets = await listClientAssets(project.client.id).catch(() => null);
@@ -388,12 +438,30 @@ export default async function EditBriefPage({
   const approvedAt = latestRound?.status === "APPROVED" ? latestRound.decidedAt : null;
   const revisionAfterApproval =
     revisionOpen && (!approvedAt || videoRevisionTasks.some((t) => t.createdAt > approvedAt));
+  // WHO EACH WAITING CUT IS WITH (unified handoff §8.1, Sep 25). Read here so
+  // the tracker's "with …" and the strip below say the same name. A failed
+  // read shows no strip; nothing on the page waits on it.
+  const reviewerStrip = await import("@/lib/reviewerAssignment")
+    .then((m) => m.reviewerStripFor(id, viewer, { authEnforced: authEnforced() }))
+    .catch(() => null);
+  const latestReviewer =
+    latestRound?.status === "PENDING"
+      ? reviewerStrip?.rows.find((r) => r.submissionId === latestRound.id)?.reviewer?.name ?? null
+      : null;
+  // WHO IS ON THIS JOB RIGHT NOW (§7.1, Sep 25) — the editor's own Start,
+  // not the status. Read-only here: opening this page never starts anything.
+  // A failed read shows no bar and the tracker says "not confirmed".
+  const workBar = await import("@/lib/editorWork").then((m) => m.workBarFor(id, viewer)).catch(() => null);
   const { stage, label: statusLine } = deriveEditStage({
     projectStatus: project.status,
     revisionOpen,
     revisionAfterApproval,
     latestRoundStatus: latestRound?.status ?? null,
     rawsLanded: rawsLanded || submissions.length > 0,
+    reviewerName: latestReviewer,
+    work: workBar?.stageWork,
+    // §8.2: a newest version still waiting on its check is not "in review".
+    heldForCheck: !!latestRound && quality.held.some((h) => h.submissionId === latestRound.id),
   });
   const hadRevision =
     revisionOpen ||
@@ -580,7 +648,7 @@ export default async function EditBriefPage({
       // name itself stays as it is (the approved file is named by it).
       label: sl.topicTitle ? `${sl.label} · ${sl.topicTitle}` : sl.label,
       latest: latest
-        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note, sourceWidth: latest.sourceWidth, sourceHeight: latest.sourceHeight }
+        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note, sourceWidth: latest.sourceWidth, sourceHeight: latest.sourceHeight, held: quality.held.some((h) => h.submissionId === latest.id) }
         : null,
       openNotes,
     };
@@ -693,6 +761,7 @@ export default async function EditBriefPage({
           photos-only or cancelled job has no edit lifecycle to narrate. */}
       {showTracker && (
         <div className="px-4 pt-4 sm:px-6">
+          {workBar && <WorkStateBar bar={workBar} />}
           <EditTracker
             stage={stage}
             statusLine={statusLine}
@@ -1057,6 +1126,7 @@ export default async function EditBriefPage({
               review with the owner's timestamped notes under it. #submit-cut
               is the anchor the tracker's "Done? Send to review" jumps to. */}
           <div id="submit-cut" className="scroll-mt-20 space-y-6">
+            {reviewerStrip && <ReviewerStrip data={reviewerStrip} />}
             {currentCuts.length > 1 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 {currentCuts.map((c, i) => (
@@ -1093,9 +1163,22 @@ export default async function EditBriefPage({
             {/* The way in: upload a version per cut (Jordan, Sep 1), each with
                 the editor's own message to whoever reviews it (Sep 2).
                 Owner/admin can upload on an editor's behalf (vendor cuts). */}
+            {/* Versions that exist but wait on the send-for-review check
+                (§8.2) — found in the folder, a mismatched upload, a moved cut.
+                Anchor #self-check is where the "check needed" bell lands. */}
+            <HeldCutsCard
+              held={quality.held.map((h) => ({
+                submissionId: h.submissionId, round: h.round, fileName: h.fileName, reason: h.reason, sizeBytes: h.sizeBytes, context: h.context,
+                label: slots.find((sl) => sl.deliverableId === h.deliverableId && sl.slot === h.slot)?.label ?? h.fileName ?? "Video",
+              }))}
+              canFinish={canUploadCuts && !viewer?.impersonating}
+              onBehalfOf={quality.onBehalfOf}
+            />
             <CutUploader
               projectId={project.id}
               canUpload={canUploadCuts}
+              checks={quality.checks}
+              onBehalfOf={quality.onBehalfOf}
               // Only Jordan and Kyle may send an over-spec file anyway, and
               // only for real: the server checks the role again and puts their
               // name on it (startCutUpload).
@@ -1142,7 +1225,7 @@ export default async function EditBriefPage({
                   blocked — a finished cut that silently fails to reach the
                   Review Room is worse than a 4K one that does. */}
               <p className="mt-2 text-[11px] leading-relaxed text-muted-2">{EXPORT_SPEC.headline}: {EXPORT_SPEC.finalCut}</p>
-              <div className="mt-2"><SubmitCutCard projectId={project.id} /></div>
+              <div className="mt-2"><FolderSendForReview projectId={project.id} onBehalfOf={quality.onBehalfOf} /></div>
             </details>
             {/* ONE PANEL PER CUT that needs looking at — the one they opened,
                 and every cut sitting at "changes requested". Each carries its
@@ -1171,6 +1254,15 @@ export default async function EditBriefPage({
             {/* Review-Room notes that aren't on the active cut (renders nothing
                 when the list is empty). */}
             <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
+            {/* Every revision issue on the job, by video and version (§8.3) —
+                what is open, what the editor says is fixed, what the reviewer
+                verified, and (for reviewers) why each one happened. */}
+            <RevisionIssuesPanel issues={quality.issues} canReview={quality.canReview} attestations={quality.attestations} />
+            {viewer?.role === "EDITOR" && (
+              <Link href="/quality?tab=editors" className="inline-flex text-xs font-medium text-brand hover:underline">
+                Your review results →
+              </Link>
+            )}
           </div>
 
           {/* 7 · HISTORY — the per-job thread. */}

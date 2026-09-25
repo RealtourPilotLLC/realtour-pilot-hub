@@ -297,14 +297,44 @@ export type ReviewRoomRules = {
    * "the office" — and the exceptions board says which of the three answered,
    * so a name that came from a flag set for something else is visible rather
    * than authoritative.
+   *
+   * Since Sep 25 (unified handoff §8.1) this is the PRIMARY reviewer: every
+   * cut entering review is assigned to ONE person (ReviewSubmission.reviewer*,
+   * lib/reviewerAssignment.ts), the first of primary → backup → fallback who
+   * has a working login and is not marked away. The creative-manager flag is
+   * never read to assign — it stays a display hint on the exceptions board.
    */
   creativeApproverTeamMemberId: string | null;
+  /** §3: Kyle — first backup. Covers James when he is away or offered a cut he has not reached. */
+  backupReviewerTeamMemberId: string | null;
+  /** §3: Jordan — final fallback. One active owner, never a second required approval. */
+  fallbackReviewerTeamMemberId: string | null;
+  /**
+   * Covered hours (Mon–Fri 9–6 ET by the rota) a cut waits on the primary
+   * before the backup is OFFERED it — one tap, "I'll cover it". Nothing moves
+   * until he takes it. Jordan's default until he answers otherwise (§13).
+   */
+  coverOfferHours: number;
+  /**
+   * Covered hours after which a cut MOVES to the next person on its own.
+   * NULL = never, and null is the default: whether a cut may change owner
+   * without a person accepting it is Jordan's open question (§13). Away is the
+   * one automatic move, and it is a person's own switch.
+   */
+  coverTransferHours: number | null;
 };
+/** The two §8.1 defaults, named so a person can argue with them. */
+export const DEFAULT_COVER_OFFER_HOURS = 9; // one covered day, Mon–Fri 9–6
+export const DEFAULT_COVER_TRANSFER_HOURS: number | null = null; // off until Jordan answers
 // 90 days: the client portal shows the current and previous month's cuts.
 export const DEFAULT_REVIEW_ROOM: ReviewRoomRules = {
   discoverFromDropbox: false,
   keepUploadsDays: 90,
   creativeApproverTeamMemberId: null,
+  backupReviewerTeamMemberId: null,
+  fallbackReviewerTeamMemberId: null,
+  coverOfferHours: DEFAULT_COVER_OFFER_HOURS,
+  coverTransferHours: DEFAULT_COVER_TRANSFER_HOURS,
 };
 export async function reviewRoomRules(): Promise<ReviewRoomRules> {
   const r = await getSetting<ReviewRoomRules>("review_room", DEFAULT_REVIEW_ROOM);
@@ -317,6 +347,20 @@ export async function reviewRoomRules(): Promise<ReviewRoomRules> {
     creativeApproverTeamMemberId:
       typeof r.creativeApproverTeamMemberId === "string" && r.creativeApproverTeamMemberId
         ? r.creativeApproverTeamMemberId
+        : null,
+    backupReviewerTeamMemberId:
+      typeof r.backupReviewerTeamMemberId === "string" && r.backupReviewerTeamMemberId ? r.backupReviewerTeamMemberId : null,
+    fallbackReviewerTeamMemberId:
+      typeof r.fallbackReviewerTeamMemberId === "string" && r.fallbackReviewerTeamMemberId ? r.fallbackReviewerTeamMemberId : null,
+    // Clamped like every hour here: a bad save must not offer every cut the
+    // moment it lands (0) or never (a typo'd 9000).
+    coverOfferHours:
+      typeof r.coverOfferHours === "number" && r.coverOfferHours >= 1 && r.coverOfferHours <= 90
+        ? Math.floor(r.coverOfferHours)
+        : DEFAULT_COVER_OFFER_HOURS,
+    coverTransferHours:
+      typeof r.coverTransferHours === "number" && r.coverTransferHours >= 1 && r.coverTransferHours <= 200
+        ? Math.floor(r.coverTransferHours)
         : null,
   };
 }

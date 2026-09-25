@@ -105,6 +105,38 @@ export async function routeAlert(
   return { send: "defer", until: nextCoveredMomentAt(at, c), why: "routine, out of hours" };
 }
 
+/**
+ * HOW LONG SOMEBODY WAS ACTUALLY THERE between two instants, in ms (unified
+ * handoff §8.1, Sep 25 2026). The review-ownership clocks — "nine covered
+ * hours without a verdict" offers the cut to Kyle, "two covered days" puts it
+ * in front of Jordan — are about time somebody could have acted, so a cut
+ * handed in at 5pm on a Friday has waited ONE covered hour by Monday 9am, not
+ * sixty-four. Same day-key walk as nextCoveredMomentAt, so a clock change
+ * cannot add or lose an hour; the 400-day guard only bounds a pathological
+ * range (a cut that old is past every threshold regardless).
+ */
+export function coveredMsBetween(from: Date, to: Date, c: Coverage): number {
+  if (!(to.getTime() > from.getTime())) return 0;
+  let total = 0;
+  let key = etDayKey(from);
+  const endKey = etDayKey(to);
+  for (let i = 0; i < 400; i++) {
+    const covered = !c.weekdaysOnly || isWeekdayET(etAt(key, 12));
+    if (covered) {
+      const s = Math.max(from.getTime(), etAt(key, c.fromHour).getTime());
+      const e = Math.min(to.getTime(), etAt(key, c.toHour).getTime());
+      if (e > s) total += e - s;
+    }
+    if (key === endKey) break;
+    const [y, m, d] = key.split("-").map(Number);
+    key = new Date(Date.UTC(y, m - 1, d + 1, 12)).toISOString().slice(0, 10);
+  }
+  return total;
+}
+
+export const coveredHoursBetween = (from: Date, to: Date, c: Coverage): number =>
+  coveredMsBetween(from, to, c) / 3_600_000;
+
 /** Plain-English coverage, for a settings screen or an alert's own footnote. */
 export function describeCoverage(c: Coverage): string {
   const h = (n: number) => (n === 12 ? "12pm" : n > 12 ? `${n - 12}pm` : `${n}am`);

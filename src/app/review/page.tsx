@@ -29,7 +29,19 @@ export const dynamic = "force-dynamic";
 
 const ago = (iso: string) => formatDistanceToNow(new Date(iso), { addSuffix: true });
 
-function CutRow({ s, decided }: { s: QueueSubmission; decided?: boolean }) {
+// §8.1: who the cut waits on, from the row itself — never from a notice.
+function ReviewerChip({ s, viewerTeamMemberId }: { s: QueueSubmission; viewerTeamMemberId: string | null }) {
+  if (s.status !== "PENDING" || s.heldForCheck) return null;
+  if (!s.reviewer) {
+    return <span className="rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">Nobody holds it — the office</span>;
+  }
+  if (viewerTeamMemberId && s.reviewer.id === viewerTeamMemberId) {
+    return <span className="rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">Waiting on you</span>;
+  }
+  return <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted">With {s.reviewer.name.split(/\s+/)[0]}</span>;
+}
+
+function CutRow({ s, decided, viewerTeamMemberId = null }: { s: QueueSubmission; decided?: boolean; viewerTeamMemberId?: string | null }) {
   return (
     <li>
       <Link
@@ -56,6 +68,7 @@ function CutRow({ s, decided }: { s: QueueSubmission; decided?: boolean }) {
             {!s.hasAsset && (
               <span className="rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">No file found</span>
             )}
+            <ReviewerChip s={s} viewerTeamMemberId={viewerTeamMemberId} />
             {s.openEditorNotes > 0 && (
               <span className="rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-medium text-brand">
                 {s.openEditorNotes} open note{s.openEditorNotes === 1 ? "" : "s"}
@@ -84,7 +97,13 @@ function CutRow({ s, decided }: { s: QueueSubmission; decided?: boolean }) {
 export default async function ReviewRoomPage() {
   await requirePageAccess("review");
   const me = await getCurrentUser().catch(() => null);
-  const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // THE SAME QUESTION THE ACTIONS ASK (§8.1, review fix Sep 25): owner/admin,
+  // or a login seated as one of the three reviewers. It used to be the
+  // OWNER/ADMIN role alone, so a seated reviewer on a narrower login was rung
+  // for cuts and allowed to rule on them by the server, with no desk to do it
+  // from. View-as is still refused (canRuleOnCuts says no to a preview).
+  const { isReviewDesk } = await import("@/lib/reviewerAssignment");
+  const ownerDesk = await isReviewDesk(me, { authEnforced: authEnforced() });
   // A PHOTOGRAPHER gets the Room narrowed to their own shoots rather than the
   // door (Jordan, Sep 18). Sending them to /shoot — the Sep 17 answer — meant
   // the only way into a cut was a tag, so a video from their own shoot that
@@ -110,6 +129,16 @@ export default async function ReviewRoomPage() {
   if (!ownerDesk) redirect(homeFor(me?.role));
 
   const [q, patterns, qcStats] = await Promise.all([getReviewQueue(), getFixPatterns(60), getQcStats(30)]);
+  // "Waiting on YOUR verdict" counts only the cuts that are yours (§8.1) —
+  // Kyle's Room must not tell him James's cuts are his to rule on.
+  // A cut nobody holds (no chain configured, or everyone away) is the
+  // office's, so it counts as waiting on an owner/admin viewer.
+  const viewerTeamMemberId = me && !me.impersonating ? me.teamMemberId : null;
+  const officeViewer = !!me && !me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN");
+  const mine = viewerTeamMemberId || officeViewer
+    ? q.pending.filter((s) => (s.reviewer ? s.reviewer.id === viewerTeamMemberId : officeViewer)).length
+    : 0;
+  const withOthers = q.pending.length - mine;
   const laneMeta = {
     EDIT: { label: "Kyle — delivery fixes", icon: Pencil },
     PHOTOGRAPHER: { label: "Photographer — capture", icon: Camera },
@@ -122,9 +151,13 @@ export default async function ReviewRoomPage() {
         eyebrow="Quality desk"
         title="Review Room"
         subtitle={
-          q.pending.length
-            ? `${q.pending.length} cut${q.pending.length === 1 ? "" : "s"} waiting on your verdict`
-            : "Nothing waiting on you — all clear"
+          !viewerTeamMemberId && !officeViewer && q.pending.length
+            ? `${q.pending.length} cut${q.pending.length === 1 ? "" : "s"} waiting on a verdict`
+            : mine
+              ? `${mine} cut${mine === 1 ? "" : "s"} waiting on you${withOthers ? ` · ${withOthers} with someone else` : ""}`
+              : withOthers
+                ? `Nothing waiting on you — ${withOthers} cut${withOthers === 1 ? "" : "s"} with someone else`
+                : "Nothing waiting on you — all clear"
         }
       />
 
@@ -144,9 +177,22 @@ export default async function ReviewRoomPage() {
               timestamped notes.
             </p>
           ) : (
-            <ul className="space-y-2.5">{q.pending.map((s) => <CutRow key={s.id} s={s} />)}</ul>
+            <ul className="space-y-2.5">{q.pending.map((s) => <CutRow key={s.id} s={s} viewerTeamMemberId={viewerTeamMemberId} />)}</ul>
           )}
         </Section>
+
+        {/* §8.2: handed in, held for the editor's own send-for-review check —
+            the found-in-the-folder cut, the upload that wasn't the file
+            checked, the moved cut. Nothing here can be ruled on yet. */}
+        {q.waitingOnCheck.length > 0 && (
+          <Section icon={Hourglass} title="Waiting on the editor's check" count={q.waitingOnCheck.length}>
+            <p className="mb-3 text-xs text-muted">
+              These are in, but the editor hasn&rsquo;t finished the send-for-review check on them — they reach the list
+              above once they do. They can finish it on the job&rsquo;s edit page (or the office can, for them).
+            </p>
+            <ul className="space-y-2.5">{q.waitingOnCheck.map((s) => <CutRow key={s.id} s={s} />)}</ul>
+          </Section>
+        )}
 
         {q.waitingOnEditor.length > 0 && (
           <Section icon={Hourglass} title="In revisions" count={q.waitingOnEditor.length}>

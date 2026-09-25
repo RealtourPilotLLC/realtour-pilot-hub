@@ -435,9 +435,25 @@ export async function createRevisionBrief(opts: {
     return null; // never break a revision over its paperwork
   }
 
-  if (!worthAnalyzing) return brief.id;
+  if (!worthAnalyzing) {
+    // Already a work order (a short ask, or a portal pin) — its items are the
+    // editor's issues now (§8.3). A model run ingests at its own end.
+    await ingestBriefIssues(brief.id);
+    return brief.id;
+  }
   await analyzeBrief(brief.id, { ...opts, pin });
   return brief.id;
+}
+
+/** The work order's items as revision issues (§8.3) — one per item × video it
+ *  names, idempotent on that source, reconciling after a re-read. Dynamic
+ *  import: revisionIssues reads this module's slot helpers' home (reviewCuts)
+ *  and must stay out of the analyser's import graph. Never throws. */
+async function ingestBriefIssues(briefId: string): Promise<void> {
+  try {
+    const { ingestBriefItems } = await import("@/lib/revisionIssues");
+    await ingestBriefItems(briefId);
+  } catch { /* the brief and the client's words are already saved */ }
 }
 
 /**
@@ -497,6 +513,19 @@ export async function analyzeBrief(
     },
   });
   if (!brief) return false;
+  // A RE-READ MUST NOT RENUMBER WORK A PERSON HAS ACTED ON (§8.3). Once any of
+  // this request's issues is classified, fixed, verified or merged, a fresh
+  // split would orphan those decisions — refused, with the reason on the card.
+  // A first analysis has no issues yet and is never refused.
+  {
+    const { briefIssuesLocked } = await import("@/lib/revisionIssues");
+    if (await briefIssuesLocked(briefId).catch(() => false)) {
+      await prisma.revisionBrief
+        .update({ where: { id: briefId }, data: { analysisError: "Not re-read: its items are already being worked (classified, fixed or verified) — re-reading would renumber them." } })
+        .catch(() => {});
+      return false;
+    }
+  }
   try {
     // The cut list is what lets an item say WHICH video (WF-03). A job with no
     // video slots simply gets none, and every item stays unplaced.
@@ -531,6 +560,7 @@ export async function analyzeBrief(
           analysisError: null,
         },
       });
+      await ingestBriefIssues(briefId);
       return true;
     }
     // When every item lands on the SAME one video, the brief itself is about
@@ -574,6 +604,7 @@ export async function analyzeBrief(
     // on that verdict, so a delivered job sat in REVISION with an URGENT
     // overdue task and a card reading "Still owed: nothing" (Jordan, Sep 7).
     if (analysis.items.length === 0) await standDownNonRevision(briefId);
+    await ingestBriefIssues(briefId);
     return true;
   } catch (e) {
     await prisma.revisionBrief
@@ -582,6 +613,8 @@ export async function analyzeBrief(
         data: { analysisError: (e as Error).message.slice(0, 300) },
       })
       .catch(() => {});
+    // The model failed; the client's whole text is still one ask to act on.
+    await ingestBriefIssues(briefId);
     return false;
   }
 }

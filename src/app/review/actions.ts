@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 // measurement in here that nobody is waiting on (finishCutUpload, below).
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { authEnforced, requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
+import { authEnforced, requireAdmin, requireCutReviewer, requireTaskAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 import { slugForName } from "@/lib/assignees";
@@ -147,6 +147,11 @@ async function requireCutNoteAccess(
   if (!u) throw new Error("Please sign in to do that.");
   if (u.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
   if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
+  // A named review seat is the desk too (§8.1) — the same test requireCutReviewer runs.
+  {
+    const { canRuleOnCuts } = await import("@/lib/reviewerAssignment");
+    if ((await canRuleOnCuts(u)).ok) return;
+  }
   if (u.realRole === "EDITOR" && root.lane === "EDITOR" && u.editorKey && u.editorKey === root.editorKey) return;
   if (u.realRole === "PHOTOGRAPHER") {
     const { photographerMemberId } = await import("@/lib/shoot");
@@ -177,10 +182,25 @@ async function requireCutNoteAccess(
 // The editor's "Done — send to review". Everything sendEditToReview did, PLUS
 // a ReviewSubmission row with a playable link so the owner reviews in-house at
 // /review/<id> instead of hunting through Dropbox.
+//
+// §8.2 (Sep 25): nothing goes without the editor's self-check. Called with no
+// check it writes NOTHING and answers `needsSelfCheck` with the file it would
+// send (`candidate`) — the dialog asks about exactly that file, and the second
+// call carries the answers. `submissionId` finishes the check on a cut that is
+// already held (found by the folder sweep, or a press whose check failed).
+export type SelfCheckCandidate = {
+  submissionId: string | null;
+  fileName: string;
+  round: number;
+  isRedo: boolean;
+  context: import("@/lib/selfCheckStore").SlotCheckContext;
+};
 export async function submitCutForReview(
   projectId: string,
   note?: string,
-): Promise<{ ok: boolean; message: string }> {
+  selfCheck?: import("@/lib/selfCheck").SelfCheckInput | null,
+  opts?: { submissionId?: string | null },
+): Promise<{ ok: boolean; message: string; needsSelfCheck?: boolean; candidate?: SelfCheckCandidate }> {
   // Scope to the SUBMITTING editor's own task: authorizing off the oldest open
   // task regardless of assignee let one editor's submit close ANOTHER editor's
   // work item (audit). Owner/admin submit-on-behalf keeps the wide net.
@@ -233,13 +253,63 @@ export async function submitCutForReview(
   // a playable link that doesn't depend on a sharing scope the Dropbox app
   // doesn't have (the old shared-link mint returned null on every submit).
   const { syncFinalCutsToReview, submittedDistinctCuts } = await import("@/lib/reviewCuts");
-  const sync = await syncFinalCutsToReview(projectId, {
-    mode: "button",
-    onlyNewest: true,
-    submittedByKey: editorKey,
-    submittedByName: authorName ?? "Editor",
-    note,
-  });
+  // ---- THE EDITOR'S SELF-CHECK FIRST (§8.2) -------------------------------
+  // Which file this press would send: the held cut the caller named, else a
+  // DRY run of the very pick below. Nothing is written until the check for
+  // that file is complete, so a press without one leaves no row behind.
+  let held: import("@/lib/reviewCuts").CreatedCut | null = null;
+  if (opts?.submissionId) {
+    const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
+    const row = await prisma.reviewSubmission.findUnique({
+      where: { id: opts.submissionId },
+      select: { id: true, projectId: true, status: true, assetPath: true, blobUrl: true, fileName: true, round: true, sizeBytes: true, submittedByKey: true, selfCheckId: true, selfCheckedAt: true, sourceRev: true },
+    });
+    if (!row || row.projectId !== projectId || !row.assetPath || row.blobUrl || !isHeldForSelfCheck(row)) {
+      return { ok: false, message: "That cut isn't waiting on a check any more — refresh the page." };
+    }
+    // An editor finishes their own held cut, or one nobody has claimed; the
+    // office may finish any, on the editor's behalf.
+    if (myEditorKey && row.submittedByKey && row.submittedByKey !== myEditorKey) {
+      return { ok: false, message: "That cut was handed in by another editor — ask Kyle or Jordan." };
+    }
+    held = { id: row.id, assetPath: row.assetPath, fileName: row.fileName ?? "", round: row.round, isRedo: row.round > 1, sizeBytes: row.sizeBytes, legacy: false, contentHash: row.sourceRev };
+  }
+  const dry = held
+    ? null
+    : await syncFinalCutsToReview(projectId, { mode: "button", onlyNewest: true, submittedByKey: editorKey, submittedByName: authorName ?? "Editor", note, dryRun: true });
+  if (dry?.unreadable) return { ok: false, message: "Dropbox couldn't be read just now — try again in a minute." };
+  const pick = held ?? dry?.claimed ?? dry?.created[0] ?? null;
+  if (!pick) {
+    return {
+      ok: false,
+      message: (dry?.folderVideoCount ?? 0) === 0
+        ? "No video file found in 05-Final-Video yet. Export the cut there, then send again."
+        : "Every video in the Final folder is already in review (or approved). Drop the next finished file in 05-Final-Video, then send again.",
+    };
+  }
+  {
+    const { checkContextForSlot } = await import("@/lib/selfCheckStore");
+    const { validateSelfCheck } = await import("@/lib/selfCheck");
+    const context = await checkContextForSlot(projectId, { deliverableId: null, slot: null, assetPath: pick.assetPath }, { round: pick.round });
+    const candidate: SelfCheckCandidate = { submissionId: pick.id || null, fileName: pick.fileName, round: pick.round, isRedo: pick.isRedo, context };
+    if (!selfCheck) {
+      return { ok: false, needsSelfCheck: true, candidate, message: `Before it goes to review: watch ${pick.fileName || "the export"} and complete the check.` };
+    }
+    if (selfCheck.watchedFile?.name && selfCheck.watchedFile.name !== pick.fileName) {
+      return { ok: false, needsSelfCheck: true, candidate, message: `The file that would go is ${pick.fileName}, not ${selfCheck.watchedFile.name} — check that one.` };
+    }
+    const v = validateSelfCheck(context.profile, selfCheck, { isRevision: context.isRevision, openIssueIds: context.issues.map((i) => i.id) });
+    if (!v.ok) return { ok: false, needsSelfCheck: true, candidate, message: v.message };
+  }
+  const sync = held
+    ? { created: [] as import("@/lib/reviewCuts").CreatedCut[], claimed: held, folderVideoCount: 1, nothingNew: false, unreadable: false }
+    : await syncFinalCutsToReview(projectId, {
+        mode: "button",
+        onlyNewest: true,
+        submittedByKey: editorKey,
+        submittedByName: authorName ?? "Editor",
+        note,
+      });
   if (sync.unreadable) {
     return { ok: false, message: "Dropbox couldn't be read just now — try again in a minute." };
   }
@@ -271,6 +341,23 @@ export async function submitCutForReview(
     isRedo: made.isRedo,
     folderVideoCount: sync.folderVideoCount,
   };
+
+  // The check, bound to the bytes as Dropbox holds them NOW, then the one
+  // compare-and-set that puts the cut in review (§8.2). A row minted above is
+  // held until this lands, so a failure here leaves a held cut the editor can
+  // finish from the edit page — never an unchecked one in front of James.
+  {
+    const { attestRow } = await import("@/lib/selfCheckStore");
+    const office = !me || me.role !== "EDITOR";
+    const att = await attestRow(made.id, selfCheck, { name: authorName ?? "Editor", userId: me?.id ?? null, editorKey: myEditorKey, office });
+    if (!att.ok) return { ok: false, message: att.message, needsSelfCheck: att.needsSelfCheck };
+    const { claimReviewEntry } = await import("@/lib/reviewCuts");
+    const entry = await claimReviewEntry(made.id);
+    if (entry !== "entered") {
+      refresh(projectId);
+      return { ok: entry !== "held", message: entry === "held" ? "The check didn't take — try again." : "Already in review." };
+    }
+  }
 
   // How many videos this job owes (deliverable quantities), and how many
   // distinct files have been through review — drives whether this submit
@@ -349,6 +436,21 @@ export async function submitCutForReview(
     } catch { /* best-effort — the cut is already in review */ }
   }
 
+  // The hand-in closes the credited editor's active stretch on this job (§7.1)
+  // — theirs only, and nothing about the other videos a batch still owes. The
+  // office sending on an editor's behalf is recorded as the office. The hourly
+  // folder discovery is NOT a submit and never reaches this line. Never throws.
+  {
+    const { closeActiveWork } = await import("@/lib/editorWork");
+    const office = !me || me.role !== "EDITOR";
+    await closeActiveWork(projectId, {
+      editorKey: myEditorKey ?? editorKey,
+      reason: "SUBMITTED",
+      actor: { userId: me?.id ?? null, name: me?.name ?? me?.email ?? authorName ?? "The office", role: office ? (me?.realRole === "ADMIN" ? "ADMIN" : "OWNER") : "EDITOR" },
+      detail: office ? `cut sent to review by ${me?.name ?? me?.email ?? "the office"}` : "cut submitted",
+    });
+  }
+
   // EDITING/SHOT → REVIEW (never demote a job already past review).
   // A submit is a human status write, and a human write ends the office's
   // status pin (Sep 13, editOverrides.ts) — the pin only ever holds off the
@@ -382,7 +484,9 @@ export async function submitCutForReview(
   // `autocut-…` key, so a claim of one would otherwise ring and text a cut
   // that has sat in the Room since August (reviewer, Sep 11). The owner
   // pressing on an editor's behalf is not texted about his own press.
-  if (!sync.claimed) {
+  // §8.2: a claimed row found AFTER the gate was held, never announced, and
+  // rings now — only a pre-gate claim (`legacy`) was rung by the old sweep.
+  if (!sync.claimed || !made.legacy) {
     const { announceCutInReview } = await import("@/lib/reviewCuts");
     await announceCutInReview({
       kind: "review_submitted",
@@ -441,7 +545,8 @@ export async function addCutNote(input: {
   timeSec: number | null;
 }): Promise<{ ok: boolean; message?: string }> {
   try {
-    await requireAdmin();
+    // The review desk: owner/admin, or a named review seat (§8.1, Sep 25).
+    await requireCutReviewer();
   } catch {
     const me = await getCurrentUser().catch(() => null);
     // "View as" is strictly READ-ONLY platform-wide — an owner previewing an
@@ -522,6 +627,13 @@ export async function addCutNote(input: {
       photographerId,
     },
   });
+  // A fix asked on the cut is an issue on this exact version (§8.3). The
+  // ingester decides what counts (editor-lane roots by the desk, not coaching,
+  // not the editor's own context notes); idempotent on the note, never throws.
+  {
+    const { ingestReviewNote } = await import("@/lib/revisionIssues");
+    await ingestReviewNote(note.id);
+  }
   {
     const { notifyMentions } = await import("@/lib/mentions");
     // cutId + surface: the owner reads a cut note in the Review Room, not on
@@ -634,6 +746,12 @@ export async function askCutChange(input: {
       body: `${authorName ?? "The photographer"} asked for a change on the round-${submission.round} cut.`,
     },
   }).catch(() => {});
+  // The shooter's ask is an issue on this version too (§8.3) — raised by them,
+  // classified by the reviewer like any other. Never throws.
+  {
+    const { ingestReviewNote } = await import("@/lib/revisionIssues");
+    await ingestReviewNote(note.id);
+  }
 
   try {
     const { notifyMentions } = await import("@/lib/mentions");
@@ -768,7 +886,7 @@ export async function setCutNoteStatus(
   if (note.parentId) return { ok: false, message: "Replies don't have a status." };
   try {
     if (status === "FIXED") await requireCutNoteAccess(note);
-    else await requireAdmin(); // reopen + approve stay with the owner's desk
+    else await requireCutReviewer(); // reopen + approve stay with the review desk (owner/admin or a review seat, §8.1)
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -779,15 +897,27 @@ export async function setCutNoteStatus(
       ...(status === "RESOLVED" ? { resolvedAt: new Date() } : status === "OPEN" ? { resolvedAt: null } : {}),
     },
   });
+  // The legacy toggle writes the same issue state the self-check does (§8.3):
+  // FIXED = the editor says addressed, RESOLVED = the desk verified it.
+  {
+    const { mirrorNoteStatus } = await import("@/lib/revisionIssues");
+    const { authorName } = await sessionAuthor();
+    await mirrorNoteStatus(noteId, status, { name: authorName ?? "Hub" });
+  }
   refresh(note.projectId);
   return { ok: true };
 }
 
 // APPROVE the cut: verdict on the submission, praise bell to the editor, and a
 // delivery nudge to ADMIN (Kyle ships it via the normal delivery flow).
-export async function approveCut(submissionId: string): Promise<{ ok: boolean; message: string }> {
+// `opts.verifyIssueIds` (§8.3): the issue list's "verified" ticks. Absent (the
+// plain Approve button) = every fix the editor marked done on this cut is
+// verified by the approval, which is what the list pre-ticks anyway.
+export async function approveCut(submissionId: string, opts?: { verifyIssueIds?: string[] | null }): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    // Owner/admin as always, or a named review seat (§8.1, Sep 25): James's
+    // approval must work on THIS action, not hang on the broad ADMIN role.
+    await requireCutReviewer();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -834,6 +964,27 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   if (submission.status === "UPLOAD_FAILED") {
     return { ok: false, message: "That upload never finished, so there's nothing in review to approve." };
   }
+  // ---- WHAT MUST BE TRUE OF THE VERSION (§8.2 / §8.3, Sep 25) --------------
+  // It came through the editor's check (a held cut is not in review yet); for
+  // a Final-folder cut, the bytes in the folder are still the bytes that were
+  // checked; and the fixes on it are accounted for. All three are refusals
+  // that change nothing, so they sit before the verdict is written.
+  const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
+  if (isHeldForSelfCheck(submission)) {
+    return { ok: false, message: "This version is waiting on the editor's check — it isn't in review yet, so there's nothing to approve." };
+  }
+  // Nobody approves their own version, whatever seat or role they hold (§8.1).
+  {
+    const { refuseOwnWork } = await import("@/lib/reviewerAssignment");
+    const own = refuseOwnWork(await getCurrentUser().catch(() => null), submission.submittedByKey, "cut");
+    if (own) return { ok: false, message: own };
+  }
+  const { folderDriftCheck } = await import("@/lib/selfCheckStore");
+  const drift = await folderDriftCheck(submission);
+  if (!drift.ok) return { ok: false, message: drift.message };
+  const { approvalGate } = await import("@/lib/revisionIssues");
+  const issueGate = await approvalGate(submission, { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, verifyIssueIds: opts?.verifyIssueIds ?? null });
+  if (!issueGate.ok) return { ok: false, message: issueGate.message };
 
   const { authorName } = await sessionAuthor();
   const decidedAt = new Date();
@@ -856,6 +1007,16 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
       message: "Someone else ruled on that version a moment ago — reload the Review Room and rule on where the cut stands now.",
     };
   }
+  // ONE APPROVAL, AND IT NAMES WHO GAVE IT (§8.1). Kyle or Jordan ruling on a
+  // cut that was James's is a cover, recorded as a CutReviewerEvent AFTER the
+  // verdict won its row — never a second approval anybody has to give.
+  {
+    const { recordRulingReviewer } = await import("@/lib/reviewerAssignment");
+    await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "approved", ruler: await rulerOf() });
+  }
+  // The fixes on this version, verified by the one who approved it (§8.3).
+  // After the verdict won its row, so a lost race verifies nothing.
+  await issueGate.apply({ name: authorName ?? "Reviewer" }).catch(() => ({ verified: 0 }));
   const street = streetOf(submission.project?.title);
   await prisma.activity.create({
     data: { projectId: submission.projectId, type: "SYSTEM", body: `Cut approved in review (round ${submission.round}).` },
@@ -1030,9 +1191,12 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
 // flip the job to REVISION ("Revisions" on the queue), ring the bell. A
 // client's revision the cut was answering goes back to OPEN — the job stays
 // in Revisions and the client's ask stays open until a cut is approved.
-export async function requestCutChanges(submissionId: string): Promise<{ ok: boolean; message: string }> {
+// `opts.notFixedIssueIds` (§8.3): fixes the editor marked done that the
+// reviewer says are NOT done — they go back REOPENED, stamped missed in this
+// version. Absent (the plain button), no fix is judged either way.
+export async function requestCutChanges(submissionId: string, opts?: { notFixedIssueIds?: string[] | null }): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCutReviewer(); // same desk as approveCut (§8.1)
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -1072,6 +1236,20 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   }
   if (submission.status === "UPLOAD_FAILED") {
     return { ok: false, message: "That upload never finished, so there's nothing in review to send back." };
+  }
+  // Same two refusals as approveCut (§8.2): a held cut is not in review yet,
+  // and a folder cut whose bytes changed since the check is the editor's again.
+  {
+    const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
+    if (isHeldForSelfCheck(submission)) {
+      return { ok: false, message: "This version is waiting on the editor's check — it isn't in review yet, so there's nothing to send back." };
+    }
+    const { refuseOwnWork } = await import("@/lib/reviewerAssignment");
+    const own = refuseOwnWork(await getCurrentUser().catch(() => null), submission.submittedByKey, "cut");
+    if (own) return { ok: false, message: own };
+    const { folderDriftCheck } = await import("@/lib/selfCheckStore");
+    const drift = await folderDriftCheck(submission);
+    if (!drift.ok) return { ok: false, message: drift.message };
   }
 
   const assetKey = submission.assetUrl ?? `cut:${submission.id}`;
@@ -1190,6 +1368,22 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
       ok: false,
       message: `Someone else ruled on that version a moment ago — it now reads ${cutStatusWords(now.status)}, so the verdict stands. ${residue} Reload the Review Room before you rule again.`,
     };
+  }
+  // Whoever sent it back is its reviewer of record (§8.1 — see approveCut).
+  {
+    const { recordRulingReviewer } = await import("@/lib/reviewerAssignment");
+    await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "sent back", ruler: await rulerOf() });
+  }
+  // The notes become issues on THIS version; fixes named as not done go back;
+  // earlier asks the editor did not fix are stamped missed here (§8.3). Only
+  // for the caller that won the row. Never throws.
+  {
+    const { onChangesRequested } = await import("@/lib/revisionIssues");
+    await onChangesRequested(
+      submission,
+      { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, notFixedIssueIds: opts?.notFixedIssueIds ?? null, noteIds: open.map((n) => n.id) },
+      { name: authorName ?? "Reviewer" },
+    );
   }
   // The client's revision this cut was answering is back with the editor —
   // the state sentence goes in front of the ask line, never over it. This runs
@@ -1425,7 +1619,10 @@ export async function startCutUpload(input: {
    * timeline and to the office — see the approved-cut branch below.
    */
   reopenReason?: string | null;
-}): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string; needsReason?: boolean }> {
+  /** §8.2: the editor's self-check for THIS file. Required — without it
+   *  nothing is reserved. Bound to the bytes at finalize. */
+  selfCheck?: import("@/lib/selfCheck").SelfCheckInput | null;
+}): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean }> {
   const reason = (input.reopenReason ?? "").trim();
   // A reason is what turns this into a REPLACEMENT, which is the one upload an
   // editor may make on a job whose task is closed — see uploadAuthor. Without
@@ -1498,6 +1695,26 @@ export async function startCutUpload(input: {
       };
     }
   }
+  // ---- THE EDITOR'S SELF-CHECK (§8.2, Sep 25) -----------------------------
+  // "Editors must watch their actual exported edit and complete a required
+  // checklist before each submission, including revisions." Checked HERE,
+  // before a row is reserved or a replacement is announced, so a refused
+  // check leaves nothing behind. The office uploading a vendor's or an
+  // editor's file attests on their behalf, recorded as such.
+  const checkMe = await getCurrentUser().catch(() => null);
+  const { prepareUploadCheck } = await import("@/lib/selfCheckStore");
+  const office = who.role === "OWNER" || who.role === "ADMIN";
+  const prepared = await prepareUploadCheck({
+    projectId: input.projectId,
+    deliverableId: input.deliverableId,
+    slot: slot.slot,
+    fileName: input.fileName,
+    sizeBytes: input.sizeBytes,
+    selfCheck: input.selfCheck,
+    actor: { name: who.name ?? "The office", userId: checkMe?.id ?? null, editorKey: who.key, office },
+    intendedEditorKey: office ? await projectEditorKey(input.projectId) : who.key,
+  });
+  if (!prepared.ok) return prepared;
   // THE REASON IS FILED WHENEVER ONE WAS GIVEN — never again only when some
   // branch above decided it was compulsory (drill, Sep 18).
   //
@@ -1594,6 +1811,15 @@ export async function startCutUpload(input: {
       },
       select: { id: true },
     });
+    // The check rides the reservation (§8.2): same transaction, so there is
+    // never a reserved upload without its attestation, and the store's
+    // session-less completion callback can still bind it — the check hangs
+    // off this row, not off anybody's login.
+    const check = await tx.cutSelfCheck.create({
+      data: { ...prepared.row, submissionId: created.id, projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, round: next, state: "PENDING_BYTES" },
+      select: { id: true },
+    });
+    await tx.reviewSubmission.update({ where: { id: created.id }, data: { selfCheckId: check.id } });
     return { round: next, row: created };
   });
   // An override is a decision, so it goes in the job's history in words — the
@@ -1611,8 +1837,14 @@ export async function startCutUpload(input: {
   return { ok: true, submissionId: row.id, pathname: uploadPathnameFor(input.projectId, row.id, input.fileName), round };
 }
 
-export async function finishCutUpload(input: { submissionId: string; url: string; pathname: string }): Promise<{ ok: boolean; message: string }> {
-  const row = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true, status: true, sourceWidth: true, deliverableId: true, slot: true } });
+// `held` (§8.2): the bytes are safe in the store but they are not the file the
+// editor checked, so the cut waits for a fresh check — the browser must not
+// treat that as a failed upload and throw the bytes away.
+export async function finishCutUpload(input: { submissionId: string; url: string; pathname: string }): Promise<{ ok: boolean; message: string; held?: boolean }> {
+  const row = await prisma.reviewSubmission.findUnique({
+    where: { id: input.submissionId },
+    select: { projectId: true, status: true, sourceWidth: true, deliverableId: true, slot: true, blobUrl: true, selfCheckId: true, selfCheckedAt: true },
+  });
   if (!row) return { ok: false, message: "That upload no longer exists." };
   // THE SAME SLOT THE RESERVATION IS ON, so an author who was allowed to start
   // a replacement is allowed to finish one. Without this the widened door would
@@ -1623,7 +1855,14 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   // looks at; the approved one it would supersede still is.
   const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null);
   if (!who.ok) return who;
-  if (row.status !== "UPLOADING") return { ok: true, message: "Already in review." };
+  // The store's completion callback may have flipped the row first and then
+  // been unable to say what landed (it carries no size; its own read failed),
+  // leaving the editor's check waiting on the bytes. This call has a browser
+  // behind it and measures the object below, so it goes on and binds — it
+  // used to answer "Already in review." here and leave the cut held with no
+  // bell (review fix, Sep 25). Every other non-UPLOADING row is as before.
+  const awaitingBytes = row.status === "PENDING" && !!row.blobUrl && row.blobUrl === input.url && !!row.selfCheckId && !row.selfCheckedAt;
+  if (row.status !== "UPLOADING" && !awaitingBytes) return { ok: true, message: "Already in review." };
   // The blob must live in a store WE HOLD A TOKEN FOR, under THIS row's prefix
   // — never attach a foreign URL to a cut.
   //
@@ -1645,13 +1884,17 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   // private store head() is a credentialled control-plane read, and during the
   // cutover the object may be in the legacy one.
   let size: number | null = null;
+  // A row the callback already filed is a cut whose bytes are safe in the
+  // store: any trouble measuring it here answers HELD, never a plain failure —
+  // the uploader abandons (and deletes the bytes of) a plain failure.
+  const heldAnswer = { ok: false, held: true, message: "The upload landed, but the hub couldn't confirm it's the file you checked yet — finish the check on this page." };
   try {
     const { head } = await import("@vercel/blob");
     const meta = await head(input.url, owner.token ? { token: owner.token } : undefined);
     size = meta.size;
-    if (meta.pathname !== input.pathname) return { ok: false, message: "Upload mismatch — try again." };
+    if (meta.pathname !== input.pathname) return awaitingBytes ? heldAnswer : { ok: false, message: "Upload mismatch — try again." };
   } catch {
-    return { ok: false, message: "The file didn't land in the store — try the upload again." };
+    return awaitingBytes ? heldAnswer : { ok: false, message: "The file didn't land in the store — try the upload again." };
   }
   const { finalizeCutUpload } = await import("@/lib/reviewCuts");
   const r = await finalizeCutUpload(input.submissionId, { url: input.url, pathname: input.pathname, size });
@@ -1680,8 +1923,13 @@ export async function finishCutUpload(input: { submissionId: string; url: string
 }
 
 export async function abandonCutUpload(submissionId: string, blobUrl?: string | null): Promise<void> {
-  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, deliverableId: true, slot: true } });
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, deliverableId: true, slot: true, status: true, blobUrl: true } });
   if (!row) return;
+  // Bytes a row has already FILED as a cut are never "abandoned" (review fix,
+  // Sep 25): the store's callback can file the row while the browser's finish
+  // is still failing, and deleting them here would leave a cut in review with
+  // no file behind it.
+  if (blobUrl && row.blobUrl === blobUrl && row.status !== "UPLOADING" && row.status !== "UPLOAD_FAILED") return;
   // Same slot as finishCutUpload's, for the same reason: whoever could open the
   // replacement has to be able to clean up after a failed one, or a widened
   // door leaves UPLOADING rows and orphan bytes behind it.
@@ -2352,10 +2600,16 @@ async function reassignCutInner(
     select: {
       id: true, projectId: true, round: true, status: true, fileName: true, assetUrl: true, assetPath: true,
       finalPath: true, note: true, deliverableId: true, slot: true, submittedByKey: true, submittedByName: true,
+      selfCheckId: true,
       project: { select: { title: true } },
     },
   });
   if (!sub) return { ok: false, message: "That version no longer exists." };
+  // §8.2: a move changes the output (another job, another brief, another
+  // slot), so the check made for the old one does not travel. A cut that came
+  // through the gate lands HELD and waits for a fresh check; a pre-gate cut is
+  // grandfathered and moves exactly as it always did.
+  const holdOnLanding = !!sub.selfCheckId;
   const refusal = whyNotTakeBack(sub, who.actor, "move");
   if (refusal) return { ok: false, message: refusal };
   if (!targetProjectId || targetProjectId === sub.projectId) {
@@ -2434,6 +2688,7 @@ async function reassignCutInner(
         movedAt,
         movedBy: who.actor.name,
         ...(noteText ? { note: noteText } : {}),
+        ...(holdOnLanding ? { selfCheckedAt: null } : {}),
       },
     })).count;
   } catch (e) {
@@ -2484,14 +2739,19 @@ async function reassignCutInner(
   // the target's own revision lane: a cut that arrived from another job is not
   // automatically the correction to THIS client's ask, so correctedCutSubmitted
   // is deliberately not called. Whoever rules on it decides that.
-  if (target.status === "EDITING" || target.status === "SHOT") {
+  // HELD (§8.2): the stage move and the announcement wait for the fresh check
+  // (reviewCuts.enterReview → movedCutEntered makes both, once).
+  if (holdOnLanding) {
+    const { voidSelfCheck } = await import("@/lib/selfCheckStore");
+    await voidSelfCheck(sub.id, `Moved to ${targetStreet} — the output changed, so it needs a fresh check there.`, { release: true, notify: true });
+  } else if (target.status === "EDITING" || target.status === "SHOT") {
     await prisma.project.update({ where: { id: target.id }, data: { status: "REVIEW", statusPinnedAt: null } }).catch(() => {});
   }
 
   // One announcement for the job it landed on. The key carries the move, or
   // the per-submission dedupe from the cut's FIRST trip into the Room would
   // swallow it and the reviewer would never hear the video arrived.
-  await announceCutInReview({
+  if (!holdOnLanding) await announceCutInReview({
     kind: "review_submitted",
     projectId: target.id,
     submissionId: sub.id,
@@ -2518,7 +2778,9 @@ async function reassignCutInner(
   return {
     ok: true,
     message:
-      `Moved to ${targetStreet} — it's in the Review Room there as ${landing.label}, version ${landing.round}.` +
+      (holdOnLanding
+        ? `Moved to ${targetStreet} as ${landing.label}, version ${landing.round} — it goes to review there once the editor's check is done for that job.`
+        : `Moved to ${targetStreet} — it's in the Review Room there as ${landing.label}, version ${landing.round}.`) +
       (landing.freeSlot ? "" : " That job's cuts were all taken, so it landed on the first one still open — move it again if that's wrong.") +
       (stranded ? ` The approved copy is still in ${sourceStreet}'s Dropbox folder — the flag on the cut has a control to remove it.` : ""),
   };
@@ -2751,4 +3013,163 @@ export async function queueTopazRenderAction(submissionId: string): Promise<{ ok
   return r.queued
     ? { ok: true, message: "Queued — the 1080p version will be in Dropbox shortly." }
     : { ok: false, message: r.reason };
+}
+
+/**
+ * A HELD 1080p FILE, DECIDED BY A PERSON (O02, Sep 25 2026). The pass finished
+ * but its sound couldn't be verified, so the file waits in Dropbox and the
+ * approved original stays the deliverable until somebody chooses. Two answers:
+ * keep the original, or use the processed file after listening (the exact
+ * attestation sentence is required — lib/topazHold). Guarded by the review desk
+ * (requireCutReviewer: owner/admin or a named review seat) because it is a
+ * creative verdict on a cut, not an office setting. Nothing here re-renders or
+ * spends: the provider is never called.
+ */
+export async function resolveHeldRenderAction(
+  jobId: string,
+  choice: "use-original" | "accept-processed",
+  attest?: string | null,
+  why?: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { requireCutReviewer } = await import("@/lib/auth/guards");
+    await requireCutReviewer();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  if (typeof jobId !== "string" || !jobId) return { ok: false, message: "Which render?" };
+  if (choice !== "use-original" && choice !== "accept-processed") return { ok: false, message: "Choose the original or the 1080p file." };
+  const me = await getCurrentUser().catch(() => null);
+  const { resolveHeldTopazJob } = await import("@/lib/topazJobs");
+  const r = await resolveHeldTopazJob(jobId, choice, me?.name ?? me?.email ?? null, {
+    attest: typeof attest === "string" ? attest : null,
+    why: typeof why === "string" ? why : null,
+  });
+  revalidatePath("/");
+  revalidatePath("/ops");
+  revalidatePath("/review");
+  revalidatePath("/connections");
+  return r;
+}
+
+/** Read a held 1080p file again, from Dropbox only — free, never a re-render. */
+export async function recheckHeldRenderAction(jobId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { requireCutReviewer } = await import("@/lib/auth/guards");
+    await requireCutReviewer();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  if (typeof jobId !== "string" || !jobId) return { ok: false, message: "Which render?" };
+  const me = await getCurrentUser().catch(() => null);
+  const { recheckHeldTopazJob } = await import("@/lib/topazJobs");
+  const r = await recheckHeldTopazJob(jobId, me?.name ?? me?.email ?? null);
+  revalidatePath("/");
+  revalidatePath("/ops");
+  revalidatePath("/review");
+  return r;
+}
+
+// ===========================================================================
+// WHO IS REVIEWING THIS CUT (unified handoff §8.1, Sep 25 2026). Thin doors
+// onto lib/reviewerAssignment — the chain, the compare-and-set, the event and
+// the notices all live there. Every door is the review desk's
+// (requireCutReviewer: owner/admin, or a named review seat). None of them
+// rules on a cut: taking or handing on a cut changes who it is waiting on,
+// never its status.
+// ===========================================================================
+type ReviewDeskActor = import("@/lib/reviewerAssignment").ReviewActor;
+
+async function reviewDeskActor(): Promise<{ ok: true; actor: ReviewDeskActor; office: boolean } | { ok: false; message: string }> {
+  try {
+    await requireCutReviewer();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const me = await getCurrentUser().catch(() => null);
+  // Local dev with auth off acts as the desk, like every guard in this file.
+  if (!me) return { ok: true, actor: { teamMemberId: null, name: "Local dev", userId: null }, office: true };
+  return {
+    ok: true,
+    actor: { teamMemberId: me.teamMemberId, name: me.name ?? me.email, userId: me.id },
+    office: me.realRole === "OWNER" || me.realRole === "ADMIN",
+  };
+}
+
+/** Who pressed a verdict, for the reviewer-of-record line. The session read
+ *  requireCutReviewer already made (cached per request); null in local dev. */
+async function rulerOf(): Promise<{ teamMemberId: string | null; name: string; userId: string | null } | null> {
+  const me = await getCurrentUser().catch(() => null);
+  if (!me || me.impersonating) return null;
+  return { teamMemberId: me.teamMemberId, name: me.name ?? me.email, userId: me.id };
+}
+
+async function refreshCutPages(submissionId: string): Promise<void> {
+  const s = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } }).catch(() => null);
+  if (s) refresh(s.projectId);
+}
+
+/** "I'll take it" — or, on a cut the primary has held past the offer, "I'll
+ *  cover it" (the same move, recorded as a COVER). */
+export async function claimCutReview(submissionId: string, opts: { cover?: boolean } = {}): Promise<{ ok: boolean; message: string }> {
+  const who = await reviewDeskActor();
+  if (!who.ok) return who;
+  if (typeof submissionId !== "string" || !submissionId) return { ok: false, message: "Which cut?" };
+  const { takeCutReview } = await import("@/lib/reviewerAssignment");
+  const r = await takeCutReview(submissionId, who.actor, { cover: opts?.cover === true });
+  if (r.ok) await refreshCutPages(submissionId);
+  return r;
+}
+
+/** Hand a waiting cut to a named person who can rule on it. */
+export async function reassignCutReviewer(
+  submissionId: string,
+  toTeamMemberId: string,
+  note?: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  const who = await reviewDeskActor();
+  if (!who.ok) return who;
+  if (typeof submissionId !== "string" || !submissionId || typeof toTeamMemberId !== "string" || !toTeamMemberId) {
+    return { ok: false, message: "Pick who should review it." };
+  }
+  const { handCutReview } = await import("@/lib/reviewerAssignment");
+  const r = await handCutReview(submissionId, toTeamMemberId, who.actor, typeof note === "string" ? note : null);
+  if (r.ok) await refreshCutPages(submissionId);
+  return r;
+}
+
+/** Mark a review seat away until a day (YYYY-MM-DD, through the end of that ET
+ *  day) or back (null). The office for anyone; a seat for themselves. Away
+ *  moves their waiting cuts to the next seat at once. */
+export async function setCutReviewerAway(
+  teamMemberId: string,
+  untilDay: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  const who = await reviewDeskActor();
+  if (!who.ok) return who;
+  if (typeof teamMemberId !== "string" || !teamMemberId) return { ok: false, message: "Whose seat?" };
+  if (!who.office && who.actor.teamMemberId !== teamMemberId) {
+    return { ok: false, message: "You can mark yourself away — ask Jordan or Kyle to change someone else's." };
+  }
+  let until: Date | null = null;
+  if (untilDay != null) {
+    if (typeof untilDay !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(untilDay)) return { ok: false, message: "Pick the last day they're away." };
+    const { etAt } = await import("@/lib/datetime");
+    until = etAt(untilDay, 23, 59);
+  }
+  const { markReviewerAway } = await import("@/lib/reviewerAssignment");
+  const r = await markReviewerAway(teamMemberId, until, who.actor);
+  revalidatePath("/settings");
+  revalidatePath("/review");
+  revalidatePath("/editing");
+  return r;
+}
+
+/** The Settings card's roster: who could hold a seat, whether their login can
+ *  act, what their own "video in review" switch says, and who is away. */
+export async function loadCutReviewerSeats(): Promise<import("@/components/review/reviewerTypes").ReviewerSeat[]> {
+  const who = await reviewDeskActor();
+  if (!who.ok) return [];
+  const { reviewerSeats } = await import("@/lib/reviewerAssignment");
+  return reviewerSeats();
 }

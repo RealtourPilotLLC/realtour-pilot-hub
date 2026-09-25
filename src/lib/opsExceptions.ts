@@ -37,7 +37,8 @@ export type ExceptionKind =
   | "aging-review"
   | "overdue-followup"
   | "stalled-render"
-  | "unsent-replacement";
+  | "unsent-replacement"
+  | "unverified-render";
 
 export type OpsException = {
   id: string;
@@ -87,6 +88,7 @@ export function emptyExceptionBoard(): OpsExceptionBoard {
       "overdue-followup": { ...none },
       "stalled-render": { ...none },
       "unsent-replacement": { ...none },
+      "unverified-render": { ...none },
     },
   };
 }
@@ -97,6 +99,7 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "overdue-followup": "Follow-up date passed",
   "stalled-render": "Render stuck at the provider",
   "unsent-replacement": "Approved replacement, not sent",
+  "unverified-render": "1080p file held — sound not verified",
 };
 
 const DAY = 86_400_000;
@@ -126,8 +129,14 @@ const prettyKey = (key: string) =>
 /** Thresholds, in one place so a person can argue with them. Deliberately
  *  generous: a board that fires on everything is a board nobody reads. */
 export const EXCEPTION_RULES = {
-  /** a cut with no verdict after this many days */
-  reviewAgingDays: 3,
+  /**
+   * A cut with no verdict after this many COVERED days (Mon–Fri 9–6 ET by the
+   * rota). Was 3 calendar days until Sep 25: the unified handoff's default —
+   * pending Jordan's answer on coverage (§13) — is that he is reached HERE
+   * after two covered days, not by a page. Covered, so a Friday-5pm cut is not
+   * "three days late" on Monday morning; high at twice this.
+   */
+  reviewAgingCoveredDays: 2,
   /**
    * A provider job with no movement for this many hours.
    *
@@ -183,8 +192,14 @@ export async function creativeApprover(): Promise<CreativeApprover | null> {
       .findFirst({ where: { creativeManager: true, active: true }, select: { id: true, name: true } })
       .catch(() => null));
   if (!row) return null;
+  // A DESIGNATED reviewer can rule with any active login since Sep 25 (§8.1,
+  // lib/reviewerAssignment.canRuleOnCuts); somebody named only by the flag
+  // still needs owner/admin, because the flag grants nothing.
   const login = await prisma.appUser
-    .findFirst({ where: { teamMemberId: row.id, role: { in: ["OWNER", "ADMIN"] }, status: "ACTIVE" }, select: { id: true } })
+    .findFirst({
+      where: { teamMemberId: row.id, status: "ACTIVE", ...(picked ? {} : { role: { in: ["OWNER", "ADMIN"] } }) },
+      select: { id: true },
+    })
     .catch(() => null);
   return { id: row.id, name: row.name, from: picked ? "designated" : "creative-manager-flag", canApprove: !!login };
 }
@@ -195,7 +210,15 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // The roster is read WITH the approver rather than after it: resolving the
   // key an engine wrote on a task ("john", "kim", "cubicasa") to a person costs
   // one read of the team table for the whole card.
-  const [approver, roster] = await Promise.all([creativeApprover(), listAssignees().catch((): Assignee[] => [])]);
+  const [approver, roster, coverage] = await Promise.all([
+    creativeApprover(),
+    listAssignees().catch((): Assignee[] => []),
+    // The rota the review clock is measured on (§8.1). Read with the rest; a
+    // failed read falls back to the shipped Mon–Fri 9–6.
+    import("@/lib/coverage").then((m) => m.coverageRules()).catch(() => ({ weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null })),
+  ]);
+  const { coveredHoursBetween } = await import("@/lib/coverage");
+  const agingCoveredHours = EXCEPTION_RULES.reviewAgingCoveredDays * (coverage.toHour - coverage.fromHour);
   // SAY WHERE THE NAME CAME FROM. A name lifted off a flag that exists for the
   // shoot bonus is a guess wearing a person's face; naming somebody whose login
   // cannot press Approve is worse than naming nobody. Both are said out loud
@@ -237,7 +260,14 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // been running. The editor is finished; this one is the office's.
   const agingReviewWhere: Prisma.ReviewSubmissionWhereInput = {
     status: "PENDING",
-    createdAt: { lt: new Date(now - EXCEPTION_RULES.reviewAgingDays * DAY) },
+    // A FLOOR, not the rule: covered time can never exceed elapsed time, so
+    // nothing younger than the covered-hours line can qualify. The rule itself
+    // — covered hours since the cut entered review — is applied in memory.
+    createdAt: { lt: new Date(now - agingCoveredHours * HOUR) },
+    // Waiting on the EDITOR's check is not waiting on a verdict (§8.2): only a
+    // checked cut, or one from before the gate, is the reviewer's to answer
+    // for. Same test as selfCheck.awaitingReviewWhere, on the columns.
+    AND: [{ OR: [{ selfCheckedAt: { not: null } }, { selfCheckId: null }] }],
     // A DELIVERED job's still-PENDING cut is not a work list — the client
     // already has the video (131 Woodcutter sat in the queue for days after
     // delivery). The Review Room decided that twice, in reviewRoom.ts and in
@@ -255,11 +285,6 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     // would mean a second copy of MONTHLY_PLAN_RE written in SQL, which is the
     // same drift that put half of OWED_DELIVERABLE_WHERE in the query above.
     project: { status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] } },
-  };
-  // High = twice the waiting rule, exactly as the row builder scores it.
-  const agingReviewHighWhere: Prisma.ReviewSubmissionWhereInput = {
-    ...agingReviewWhere,
-    createdAt: { lt: new Date(now - EXCEPTION_RULES.reviewAgingDays * 2 * DAY) },
   };
 
   // 3. A CHASE DATE THAT PASSED. SmartTask.followUpAt is the date somebody
@@ -308,9 +333,15 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     }),
     prisma.reviewSubmission.findMany({
       where: agingReviewWhere,
-      select: { id: true, projectId: true, round: true, createdAt: true, fileName: true, project: { select: { title: true } } },
+      select: {
+        id: true, projectId: true, round: true, createdAt: true, fileName: true, project: { select: { title: true } },
+        reviewerTeamMemberId: true, selfCheckedAt: true,
+      },
       orderBy: { createdAt: "asc" },
-      take: cap + 1,
+      // The WHOLE pool under the ceiling, like the unsent read below: the
+      // covered-hours rule runs in memory, so a capped read would hide rows
+      // rather than page them. PENDING cuts on live jobs are a small pool.
+      take: SAFETY_CEILING,
     }),
     prisma.smartTask.findMany({
       where: followUpWhere,
@@ -420,18 +451,36 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // nothing and a bad day pays for six cheap indexed counts.
   const overflowed = {
     unassigned: unassignedRows.length > cap,
-    aging: agingRows.length > cap,
     followUp: followUpRows.length > cap,
   };
+  // WAITING ON A VERDICT, by covered hours (§8.1, Sep 25). The clock starts
+  // when the cut ENTERED review — the editor's self-check where there is one,
+  // the upload otherwise — and counts only time somebody was on shift. The
+  // whole pool was read, so these ARE the pile, not a page of it.
+  const reviewClock = (r: { createdAt: Date; selfCheckedAt: Date | null }) => r.selfCheckedAt ?? r.createdAt;
+  const coveredWait = (r: { createdAt: Date; selfCheckedAt: Date | null }) => coveredHoursBetween(reviewClock(r), new Date(now), coverage);
+  const agingQualified = agingRows
+    .map((r) => ({ r, hours: coveredWait(r) }))
+    .filter((x) => x.hours >= agingCoveredHours)
+    .sort((a, b) => b.hours - a.hours);
+  const agingIsHigh = (hours: number) => hours >= agingCoveredHours * 2;
+  const reviewerName = new Map(
+    (
+      await prisma.teamMember
+        .findMany({
+          where: { id: { in: [...new Set(agingQualified.map((x) => x.r.reviewerTeamMemberId).filter((x): x is string => !!x))] } },
+          select: { id: true, name: true },
+        })
+        .catch(() => [] as { id: string; name: string }[])
+    ).map((t) => [t.id, t.name]),
+  );
   const [unassignedAll, unassignedHigh, agingAll, agingHigh, followUpAll, followUpHigh] = await Promise.all([
     overflowed.unassigned ? prisma.project.count({ where: unassignedWhere }) : unassignedRows.length,
     overflowed.unassigned
       ? prisma.project.count({ where: unassignedHighWhere })
       : unassignedRows.filter((p) => p.deliveryDue && p.deliveryDue.getTime() < now).length,
-    overflowed.aging ? prisma.reviewSubmission.count({ where: agingReviewWhere }) : agingRows.length,
-    overflowed.aging
-      ? prisma.reviewSubmission.count({ where: agingReviewHighWhere })
-      : agingRows.filter((r) => ageOf(r.createdAt, now) >= EXCEPTION_RULES.reviewAgingDays * 2).length,
+    agingQualified.length,
+    agingQualified.filter((x) => agingIsHigh(x.hours)).length,
     overflowed.followUp ? prisma.smartTask.count({ where: followUpWhere }) : followUpRows.length,
     overflowed.followUp
       ? prisma.smartTask.count({ where: followUpHighWhere })
@@ -456,17 +505,24 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     });
   }
 
-  for (const r of agingRows.slice(0, cap)) {
+  for (const { r, hours } of agingQualified.slice(0, cap)) {
+    // THE ROW'S OWN REVIEWER (§8.1): the one person the cut is waiting on.
+    // The board-wide approver label is only for a cut nobody holds — one that
+    // entered review before the chain existed, or while all three were away.
+    const holder = r.reviewerTeamMemberId ? reviewerName.get(r.reviewerTeamMemberId) ?? null : null;
+    const coveredDays = Math.floor(hours / Math.max(1, coverage.toHour - coverage.fromHour));
     out.push({
       id: `review:${r.id}`,
       kind: "aging-review",
-      severity: ageOf(r.createdAt, now) >= EXCEPTION_RULES.reviewAgingDays * 2 ? "high" : "medium",
+      severity: agingIsHigh(hours) ? "high" : "medium",
       title: streetOf(r.project?.title),
-      why: `Version ${r.round} has been waiting ${ageOf(r.createdAt, now)} days for a verdict`,
-      owner: verdictOwner,
-      nextAction: "Watch it and approve or send it back in the Review Room",
+      why: `Version ${r.round} has waited ${coveredDays} covered day${coveredDays === 1 ? "" : "s"} (${Math.floor(hours)} covered hours) for a verdict`,
+      owner: holder ?? verdictOwner,
+      nextAction: holder
+        ? `${holder.split(/\s+/)[0]} to rule on it in the Review Room — or take it over on the job's edit page`
+        : "Watch it and approve or send it back in the Review Room",
       href: `/edit/${r.projectId}`,
-      ageDays: ageOf(r.createdAt, now),
+      ageDays: ageOf(reviewClock(r), now),
     });
   }
 
@@ -535,6 +591,57 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     });
   }
 
+  // 6. A 1080p FILE HELD FOR A LISTEN (O02, Sep 25 2026). The pass finished
+  // and its file could not be checked, so it was NOT filed as the deliverable
+  // and nobody was told to send it — it waits in Dropbox for a person. Nothing
+  // retries it (the driver never claims a held job), so without this row a
+  // held video would wait silently: the ready card lists it, but only while
+  // somebody is looking at that card. Its own read, kept out of the batch above
+  // so this kind stays one self-contained block; the pool is tiny (a hold needs
+  // three failed reads of Topaz AND a failed read of Dropbox).
+  const heldRenders = await prisma.topazJob
+    .findMany({
+      where: { state: "held" },
+      select: {
+        id: true, projectId: true, heldAt: true, createdAt: true,
+        project: { select: { title: true } },
+        submission: { select: { round: true, reviewerTeamMemberId: true } },
+      },
+      orderBy: { heldAt: "asc" },
+      take: SAFETY_CEILING,
+    })
+    .catch(() => []);
+  const heldReviewer = new Map(
+    (
+      await prisma.teamMember
+        .findMany({
+          where: { id: { in: [...new Set(heldRenders.map((j) => j.submission?.reviewerTeamMemberId).filter((x): x is string => !!x))] } },
+          select: { id: true, name: true },
+        })
+        .catch(() => [] as { id: string; name: string }[])
+    ).map((t) => [t.id, t.name]),
+  );
+  const heldHours = (j: { heldAt: Date | null; createdAt: Date }) => Math.max(0, Math.floor((now - (j.heldAt ?? j.createdAt).getTime()) / HOUR));
+  for (const j of heldRenders.slice(0, cap)) {
+    const hours = heldHours(j);
+    const reviewer = j.submission?.reviewerTeamMemberId ? heldReviewer.get(j.submission.reviewerTeamMemberId) ?? null : null;
+    out.push({
+      id: `held:${j.id}`,
+      kind: "unverified-render",
+      // An approved video the client is owed and nobody can send: a day of
+      // that is worth doing today.
+      severity: hours >= 24 ? "high" : "medium",
+      title: streetOf(j.project?.title),
+      why: `Version ${j.submission?.round ?? "?"} came back from the 1080p pass but its sound couldn't be verified, so it hasn't gone to Kyle`,
+      // The creative reviewer's call — whoever reviewed this cut, else the
+      // board's approver line (which says out loud when nobody is named).
+      owner: reviewer ?? verdictOwner,
+      nextAction: "Listen to the 1080p file or keep the original",
+      href: "/#video-review",
+      ageDays: Math.floor(hours / 24),
+    });
+  }
+
   return {
     // High first, then oldest. A list somebody reads top to bottom.
     rows: out.sort((a, b) => {
@@ -551,6 +658,8 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
         high: stalledAll.filter((j) => now - renderClock(j).getTime() >= 24 * HOUR).length,
       },
       "unsent-replacement": { all: qualifying.length, high: qualifying.length },
+      // Read whole (under the ceiling), so this is the pile too.
+      "unverified-render": { all: heldRenders.length, high: heldRenders.filter((j) => heldHours(j) >= 24).length },
     },
   };
 }

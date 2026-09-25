@@ -12,6 +12,10 @@ import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
 import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
 import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
 import { recentlyRemovedFromQueue } from "@/app/editing/actions";
+import { AutoRefresh } from "@/components/ops/AutoRefresh";
+import { WorkingNowPanel } from "@/components/editing/WorkingNowPanel";
+import { EditorDesk } from "@/components/editing/EditorDesk";
+import { myDesk, workingNow } from "@/lib/editorWork";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +39,10 @@ export const dynamic = "force-dynamic";
 //     view (hideEditor) never renders it, and the server refuses it anyway.
 //     Row values arrive from editorQueue.ts AFTER overrides, so the counts in
 //     the editor's header line below already honour them.
+//   · WORKING NOW (§7.1, Sep 25): what each editor has pressed Start on, above
+//     the backlog, re-read every minute. The editor's own view gets their desk
+//     (what they're on + Pause) and, once, "which one are you on right now?"
+//     for the jobs the old pill left claimed.
 
 // The door to the message center, with the viewer's unread count.
 function MessagesButton({ unread }: { unread: number }) {
@@ -148,6 +156,9 @@ export default async function EditorQueuePage() {
     const overdue = myToEdit.filter((r) => r.late).length;
     const waitingNote = myWaiting.length ? ` · ${myWaiting.length} waiting on footage` : "";
     const unread = await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id));
+    // What they said they're on (§7.1). A failed read shows no banner — the
+    // pill on each row still starts and pauses.
+    const desk = await myDesk(editorScope).catch(() => null);
 
     return (
       <div>
@@ -169,6 +180,7 @@ export default async function EditorQueuePage() {
           }
         />
         <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
+          {desk && <EditorDesk active={desk.active} unconfirmed={desk.unconfirmed} />}
           <WorkloadPanel view={await editingWorkload(workloadRows([...myNotDone, ...myUpcoming]))} mine />
           <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
         </div>
@@ -199,13 +211,25 @@ export default async function EditorQueuePage() {
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
+        {/* WHAT EACH EDITOR IS ON RIGHT NOW (§7.1) — their own Start/Pause,
+            separate from the backlog below. The page re-reads every minute
+            while the tab is visible; the panel says when it read and says so
+            when that read has gone stale or failed. */}
+        <AutoRefresh seconds={60} />
+        <WorkingNowPanel data={await workingNow()} />
         {/* Whose desk each job is on, and whether the person it is on can
             actually move it. See lib/editorWorkload for why there is not a
             single invented hour in it. */}
         <WorkloadPanel view={await editingWorkload(workloadRows([...notDone, ...upcomingRows]))} />
-        {/* Rows click straight through to /edit/<id> — the notes (customer +
-            shoot) live there now, not in the table. */}
-        <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />
+        {/* THE BACKLOG. Rows click straight through to /edit/<id> — the notes
+            (customer + shoot) live there now, not in the table. A row reads
+            "In editing" only while somebody has pressed Start on it. */}
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-foreground">
+            Backlog <span className="font-normal text-muted">— every job owed, whoever holds it; Ready for editing means nobody has started it</span>
+          </h2>
+          <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />
+        </div>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}
         <RecentlyRemoved rows={await recentlyRemovedFromQueue()} />

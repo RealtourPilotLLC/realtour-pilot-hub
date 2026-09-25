@@ -33,7 +33,10 @@ export function QualityDials({ dials }: { dials: OwnerDials }) {
           <Clapperboard className="size-3.5 text-muted-2" />
           <span className="text-muted">Video</span>{" "}
           <b className="tabular-nums">{video.inEditing}</b>
-          <span className="text-muted">in editing</span>
+          {/* Work owed across production, not work happening (§7.1, A64): the
+              "being edited now" figure is the editors' own Start. */}
+          <span className="text-muted">video job{video.inEditing === 1 ? "" : "s"} in production</span>
+          {video.editingNow > 0 && <span className="text-muted">· {video.editingNow} being edited now</span>}
           {video.pastSla > 0 && (
             <span className="ml-0.5 rounded-md bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning tabular-nums">
               {video.pastSla} past SLA

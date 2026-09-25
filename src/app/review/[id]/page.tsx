@@ -14,6 +14,9 @@ import { editorMeta } from "@/lib/editors";
 import { CutReviewPanel } from "@/components/review/CutReviewPanel";
 import { cutTakeBackFlags } from "@/app/review/actions";
 import { BackLink } from "@/components/ui/BackLink";
+// §8.1: the one person each waiting cut is waiting on, and the take / cover /
+// hand-on doors — the same strip /edit/<id> carries, here where review happens.
+import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +38,13 @@ export default async function CutReviewPage({
   const { id } = await params;
   const { cut } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
-  const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // THE SAME QUESTION THE ACTIONS ASK (§8.1, review fix Sep 25): owner/admin,
+  // or a login seated as a reviewer — the desk is drawn exactly where approveCut
+  // and requestCutChanges will accept the press. It used to be the OWNER/ADMIN
+  // role alone, which sent a seated reviewer on a narrower login home from the
+  // very link their "Waiting on you" notice carries. View-as is refused.
+  const { isReviewDesk, reviewerStripFor } = await import("@/lib/reviewerAssignment");
+  const ownerDesk = await isReviewDesk(me, { authEnforced: authEnforced() });
   // A PHOTOGRAPHER reaches this page from a tag on the cut (Jordan, Sep 17:
   // "I want to be able to tag james on the video - he gets a text with my
   // message and a link to see the review room video and comment") and, since
@@ -106,6 +115,18 @@ export default async function CutReviewPage({
   // renders nowhere in the Review Room and only the editor's own page has it,
   // which would leave Jordan unable to pull a cut from the desk he reviews on.
   const cutFlags = active ? await cutTakeBackFlags(w.projectId).catch(() => []) : [];
+  // Who each waiting cut is with (§8.1). The office lens only — a photographer
+  // on their own shoot is not the desk. A failed read shows no strip.
+  const reviewerStrip = shotThis ? null : await reviewerStripFor(w.projectId, me, { authEnforced: authEnforced() }).catch(() => null);
+  // The earlier asks this version's check claimed fixed, for the verdict's
+  // "not actually fixed" ticks (§8.3). The desk only; a failed read shows none.
+  const fixesToCheck =
+    active && !shotThis && active.status === "PENDING"
+      ? await import("@/lib/revisionIssues")
+          .then((m) => m.issuesForProject(w.projectId, { scrub: false }))
+          .then((all) => all.filter((i) => i.state === "ADDRESSED" && i.addressedInSubmissionId === active.id).map((i) => ({ id: i.id, text: (i.summary ?? i.text).slice(0, 200) })))
+          .catch(() => [])
+      : [];
   const takeBack = active ? (cutFlags.find((f) => f.submissionId === active.id) ?? null) : null;
   const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
   const clientAsk = active
@@ -201,6 +222,20 @@ export default async function CutReviewPage({
               {active.note && (
                 <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm italic text-foreground/80">“{active.note}”</p>
               )}
+              {active.heldForCheck && (
+                <div className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm">
+                  <p className="font-semibold text-foreground">Waiting on {editorLabel}&rsquo;s send-for-review check</p>
+                  <p className="mt-1 text-xs text-muted">
+                    This version is in, but the editor hasn&rsquo;t finished the check on it yet, so there is nothing to rule on.
+                    It joins the review list once they do.{" "}
+                    {!shotThis && (
+                      <Link href={`/edit/${w.projectId}#self-check`} className="font-medium text-brand hover:underline">
+                        Finish it for them
+                      </Link>
+                    )}
+                  </p>
+                </div>
+              )}
               {clientAsk && active.status !== "APPROVED" && (
                 <div className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm">
                   <p className="font-semibold text-foreground">
@@ -215,6 +250,7 @@ export default async function CutReviewPage({
                   </p>
                 </div>
               )}
+              {reviewerStrip && reviewerStrip.rows.length > 0 && <ReviewerStrip data={reviewerStrip} />}
               <CutReviewPanel
                 projectId={w.projectId}
                 submission={active}
@@ -223,6 +259,8 @@ export default async function CutReviewPage({
                 takeBack={takeBack}
                 cutLabel={slotLabel(active) ?? active.fileName ?? "this cut"}
                 canDecide={!shotThis}
+                heldForCheck={active.heldForCheck}
+                fixesToCheck={fixesToCheck}
               />
             </>
           ) : (

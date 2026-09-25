@@ -1,18 +1,21 @@
 import Link from "next/link";
-import { Camera, MessageSquareHeart } from "lucide-react";
+import { Camera, Clapperboard, MessageSquareHeart } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// The two halves of "feedback about the work": what CLIENTS said, and the
-// quality signals on the PHOTOGRAPHERS who shot it. Plain links (server-safe)
-// — the active tab comes from the page, not usePathname, so nothing here has
-// to be a client component.
-export type QualityTab = "clients" | "photographers";
+// The halves of "feedback about the work": what CLIENTS said, the quality
+// signals on the PHOTOGRAPHERS who shot it, and (§8.4, Sep 25) how each
+// EDITOR's versions fare in review. Plain links (server-safe) — the active tab
+// comes from the page, not usePathname, so nothing here has to be a client
+// component. `only` narrows the bar for a viewer who may see one tab (an
+// editor sees their own review results and nothing else here).
+export type QualityTab = "clients" | "photographers" | "editors";
 
-export function QualityTabs({ active, counts }: {
+export function QualityTabs({ active, counts, only }: {
   active: QualityTab;
-  counts?: { clients?: number; photographers?: number };
+  counts?: { clients?: number; photographers?: number; editors?: number };
+  only?: QualityTab[];
 }) {
-  const tabs = [
+  const all = [
     {
       key: "clients" as const, label: "Client feedback", href: "/quality?tab=clients", icon: MessageSquareHeart,
       count: counts?.clients, hint: "responses not yet marked handled",
@@ -21,7 +24,12 @@ export function QualityTabs({ active, counts }: {
       key: "photographers" as const, label: "Photographer feedback", href: "/quality?tab=photographers", icon: Camera,
       count: counts?.photographers, hint: "capture notes still open to fix",
     },
+    {
+      key: "editors" as const, label: "Editor quality", href: "/quality?tab=editors", icon: Clapperboard,
+      count: counts?.editors, hint: "revision issues waiting on a cause",
+    },
   ];
+  const tabs = only ? all.filter((t) => only.includes(t.key)) : all;
   return (
     <div className="mb-4 flex items-center gap-1 rounded-2xl border bg-surface p-1">
       {tabs.map((t) => {

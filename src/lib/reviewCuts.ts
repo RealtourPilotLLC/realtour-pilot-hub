@@ -64,7 +64,10 @@ export function isOwnCutNoteKey(key: string, submissionId: string): boolean {
 // client videos).
 // ---------------------------------------------------------------------------
 
-export type FinalCut = { path: string; name: string; serverModified: Date; size: number };
+/** `contentHash` (Dropbox's content_hash) is what binds an editor's self-check
+ *  to THESE bytes (§8.2): a re-export in place keeps the path and the name and
+ *  changes the hash. null when Dropbox did not say. */
+export type FinalCut = { path: string; name: string; serverModified: Date; size: number; contentHash?: string | null; rev?: string | null };
 
 const VIDEO_RE = /\.(mp4|mov|m4v|webm)$/i;
 const AUTO_NAME = "Auto — Final folder";
@@ -122,7 +125,25 @@ export async function announceCutInReview(input: {
   editorName?: string | null;
   ownerActed?: boolean;
   dedupeSuffix?: string | null;
+  /** §8.1: the cut's ONE reviewer, when the caller already assigned it. Left
+   *  out, it is assigned here — this announcer is the one moment every door
+   *  into the Room shares, so it is where a cut gets its owner. */
+  reviewer?: { teamMemberId: string; name: string } | null;
 }): Promise<void> {
+  // WHO IT IS WAITING ON (unified handoff §8.1, Sep 25). Outside the bell's
+  // try on purpose: the assignment is queue state and must land even when a
+  // notification cannot. Null = no chain configured or nobody present, and
+  // everything below then runs exactly as it did before.
+  let reviewer = input.reviewer;
+  if (reviewer === undefined) {
+    try {
+      const { ensureCutReviewer } = await import("@/lib/reviewerAssignment");
+      reviewer = await ensureCutReviewer(input.submissionId);
+    } catch (e) {
+      console.warn("cut reviewer assignment failed (announcing to the office)", input.submissionId, e);
+      reviewer = null;
+    }
+  }
   try {
     const { notifyInApp } = await import("@/lib/notify");
     const { appBase } = await import("@/lib/appUrl");
@@ -130,6 +151,12 @@ export async function announceCutInReview(input: {
     // The editor by roster name when the key resolves ("Kim"), else whoever
     // handed it in — the owner or Kyle uploading on an editor's behalf.
     const editor = editorMeta(input.editorKey)?.name ?? input.editorName ?? "editor";
+    // The assignee, Jordan's oversight copy and the chain's FYI — or null, and
+    // the office broadcast below stands (lib/reviewerAssignment explains each).
+    const { reviewAnnounceTargets } = await import("@/lib/reviewerAssignment");
+    const assigned = await reviewAnnounceTargets({
+      reviewer: reviewer ?? null, street: input.street, editor, round: input.round, href, ownerActed: input.ownerActed,
+    }).catch(() => null);
     // The person who SHOT it hears about it too (Jordan, Sep 18: "I want to be
     // able to share the review room with the photographer who shot the video …
     // they should be notified just like I am, with access to the review room").
@@ -142,6 +169,8 @@ export async function announceCutInReview(input: {
     const shooter = await photographerNotifyTarget(input.projectId, {
       href,
       slackDm: `🎬 A cut from your shoot is in review — ${input.street} (v${input.round}). Watch it and leave notes: ${appBase()}${href}`,
+      // James shooting a job he also reviews hears it once, as its reviewer.
+      skipMemberId: reviewer?.teamMemberId ?? null,
     }).catch(() => null);
     await notifyInApp({
       kind: input.kind,
@@ -149,15 +178,17 @@ export async function announceCutInReview(input: {
       body: input.fileName ?? undefined,
       href,
       targets: [
-        {
-          roles: ["OWNER", "ADMIN"],
-          ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}`,
-          // …and the owner's own upload takes his name off the fan-out inside
-          // the bridge, one person at a time, instead of taking the sentence
-          // away from everybody (see the note above this function).
-          ...(input.ownerActed ? { ownerActed: true } : {}),
-        },
-        ...(shooter ? [shooter] : []),
+        ...(assigned ?? [
+          {
+            roles: ["OWNER", "ADMIN"],
+            ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}`,
+            // …and the owner's own upload takes his name off the fan-out inside
+            // the bridge, one person at a time, instead of taking the sentence
+            // away from everybody (see the note above this function).
+            ...(input.ownerActed ? { ownerActed: true } : {}),
+          },
+        ]),
+        ...(shooter && !assigned?.some((t) => t.userKey === shooter.userKey) ? [shooter] : []),
       ],
       dedupeKey: `cut-in-review-${input.submissionId}${input.dedupeSuffix ? `-${input.dedupeSuffix}` : ""}`,
     });
@@ -168,7 +199,7 @@ export async function announceCutInReview(input: {
  *  empty (a trustworthy zero); null = Dropbox couldn't be read (unknown). */
 export async function listFinalCuts(project: FolderProject): Promise<FinalCut[] | null> {
   const path = actualFolderPaths(project).finalVideo;
-  type Entry = { ".tag": string; name: string; path_display?: string; server_modified?: string; size?: number };
+  type Entry = { ".tag": string; name: string; path_display?: string; server_modified?: string; size?: number; content_hash?: string; rev?: string };
   type Page = { entries: Entry[]; has_more?: boolean; cursor?: string };
   try {
     // Recursive + paginated, like the evidence counter — an editor's subfolder
@@ -187,6 +218,8 @@ export async function listFinalCuts(project: FolderProject): Promise<FinalCut[] 
         name: e.name,
         serverModified: e.server_modified ? new Date(e.server_modified) : new Date(0),
         size: e.size ?? 0,
+        contentHash: e.content_hash ?? null,
+        rev: e.rev ?? null,
       }))
       .sort((a, b) => a.serverModified.getTime() - b.serverModified.getTime());
   } catch (e) {
@@ -198,8 +231,11 @@ export async function listFinalCuts(project: FolderProject): Promise<FinalCut[] 
 /** `sizeBytes`: what Dropbox says the file weighs, carried so the export
  *  measurement below can skip a HEAD request it would otherwise have to make.
  *  Null on a CLAIMED row — a claim creates nothing, and the sweep that minted
- *  that row is the pass that measures it. */
-export type CreatedCut = { id: string; assetPath: string; fileName: string; round: number; isRedo: boolean; sizeBytes: number | null };
+ *  that row is the pass that measures it.
+ *  `legacy` (§8.2): a claimed row from before the self-check gate — it was
+ *  announced the day the old sweep found it, so its release must not ring
+ *  again. `contentHash`: the Dropbox hash the row was minted against. */
+export type CreatedCut = { id: string; assetPath: string; fileName: string; round: number; isRedo: boolean; sizeBytes: number | null; legacy?: boolean; contentHash?: string | null };
 
 // ---------------------------------------------------------------------------
 // WHAT ACTUALLY ARRIVED — the resolution of a cut, recorded on its own row.
@@ -350,6 +386,10 @@ export async function syncFinalCutsToReview(
     submittedByName: string;
     note?: string | null;
     onlyNewest?: boolean;
+    /** §8.2: say which file the button WOULD send, and write nothing. The
+     *  editor's check is asked about that file before any row exists. A dry
+     *  run's created rows carry id "". */
+    dryRun?: boolean;
   },
 ): Promise<{ created: CreatedCut[]; claimed: CreatedCut | null; folderVideoCount: number; nothingNew: boolean; unreadable: boolean }> {
   const mode = opts.mode ?? "sweep";
@@ -359,7 +399,7 @@ export async function syncFinalCutsToReview(
       title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, deliveredAt: true,
       client: { select: { name: true } },
       reviewSubmissions: {
-        select: { id: true, assetPath: true, finalPath: true, fileName: true, round: true, status: true, decidedAt: true, createdAt: true, submittedByName: true, submittedByKey: true },
+        select: { id: true, assetPath: true, finalPath: true, fileName: true, round: true, status: true, decidedAt: true, createdAt: true, submittedByName: true, submittedByKey: true, selfCheckId: true, selfCheckedAt: true, sourceRev: true },
         orderBy: { round: "asc" },
       },
     },
@@ -379,19 +419,26 @@ export async function syncFinalCutsToReview(
     // redo stamped but never "submitted", and the revision task could only
     // be cleared by hand — review). A redo (round > 1) goes first: it is the
     // row that answers an open revision and moves REVISION → REVIEW.
+    // A row HELD for its check (§8.2) is claimable too when it is already this
+    // editor's: a press whose check failed half-way must find its own row
+    // again, not answer "already in review" about a cut nobody can see.
+    const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
     const unclaimed = project.reviewSubmissions
-      .filter((s) => s.assetPath && s.status === "PENDING" && !s.submittedByKey)
+      .filter((s) => s.assetPath && s.status === "PENDING" && (!s.submittedByKey || (isHeldForSelfCheck(s) && s.submittedByKey === (opts.submittedByKey ?? null))))
       .sort((a, b) => (b.round - a.round) || (b.createdAt.getTime() - a.createdAt.getTime()));
     if (unclaimed.length > 0) {
       const note = (opts.note ?? "").trim().slice(0, 1000) || null;
       const pick = unclaimed[0];
-      await prisma.reviewSubmission.update({
-        where: { id: pick.id },
-        data: { submittedByKey: opts.submittedByKey ?? null, submittedByName: opts.submittedByName, ...(note ? { note } : {}) },
-      });
+      if (!opts.dryRun) {
+        await prisma.reviewSubmission.update({
+          where: { id: pick.id },
+          data: { submittedByKey: opts.submittedByKey ?? null, submittedByName: opts.submittedByName, ...(note ? { note } : {}) },
+        });
+      }
       // sizeBytes null: a claim creates nothing — the sweep that minted this
-      // row already measured it.
-      const claimed: CreatedCut = { id: pick.id, assetPath: pick.assetPath!, fileName: pick.fileName ?? "", round: pick.round, isRedo: pick.round > 1, sizeBytes: null };
+      // row already measured it. `legacy`: a pre-gate row, rung the day the old
+      // sweep found it; it keeps its grandfathered place in the Room.
+      const claimed: CreatedCut = { id: pick.id, assetPath: pick.assetPath!, fileName: pick.fileName ?? "", round: pick.round, isRedo: pick.round > 1, sizeBytes: null, legacy: !pick.selfCheckId, contentHash: pick.sourceRev };
       return { created: [], claimed, folderVideoCount: project.reviewSubmissions.filter((s) => s.assetPath).length, nothingNew: false, unreadable: false };
     }
   }
@@ -437,7 +484,7 @@ export async function syncFinalCutsToReview(
   // review. The only thing to do is give a legacy blank placeholder its file
   // and record what delivery already meant: approved.
   if (project.status === "DELIVERED") {
-    if (placeholder && cuts.length > 0) {
+    if (placeholder && cuts.length > 0 && !opts.dryRun) {
       const c = cuts[cuts.length - 1];
       await prisma.reviewSubmission.update({
         where: { id: placeholder.id },
@@ -463,6 +510,15 @@ export async function syncFinalCutsToReview(
   });
   if (opts.onlyNewest && eligible.length > 1) eligible = [eligible[eligible.length - 1]];
   if (eligible.length === 0) return { ...none, folderVideoCount: cuts.length };
+  if (opts.dryRun) {
+    return {
+      created: eligible.map((c) => {
+        const latest = latestByPath.get(c.path);
+        return { id: "", assetPath: c.path, fileName: c.name, round: latest ? latest.round + 1 : 1, isRedo: !!latest, sizeBytes: c.size || null, contentHash: c.contentHash ?? null };
+      }),
+      claimed: null, folderVideoCount: cuts.length, nothingNew: false, unreadable: false,
+    };
+  }
 
   const created: CreatedCut[] = [];
   for (const c of eligible) {
@@ -481,6 +537,7 @@ export async function syncFinalCutsToReview(
           ...(opts.submittedByKey ? { submittedByKey: opts.submittedByKey } : {}),
           submittedByName: opts.submittedByName,
           ...(note ? { note } : {}),
+          sourceRev: c.contentHash ?? null,
         },
       });
       id = placeholder.id;
@@ -499,6 +556,8 @@ export async function syncFinalCutsToReview(
             submittedByKey: opts.submittedByKey ?? null,
             submittedByName: opts.submittedByName,
             note,
+            // The bytes this row was minted against (§8.2) — what a check binds to.
+            sourceRev: c.contentHash ?? null,
           },
           select: { id: true },
         });
@@ -511,7 +570,13 @@ export async function syncFinalCutsToReview(
       await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: streamUrlFor(row.id) } });
       id = row.id;
     }
-    created.push({ id, assetPath: c.path, fileName: c.name, round, isRedo: !!latest, sizeBytes: c.size || null });
+    // HELD UNTIL THE EDITOR'S CHECK (§8.2: "a discovered cut may wait for
+    // self-QC; discovery cannot silently satisfy it"). Every folder row minted
+    // from here on carries the marker, sweep or button alike; the button's own
+    // check releases its row a moment later (review/actions.submitCutForReview).
+    const { holdForSelfCheck } = await import("@/lib/selfCheckStore");
+    await holdForSelfCheck(id, mode === "sweep" ? "Found in the Final folder — the editor's check before review is still to do." : "Waiting on the send-for-review check.").catch(() => {});
+    created.push({ id, assetPath: c.path, fileName: c.name, round, isRedo: !!latest, sizeBytes: c.size || null, contentHash: c.contentHash ?? null });
   }
   return { created, claimed: null, folderVideoCount: cuts.length, nothingNew: created.length === 0, unreadable: false };
 }
@@ -542,19 +607,14 @@ export async function discoverCutsForReview(projectId: string, title: string | n
   });
   if (r.created.length === 0) return 0;
   const street = (title || "job").split(",")[0].trim();
+  // NOT ANNOUNCED (§8.2, Sep 25). A cut the sweep found is held for the
+  // editor's check, so it is not in front of the reviewer and ringing the desk
+  // about it would be the one notice that lies. The editor (and the office,
+  // bell only) hears that a check is owed; the review announcement goes out
+  // once, when the check releases it (review/actions.submitCutForReview).
+  const { notifySelfCheckNeeded } = await import("@/lib/selfCheckStore");
   for (const row of r.created) {
-    // One row per (file, round) already — the submission id IS the per-file
-    // key, so the second video of a batch rings too, and the editor's later
-    // claim of this same row can't ring it again (announceCutInReview).
-    await announceCutInReview({
-      kind: "cut_ready",
-      projectId,
-      submissionId: row.id,
-      round: row.round,
-      street,
-      fileName: row.fileName,
-      editorName: "Final folder",
-    });
+    await notifySelfCheckNeeded(row.id, `Found in ${street}'s Final folder — finish the check to send it to review.`);
   }
   // What the files actually were. AFTER the bell, always: a desk that knows a
   // cut is waiting matters and a number on a report does not, so nothing above
@@ -1020,18 +1080,29 @@ export async function deleteCutObject(blobUrl: string): Promise<{ ok: true } | {
   }
 }
 
+/** The words an upload hears when its bytes are not the file that was checked. */
+export const HELD_UPLOAD_MESSAGE =
+  "The upload landed, but it isn't the file you checked — it is waiting for a fresh check before it goes to review (Finish the check on this page).";
+
+const loadEnteringCut = (id: string) =>
+  prisma.reviewSubmission.findUnique({
+    where: { id },
+    include: { project: { select: { id: true, title: true, status: true, deliveredAt: true } } },
+  });
+type EnteringCut = NonNullable<Awaited<ReturnType<typeof loadEnteringCut>>>;
+
 /** The upload landed in the store → the cut is in review. Idempotent (the
- *  client calls it, and Vercel's upload-completed callback may call it too). */
+ *  client calls it, and Vercel's upload-completed callback may call it too).
+ *  §8.2: only once the editor's check is bound to THESE bytes — see
+ *  enterReview below. `held` = the bytes are safe in the store but the cut is
+ *  waiting on a check, so the browser must not treat it as a failed upload. */
 export async function finalizeCutUpload(
   submissionId: string,
   blob: { url: string; pathname: string; size?: number | null },
-): Promise<{ ok: boolean; message: string }> {
-  const sub = await prisma.reviewSubmission.findUnique({
-    where: { id: submissionId },
-    include: { project: { select: { id: true, title: true, status: true, deliveredAt: true } } },
-  });
+): Promise<{ ok: boolean; message: string; held?: boolean }> {
+  const sub = await loadEnteringCut(submissionId);
   if (!sub) return { ok: false, message: "That upload no longer exists." };
-  if (sub.blobUrl) return { ok: true, message: "Already in review." };
+  if (sub.blobUrl) return bindLandedUpload(sub, blob);
   if (!blob.pathname.startsWith(`review-cuts/${sub.projectId}/${sub.id}/`)) {
     return { ok: false, message: "That file doesn't belong to this cut." };
   }
@@ -1070,7 +1141,138 @@ export async function finalizeCutUpload(
       assetPath: null,
     },
   });
-  if (won.count === 0) return { ok: true, message: "Already in review." };
+  if (won.count === 0) {
+    // The other caller flipped the row between our read and our flip. If it
+    // could not say what landed (the store's callback carries no size, and its
+    // own read of the store failed) the check is still waiting on the bytes —
+    // and this caller may be the one holding the measurement. Answer from the
+    // row as it is now, never a blind "already in review" (review fix, Sep 25).
+    const again = await loadEnteringCut(submissionId);
+    if (again?.blobUrl) return bindLandedUpload(again, blob);
+    return { ok: true, message: "Already in review." };
+  }
+  // THE EDITOR'S CHECK, BOUND TO WHAT LANDED (§8.2). The bytes are ours now;
+  // whether they are in front of the reviewer depends on them being the file
+  // the editor checked. A reservation from before the gate carries no check
+  // and enters exactly as it always did (grandfathered).
+  const { bindUploadCheck } = await import("@/lib/selfCheckStore");
+  const bound = await bindUploadCheck(sub, { url: blob.url, pathname: blob.pathname, size: blob.size ?? null });
+  if (bound === "void" || bound === "unverified") return { ok: false, held: true, message: HELD_UPLOAD_MESSAGE };
+  const entered = await enterReview(sub.id, { legacy: bound === "none" });
+  return entered.entered ? { ok: true, message: entered.message } : { ok: true, message: "Already in review." };
+}
+
+/** The bytes are already recorded (by the other of the two finalize callers).
+ *  When that one could not say what landed, the check is still waiting on
+ *  them — bind it now with this caller's measurement and enter the cut; a row
+ *  whose check is gone or whose bytes did not match stays held, and says so. */
+async function bindLandedUpload(
+  sub: EnteringCut,
+  blob: { url: string; pathname: string; size?: number | null },
+): Promise<{ ok: boolean; message: string; held?: boolean }> {
+  if (sub.status === "PENDING" && sub.blobUrl && sub.selfCheckId && !sub.selfCheckedAt) {
+    const { bindUploadCheck } = await import("@/lib/selfCheckStore");
+    const bound = await bindUploadCheck(sub, { url: sub.blobUrl, pathname: sub.blobPathname ?? blob.pathname, size: blob.size ?? null });
+    if (bound === "void" || bound === "unverified") return { ok: false, held: true, message: HELD_UPLOAD_MESSAGE };
+    if (bound === "valid" || bound === "already") {
+      const r = await enterReview(sub.id);
+      if (r.entered) return { ok: true, message: r.message };
+      if (r.held) return { ok: false, held: true, message: HELD_UPLOAD_MESSAGE };
+    }
+  }
+  return { ok: true, message: "Already in review." };
+}
+
+/**
+ * THE MOMENT A CUT IS IN FRONT OF THE REVIEWER (§8.2, Sep 25).
+ *
+ * Every gated door ends here or in claimReviewEntry: a VALID self-check bound
+ * to the row, then ONE compare-and-set on selfCheckedAt, and only the caller
+ * that wins it runs the entry's side effects — the job to REVIEW, the edit
+ * card's close-out, the Activity line and the announcement (which names the
+ * cut's one reviewer, §8.1, and is where the editor's active stretch closes,
+ * §7.1). A repeat call is a no-op. A row with no check id is a pre-gate row;
+ * it enters only when its caller says so (`legacy`), because that caller's
+ * own compare-and-set is then the guard — finalize's UPLOADING → PENDING.
+ *
+ * Handles the upload door and a moved cut. A Final-folder cut's side effects
+ * stay with the editor's button (review/actions.submitCutForReview), which
+ * claims its entry through claimReviewEntry — same gate, same single CAS.
+ */
+export async function enterReview(
+  submissionId: string,
+  opts: { legacy?: boolean } = {},
+): Promise<{ entered: boolean; held: boolean; message: string }> {
+  const sub = await loadEnteringCut(submissionId);
+  if (!sub || sub.status !== "PENDING") return { entered: false, held: false, message: "Already in review." };
+  const moved = !!(sub.movedAt && sub.movedFromProjectId);
+  if (!moved && !sub.blobUrl) {
+    return { entered: false, held: false, message: "A Final-folder cut goes to review from the editor's send-for-review check." };
+  }
+  const claim = await claimReviewEntry(sub.id);
+  if (claim === "held") return { entered: false, held: true, message: "Waiting on the editor's check." };
+  if (claim === "already" || (claim === "legacy" && !opts.legacy)) return { entered: false, held: false, message: "Already in review." };
+  const r = moved ? await movedCutEntered(sub) : await uploadCutEntered(sub);
+  try {
+    const { ensureOutputsForProject, refreshOutputsForProject } = await import("@/lib/deliverableOutputs");
+    await ensureOutputsForProject(sub.projectId);
+    await refreshOutputsForProject(sub.projectId);
+  } catch { /* the per-video rows re-derive on the next read */ }
+  return { entered: true, held: false, message: r.message };
+}
+
+/**
+ * The single compare-and-set that puts a checked cut in review.
+ *   entered — this caller stamped selfCheckedAt and owns the side effects
+ *   held    — no VALID check is bound (the row waits for one)
+ *   already — somebody else entered it, or it is no longer PENDING
+ *   legacy  — a pre-gate row with no check id (nothing stamped)
+ */
+export async function claimReviewEntry(submissionId: string): Promise<"entered" | "held" | "already" | "legacy"> {
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { status: true, selfCheckId: true, selfCheckedAt: true } });
+  if (!sub || sub.status !== "PENDING") return "already";
+  if (!sub.selfCheckId) return "legacy";
+  if (sub.selfCheckedAt) return "already";
+  const check = await prisma.cutSelfCheck.findUnique({ where: { id: sub.selfCheckId }, select: { state: true } });
+  if (check?.state !== "VALID") return "held";
+  const won = await prisma.reviewSubmission.updateMany({
+    where: { id: submissionId, status: "PENDING", selfCheckedAt: null, selfCheckId: sub.selfCheckId },
+    data: { selfCheckedAt: new Date() },
+  });
+  return won.count ? "entered" : "already";
+}
+
+/** A moved cut, checked on the job it landed on (§8.2: a move changes the
+ *  output, so the check made for the old job does not travel). The same stage
+ *  move the move itself used to make — and, as before, never a word about the
+ *  target's own revision lane: a cut that arrived from another job is not
+ *  automatically the correction to this client's ask. One announcement, keyed
+ *  to the move so the cut's first trip into the Room cannot swallow it. */
+async function movedCutEntered(sub: EnteringCut): Promise<{ ok: boolean; message: string }> {
+  const street = (sub.project.title || "job").split(",")[0].trim();
+  if (sub.project.status === "EDITING" || sub.project.status === "SHOT") {
+    await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW", statusPinnedAt: null } }).catch(() => {});
+  }
+  await prisma.activity.create({
+    data: { projectId: sub.projectId, type: "SYSTEM", body: `Moved cut checked and in the Review Room — version ${sub.round}${sub.fileName ? ` (${sub.fileName})` : ""}.` },
+  }).catch(() => {});
+  await announceCutInReview({
+    kind: "review_submitted",
+    projectId: sub.projectId,
+    submissionId: sub.id,
+    round: sub.round,
+    street,
+    fileName: sub.fileName,
+    editorKey: sub.submittedByKey,
+    editorName: sub.submittedByName,
+    dedupeSuffix: `moved-${(sub.movedAt ?? new Date()).getTime()}`,
+  });
+  return { ok: true, message: `Version ${sub.round} is in the Review Room.` };
+}
+
+/** The upload door's entry — moved here verbatim from finalizeCutUpload when
+ *  the check gate split "the bytes landed" from "the cut is in review". */
+async function uploadCutEntered(sub: EnteringCut): Promise<{ ok: boolean; message: string }> {
   // An earlier round of this cut still waiting for a verdict is superseded by
   // this one — it must not keep counting as "in review" (dashboard, content
   // program, queue). SUPERSEDED is excluded by every PENDING-keyed count.
@@ -1098,6 +1300,22 @@ export async function finalizeCutUpload(
     await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW", statusPinnedAt: null } });
   } else {
     await correctedCutSubmitted(sub.projectId, { round: sub.round });
+  }
+  // The uploading editor's active stretch on this job ends with the hand-in
+  // (§7.1): SUBMITTED, their item only — a co-editor on the same job keeps
+  // theirs, and no other output is touched. An office upload carries no editor
+  // key, so it closes nothing. Never throws.
+  if (sub.submittedByKey) {
+    const { closeActiveWork } = await import("@/lib/editorWork");
+    await closeActiveWork(sub.projectId, {
+      editorKey: sub.submittedByKey,
+      // Only the stretch on THIS video (or one that named no video): a fix to
+      // video 1 does not end the editor's stretch on video 3 (review fix, Sep 25).
+      forOutputId: sub.outputId ?? null,
+      reason: "SUBMITTED",
+      actor: { userId: null, name: sub.submittedByName ?? sub.submittedByKey, role: "EDITOR" },
+      detail: `version ${sub.round} submitted`,
+    });
   }
   // The editor's work item answers the way the Final-folder submit always
   // has (submitCutForReview's closeEdit): COMPLETED on a one-video job or once
@@ -1347,11 +1565,13 @@ export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: nu
   // NEVER release the bytes a 1080p pass still needs (Sep 16). A Topaz job can
   // legitimately wait days — the monthly credit cap parks one until the 1st of
   // next month — and releasing its source would turn a waiting render into a
-  // dead one. A finished, failed or skipped job holds nothing.
+  // dead one. A finished, failed or skipped job holds nothing. A HELD one does
+  // (O02): until a person decides, the editor's upload may yet be the file the
+  // ready card offers, so its bytes stay.
   const notAwaitingTopaz = {
     OR: [
       { topazJob: { is: null } },
-      { topazJob: { state: { notIn: ["queued", "estimated", "uploading", "processing", "saving"] } } },
+      { topazJob: { state: { notIn: ["queued", "estimated", "uploading", "processing", "saving", "held"] } } },
     ],
   } satisfies Prisma.ReviewSubmissionWhereInput;
   let pruned = 0, failed = 0;
@@ -1967,8 +2187,12 @@ export async function correctedCutWithdrawn(
         }).catch(() => {});
         status = "REVISION";
       } else {
-        await prisma.project.update({ where: { id: projectId }, data: { status: "EDITING" } }).catch(() => {});
-        status = "EDITING";
+        // SHOT, not EDITING (§7.1, Sep 25): a withdrawal is the office taking
+        // a cut back, and nobody has started the redo — EDITING here read as
+        // "someone is in the edit" on every surface. SHOT is Ready for editing,
+        // and the sweep's shootHappened guard keeps it off Scheduled/Booked.
+        await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT" } }).catch(() => {});
+        status = "SHOT";
       }
     }
   }
@@ -2199,7 +2423,10 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
   if (projectIds.length === 0) return out;
   const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
   const { videoTier } = await import("@/lib/projectStatus");
-  const [projects, subs, editTasks, notes] = await Promise.all([
+  // Who has pressed Start (§7.1) — the one reader every "is anyone editing
+  // this" answer shares. A failed read means nobody is claimed as active.
+  const { workStateFor, workClock } = await import("@/lib/editorWork");
+  const [projects, subs, editTasks, notes, work] = await Promise.all([
     prisma.project.findMany({
       where: { id: { in: projectIds } },
       select: {
@@ -2214,7 +2441,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     prisma.reviewSubmission.findMany({
       where: { projectId: { in: projectIds }, status: { in: ["PENDING", "CHANGES_REQUESTED", "APPROVED"] } },
       orderBy: { round: "asc" },
-      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, assetUrl: true, fileName: true, round: true, status: true, createdAt: true, decidedAt: true, submittedByKey: true, submittedByName: true },
+      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, assetUrl: true, fileName: true, round: true, status: true, createdAt: true, decidedAt: true, submittedByKey: true, submittedByName: true, selfCheckId: true, selfCheckedAt: true },
     }),
     prisma.smartTask.findMany({
       where: { projectId: { in: projectIds }, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
@@ -2225,11 +2452,17 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       where: { projectId: { in: projectIds }, parentId: null, lane: "EDITOR", status: "OPEN", NOT: { authorKey: { startsWith: "editor:" } } },
       _count: true,
     }),
+    workStateFor(projectIds).catch(() => new Map<string, import("@/lib/editorWork").ProjectWork>()),
   ]);
   const notesByAsset = new Map(notes.map((n) => [n.assetUrl, n._count]));
   const editByProject = new Map(editTasks.map((t) => [t.projectId, t.assignedKey]));
   const subsByProject = new Map<string, typeof subs>();
+  const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
   for (const s of subs) {
+    // A version still waiting on its editor's check (§8.2) is not waiting on
+    // the reviewer — the cut reads as wherever its last handed-in version
+    // left it, and the Review Room lists the held one on its own.
+    if (isHeldForSelfCheck(s)) continue;
     const arr = subsByProject.get(s.projectId) ?? [];
     arr.push(s);
     subsByProject.set(s.projectId, arr);
@@ -2282,13 +2515,14 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       // Aryeo: Video").
       else if (videoLive) stage = "delivered";
       else if (owed > 0 && approved >= owed) stage = "approved";
-      // "In editing" only when a human said so (the editor's click on the
-      // queue pill writes EDITING) or a cut has actually been uploaded. An
-      // open edit card on its own is footage waiting for the editor — Kyle's
-      // QC card read "Video: In editing — John Mark" for a job nobody had
-      // opened (Jordan, Sep 10: "the video projects should not automatically
-      // be in editing, it should say ready for editing").
-      else if (p.status === "EDITING" || cuts.length > 0) stage = "editing";
+      // "In editing" only when an editor has pressed Start (§7.1, Sep 25 —
+      // the work layer, not Project.status: EDITING stays set through a
+      // pause, an office pin, a board move). Paused work, part of a batch
+      // handed in, or a legacy EDITING nobody confirmed are still the editing
+      // stage, in their own words below. An open edit card on its own is
+      // footage waiting for the editor — Kyle's QC card read "Video: In
+      // editing — John Mark" for a job nobody had opened (Jordan, Sep 10).
+      else if (work.has(p.id) || p.status === "EDITING" || cuts.length > 0) stage = "editing";
       else if (editByProject.has(p.id)) stage = "ready_to_edit";
       else stage = "not_started";
     }
@@ -2301,12 +2535,28 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       stage === "in_revisions" ? `${ver(first("CHANGES_REQUESTED")!)}in revisions${first("CHANGES_REQUESTED")!.openNotes ? ` (${first("CHANGES_REQUESTED")!.openNotes} note${first("CHANGES_REQUESTED")!.openNotes === 1 ? "" : "s"})` : ""}${done}` :
       stage === "waiting_review" ? `${ver(first("PENDING")!)}waiting on review${done}` :
       stage === "approved" ? `Approved${owed > 1 ? ` — all ${owed} cuts` : ""}` :
-      stage === "editing" ? `In editing${editByProject.get(p.id) ? ` — ${prettyKey(editByProject.get(p.id) as string)}` : ""}${done}` :
+      stage === "editing" ? editingDetail(work.get(p.id), { uploaded: cuts.length, owed, approved, legacy: p.status === "EDITING", editor: editByProject.get(p.id) ?? null, done, clock: workClock }) :
       stage === "ready_to_edit" ? `Ready for editing${editByProject.get(p.id) ? ` — ${prettyKey(editByProject.get(p.id) as string)}` : ""}${done}` :
       "Not started — no cut uploaded yet";
     out.set(p.id, { projectId: p.id, owed, approved, waiting, revising, uploaded: cuts.length, stage, detail, cuts });
   }
   return out;
+}
+
+/** The editing stage in words (§7.1). "In editing" only for somebody ACTIVE. */
+function editingDetail(
+  w: import("@/lib/editorWork").ProjectWork | undefined,
+  o: { uploaded: number; owed: number; approved: number; legacy: boolean; editor: string | null; done: string; clock: (iso: string | null) => string },
+): string {
+  const names = (xs: { name: string }[]) => xs.map((x) => x.name).join(", ");
+  if (w?.active.length) {
+    const since = w.active.length === 1 && w.active[0].sinceISO ? ` since ${o.clock(w.active[0].sinceISO)}` : "";
+    return `In editing — ${names(w.active)}${since}${o.done}`;
+  }
+  if (w?.paused.length) return `Paused — ${names(w.paused)}${o.done}`;
+  const who = o.editor ? ` — ${prettyKey(o.editor)}` : "";
+  if (o.uploaded > 0) return `${o.uploaded} of ${o.owed} handed in${o.approved ? ` · ${o.approved} approved` : ""}${who}`;
+  return o.legacy ? `In editing — not confirmed${who}${o.done}` : `Ready for editing${who}${o.done}`;
 }
 
 /** Every cut across the business that is waiting on a verdict or back with an editor. */

@@ -36,7 +36,12 @@ import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefau
 //
 // The ladder (Jordan, Sep 10 + 11): Waiting and Ready for editing set
 // themselves from the raw folder; nothing lands on In editing by itself — the
-// EDITOR sets it when they start. The OFFICE (owner/admin) can walk a job
+// EDITOR sets it when they start. Since Sep 25 (§7.1) "In editing" and
+// "Paused" are the editor's own Start / Pause (lib/editorWork): one active job
+// per editor, and starting another pauses the one they were on. A row reads
+// "In editing" only while somebody has pressed Start; an old EDITING nobody
+// confirmed says "In editing — not confirmed", and a job in review or in
+// revisions keeps its word and wears a chip naming who is on it. The OFFICE (owner/admin) can walk a job
 // BACK: In editing → Ready for editing (Sep 10), and Ready for editing / In
 // editing → Waiting (Sep 11: "I should also be able to change projects back
 // to waiting but its blocked off"). A Waiting the office set is a HOLD — the
@@ -69,6 +74,9 @@ import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefau
 // and hand a field back. A row wearing any override shows the Override chip
 // (hover = who, when, note) and a pinned status wears a pin on its pill. The
 // pill and the editor select keep working exactly as before.
+
+/** One editor's declared work on a row (§7.1, lib/editorWork). */
+export type WorkPersonView = { key: string; name: string; sinceISO: string | null; outputTitle: string | null; onBehalfBy: string | null };
 
 export type QueueRow = {
   id: string;
@@ -109,6 +117,11 @@ export type QueueRow = {
   overrides: EditOverrideView;
   // What the hub would say on its own — the row's values BEFORE overrides.
   computed: EditComputedView;
+  /** Who has pressed Start (active) or Pause on this job — never derived from
+   *  the status (§7.1). */
+  work: { active: WorkPersonView[]; paused: WorkPersonView[] };
+  /** "Active — Kim since 10:02am" / "Paused — Kim 3:10pm"; null when nobody. */
+  workChip: string | null;
 };
 
 const TIER = {
@@ -121,14 +134,29 @@ const TIER = {
 // selectable: true = anyone with the pill; "office" = owner/admin only, and
 // only as an undo — see OFFICE_FROM in the pill for which rows (the editor
 // sees it greyed with the reason); false = evidence sets it.
-const STATUSES: Record<string, { color: string; selectable: boolean | "office" }> = {
+// "working" = Pause: only on a row somebody has actually started (§7.1).
+const STATUSES: Record<string, { color: string; selectable: boolean | "office" | "working" }> = {
   Waiting: { color: "#94a3b8", selectable: "office" }, // raws flip it off; the office can put a Ready for editing / In editing job back here (Sep 11)
   "Ready for editing": { color: "#38bdf8", selectable: "office" }, // raws flip it on; the office can put an In editing job back here (Sep 10) or move a Waiting one on (Sep 11)
-  "In editing": { color: "#a78bfa", selectable: true }, // the editor's own "I've started" (Sep 10)
+  "In editing": { color: "#a78bfa", selectable: true }, // Start / Resume — the editor's own (Sep 10), or the office's correction, logged as the office (§7.1)
+  Paused: { color: "#8b5cf6", selectable: "working" }, // Pause — the job stays theirs, due date and asks untouched (§7.1)
   "Ready for review": { color: "#f59e0b", selectable: true },
   Revisions: { color: "#f87171", selectable: true },
   Completed: { color: "#34d399", selectable: true },
 };
+// Words a row can WEAR but nobody can pick: an EDITING nobody has confirmed
+// since the Start button existed (a pre-Sep-25 click, an office pin, a board
+// move). Picking "In editing" on it is how the editor confirms it.
+const WORN_ONLY: Record<string, { color: string }> = {
+  "In editing — not confirmed": { color: "#a78bfa" },
+  // A cut is in but held for the editor's send-for-review check (§8.2) —
+  // finished on the job's page, not picked here (editorQueue.CHECK_NEEDED_STATUS).
+  "Check needed": { color: "#fb923c" },
+};
+// The two work moves: they change who is on the job, not the job's stage, so
+// the pill does not pretend the label changed — the row comes back from the
+// server with the truth (and its chip) instead.
+const WORK_MOVES = new Set(["In editing", "Paused"]);
 
 // The queue's assignable video editors (matches VIDEO_EDITOR_KEYS server-side).
 const VIDEO_EDITORS = [
@@ -148,9 +176,13 @@ const EXTERNAL = "external_agency";
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "—";
 
-// Height of the 6-option menu — used to flip it above the pill near the
+// Height of the 7-option menu — used to flip it above the pill near the
 // viewport bottom, since it renders position:fixed (see below).
-const MENU_H = 212;
+const MENU_H = 244;
+
+// One id per status click (§7.1) — the server's idempotency key.
+const newRequestId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 // office: the viewer is owner/admin (not the editor's scoped view) — unlocks
 // the two undo options, "Ready for editing" and "Waiting". The server rule is
@@ -173,7 +205,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
   // sentence has to reach the editor, not vanish into a snapped-back pill.
   const [note, setNote] = useState<string | null>(null);
   const [pending, start] = useTransition();
-  const meta = STATUSES[status] ?? { color: "#94a3b8", selectable: false };
+  const meta = STATUSES[status] ?? { ...(WORN_ONLY[status] ?? { color: "#94a3b8" }), selectable: false };
   // The office's two undo moves (Jordan, Sep 10 "put them back"; Sep 11 "change
   // projects back to waiting"), each only on the rows where it IS an undo:
   // "Ready for editing" on an In editing row (put it back) or a Waiting row
@@ -183,18 +215,22 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
   // nothing but a stray "Put back…" line on the timeline (Sep 10 review). A
   // cut already in the Review Room is refused by the server with the reason.
   const OFFICE_FROM: Record<string, string[]> = {
-    Waiting: ["Ready for editing", "In editing"],
-    "Ready for editing": ["In editing", "Waiting"],
+    Waiting: ["Ready for editing", "In editing", "Paused", "In editing — not confirmed"],
+    "Ready for editing": ["In editing", "Waiting", "Paused", "In editing — not confirmed"],
   };
   // A job the office is HOLDING in Waiting is nobody else's to move (Sep 11
   // review): the editor's pill greys every option on it — In editing there
   // would have walked past the hold. The server refuses the same click.
   const heldFromEditor = !office && row.held && status === "Waiting";
-  const canPick = (name: string, s: boolean | "office") =>
-    !heldFromEditor && (s === true || (s === "office" && office && (OFFICE_FROM[name] ?? []).includes(status)));
-  const whyNot = (name: string, s: boolean | "office") =>
+  const working = row.work.active.length > 0;
+  const canPick = (name: string, s: boolean | "office" | "working") =>
+    !heldFromEditor &&
+    (s === true || (s === "working" && working) || (s === "office" && office && (OFFICE_FROM[name] ?? []).includes(status)));
+  const whyNot = (name: string, s: boolean | "office" | "working") =>
     heldFromEditor
       ? "The office is holding this job in Waiting — it can't be started until the footage is in"
+      : s === "working"
+        ? status === "Paused" ? "It's already paused — In editing resumes it" : "Nobody has started this one — there is nothing to pause"
       : s !== "office"
         ? "Set automatically from upload/delivery evidence"
         : !office
@@ -212,14 +248,17 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
 
   const pick = (next: string) => {
     setMenu(null);
-    if (next === status) return;
+    if (next === status && !WORK_MOVES.has(next)) return;
     const prev = status;
-    setStatus(next);
+    if (!WORK_MOVES.has(next)) setStatus(next);
     setNote(null);
+    // One id per click (§7.1): the server logs a retried or doubled request
+    // once, and a replay comes back as "Already recorded".
+    const requestId = newRequestId();
     start(async () => {
       // .catch too: a rejected action (DB hiccup, deleted project) must snap
       // back like a refusal, not crash the whole queue view.
-      const r = await setQueueStatus(row.id, next).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await setQueueStatus(row.id, next, requestId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
       if (!r.ok) {
         setStatus(prev); // server refused — snap back, no silent lie
         setNote(r.message || "That didn't save — try again.");
@@ -823,7 +862,9 @@ export function SimpleQueue({
                           // another admin), remount so the pill can't go stale.
                           // hideEditor is the editor's scoped view — everyone
                           // else looking at this table is the office.
-                          <StatusPill key={r.status} row={r} office={!hideEditor} onReceipt={setReceipt} />
+                          // The chip is in the key too: Start / Pause change who
+                          // is on a job without always changing its word.
+                          <StatusPill key={`${r.status}|${r.workChip ?? ""}`} row={r} office={!hideEditor} onReceipt={setReceipt} />
                         )}
                         {/* THE OVERRIDE (Sep 13) — office only. A bare glyph
                             beside the pill, muted until you reach for it, and
@@ -868,6 +909,23 @@ export function SimpleQueue({
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
                         <span className="mt-1 block text-[11px] text-muted-2">{r.videoBreakdown}</span>
+                      )}
+                      {/* WHO IS ON IT (§7.1) — the editor's own Start/Pause,
+                          with the time they said so. A declared status, not a
+                          timer: nothing here counts hours. */}
+                      {r.workChip && (
+                        <span
+                          className={cn(
+                            "mt-1 flex items-center gap-1 text-[11px]",
+                            r.work.active.length ? "font-medium text-[#8b5cf6]" : "text-muted-2",
+                          )}
+                          title={r.work.active.concat(r.work.paused).some((x) => x.onBehalfBy)
+                            ? `Last change made by the office (${r.work.active.concat(r.work.paused).find((x) => x.onBehalfBy)?.onBehalfBy}) on the editor's behalf`
+                            : undefined}
+                        >
+                          <span className={cn("size-1.5 shrink-0 rounded-full", r.work.active.length ? "bg-[#8b5cf6]" : "border border-muted-2/70")} />
+                          {r.workChip}
+                        </span>
                       )}
                     </td>
                     <td

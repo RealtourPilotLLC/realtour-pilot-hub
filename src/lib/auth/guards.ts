@@ -200,6 +200,22 @@ export async function deliverableInProject(deliverableId: string, projectId: str
 export const requireOwner = () => requireRole(["OWNER"]);
 export const requireAdmin = () => requireRole(["OWNER", "ADMIN"]);
 
+// A VERDICT ON A CUT (unified handoff §8.1, Sep 25 2026). Owner/admin exactly
+// as requireAdmin — nobody loses anything — PLUS the three named review seats
+// (review_room primary / backup / fallback) with an active login, so James's
+// Approve and Send back work on the real server actions without hanging on the
+// broad ADMIN role. Never "view as", and never TeamMember.creativeManager: that
+// flag also sets a shoot-bonus basis, and a permission must not ride on it.
+// The rule itself lives in lib/reviewerAssignment.canRuleOnCuts so the pages
+// that decide whether to DRAW the buttons ask the same question.
+export async function requireCutReviewer(): Promise<void> {
+  if (!enforced()) return;
+  const u = await getCurrentUser();
+  const { canRuleOnCuts } = await import("@/lib/reviewerAssignment");
+  const r = await canRuleOnCuts(u);
+  if (!r.ok) throw new Error(r.why);
+}
+
 // Owner/admin, OR the EDITOR a task is delegated to. Editors are DB-scoped to
 // their own tasks on /queue, but the Complete/status/assign buttons behind it
 // were admin-only — the day Kim/Remar get accounts they'd hit "You don't have
