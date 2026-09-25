@@ -12,44 +12,44 @@ Status key: CONFIRMED (defect/gap real) · PARTIALLY_IMPLEMENTED · ALREADY_FIXE
 
 | Item | Verified | Size | Commit | Tests | Deployed | Enabled | Owner / next |
 |---|---|---|---|---|---|---|---|
-| O09 | CONFIRMED | L |  | | | | |
-| 7.1-states | PARTIALLY_IMPLEMENTED | M |  | | | | |
-| 7.1-one-active-atomic-switch | CONFIRMED | M |  | | | | |
-| 7.1-identity-on-behalf | CONFIRMED | S |  | | | | |
-| 7.1-sync-never-starts | PARTIALLY_IMPLEMENTED | M |  | | | | |
-| 7.1-derived-in-editing-labels | CONFIRMED | M |  | | | | |
-| 7.1-editor-controls | CONFIRMED | M |  | | | | |
-| 7.1-working-now | CONFIRMED | M |  | | | | |
-| 7.1-refresh-stale | CONFIRMED | S |  | | | | |
-| 7.1-logging | PARTIALLY_IMPLEMENTED | S |  | | | | |
-| 7.1-close-on-submit-reassign-cancel | CONFIRMED | M |  | | | | |
-| 7.1-revision-semantics | CONFIRMED | S |  | | | | |
-| 7.1-migration | CONFIRMED | S |  | | | | |
-| A58 | PARTIALLY_IMPLEMENTED | S |  | | | | |
-| A59 | CONFIRMED | S |  | | | | |
-| A60 | CONFIGURATION_DEPENDENT | S |  | | | | |
-| A61 | CONFIRMED | S |  | | | | |
-| A62 | CONFIRMED | S |  | | | | |
-| A63 | CONFIRMED | S |  | | | | |
-| A64 | CONFIRMED | S |  | | | | |
-| A65 | CONFIRMED | S |  | | | | |
-| O03 | CONFIRMED | M |  | | | | |
-| 8.1-reviewer-assignment | CONFIRMED | L |  | | | | |
-| 8.1-scoped-authority | CONFIGURATION_DEPENDENT | M |  | | | | |
-| 8.1-notifications-oversight | CONFIRMED | M |  | | | | |
-| 8.1-coverage-transfer | CONFIRMED | S |  | | | | |
-| O07 | CONFIRMED | L |  | | | | |
-| 8.2-self-qc | CONFIRMED | XL |  | | | | |
-| 8.3-revision-issues | PARTIALLY_IMPLEMENTED | XL |  | | | | |
-| 8.4-kpi | CONFIRMED | L |  | | | | |
-| A34 | CONFIRMED | XL |  | | | | |
-| A35 | CONFIGURATION_DEPENDENT | M |  | | | | |
-| A36 | PARTIALLY_IMPLEMENTED | L |  | | | | |
-| A37 | CONFIRMED | M |  | | | | |
-| A38 | CONFIRMED | M |  | | | | |
-| O02 | CONFIRMED | L |  | | | | |
-| A39 | CONFIRMED | S |  | | | | |
-| O01 | CONFIRMED | M |  | | | | |
+| O09 | CONFIRMED | L | e954b23 | b1-active-editing (§0 (old at 75d56f1: office click logged as "Kim started editing.", three jobs claimed at once) + §2 + §7) · PGlite | pending | live on deploy (staff only) | the task-card dropdown and setTaskAssignee are not delegated (src/app/actions.ts not owned) |
+| 7.1-states | PARTIALLY_IMPLEMENTED | M | e954b23 | b1-active-editing (§1, §6, §9 workLabel over lifecycle × {none, active, paused}; queue labels) · PGlite | pending | live on deploy (staff only) | — |
+| 7.1-one-active-atomic-switch | CONFIRMED | M | e954b23 | b1-active-editing (§2 switch; §3 a trigger failure after the pause write leaves A ACTIVE with the same activeSince; §4 concurrent tabs, doubled click, P2002) · PGlite | pending | live on deploy (staff only) | real-Postgres interleaving deferred to R04 |
+| 7.1-identity-on-behalf | CONFIRMED | S | e954b23 | b1-active-editing (§5: John untouched by Kim; Jordan (OWNER) and Kyle (ADMIN) recorded on behalf with their own names; editor refused on others' work; forEdito…) · PGlite | pending | live on deploy (staff only) | — |
+| 7.1-sync-never-starts | PARTIALLY_IMPLEMENTED | M | e954b23 | b1-active-editing (§8: 11 automatic/office paths give 0 new ACTIVE and 0 START/RESUME/CONFIRM; correctedCutWithdrawn now writes SHOT; an override pin reads "no…) · PGlite | pending | live on deploy (staff only) | PARTIAL — setSmartTaskStatus not delegated to startEditing (not owned) |
+| 7.1-derived-in-editing-labels | CONFIRMED | M | e954b23 | b1-active-editing (§9: editorQueue, videoStatesFor, EditTracker and workingNow agree; no "In editing" without someone ACTIVE) · PGlite | pending | live on deploy (staff only) | PARTIAL — QualityDials/queries.ts, opsDay pipeline.editing, deliveryBoard, TaskCard chip not changed (not owned) |
+| 7.1-editor-controls | CONFIRMED | M | e954b23 | b1-active-editing (drill drives the server actions; WorkStateBar on /edit/[id], EditorDesk on /editing, pill Paused plus requestId) · PGlite | pending | live on deploy (staff only) | no browser walkthrough; the guide text in content.ts is not owned |
+| 7.1-working-now | CONFIRMED | M | e954b23 | b1-active-editing (§1, §9 workingNow by editor (active, paused, unconfirmed); backlog heading; lane relabelled) · PGlite | pending | live on deploy (staff only) | — |
+| 7.1-refresh-stale | CONFIRMED | S | e954b23 | b1-active-editing (§9 table made unreadable → ok:false with a reason; AutoRefresh 60s is mounted) · PGlite | pending | live on deploy (staff only) | PARTIAL — client-side stale warning not drilled |
+| 7.1-logging | PARTIALLY_IMPLEMENTED | S | e954b23 | b1-active-editing (§2: one event and one Activity row per transition; a replay writes zero; close events carry actor and reason) · PGlite | pending | live on deploy (staff only) | — |
+| 7.1-close-on-submit-reassign-cancel | CONFIRMED | M | e954b23 | b1-active-editing (§7: SUBMITTED (portal finalize), REASSIGNED (setEditVideoEditor), REMOVED and restore, PROJECT_DELIVERED (board), PROJECT_CANCELLED, PUT_BAC…) · PGlite | pending | live on deploy (staff only) | setTaskAssignee and lib merge close via ghost sweep (hourly or next Start), not immediately |
+| 7.1-revision-semantics | CONFIRMED | S | e954b23 | b1-active-editing (§6: status stays REVISION, the revision task is untouched, the row reads Revisions with an "Active — Kim" chip) · PGlite | pending | live on deploy (staff only) | — |
+| 7.1-migration | CONFIRMED | S | e954b23 | b1-active-editing (§1: zero rows on read, 3 claims with Activity dates where they exist, confirm gives 1 ACTIVE + 2 PAUSED, status unchanged, payroll identical) · PGlite | pending | live on deploy (staff only) | live count probe not run (forbidden this batch) |
+| A58 | PARTIALLY_IMPLEMENTED | S | e954b23 | b1-active-editing (§8) · PGlite | pending | live on deploy (staff only) | PARTIAL — dropdown delegation (not owned) |
+| A59 | CONFIRMED | S | e954b23 | b1-active-editing (§2, §3) · PGlite | pending | live on deploy (staff only) | — |
+| A60 | CONFIGURATION_DEPENDENT | S | e954b23 | b1-active-editing (§4) · PGlite | pending | live on deploy (staff only) | R04 real-Postgres run |
+| A61 | CONFIRMED | S | e954b23 | b1-active-editing (§5) · PGlite | pending | live on deploy (staff only) | — |
+| A62 | CONFIRMED | S | e954b23 | b1-active-editing (§2 snapshot of card, revision, project dates and outputs is byte-identical across pause and resume) · PGlite | pending | live on deploy (staff only) | — |
+| A63 | CONFIRMED | S | e954b23 | b1-active-editing (§7) · PGlite | pending | live on deploy (staff only) | — |
+| A64 | CONFIRMED | S | e954b23 | b1-active-editing (§9) · PGlite | pending | live on deploy (staff only) | PARTIAL — readers in files I don't own |
+| A65 | CONFIRMED | S | e954b23 | b1-active-editing (§1) · PGlite | pending | live on deploy (staff only) | live probe |
+| O03 | CONFIRMED | M | e954b23 | b1-review-ownership (b1 §0 (old code: only the OWNER+ADMIN broadcast, the non-admin seat refused) + §2 (tm:<james> row, Kyle FYI DM, Jordan oversight) + §3 (Jame…) · PGlite | pending | seats unset until saved | Jordan's Sep 25 answer applied: all three rung, James first, Kyle nudged at 9 covered h, rule directly. Seats saved after deploy (see handoff.md). remaining: save the review_room seats in production (settings action); confirm James's AppUser role (batch-0 probe) |
+| 8.1-reviewer-assignment | CONFIRMED | L | e954b23 | b1-review-ownership (b1 §2 (one reviewer, one SUBMITTED event, 3-way race writes one event), §4 (away order James→Kyle→Jordan→office), §5 (take/hand on with comp…) · PGlite | pending | seats unset until saved | PARTIAL — Jordan's Sep 25 answer applied: all three rung, James first, Kyle nudged at 9 covered h, rule directly. Seats saved after deploy (see handoff.md). remaining: Review Room queue "Mine" filter and reviewer label (reviewRoom.ts, review pages) and videoReviewBoard — outside my file list |
+| 8.1-scoped-authority | CONFIGURATION_DEPENDENT | M | e954b23 | b1-review-ownership (b1 §3: Approve/Send back/office note work for a non-admin seat through the real actions under AUTH_ENFORCE; Harrison, Harrison with the crea…) · PGlite | pending | live on deploy (staff only) | Jordan's Sep 25 answer applied: all three rung, James first, Kyle nudged at 9 covered h, rule directly. Seats saved after deploy (see handoff.md). remaining: review pages still gate on OWNER |
+| 8.1-notifications-oversight | CONFIRMED | M | e954b23 | b1-review-ownership (b1 §1 (unconfigured = old broadcast), §2 (assignee row + OWNER oversight + FYI, no ADMIN broadcast, repeat adds 0 rows, James bell-only by h…) · PGlite | pending | seats unset until saved | Jordan's Sep 25 answer applied: all three rung, James first, Kyle nudged at 9 covered h, rule directly. Seats saved after deploy (see handoff.md). remaining: the bell-only warning is in the Review Room card rather than TeamNotifications; James's external channel is Jordan's call |
+| 8.1-coverage-transfer | CONFIRMED | S | e954b23 | b1-review-ownership (b1 §4 (away moves only PENDING cuts; coming back moves nothing), §6 (Fri-5pm cut offered to Kyle once on Monday at 9½ covered hours, nothing…) · PGlite | pending | auto-move OFF (null) | Jordan's Sep 25 answer applied: all three rung, James first, Kyle nudged at 9 covered h, rule directly. Seats saved after deploy (see handoff.md). remaining: Jordan's answer on coverTransferHours (null/off today) and James's channel |
+| O07 | CONFIRMED | L | e954b23 | b1-selfqc-issues (b1-selfqc-issues §C: kpi.ts scoreQuarterRoster and qc.getQcStats identical before and after (with seeded data); §B causes set by a reviewer …) · PGlite | pending | live on deploy (staff only) | — |
+| 8.2-self-qc | CONFIRMED | XL | e954b23 | b1-selfqc-issues (§A (a)–(l): 44 checks — refusal, binding, finish/callback race, held on mismatch, button dry run, content_hash, sweep held, drift void, move…) · PGlite | pending | live on deploy (staff only) | PARTIAL — stream-route drift void; Review Room "waiting on check" group and attestation in CutReviewPanel (§8.1 files); checklist editor lives on /quality, not Settings |
+| 8.3-revision-issues | PARTIALLY_IMPLEMENTED | XL | e954b23 | b1-selfqc-issues (§B: 28 checks — idempotent note and brief ingestion, portal addendum, addressed on v2 then verified at approval, unticked approval refused, …) · PGlite | pending | live on deploy (staff only) | PARTIAL — verify/not-fixed controls inside the Review Room panel; `revisionActions.reanalyzeBrief` clears ticks before the lock (not my file) |
+| 8.4-kpi | CONFIRMED | L | e954b23 | b1-selfqc-issues (§C: pure outcomes, 17h Fri 5pm → Mon 10am, James/Kyle 16h/1h split, 5 of 6 then 6 of 6 after reclassification, duplicate counted once, block…) · PGlite | pending | live on deploy (staff only) | editor card not mounted on /editing (reached via /quality and a link on /edit) |
+| A34 | CONFIRMED | XL | e954b23 | b1-selfqc-issues (§A (a)–(l) plus the cp01/cp02/cp02b/cp03/cp12 regression drills green) · PGlite | pending | live on deploy (staff only) | stream-route drift |
+| A35 | CONFIGURATION_DEPENDENT | M | e954b23 | b1-review-ownership (b1 §3: one approval completes; Kyle/Jordan intervening is one call plus one COVER event, no co-approval; creativeManager and pay columns unc…) · PGlite | pending | live on deploy (staff only) | Jordan's Sep 25 answer applied: all three rung, James first, Kyle nudged at 9 covered h, rule directly. Seats saved after deploy (see handoff.md). remaining: none beyond the production seat configuration |
+| A36 | PARTIALLY_IMPLEMENTED | L | e954b23 | b1-selfqc-issues (§B: addendum, replacement v2, finish retry race, Kim→John reassignment, verification required) · PGlite | pending | live on deploy (staff only) | Review Room panel UI |
+| A37 | CONFIRMED | M | e954b23 | b1-selfqc-issues (§B merge counts once; CLASSIFIED events with from→to; §C CLIENT_CHANGE vs EDITOR_ERROR re-scores; nothing classified by the hub) · PGlite | pending | live on deploy (staff only) | — |
+| A38 | CONFIRMED | M | e954b23 | b1-selfqc-issues (§C: pending and unclassified excluded from the denominator, n and product shown, reviewer waiting time per queue, blocked time "not recorded…) · PGlite | pending | live on deploy (staff only) | — |
+| O02 | CONFIRMED | L | e954b23 | b1-readiness-topaz (Drill sections:) · PGlite | pending | live on deploy (staff only) | — |
+| A39 | CONFIRMED | S | e954b23 | b1-readiness-topaz (Drill B1/B3/B4: the approved original stays intact and becomes the file to send under an explicit reviewer decision; no blind re-render or r…) · PGlite | pending | live on deploy (staff only) | — |
+| O01 | CONFIRMED | M | e954b23 | b1-readiness-topaz (Drill sections A0–A10: the old code at 75d56f1 says "ready for editing" on a blocked job; the new receipt is truthful and quotes the card's …) · PGlite | pending | live on deploy (staff only) | PARTIAL — Remaining: the editorQueue/SimpleQueue "Waiting on instructions" label (other lane's files), and stale Luma comments in upload/actions.ts and dropboxFolders.ts |
 
 ## Batch 2 — Guided content preparation (38 items)
 
@@ -153,7 +153,7 @@ Status key: CONFIRMED (defect/gap real) · PARTIALLY_IMPLEMENTED · ALREADY_FIXE
 | A29 | ALREADY_FIXED | S | ✓ closed at verification | | | | |
 | A30 | CONFIRMED | S |  | | | | |
 | A31 | CONFIRMED | S |  | | | | |
-| A32 | CONFIRMED | S |  | | | | |
+| A32 | CONFIRMED | S | e954b23 | b1-readiness-topaz (The same A1–A10 checks count timeline markers, Notification rows (unique dedupeKey) and ops-Slack posts held at fetch.) · PGlite | pending | live on deploy (staff only) | PARTIAL — Remaining: the queue does not yet read "Waiting on instructions", so queue/card/board agreement depends on the editorQueue label |
 | A33 | CONFIGURATION_DEPENDENT | S |  | | | | |
 
 ## Batch 5 — Operational visibility (23 items)
