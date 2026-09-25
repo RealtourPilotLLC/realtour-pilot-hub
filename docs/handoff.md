@@ -9,14 +9,13 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 ## Resume here
 
-- **Current batch:** 2 — guided content preparation.
-- **Batch 1:** committed `e954b23`; deployed with the docs commit that follows it.
+- **Current batch:** 3 — scheduling and integrations.
+- **Batch 1:** `e954b23`, live (deployed with `f2555f7`). **Batch 2:** `2c74adc`, deployed with the docs commit after it.
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF).
-  Batch 1 is staff-facing and live on deploy; the review seats are saved
-  separately (below).
-- **Next action:** batch 2 build; then the authorised external actions
-  (Stripe webhook, private review-cut store) and batch 3.
+  Review seats saved (James → Kyle → Jordan).
+- **Next action:** register the Stripe webhook (authorised); switch review
+  cuts to the private store (authorised); batch 3.
 
 ## Batch 0 — facts measured Sep 25 (read-only probe, `scripts/_recon/cp15-config-probe.ts`)
 
@@ -41,7 +40,7 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 |---|---|---|---|
 | 0 Verify and prepare | done | `75d56f1` checklist, `2528374` schema | schema pushed |
 | 1 Operational correctness | done (4 partial remainders → batch 2's remainder builder) | `e954b23` | see below |
-| 2 Guided content preparation | — | | |
+| 2 Guided content preparation | done | `2c74adc` | see below |
 | 3 Scheduling and integrations | — | | |
 | 4 Capture through delivery | — | | |
 | 5 Operational visibility | — | | |
@@ -68,7 +67,57 @@ change the design:
 | Permissions | Register the Stripe webhook; run the Aryeo + Calendly supervised test; create the private video store. | Authorised external actions, done in the batch that needs them, each recorded here. |
 
 
+## Production changes made in this handoff
+
+| When (ET) | What | How | Backout |
+|---|---|---|---|
+| Sep 25 | `review_room` seats saved: James primary, Kyle backup, Jordan fallback (row was absent; every other value = its default) | one `putSetting` after `validateReviewSeats(…, "OWNER")`; chain read back: all three canRule | delete the `review_room` AppSetting row (→ unconfigured, the old OWNER+ADMIN broadcast) |
+| Sep 25 | **Private review-cut store created**: `review-cuts-private` (`store_Ivpn6ZpIy2r0feKR`, iad1, access private). Connected to the project for **development only**, env prefix `REVIEW_CUTS_PRIVATE_` → `REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN`. Production untouched. | `vercel blob create-store --access private` from an unlinked folder; `vercel integration-resource connect … --environment development --prefix REVIEW_CUTS_PRIVATE_` | `vercel blob delete-store store_Ivpn6ZpIy2r0feKR` |
+
+### Private store — first real proof (Sep 25)
+
+The shipped cut-store functions (`src/lib/reviewCuts.ts`) run against the new
+store with its token, one 300 KB object, deleted after: **13 of 13 passed.**
+Browser-style upload (client token + `access: private`) lands on
+`*.private.blob.vercel-storage.com`; a public upload into it is refused
+("Cannot use public access on a private store"); anonymous GET → 403; our
+own GET with the token → 200, bytes identical; ranged GET → 206; a presigned
+URL fetches with no headers (the Dropbox/Topaz/Meta path) → 200 and 206;
+`probeableUrl` signs; `deleteCutObject` aims at the right store; gone → 404.
+Still not exercised: copying objects between stores (`migrate-cut-store.ts
+--apply`), the rollback, and a real editor upload in the browser.
+
+**Cutover plan (after batch 2's deploy):** only review cuts use Blob, but
+`BLOB_READ_WRITE_TOKEN` is integration-managed, so rather than swapping it the
+code will treat `REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN` as the primary store
+when present (the public one becomes the legacy slot), pass that token to
+`handleUpload` explicitly, and give the uploader its access word from the
+server — so one connection decides both halves and they cannot disagree.
+Then: connect the store to production with the same prefix, deploy, run
+`migrate-cut-store.ts` (dry run, then `--apply`), check hosts, and have one
+real upload watched.
+
 ## Tests and environment
+
+### Batch 2
+
+- Five builders (planning reader + routes; scripts/topics/release; discovery +
+  strategy; signups; batch-1 remainders); two review lenses (correctness/data;
+  client words/launch gate). **19 of 19 findings confirmed and fixed**, two of
+  them duplicates. The two highs: a booked call on the written route opened
+  filming without answers; unreviewed AI topics from the discovery call reached
+  the client's topic bank.
+- New drills: b2-planning 151, b2-scripts-topics 200, b2-discovery-strategy
+  105, b2-signups 54, b1-remainders 73; cp14 108. Pre-R01 drills
+  (scheduled-journey, cron-route-journey, cp15) were moved to the one-reader
+  rules, not loosened: each now asserts the extra is EXTRA first.
+- **Measured read-only before deploy:** 32 enrollments, 31 legacy
+  call-required (callMode null); 2 Calendly mappings enabled (so the legacy
+  sweeps standing down changes nothing); 0 released strategies carrying
+  gaps/proposal sections; 0 edit cards the pin rule would move; 0 written-route
+  months that will lock; the script-approval desk-task dry run opens 0 tasks and
+  rings 0 bells; 2 Editing-stage jobs will read "In editing — not confirmed"
+  until an editor presses Start; every signup price is in the catalogue.
 
 ### Batch 1 (`e954b23`)
 
