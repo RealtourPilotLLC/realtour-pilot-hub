@@ -240,11 +240,21 @@ export async function sendGmailReply(opts: {
 // (4xx — nothing was sent, offer it again) from a 5xx or a transport failure
 // (it may have gone — hold it and ask a person). `ok`/`error`/`needsReconnect`
 // are unchanged, so every existing caller reads exactly as before.
+//
+// CP-15 (Sep 24 2026): `strict`. Without it a missing mailbox quietly falls back
+// to whichever account happens to be first in the map — so a program email the
+// outbox addressed as info@ would go out from hello@ (or any mailbox connected
+// later), under the wrong sender, with nothing saying so. With `strict` the
+// mailbox asked for is the only one that may send: absent, the answer is "not
+// connected" (needsReconnect, 401) and no token is even requested, so the
+// outbox records a clean refusal it can offer again once info@ is reconnected.
+// Callers that do not pass it keep the old fallback.
 export async function sendGmailNew(opts: {
   mailbox: string;
   to: string;
   subject: string;
   body: string;
+  strict?: boolean;
 }): Promise<
   | { ok: true; to: string; id: string | null }
   | { ok: false; error: string; needsReconnect?: boolean; status?: number }
@@ -252,7 +262,12 @@ export async function sendGmailNew(opts: {
   const to = opts.to.trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return { ok: false, error: "That doesn't look like an email address.", status: 400 };
   const accounts = await gmailAccounts();
-  const acct = accounts.find((a) => a.email === opts.mailbox) ?? accounts[0];
+  const wanted = opts.mailbox.trim().toLowerCase();
+  const exact = accounts.find((a) => a.email.trim().toLowerCase() === wanted);
+  if (opts.strict && !exact) {
+    return { ok: false, error: `The ${opts.mailbox} mailbox isn't connected — reconnect it in Connections. Nothing was sent from another account.`, needsReconnect: true, status: 401 };
+  }
+  const acct = exact ?? accounts[0];
   if (!acct) return { ok: false, error: "No Gmail account is connected.", status: 401 };
   let token: string;
   try {

@@ -62,7 +62,14 @@ async function main() {
   const lastSync = await prisma.cronRun.findFirst({ where: { job: "sync" }, orderBy: { startedAt: "desc" } });
   let deploy: string | null = null;
   try { deploy = (JSON.parse(lastSync?.summary ?? "{}") as { deploy?: string }).deploy ?? null; } catch { /* unreadable */ }
-  say("deploy", "commit the live hub is running", deploy ? ["OK"] : ["UNKNOWN"], deploy ? `${deploy} (last hourly run ${ago(lastSync?.startedAt)})` : "no deploy stamp on the last hourly run yet (cron.ts stamps it from this batch on)");
+  // cron.ts stamps out.deploy (first 12 of VERCEL_GIT_COMMIT_SHA, else the
+  // HUB_COMMIT_SHA a CLI deploy passes). Compared with this checkout's HEAD so
+  // "production is behind" is a fact on the page, not a guess.
+  let head: string | null = null;
+  try { head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" }).trim().slice(0, 12); } catch { /* not a checkout */ }
+  const behind = !!deploy && !!head && deploy !== head;
+  say("deploy", "commit the live hub is running", deploy ? [behind ? "WARN" : "OK"] : ["UNKNOWN"],
+    deploy ? `${deploy} (last hourly run ${ago(lastSync?.startedAt)})${head ? ` · this checkout's HEAD ${head}${behind ? " — DIFFERENT" : " — same"}` : ""}` : "no deploy stamp on the last hourly run (deploy with --env HUB_COMMIT_SHA=$(git rev-parse HEAD); cron.ts records it)");
 
   // F2 — does production's schema match HEAD? migrate diff only inspects.
   try {

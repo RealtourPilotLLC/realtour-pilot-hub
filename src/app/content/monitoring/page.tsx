@@ -15,6 +15,7 @@ import { allAutomations } from "@/lib/programAutomation";
 import { transcriptJobsSnapshot } from "@/lib/transcriptJobs";
 import { listCallRecords, callReviewQueue } from "@/lib/contentCallRecords";
 import { CallReviewQueue } from "@/components/content/CallReviewQueue";
+import { deployStamp, lastRunDeploy } from "@/lib/cron";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +36,7 @@ export default async function ContentMonitoringPage() {
   if (me && !canAccess(me, "content")) redirect("/");
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
 
-  const [runs, quota, jobs, calls, queue, sessions, reminders, failures, switches, imports, months] = await Promise.all([
+  const [runs, quota, jobs, calls, queue, sessions, reminders, failures, switches, imports, months, lastSync] = await Promise.all([
     aiRunLedger({ take: 60 }).catch(() => []),
     aiQuotaUse().catch(() => null),
     transcriptJobsSnapshot().catch(() => null),
@@ -47,7 +48,12 @@ export default async function ContentMonitoringPage() {
     allAutomations().catch(() => []),
     importOverview().catch(() => ({ batches: [], unapplied: 0 })),
     prisma.contentMonth.findMany({ select: { monthKey: true }, distinct: ["monthKey"], orderBy: { monthKey: "desc" }, take: 18 }).catch(() => []),
+    lastRunDeploy("sync").catch(() => null),
   ]);
+  // CP-15: which build is answering, and which build the hourly run that wrote
+  // most of these rows was. Right after a deploy they differ until the next
+  // hour — that is the point of showing both.
+  const pageBuild = deployStamp();
   // ContentEnrollment.clientId is a plain ref, so the enrolled clients are
   // resolved in two steps rather than through a relation filter.
   const enrolled = await prisma.contentEnrollment.findMany({ select: { clientId: true } }).catch(() => [] as { clientId: string }[]);
@@ -72,6 +78,27 @@ export default async function ContentMonitoringPage() {
       <PageHeader eyebrow="Content program" title="Automation monitoring" subtitle="what ran, what it cost, and what needs a person" />
 
       <div className="mx-auto max-w-5xl space-y-6 p-4 pb-16 sm:p-6">
+        {/* CP-15: the deployed build, as this page and the last hourly run recorded it. */}
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
+          <span>
+            This page: <code className="rounded bg-surface-2 px-1">{pageBuild ?? "build not stamped"}</code>
+          </span>
+          <span>
+            Last hourly run:{" "}
+            {lastSync ? (
+              <>
+                <code className="rounded bg-surface-2 px-1">{lastSync.deploy ?? "not stamped"}</code>
+                <span className="text-muted-2"> · started {when(lastSync.startedAt)}{lastSync.finishedAt ? "" : " · not finished (running now, or killed)"}</span>
+              </>
+            ) : (
+              <span className="text-muted-2">none recorded</span>
+            )}
+          </span>
+          {pageBuild && lastSync?.deploy && pageBuild !== lastSync.deploy && (
+            <span className="text-warning">the hourly run has not run on this build yet</span>
+          )}
+        </p>
+
         {/* FAILED AUTOMATIONS — the same list the overview's filter reads. */}
         <Section
           icon={AlertTriangle}

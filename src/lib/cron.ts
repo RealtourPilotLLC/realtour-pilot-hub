@@ -64,16 +64,50 @@ function failureSignature(out: Record<string, unknown>): string {
 function serialize(out: Record<string, unknown>): string {
   const clipped: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(out)) {
-    if (["at", "skipped", "timedOut", "ms"].includes(k)) { clipped[k] = v; continue; }
+    if (["at", "deploy", "skipped", "timedOut", "ms"].includes(k)) { clipped[k] = v; continue; }
     const s = typeof v === "string" ? v : JSON.stringify(v);
     clipped[k] = s && s.length > 300 ? `${s.slice(0, 297)}…` : v;
   }
   const json = JSON.stringify(clipped);
-  return json.length <= 4000 ? json : JSON.stringify({ at: out.at, skipped: out.skipped, timedOut: out.timedOut, ms: out.ms, truncated: true });
+  return json.length <= 4000 ? json : JSON.stringify({ at: out.at, deploy: out.deploy, skipped: out.skipped, timedOut: out.timedOut, ms: out.ms, truncated: true });
+}
+
+// ---------------------------------------------------------------------------
+// WHICH BUILD RAN THIS (CP-15, Sep 24 2026). Nothing in the app could say what
+// commit production is running: the probe had to report "deployed commit:
+// UNKNOWN", and a CronRun row that died could not be tied to the code that
+// died. So every run stamps its own build on its summary, and
+// /content/monitoring shows both the page's build and the last hourly run's.
+//
+// Vercel sets VERCEL_GIT_COMMIT_SHA only on git-triggered builds. This hub is
+// deployed from the CLI, where it is absent, so the deploy passes its own:
+// `vercel deploy --prod --env HUB_COMMIT_SHA=$(git rev-parse HEAD)`. `||`, not
+// `??`: a variable that is set but empty is not a commit either. No stamp at
+// all is written rather than a guess — "unknown" stays visibly unknown.
+// ---------------------------------------------------------------------------
+export function deployStamp(): string | null {
+  const sha = (process.env.VERCEL_GIT_COMMIT_SHA || process.env.HUB_COMMIT_SHA || "").trim();
+  return sha ? sha.slice(0, 12) : null;
+}
+
+/** The build the most recent run of `job` recorded, and when that run started.
+ *  Null stamp = that run predates the stamp or its build set no commit. */
+export async function lastRunDeploy(job = "sync"): Promise<{ deploy: string | null; startedAt: Date; finishedAt: Date | null } | null> {
+  const { prisma } = await import("@/lib/prisma");
+  const row = await prisma.cronRun.findFirst({ where: { job }, orderBy: { startedAt: "desc" }, select: { summary: true, startedAt: true, finishedAt: true } });
+  if (!row) return null;
+  let deploy: string | null = null;
+  try {
+    const v = (JSON.parse(row.summary ?? "{}") as { deploy?: unknown }).deploy;
+    deploy = typeof v === "string" && v ? v : null;
+  } catch { /* an unreadable summary carries no stamp */ }
+  return { deploy, startedAt: row.startedAt, finishedAt: row.finishedAt };
 }
 
 export function cronBudget(budgetMs: number, startedAtMs: number, job?: string): CronRunner {
   const out: Record<string, unknown> = { at: new Date(startedAtMs).toISOString() };
+  const deploy = deployStamp();
+  if (deploy) out.deploy = deploy;
   const skipped: string[] = [];
   out.skipped = skipped;
   let firstError: string | null = null;

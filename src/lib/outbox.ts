@@ -353,6 +353,8 @@ export function realOutboxProvider(): OutboxProvider {
           to: row.toRef,
           subject: subjectFor(outboxKind(row.dedupeKey), row.dedupeKey),
           body: row.body,
+          // CP-15: info@ or nothing — never a silent send from another mailbox.
+          strict: true,
         });
         if (res.ok) return { providerId: res.id ?? null };
         // Gmail answers in words, not exceptions. A refusal we understand (no

@@ -1,0 +1,13 @@
+{
+  "_comment": "The isolated demo's fixed coordinates. Read by isolated-demo.ts, sample.ts, demo-preload.cjs, run-demo-db.sh and run-demo-dev.sh so the five cannot disagree. Nothing here is a real credential: appSecret signs sessions in the throwaway demo database only, and staffPassword opens the demo's copy of Jordan's login, which exists nowhere else.",
+  "dbPort": 5599,
+  "samplePort": 5598,
+  "devPort": 3100,
+  "dataDirName": "rtp-isolated-demo",
+  "appSecret": "rtp-isolated-demo-only-not-a-real-key-6f1c2a9e0b",
+  "blobHost": "rtpdemo0isolated.public.blob.vercel-storage.com",
+  "staffEmail": "info@realtourpilot.com",
+  "staffName": "Jordan Spackman",
+  "staffPassword": "demo-walkthrough",
+  "aiStubKey": "demo-stub-key-never-leaves-this-mac"
+}

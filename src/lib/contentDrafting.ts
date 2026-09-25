@@ -249,6 +249,14 @@ export type DraftOpts = {
  * Postgres enforces — so two sweeps racing on the same topic produce one
  * script and one skip, not two scripts. No advisory lock needed and no claim
  * of our own to leak on a crash.
+ *
+ * The work list is read ONCE, and a walk can take minutes. A topic another
+ * sweep drafted start to finish meanwhile is not "owed" any more, and the key
+ * alone did not know (it was freed when that run's model call returned) — so
+ * every generator here runs with onlyIfUnscripted: it re-checks right before
+ * claiming, holds the key until the version is written, and never adds a
+ * version to a script that exists. That skip is counted as raced, not failed
+ * (Sep 24; cron-route-journey §4 drives it).
  */
 export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; paused: string | null; outcomes: DraftOutcome[] }> {
   const work = await scriptWorkForMonth(monthId);
@@ -261,7 +269,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
     try {
       if ((w.readiness === "FROM_ANSWERS" || w.readiness === "THIN_ANSWERS") && w.interviewId) {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
-        const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended });
+        const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended, onlyIfUnscripted: true });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "answers", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       } else {
         const { generateScriptForTopic } = await import("@/lib/contentGeneration");
@@ -272,13 +280,15 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
           unattended: opts.unattended,
           callRecordId: w.callRecordId,
           selectedOnCall: w.readiness === "FROM_CALL",
+          onlyIfUnscripted: true,
         });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "topic", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // Losing the dedupe race is not a failure — somebody else is drafting it.
-      const raced = /already (running|in progress)|Unique constraint|dedupe/i.test(msg);
+      // So is finding it drafted by the other run since this list was read.
+      const raced = /already (running|in progress|drafted)|Unique constraint|dedupe/i.test(msg);
       // NEITHER IS A CLOSED SWITCH. `ai_runs` off is Jordan's stop button, and
       // the whole point of a stop button is that pressing it is not an incident.
       // Counted as a failure it became one: every hourly tick stamped lastError

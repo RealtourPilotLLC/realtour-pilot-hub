@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { runAiJson, activePolicyVersion, setRunOutputRef, sha256, type AiRunKind } from "@/lib/aiRuns";
+import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, sha256, type AiRunKind } from "@/lib/aiRuns";
 import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
@@ -133,7 +133,40 @@ async function excerptsForTopic(topicId: string, monthId: string | null): Promis
 /** CP-08: the script prompt with the per-part word budgets — every script draft names it, so a before/after on estimated length is attributable. */
 const SCRIPT_PROMPT_VERSION = "script.v2-budgets";
 
-export type GenerateScriptOpts = { topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean };
+export type GenerateScriptOpts = {
+  topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean;
+  /** The "draft what's owed" sweep: never add a version to a script that exists — see AlreadyDraftedError. */
+  onlyIfUnscripted?: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// THE OWED-SCRIPT SWEEP DRAFTS A TOPIC ONCE (Sep 24). draftOwedScriptsForMonth
+// reads its work list once, then spends 20-60 s per model call walking it. Two
+// sweeps (the hourly one and Kyle's "Draft what's owed", or two presses) that
+// overlap could each draft the same topic: the other run finished it start to
+// finish while this one was still in the model on an earlier topic, released
+// the dedupe key, and this one reached it with its stale list — a second paid
+// run and a version 2 nobody asked for. So the sweep path (onlyIfUnscripted):
+//   · re-checks for this month's script right before it claims, and
+//   · holds the dedupe key until the version is written (holdDedupeKey), so a
+//     run that passed the re-check while the other was between "model
+//     returned" and "version written" still collides on the key, and
+//   · refuses at write time if a script appeared anyway by a path that takes
+//     no key (a script typed or imported by hand) — the paid output is kept
+//     on the run row, never added as a version.
+// A person asking for a NEW draft of one topic still gets one: that path does
+// not set onlyIfUnscripted.
+// ---------------------------------------------------------------------------
+export class AlreadyDraftedError extends Error {
+  constructor(what: string) { super(`Already drafted — ${what} got its script from another run after this sweep read its list.`); this.name = "AlreadyDraftedError"; }
+}
+async function assertUnscripted(topicId: string, monthId: string | null, interviewId: string | null, what: string): Promise<void> {
+  const existing = await prisma.contentScript.findFirst({
+    where: { historical: false, OR: [{ topicId, monthId }, ...(interviewId ? [{ interviewId }] : [])] },
+    select: { id: true },
+  });
+  if (existing) throw new AlreadyDraftedError(what);
+}
 
 /** Transcript / topic path: one script version (INTERNAL_REVIEW) for a topic, through the policy prompt + validator. */
 export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number }> {
@@ -142,50 +175,66 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   const excerpts = o.excerpts ?? (await excerptsForTopic(o.topicId, o.monthId));
   const scrub = await scrubOtherClients(row.clientId, excerpts.map((e) => e.text));
   const bundle = buildScriptPrompt(built.ctx, { path: "transcript", topic, excerpts: excerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: o.selectedOnCall ?? true });
+  if (o.onlyIfUnscripted) await assertUnscripted(o.topicId, o.monthId, null, `"${row.title}"`);
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length },
     promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
-    dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
+    dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
   });
-  const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId);
-  if (!parts.title) parts.title = row.title;
-  // monthId null = the bank-level script (IS NULL), never "any month's script".
-  const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
-  const r = await createScriptVersion({
-    scriptId: existing?.id ?? null, enrollmentId: row.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: "INTERNAL_REVIEW",
-    callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: { ok: validation.ok, findings: validation.findings }, gaps,
-    changeSummary: `Drafted from the ${excerpts.length ? "call excerpts" : "topic"} (${validation.ok ? "passes the format check" : `${validation.findings.filter((f) => f.severity === "block").length} blocking finding(s)`}; ${gaps.length} gap(s))`,
-  });
-  await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
-  await prisma.contentTopic.updateMany({ where: { id: o.topicId, status: "SELECTED" }, data: { status: "SCRIPTED" } });
-  await recordTopicEvent(o.topicId, row.enrollmentId, "SCRIPTED", { kind: "AI" }, { monthId: o.monthId, sourceRef: `ContentScriptVersion:${r.versionId}` });
-  return { scriptId: r.scriptId, versionId: r.versionId, versionNo: r.versionNo, ok: validation.ok, findings: validation.findings.length, gaps: gaps.length };
+  try {
+    const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId);
+    if (!parts.title) parts.title = row.title;
+    // monthId null = the bank-level script (IS NULL), never "any month's script".
+    const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
+    if (existing && o.onlyIfUnscripted) throw new AlreadyDraftedError(`"${row.title}"`);
+    const r = await createScriptVersion({
+      scriptId: existing?.id ?? null, enrollmentId: row.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: "INTERNAL_REVIEW",
+      callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: { ok: validation.ok, findings: validation.findings }, gaps,
+      changeSummary: `Drafted from the ${excerpts.length ? "call excerpts" : "topic"} (${validation.ok ? "passes the format check" : `${validation.findings.filter((f) => f.severity === "block").length} blocking finding(s)`}; ${gaps.length} gap(s))`,
+    });
+    await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
+    await releaseRunKey(run.runId);
+    await prisma.contentTopic.updateMany({ where: { id: o.topicId, status: "SELECTED" }, data: { status: "SCRIPTED" } });
+    await recordTopicEvent(o.topicId, row.enrollmentId, "SCRIPTED", { kind: "AI" }, { monthId: o.monthId, sourceRef: `ContentScriptVersion:${r.versionId}` });
+    return { scriptId: r.scriptId, versionId: r.versionId, versionNo: r.versionNo, ok: validation.ok, findings: validation.findings.length, gaps: gaps.length };
+  } finally {
+    await releaseRunKey(run.runId); // idempotent; frees the key if the write above threw
+  }
 }
 
 /** Written-answer path: a DRAFT version from the interview's exact answer rows, gaps carried through, never filled. */
-export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
+export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
   // The call's own words about this topic ride along beside the answers
   // (CP-08) — already confidential- and other-client-scrubbed.
   const bundle = buildScriptPrompt(built.ctx, { path: "written-answers", input: a.input, excerpts: a.excerpts });
+  // The sweep path (see AlreadyDraftedError): a script for this topic in this
+  // month, or for these answers, means somebody drafted it while we queued.
+  if (opts.onlyIfUnscripted) await assertUnscripted(a.topic.id!, a.monthId, interviewId, `"${a.topic.title}"`);
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length },
-    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`,
+    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`, holdDedupeKey: true,
     system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
   });
-  const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId);
-  if (!parts.title) parts.title = a.topic.title;
-  const existing = await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } });
-  const r = await createScriptVersion({
-    scriptId: existing?.id ?? null, enrollmentId: a.enrollmentId, monthId: a.monthId, topicId: a.topic.id, parts, source: "AI", createdBy: requestedBy, status: "DRAFT",
-    basedOnVersionId: existing?.currentVersionId ?? null, interviewId, answerIds: a.answerIds, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId,
-    validation: { ok: validation.ok, findings: validation.findings }, gaps: [...a.input.gaps, ...gaps],
-    changeSummary: existing ? "New draft from the changed answers — the earlier version is kept." : `Drafted from ${a.input.completeness.substantiveAnswered}/${a.input.completeness.substantiveTotal} substantive answers`,
-  });
-  await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
-  await prisma.contentTopic.updateMany({ where: { id: a.topic.id!, status: "SELECTED" }, data: { status: "SCRIPTED" } });
-  return { scriptId: r.scriptId, versionId: r.versionId, ok: validation.ok, gaps: a.input.gaps.length + gaps.length };
+  try {
+    const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId);
+    if (!parts.title) parts.title = a.topic.title;
+    const existing = await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } });
+    if (existing && opts.onlyIfUnscripted) throw new AlreadyDraftedError(`"${a.topic.title}"`);
+    const r = await createScriptVersion({
+      scriptId: existing?.id ?? null, enrollmentId: a.enrollmentId, monthId: a.monthId, topicId: a.topic.id, parts, source: "AI", createdBy: requestedBy, status: "DRAFT",
+      basedOnVersionId: existing?.currentVersionId ?? null, interviewId, answerIds: a.answerIds, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId,
+      validation: { ok: validation.ok, findings: validation.findings }, gaps: [...a.input.gaps, ...gaps],
+      changeSummary: existing ? "New draft from the changed answers — the earlier version is kept." : `Drafted from ${a.input.completeness.substantiveAnswered}/${a.input.completeness.substantiveTotal} substantive answers`,
+    });
+    await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
+    await releaseRunKey(run.runId);
+    await prisma.contentTopic.updateMany({ where: { id: a.topic.id!, status: "SELECTED" }, data: { status: "SCRIPTED" } });
+    return { scriptId: r.scriptId, versionId: r.versionId, ok: validation.ok, gaps: a.input.gaps.length + gaps.length };
+  } finally {
+    await releaseRunKey(run.runId); // idempotent; frees the key if the write above threw
+  }
 }
 
 /**

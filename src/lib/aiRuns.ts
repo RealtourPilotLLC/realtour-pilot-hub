@@ -102,6 +102,15 @@ export type RunAiOpts<T> = {
   unattended: boolean;
   /** Collide duplicate requests on this key while one is active. */
   dedupeKey?: string | null;
+  /**
+   * Keep the dedupe key (and the lease) on the row after the model returns,
+   * until the caller has WRITTEN what the run produced and calls
+   * releaseRunKey(). Without it the key is freed the moment the model answers
+   * — and a sweep holding a stale work list could claim the same topic again
+   * in the gap before the script existed (Sep 24, cron-route-journey §4). A
+   * crash in that gap frees the key when the lease runs out, like a dead run.
+   */
+  holdDedupeKey?: boolean;
   system: string;
   prompt: string;
   schema: Record<string, unknown>;
@@ -127,6 +136,12 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
   await prisma.programAiRun.updateMany({
     where: { status: "RUNNING", leaseUntil: { lt: now } },
     data: { status: "FAILED", error: "Lease expired — the run never finished (timed out or the server restarted).", errorAt: now, finishedAt: now, dedupeKey: null, leaseUntil: null, leaseBy: null },
+  }).catch(() => {});
+  // A finished run whose caller died before releaseRunKey (holdDedupeKey):
+  // the model call succeeded, so the row stays SUCCEEDED — only the key goes.
+  await prisma.programAiRun.updateMany({
+    where: { status: "SUCCEEDED", dedupeKey: { not: null }, leaseUntil: { lt: now } },
+    data: { dedupeKey: null, leaseUntil: null, leaseBy: null },
   }).catch(() => {});
   const base = {
     kind: opts.kind,
@@ -163,9 +178,10 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
       where: { id: runId },
       data: {
         status: "SUCCEEDED", finishedAt: new Date(), model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costCents,
-        outputJson: JSON.stringify(output).slice(0, 200_000), leaseUntil: null, leaseBy: null,
-        // The dedupe key only needs to hold while the run is active.
-        dedupeKey: null,
+        outputJson: JSON.stringify(output).slice(0, 200_000),
+        // The dedupe key only needs to hold while the run is active — or, with
+        // holdDedupeKey, until the caller has written the output.
+        ...(opts.holdDedupeKey ? {} : { dedupeKey: null, leaseUntil: null, leaseBy: null }),
       },
     });
     return { runId, output, usage, model, costCents };
@@ -177,6 +193,11 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     }).catch(() => {});
     throw e;
   }
+}
+
+/** Free a held dedupe key (holdDedupeKey) once the run's output is written — or abandoned. */
+export async function releaseRunKey(runId: string): Promise<void> {
+  await prisma.programAiRun.updateMany({ where: { id: runId, status: { not: "RUNNING" } }, data: { dedupeKey: null, leaseUntil: null, leaseBy: null } }).catch(() => {});
 }
 
 /** Point a run at the record it produced, once that record exists. */

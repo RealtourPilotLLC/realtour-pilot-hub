@@ -7,6 +7,12 @@
       "runtimeArgs": ["node_modules/next/dist/bin/next", "dev"],
       "port": 3000,
       "autoPort": true
+    },
+    {
+      "name": "demo",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["scripts/demo/run-demo-dev.sh"],
+      "port": 3100
     }
   ]
 }

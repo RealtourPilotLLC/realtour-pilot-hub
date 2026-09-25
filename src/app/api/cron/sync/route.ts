@@ -139,11 +139,17 @@ export async function GET(req: NextRequest) {
   // wait in INTERNAL_REVIEW — the human-review rule holds), and on the 1st the
   // booking-link drafts are minted for clients who haven't scheduled.
   await step("contentCalls", async () => {
-    const { syncStrategyCallsFromCalendly, sweepNotetakerTranscripts, sweepDriveTranscripts, mintStrategyCallInvites } = await import("@/lib/contentCalls");
+    const { syncStrategyCallsFromCalendly, sweepDriveTranscripts, mintStrategyCallInvites } = await import("@/lib/contentCalls");
     const cal = await syncStrategyCallsFromCalendly().catch(() => ({ skipped: "error" }));
-    // Transcript sources in priority order: Notetaker (primary — Jordan keeps
-    // it on every call), then the Drive/Meet backup for anything still bare.
-    const nt = await sweepNotetakerTranscripts().catch(() => ({ skipped: "error" }));
+    // Transcripts come from the Drive/Meet (Gemini) docs — through the call
+    // records once a Calendly mapping is enabled, through the legacy sweep
+    // below until then (it stands down by itself). Calendly Notetaker is NOT a
+    // source: it answers 403 on our plan ("required features are not enabled")
+    // and Jordan closed it on Sep 21 — not a requirement. This step
+    // used to call it every hour anyway, under a comment calling it the primary
+    // source, and every call failed. It is no longer called from here;
+    // sweepNotetakerTranscripts stays in contentCalls.ts, and the staff "sync
+    // calls" button still runs it on demand (CP-15, Sep 24 2026).
     const drv = await sweepDriveTranscripts().catch(() => ({ skipped: "error" }));
     const inv = await mintStrategyCallInvites().catch(() => ({ minted: 0 }));
     // Auto-process any transcript that landed without analysis (Drive sweep or
@@ -163,7 +169,7 @@ export async function GET(req: NextRequest) {
         processed++;
       } catch { /* one bad transcript must not stop the rest */ }
     }
-    return { calendly: cal, notetaker: nt, drive: drv, invites: inv.minted, processed };
+    return { calendly: cal, drive: drv, invites: inv.minted, processed };
   });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /

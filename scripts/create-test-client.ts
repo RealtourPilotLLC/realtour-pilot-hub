@@ -70,6 +70,25 @@
 // Fixtures are marked with the sentinel below so a re-run tops them up rather
 // than duplicating, and so scripts/run-acceptance-scenarios.ts can tell a
 // fixture from real data. See that script for what each scenario asserts.
+//
+// With --month-fixture=program|full it ALSO seeds a REPRESENTATIVE MONTH on the
+// same client (CP-15, Sep 24 2026 — scripts/_fixtures/representativeMonth.ts
+// says exactly what, and what a live run leaves behind). The fixture runs the
+// app's own functions, which need the react-server condition:
+//
+//   NODE_OPTIONS=--conditions=react-server npx tsx \
+//     --require ./scripts/_drill/_drill-preload.cjs \
+//     scripts/create-test-client.ts --jordan 2026-09 --month-fixture=program [--variant=pro|ended]
+//
+//   · program — strategy, topic bank, a planned month, scripts in every state,
+//     a session request. Creates NO Project; the only tier allowed on the live
+//     hub. Moves the TEST enrollment to Accelerator (Pro for --variant=pro)
+//     through the ledgered package change.
+//   · full — adds cuts, a revision round and deliveries. REFUSED before this
+//     script writes anything when DATABASE_URL looks hosted: isolated copies
+//     only. The month is the positional month argument, which must be the
+//     current ET month (program: this month or later).
+// --dry-run prints what the fixture would do and runs none of it.
 // ---------------------------------------------------------------------------
 import { PrismaClient } from "@prisma/client";
 import { randomBytes } from "crypto";
@@ -86,22 +105,32 @@ import {
   JORDAN_TEST_PHONE_DIGITS,
   providerWriteDecision,
 } from "../src/lib/testClients";
+import { assertIsolatedDatabase, REPRESENTATIVE_MARKER, type RepresentativeTier, type RepresentativeVariant } from "./_fixtures/representativeMonth";
 
 const ARGS = process.argv.slice(2);
-const FLAGS = new Set(ARGS.filter((a) => a.startsWith("--")));
+const FLAGS = new Set(ARGS.filter((a) => a.startsWith("--") && !a.includes("=")));
 const POSITIONAL = ARGS.filter((a) => !a.startsWith("--"));
 
 const DRY_RUN = FLAGS.has("--dry-run");
 const JORDAN = FLAGS.has("--jordan");
 const WITH_SCENARIOS = FLAGS.has("--scenarios");
 const WITH_PHONE = FLAGS.has("--phone");
+/** CP-15: --month-fixture=program|full, --variant=accelerator|pro|ended. */
+const flagValue = (name: string): string | null => ARGS.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1) ?? null;
+const MONTH_FIXTURE = flagValue("--month-fixture") as RepresentativeTier | null;
+const VARIANT = (flagValue("--variant") ?? "accelerator") as RepresentativeVariant;
 
 const NAME = JORDAN ? JORDAN_TEST_CLIENT_NAME : (POSITIONAL[0] ?? "Cara TEST");
 const SLUG = (JORDAN ? "jordan" : (POSITIONAL[1] ?? NAME.split(/\s+/)[0])).toLowerCase().replace(/[^a-z0-9]/g, "");
 const EMAIL = `info+${SLUG}test@realtourpilot.com`;
 /** Only ever the number Jordan verified on Sep 21 2026, and only when asked for. */
 const PHONE = WITH_PHONE ? `+1${JORDAN_TEST_PHONE_DIGITS}` : null;
-const MONTH_KEY = (POSITIONAL[2] && /^\d{4}-\d{2}$/.test(POSITIONAL[2]) ? POSITIONAL[2] : null) ?? "2026-09";
+// The month is the third positional ("Dave TEST" dave 2026-10). CP-15: with
+// --jordan there is no name or slug to pass, so a month anywhere in the
+// positionals counts — `--jordan 2026-10` used to seed 2026-09 silently.
+const MONTH_KEY = (POSITIONAL[2] && /^\d{4}-\d{2}$/.test(POSITIONAL[2]) ? POSITIONAL[2] : null)
+  ?? (JORDAN ? POSITIONAL.find((a) => /^\d{4}-\d{2}$/.test(a)) ?? null : null)
+  ?? "2026-09";
 /** Isolated by construction — never a real client's folder. Nothing is created in Dropbox here. */
 const BRAND_ASSETS_PATH = `/RealTour Pilot TEST FIXTURES/${NAME}/Brand Assets`;
 
@@ -225,6 +254,15 @@ async function main() {
     console.log(`         Inbound texts from Jordan's own handset can then resolve to this TEST client`);
     console.log(`         in comms (src/lib/contacts.ts phone index).`);
     console.log(`         Both auto-text switches are re-asserted OFF on every run, so nothing sends on its own.\n`);
+  }
+
+  // CP-15: a bad fixture request is refused before THIS script writes a row,
+  // not after it has made the client and handed over to the fixture.
+  if (MONTH_FIXTURE) {
+    if (MONTH_FIXTURE !== "program" && MONTH_FIXTURE !== "full") throw new Error(`--month-fixture must be program or full, not "${MONTH_FIXTURE}".`);
+    if (!["accelerator", "pro", "ended"].includes(VARIANT)) throw new Error(`--variant must be accelerator, pro or ended, not "${VARIANT}".`);
+    if (MONTH_FIXTURE === "full") assertIsolatedDatabase();
+    if (!DRY_RUN) await assertServerConditions();
   }
 
   if (DRY_RUN) {
@@ -364,6 +402,24 @@ async function main() {
     }
   }
 
+  if (MONTH_FIXTURE) {
+    if (DRY_RUN) {
+      would(`--month-fixture=${MONTH_FIXTURE} --variant=${VARIANT}: seed the representative ${MONTH_KEY} (see scripts/_fixtures/representativeMonth.ts), every row marked "${REPRESENTATIVE_MARKER}"`);
+    } else if (client && enrollmentId) {
+      console.log(`\n--- CP-15 representative month (${MONTH_FIXTURE}, ${VARIANT}) ---`);
+      // The fixture writes through the app's functions, which import
+      // @/lib/prisma. Handing it THIS client first means both are one
+      // connection to one database (lib/prisma.ts reuses globalThis.prisma).
+      (globalThis as unknown as { prisma?: PrismaClient }).prisma = prisma;
+      const { seedRepresentativeMonth } = await import("./_fixtures/representativeMonth");
+      const r = await seedRepresentativeMonth(prisma, { clientId: client.id, monthKey: MONTH_KEY, tier: MONTH_FIXTURE, variant: VARIANT, log: (l) => console.log(l) });
+      console.log(`month               ${r.monthId}  ${r.monthKey} (last month ${r.lastMonthKey})`);
+      console.log(`topics A–E          ${Object.values(r.topics).join(" ")}`);
+      if (r.projectId) console.log(`projects            ${r.projectId} (this month) · ${r.lastProjectId} (last month)`);
+      console.log(r.wrote.length ? `${r.wrote.length} step(s) written this run` : "Already seeded — nothing written.");
+    }
+  }
+
   // ---- what a test journey may NOT do, stated out loud ---------------------
   reportProviderPosture();
 
@@ -376,6 +432,22 @@ async function main() {
   // trusts the last line they saw instead of the status a wrapper reads.
   if (process.exitCode) {
     console.log(`\n=== EXIT 1 — the isolation audit above FAILED. This record is not safe for a test journey yet. ===`);
+  }
+}
+
+/**
+ * The fixture calls app modules that import "server-only", which only resolves
+ * under the react-server condition. Found out here, before anything is
+ * written, rather than half way through a seed.
+ */
+async function assertServerConditions(): Promise<void> {
+  try {
+    await import("server-only");
+  } catch {
+    throw new Error(
+      "--month-fixture runs the app's own functions and needs the react-server condition:\n" +
+      "  NODE_OPTIONS=--conditions=react-server npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/create-test-client.ts … --month-fixture=…",
+    );
   }
 }
 
