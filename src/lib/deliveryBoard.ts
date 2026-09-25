@@ -17,6 +17,9 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import { categoryLabelsForLabel } from "@/lib/qcCategories";
 import { pendingDuesByCategory, slaTierOf, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { turnaroundRules } from "@/lib/settings";
+// Who is ACTUALLY editing a job right now — the editor's own Start/Pause (§7.1).
+// Light: prisma, the roster and the date helpers.
+import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -653,6 +656,9 @@ function blockerFor(
   /** the status engine's own answer — categories ordered but not live on
    *  Aryeo. Null when the job has no evidence yet (then the rows decide). */
   missingCategories: string[] | null,
+  /** Who has pressed Start / Pause on the job (lib/editorWork.workStateFor).
+   *  Absent or empty = nobody said so. */
+  work?: ProjectWork | null,
 ): { kind: BlockerKind; label: string } {
   // THE OBLIGATION IS TESTED FIRST (RTP-04, Sep 16). This used to open with
   // `if (p.deliveredAt) return "Delivered"`, which read a job delivered months
@@ -730,10 +736,22 @@ function blockerFor(
   if (deliverables.length > 0 && deliverables.every((d) => d.status === "DONE")) {
     return { kind: "ready", label: "Ready to deliver" };
   }
-  // "With the editor" only once the editor has said so (status EDITING — the
-  // queue pill). Files in on a SHOT job are footage waiting to be picked up,
-  // and the board used to call that editing (Jordan, Sep 10).
-  if (p.status === "EDITING") return { kind: "editing", label: "With the editor" };
+  // WHO IS ON IT — the editor's own Start, not the stage (§7.1, A64, Sep 25).
+  // This used to say "With the editor" for every EDITING job, and EDITING is
+  // now only the lifecycle ("editing has begun"): a paused job, a board move
+  // and a pre-Start claim all wear it. The words are the Editing Room row's
+  // own (workLabel), so the two screens say the same thing about a job:
+  //   somebody pressed Start → "In editing — Kim since 10:02am"
+  //   they paused it         → "Paused — Kim 3:10pm"
+  //   EDITING, nobody said   → "In editing — not confirmed"
+  //   files in, nobody       → "Ready for editing" (Jordan, Sep 10)
+  const w = work && (work.active.length || work.paused.length) ? work : null;
+  if (p.status === "EDITING" || w) {
+    const { label, chip } = workLabel(p.status === "EDITING" ? "EDITING" : "SHOT", w);
+    if (label === "Ready for editing") return { kind: "ready_to_edit", label };
+    const who = chip ? chip.replace(/^Paused — /, "") : null;
+    return { kind: "editing", label: who ? `${label} — ${who}` : label };
+  }
   return { kind: "ready_to_edit", label: "Ready for editing" };
 }
 
@@ -805,12 +823,18 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     take: 400,
   });
 
+  // Who pressed Start (§7.1) — one batched read, and only for the jobs whose
+  // blocker can be an editing one. A failed read degrades to "nobody said so"
+  // (Ready for editing / not confirmed), never to somebody's live work.
+  const work = await workStateFor(rows.filter((p) => p.status === "SHOT" || p.status === "EDITING").map((p) => p.id))
+    .catch(() => new Map<string, ProjectWork>());
+
   const jobs: BoardJob[] = rows.map((p) => {
     const items = boardItems(p, now, turnarounds);
 
     const ev = parseEvidence(p.statusEvidence);
     const missingCategories = ev ? ev.missing : null;
-    const { kind, label } = blockerFor(p, p.deliverables, missingCategories);
+    const { kind, label } = blockerFor(p, p.deliverables, missingCategories, work.get(p.id));
     // THE OBLIGATION, once, for the column, the promise and the card.
     const settled = isSettled(p);
     const openAsk = !settled && hasOpenRevision(p);

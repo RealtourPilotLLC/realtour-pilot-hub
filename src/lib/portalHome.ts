@@ -1,7 +1,7 @@
 import type { PortalTopic, PortalTopicsData, PortalTopicMonth } from "@/lib/portal";
 import type { ClientVideoState, VideoListRow } from "@/lib/contentVideos";
 import { portalHref, type PortalDest } from "@/lib/portalNav";
-import { LIBRARY_FILTERS, type LibraryFilterKey } from "@/lib/portalWords";
+import { CTA_WORDS, LIBRARY_FILTERS, answerCta, type LibraryFilterKey } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // WHAT THE v2 PORTAL PUTS IN FRONT OF THE CLIENT (UI-01, Sep 24 2026) — pure.
@@ -37,7 +37,13 @@ export type PlanModel = {
   month: PortalTopicMonth | null;
   /** That month's selections, in bank order. */
   monthTopics: PortalTopic[];
-  /** Selected this month and still missing answers (the v1 Home rule). */
+  /**
+   * The month's allowance topics whose answers the client still owes — the
+   * planning reader's NEEDS_ANSWERS / NEEDS_MORE steps (R01). It used to be
+   * "selected, unfilmed, no submitted interview", which counted a call-drafted
+   * script in review, an approved carryover and every extra: the TEST portal
+   * read "2 chosen" above "3 need your answers".
+   */
   toAnswer: PortalTopic[];
   /** Shared, undecided, readable — see awaitingScript. */
   scripts: PortalTopic[];
@@ -65,7 +71,8 @@ export function planModel(t: PortalTopicsData, monthKey: string, now: Date = new
   return {
     month,
     monthTopics,
-    toAnswer: monthTopics.filter((x) => x.state !== "FILMED" && (!x.interview || x.interview.status !== "SUBMITTED")),
+    // No plan step (the reader could not be read) is unknown, not "owes answers".
+    toAnswer: monthTopics.filter((x) => x.plan?.step === "NEEDS_ANSWERS" || x.plan?.step === "NEEDS_MORE"),
     scripts: active.filter(awaitingScript),
     decidedScripts,
     justDecided: decidedScripts.filter((x) => !!x.script?.decidedAtISO && now.getTime() - Date.parse(x.script.decidedAtISO) < JUST_DECIDED_MS),
@@ -76,7 +83,7 @@ export function planModel(t: PortalTopicsData, monthKey: string, now: Date = new
 // ---- Home: one primary action ---------------------------------------------------
 
 export type HomeActionKind =
-  | "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "READ_REPLY" | "ANSWER_QUESTIONS" | "BOOK_CALL"
+  | "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "READ_REPLY" | "ANSWER_QUESTIONS" | "CHOOSE_ROUTE" | "BOOK_CALL"
   | "PICK_TOPICS" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "FINISH_SETUP" | "DOWNLOAD";
 
 /**
@@ -84,9 +91,11 @@ export type HomeActionKind =
  * them is the only item with a clock (CP-02) and the one that holds up
  * delivery; then the script decision that gates filming; then a reply from
  * the office; then the month's planning steps in the order the month runs.
+ * CHOOSE_ROUTE (§6.4, Sep 25 2026) is the call step's place when the month
+ * may be planned either way — the order of every other kind is unchanged.
  */
 export const HOME_PRIORITY: readonly HomeActionKind[] = [
-  "REVIEW_VIDEOS", "APPROVE_SCRIPTS", "READ_REPLY", "ANSWER_QUESTIONS", "BOOK_CALL",
+  "REVIEW_VIDEOS", "APPROVE_SCRIPTS", "READ_REPLY", "ANSWER_QUESTIONS", "CHOOSE_ROUTE", "BOOK_CALL",
   "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS", "FINISH_SETUP", "DOWNLOAD",
 ];
 
@@ -110,9 +119,11 @@ export type HomeActionsInput = {
   review: { count: number; single: { id: string; title: string } | null; soonestDeadlineLabel: string | null };
   scripts: { topicId: string; title: string }[];
   unread: number;
-  planning: { planningMode: string; callStatus: string } | null;
+  /** `noCallEligible`: the month may be planned in writing or on a call — an undecided month is asked which (§6.4). */
+  planning: { planningMode: string; callStatus: string; noCallEligible?: boolean } | null;
   month: { monthKey: string; label: string; owed: number; selected: number } | null;
-  toAnswer: { title: string }[];
+  /** The planning reader's owed answers (planModel.toAnswer): never an extra, never a topic the call covered. `missing` = its known gaps. */
+  toAnswer: { title: string; missing?: number }[];
   session: { offerBooking: boolean; required: number; missing: number };
   /** Booked sessions still missing an exact filming address (CP-05). */
   addressNeeded: number;
@@ -129,7 +140,9 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  */
 export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeAction | null; more: HomeAction[] } {
   const out: HomeAction[] = [];
-  const add = (a: Omit<HomeAction, "href"> & { extra?: string }) => out.push({ kind: a.kind, count: a.count, title: a.title, detail: a.detail, cta: a.cta, dest: a.dest, href: portalHref(base, a.dest, a.extra) });
+  // `step`: the Your Month step the action lands on (#step-<key>) — Home's next
+  // step opens the guided plan where that step is, not a separate page.
+  const add = (a: Omit<HomeAction, "href"> & { extra?: string; step?: string }) => out.push({ kind: a.kind, count: a.count, title: a.title, detail: a.detail, cta: a.cta, dest: a.dest, href: `${portalHref(base, a.dest, a.extra)}${a.step ? `#step-${a.step}` : ""}` });
 
   // A reply is something to read, not something to start: it reaches a paused account too.
   if (i.unread > 0) add({ kind: "READ_REPLY", count: i.unread, title: i.unread === 1 ? "A new reply from the team" : `${i.unread} new replies from the team`, detail: null, cta: "Read it", dest: "messages" });
@@ -149,23 +162,32 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
         detail: "Approve it as written, or tell us what to change.", cta: i.scripts.length === 1 ? "Read the script" : "Read the scripts", dest: "plan", extra: "pv=scripts",
       });
     }
-    if (i.planning?.planningMode === "WRITTEN" && i.toAnswer.length > 0 && i.perms.suggest) {
+    // R01: keyed on what is OWED, on either route — a call-route gap after the
+    // call is asked too, and a topic the call covered, a script in review or an
+    // extra never is. (It used to need planningMode WRITTEN and counted all three.)
+    if (i.toAnswer.length > 0 && i.perms.suggest) {
+      const one = i.toAnswer.length === 1 ? i.toAnswer[0] : null;
       add({
         kind: "ANSWER_QUESTIONS", count: i.toAnswer.length,
-        title: i.toAnswer.length === 1 ? `Answer the questions for “${i.toAnswer[0].title}”` : `Answer the questions for ${plural(i.toAnswer.length, "topic")}`,
-        detail: "We write each script from your answers.", cta: "Answer now", dest: "plan",
+        title: one ? (one.missing === 1 ? `One more question on “${one.title}”` : `Answer the questions for “${one.title}”`) : `Answer the questions for ${plural(i.toAnswer.length, "topic")}`,
+        detail: "We write each script from your answers.", cta: one ? answerCta(one.missing ?? 0) : CTA_WORDS.ANSWER, dest: "plan", step: "answers",
       });
     }
-    if (i.planning && i.planning.planningMode !== "WRITTEN" && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session) {
-      add({ kind: "BOOK_CALL", count: 1, title: "Book your strategy call", detail: "We plan the month on it.", cta: "Book the call", dest: "schedule" });
+    const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;
+    if (undecided && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session) {
+      add({ kind: "CHOOSE_ROUTE", count: 1, title: `How would you like to plan ${i.month?.label ?? "this month"}?`, detail: "Choose your topics here, or talk them through on a call.", cta: "Choose", dest: "plan", step: "route" });
+    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session) {
+      add({ kind: "BOOK_CALL", count: 1, title: "Book your strategy call", detail: "We plan the month on it.", cta: "Book the call", dest: "plan", step: "call" });
     }
-    if (i.month && i.month.selected < i.month.owed && i.perms.suggest) {
+    // On the call route the topics are chosen together on the call — browsing
+    // first is optional (§6.4), so it is not a to-do for the client.
+    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL") {
       const n = i.month.owed - i.month.selected;
-      add({ kind: "PICK_TOPICS", count: n, title: `Pick ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Pick topics", dest: "plan", extra: "pv=bank" });
+      add({ kind: "PICK_TOPICS", count: n, title: `Choose ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Choose topics", dest: "plan", extra: "pv=bank" });
     }
     if (i.session.offerBooking && i.perms.session) {
       const booked = i.session.required - i.session.missing;
-      add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail: null, cta: "Book a session", dest: "schedule" });
+      add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail: null, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
     }
     if (i.addressNeeded > 0 && i.perms.session) {
       add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So your photographer arrives at the right door.", cta: "Add the address", dest: "schedule" });

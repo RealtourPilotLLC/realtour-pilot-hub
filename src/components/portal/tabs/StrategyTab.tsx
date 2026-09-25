@@ -2,13 +2,18 @@ import { Compass, Sparkles, Target } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalStrategyView } from "@/lib/portal";
 import { Card, CardTitle, Empty, LoadFailed, fmtShort } from "@/components/portal/ui";
-import { PortalRichText } from "@/components/portal/PortalRichText";
 import { ProposeCorrection } from "@/components/portal/ProposeCorrection";
+import { StrategyDocView } from "@/components/content/StrategyDocView";
 
 // MY STRATEGY (spec §3): the released version — version number + approval
 // date, the accessible summary (brand foundation), this month's priorities
 // kept apart, then the full document in its own structure. Corrections go to
 // the team as proposals; nothing here edits the strategy.
+//
+// U01 (Sep 25 2026): the full document renders through the same structured
+// view as the staff Strategy tab — labelled rows, real lists, one card per
+// pillar — over the released sections portalStrategy already filtered (the
+// framework, caption lists and the team's working notes never reach here).
 export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest, readOnly }: {
   strategy: PortalStrategyView | null;
   failed: boolean;
@@ -60,14 +65,13 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
       {/* Full document, source structure preserved */}
       <Card>
         <CardTitle icon={Compass}>The full strategy</CardTitle>
-        <div className="mt-3 space-y-2">
-          {strategy.sections.map((sec) => (
-            <details key={sec.id} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
-              <summary className="cursor-pointer text-sm font-bold">{sec.heading}</summary>
-              <PortalRichText text={sec.body} />
-            </details>
-          ))}
-          {strategy.sections.length === 0 && <p className="text-sm text-muted">The document has no client-facing sections beyond the summary above.</p>}
+        <div className="mt-3">
+          <StrategyDocView
+            sections={strategy.sections.map((sec) => ({ id: sec.id, heading: sec.heading, text: sec.body }))}
+            collapsible
+            openFirst
+            empty={<p className="text-sm text-muted">The document has no client-facing sections beyond the summary above.</p>}
+          />
         </div>
         {canSuggest && !readOnly && (
           <div className="mt-4 border-t border-border pt-3">

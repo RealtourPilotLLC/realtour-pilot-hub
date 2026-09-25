@@ -32,6 +32,9 @@ export type ProgramDeskTaskInput = {
   assignedKey: string;
   reasonCreated: string;
   reopenIfClosed: boolean;
+  /** Default: two days from now. */
+  dueAt?: Date | null;
+  priority?: "URGENT" | "HIGH" | "MEDIUM";
 };
 
 /**
@@ -40,7 +43,8 @@ export type ProgramDeskTaskInput = {
  * tasks this raises answer different questions and must not share one.
  */
 export async function openProgramDeskTask(input: ProgramDeskTaskInput): Promise<void> {
-  if (isTestClientName(input.clientName)) return;
+  // A probe may ask for TEST work to be raised (the address lane's rule).
+  if (isTestClientName(input.clientName) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
   const description = input.lines.join("\n");
   const title = input.title.slice(0, 140);
   const existing = await prisma.smartTask
@@ -67,9 +71,9 @@ export async function openProgramDeskTask(input: ProgramDeskTaskInput): Promise<
     .create({
       data: {
         title, description, summary: input.title.slice(0, 200),
-        taskType: "todo", status: "OPEN", source: "content_program", priority: "HIGH",
+        taskType: "todo", status: "OPEN", source: "content_program", priority: input.priority ?? "HIGH",
         clientId: input.clientId, dedupeKey: input.dedupeKey, assignedKey: input.assignedKey,
-        dueAt: new Date(Date.now() + 2 * 864e5),
+        dueAt: input.dueAt ?? new Date(Date.now() + 2 * 864e5),
         reasonCreated: input.reasonCreated,
       },
     })
@@ -264,4 +268,191 @@ export async function monthAnswerGapParagraph(monthId: string): Promise<{ paragr
     "The link below opens them directly.",
   ].join("\n");
   return { paragraph, path: gap.path };
+}
+
+// ---------------------------------------------------------------------------
+// WHO A PROGRAM DUTY BELONGS TO, as a SmartTask assignee (first name,
+// lowercased — the hub's convention; programReminders.escalationOwner reads it
+// the same way). Falls back to the given key when nobody is assigned.
+// ---------------------------------------------------------------------------
+export async function dutyAssignedKey(enrollmentId: string, monthId: string | null, duty: "SCRIPTS" | "SCHEDULING" | "ESCALATION", fallback: string): Promise<string> {
+  try {
+    const { ownersFor } = await import("@/lib/contentProgram");
+    const owners = await ownersFor(enrollmentId, monthId);
+    const o = owners[duty] ?? owners.ESCALATION;
+    const first = (o?.label ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    // ensureDefaultOwnerAssignments labels an empty seat "unassigned" — not a person.
+    return first && first !== "unassigned" ? first : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A DRAFT THAT KEEPS FAILING HAS AN OWNER (6.5, Sep 25 2026).
+//
+// A failed unattended draft was visible only as the automation row's lastError
+// and a topic still on the "owed" list — nobody's job. Two failures in a row
+// for the same topic and month (the model runs the ledger records, newest
+// first, since the last success) put one task on the scripts owner with the
+// error and where "Draft what's ready" is. The next successful draft closes it.
+// ---------------------------------------------------------------------------
+
+export const DRAFT_FAILED_TASK_PREFIX = "program-draft-failed:";
+export const draftFailedKey = (topicId: string, monthId: string) => `${DRAFT_FAILED_TASK_PREFIX}${topicId}:${monthId}`;
+
+/** How many of this topic's most recent draft runs for this month failed in a row. */
+export async function consecutiveDraftFailures(topicId: string, monthId: string): Promise<{ count: number; lastError: string | null }> {
+  const runs = await prisma.programAiRun.findMany({
+    where: { kind: "script_draft", scopeJson: { contains: `"topicId":"${topicId}"` } },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { status: true, scopeJson: true, error: true },
+  });
+  let count = 0;
+  let lastError: string | null = null;
+  for (const r of runs) {
+    let scope: { monthId?: string | null } = {};
+    try { scope = JSON.parse(r.scopeJson ?? "{}"); } catch { continue; }
+    if (scope.monthId !== monthId) continue;
+    if (r.status === "RUNNING" || r.status === "QUEUED") continue;
+    if (r.status !== "FAILED") break;
+    count++;
+    lastError ??= r.error;
+  }
+  return { count, lastError };
+}
+
+/** After a draft attempt: close the task on success, open it on the second failure in a row. */
+export async function noteDraftOutcome(w: { topicId: string; monthId: string; monthKey: string; enrollmentId: string; clientId: string; clientName: string | null; title: string }, result: "drafted" | "failed", error?: string | null): Promise<"opened" | "closed" | "none"> {
+  const key = draftFailedKey(w.topicId, w.monthId);
+  if (result === "drafted") return (await closeProgramDeskTask(key)) ? "closed" : "none";
+  const { count, lastError } = await consecutiveDraftFailures(w.topicId, w.monthId);
+  if (count < 2) return "none";
+  const had = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true } }).catch(() => null);
+  await openProgramDeskTask({
+    dedupeKey: key, clientId: w.clientId, clientName: w.clientName ?? "",
+    title: `Script draft keeps failing — ${w.clientName ?? "program client"} · “${w.title}”`,
+    lines: [
+      `The automatic draft for this topic (${w.monthKey}) has failed ${count} times in a row, so the client's script is not being written.`,
+      "",
+      `Last error: ${(error ?? lastError ?? "unknown").slice(0, 400)}`,
+      "",
+      `Draft it now: Content Program → this client → Plan → Scripts → “Draft what's ready” (/content/${w.enrollmentId}?tab=plan&view=scripts), or write it by hand.`,
+      "This closes itself the next time the draft succeeds.",
+    ],
+    assignedKey: await dutyAssignedKey(w.enrollmentId, w.monthId, "SCRIPTS", "jordan"),
+    reasonCreated: "Script draft failed twice in a row (6.5)",
+    reopenIfClosed: true,
+  });
+  return had ? "none" : "opened";
+}
+
+// ---------------------------------------------------------------------------
+// SCRIPTS NOT APPROVED BEFORE FILMING (6.5, Jordan's answer Sep 25 2026).
+//
+// Internal and always on (desk truth, like the address task): the client's
+// email is programReminders' SCRIPTS lane, behind `reminders`. Here:
+//   · at `scriptApproval.deskTaskLeadHours` (24) before a session, shared
+//     scripts still without the client's approval — or planned scripts not
+//     yet shared — put ONE follow-up on Kyle (the scheduling owner), per
+//     session; it closes when they are approved or the session starts;
+//   · within `ownerBellLeadHours` (72) of a session, scripts still in the
+//     team's queue ring the scripts owner's bell, once per session.
+// Never a cancellation, never a move: the session stands (Jordan).
+// ---------------------------------------------------------------------------
+
+export const SCRIPTS_UNAPPROVED_TASK_PREFIX = "program-scripts-unapproved:";
+/** `<prefix><monthId>:<sessionKey>` — the month travels in the key, so closing needs nothing else. */
+export const scriptsUnapprovedKey = (monthId: string, sessionKey: string) => `${SCRIPTS_UNAPPROVED_TASK_PREFIX}${monthId}:${sessionKey}`;
+
+const whenET = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+export async function reconcileScriptApprovalTasks(opts: { now?: Date; max?: number; /** Read only: report what would open, close and ring; write nothing. */ dryRun?: boolean } = {}): Promise<{ opened: number; closed: number; bells: number; checkedSessions: number; wouldOpen: string[]; wouldRing: string[] }> {
+  const now = opts.now ?? new Date();
+  const { reminderPolicy, monthScriptApprovals } = await import("@/lib/programReminders");
+  const { policy } = await reminderPolicy({ orDefaults: true });
+  const wouldOpen: string[] = [];
+  const wouldRing: string[] = [];
+  if (!policy) return { opened: 0, closed: 0, bells: 0, checkedSessions: 0, wouldOpen, wouldRing };
+  const lead = policy.scriptApproval;
+  let opened = 0, closed = 0, bells = 0, checkedSessions = 0;
+  const { upcomingProgramSessions } = await import("@/lib/sessionAddress");
+
+  // 1. CLOSE what is no longer true: the session started, or nothing is pending.
+  const open = await prisma.smartTask.findMany({ where: { dedupeKey: { startsWith: SCRIPTS_UNAPPROVED_TASK_PREFIX }, status: { notIn: TASK_DONE_INCLUDING_LEGACY } }, select: { dedupeKey: true }, take: opts.max ?? 100 });
+  for (const t of open) {
+    const rest = (t.dedupeKey ?? "").slice(SCRIPTS_UNAPPROVED_TASK_PREFIX.length);
+    const cut = rest.indexOf(":");
+    const monthId = cut > 0 ? rest.slice(0, cut) : null;
+    const sessionKey = cut > 0 ? rest.slice(cut + 1) : rest;
+    const session = monthId ? (await upcomingProgramSessions(monthId, now)).find((x) => x.key === sessionKey) ?? null : null;
+    const pending = monthId ? await monthScriptApprovals(monthId) : null;
+    const stillOwed = !!pending && pending.awaitingClient.length + pending.changesRequested.length + pending.notShared.length > 0;
+    if (!session || !stillOwed) { if (opts.dryRun) closed++; else if (await closeProgramDeskTask(t.dedupeKey!)) closed++; }
+  }
+
+  // 2. OPEN / RING for sessions inside their windows.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } });
+  if (!live.length) return { opened, closed, bells, checkedSessions, wouldOpen, wouldRing };
+  const curKey = now.toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
+  const months = await prisma.contentMonth.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, monthKey: { gte: curKey } }, select: { id: true, monthKey: true, enrollmentId: true, clientId: true }, take: opts.max ?? 100 });
+  const names = new Map((await prisma.client.findMany({ where: { id: { in: [...new Set(months.map((m) => m.clientId))] } }, select: { id: true, name: true } })).map((c) => [c.id, c.name ?? ""]));
+  const horizon = Math.max(lead.deskTaskLeadHours, lead.ownerBellLeadHours) * 3_600_000;
+  for (const m of months) {
+    const sessions = (await upcomingProgramSessions(m.id, now)).filter((x) => x.startsAt.getTime() - now.getTime() <= horizon);
+    if (!sessions.length) continue;
+    const pending = await monthScriptApprovals(m.id);
+    const name = names.get(m.clientId) ?? "";
+    for (const x of sessions) {
+      checkedSessions++;
+      const hoursLeft = (x.startsAt.getTime() - now.getTime()) / 3_600_000;
+      const waiting = [...pending.awaitingClient, ...pending.changesRequested];
+      if (hoursLeft <= lead.deskTaskLeadHours && waiting.length + pending.notShared.length > 0) {
+        const key = scriptsUnapprovedKey(m.id, x.key);
+        const had = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true } }).catch(() => null);
+        if (opts.dryRun) {
+          if (!had && (!isTestClientName(name) || process.env.PROGRAM_DESK_TASKS_FOR_TEST === "1")) wouldOpen.push(`${name} · ${whenET(x.startsAt)} · ${waiting.length} awaiting, ${pending.notShared.length} not shared`);
+        } else {
+          await openProgramDeskTask({
+            dedupeKey: key, clientId: m.clientId, clientName: name,
+            title: `Scripts not approved before filming — ${name || "program client"} · ${whenET(x.startsAt)}`,
+            lines: [
+              `Filming is ${whenET(x.startsAt)} ET. We film either way; nothing is cancelled or moved.`,
+              ...(pending.awaitingClient.length ? ["", "Waiting on the client's approval:", ...pending.awaitingClient.map((a) => `• ${a.title}`)] : []),
+              ...(pending.changesRequested.length ? ["", "The client asked for changes (with the scripts owner):", ...pending.changesRequested.map((a) => `• ${a.title}`)] : []),
+              ...(pending.notShared.length ? ["", "Not shared with the client yet:", ...pending.notShared.map((a) => `• ${a.title} (${a.stage})`)] : []),
+              "",
+              "Give the client a quick call or text so the words on camera are the ones they chose. This closes itself once they are approved or the session starts.",
+            ],
+            assignedKey: await dutyAssignedKey(m.enrollmentId, m.id, "SCHEDULING", "kyle"),
+            reasonCreated: "Scripts not approved 24 hours before filming (6.5)",
+            reopenIfClosed: false,
+            dueAt: x.startsAt,
+            priority: "URGENT",
+          });
+          if (!had && (await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true } }).catch(() => null))) opened++;
+        }
+      }
+      // The team's own queue, three days out: the scripts owner hears first.
+      if (hoursLeft <= lead.ownerBellLeadHours && pending.notShared.length > 0 && (!isTestClientName(name) || process.env.PROGRAM_DESK_TASKS_FOR_TEST === "1")) {
+        const bellKey = `scripts-before-shoot:${x.key}`;
+        const already = await prisma.notification.count({ where: { dedupeKey: { startsWith: bellKey } } }).catch(() => 0);
+        if (!already && opts.dryRun) wouldRing.push(`${name} · ${whenET(x.startsAt)} · ${pending.notShared.length} not shared`);
+        else if (!already) {
+          const { notifyInApp } = await import("@/lib/notify");
+          await notifyInApp({
+            kind: "scripts_before_shoot",
+            title: `${pending.notShared.length} script${pending.notShared.length === 1 ? "" : "s"} not shared, filming ${whenET(x.startsAt)} — ${name}`.slice(0, 90),
+            body: pending.notShared.map((a) => `${a.title} (${a.stage})`).join(" · "),
+            href: `/content/${m.enrollmentId}?tab=plan&view=scripts`,
+            targets: [{ roles: ["OWNER"] }],
+            dedupeKey: bellKey,
+          }).catch(() => null);
+          bells++;
+        }
+      }
+    }
+  }
+  return { opened, closed, bells, checkedSessions, wouldOpen, wouldRing };
 }

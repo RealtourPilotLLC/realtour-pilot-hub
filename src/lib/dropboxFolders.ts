@@ -852,8 +852,11 @@ export async function syncDropboxFolderStatus(): Promise<{
         where: { projectId: p.id, taskType: { in: ["confirmation_text", "appointment_prep"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
         data: { status: "COMPLETED", completedAt: new Date() },
       });
-      // Raws landed → ping the editors + mint the premium-reel Luma dispatch
-      // task (audit crack #19). Idempotent; best-effort so it never breaks the sweep.
+      // Raws landed → the files-received notice (audit crack #19): received,
+      // never "ready for editing" — readiness is ensureEditorHandoff's to
+      // announce, once, when the handoff is complete (O01). No vendor dispatch
+      // is minted here; the outside agency gets work only by the office's pick.
+      // Idempotent; best-effort so it never breaks the sweep.
       try {
         const { notifyRawsLanded } = await import("@/lib/tasks");
         await notifyRawsLanded(p.id);

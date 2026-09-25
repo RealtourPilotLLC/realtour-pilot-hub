@@ -473,7 +473,7 @@ export async function dismissTask(
   }
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { id: true, title: true, status: true, summary: true, projectId: true, taskType: true },
+    select: { id: true, title: true, status: true, summary: true, projectId: true, taskType: true, assignedKey: true },
   });
   if (!t) return { ok: false, message: "That task no longer exists." };
   if (t.status === "CANCELLED") return { ok: true, message: "Already dismissed." };
@@ -512,6 +512,12 @@ export async function dismissTask(
   const { stampHandledByHand } = await import("@/lib/opsDay");
   await stampHandledByHand(taskId, who, me?.email ?? null);
 
+  // A dismissed edit card takes its editor's stretch on the job with it
+  // (§7.1) — the same close as a Complete/Cancelled from the card's menu.
+  if (t.projectId && t.assignedKey && (await isDeskEditorCard({ taskType: t.taskType, projectId: t.projectId, assignedKey: t.assignedKey }))) {
+    await closeEditCardWork(t.projectId, t.assignedKey, (by) => `the edit card was dismissed (${why}) by ${by}`);
+  }
+
   if (t.projectId) {
     await prisma.activity
       .create({
@@ -549,7 +555,48 @@ export async function dismissTask(
   return { ok: true, message: `Dismissed — ${why}.` };
 }
 
-export async function setSmartTaskStatus(taskId: string, status: string) {
+// ---- the edit card and the editor's declared work (§7.1, Sep 25) ----------
+//
+// An edit_video card's status is NOT the Start button. Only lib/editorWork's
+// startEditing (the editor's own Start, or the office's labelled correction on
+// the edit page / queue pill) may say somebody is editing a job right now. The
+// card's dropdown, the assignee picker, a dismissal and a board move are other
+// doors onto the same job, and each one may only PAUSE or CLOSE that work —
+// never create or resume it — so the card and "Working now" can't disagree.
+
+/** The person acting, in the terms lib/editorWork records. */
+async function workActorNow(): Promise<import("@/lib/editorWork").WorkActor> {
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const real = me?.realRole;
+  const role = real === "OWNER" || real === "ADMIN" || real === "EDITOR" ? real : me ? "ADMIN" : "OWNER";
+  return { userId: me?.id ?? null, name: (me?.name ?? me?.email ?? "").trim() || "The office", role };
+}
+
+/** Does this card belong to somebody who can hold editing work (an in-house
+ *  editor with a login)? The agency and the retired vendor never can. */
+async function isDeskEditorCard(t: { taskType: string; projectId: string | null; assignedKey: string | null }): Promise<boolean> {
+  if (t.taskType !== "edit_video" || !t.projectId || !t.assignedKey) return false;
+  const { WORK_EDITOR_KEYS } = await import("@/lib/editorWork");
+  return WORK_EDITOR_KEYS.includes(t.assignedKey);
+}
+
+/** Close the card editor's open work on a job whose edit card just left the
+ *  open set by hand (Complete, Cancelled, Dismissed). Never throws. */
+async function closeEditCardWork(projectId: string, editorKey: string, what: (by: string) => string): Promise<void> {
+  try {
+    const { closeActiveWork } = await import("@/lib/editorWork");
+    const actor = await workActorNow();
+    await closeActiveWork(projectId, { editorKey, reason: "REMOVED", actor, detail: what(actor.name) });
+  } catch { /* the card write stands; the hourly card refresh closes a ghost too */ }
+}
+
+// Card statuses that say the editor is NOT cutting it right now, so an active
+// stretch on the job pauses with them. WAITING_EDITOR is deliberately absent:
+// "waiting on the editor" is exactly what an active editor is doing.
+const CARD_PAUSES_WORK = new Set(["OPEN", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED"]);
+
+export async function setSmartTaskStatus(taskId: string, status: string): Promise<{ ok: boolean; message: string } | undefined> {
   // Owner/admin, or the editor this task is delegated to — editors must be able
   // to complete their own queue work (audit crack #28).
   await requireTaskAccess(taskId);
@@ -561,6 +608,17 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     select: { projectId: true, taskType: true, status: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true, sourceDetail: true },
   });
   if (!t) return; // task no longer exists — no-op instead of throw
+  // THE DROPDOWN CAN'T START EDITING (§7.1). "In progress" on an in-house
+  // editor's edit card used to be the second way to say "I'm on it", with no
+  // record of who or since when, and it paused nothing else they were on.
+  // Refused with the way forward; the card is left exactly as it was. A card
+  // with the outside agency on it has no desk to start, so its status is only
+  // the card's, as before.
+  const deskCard = await isDeskEditorCard(t);
+  if (deskCard && status === "IN_PROGRESS" && t.status !== "IN_PROGRESS") {
+    const street = (t.propertyAddress || t.title || "this job").replace(/^Edit\s+—\s+/, "").split(",")[0].trim();
+    return { ok: false, message: `Editing starts with Start on the edit page for ${street} — the task's status can't start it.` };
+  }
   // Every route into this action is a HUMAN pressing Complete (requireTaskAccess
   // above): the project page's button, a ?task= deep link, the queue card, the
   // Today feed, My Shoots. The reconciler in src/lib/tasks.ts reopens ANY
@@ -620,6 +678,24 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     const me = await getCurrentUser().catch(() => null);
     await stampHandledByHand(taskId, me?.name ?? null, me?.email ?? null);
   }
+  // THE CARD'S MOVE, CARRIED TO THE WORK LAYER (§7.1) — only ever a pause or
+  // a close. Done or cancelled by hand: the card's editor's stretch on the job
+  // ends (history kept). Back to Open, or waiting on somebody else: an active
+  // stretch pauses, recorded as whoever pressed it — pauseEditing writes only
+  // its own rows, never the card, the due date or the asks.
+  if (deskCard && t.projectId && t.assignedKey && t.status !== status) {
+    if (status === "COMPLETED" || status === "CANCELLED") {
+      await closeEditCardWork(t.projectId, t.assignedKey, (by) => `the edit card was ${status === "COMPLETED" ? "marked complete" : "cancelled"} on the task board by ${by}`);
+    } else if (CARD_PAUSES_WORK.has(status)) {
+      try {
+        const on = await prisma.editorWorkItem.count({ where: { projectId: t.projectId, editorKey: t.assignedKey, state: "ACTIVE" } });
+        if (on > 0) {
+          const { pauseEditing, newWorkRequestId } = await import("@/lib/editorWork");
+          await pauseEditing({ projectId: t.projectId, forEditorKey: t.assignedKey, requestId: newWorkRequestId("task") });
+        }
+      } catch { /* the card write stands; the editor's own Pause still works */ }
+    }
+  }
   // Completing the QC card via the status button (not the checklist) must still
   // write the QcRecord — this was the third no-record completion path the July
   // 2026 audit found (30 deliveries, 0 QcRecords, owner quality dial empty).
@@ -676,12 +752,10 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   // /projects bounces — so John presses Complete, the card disappears, and
   // nothing on his screen says the job is still in Revisions waiting on Kyle's
   // photos. The /editing pill answers the identical branch in words (Jordan,
-  // Sep 11: "it didn't save"). Returning { heldInRevisions } from here looks
-  // free because no caller reads it, but it is not: TaskCard.tsx:531 hands this
-  // action straight to a React 19 transition, whose callback is typed
-  // () => VoidOrUndefinedOnly | Promise<VoidOrUndefinedOnly>, and the build
-  // fails on a file this fix may not touch. The sentence and the return belong
-  // together in the card's own ticket.
+  // Sep 11: "it didn't save"). Since Sep 25 this action does return a
+  // { ok, message } (the edit card's refused "In progress", §7.1) and the task
+  // card prints a refusal's message — so the held-in-revisions sentence can ride
+  // that same return. It is not added here: it wants its own filing and words.
   if (
     t?.taskType === "revision" &&
     t.projectId &&
@@ -869,14 +943,34 @@ export async function setTaskAssignee(taskId: string, key: string) {
   // can hand a task back to Kyle) — audit crack #28.
   await requireTaskAccess(taskId);
   const { listAssignees, slugForName } = await import("@/lib/assignees");
-  const validKeys = new Set((await listAssignees()).map((a) => a.key));
+  const roster = await listAssignees();
+  const validKeys = new Set(roster.map((a) => a.key));
   const assignedKey = key && validKeys.has(key) ? key : null;
-  const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
+  const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true, taskType: true } });
   const t = await prisma.smartTask.update({
     where: { id: taskId },
     data: { assignedKey },
     select: { projectId: true, title: true },
   });
+  // THE WORK FOLLOWS THE CARD (§7.1, O09/A58). Moving a job's edit card — or
+  // its video-lane revision — off an editor ends their stretch on it now, as
+  // the Editing Room's own reassign does, recorded as whoever moved it. The
+  // new holder is never started for them: they press Start. A co-editor who
+  // still holds one of the job's videos keeps theirs (closeGhostWork's rule).
+  // Until Sep 25 this waited for the hourly card refresh, and the old editor
+  // sat on "Working now" for up to an hour on a job that was no longer theirs.
+  if (t.projectId && prev && prev.assignedKey !== assignedKey && (prev.taskType === "edit_video" || prev.taskType === "revision")) {
+    try {
+      const { closeGhostWork } = await import("@/lib/editorWork");
+      const actor = await workActorNow();
+      const toName = assignedKey ? roster.find((a) => a.key === assignedKey)?.name ?? assignedKey : null;
+      await closeGhostWork(t.projectId, {
+        reason: assignedKey ? "REASSIGNED" : "UNASSIGNED",
+        actor,
+        detail: toName ? `reassigned to ${toName} on the task card by ${actor.name}` : `unassigned on the task card by ${actor.name}`,
+      });
+    } catch { /* the reassign stands; the hourly card refresh closes it too */ }
+  }
   // Work must never move onto someone's plate SILENTLY (audit critical: tasks
   // assigned to Jordan/photographers vanished with no ping). Editors get their
   // channel row; everyone else a person-addressed bell (photographers also get
@@ -925,6 +1019,77 @@ export async function setTaskAssignee(taskId: string, key: string) {
   }
   revalidatePath("/queue");
   if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
+}
+
+/** What an edit card's chip says about the job's editing (§7.1, A64). */
+export type EditCardWork = {
+  /** active / paused = somebody pressed Start (and maybe Pause); waiting = the
+   *  handoff is not complete and nobody is on it; none = nobody is on it. */
+  tone: "active" | "paused" | "waiting" | "none";
+  text: string;
+  /** The handoff engine's stored sentence — the same words the Editing Room
+   *  row and the delivery board print (O01). Never recomputed here. */
+  blocker: string | null;
+};
+
+/**
+ * WHO IS ACTUALLY ON EACH EDIT CARD'S JOB — one batched read for every edit
+ * card on the screen (the task card asks once per render, not once per card:
+ * server functions run one at a time, so per-card reads would queue behind
+ * each other and in front of the next Complete). The answer is lib/editorWork's
+ * workStateFor, the same reader the Editing Room, the delivery board and Kyle's
+ * QC card use, so the card can never call a job "in progress" that nobody
+ * started. Read-only. Owner/admin see every card; an editor or photographer
+ * only cards assigned to them. A failed read says so ({ ok: false }) and the
+ * card shows that, never a guess.
+ */
+export async function editCardWork(taskIds: string[]): Promise<{ ok: boolean; cards: Record<string, EditCardWork> }> {
+  const ids = [...new Set((Array.isArray(taskIds) ? taskIds : []).filter((x): x is string => typeof x === "string" && x.length > 0 && x.length < 64))].slice(0, 100);
+  const cards: Record<string, EditCardWork> = {};
+  if (ids.length === 0) return { ok: true, cards };
+  try {
+    const { authEnforced, addressableKeys } = await import("@/lib/auth/guards");
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    // null = every card (owner/admin, or local dev with auth off)
+    let mine: Set<string> | null = null;
+    if (authEnforced()) {
+      if (!me) return { ok: false, cards };
+      if (me.role !== "OWNER" && me.role !== "ADMIN") {
+        if (me.role !== "EDITOR" && me.role !== "PHOTOGRAPHER") return { ok: true, cards };
+        mine = await addressableKeys(me);
+      }
+    }
+    const tasks = await prisma.smartTask.findMany({
+      where: { id: { in: ids }, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] }, projectId: { not: null } },
+      select: { id: true, projectId: true, assignedKey: true, project: { select: { status: true, handoffBlockedReason: true } } },
+    });
+    const visible = tasks.filter((t) => !mine || (!!t.assignedKey && mine.has(t.assignedKey)));
+    if (visible.length === 0) return { ok: true, cards };
+    const { workStateFor, workLabel, WORK_EDITOR_KEYS } = await import("@/lib/editorWork");
+    const work = await workStateFor(visible.map((t) => t.projectId as string));
+    const now = new Date();
+    for (const t of visible) {
+      const w = work.get(t.projectId as string);
+      const blocker = t.project?.handoffBlockedReason?.trim().replace(/\.$/, "") || null;
+      // Not a stage word: the lifecycle argument is empty on purpose, so the
+      // answer is the chip alone — "Active — Kim since 10:02am" / "Paused —
+      // Kim 3:10pm", the queue row's own words.
+      const { chip } = workLabel("", w, { now });
+      if (chip) cards[t.id] = { tone: w?.active.length ? "active" : "paused", text: chip, blocker };
+      else if (blocker) cards[t.id] = { tone: "waiting", text: "Waiting on instructions", blocker };
+      else if (t.assignedKey && WORK_EDITOR_KEYS.includes(t.assignedKey)) {
+        const begun = t.project?.status === "EDITING" || t.project?.status === "REVIEW" || t.project?.status === "REVISION";
+        cards[t.id] = { tone: "none", text: begun ? "Nobody is on it right now" : "Not started yet", blocker: null };
+      }
+      // The outside agency or nobody: no chip. Nobody there can be "active",
+      // and the card's own assignee chip already says who has it.
+    }
+    return { ok: true, cards };
+  } catch (e) {
+    console.error("[tasks] edit card work read failed", e);
+    return { ok: false, cards: {} };
+  }
 }
 
 /**
@@ -1120,6 +1285,22 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       const { releaseWaitingHold } = await import("@/lib/queueWaiting");
       await releaseWaitingHold(projectId);
     } catch { /* hygiene only */ }
+  }
+
+  // A BOARD MOVE BACK BEFORE EDITING IS THE OFFICE'S PUT-BACK (§7.1). Dragging
+  // a job back to Shot, Scheduled or Booked says nobody should be cutting it,
+  // exactly as the Editing Room pill's put-back does — so whoever was on it
+  // stops, recorded as the mover (PUT_BACK), rather than the row reading "In
+  // editing — Kim" over a stage the office just walked back. A move FORWARD
+  // (to Editing) starts nobody: it is the stage, and the row says "not
+  // confirmed" until an editor presses Start. Delivered/Cancelled close work
+  // inside closeObsoleteTasks below.
+  if (status === ProjectStatus.SHOT || status === ProjectStatus.SCHEDULED || status === ProjectStatus.BOOKED) {
+    try {
+      const { closeActiveWork } = await import("@/lib/editorWork");
+      const actor = await workActorNow();
+      await closeActiveWork(projectId, { reason: "PUT_BACK", actor, detail: `moved back to ${stageMeta(status).label} on the board by ${actor.name}` });
+    } catch { /* never blocks the move */ }
   }
 
   // Close out the revision task too when manually delivered.

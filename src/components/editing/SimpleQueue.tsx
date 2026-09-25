@@ -92,7 +92,7 @@ export type QueueRow = {
   status: string;
   held: boolean; // the office put this job back to Waiting and is holding it there (Sep 11) — the editor's pill greys out
   /** The per-video arithmetic under the pill on a multi-video job (Sep 18):
-   *  "1 ready for review · 3 more in editing". Null when the job owes one
+   *  "1 ready for review · 3 more to edit". Null when the job owes one
    *  video, where the pill already says everything. */
   videoBreakdown: string | null;
   editor: string | null;
@@ -122,6 +122,10 @@ export type QueueRow = {
   work: { active: WorkPersonView[]; paused: WorkPersonView[] };
   /** "Active — Kim since 10:02am" / "Paused — Kim 3:10pm"; null when nobody. */
   workChip: string | null;
+  /** What the handoff is still waiting on, in the engine's stored words (O01)
+   *  — the edit card and the delivery board quote the same sentence. Null
+   *  when the handoff is complete. */
+  blocker: string | null;
 };
 
 const TIER = {
@@ -152,6 +156,10 @@ const WORN_ONLY: Record<string, { color: string }> = {
   // A cut is in but held for the editor's send-for-review check (§8.2) —
   // finished on the job's page, not picked here (editorQueue.CHECK_NEEDED_STATUS).
   "Check needed": { color: "#fb923c" },
+  // Files in, the photographer's handoff not (O01) — it clears itself when the
+  // wrap-up lands (editorQueue.WAITING_ON_INSTRUCTIONS). What is missing is
+  // printed under the pill in the engine's own words.
+  "Waiting on instructions": { color: "#eab308" },
 };
 // The two work moves: they change who is on the job, not the job's stage, so
 // the pill does not pretend the label changed — the row comes back from the
@@ -214,8 +222,10 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
   // keeps the job in Revisions on the next recompute and the click would leave
   // nothing but a stray "Put back…" line on the timeline (Sep 10 review). A
   // cut already in the Review Room is refused by the server with the reason.
+  // "Waiting on instructions" is a Ready-for-editing job the handoff is still
+  // short on, so the office can put it back to Waiting like any other.
   const OFFICE_FROM: Record<string, string[]> = {
-    Waiting: ["Ready for editing", "In editing", "Paused", "In editing — not confirmed"],
+    Waiting: ["Ready for editing", "In editing", "Paused", "In editing — not confirmed", "Waiting on instructions"],
     "Ready for editing": ["In editing", "Waiting", "Paused", "In editing — not confirmed"],
   };
   // A job the office is HOLDING in Waiting is nobody else's to move (Sep 11
@@ -909,6 +919,12 @@ export function SimpleQueue({
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
                         <span className="mt-1 block text-[11px] text-muted-2">{r.videoBreakdown}</span>
+                      )}
+                      {/* WHAT THE HANDOFF IS WAITING ON (O01) — the engine's
+                          stored sentence, the one the edit card and Kyle's
+                          board quote too. */}
+                      {r.blocker && (
+                        <span className="mt-1 block max-w-64 whitespace-normal text-[11px] leading-snug text-warning">{r.blocker}</span>
                       )}
                       {/* WHO IS ON IT (§7.1) — the editor's own Start/Pause,
                           with the time they said so. A declared status, not a

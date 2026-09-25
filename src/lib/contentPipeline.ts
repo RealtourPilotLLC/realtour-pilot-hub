@@ -203,6 +203,9 @@ function transcriptHandler(kind: "ANALYZE" | "STRATEGY_DRAFT" | "SCRIPT_DRAFT" |
     // A closed owner switch is carried through as a PAUSE, never folded into
     // needsReview — the driver puts the job back on the queue untouched.
     if ("paused" in r) return { ok: false, paused: r.paused };
+    // A04/A09: a wait on THIS job's own facts (the call's client in question,
+    // the discovery analysis not finished) — requeued for later, never a failure.
+    if ("waiting" in r) return { ok: false, waiting: r.waiting };
     if (r.reviewReason) return { ok: false, needsReview: r.reviewReason };
     const error = r.error ?? "unknown failure";
     return { ok: false, error, retryable: RETRYABLE_RE.test(error) };

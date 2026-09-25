@@ -51,6 +51,11 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
     onEffect: "Approving a script version EMAILS IT TO THE CLIENT immediately instead of only releasing it to their portal.",
     reaches: "clients",
   },
+  script_auto_share: {
+    title: "Share scripts without my approval",
+    onEffect: "A script the hub drafted on its own is APPROVED AND RELEASED TO THE CLIENT'S PORTAL WITHOUT YOU, once it has waited the hold (two hours by default, so you can still step in) and only when it is clean: no format problem, inside the 20 to 30 second target, drafted from the strategy that is still approved, for a topic in the month's allowance, on an active program with no open change request. Every approval and release is recorded as done automatically. Whether the client is also emailed is the separate \"Approve & share → email the client\" switch. By default only TEST clients (testClientsOnly). With this off you approve every script before a client sees it.",
+    reaches: "clients",
+  },
   portal_invites: {
     title: "Portal invitations",
     onEffect: "Real clients can be invited to the portal by email. Until this is on, invitations only go to staff-controlled test addresses.",
@@ -78,6 +83,11 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
   strategy_generation: {
     title: "Strategy drafting",
     onEffect: "A discovery call can be drafted into a strategy version automatically. The draft still needs Jordan's approval before anyone sees it.",
+    reaches: "internal",
+  },
+  legacy_call_sweeps: {
+    title: "Old call sweeps (name matching)",
+    onEffect: "Brings back the pre-mapping sweeps: Calendly bookings filed on a month by the invitee's email, and Drive meeting notes filed on a client by the NAME in the doc title (a first name alone can match). They still stand down while any Calendly mapping is enabled. Leave this off; map the dedicated event types on Settings → Calendly & calls instead.",
     reaches: "internal",
   },
   session_booking: {

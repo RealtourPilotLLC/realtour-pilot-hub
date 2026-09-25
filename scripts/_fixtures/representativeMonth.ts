@@ -205,6 +205,46 @@ const TOPIC_TITLES: string[][] = [
   ],
 ];
 
+/**
+ * U02 (Sep 25 2026): each topic's own one-line, filmable concept. The concept
+ * used to be the title with a full stop after it, which the demo portal showed
+ * under every title — a page of topics that each said their own name twice.
+ */
+const TOPIC_CONCEPTS: Record<string, string> = {
+  "Why the first weekend decides your price": "How the first weekend of showings sets the price, and what to have ready before it.",
+  "What days on market really tell a buyer": "What a buyer reads into every extra week a listing sits, and how to keep that clock short.",
+  "Three numbers to read before you list": "The three local figures that tell you when and how to price: absorption, list-to-sale and new listings.",
+  "Why the list price is a marketing decision": "Pricing to be found in searches, not to leave room for negotiating.",
+  "What a price cut costs you after week two": "What a reduction after week two costs in money and in how buyers see the house.",
+  "How spring inventory changes your pricing": "What more listings in spring does to your competition and your price.",
+  "Reading a comparable sale like an appraiser": "How to read a comparable sale the way the appraiser will, before you set a price.",
+  "When a bidding war is not a good sign": "When multiple offers mean the house was underpriced, and how to tell the difference.",
+  "What rates are doing to move-up buyers": "How today's rates change what a move-up buyer can pay, and what that means for your sale.",
+  "The one chart every seller should see": "One local chart that shows sale prices against list prices, week by week.",
+  "A Saturday morning on Main Street": "A walk down Main Street on a Saturday: the bakery, the market and the people buyers will meet.",
+  "Where the new families are moving first": "The streets young families are choosing first, and why.",
+  "The commute nobody tells you about": "The real drive and train times at rush hour, filmed door to desk.",
+  "Three parks buyers ask me about": "A quick tour of the three parks that come up at every showing.",
+  "What the school boundary really changes": "What living on either side of the school boundary changes for a family, and for price.",
+  "The coffee shop test for a neighborhood": "Judging a neighborhood by its coffee shop on a weekday morning.",
+  "Why this street sells in a weekend": "What makes one street sell in a weekend while the next one waits.",
+  "The walkable blocks nobody lists": "The blocks where you can walk to dinner, and why listings rarely mention them.",
+  "What a new restaurant does to prices nearby": "What happens to nearby home prices when a popular restaurant opens.",
+  "Five minutes from the train, block by block": "Walking the five minutes from the station and what each block is like.",
+  "What a pre-listing inspection saves you": "How an inspection before you list turns surprise repairs into decisions you make on your own schedule.",
+  "The three rooms buyers decide on": "The kitchen, the main bedroom and the living room, and how to show each one well.",
+  "What staging actually costs in this market": "A plain look at what staging costs locally and when it pays for itself.",
+  "Photos first: the order that sells a house": "Why photos come before the sign goes up, and the order to do everything else in.",
+  "The questions to ask before you pick an agent": "Four questions that show how an agent will price, market and negotiate for you.",
+  "How to price the repairs you will not make": "How to account for repairs you are leaving to the buyer without giving away too much.",
+  "The paperwork to have ready on day one": "The documents to have ready before the first showing so nothing slows an offer down.",
+  "What to do the week before photos": "A simple checklist for the week before the photographer arrives.",
+  "How to read your first offer": "What to look at in a first offer beyond the price: terms, timing and contingencies.",
+  "When to say yes to an early offer": "How to decide whether an offer before the first weekend is worth taking.",
+  "A tour of the quiet cul-de-sacs": "A drive through the quiet cul-de-sacs families ask about.",
+  "What a rent-back agreement looks like": "How a rent-back works when a seller needs a few more weeks in the house.",
+};
+
 /** AI suggestions nobody has reviewed: PROPOSED, never on the client's page. */
 const PROPOSED_TITLES = ["A tour of the quiet cul-de-sacs", "What a rent-back agreement looks like"];
 
@@ -239,16 +279,42 @@ const CANNED_ANSWERS: Record<string, string> = {
 };
 const FOLLOW_UP_ANSWER = "A client last year had exactly this: the report came back clean, we said so in the listing, and the offers came in without conditions.";
 
+/**
+ * U02: talking points that belong to the pillar, varied per topic. Every
+ * script in the demo used to carry the same three points word for word, so a
+ * reviewer reading two scripts side by side saw one script twice.
+ */
+const POINT_SETS: Record<string, [string, string, string][]> = {
+  "Market Authority": [
+    ["Most sellers learn this the expensive way, after the listing has already gone live.", "Buyers read every week on the market as a signal, and the first weekend sets the story they tell each other.", "Get the price, the photos and the paperwork right before day one, and the first weekend does the negotiating for you."],
+    ["The number everyone quotes is not the number that decides your sale.", "What matters is how fast homes like yours are going, and how close they sell to their asking price.", "Read those two first and the right list price stops being a guess."],
+    ["A higher price can leave you with less money.", "A house that sits gets a reduction, and a reduction tells every buyer there is room to push.", "Priced right once beats priced high and then cut, almost every time."],
+  ],
+  "Neighborhood Life": [
+    ["Buyers decide on the neighborhood before they ever walk through the door.", "They drive the streets, grab a coffee and picture a normal Tuesday here.", "Show them that Tuesday and the house sells itself."],
+    ["The listing tells you about the house, and nothing about the street.", "Where people walk, where the kids play and how long the drive really takes are what buyers ask me about.", "That is what we film, so you know before you visit."],
+    ["Two houses a block apart can sell weeks apart.", "One is on the walk to the park and the school, and the other is not.", "Knowing which block you are on changes how we price and how we market it."],
+  ],
+  "Seller Playbook": [
+    ["The decisions you make before you list matter more than the ones you make after.", "Repairs, staging and photos all happen before a buyer sees anything.", "Plan them in the right order and the first weekend does the rest."],
+    ["Most of the money in a sale is made or lost in the two weeks before it lists.", "That is when you choose what to fix, what to leave and how the house will look in photos.", "A simple plan for those two weeks keeps you in control of the negotiation."],
+    ["Buyers remember three rooms, and forget the rest.", "The kitchen, the main bedroom and the living room carry the photos and the showings.", "Spend your time and money there first."],
+  ],
+};
+
 function scriptParts(title: string, pillar: { id: string; name: string }, hook: string) {
+  const sets = POINT_SETS[pillar.name] ?? POINT_SETS["Seller Playbook"];
+  // A stable pick per title, so a re-run drafts the same words.
+  const pick = sets[[...title].reduce((n, ch) => (n + ch.charCodeAt(0)) % 997, 0) % sets.length];
   return {
     title,
     categoryLabel: pillar.name,
     pillarId: pillar.id,
     hook,
     points: [
-      { role: "re-hook" as const, text: "Most sellers learn this the expensive way, after the listing has already gone live." },
-      { role: "build-up" as const, text: "Buyers read every week on the market as a signal, and the first weekend sets the story they tell each other." },
-      { role: "payoff" as const, text: "Get the price, the photos and the paperwork right before day one, and the first weekend does the negotiating for you." },
+      { role: "re-hook" as const, text: pick[0] },
+      { role: "build-up" as const, text: pick[1] },
+      { role: "payoff" as const, text: pick[2] },
     ],
     close: "Planning to sell this year? Call me before you book the photographer and we will plan your first weekend together.",
     captionCta: "Comment PLAN and I will send you my first-weekend checklist.",
@@ -257,7 +323,9 @@ function scriptParts(title: string, pillar: { id: string; name: string }, hook: 
 
 function transcriptFor(clientName: string, monthKey: string): string {
   return [
-    `Monthly strategy call — ${clientName} — planning ${monthKey} ${REPRESENTATIVE_MARKER}`,
+    // U02: no marker in the transcript text itself — the call record's matchNote
+    // (callNote) is what identifies the fixture, and it is staff-only.
+    `Monthly strategy call — ${clientName} — planning ${monthKey}`,
     "Jordan: Let's pick this month's videos. What are sellers asking you about right now?",
     `Client: ${CALL_LINES.A[0]}`,
     `Client: ${CALL_LINES.A[1]}`,
@@ -270,7 +338,7 @@ function transcriptFor(clientName: string, monthKey: string): string {
 
 function strategyText(clientName: string): string {
   return `${clientName}
-Social Content Strategy ${REPRESENTATIVE_MARKER}
+Social Content Strategy
 1. Brand Overview
 Core Values: Straight answers, local knowledge
 Brand Message: The agent who explains the market before selling it
@@ -471,7 +539,7 @@ export async function seedRepresentativeMonth(prisma: PrismaClient, opts: Repres
     const found = await prisma.contentTopic.findFirst({ where: { enrollmentId, title, notes: { contains: REPRESENTATIVE_MARKER } }, select: { id: true } });
     if (found) return found.id;
     const r = await ct.createTopic({
-      enrollmentId, title, pillarId: pillar.id, pillarLabel: pillar.name, concept: `${title}.`,
+      enrollmentId, title, pillarId: pillar.id, pillarLabel: pillar.name, concept: TOPIC_CONCEPTS[title] ?? `${title}.`,
       source: proposed ? "ai" : "staff", approvalState: proposed ? "PROPOSED" : "APPROVED", approvedBy: proposed ? null : ACTOR,
       actor: proposed ? { kind: "AI" } : staff, note: REPRESENTATIVE_MARKER,
     });

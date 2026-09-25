@@ -3,13 +3,13 @@ import { prisma } from "@/lib/prisma";
 import { monthLabel, ownersFor } from "@/lib/contentProgram";
 import { parseStoredSections, openStrategyProposals, strategyVersions, monthPriorities } from "@/lib/contentStrategy";
 import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
-import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock } from "@/lib/contentTopics";
+import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions } from "@/lib/contentTopics";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
 import { scriptsAwaitingReview } from "@/lib/contentScripts";
 import { factsForReview, factCounts } from "@/lib/clientFacts";
 import { importBatches, importReviewItems } from "@/lib/contentImport";
 import { activePolicyVersion } from "@/lib/aiRuns";
-import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi } from "@/components/content/StrategyPanel";
+import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi, DiscoveryUi } from "@/components/content/StrategyPanel";
 import type { GroupUi, ProposedUi, SuggestionUi, RunUi, EventUi, TopicUi } from "@/components/content/TopicsPanel";
 import type { InterviewUi } from "@/components/content/InterviewPanel";
 import { interviewPlanningContext } from "@/lib/contentInterview";
@@ -34,16 +34,43 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
     return {
       id: v.id, versionNo: v.versionNo, status: v.status, structureTemplate: v.structureTemplate, sourceKind: v.sourceKind, sourceRef: v.sourceRef, createdBy: v.createdBy, createdAt: v.createdAt.toISOString(),
       approvedBy: v.approvedBy, approvedAt: iso(v.approvedAt), releasedAt: iso(v.releasedAt), changeSummary: v.changeSummary,
-      sections: (stored?.sections ?? []).map((s) => ({ heading: s.heading, text: s.text })), pillarNames: stored?.document?.contentPillars.pillars.map((p) => p.name) ?? [],
+      // A08: section ids ride along — a hand edit names the ONE section it changes.
+      sections: (stored?.sections ?? []).map((s) => ({ id: s.id, heading: s.heading, text: s.text })), pillarNames: stored?.document?.contentPillars.pillars.map((p) => p.name) ?? [],
     };
   });
+  const discovery = await loadDiscoveryUi(enrollmentId, versions).catch(() => null);
   const prows: ProposalRow[] = proposals.map((p) => ({ id: p.id, kind: p.kind, summary: p.summary, impact: p.impact, sourceKind: p.sourceKind, sourceRef: p.sourceRef, createdAt: p.createdAt.toISOString() }));
   const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status }));
   const mapping: MappingRowUi[] = mappingRaw.filter((m) => !dismissed.has(m.label));
   const ow: OwnerUi[] = Object.values(owners).map((o) => ({ duty: o.duty, label: o.label, scope: o.scope, appUserId: o.appUserId }));
   return {
+    discovery,
     versions: vrows, proposals: prows, pillars: pil, mapping, owners: ow, staff: staff.map((s) => ({ id: s.id, name: s.name ?? s.email })),
     month: month ? { id: month.id, label: monthLabel(month.monthKey), priorities: monthPriorities(month.prioritiesJson), sourceRef: month.prioritiesSourceRef } : null,
+  };
+}
+
+/**
+ * The brand-discovery strip on the Strategy tab (A08, Sep 25 2026): the
+ * discovery call on file, whether its transcript is confirmed (so a draft can
+ * be made from it now, by a click), whether its analysis has run, and the
+ * version it already produced. Read-only.
+ */
+async function loadDiscoveryUi(enrollmentId: string, versions: { versionNo: number; callRecordId: string | null }[]): Promise<DiscoveryUi | null> {
+  const ob = await prisma.programOnboarding.findUnique({ where: { enrollmentId }, select: { discoveryCallRecordId: true, discoveryRequired: true, discoveryWaivedAt: true, discoveryWaivedBy: true, discoveryWaivedReason: true } });
+  const select = { id: true, status: true, scheduledStart: true, transcriptState: true, matchState: true, rawJson: true } as const;
+  const call = ob?.discoveryCallRecordId
+    ? await prisma.programCallRecord.findUnique({ where: { id: ob.discoveryCallRecordId }, select })
+    : await prisma.programCallRecord.findFirst({ where: { enrollmentId, callType: "BRAND_DISCOVERY", status: { notIn: ["CANCELLED", "RESCHEDULED"] } }, orderBy: { scheduledStart: "desc" }, select });
+  if (!ob && !call) return null;
+  const { discoveryAnalysisDone } = await import("@/lib/contentGeneration");
+  const drafted = call ? versions.filter((v) => v.callRecordId === call.id).sort((a, b) => a.versionNo - b.versionNo)[0] ?? null : null;
+  return {
+    required: ob?.discoveryRequired ?? true,
+    waived: ob?.discoveryWaivedAt ? { reason: ob.discoveryWaivedReason, by: ob.discoveryWaivedBy } : null,
+    call: call ? { id: call.id, whenISO: iso(call.scheduledStart), status: call.status, transcriptState: call.transcriptState, verified: call.matchState === "MATCHED" || call.matchState === "CONFIRMED_BY_STAFF" } : null,
+    draftedVersionNo: drafted?.versionNo ?? null,
+    analysed: call ? await discoveryAnalysisDone(call.id, call.transcriptState, call.rawJson) : false,
   };
 }
 
@@ -80,7 +107,9 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
     }).filter((x): x is ProposedUi => !!x);
   }
   const pillarName = (id: string | null) => pillars.find((p) => p.id === id)?.name ?? null;
-  const toSug = (s: (typeof suggestions)[number]): SuggestionUi => ({ id: s.id, kind: s.kind, rank: s.rank, title: s.title, description: s.description, pillarName: pillarName(s.pillarId), audienceNeed: s.audienceNeed, businessGoal: s.businessGoal, intendedMessage: s.intendedMessage, rationale: s.rationale, whyNow: s.whyNow, linkedGoal: s.linkedGoal, priorContentRelation: s.priorContentRelation, relatedTopicId: s.relatedTopicId, runSummary: null });
+  const toSug = (s: (typeof suggestions)[number]): SuggestionUi => ({ id: s.id, kind: s.kind, rank: s.rank, title: s.title, description: s.description, pillarName: pillarName(s.pillarId), audienceNeed: s.audienceNeed, businessGoal: s.businessGoal, intendedMessage: s.intendedMessage, rationale: s.rationale, whyNow: s.whyNow, linkedGoal: s.linkedGoal, priorContentRelation: s.priorContentRelation, relatedTopicId: s.relatedTopicId, runSummary: null, clientReason: s.clientReason });
+  // 6.3: suggestions staff put on hold — off the review list until released.
+  const held = (await heldSuggestions(enrollmentId).catch(() => [])).map(toSug);
   const latestRec = runs.find((r) => r.kind === "RECOMMENDATION" && r.status === "SUCCEEDED");
   const recommended = suggestions.filter((s) => (s.kind === "RECOMMENDED" || s.kind === "ALTERNATIVE") && (!latestRec || s.refreshRunId === latestRec.id)).map(toSug);
   const bankSugg = suggestions.filter((s) => s.kind === "BANK").map(toSug);
@@ -107,7 +136,7 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
       };
     }
   }
-  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock };
+  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock };
 }
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {
@@ -145,6 +174,12 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       clientVerdict: verdicts.get(s.id)?.decision ?? (verdicts.get(s.id)?.staleApproval ? "STALE" : null), clientVerdictAt: verdicts.get(s.id)?.decidedAt ?? null,
     };
   });
+  // 6.5: the client changed an answer after this script was drafted — nothing
+  // redrafts on its own, so the reviewer is told here.
+  for (const row of rows) {
+    const iv = scripts.find((x) => x.id === row.id)?.interviewId;
+    if (iv && !row.historical) row.answersChanged = await answersChangedSinceLastDraft(iv).catch(() => false);
+  }
   // What the month still OWES, and why each one is or is not ready to draft
   // (F07/F08). Read-only; the doing lives in src/lib/contentDrafting.ts.
   const owed = month ? await scriptWorkForMonth(month.id).catch(() => []) : [];

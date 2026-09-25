@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
+import type { StripeProgramPrice } from "@/lib/contentProgram";
 
 // ---------------------------------------------------------------------------
 // WEBSITE SIGNUP ACTIVATION (Jordan, Aug 28: "I already have website signup →
@@ -19,7 +20,9 @@ import { getSecret } from "@/lib/integrations/connections";
 //                 → find-or-create the Client (email first, then an exact-name
 //                   stub — Aryeo often creates name-only rows with no email)
 //                 → create/activate the ContentEnrollment with the package +
-//                   billing terms parsed from the product name
+//                   billing terms read from the verified PRICE catalogue
+//                   (the product name only as a fallback that parks the
+//                   signup for review — Sep 25 2026, programTermsFor)
 //                 → current-month workspace
 //                 → DISCOVERY, in either order (§4.3): re-match a booking made
 //                   before the payment, link it, or raise the task to make one
@@ -49,7 +52,10 @@ import { getSecret } from "@/lib/integrations/connections";
 // poll racing on one checkout produce one activation, and grantProgramAccess
 // collapses a repeated `checkout.session.completed` into the same seat and the
 // same welcome (drilled: scripts/_drill/cp14-stripe-activation.ts). If Jordan
-// never registers it, nothing is lost.
+// never registers it, nothing is lost. (Sep 25 2026: Jordan authorised the
+// registration through the API; scripts/_ops/register-stripe-webhook.ts is
+// that operation, run by hand. The /connections "Stripe webhook" card holds
+// the secret and checkWebhookCoverage below notices a dead endpoint.)
 //
 // Spec rule 15 honoured: web-activated enrollments get statusManual=true and
 // packageSource="website", so the Aryeo social-flag sweep can never pause,
@@ -99,9 +105,11 @@ type LineItem = {
   price?: { id: string; product: string | { id: string; name?: string } | null } | null;
 };
 
-// The program's catalog, by name convention. Everything else Stripe sells
-// (photo shoots, biography videos, brand launch sessions) is NOT a recurring
-// program signup and is left alone.
+// The program's catalog, by name convention — the FALLBACK since Sep 25 2026:
+// the price-keyed catalogue (contentProgram.STRIPE_PROGRAM_PRICES) is read
+// first, see programTermsFor. Everything else Stripe sells (photo shoots,
+// biography videos, brand launch sessions) is NOT a recurring program signup
+// and is left alone.
 const PROGRAM_PRODUCT_RE = /^Video (Starter|Accelerator|Pro)\b/i;
 
 // Typographic dashes (en/em/non-breaking hyphen…) normalise to "-" before any
@@ -131,6 +139,64 @@ export function parseProgramProduct(rawName: string, opts: { recurring: boolean;
     : opts.amount < 2000
       ? { package: pkg, billingType: "TRIAL", billingMonths: 1, guessed: true }
       : { package: pkg, billingType: "PAID_IN_FULL", billingMonths: 12, guessed: true };
+}
+
+export type ProgramTerms = NonNullable<ReturnType<typeof parseProgramProduct>>;
+type CatalogueRow = Pick<StripeProgramPrice, "productId" | "productName" | "package" | "billingType" | "billingMonths" | "amountCents">;
+const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
+
+/**
+ * WHAT WAS BOUGHT, PRICE FIRST (unified handoff §6.1, Sep 25 2026). Pure.
+ *
+ * The price-keyed catalogue (contentProgram.STRIPE_PROGRAM_PRICES, read from
+ * the live account in Phase 0) existed for four days as dead code while
+ * activation parsed the product NAME — so a product renamed in Stripe on a
+ * price we know by heart would have left a paying client silently ignored
+ * ("not_program": no row, no review, no bell). The order now:
+ *   1. a KNOWN PRICE decides package and terms, whatever the product is called.
+ *      A payment that differs from the list price is noted for information
+ *      (a coupon is normal) and does not hold anything up.
+ *   2. a known PRODUCT on an unknown price (a new price on an old product):
+ *      terms from that product's catalogue row; parked for review.
+ *   3. the NAME, as before; parked for review, because an unrecognised price
+ *      is exactly when a human should look at the terms.
+ * null = not a program purchase at all (a photo payment, a bio video).
+ */
+export function programTermsFor(
+  input: { priceId: string | null; productId: string | null; name: string; recurring: boolean; amountCents: number | null },
+  catalogue: Record<string, CatalogueRow>,
+): { terms: ProgramTerms; source: "price" | "product" | "name"; reviewNote: string | null; infoNote: string | null } | null {
+  const known = input.priceId ? catalogue[input.priceId] ?? null : null;
+  if (known) {
+    const paid = input.amountCents ?? 0;
+    return {
+      terms: { package: known.package, billingType: known.billingType, billingMonths: known.billingMonths, guessed: false },
+      source: "price",
+      reviewNote: null,
+      infoNote:
+        paid === known.amountCents
+          ? null
+          : `Paid ${usd(paid)} against the list price of ${usd(known.amountCents)} (${paid < known.amountCents ? "a coupon or discount?" : "tax, or a price change?"}).`,
+    };
+  }
+  const unrecognised = `Unrecognised price ${input.priceId ?? "(the checkout carried none)"}: it is not in the hub's list of program prices (STRIPE_PROGRAM_PRICES), so`;
+  const sameProduct = input.productId ? Object.values(catalogue).find((p) => p.productId === input.productId) ?? null : null;
+  if (sameProduct) {
+    return {
+      terms: { package: sameProduct.package, billingType: sameProduct.billingType, billingMonths: sameProduct.billingMonths, guessed: false },
+      source: "product",
+      reviewNote: `${unrecognised} the package and terms were taken from the product it belongs to ("${sameProduct.productName}"). Confirm them on the settings card, and add the price to the list.`,
+      infoNote: null,
+    };
+  }
+  const parsed = input.name ? parseProgramProduct(input.name, { recurring: input.recurring, amount: (input.amountCents ?? 0) / 100 }) : null;
+  if (!parsed) return null;
+  return {
+    terms: parsed,
+    source: "name",
+    reviewNote: `${unrecognised} the package and terms were read from the product name "${input.name}". Confirm them on the settings card, and add the price to the list.`,
+    infoNote: null,
+  };
 }
 
 const idOf = (v: string | { id: string } | null | undefined): string | null =>
@@ -186,11 +252,19 @@ function productLookup(): ProductLookup {
  * CP-14, concurrently with the Stripe webhook receiver, which calls the same
  * processCheckoutSession below.
  */
-export async function sweepStripeSignups(): Promise<{ scanned: number; activated: number; skippedKnown: number; parked: number }> {
+/** Pages of 50 one poll reads — 250 checkouts, newest first. */
+export const SWEEP_MAX_PAGES = 5;
+
+export async function sweepStripeSignups(): Promise<{ scanned: number; activated: number; skippedKnown: number; parked: number; truncated: boolean }> {
   const since = Math.floor((Date.now() - 30 * 86_400_000) / 1000);
   const sessions: StripeCheckoutSession[] = [];
   let startingAfter: string | null = null;
-  for (let page = 0; page < 5; page++) {
+  // TRUNCATION IS REPORTED, NOT SWALLOWED (§6.1, Sep 25 2026). The loop used
+  // to stop at page 5 and say nothing, so a month with more than 250 checkouts
+  // would quietly leave its oldest unread. `truncated` lands in
+  // CronRun.summary (every step's return value does) and on Sync-now.
+  let truncated = false;
+  for (let page = 0; page < SWEEP_MAX_PAGES; page++) {
     const q: Record<string, string | number | string[]> = {
       limit: 50,
       "created[gte]": since,
@@ -200,6 +274,7 @@ export async function sweepStripeSignups(): Promise<{ scanned: number; activated
     const res = await stripeGet<{ data: StripeCheckoutSession[]; has_more: boolean }>("/checkout/sessions", q);
     sessions.push(...res.data);
     if (!res.has_more || res.data.length === 0) break;
+    if (page === SWEEP_MAX_PAGES - 1) truncated = true;
     startingAfter = res.data[res.data.length - 1].id;
   }
 
@@ -213,7 +288,7 @@ export async function sweepStripeSignups(): Promise<{ scanned: number; activated
     else if (outcome === "known") skippedKnown++;
     else if (outcome === "parked") parked++;
   }
-  return { scanned, activated, skippedKnown, parked };
+  return { scanned, activated, skippedKnown, parked, truncated };
 }
 
 /**
@@ -250,16 +325,26 @@ export async function processCheckoutSession(
     const full = await stripeGet<StripeCheckoutSession>(`/checkout/sessions/${s.id}`, { "expand[]": ["line_items"] }).catch(() => null);
     item = full?.line_items?.data?.[0] ?? null;
   }
-  const productId = idOf(item?.price?.product ?? null);
+  // PRICE FIRST (§6.1, Sep 25 2026) — programTermsFor above. A known price
+  // needs no name at all, so it is not looked up; any other checkout reads
+  // the product name exactly as before.
+  const { STRIPE_PROGRAM_PRICES } = await import("@/lib/contentProgram");
+  const priceId = item?.price?.id ?? null;
+  const knownPrice = priceId ? STRIPE_PROGRAM_PRICES[priceId] ?? null : null;
+  const productId = idOf(item?.price?.product ?? null) ?? knownPrice?.productId ?? null;
   if (!productId) return "not_program";
   const name =
     (typeof item?.price?.product === "object" && item?.price?.product?.name) ||
     item?.description ||
-    (await lookupProduct(productId).catch(() => ""));
+    (knownPrice ? knownPrice.productName : await lookupProduct(productId).catch(() => ""));
   const recurring = s.mode === "subscription";
   const amount = Math.round(((s.amount_total ?? 0) / 100) * 100) / 100;
-  const terms = name ? parseProgramProduct(name, { recurring, amount }) : null;
-  if (!terms) return "not_program"; // not a program product — a photo payment, a bio video, etc.
+  const resolved = programTermsFor({ priceId, productId, name, recurring, amountCents: s.amount_total }, STRIPE_PROGRAM_PRICES);
+  if (!resolved) return "not_program"; // not a program product — a photo payment, a bio video, etc.
+  const { terms } = resolved;
+  // What the owner must confirm (parks the row NEEDS_REVIEW) vs what is only
+  // worth knowing (kept on the row, holds nothing up).
+  const termsNote = resolved.reviewNote ?? (terms.guessed ? `Billing terms guessed from "${name}" — confirm them on the settings card.` : null);
 
   const base = {
     subscriptionId: idOf(s.subscription),
@@ -269,7 +354,7 @@ export async function processCheckoutSession(
     phone: s.customer_details?.phone?.trim() || null,
     productId,
     productName: name || productId,
-    priceId: item?.price?.id ?? null,
+    priceId,
     amount,
     recurring,
     // An asynchronous payment settles days after the checkout opened; the
@@ -313,17 +398,19 @@ export async function processCheckoutSession(
   }
 
   try {
-    const done = await activateSignup({ checkoutId: s.id, ...base, terms });
+    const done = await activateSignup({ checkoutId: s.id, ...base, terms, termsNote });
     await prisma.programSignup.update({
       where: { id: claimId },
       data: {
         clientId: done.clientId,
         enrollmentId: done.enrollmentId,
         status: done.note ? "NEEDS_REVIEW" : "ACTIVATED",
-        note: done.note,
+        note: [done.note, resolved.infoNote].filter(Boolean).join(" ") || null,
         activatedVia: via,
       },
     });
+    // Only the poll can witness a webhook that never came.
+    if (via === "poll") await checkWebhookCoverage(s, base).catch(() => false);
     return "activated";
   } catch (e) {
     await prisma.programSignup
@@ -345,6 +432,121 @@ export async function processCheckoutSession(
     } catch { /* bell is best-effort */ }
     return "parked";
   }
+}
+
+// ---------------------------------------------------------------------------
+// WEBHOOK COVERAGE (unified handoff, Stripe webhook readiness, Sep 25 2026).
+//
+// The Sep 8 Aryeo lesson: a feed that stops talking is invisible when
+// something else papers over it. Once the Stripe endpoint is registered the
+// hourly poll will still activate every signup — so an endpoint that is dead
+// (wrong secret, disabled by Stripe after days of failures) would look exactly
+// like a healthy one. The poll is the only witness: a checkout it activates,
+// old enough that Stripe had every chance to deliver it, with no WebhookEvent
+// naming it, is a delivery that did not happen. One owner bell per checkout,
+// and a running count the Connections card reads.
+//
+// Silent when no secret is saved: then the poll IS the path and nothing was
+// missed. Also silent for a checkout opened before the secret was saved —
+// Stripe had nowhere to send those.
+// ---------------------------------------------------------------------------
+export const WEBHOOK_MISSED_GRACE_MS = 15 * 60_000;
+export const WEBHOOK_COVERAGE_KEY = "stripe-webhook-coverage";
+type CoverageCounter = { missed: number; lastMissedAt: string | null; lastCheckoutId: string | null };
+
+async function checkWebhookCoverage(s: StripeCheckoutSession, who: { name: string | null; email: string | null }): Promise<boolean> {
+  const { stripeWebhookSecret } = await import("@/lib/stripeWebhook");
+  if (!(await stripeWebhookSecret())) return false;
+  const openedAt = s.created * 1000;
+  if (Date.now() - openedAt < WEBHOOK_MISSED_GRACE_MS) return false;
+  const conn = await prisma.connection.findUnique({ where: { provider: "stripe_webhook" }, select: { updatedAt: true, secretEncrypted: true } });
+  if (conn?.secretEncrypted && openedAt < conn.updatedAt.getTime()) return false;
+  // The receiver stores {id, type, objectId, …} — objectId IS the checkout id.
+  // A REFUSED post keeps no body, so it does not count as delivered: a wrong
+  // secret is exactly the failure this is here to notice.
+  const delivered = await prisma.webhookEvent.count({ where: { provider: "stripe", status: { not: "REJECTED" }, payload: { contains: s.id } } });
+  if (delivered > 0) return false;
+  const dedupeKey = `stripe-webhook-missed:${s.id}`;
+  if ((await prisma.notification.count({ where: { dedupeKey: { startsWith: dedupeKey } } })) > 0) return false;
+  const { notifyInApp } = await import("@/lib/notify");
+  await notifyInApp({
+    kind: "program_signup",
+    title: "Stripe did not deliver a checkout; the hourly poll activated it",
+    // No amounts; a name so the owner can find it.
+    body: `${who.name ?? who.email ?? "A buyer"}'s signup never reached the Stripe webhook. If this repeats, check the Stripe webhook card on Connections.`,
+    href: "/connections",
+    targets: [{ roles: ["OWNER"] }],
+    dedupeKey,
+  });
+  // A read-modify-write, not a transaction: two sweeps missing two different
+  // checkouts in the same instant could undercount by one. The count is a
+  // headline for the card; the bells are the record.
+  const prev = await prisma.appSetting.findUnique({ where: { key: WEBHOOK_COVERAGE_KEY }, select: { value: true } }).catch(() => null);
+  let c: CoverageCounter = { missed: 0, lastMissedAt: null, lastCheckoutId: null };
+  try { if (prev?.value) c = { ...c, ...(JSON.parse(prev.value) as Partial<CoverageCounter>) }; } catch { /* a hand-edited row restarts the count */ }
+  const next = JSON.stringify({ missed: (Number(c.missed) || 0) + 1, lastMissedAt: new Date().toISOString(), lastCheckoutId: s.id } satisfies CoverageCounter);
+  await prisma.appSetting.upsert({ where: { key: WEBHOOK_COVERAGE_KEY }, create: { key: WEBHOOK_COVERAGE_KEY, value: next }, update: { value: next } });
+  return true;
+}
+
+/** Where Stripe posts, once registered. The hub's canonical host, never a preview deployment's. */
+export const STRIPE_WEBHOOK_URL = "https://hub.realtourpilot.com/api/webhooks/stripe";
+
+export type StripeWebhookStatus = {
+  endpointUrl: string;
+  events: string[];
+  /** An encrypted secret is on the Connection row. */
+  secretStored: boolean;
+  /** …and it decrypts, which is what the receiver actually uses. */
+  secretReadable: boolean;
+  /** STRIPE_WEBHOOK_SECRET is set on this deployment (the receiver's second source). */
+  envFallback: boolean;
+  savedAt: string | null;
+  lastProcessed: { at: string; type: string | null } | null;
+  lastRejected: { at: string; code: string | null } | null;
+  /** Signups activated in the last 30 days, by path. */
+  pollOnly30d: number;
+  webhook30d: number;
+  missed: { count: number; lastAt: string | null };
+};
+
+/**
+ * The /connections "Stripe webhook" card's facts. Database only — nothing here
+ * calls Stripe, and the secret itself never leaves the server (only whether it
+ * exists and decrypts).
+ */
+export async function stripeWebhookStatus(): Promise<StripeWebhookStatus> {
+  const since = new Date(Date.now() - 30 * 86_400_000);
+  const [{ STRIPE_WEBHOOK_EVENTS }, { decodeRejection }] = await Promise.all([import("@/lib/stripeWebhook"), import("@/lib/webhookRetry")]);
+  const [row, readable, processed, rejected, poll30, hook30, counter] = await Promise.all([
+    prisma.connection.findUnique({ where: { provider: "stripe_webhook" }, select: { secretEncrypted: true, updatedAt: true } }),
+    getSecret("stripe_webhook").catch(() => null),
+    prisma.webhookEvent.findFirst({ where: { provider: "stripe", status: "PROCESSED" }, orderBy: { createdAt: "desc" }, select: { createdAt: true, eventType: true } }),
+    prisma.webhookEvent.findFirst({ where: { provider: "stripe", status: "REJECTED" }, orderBy: { createdAt: "desc" }, select: { createdAt: true, error: true } }),
+    prisma.programSignup.count({ where: { activatedVia: "poll", createdAt: { gte: since } } }),
+    prisma.programSignup.count({ where: { activatedVia: "webhook", createdAt: { gte: since } } }),
+    prisma.appSetting.findUnique({ where: { key: WEBHOOK_COVERAGE_KEY }, select: { value: true } }),
+  ]);
+  let missed = { count: 0, lastAt: null as string | null };
+  try {
+    if (counter?.value) {
+      const c = JSON.parse(counter.value) as Partial<CoverageCounter>;
+      missed = { count: Number(c.missed) || 0, lastAt: c.lastMissedAt ?? null };
+    }
+  } catch { /* unreadable → zero, said as zero */ }
+  return {
+    endpointUrl: STRIPE_WEBHOOK_URL,
+    events: [...STRIPE_WEBHOOK_EVENTS],
+    secretStored: Boolean(row?.secretEncrypted),
+    secretReadable: Boolean(readable?.trim()),
+    envFallback: Boolean(process.env.STRIPE_WEBHOOK_SECRET?.trim()),
+    savedAt: row?.secretEncrypted ? row.updatedAt.toISOString() : null,
+    lastProcessed: processed ? { at: processed.createdAt.toISOString(), type: processed.eventType } : null,
+    lastRejected: rejected ? { at: rejected.createdAt.toISOString(), code: decodeRejection(rejected.error)?.code ?? null } : null,
+    pollOnly30d: poll30,
+    webhook30d: hook30,
+    missed,
+  };
 }
 
 /**
@@ -397,139 +599,184 @@ async function activateSignup(sig: {
   email: string | null; name: string | null; phone: string | null;
   productId: string; productName: string; priceId: string | null;
   amount: number; recurring: boolean; paidAt: Date;
-  terms: NonNullable<ReturnType<typeof parseProgramProduct>>;
+  terms: ProgramTerms;
+  /** What the owner must confirm about the terms themselves (unrecognised price, guessed terms). */
+  termsNote: string | null;
 }): Promise<{ clientId: string; enrollmentId: string; note: string | null }> {
-  // Anything the identity checks below want to say on the signup row. Folded
-  // into `note` once the enrollment section declares it.
-  let identityNote: string | null = null;
-
-  // --- Find the client: checkout email first; exact full-name second, but
-  // ONLY a row whose email is blank or already matches — a same-name client
-  // with a DIFFERENT email may be a different person, and a wrong merge is
-  // worse than a duplicate the owner merges by hand. Oldest row wins so the
-  // pick is deterministic when Aryeo made several stubs.
-  let client =
-    (sig.email
-      ? await prisma.client.findFirst({
-          where: {
-            OR: [
-              { email: { equals: sig.email, mode: "insensitive" } },
-              { backupEmail: { equals: sig.email, mode: "insensitive" } },
-            ],
-          },
-          orderBy: { createdAt: "asc" },
-          select: { id: true, name: true, email: true, backupEmail: true, phone: true },
-        })
-      : null) ??
-    (sig.name
-      ? await prisma.client.findFirst({
-          where: {
-            name: { equals: sig.name.trim(), mode: "insensitive" },
-            ...(sig.email ? { OR: [{ email: null }, { email: { equals: sig.email, mode: "insensitive" } }] } : { email: null }),
-          },
-          orderBy: { createdAt: "asc" },
-          select: { id: true, name: true, email: true, backupEmail: true, phone: true },
-        })
-      : null);
-
-  if (client) {
-    // Enrich, never overwrite: the checkout's contact details fill blanks only.
-    const patch: { email?: string; backupEmail?: string; phone?: string } = {};
-    if (sig.email && !client.email) patch.email = sig.email;
-    else if (sig.email && client.email && client.email.toLowerCase() !== sig.email.toLowerCase() && !client.backupEmail)
-      patch.backupEmail = sig.email;
-    if (sig.phone && !client.phone) patch.phone = sig.phone;
-    if (Object.keys(patch).length) await prisma.client.update({ where: { id: client.id }, data: patch });
-  } else {
-    if (!sig.name && !sig.email) throw new Error("Checkout carried no name or email to build a client from.");
-    // NEVER a name derived from the address (§4.4). When Stripe gave us no
-    // name at all the row is created under the address itself and says so,
-    // rather than inventing "Klciarmella" out of klciarmella@gmail.com.
-    const displayName = sig.name?.trim() || `${sig.email} (name not given at checkout)`;
-    // A same-name client on a DIFFERENT address is the A02 case: it may be the
-    // same person paying from a brokerage address, or it may be two people. We
-    // create the new record (a duplicate a human can merge beats a wrong merge
-    // nobody can unpick) and hand Kyle the decision with both addresses.
-    const namesakes = sig.name
-      ? await prisma.client.findMany({
-          where: { name: { equals: sig.name.trim(), mode: "insensitive" }, email: { not: null } },
-          select: { id: true, name: true, email: true },
-          take: 3,
-        })
-      : [];
-    client = await prisma.client.create({
-      data: { name: displayName, email: sig.email, phone: sig.phone },
-      select: { id: true, name: true, email: true, backupEmail: true, phone: true },
-    });
-    if (namesakes.length > 0) {
-      await routeIdentityConflict({
-        checkoutId: sig.checkoutId,
-        clientId: client.id,
-        clientName: client.name,
-        title: `Two records for ${sig.name} after a paid signup`,
-        lines: [
-          `A Content Program checkout was paid by ${sig.name} <${sig.email ?? "no email"}>.`,
-          `${namesakes.length} existing client record(s) carry that same name on a different address:`,
-          ...namesakes.map((n) => `  · ${n.name} <${n.email}> (client ${n.id})`),
-          "",
-          `A new client record was created (${client.id}) and the program was set up on it. Nothing was merged.`,
-        ],
-      });
-      identityNote = "A client with this name already exists on a different address. Kyle has the decision; nothing was merged.";
-    }
-  }
-
-  // --- The enrollment. One per client; a payment on an already-enrolled
-  // client updates status + fills blanks rather than duplicating.
+  if (!sig.name && !sig.email) throw new Error("Checkout carried no name or email to build a client from.");
   const { PACKAGE_RULES } = await import("@/lib/contentProgram");
+  const { lockAdvisory } = await import("@/lib/dbLocks");
   const rules = PACKAGE_RULES[sig.terms.package] ?? PACKAGE_RULES.Accelerator;
-  const existing = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id } });
-  let enrollmentId: string;
-  let note: string | null = sig.terms.guessed
-    ? `Billing terms guessed from "${sig.productName}" — confirm them on the settings card.`
-    : null;
-  if (identityNote) note = `${note ? note + " " : ""}${identityNote}`;
-  if (!existing) {
-    const created = await prisma.contentEnrollment.create({
-      data: {
-        clientId: client.id,
-        package: sig.terms.package,
-        ...rules,
-        status: "ACTIVE",
-        statusManual: true, // the Aryeo flag sweep must never pause a paying web client
-        packageSource: "website",
-        billingType: sig.terms.billingType,
-        billingRate: sig.amount,
-        billingMonths: sig.terms.billingMonths,
-        startedAt: sig.paidAt,
-        notes: `Signed up on the website ${sig.paidAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" })} — ${sig.productName}.`,
-      },
-      select: { id: true },
-    });
-    enrollmentId = created.id;
-  } else {
-    enrollmentId = existing.id;
-    // Reactivate + FILL BLANKS ONLY. The owner hand-entered billing terms for
-    // the founding clients — a checkout must never rewrite those; a mismatch
-    // is recorded on the signup row for a human instead of silently resolved.
-    if (existing.package !== sig.terms.package && existing.packageSource !== "aryeo") {
-      note = `${note ? note + " " : ""}Paid for ${sig.terms.package} but the enrollment is set to ${existing.package} — left as-is, check the settings card.`;
-    }
-    const billingBlank = existing.billingType == null;
-    if (!billingBlank && existing.billingType !== sig.terms.billingType) {
-      note = `${note ? note + " " : ""}Checkout terms (${sig.terms.billingType}) differ from the terms on file (${existing.billingType}) — billing left as the owner entered it.`;
-    }
-    await prisma.contentEnrollment.update({
-      where: { id: existing.id },
-      data: {
-        status: "ACTIVE",
-        statusManual: true,
-        ...(existing.packageSource === "aryeo" ? { package: sig.terms.package, ...rules, packageSource: "website" } : {}),
-        ...(billingBlank
-          ? { billingType: sig.terms.billingType, billingRate: sig.amount, billingMonths: sig.terms.billingMonths }
-          : {}),
-        startedAt: existing.startedAt ?? sig.paidAt,
-      },
+
+  // ---- FIND-OR-CREATE, ONE BUYER AT A TIME (A03(b), Sep 25 2026).
+  // The claim above makes ONE checkout activate once. It did nothing for two
+  // DIFFERENT checkouts from the same brand-new address (a double click on the
+  // website, a retry after a card decline that went through twice): both found
+  // no client, both created one — Client.email is not unique, and cannot be
+  // made so on the live table — and the second enrollment then hit the unique
+  // clientId and parked NEEDS_REVIEW on a second, orphaned client. A
+  // transaction-scoped advisory lock on the buyer (dbLocks, with its ::int4
+  // casts) makes the second one wait, find the first one's client, and take
+  // the existing-enrollment path below, which says so on its signup row.
+  // Everything inside uses `tx`; the desk task and bell for a namesake are
+  // raised after COMMIT so they never hold the lock.
+  const lockKey = `signup-client:${(sig.email || sig.name || "").trim().toLowerCase()}`;
+  const held = await prisma.$transaction(
+    async (tx) => {
+      await lockAdvisory(tx, lockKey);
+      // Anything the identity checks below want to say on the signup row.
+      let identityNote: string | null = null;
+      let namesakes: { id: string; name: string; email: string | null }[] = [];
+
+      // --- Find the client: checkout email first; exact full-name second, but
+      // ONLY a row whose email is blank or already matches — a same-name client
+      // with a DIFFERENT email may be a different person, and a wrong merge is
+      // worse than a duplicate the owner merges by hand. Oldest row wins so the
+      // pick is deterministic when Aryeo made several stubs.
+      let client =
+        (sig.email
+          ? await tx.client.findFirst({
+              where: {
+                OR: [
+                  { email: { equals: sig.email, mode: "insensitive" } },
+                  { backupEmail: { equals: sig.email, mode: "insensitive" } },
+                ],
+              },
+              orderBy: { createdAt: "asc" },
+              select: { id: true, name: true, email: true, backupEmail: true, phone: true },
+            })
+          : null) ??
+        (sig.name
+          ? await tx.client.findFirst({
+              where: {
+                name: { equals: sig.name.trim(), mode: "insensitive" },
+                ...(sig.email ? { OR: [{ email: null }, { email: { equals: sig.email, mode: "insensitive" } }] } : { email: null }),
+              },
+              orderBy: { createdAt: "asc" },
+              select: { id: true, name: true, email: true, backupEmail: true, phone: true },
+            })
+          : null);
+
+      if (client) {
+        // Enrich, never overwrite: the checkout's contact details fill blanks only.
+        const patch: { email?: string; backupEmail?: string; phone?: string } = {};
+        if (sig.email && !client.email) patch.email = sig.email;
+        else if (sig.email && client.email && client.email.toLowerCase() !== sig.email.toLowerCase() && !client.backupEmail)
+          patch.backupEmail = sig.email;
+        if (sig.phone && !client.phone) patch.phone = sig.phone;
+        if (Object.keys(patch).length) await tx.client.update({ where: { id: client.id }, data: patch });
+      } else {
+        // NEVER a name derived from the address (§4.4). When Stripe gave us no
+        // name at all the row is created under the address itself and says so,
+        // rather than inventing "Klciarmella" out of klciarmella@gmail.com.
+        const displayName = sig.name?.trim() || `${sig.email} (name not given at checkout)`;
+        // A same-name client on a DIFFERENT address is the A02 case: it may be the
+        // same person paying from a brokerage address, or it may be two people. We
+        // create the new record (a duplicate a human can merge beats a wrong merge
+        // nobody can unpick) and hand Kyle the decision with both addresses.
+        namesakes = sig.name
+          ? await tx.client.findMany({
+              where: { name: { equals: sig.name.trim(), mode: "insensitive" }, email: { not: null } },
+              select: { id: true, name: true, email: true },
+              take: 3,
+            })
+          : [];
+        client = await tx.client.create({
+          data: { name: displayName, email: sig.email, phone: sig.phone },
+          select: { id: true, name: true, email: true, backupEmail: true, phone: true },
+        });
+        if (namesakes.length > 0) identityNote = "A client with this name already exists on a different address. Kyle has the decision; nothing was merged.";
+      }
+
+      // --- The enrollment. One per client; a payment on an already-enrolled
+      // client updates status + fills blanks rather than duplicating.
+      const existing = await tx.contentEnrollment.findUnique({ where: { clientId: client.id } });
+      let enrollmentId: string;
+      let note: string | null = sig.termsNote;
+      if (identityNote) note = `${note ? note + " " : ""}${identityNote}`;
+      if (!existing) {
+        const created = await tx.contentEnrollment.create({
+          data: {
+            clientId: client.id,
+            package: sig.terms.package,
+            ...rules,
+            status: "ACTIVE",
+            statusManual: true, // the Aryeo flag sweep must never pause a paying web client
+            packageSource: "website",
+            billingType: sig.terms.billingType,
+            billingRate: sig.amount,
+            billingMonths: sig.terms.billingMonths,
+            startedAt: sig.paidAt,
+            notes: `Signed up on the website ${sig.paidAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" })} — ${sig.productName}.`,
+          },
+          select: { id: true },
+        });
+        enrollmentId = created.id;
+      } else {
+        enrollmentId = existing.id;
+        // A SECOND PAID CHECKOUT FOR A PROGRAM THAT IS ALREADY RUNNING (A03(b)).
+        // Another signup row for this buyer — by enrollment, or by address
+        // while the first is still mid-activation and has no enrollment on its
+        // row yet — means this is money paid twice, or a deliberate second
+        // purchase. Either way a person looks at Stripe; nothing is refunded
+        // or credited here. A PAUSED/ENDED program restarting is not this.
+        if (existing.status === "ACTIVE") {
+          const other = await tx.programSignup.findFirst({
+            where: {
+              checkoutId: { not: sig.checkoutId },
+              OR: [{ enrollmentId: existing.id }, ...(sig.email ? [{ email: { equals: sig.email, mode: "insensitive" as const } }] : [])],
+            },
+            orderBy: { createdAt: "asc" },
+            select: { checkoutId: true },
+          });
+          if (other) {
+            note = `${note ? note + " " : ""}This client already had an active program (existing enrollment, from an earlier checkout ${other.checkoutId}) when this one was paid: a renewal, an upgrade or a double payment. Check Stripe before anything is refunded or credited.`;
+          }
+        }
+        // Reactivate + FILL BLANKS ONLY. The owner hand-entered billing terms for
+        // the founding clients — a checkout must never rewrite those; a mismatch
+        // is recorded on the signup row for a human instead of silently resolved.
+        if (existing.package !== sig.terms.package && existing.packageSource !== "aryeo") {
+          note = `${note ? note + " " : ""}Paid for ${sig.terms.package} but the enrollment is set to ${existing.package} — left as-is, check the settings card.`;
+        }
+        const billingBlank = existing.billingType == null;
+        if (!billingBlank && existing.billingType !== sig.terms.billingType) {
+          note = `${note ? note + " " : ""}Checkout terms (${sig.terms.billingType}) differ from the terms on file (${existing.billingType}) — billing left as the owner entered it.`;
+        }
+        await tx.contentEnrollment.update({
+          where: { id: existing.id },
+          data: {
+            status: "ACTIVE",
+            statusManual: true,
+            ...(existing.packageSource === "aryeo" ? { package: sig.terms.package, ...rules, packageSource: "website" } : {}),
+            ...(billingBlank
+              ? { billingType: sig.terms.billingType, billingRate: sig.amount, billingMonths: sig.terms.billingMonths }
+              : {}),
+            startedAt: existing.startedAt ?? sig.paidAt,
+          },
+        });
+      }
+      return { client, enrollmentId, note, namesakes };
+    },
+    // The second buyer waits on the lock for as long as the first holds it —
+    // a handful of reads and writes — so these are generous, not tight.
+    { maxWait: 10_000, timeout: 20_000 },
+  );
+  const { client, enrollmentId, namesakes } = held;
+  let note = held.note;
+  if (namesakes.length > 0) {
+    await routeIdentityConflict({
+      checkoutId: sig.checkoutId,
+      clientId: client.id,
+      clientName: client.name,
+      title: `Two records for ${sig.name} after a paid signup`,
+      lines: [
+        `A Content Program checkout was paid by ${sig.name} <${sig.email ?? "no email"}>.`,
+        `${namesakes.length} existing client record(s) carry that same name on a different address:`,
+        ...namesakes.map((n) => `  · ${n.name} <${n.email}> (client ${n.id})`),
+        "",
+        `A new client record was created (${client.id}) and the program was set up on it. Nothing was merged.`,
+      ],
     });
   }
 

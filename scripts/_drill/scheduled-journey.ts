@@ -164,8 +164,13 @@ async function main() {
     data: { clientId: client.id, status: "ACTIVE", package: "Accelerator", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 4 },
     select: { id: true },
   });
+  // Planned IN WRITING (batch 2, R01): questions are phrased only for a topic
+  // the client will be asked about. On this enrollment's default route (the
+  // first call is required, and none is booked) every unanswered topic is
+  // ON_CALL — the call covers it — and the question sweep rightly skips it, so
+  // sections 2 and 7 would test nothing. Section 7 asserts that skip on purpose.
   const month = await prisma.contentMonth.create({
-    data: { enrollmentId: enrollment.id, clientId: client.id, monthKey: "2026-10", videosOwed: 4, status: "PLANNING" },
+    data: { enrollmentId: enrollment.id, clientId: client.id, monthKey: "2026-10", videosOwed: 4, status: "PLANNING", planningMode: "WRITTEN" },
     select: { id: true },
   });
   // A month on a PAUSED enrollment, to prove the sweep does not reach it.
@@ -347,6 +352,15 @@ async function main() {
   // that Postgres holds the constraint.
   const tLease = await mkTopic("The inspection contingency people waive too fast");
   await select(tLease.id, "SELECTED", JSON.stringify({ excerpts: [{ speaker: "client", source: "call", text: "Waiving the inspection to win a bid is the most expensive sentence in this market." }] }));
+  // R01 (batch 2): this is the month's FIFTH committed topic on a 4-video
+  // allowance, so it is an EXTRA — kept, shown, never drafted unattended. That
+  // is the rule, asserted here on purpose; then the office raises the month's
+  // allowance (§3: staff may change it immediately) so the topics the rest of
+  // this drill adds are owed, which is what these sections are about.
+  const leaseWork = (await scriptWorkForMonth(month.id)).find((w) => w.topicId === tLease.id);
+  ok("R01: a fifth committed topic on a 4-video month is an EXTRA and is not auto-drafted", leaseWork?.readiness === "EXTRA", String(leaseWork?.readiness));
+  await prisma.contentMonth.update({ where: { id: month.id }, data: { videosOwed: 12 } });
+  ok("…and once the allowance covers it, it is owed again (FROM_CALL)", (await scriptWorkForMonth(month.id)).find((w) => w.topicId === tLease.id)?.readiness === "FROM_CALL");
   await prisma.programAiRun.create({
     data: {
       kind: "script_draft", status: "RUNNING", promptKey: "script", requestedBy: "cron",
@@ -381,6 +395,15 @@ async function main() {
   await setSwitch("ai_runs", true);
 
   head("7 · the questions are phrased ahead of the client, on the same schedule");
+  // R01: nothing is phrased for a topic the client will not be asked about.
+  // On the call route with no call held, the call covers it (ON_CALL).
+  const tOnCall = await mkTopic("What the first offer tells you about the rest");
+  await select(tOnCall.id, "SELECTED");
+  await prisma.contentMonth.update({ where: { id: month.id }, data: { planningMode: "CALL" } });
+  await sweepInterviewPlans({ max: 3 });
+  const onCallIv = await prisma.contentInterview.findFirst({ where: { topicId: tOnCall.id }, select: { questionPlanJson: true } });
+  ok("R01: on the call route before the call, the question sweep skips the topic (ON_CALL) — no interview, no plan, no credit", !onCallIv);
+  await prisma.contentMonth.update({ where: { id: month.id }, data: { planningMode: "WRITTEN" } });
   const planned = await sweepInterviewPlans({ max: 3 });
   ok("the plan sweep ran under the same switch", !("skipped" in planned), JSON.stringify(planned).slice(0, 160));
   const withPlans = await prisma.contentInterview.count({ where: { questionPlanJson: { not: null } } });

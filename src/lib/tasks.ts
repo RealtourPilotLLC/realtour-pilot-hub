@@ -3097,7 +3097,12 @@ export async function mintEditTask(projectId: string): Promise<void> {
       // (personal branding) must not un-assign work someone already owns.
       // A project-level pin (editorManual) is a human pick too — carry it
       // onto the task as assignedManually so every downstream engine sees it.
-      ...(existing.assignedManually || startedByHolder || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
+      // Started work outranks the RULES, never the office: the project page's
+      // editor pick (assignMember) only writes the pin and relies on this
+      // refresh to move the card, so letting startedByHolder win here kept a
+      // paused Kim on the card for good while the project said John (batch-2
+      // review, Sep 25 2026). Her work is closed as reassigned just below.
+      ...(existing.assignedManually || (startedByHolder && !pin.pinned) || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
       dueAt: refreshedDue,
       priority: priorityFor(refreshedDue),
       // A bounce writes "Round N — …" here (addRoundToEditCard, Sep 8): that
@@ -3108,6 +3113,13 @@ export async function mintEditTask(projectId: string): Promise<void> {
     // Diff-before-write: an unchanged card is not touched (see changedKeys).
     if (changedKeys(existing, data).length === 0) return;
     await prisma.smartTask.update({ where: { id: existing.id }, data });
+    // The card changed hands on the office's pick: whoever was on it (§7.1)
+    // is not any more — close their active/paused work as REASSIGNED now,
+    // not an hour from now on the next refresh. The ghost close at the top of
+    // this function ran while they still held the card, so it kept them.
+    if ("assignedKey" in data && data.assignedKey !== existing.assignedKey && startedByHolder) {
+      await closeGhostWork(projectId, { reason: "REASSIGNED", detail: `the office picked ${editorName} on the project page` });
+    }
     return;
   }
   await prisma.smartTask.create({

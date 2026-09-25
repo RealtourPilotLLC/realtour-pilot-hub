@@ -337,14 +337,31 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const m = spec.month;
     const key = spec.key;
     const mid = m?.id ?? null;
-    const callMode = callModeOf(e);
     const progress = progressOf(e.id, mid, key);
+    // The month's EFFECTIVE call mode, from the planning reader the portal and
+    // monthProgress read (§3: the first call is required, later ones optional).
+    // callModeOf alone turned every legacy enrollment (no column, flag true)
+    // into "call required" for every month, so this row told Jordan to chase a
+    // booking the client's portal was offering as a choice (batch-2 review,
+    // Sep 25 2026). effectiveCallMode only ever relaxes REQUIRED to
+    // OPTIONAL_WRITTEN, and only because a prior call was held — so that is
+    // exactly what the local derivation below is told.
+    const legacyCallMode = callModeOf(e);
+    const callMode = (progress?.call.mode as CallMode | null | undefined) ?? legacyCallMode;
+    const priorCallHeld = legacyCallMode === "REQUIRED" && callMode === "OPTIONAL_WRITTEN";
 
     // ---- planning + preparation -------------------------------------------------
     // Selection rows ∪ ContentTopic.status, keyed by topic id — counted once, in the reader.
     const topicsSelected = progress?.topics.selected ?? 0;
     const myInterviews = interviews.filter((i) => i.monthId === mid);
-    const answersOutstanding = myInterviews.filter((i) => i.status !== "SUFFICIENT" && i.status !== "SUPERSEDED" && !i.submittedAt).length;
+    // What the client still owes, from the same reader as the portal's count:
+    // topics INSIDE the allowance whose answers are not in. Counting every open
+    // interview row also counted extras and filmed topics, so this row could
+    // say "3 topics waiting" while the portal asked for one. The row count is
+    // kept only for a month the reader could not read.
+    const answersOutstanding = progress?.planning
+      ? progress.planning.answersOwed
+      : myInterviews.filter((i) => i.status !== "SUFFICIENT" && i.status !== "SUPERSEDED" && !i.submittedAt).length;
     // ARE THEY PLANNING THIS MONTH IN WRITING? (Sep 22 2026, §25 scenario 4.)
     //
     // The ladder below asks for the strategy call before it asks for answers,
@@ -430,7 +447,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
             preparationWindowDays: m.preparationWindowDays, preparationExceptionAt: m.preparationExceptionAt,
             preparationExceptionReason: m.preparationExceptionReason, filmingReadyAt: m.filmingReadyAt, historical: m.historical,
           },
-          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible },
+          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld },
           records: monthly.map((c) => ({ callType: c.callType, status: c.status, matchState: c.matchState, scheduledStart: c.scheduledStart, scheduledEnd: null, transcriptState: c.transcriptState })),
           scripts: myScriptsAll.map((s) => ({ status: s.status, approvedVersionId: s.approvedVersionId, approvedAt: null, historical: s.historical })),
           interviews: myInterviews.map((i) => ({ status: i.status, submittedAt: i.submittedAt })),

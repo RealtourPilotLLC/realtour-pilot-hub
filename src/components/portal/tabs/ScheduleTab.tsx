@@ -13,7 +13,12 @@ import { cn } from "@/lib/utils";
 // by the derived preparation window, requests durable). "Plan without a
 // call" appears ONLY when the enrollment is eligible, and it never cancels a
 // booked call; the real cancellation lives on Calendly / the request row.
-export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref, topicsLabel = "Video Topics" }: {
+//
+// v2 (§6.4, Sep 25 2026): the route choice moved to Your Month's opening
+// prompt. With `routeHref` the call card shows where the month stands and
+// links there instead of carrying its own buttons; v1 passes nothing and keeps
+// them exactly as they were.
+export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref, topicsLabel = "Video Topics", routeHref = null }: {
   planning: PortalPlanning | null;
   planningFailed: boolean;
   months: PortalScheduleMonth[];
@@ -27,7 +32,13 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
   topicsHref: string;
   /** What that page is called in this layout: v1 "Video Topics"; v2 has no such page (Sep 24), so it says "your plan". */
   topicsLabel?: string;
+  /** v2: Your Month's route step — the one place the planning route is chosen. */
+  routeHref?: string | null;
 }) {
+  // v2 routes the choice to Your Month; v1 keeps its buttons here.
+  const switchLink = (label: string) => routeHref && p?.noCallEligible && !readOnly && perms.session
+    ? <Link href={routeHref} className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{label} <ChevronRight className="size-3" /></Link>
+    : null;
   const p = planning;
   const tz = p?.timezone ?? "America/New_York";
   const tzName = tzShort(tz);
@@ -54,7 +65,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
                 {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {tzName} — cancel it on Calendly if you no longer need it.</p>}
                 {/* Not a one-way door: the same eligibility that offered the
                     written path offers the call back (review, Sep 17). */}
-                {p.noCallEligible && !readOnly && perms.session && <PlanWithCall monthId={p.monthId} />}
+                {routeHref ? switchLink("Change how you plan this month") : p.noCallEligible && !readOnly && perms.session && <PlanWithCall monthId={p.monthId} />}
               </>
             ) : p.callStatus === "COMPLETED" ? (
               <div className="flex items-center gap-1.5 text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtDate(p.callAtISO, tz)}` : ""} — the month is planned.</div>
@@ -65,7 +76,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
                 <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {tzName}</div>
                 {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <div className="text-xs text-muted-2">Video call — the link is in your calendar invite.</div>}
                 <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email — the change shows here within the hour.</p>
-                {p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked />}
+                {routeHref ? switchLink("Change how you plan this month") : p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked />}
               </>
             ) : p.callStatus === "NOT_REQUIRED" ? (
               // NOT_REQUIRED = the program has no strategy call at all.
@@ -88,7 +99,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
                   <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
                 )}
                 <p className="text-xs text-muted-2">Times show in your timezone on Calendly; it lands here as Booked once it&rsquo;s on the calendar.</p>
-                {p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked={false} />}
+                {routeHref ? switchLink("Or choose your topics here instead") : p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked={false} />}
               </>
             )}
           </div>

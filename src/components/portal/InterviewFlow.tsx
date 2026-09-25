@@ -23,6 +23,13 @@ import type { PortalInterviewView } from "@/lib/portal";
 // have" (nothing is drafted, we follow up) — never with "we'll draft it".
 // What they already said on a call is offered beside the question as an
 // optional, editable starting point, with where it came from.
+//
+// 6.5 (Sep 25 2026): a topic they already talked through on a call asks only
+// what is still missing (mode GAPS_ONLY), and says so. A note from their own
+// profile can be a suggestion too, labelled as such — never presented as
+// something they said in this questionnaire. And the "sent" line no longer
+// promises that changing an answer makes a new draft: nothing redrafts on its
+// own; the team sees the change and updates the script before it reaches them.
 // ---------------------------------------------------------------------------
 
 const monthLabel = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return monthKey ? new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long" }) : ""; };
@@ -55,9 +62,13 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
       <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
         <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Preparing {iv.monthKey ? `for ${monthLabel(iv.monthKey)}` : ""}</div>
         <h1 className="mt-1 text-lg font-semibold">{iv.topicTitle}</h1>
-        <p className="mt-1 text-xs text-muted">A few short questions in your own words — we turn them into a filmable script. Skip anything; you can come back and change any answer.</p>
+        <p className="mt-1 text-xs text-muted">
+          {iv.mode === "GAPS_ONLY"
+            ? "We covered most of this on your call. These are only the pieces we still need, in your own words. Skip anything; you can come back and change any answer."
+            : "A few quick questions in your own words. We turn them into a filmable script. Skip anything; you can come back and change any answer."}
+        </p>
         <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-2">
-          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-semibold">{iv.progress.substantiveAnswered}/{iv.progress.substantiveTotal} answered</span>
+          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-semibold">{iv.mode === "GAPS_ONLY" ? `${iv.progress.substantiveAnswered} answered` : `${iv.progress.substantiveAnswered}/${iv.progress.substantiveTotal} answered`}</span>
           {submitted && <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3" /> sent {iv.submittedAtISO ? new Date(iv.submittedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : ""}</span>}
           {sentWithGaps && <span className="inline-flex items-center gap-1 text-warning"><CheckCircle2 className="size-3" /> sent with gaps {callDay(iv.sentWithGapsAtISO) ?? ""} — we&rsquo;ll follow up</span>}
           {iv.strategyLabel && <span>· strategy version {iv.strategyLabel}</span>}
@@ -83,7 +94,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
       {/* The one question */}
       {canAct && activeKey && (
         <div className="panel-shadow rounded-2xl border border-brand/30 bg-surface/80 p-4 backdrop-blur">
-          <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{editKey ? "Change your answer" : iv.nextIsGap ? "One more, so we can write it" : iv.next.isFollowUp ? "One follow-up" : `Question ${Math.min(answeredKeys + 1, iv.progress.substantiveTotal + 1)}`}</div>
+          <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{editKey ? "Change your answer" : iv.nextIsGap || iv.mode === "GAPS_ONLY" ? "One more, so we can write it" : iv.next.isFollowUp ? "One follow-up" : `Question ${Math.min(answeredKeys + 1, iv.progress.substantiveTotal + 1)}`}</div>
           <p className="mt-1 text-base font-medium">{activePrompt}</p>
           {iv.next.isFollowUp && !editKey && <p className="mt-0.5 text-[11px] text-muted-2">{iv.nextIsGap ? "We ask only because nothing we have covers this yet — two at most." : "Asked once, only because something important was missing."}</p>}
           <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
@@ -91,13 +102,17 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
               source. Never pre-filled: they choose to start from it. */}
           {iv.suggestions.length > 0 && (
             <div className="mt-2">
-              <div className="flex items-center gap-1 text-[11px] font-semibold text-muted-2"><MessageSquareQuote className="size-3" /> From your planning call — use one as a start if it fits (optional)</div>
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-muted-2"><MessageSquareQuote className="size-3" /> {iv.suggestions.every((sg) => sg.from === "profile") ? "From your profile notes" : iv.suggestions.some((sg) => sg.from === "profile") ? "From your call and your profile notes" : "From your planning call"}: use one as a start if it fits (optional)</div>
               <ul className="mt-1 space-y-1">
                 {iv.suggestions.map((sg) => (
                   <li key={sg.id}>
                     <button type="button" onClick={() => { setText(sg.text); setSuggestionId(sg.id); }} className={cn("w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", suggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
                       <span className="text-foreground">&ldquo;{sg.text}&rdquo;</span>
-                      <span className="mt-0.5 block text-[10px] text-muted-2">you said this on your call{callDay(sg.callDateISO) ? ` of ${callDay(sg.callDateISO)}` : ""}</span>
+                      <span className="mt-0.5 block text-[10px] text-muted-2">
+                        {sg.from === "profile"
+                          ? `a suggestion from your profile notes${callDay(sg.callDateISO) ? `, ${callDay(sg.callDateISO)}` : ""}`
+                          : `you said this on your call${callDay(sg.callDateISO) ? ` of ${callDay(sg.callDateISO)}` : ""}`}
+                      </span>
                     </button>
                   </li>
                 ))}
@@ -133,7 +148,14 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           )}
           {/* "We draft from these" only when they CAN carry a script: a row
               sent before the sufficiency check existed may not (review, Sep 24). */}
-          {submitted && iv.ready && <p className="mt-2 text-xs text-muted">Sent. We draft the script from these answers; changing an answer now makes a new draft (the earlier one is kept).</p>}
+          {/* 6.5: nothing redrafts on its own after a script exists, so the old
+              "changing an answer now makes a new draft" was a promise nothing
+              kept. The team sees the change (a staff badge) and updates it. */}
+          {/* …and once the script is RELEASED "before it reaches you" is false:
+              it has. The client's way to change it is on the script itself
+              (6.5: decisions attach to the exact released version). */}
+          {submitted && iv.ready && iv.script.stage !== "released" && <p className="mt-2 text-xs text-muted">Sent. We write the script from these answers. If you change an answer, we&rsquo;ll see it and update the script before it reaches you.</p>}
+          {submitted && iv.ready && iv.script.stage === "released" && <p className="mt-2 text-xs text-muted">Sent. Your script is written from these answers. Changing an answer here won&rsquo;t change it: to change the script, choose Request changes on it.</p>}
           {submitted && !iv.ready && <p className="mt-2 text-xs text-muted">Sent. We&rsquo;ll be in touch with a question or two before we write it. Add to any answer here and it counts right away.</p>}
           {sentWithGaps && <p className="mt-2 text-xs text-muted">Sent with gaps — we&rsquo;ll be in touch with a question or two. Add to any answer here and it counts right away.</p>}
         </div>
@@ -150,7 +172,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           <div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Your script is being prepared</div>
           <p className="mt-0.5 text-[11px] text-muted-2">
             We&rsquo;re writing it from your answers and our team reviews it before you see it. It appears under this
-            topic once it&rsquo;s ready.{iv.script.changedSince ? " You&rsquo;ve changed an answer since we started — we&rsquo;ll use the newest ones." : ""}
+            topic once it&rsquo;s ready.{iv.script.changedSince ? " You’ve changed an answer since we started. We’ll see the change before your script reaches you." : ""}
           </p>
         </div>
       )}

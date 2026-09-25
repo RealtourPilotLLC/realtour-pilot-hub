@@ -62,7 +62,11 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 type Raw = {
   calendly?: { event: ScheduledEvent; invitee: Invitee | null };
   target?: { rule: string; reason: string; monthKey?: string | null };
-  calendar?: { summary: string | null; start: string | null; end: string | null; conferenceId: string | null; attendees: string[]; linkedAt: string; error?: string | null };
+  calendar?: {
+    summary: string | null; start: string | null; end: string | null; conferenceId: string | null; attendees: string[]; linkedAt: string; error?: string | null;
+    /** Drive file ids attached to the booking's own event (the Gemini notes, once Meet attaches them) — 6.2, Sep 25 2026. */
+    attachmentFileIds?: string[];
+  };
   transcripts?: { checkedAt: string; windowDocs: number; strongDocs: number };
   identity?: { note: string; candidates: { clientId: string; name: string; reason: string }[] };
   /** Why no ANALYZE job was queued for a confirmed transcript (the legacy sweep already analysed that month). */
@@ -520,17 +524,26 @@ export async function linkCalendarEvents(opts: { max?: number; now?: Date } = {}
   if (!(await ownerGoogleToken())) return { linked: 0, missing: 0, errors: 0, skipped: "Google not connected" };
   const { getCalendarEvent, CalendarNotConnected } = await import("@/lib/integrations/googleCalendar");
   const now = opts.now ?? new Date();
+  const graceMs = (await callRecordRules()).transcriptGraceHours * 3600_000;
   const rows = await prisma.programCallRecord.findMany({
     where: { calendarExternalId: { not: null }, matchState: { not: "IGNORED" }, status: { in: ["SCHEDULED", "COMPLETED"] }, scheduledStart: { gte: new Date(now.getTime() - 90 * 864e5) } },
-    select: { id: true, calendarExternalId: true, meetLink: true, rawJson: true },
+    select: { id: true, calendarExternalId: true, meetLink: true, rawJson: true, scheduledStart: true, scheduledEnd: true, transcriptState: true },
     orderBy: { scheduledStart: "desc" },
     take: 200,
   });
   let linked = 0, missing = 0, errors = 0, budget = opts.max ?? 20;
   for (const r of rows) {
     const raw = readRaw(r.rawJson);
-    // Linked once, or failed within the last day: leave it.
-    if (raw.calendar?.linkedAt && !raw.calendar.error) continue;
+    // Linked once, or failed within the last day: leave it — with ONE
+    // exception (6.2, Sep 25 2026). Most bookings are linked before the call
+    // happens, when Meet has attached nothing yet; the Gemini notes are
+    // attached to the event only after it ends. So an ended call that is still
+    // looking for its transcript has its event read again, each pass, inside
+    // the transcript grace window, until an attachment is on it.
+    const end = r.scheduledEnd ?? r.scheduledStart;
+    const awaitingNotes = !!end && end < now && now.getTime() - end.getTime() < graceMs
+      && ["NONE", "AWAITING", "CANDIDATES"].includes(r.transcriptState) && !raw.calendar?.attachmentFileIds?.length;
+    if (raw.calendar?.linkedAt && !raw.calendar.error && !awaitingNotes) continue;
     if (raw.calendar?.error && now.getTime() - new Date(raw.calendar.linkedAt).getTime() < 24 * 3600_000) continue;
     if (budget-- <= 0) break;
     try {
@@ -541,7 +554,7 @@ export async function linkCalendarEvents(opts: { max?: number; now?: Date } = {}
         missing++;
         continue;
       }
-      raw.calendar = { summary: ev.summary, start: ev.start?.toISOString() ?? null, end: ev.end?.toISOString() ?? null, conferenceId: ev.conferenceId, attendees: ev.attendees.map((a) => a.email), linkedAt: now.toISOString(), error: null };
+      raw.calendar = { summary: ev.summary, start: ev.start?.toISOString() ?? null, end: ev.end?.toISOString() ?? null, conferenceId: ev.conferenceId, attendees: ev.attendees.map((a) => a.email), linkedAt: now.toISOString(), error: null, attachmentFileIds: ev.attachments.map((a) => a.fileId) };
       await prisma.programCallRecord.update({
         where: { id: r.id },
         data: { meetConferenceId: ev.conferenceId, ...(r.meetLink ? {} : { meetLink: ev.hangoutLink }), rawJson: JSON.stringify(raw) },
@@ -614,6 +627,18 @@ async function listGeminiDocs(token: string, createdMin: Date, createdMax: Date)
   return out;
 }
 
+/** One Drive file by id, as a GeminiDoc — only a live Google Doc (the export needs one). */
+async function getDriveDoc(token: string, fileId: string): Promise<GeminiDoc | null> {
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+  url.searchParams.set("fields", "id, name, createdTime, webViewLink, mimeType, trashed");
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (!res.ok) return null;
+  const f = (await res.json()) as { id?: string; name?: string; createdTime?: string; webViewLink?: string; mimeType?: string; trashed?: boolean };
+  if (!f.id || !f.name || !f.createdTime || f.trashed || f.mimeType !== "application/vnd.google-apps.document") return null;
+  const { prefix, heldAt } = parseGeminiTitle(f.name);
+  return { id: f.id, name: f.name, prefix, heldAt, createdAt: new Date(f.createdTime), link: f.webViewLink ?? null };
+}
+
 /**
  * One source row per Drive doc, deduplicated by the TEXT hash (two copies of
  * one meeting = one source). `exportText:false` records the doc WITHOUT
@@ -681,9 +706,19 @@ export type TranscriptPair = { doc: GeminiDoc; strong: boolean; why: string };
  * exactly ONE strong doc and that doc is strong for NO other record: two calls
  * with the same client on the same day each keep their own doc or neither is
  * confirmed. Everything else is a candidate list for a person.
+ *
+ * ATTACHED IS STRONGEST (6.2, Sep 25 2026). A doc whose file id is attached to
+ * the booking's OWN calendar event (Meet attaches its Gemini notes there) is
+ * that meeting's notes by reference, not by resemblance: it is strong even
+ * when somebody renamed it, and even outside the time window. Only a doc
+ * CREATED once the meeting was under way counts (from 30 minutes before the
+ * booked start): an agenda or brief attached to the invite days earlier is
+ * not the call's notes. The exclusivity rule does not change — one doc
+ * attached to two records' events confirms neither, and two fresh docs on one
+ * event confirm neither.
  */
 export function pairTranscriptCandidates(
-  records: { id: string; scheduledStart: Date; calendarSummary: string | null }[],
+  records: { id: string; scheduledStart: Date; calendarSummary: string | null; attachmentFileIds?: string[] | null }[],
   docs: GeminiDoc[],
   rules: Pick<CallRecordRules, "startToleranceMinutes">,
 ): Map<string, { list: TranscriptPair[]; auto: TranscriptPair | null }> {
@@ -692,13 +727,15 @@ export function pairTranscriptCandidates(
   const strongCount = new Map<string, number>();
   for (const r of records) {
     const summary = r.calendarSummary ? norm(r.calendarSummary) : null;
+    const attached = new Set(r.attachmentFileIds ?? []);
     const list: TranscriptPair[] = [];
     for (const d of docs) {
       const at = d.heldAt;
+      const isAttached = attached.has(d.id) && d.createdAt.getTime() >= r.scheduledStart.getTime() - 30 * 60_000;
       const inWindow = at ? Math.abs(at.getTime() - r.scheduledStart.getTime()) <= tol : d.createdAt >= r.scheduledStart && d.createdAt.getTime() - r.scheduledStart.getTime() <= 6 * 3600_000;
-      if (!inWindow) continue;
-      const strong = !!at && !!summary && norm(d.prefix) === summary;
-      list.push({ doc: d, strong, why: strong ? "calendar summary + start stamp both match" : at ? (summary ? "start stamp matches, title does not" : "start stamp matches (no calendar link to compare the title)") : "created shortly after the call (no stamp in the title)" });
+      if (!inWindow && !isAttached) continue;
+      const strong = isAttached || (!!at && !!summary && norm(d.prefix) === summary);
+      list.push({ doc: d, strong, why: isAttached ? "attached to the booking's calendar event" : strong ? "calendar summary + start stamp both match" : at ? (summary ? "start stamp matches, title does not" : "start stamp matches (no calendar link to compare the title)") : "created shortly after the call (no stamp in the title)" });
       if (strong) strongCount.set(d.id, (strongCount.get(d.id) ?? 0) + 1);
     }
     lists.set(r.id, list);
@@ -746,8 +783,18 @@ export async function discoverTranscriptSources(opts: { now?: Date; max?: number
   const { markSynced } = await import("@/lib/integrations/connections");
   await markSynced("gmail").catch(() => {}); // Drive rides the gmail connection row
 
+  // A doc attached to a booking's own event but renamed (so the "Notes by
+  // Gemini" search no longer finds it) is read by its id — the attachment is
+  // the reference, the listing only a convenience. Unreadable → skipped.
+  const listed = new Set(docs.map((d) => d.id));
+  const attachedIds = [...new Set(due.flatMap((r) => readRaw(r.rawJson).calendar?.attachmentFileIds ?? []))].filter((id) => !listed.has(id));
+  for (const id of attachedIds.slice(0, 20)) {
+    const d = await getDriveDoc(token, id).catch(() => null);
+    if (d) docs.push(d);
+  }
+
   const paired = pairTranscriptCandidates(
-    due.map((r) => ({ id: r.id, scheduledStart: r.scheduledStart!, calendarSummary: readRaw(r.rawJson).calendar?.summary ?? null })),
+    due.map((r) => { const cal = readRaw(r.rawJson).calendar; return { id: r.id, scheduledStart: r.scheduledStart!, calendarSummary: cal?.summary ?? null, attachmentFileIds: cal?.attachmentFileIds ?? [] }; }),
     docs, rules,
   );
 
@@ -892,6 +939,9 @@ export async function confirmCallRecordClient(recordId: string, clientId: string
   }
   const t = await applyTarget(recordId, await callRecordRules());
   for (const m of t.touchedMonthIds) await recalcProgramMonth(m);
+  // A04: jobs that were WAITING on this call's identity (runTranscriptJob
+  // holds them while the client is in question) run on the very next tick.
+  await prisma.programTranscriptJob.updateMany({ where: { callRecordId: recordId, state: "QUEUED" }, data: { nextAttemptAt: null } });
   await reconcileCallReviewTasks();
 }
 
@@ -943,6 +993,62 @@ export async function rematchDiscoveryForClient(clientId: string): Promise<{ mat
   }
   if (matched.length) await reconcileCallReviewTasks().catch(() => {});
   return { matched };
+}
+
+export type CandidateDiscoveryBooking = {
+  id: string; inviteeEmail: string | null; inviteeName: string | null; scheduledStart: Date | null;
+  /** Why it is listed: the sync already named this client, an alias is proposed, or the full name matches now. */
+  why: "stored-candidate" | "proposed-alias" | "same-full-name";
+};
+
+/**
+ * A DISCOVERY BOOKING THAT MAY BE THIS CLIENT'S, UNPROVEN (unified handoff
+ * §6.1, Sep 25 2026). Read-only.
+ *
+ * The live Arielle shape: she pays from gmail and books from her brokerage.
+ * When the booking lands first, the sync writes it UNMATCHED with no
+ * candidates (no program client existed to name), and rematchDiscoveryForClient
+ * rightly refuses it at activation (the address is not on her record). The
+ * refusal was right; what followed was not: the welcome told her to book the
+ * call she had booked, and Kyle was handed a task to chase it. Now activation
+ * and the welcome ask this first. A booking is listed when the sync already
+ * named this client as a candidate, when its address is an unverified alias
+ * PROPOSED for this client, or when resolveInviteeIdentity (the sync's own
+ * full-name rule, asked again now that the enrollment is ACTIVE) names them.
+ *
+ * A listing is never a match. Nothing here links, verifies or closes anything:
+ * callers soften a sentence and point a person at the booking. A person
+ * verifying the address is still the only way it becomes a MATCH.
+ */
+export async function candidateDiscoveryBookingsFor(clientId: string): Promise<CandidateDiscoveryBooking[]> {
+  const [client, proposedRows] = await Promise.all([
+    prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }),
+    prisma.clientEmailAlias.findMany({ where: { clientId, active: true, verifiedAt: null }, select: { email: true } }),
+  ]);
+  if (!client) return [];
+  const proposed = new Set(proposedRows.map((a) => a.email.trim().toLowerCase()));
+  const waiting = await prisma.programCallRecord.findMany({
+    where: { callType: "BRAND_DISCOVERY", clientId: null, status: { notIn: ["CANCELLED", "RESCHEDULED"] }, matchState: "UNMATCHED_INVITEE" },
+    orderBy: { scheduledStart: "desc" },
+    take: 50,
+    select: { id: true, inviteeEmail: true, inviteeName: true, scheduledStart: true, rawJson: true },
+  });
+  const firstWord = norm(client.name).split(" ")[0] ?? "";
+  const out: CandidateDiscoveryBooking[] = [];
+  for (const r of waiting) {
+    const email = r.inviteeEmail?.trim().toLowerCase() || null;
+    let why: CandidateDiscoveryBooking["why"] | null = null;
+    if (readRaw(r.rawJson).identity?.candidates?.some((c) => c.clientId === clientId)) why = "stored-candidate";
+    else if (email && proposed.has(email)) why = "proposed-alias";
+    // The cheap first-word check only decides whether the real rule is worth
+    // a query; the real rule (full name, never a first name alone) decides.
+    else if (r.inviteeName && firstWord && norm(r.inviteeName).split(" ")[0] === firstWord) {
+      const idn = await resolveInviteeIdentity(email, r.inviteeName);
+      if (idn.state === "UNMATCHED_INVITEE" && idn.candidates.some((c) => c.clientId === clientId && c.active)) why = "same-full-name";
+    }
+    if (why) out.push({ id: r.id, inviteeEmail: email, inviteeName: r.inviteeName, scheduledStart: r.scheduledStart, why });
+  }
+  return out;
 }
 
 export async function setCallRecordTargetMonth(recordId: string, monthKey: string, by: string | null): Promise<void> {

@@ -14,11 +14,15 @@ import type { BoardJob, BlockerKind, DeliveryBoard } from "@/lib/deliveryBoard";
 
 const BLOCKER: Record<BlockerKind, { cls: string; icon: React.ElementType }> = {
   awaiting_upload: { cls: "bg-warning/15 text-warning border-warning/30", icon: Camera },
-  // Footage in, editor not started (Sep 10) — quieter than "With the editor".
-  // Amber, not brand: this is a job that CANNOT start, sitting next to jobs that
-  // can. It reads as a hold rather than a stage (audit WF-06, Sep 18).
+  // Files in, instructions not (audit WF-06, Sep 18). Amber, not brand: this is
+  // a job that CANNOT start, sitting next to jobs that can. It reads as a hold
+  // rather than a stage.
   handoff_incomplete: { cls: "bg-warning/15 text-warning border-warning/30", icon: StickyNote },
+  // Footage in, nobody has pressed Start (Sep 10) — quieter than editing.
   ready_to_edit: { cls: "bg-brand/10 text-brand border-brand/20", icon: Video },
+  // The label names who pressed Start or Pause, from the editor's own record
+  // (§7.1) — "In editing — Kim since 10:02am", "Paused — Kim", or "In editing
+  // — not confirmed" when the stage says editing and nobody has said so.
   editing: { cls: "bg-brand/15 text-brand border-brand/30", icon: Sparkles },
   qc: { cls: "bg-accent/15 text-accent border-accent/30", icon: Check },
   ready: { cls: "bg-success/15 text-success border-success/30", icon: Truck },

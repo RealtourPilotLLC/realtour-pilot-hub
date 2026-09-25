@@ -10,6 +10,7 @@ import {
   snoozeMonthReminders, unsnoozeMonthReminders, type ReminderLedgerRow,
 } from "@/lib/programReminders";
 import { REMINDER_TEMPLATES } from "@/lib/reminderTemplates";
+import { isTestClientName } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // Settings → Program reminders (spec §24). Reads: owner or admin. Writes that
@@ -107,6 +108,15 @@ export async function runReminderDryRun(): Promise<{ ok: boolean; message: strin
       suppressionReason: c.suppressionReason, attempt: c.attempt, to: c.to, nextEligibleAt: c.nextEligibleAt?.toISOString() ?? null, deadlineAt: c.deadlineAt?.toISOString() ?? null,
       escalation: c.escalation?.due ? c.escalation.reason : null, templateKey: c.templateKey,
     }));
+    // 6.5: the scripts-not-approved lane, one row per session (read-only here:
+    // its per-row buttons would act on the planning lane, so the panel hides them).
+    for (const a of r.scriptApprovalLane) {
+      rows.push({
+        enrollmentId: a.enrollmentId, monthId: a.monthId, clientName: a.clientName, isTest: isTestClientName(a.clientName), monthKey: a.monthKey, action: "APPROVE_SCRIPTS", decision: a.decision,
+        reason: `${a.reason}${a.titles.length ? ` (${a.titles.join(", ")})` : ""}`, suppressionReason: a.suppressionReason, attempt: 1, to: null, nextEligibleAt: a.nextEligibleAt?.toISOString() ?? a.remindAt.toISOString(),
+        deadlineAt: a.deadlineAt.toISOString(), escalation: null, templateKey: "reminder.approve_scripts.v1",
+      });
+    }
     return { ok: true, message: r.note, rows, enabled: r.enabled, policySource: r.policySource };
   } catch (e) { return { ...fail(e), rows: [], enabled: false, policySource: "off" }; }
 }

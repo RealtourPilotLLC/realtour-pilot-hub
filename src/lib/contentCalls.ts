@@ -17,16 +17,27 @@ import { isTestClientName } from "@/lib/testClients";
 // ProgramCalendlyEventMapping exists. From that moment the verified chain in
 // contentCallRecords.ts owns bookings and transcripts and these three return
 // `{ skipped }` (the cron output says so), because the whole point of the
-// mapping is to stop filing work on a name match. Nothing here is deleted:
-// switching the mapping off brings the old behaviour straight back.
+// mapping is to stop filing work on a name match. Nothing here is deleted.
+//
+// RETIRED, NOT CONDITIONAL (A04, unified handoff Sep 25 2026). "Switching the
+// mapping off brings the old behaviour straight back" was the hole: disabling
+// a mapping for a minute revived the Drive NAME matcher (first-name fallback
+// included) and the email-only Calendly stamper, and nothing said so. They now
+// run only when an owner turns `legacy_call_sweeps` on (a missing row is off)
+// AND no mapping is enabled. With the switch off and no mapping, the hub
+// reports the same configuration exception the call-record sync does — map
+// the dedicated event types — instead of guessing.
 // ---------------------------------------------------------------------------
 
 export { STRATEGY_CALL_BOOKING_URL };
 
 const SUPERSEDED = "superseded — an enabled Calendly mapping exists, call records own this now";
-async function legacyYields(): Promise<boolean> {
+const RETIRED = "retired — legacy_call_sweeps is off; map the dedicated event types on Settings → Calendly & calls";
+async function legacyYields(): Promise<string | null> {
+  const { isAutomationEnabled } = await import("@/lib/programAutomation");
+  if (!(await isAutomationEnabled("legacy_call_sweeps"))) return RETIRED;
   const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
-  return hasEnabledCallMapping();
+  return (await hasEnabledCallMapping()) ? SUPERSEDED : null;
 }
 
 // Match a Calendly invitee to an enrolled client by email (email or backupEmail).
@@ -55,7 +66,8 @@ async function enrolledClientByEmail(): Promise<Map<string, { clientId: string; 
 export async function syncStrategyCallsFromCalendly(): Promise<{ stamped: number; completed: number; canceled: number } | { skipped: string }> {
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("calendly"))) return { skipped: "Calendly not connected" };
-  if (await legacyYields()) return { skipped: SUPERSEDED };
+  const stood = await legacyYields();
+  if (stood) return { skipped: stood };
   const { listStrategyCalls, CalendlyConfigError } = await import("@/lib/integrations/calendly");
 
   // Window: 30 days back (completions) → 60 days forward (next month's bookings).
@@ -148,7 +160,8 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
   const { ownerGoogleToken } = await import("@/lib/integrations/google");
   const token = await ownerGoogleToken();
   if (!token) return { skipped: "Google not connected" };
-  if (await legacyYields()) return { skipped: SUPERSEDED };
+  const stood = await legacyYields();
+  if (stood) return { skipped: stood };
 
   // Jordan's real artifacts (verified Aug 24): Gemini meeting-notes docs named
   // "<Client> and Jordan Spackman - 2026/08/07 12:46 EDT - Notes by Gemini",
@@ -507,7 +520,8 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number; close
 export async function sweepNotetakerTranscripts(): Promise<{ ingested: number } | { skipped: string }> {
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("calendly"))) return { skipped: "Calendly not connected" };
-  if (await legacyYields()) return { skipped: SUPERSEDED };
+  const stood = await legacyYields();
+  if (stood) return { skipped: stood };
 
   const months = await prisma.contentMonth.findMany({
     where: { transcriptText: null, calendlyEventUri: { not: null } },

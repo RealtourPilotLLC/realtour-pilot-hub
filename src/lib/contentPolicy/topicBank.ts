@@ -22,6 +22,20 @@ export type TopicState = "SUGGESTED" | "SELECTED" | "PREPARING" | "FILMED" | "AR
 
 export type TopicSource = "GENERATED" | "IMPORTED" | "CLIENT_SUGGESTED" | "CALL" | "STAFF";
 
+/**
+ * ContentTopic.source values a model wrote — a topic from one of these is not
+ * the client's until staff approve it (§6.3: "New generated bank items follow
+ * staff approval before client visibility"). ONE list, read by the portal's
+ * visibility rule (contentTopics.clientCanSeeTopic) and the staff bank's
+ * "hidden from the client until approved" hint, so the two cannot drift: the
+ * discovery call's topics (batch 2) were added as a new source and reached the
+ * client's bank unapproved because only the rule's own inline pair was checked.
+ */
+export const TOPIC_SOURCES_NEEDING_APPROVAL: readonly string[] = ["ai", "strategy_call", "discovery_call"];
+export const topicSourceNeedsApproval = (source: string | null | undefined): boolean => !!source && TOPIC_SOURCES_NEEDING_APPROVAL.includes(source);
+/** A call transcript's topic (monthly or discovery) — its "declined" mark came from the call. */
+export const topicSourceIsCall = (source: string | null | undefined): boolean => source === "strategy_call" || source === "discovery_call";
+
 export type TopicHistoryEvent = {
   at: string; // ISO
   event: string; // "imported" | "suggested" | "selected" | "deselected" | "script-drafted" | "filmed" | "delivered" | "published" | "archived" | "rejected"
@@ -670,4 +684,35 @@ export function rankRecommendations(input: RecommendationInput): RecommendationR
   }
   picked.forEach((p, i) => (p.rank = i + 1));
   return { recommended: picked.slice(0, capacity), alternatives: picked.slice(capacity), excluded, historyNote, pillarFilmedCounts };
+}
+
+// ---------------------------------------------------------------------------
+// THE CLIENT'S REASON (6.3, unified handoff Sep 25 2026).
+//
+// `whyNow` is the ranking's own account for staff — "in the bank with no goal,
+// phase or history signal attached — a filler, not a priority", "verified
+// performance signal in this pillar". None of that is a sentence to put in
+// front of a client. This builds the one short line a client reads beside a
+// recommended topic, from three facts only: the strategy goal the topic
+// supports, the pillar it rebalances, and the filmed video it builds on. When
+// none applies it says what is true — the topic fits their pillar — and never
+// borrows a staff word (filler, signal, score, verified, rank).
+// ---------------------------------------------------------------------------
+
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).replace(/\s+\S*$/, "")}…` : s);
+
+export function clientReasonFor(r: Pick<RankedTopic, "linkedGoal" | "pillar" | "priorContentRelationship" | "reasons">, ctx: { pillarFilmedCounts?: Record<string, number> | null } = {}): string {
+  const pillar = r.pillar && !/^\(?\s*no\s+pillar/i.test(r.pillar) ? r.pillar : null;
+  if (r.linkedGoal) return `Supports your goal: ${clip(r.linkedGoal.replace(/[.\s]+$/, ""), 90)}.`;
+  const counts = ctx.pillarFilmedCounts;
+  if (pillar && counts) {
+    const mine = counts[pillar] ?? 0;
+    const most = Math.max(0, ...Object.values(counts));
+    if (most > mine) return `Balances your videos: fewer ${pillar} videos so far.`;
+  }
+  if (r.priorContentRelationship === "follow-up" || r.priorContentRelationship === "sequel") {
+    const m = /(?:new angle to filmed content|deliberate (?:sequel|follow-up)).*?[“"]([^”"]+)[”"]/.exec(r.reasons.join(" "));
+    return m ? `A fresh angle on “${clip(m[1], 70)}”.` : "A fresh angle on a video you've already made.";
+  }
+  return pillar ? `A strong fit for your ${pillar} content.` : "A strong fit for your content strategy.";
 }

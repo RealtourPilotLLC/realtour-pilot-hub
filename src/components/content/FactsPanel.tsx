@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { ArrowRight, Check, Loader2, Lock, NotebookPen, Undo2, Wand2, X } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
-import { addFact, applyFieldProposalAction, factDecision, ignoreFieldProposalAction, setFactScopeAction } from "@/app/content/actions";
+import { addFact, applyFieldProposalAction, factConfidential, factDecision, ignoreFieldProposalAction, setFactScopeAction } from "@/app/content/actions";
 import type { FactCategory, FactScope } from "@/lib/clientFacts";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +20,10 @@ import type { FactCategory, FactScope } from "@/lib/clientFacts";
 //     under the fact names the field, what it says now, what it would become,
 //     and the call it came from. Applying writes a new version (history kept)
 //     and tells the editor; Ignore leaves the profile exactly as it is.
+//
+// A09 (Sep 25 2026): "Said in confidence" on any fact the extractor did not
+// mark. It becomes confidential for good: out of every prompt, and the call
+// line it came from stops reaching scripts and the client's suggested answers.
 // ---------------------------------------------------------------------------
 
 /** A proposed profile change from a call (ContentStrategyProposal kind PROFILE). */
@@ -114,6 +118,11 @@ function FactRow({ f, busy, run, months, projects, proposals = [] }: { f: FactUi
           </>
         )}
         {(f.status === "ACCEPTED" || f.status === "REJECTED") && <button disabled={busy} onClick={() => run(() => factDecision(f.id, "UNDO"))} className={quiet}><Undo2 className="mr-1 inline size-3" />Undo</button>}
+        {!f.confidential && (
+          <button disabled={busy} title="They said this in confidence: keep it out of every prompt, script and suggested answer from now on. It can't be undone from here." onClick={() => { if (window.confirm("Mark this as said in confidence? It leaves every prompt and the client's suggested answers for good.")) run(() => factConfidential(f.id)); }} className={quiet}>
+            <Lock className="mr-1 inline size-3" />Said in confidence
+          </button>
+        )}
       </div>
       {proposals.map((p) => <div key={p.id} className="mt-2"><ProposalBox p={p} busy={busy} run={run} /></div>)}
     </div>

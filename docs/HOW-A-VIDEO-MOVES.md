@@ -22,6 +22,10 @@ part that is about money already spent.
    **Mark as sent** records that Kyle uploaded it to Aryeo and delivered the
    listing — it asks twice, because nothing in the hub can clear that stamp.
 
+   A row can also say **1080p file held, not sent** (since Sep 25). That is a
+   finished pass whose sound or picture the hub could not verify: the row offers
+   no file to send until a person decides — see step 6 below.
+
    If the pass failed, the row also carries **Try the pass again**. That used to
    live on the Connections page next to the API key; it is on the row now,
    because that is where the failure is read. It asks before it fires, because a
@@ -44,7 +48,15 @@ part that is about money already spent.
    *Ready for editing*, *Needs QC*, *Delivered* — and now **Waiting on the flow
    and vision for the edit, the wrap-up on the upload page from Harrison
    Wells**, which is a job whose footage is in and whose instructions are not.
-   It names the person and carries a chase date.
+   It names the person and carries a chase date. The Editing Room row says
+   *Waiting on instructions* with the same sentence under it, and so does the
+   edit card.
+
+   Editing is said the Editing Room's way (Sep 25): *In editing — Kim since
+   10:02am* only while an editor has pressed Start, *Paused — Kim* when they
+   paused it or started another job, and *In editing — not confirmed* when the
+   stage says editing but nobody has pressed Start. It used to say *With the
+   editor* for all three.
 
    If the board itself cannot be read, it says so. It no longer renders a failed
    query as a clean board with nothing past due.
@@ -115,6 +127,23 @@ editor's export is 1080p too.
 A header that cannot be read is retried against a fresh cache key before
 anything is concluded, and is retryable rather than terminal. One bad read is
 not a broken file.
+
+**A 1080p file the hub cannot check is HELD, never sent (Sep 25).** The finished
+render is checked for sound and picture before it is filed. If that check cannot
+be completed — even after the file is saved to Dropbox and read again from
+there — it is not filed as FINAL and not offered on the Ready-to-send card. It
+waits in `05-Final-Video/unverified/`, the editor's approved original stays
+exactly as it was, and the office is told. A person decides on the Ready-to-send
+row, and the decision and their name go on the job's timeline:
+
+- **Check again** — reads the file from Dropbox once more. Free: it never
+  goes back to Topaz, so it cannot re-render or re-charge. Readable and right,
+  it is filed as FINAL as if it had passed first time.
+- **Keep the approved original** — the unchecked render goes to `superseded/`
+  and the editor's export becomes `- FINAL (editor export)`.
+- **I listened — use this file** — only after playing it in Dropbox and ticking
+  that the sound and picture are right. Refused if a check did read the file and
+  found it silent or the wrong video: a measurement beats a tick box.
 
 ### 7. Delivered
 The video shows on Kyle's Ready-to-send card. He uploads it to Aryeo, delivers

@@ -120,10 +120,49 @@ export function addWeekdayHoursET(from: Date, hours: number): Date {
   return cursor;
 }
 
+/**
+ * THE EARLIEST FILMING START — the one function every gate asks (unified
+ * handoff §6.4, Sep 25 2026). The written route's material, the call route's
+ * scheduled end and the written route's call buffer all go through here, as
+ * do the portal's booked-call estimate and the reminder calendar through
+ * deriveMonthState. W01 (72 weekday hours, batch 3) changes the window in ONE
+ * place — DEFAULT_PREPARATION_WINDOW_HOURS / this function — and every reader
+ * moves with it; nothing else restates the arithmetic.
+ */
+export function earliestFilmingStart(base: Date, w: { windowHours: number; windowWaived: boolean }): Date {
+  return w.windowWaived ? base : addWeekdayHoursET(base, w.windowHours);
+}
+
 /** The enrollment's call mode: the explicit column, else derived from the legacy flag. */
 export function callModeOf(e: { callMode: string | null; strategyCallRequired: boolean }): CallMode {
   if (e.callMode === "REQUIRED" || e.callMode === "OPTIONAL_WRITTEN" || e.callMode === "NOT_INCLUDED") return e.callMode;
   return e.strategyCallRequired ? "REQUIRED" : "NOT_INCLUDED";
+}
+
+/**
+ * The call mode a MONTH actually runs on (§3, Sep 25 2026: "The previously
+ * required first strategy call remains required … Later monthly calls are
+ * optional"). callModeOf derives REQUIRED from strategyCallRequired, which
+ * defaults to true, so every enrollment without a hand-set column was
+ * call-only for EVERY month — the written route was never offered and the
+ * reminder evaluator chased a mandatory call each month.
+ *
+ *   · an explicit column wins — staff overrides are kept exactly;
+ *   · the legacy-derived REQUIRED holds only until the enrollment's first
+ *     monthly strategy call has been held (in another month), then the month
+ *     is OPTIONAL_WRITTEN — unless the client is switched off the written
+ *     route (noCallEligible === false), which keeps it call-only.
+ * Pure; the caller supplies `priorProgramCallHeld` (recalcProgramMonth and
+ * planningFacts read it with one query).
+ */
+export function effectiveCallMode(
+  e: { callMode: string | null; strategyCallRequired: boolean; noCallEligible?: boolean | null },
+  ctx: { priorProgramCallHeld: boolean },
+): CallMode {
+  const base = callModeOf(e);
+  const explicit = e.callMode === "REQUIRED" || e.callMode === "OPTIONAL_WRITTEN" || e.callMode === "NOT_INCLUDED";
+  if (explicit || base !== "REQUIRED" || !ctx.priorProgramCallHeld) return base;
+  return e.noCallEligible === false ? "REQUIRED" : "OPTIONAL_WRITTEN";
 }
 
 /**
@@ -212,11 +251,14 @@ export type SessionReadiness = {
 };
 
 export type PreparationFollowUp = {
-  kind: "MISSING_POST_CALL_INFO" | "UNFINISHED_ANSWERS" | "ANSWERS_REOPENED" | "UNDER_PLANNED_SESSION";
+  kind: "MISSING_POST_CALL_INFO" | "UNFINISHED_ANSWERS" | "ANSWERS_REOPENED" | "UNDER_PLANNED_SESSION" | "CALL_INSIDE_BUFFER";
   /** Who owns chasing it (spec §3: scheduling and client follow-up are Kyle's). */
   owner: "KYLE" | "JORDAN";
   reason: string;
   sessionIndex: number | null;
+  /** The identity of the facts behind it, when a desk task is keyed on them
+   *  (CALL_INSIDE_BUFFER: the session's start and the call's end, epoch ms). */
+  ref?: string;
 };
 
 /** A topic's material is complete. A submission STAMP is not enough on its own:
@@ -246,9 +288,15 @@ export function topicMaterialReadyAt(t: TopicMaterialInput): Date | null {
 
 /**
  * Split a month's required topics into the package's sessions. Stable order
- * (creation, then id) so the same month always splits the same way. Overflow —
- * more selected topics than the package plans for — lands in the last session
- * rather than vanishing; §3 says extra filmed work is flagged, not dropped.
+ * (creation, then id) so the same month always splits the same way.
+ *
+ * EXTRAS ARE NOT HERE (R01, Sep 25 2026). recalcProgramMonth hands in only the
+ * topics inside the month's allowance (planningState.allowanceOrder). It used
+ * to hand in every topic pointing at the month, so an extra — kept, "waits its
+ * turn" — landed in the last session and an unanswered one held the written
+ * route's filming calendar shut (and, on Pro, session 2). Anything past the
+ * plan that still arrives here (a caller building its own input) lands in the
+ * last session rather than vanishing.
  */
 export function planSessions(
   topics: TopicMaterialInput[],
@@ -502,7 +550,10 @@ export type DeriveInput = {
     filmingReadyAt: Date | null;
     historical: boolean;
   };
-  enrollment: { callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null };
+  /** `priorCallHeld`: a monthly strategy call was held in another month of this
+   *  enrollment (effectiveCallMode). Optional — a caller that does not know
+   *  (the read-only overview) gets the legacy reading, never a guess. */
+  enrollment: { callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null; priorCallHeld?: boolean };
   records: MonthCallRecordInput[];
   /**
    * Scripts on the month, INCLUDING historical imports. An import from Jordan's archive is
@@ -592,12 +643,32 @@ const HELD = (r: MonthCallRecordInput, now: Date) =>
   r.transcriptState === "CONFIRMED" || r.transcriptState === "ANALYZED" ||
   (r.status === "SCHEDULED" && !!(r.scheduledEnd ?? r.scheduledStart) && (r.scheduledEnd ?? r.scheduledStart)! < now);
 
+/**
+ * Has this enrollment held a monthly strategy call in ANOTHER month? The input
+ * to effectiveCallMode. A record counts when a verified identity put it on the
+ * program (MATCHED / CONFIRMED_BY_STAFF) and it was held by the same test the
+ * month derivation uses; a legacy month stamped COMPLETED (a pasted
+ * transcript, the old sweep) counts too. Pure — the caller reads the rows.
+ */
+export function priorCallHeldFrom(
+  monthId: string,
+  records: (MonthCallRecordInput & { monthId: string | null })[],
+  completedMonthIds: readonly string[],
+  now: Date,
+): boolean {
+  if (completedMonthIds.some((id) => id !== monthId)) return true;
+  return records.some((r) => r.monthId !== monthId && r.callType === "MONTHLY_STRATEGY" &&
+    (r.matchState === "MATCHED" || r.matchState === "CONFIRMED_BY_STAFF") &&
+    r.status !== "CANCELLED" && r.status !== "RESCHEDULED" && HELD(r, now));
+}
+
 export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   const { now, month, enrollment } = input;
   const reasons: string[] = [];
   const exceptions: string[] = [];
   const followUps: PreparationFollowUp[] = [];
-  const callMode = callModeOf(enrollment);
+  const callMode = effectiveCallMode(enrollment, { priorProgramCallHeld: !!enrollment.priorCallHeld });
+  if (callMode !== callModeOf(enrollment)) reasons.push("the first monthly call has been held — later months may be planned in writing (§3)");
 
   // Only records that a mapping classified as the MONTHLY call and that a
   // verified identity put on this month. Discovery calls, unrelated calls,
@@ -693,7 +764,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   const windowHours = preparationWindowHours(month.preparationWindowDays);
   const windowWaived = !!month.preparationExceptionAt && !!month.preparationExceptionReason;
   if (windowWaived) reasons.push(`window waived: ${month.preparationExceptionReason}`);
-  const afterWindow = (base: Date): Date => (windowWaived ? base : addWeekdayHoursET(base, windowHours));
+  const afterWindow = (base: Date): Date => earliestFilmingStart(base, { windowHours, windowWaived });
 
   // THE CALL CLOCK starts when the call ENDS (spec §8). scheduledEnd is what
   // every monthly record in production actually carries; scheduledStart is the
@@ -788,6 +859,34 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     });
   }
 
+  // ---- the written route's call buffer (§6.4, Sep 25 2026) ------------------
+  // "The written route can still offer a strategy call to discuss scripts.
+  // Preserve the agreed call buffer when it is used and surface any conflict
+  // with an existing shoot. Do not silently move bookings." An explicit WRITTEN
+  // choice keeps the route when a call is booked, and the gate read material
+  // time only — so a call booked the day before a shoot, to talk the scripts
+  // through, left the shoot inside the buffer and nobody was told.
+  //   (a) NEW offers start no earlier than the call's end plus the window;
+  //   (b) a booked, unfilmed session inside that buffer is an EXCEPTION with a
+  //       follow-up for Kyle. The booking is never moved or cancelled here.
+  const booking = input.booking ?? null;
+  if (planningMode === "WRITTEN") {
+    const calls = [...held, ...upcoming].filter((r) => !conflicted.has(r) && (r.scheduledEnd ?? r.scheduledStart));
+    const latest = calls.reduce<MonthCallRecordInput | null>((a, r) => (!a || (r.scheduledEnd ?? r.scheduledStart)! > (a.scheduledEnd ?? a.scheduledStart)! ? r : a), null);
+    if (latest) {
+      const callEnd = (latest.scheduledEnd ?? latest.scheduledStart)!;
+      const callStart = latest.scheduledStart ?? callEnd;
+      const buffer = afterWindow(callEnd);
+      for (const s of sessions) if (s.earliestSessionAt && s.earliestSessionAt < buffer) s.earliestSessionAt = buffer;
+      for (const b of booking?.sessions ?? []) {
+        if (b.filmed || !b.startsAt || b.startsAt < callStart || b.startsAt >= buffer) continue;
+        const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+        exceptions.push(`a strategy call ending ${day(callEnd)} ET falls inside the ${windowHours}-hour buffer before the ${day(b.startsAt)} ET session — confirm with the client`);
+        followUps.push({ kind: "CALL_INSIDE_BUFFER", owner: "KYLE", sessionIndex: null, ref: `${b.startsAt.getTime()}-${callEnd.getTime()}`, reason: `A strategy call (ends ${day(callEnd)} ET) was booked inside the preparation buffer before the ${day(b.startsAt)} ET filming session. Confirm with the client whether the session stays — nothing has been moved.` });
+      }
+    }
+  }
+
   // A Pro month's FIRST session must not wait on the second session's material,
   // so the month-wide answer is the earliest OPEN session, not the last one.
   const openAts = sessions.map((s) => s.earliestSessionAt).filter((d): d is Date => d != null);
@@ -800,7 +899,6 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   // anything that later asks "is this month fully scheduled?" cannot drift apart
   // the way the two readings of the preparation window did in F04.
   const sessionsRequired = Math.max(1, Math.floor(plan?.sessionsPerMonth ?? 1) || 1);
-  const booking = input.booking ?? null;
   const bookingKnown = !!booking;
   const shortfall = booking ? sessionShortfall(sessionsRequired, booking) : null;
   if (booking && booking.duplicatesFolded > 0) {
@@ -831,6 +929,12 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   else if (planningMode === "WRITTEN") {
     if (preparationSufficient) preparationStatus = afterPrep();
     else preparationStatus = input.interviews.length > 0 ? "AWAITING_ANSWERS" : "WRITTEN_SELECTED";
+  } else if (scripts.length > 0) {
+    // UNDECIDED (§3, Sep 25 2026: a month after the first held call may go
+    // either way). The same rule the CALL branch keeps: scripts on the month
+    // are proof it was planned, so a month whose route nobody picked but whose
+    // scripts exist is never sent back to "choose how to plan".
+    preparationStatus = afterPrep();
   }
 
   // Missing post-call information: a warning and a chase, never a closed gate
@@ -939,7 +1043,8 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     },
   });
   if (!month) return null;
-  const [enrollment, records, scripts, interviews, monthTopics] = await Promise.all([
+  const { monthAllowances } = await import("@/lib/planningFacts");
+  const [enrollment, records, scriptsAll, interviews, allowances, priorRecords, completedMonths] = await Promise.all([
     prisma.contentEnrollment.findUnique({
       where: { id: month.enrollmentId },
       select: { clientId: true, callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true },
@@ -950,10 +1055,29 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     }),
     prisma.contentScript.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, approvedVersionId: true, approvedAt: true, historical: true } }),
     prisma.contentInterview.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, submittedAt: true, sufficiencyJson: true } }),
-    // Topics PLANNED for this month. The bank (monthId null) is not material.
-    prisma.contentTopic.findMany({ where: { monthId: month.id }, select: { id: true, title: true, status: true, createdAt: true } }),
+    // Topics PLANNED for this month — the ones INSIDE its allowance (R01). The
+    // bank (no selection) is not material, and neither is an extra: it waits
+    // its turn, so it must not hold the filming calendar shut.
+    monthAllowances([month.id]),
+    // effectiveCallMode: has this program held a monthly call in another month?
+    prisma.programCallRecord.findMany({
+      where: { enrollmentId: month.enrollmentId, callType: "MONTHLY_STRATEGY", matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF"] }, OR: [{ monthId: null }, { monthId: { not: month.id } }] },
+      select: { monthId: true, callType: true, status: true, matchState: true, scheduledStart: true, scheduledEnd: true, transcriptState: true },
+    }),
+    prisma.contentMonth.findMany({ where: { enrollmentId: month.enrollmentId, id: { not: month.id }, strategyCallStatus: "COMPLETED" }, select: { id: true } }),
   ]);
   if (!enrollment) return null;
+  const allowance = allowances.get(month.id);
+  const inTopicIds = allowance ? [...allowance.slots].filter(([, slot]) => slot === "IN").map(([id]) => id) : [];
+  const extraTopicIds = new Set(allowance ? [...allowance.slots].filter(([, slot]) => slot === "EXTRA").map(([id]) => id) : []);
+  const monthTopics = inTopicIds.length
+    ? await prisma.contentTopic.findMany({ where: { id: { in: inTopicIds }, enrollmentId: month.enrollmentId }, select: { id: true, title: true, status: true, createdAt: true } })
+    : [];
+  // An extra's draft is not the month's script: it must not hold the month at
+  // AWAITING_SCRIPT_APPROVAL either. Month-level rows (no topic) and imports
+  // stay — they are evidence the month was planned.
+  const scripts = scriptsAll.filter((s) => !s.topicId || !extraTopicIds.has(s.topicId));
+  const priorCallHeld = priorCallHeldFrom(month.id, priorRecords, completedMonths.map((m) => m.id), now);
   // Per-topic material (spec §8): an approved script counts — including one
   // carried over from last month, which is why this reads the script's own
   // approval state rather than asking whether it was written this month.
@@ -976,7 +1100,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     };
   });
   const after = deriveMonthState({
-    now, month, enrollment, records, scripts, interviews, topics,
+    now, month, enrollment: { ...enrollment, priorCallHeld }, records, scripts, interviews, topics,
     plan: { videosPerMonth: enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth },
     booking: await monthSessionCount(month.id, enrollment.clientId, now),
   });
@@ -1007,7 +1131,51 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
       },
     });
   }
+  // The written route's call-buffer conflict is Kyle's to confirm with the
+  // client (§6.4) — a desk task, raised and cleared with the facts. Desk truth,
+  // not automation (programDeskTasks): never for a TEST client, never a send,
+  // and the booking itself is never touched.
+  if (!opts.dryRun) await syncCallBufferTask(month.id, month.monthKey, enrollment.clientId, after).catch(() => {});
   return { monthId: month.id, changed, before, after };
+}
+
+const CALL_BUFFER_TASK_PREFIX = "program-call-buffer:";
+
+// ONE TASK PER CONFLICT — keyed on the session and the call it collides with
+// (`program-call-buffer:<month>:<sessionStartMs>-<callEndMs>`). One key per
+// month could never be raised twice: a conflict that cleared closed it, and
+// `reopenIfClosed: false` (a person's close must stand) then swallowed every
+// later conflict in the month — a call moved away and a second one booked
+// inside session 2's buffer reached nobody (batch-2 review, Sep 25 2026). A
+// new conflict is a new key; a person's close still stands for the one they
+// closed; stale keys are closed the way reconcileScriptApprovalTasks does.
+async function syncCallBufferTask(monthId: string, monthKey: string, clientId: string, d: DerivedMonthState): Promise<void> {
+  const { openProgramDeskTask, closeProgramDeskTask, TASK_DONE_INCLUDING_LEGACY } = await import("@/lib/programDeskTasks");
+  const monthKeyPrefix = `${CALL_BUFFER_TASK_PREFIX}${monthId}`;
+  const conflicts = d.followUps.filter((f) => f.kind === "CALL_INSIDE_BUFFER");
+  const keyOf = (f: PreparationFollowUp) => (f.ref ? `${monthKeyPrefix}:${f.ref}` : monthKeyPrefix);
+  const want = new Set(conflicts.map(keyOf));
+  // The month's own key (the pre-conflict-key shape) counts as this month's too.
+  const mine = (k: string | null): k is string => !!k && (k === monthKeyPrefix || k.startsWith(`${monthKeyPrefix}:`));
+  const open = await prisma.smartTask.findMany({ where: { dedupeKey: { startsWith: monthKeyPrefix }, status: { notIn: TASK_DONE_INCLUDING_LEGACY } }, select: { dedupeKey: true } });
+  for (const t of open) if (mine(t.dedupeKey) && !want.has(t.dedupeKey)) await closeProgramDeskTask(t.dedupeKey);
+  if (!conflicts.length) return;
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { name: true } });
+  for (const f of conflicts) {
+    await openProgramDeskTask({
+      dedupeKey: keyOf(f), clientId, clientName: client?.name ?? "",
+      title: `Call inside the filming buffer — ${client?.name ?? "program client"} · ${monthKey}`,
+      lines: [
+        f.reason,
+        "",
+        "They plan this month in writing and booked a strategy call to talk the scripts through. Ask whether the session keeps its time or moves; move it only if they ask.",
+        "This closes itself once the call or the session no longer overlaps the buffer.",
+      ],
+      assignedKey: "kyle",
+      reasonCreated: "Strategy call booked inside the preparation buffer before a filming session",
+      reopenIfClosed: false,
+    });
+  }
 }
 
 export async function recalcProgramMonthsForEnrollment(enrollmentId: string, opts: { now?: Date; dryRun?: boolean } = {}): Promise<RecalcResult[]> {
@@ -1048,9 +1216,15 @@ export async function setPreparationException(monthId: string, reason: string, b
   await recalcProgramMonth(monthId);
 }
 
-/** Staff or the client: choose the written path (or back to the call path). Never cancels a booking. */
-export async function setPlanningMode(monthId: string, mode: "CALL" | "WRITTEN"): Promise<DerivedMonthState | null> {
-  await prisma.contentMonth.update({ where: { id: monthId }, data: { planningMode: mode } });
+/**
+ * Staff or the client: choose the written path (or back to the call path).
+ * Never cancels a booking, never touches a call record, a session request, a
+ * selection, an interview or a script — switching routes keeps every piece of
+ * work (§6.4). `by` stamps planningChosenAt/By so an explicit choice is told
+ * apart from the call mode's default, which the column alone could not do.
+ */
+export async function setPlanningMode(monthId: string, mode: "CALL" | "WRITTEN", by: string | null = null): Promise<DerivedMonthState | null> {
+  await prisma.contentMonth.update({ where: { id: monthId }, data: { planningMode: mode, planningChosenAt: new Date(), planningChosenBy: by } });
   const r = await recalcProgramMonth(monthId);
   return r?.after ?? null;
 }

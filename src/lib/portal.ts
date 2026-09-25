@@ -4,6 +4,7 @@ import { etMonthKey, aryeoProductFor, RESUBSCRIBE_URL } from "@/lib/contentProgr
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
+import type { MonthPlanning, PlanStep } from "@/lib/planningState";
 import { TEXT_KYLE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
@@ -610,6 +611,9 @@ export type SessionGate = {
 const LOCK_BOOK_CALL = "Book your strategy call first — we plan the month on that call, then film it.";
 const LOCK_ANSWERS = "Send us your planning answers first — we plan the month from them, then film it.";
 const LOCK_PREPARING = "We're still preparing this month — session booking opens as soon as planning is done.";
+// §6.4: a month that may be planned either way and has not been — neither
+// sentence above is true of it yet.
+const LOCK_CHOOSE = "Choose how to plan this month first — pick your topics here, or book your strategy call.";
 
 /**
  * The gate + earliest bookable moment for ONE program month of this
@@ -617,20 +621,21 @@ const LOCK_PREPARING = "We're still preparing this month — session booking ope
  * historical. Never persists anything: recalcProgramMonth runs as a dry run,
  * and the request itself (createSessionRequest) is what recalculates.
  */
-export async function sessionGate(enrollmentId: string, monthId: string): Promise<SessionGate> {
+export async function sessionGate(enrollmentId: string, monthId: string, opts: { now?: Date } = {}): Promise<SessionGate> {
+  const now = opts.now ?? new Date();
   const closed = (reason: string, extra: Partial<SessionGate> = {}): SessionGate =>
-    ({ locked: true, reason, earliest: new Date(), callStatus: "NOT_SCHEDULED", callAt: null, planningMode: "UNDECIDED", ...extra });
+    ({ locked: true, reason, earliest: now, callStatus: "NOT_SCHEDULED", callAt: null, planningMode: "UNDECIDED", ...extra });
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return closed("Pick one of your program months.");
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, historical: true } });
   if (!month || month.enrollmentId !== enrollmentId) return closed("Pick one of your program months.");
   if (month.historical) return closed("That month is closed.");
-  const { recalcProgramMonth, addWeekdayHoursET } = await import("@/lib/programMonths");
-  const r = await recalcProgramMonth(monthId, { dryRun: true });
+  const { recalcProgramMonth, earliestFilmingStart } = await import("@/lib/programMonths");
+  const r = await recalcProgramMonth(monthId, { dryRun: true, now });
   if (!r) return closed("Pick one of your program months.");
   const d = r.after;
   const base = { callStatus: d.strategyCallStatus, callAt: d.strategyCallAt, planningMode: d.planningMode };
   // Nothing today: a same-day slot is not a request the desk can honour.
-  const floor = new Date(Date.now() + 24 * 3600_000);
+  const floor = new Date(now.getTime() + 24 * 3600_000);
   const open = (from: Date): SessionGate => ({ locked: false, reason: "", earliest: from > floor ? from : floor, ...base });
   if (d.earliestSessionAt) return open(d.earliestSessionAt);
   // Booked but not yet held: the SAME clock, measured from when that booking is
@@ -647,11 +652,24 @@ export async function sessionGate(enrollmentId: string, monthId: string): Promis
   // earlier than the day before. Two separate readings of one rule — days
   // here, hours there — is what allowed that, so `windowDays` no longer
   // exists and this branch runs the hour clock itself.
-  if (d.strategyCallStatus === "SCHEDULED" && d.strategyCallAt && d.strategyCallAt > new Date()) {
-    const callEndsAt = d.strategyCallEndsAt ?? d.strategyCallAt;
-    return open(d.windowWaived ? callEndsAt : addWeekdayHoursET(callEndsAt, d.windowHours));
+  //
+  // §6.4 (Sep 25 2026): booked means booked from the moment it is booked until
+  // it has ENDED. This read `strategyCallAt > now` — the call's START — so
+  // while the call was actually in progress it was neither booked here nor
+  // held in deriveMonthState (held needs its end to have passed), and the
+  // filming calendar locked for the length of the call.
+  //
+  // CALL route only. On the WRITTEN route a booked call is the §6.4 "call to
+  // discuss scripts" — it plans nothing, so it must not open filming before a
+  // single answer is in (§3: written-route scheduling opens after the answers).
+  // That route's gate is the material (earliestSessionAt above, already pushed
+  // past the call's buffer by deriveMonthState); with none, it is LOCK_ANSWERS.
+  const callEndsAt = d.strategyCallEndsAt ?? d.strategyCallAt;
+  if (d.planningMode !== "WRITTEN" && d.strategyCallStatus === "SCHEDULED" && callEndsAt && callEndsAt > now) {
+    return open(earliestFilmingStart(callEndsAt, { windowHours: d.windowHours, windowWaived: d.windowWaived }));
   }
   if (d.planningMode === "WRITTEN") return closed(LOCK_ANSWERS, base);
+  if (d.planningMode === "UNDECIDED" && d.callMode === "OPTIONAL_WRITTEN") return closed(LOCK_CHOOSE, base);
   if (d.strategyCallStatus === "NOT_SCHEDULED") return closed(LOCK_BOOK_CALL, base);
   return closed(LOCK_PREPARING, base);
 }
@@ -944,6 +962,19 @@ export type PortalTopic = {
   carried: { selectionId: string; fromMonthKey: string | null } | null;
   scriptedNotFilmed: boolean;
   swappable: string | null;
+  /**
+   * R01: where this topic stands in its open month's plan — the one planning
+   * reader's step (planningState.topicPlanStep), so a chip, a count and a
+   * button on any page say the same thing. Null for a topic not on an open
+   * month. `inAllowance` false = an extra; `selection.overflow` says the same.
+   */
+  plan: { step: PlanStep; missing: number; inAllowance: boolean } | null;
+  /**
+   * 6.3 (Sep 25 2026): this topic is recommended for an open month, with the
+   * one plain line the client reads about why (contentTopics.
+   * recommendationsForMonth). Only on a topic the client could choose now.
+   */
+  recommended?: { monthId: string; kind: "RECOMMENDED" | "ALTERNATIVE"; rank: number; reason: string | null } | null;
 };
 
 export type PortalTopicScript = {
@@ -954,9 +985,21 @@ export type PortalTopicScript = {
   strategyLabel: string | null;
   /** An import we hold as history, NOT the script for this topic's next video (Jordan's ruling). */
   historical: boolean;
+  /**
+   * U01: the version's own parts (money-scrubbed like `body`), so the one
+   * renderer draws Hook / three Talking Points / Close from structure instead
+   * of re-reading text. null for an import, which keeps the text path.
+   */
+  parts?: { hook: string; points: { role: "re-hook" | "build-up" | "payoff" | null; text: string }[]; close: string; captionCta: string | null } | null;
+  /** The pillar's CURRENT name (by pillarId), else the frozen label; never a no-pillar placeholder. */
+  pillarName?: string | null;
 };
 
-export type PortalTopicMonth = { id: string; monthKey: string; owed: number; selected: number; overflow: number; historical: boolean };
+export type PortalTopicMonth = {
+  id: string; monthKey: string; owed: number; selected: number; overflow: number; historical: boolean;
+  /** R01: the month through the one planning reader (null when it could not be read — never zero). */
+  planning: MonthPlanning | null;
+};
 
 export type PortalTopicsData = {
   groups: { pillarId: string | null; pillarName: string; purpose: string | null; topics: PortalTopic[] }[];
@@ -1033,14 +1076,29 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
   const stratIds = [...new Set([...versions.map((v) => v.strategyVersionId), ...[...winner.values()].map((w) => w.s.strategyVersionId)].filter((x): x is string => !!x))];
   const strategies = stratIds.length ? await prisma.contentStrategyVersion.findMany({ where: { id: { in: stratIds } }, select: { id: true, versionNo: true } }) : [];
   const stratLabel = new Map(strategies.map((s) => [s.id, `v${s.versionNo}`]));
+  // U01/U02: the category a client reads is the pillar's CURRENT name, found
+  // by id and scoped to this enrollment — a version freezes its label when it
+  // is written, so a pillar renamed since ("Acceptance pillar" → "Seller
+  // Playbook") would otherwise keep its old name on every drafted script.
+  const pillarIds = [...new Set(versions.map((v) => v.pillarId).filter((x): x is string => !!x))];
+  const pillarNow = new Map(
+    (pillarIds.length ? await prisma.contentPillar.findMany({ where: { id: { in: pillarIds }, enrollmentId: enrollment.id }, select: { id: true, name: true } }) : []).map((p) => [p.id, p.name]),
+  );
+  const noPillar = (label: string | null) => (label && !/^\(?\s*no\s+pillar/i.test(label.trim()) ? label : null);
 
   for (const [topicId, { s, historical }] of winner) {
     const v = versions.find((x) => x.id === (s.sharedVersionId ?? s.approvedVersionId));
     const strategyId = v?.strategyVersionId ?? s.strategyVersionId ?? null;
     const strategyLabel = strategyId ? stratLabel.get(strategyId) ?? null : null;
     if (v) {
-      const canonical = canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, v.clientId);
-      out.set(topicId, { title: v.title, body: stripMoneySentences(renderScript(canonical)), versionLabel: `v${v.versionNo}`, strategyLabel, historical });
+      const pillarName = (v.pillarId ? pillarNow.get(v.pillarId) ?? null : null) ?? noPillar(v.categoryLabel);
+      const points = pointsFromJson(v.pointsJson);
+      const canonical = canonicalFromParts({ title: v.title, categoryLabel: pillarName, pillarId: v.pillarId, hook: v.hook, points, close: v.close, captionCta: v.captionCta }, v.clientId);
+      out.set(topicId, {
+        title: v.title, body: stripMoneySentences(renderScript(canonical, { audience: "client" })), versionLabel: `v${v.versionNo}`, strategyLabel, historical,
+        parts: { hook: stripMoneySentences(v.hook), points: points.map((p) => ({ role: p.role, text: stripMoneySentences(p.text) })), close: stripMoneySentences(v.close), captionCta: v.captionCta ? stripMoneySentences(v.captionCta) : null },
+        pillarName,
+      });
       continue;
     }
     // No version row — an import, which is 140 of the 142 topic-linked visible
@@ -1114,6 +1172,11 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   const mineOfTopic = new Map(topicRows.map((t) => [t.id, !!t.clientUserId]));
   const currentKey = etMonthKey();
   const purposeOf = new Map(pillars.map((p) => [p.id, p.purpose]));
+  // R01: the open months through the ONE planning reader — which rows are the
+  // allowance and which are extras, each topic's step, the month's headline.
+  // A failed read leaves `plan` / `planning` null (unknown), never a guess.
+  const openIds = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey).slice(0, 3).map((m) => m.id);
+  const planned = await import("@/lib/planningFacts").then((m) => m.planningFactsForMonths(openIds)).catch(() => null);
 
   const toTopic = (t: (typeof candidates)[number], pillarName: string): PortalTopic => {
     // A selection in a month still open wins over one in a past month: after a
@@ -1126,11 +1189,15 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     const state: PortalTopicState = ["FILMED", "EDITING", "DELIVERED"].includes(t.status) ? "FILMED" : t.status === "SCRIPTED" || !!sc || (iv && iv.status !== "NOT_STARTED") ? "PREPARING" : sel ? "SELECTED" : "SUGGESTED";
     const isFilmed = filmed.has(t.id) || ["FILMED", "EDITING", "DELIVERED"].includes(t.status);
     const carriedSel = sel?.status === "CARRIED" ? sel : null;
+    const tp = sel && openMonth.get(sel.monthId) ? planned?.get(sel.monthId)?.planning.topics.find((x) => x.topicId === t.id) ?? null : null;
     return {
       id: t.id, title: t.title, concept: t.concept, pillarId: t.pillarId, pillarName, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: t.source,
       mine: t.source === "client" || !!mineOfTopic.get(t.id), state,
       // A call's PROPOSED row is its suggestion and always removable (CP-07).
-      selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status, overflow: sel.overflow, removable: sel.status === "PROPOSED" || (!inProduction && sel.status !== "RECONCILED" && sel.status !== "CARRIED") } : null,
+      selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status,
+        // The allowance, derived (planningState.allowanceOrder) — the stored
+        // flag is frozen at insert and disagreed with the month's own count.
+        overflow: tp ? !tp.inAllowance : sel.overflow, removable: sel.status === "PROPOSED" || (!inProduction && sel.status !== "RECONCILED" && sel.status !== "CARRIED") } : null,
       interview: iv ? { id: iv.id, status: iv.status, answered: iv.answeredCount } : null,
       script: sc
         ? {
@@ -1153,6 +1220,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       // Carried, parked by a swap, or left on a month that has closed.
       scriptedNotFilmed: t.status === "SCRIPTED" && !!sc && !isFilmed && (!!carriedSel || !sel || !openMonth.get(sel.monthId)),
       swappable: carriedSel && !isFilmed && openMonth.get(carriedSel.monthId) ? carriedSel.id : null,
+      plan: tp ? { step: tp.step, missing: tp.missing, inAllowance: tp.inAllowance } : null,
     };
   };
   const declinedIn = (pillarId: string | null) => bank.declined.filter((t) => visibleIds.has(t.id) && (pillarId ? t.pillarId === pillarId : !t.pillarId || !pillars.some((p) => p.id === t.pillarId)));
@@ -1165,8 +1233,20 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     const orphans = declinedIn(null);
     if (orphans.length) groups.push({ pillarId: null, pillarName: "Not yet linked to a pillar", purpose: null, topics: orphans.map((t) => toTopic(t, "Not yet linked to a pillar")) });
   }
+  // §11 plain labels: "Not yet linked to a pillar" is our bookkeeping, not a
+  // heading for a client. Their own ideas are "Your ideas"; a pillar-less group
+  // that holds anything else is "More ideas". Staff screens keep the old name.
+  for (const g of groups) {
+    if (g.pillarId) continue;
+    g.pillarName = g.topics.length > 0 && g.topics.every((t) => t.mine) ? "Your ideas" : "More ideas";
+    for (const t of g.topics) t.pillarName = g.pillarName;
+  }
   const open = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey).slice(0, 3);
   const months: PortalTopicMonth[] = open.map((m) => {
+    // R01: chosen / extras from the planning reader, which counts exactly what
+    // the staff month reader and the filming gate count.
+    const planning = planned?.get(m.id)?.planning ?? null;
+    if (planning) return { id: m.id, monthKey: m.monthKey, owed: m.videosOwed, selected: planning.chosen, overflow: planning.extras, historical: m.historical, planning };
     const sels = selections.filter((s) => s.monthId === m.id);
     // Derived from the two numbers, not from the row flag — the flag is frozen
     // at insert and a package change rewrites videosOwed underneath it, which
@@ -1174,11 +1254,42 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     // Sep 17). Same arithmetic, and the same CARRIED-inclusive statuses, as
     // contentTopics.monthCapacity.
     const over = Math.max(0, sels.length - m.videosOwed);
-    return { id: m.id, monthKey: m.monthKey, owed: m.videosOwed, selected: sels.length - over, overflow: over, historical: m.historical };
+    return { id: m.id, monthKey: m.monthKey, owed: m.videosOwed, selected: sels.length - over, overflow: over, historical: m.historical, planning: null };
   });
+  // 6.3: what the ranking recommends for each open month, riding on the topics
+  // themselves so every view that already has the bank has it too.
+  const recs = await portalRecommendationsFor(enrollment, months.map((m) => m.id)).catch(() => new Map<string, NonNullable<PortalTopic["recommended"]>>());
+  for (const g of groups) for (const t of g.topics) t.recommended = !t.declined && !t.selection && t.state === "SUGGESTED" ? recs.get(t.id) ?? null : null;
   const approvedStrategy = versionsOfStrategies.length ? await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } }) : null;
   const total = groups.reduce((n, g) => n + g.topics.filter((t) => !t.declined).length, 0);
   return { groups, months, archivedCount: bank.archived, total, strategyLabel: approvedStrategy ? `v${approvedStrategy.versionNo}` : null };
+}
+
+/**
+ * 6.3: the client's recommendations for their open months, by topic — the
+ * latest ranking per month, cut to that month's open slots, visible topics
+ * only (contentTopics.recommendationsForMonth applies clientCanSeeTopic). A
+ * topic recommended for two months is offered for the earlier one.
+ */
+export async function portalRecommendationsFor(enrollment: { id: string; clientId: string }, monthIds: string[]): Promise<Map<string, NonNullable<PortalTopic["recommended"]>>> {
+  const out = new Map<string, NonNullable<PortalTopic["recommended"]>>();
+  if (!monthIds.length) return out;
+  const { recommendationsForMonth } = await import("@/lib/contentTopics");
+  for (const monthId of monthIds) {
+    const r = await recommendationsForMonth(enrollment.id, monthId);
+    // The kind the CLIENT sees follows the open slots, not the ranking's first
+    // cut: once a slot fills, the next alternative moves up.
+    r.recommended.forEach((x, i) => { if (!out.has(x.topicId)) out.set(x.topicId, { monthId, kind: "RECOMMENDED", rank: i + 1, reason: x.reason }); });
+    r.alternatives.forEach((x, i) => { if (!out.has(x.topicId)) out.set(x.topicId, { monthId, kind: "ALTERNATIVE", rank: r.recommended.length + i + 1, reason: x.reason }); });
+  }
+  return out;
+}
+
+/** One month's recommendations for the client: the slots left and the recommended / alternative topic ids with their reasons. */
+export async function portalRecommendations(enrollment: { id: string; clientId: string }, monthId: string) {
+  const { recommendationsForMonth } = await import("@/lib/contentTopics");
+  const r = await recommendationsForMonth(enrollment.id, monthId);
+  return { slotsLeft: r.slotsLeft, recommended: r.recommended.map((x) => ({ topicId: x.topicId, reason: x.reason })), alternatives: r.alternatives.map((x) => ({ topicId: x.topicId, reason: x.reason })) };
 }
 
 // A topic leaves the client's bank on `status` alone: contentTopics.
@@ -1244,7 +1355,9 @@ export type PortalInterviewView = {
   nextIsGap: boolean;
   canSendWithGaps: boolean;
   sentWithGapsAtISO: string | null;
-  suggestions: { id: string; text: string; source: string; callDateISO: string | null }[];
+  suggestions: { id: string; text: string; source: string; callDateISO: string | null; from?: "call" | "profile" }[];
+  /** 6.5: "GAPS_ONLY" — the call already covered this topic, so only what is missing is asked. */
+  mode?: "FULL" | "GAPS_ONLY";
   /**
    * WHERE THE SCRIPT STANDS — never the script itself.
    *
@@ -1331,11 +1444,12 @@ export async function portalInterview(enrollment: { id: string; clientId: string
     gaps: st.sufficiency.gaps.map((g) => g.text), ready: st.sufficiency.ready, submittedAtISO: row.submittedAt?.toISOString() ?? null, script,
     strategyLabel: strategy ? `v${strategy.versionNo}` : null,
     nextIsGap: st.nextIsGap,
+    mode: st.mode,
     // Already sent (either way) is not a second chance to send: a row sent
     // before CP-08 as SUBMITTED over a thin reading must not offer the button.
     canSendWithGaps: st.next.kind === "done" && !st.sufficiency.ready && st.status !== "SUBMITTED_WITH_GAPS" && st.status !== "SUBMITTED",
     sentWithGapsAtISO: row.sentWithGapsAt?.toISOString() ?? null,
-    suggestions: suggestions.map((x) => ({ id: x.id, text: x.text, source: x.provenance.source, callDateISO: x.provenance.callDateISO })),
+    suggestions: suggestions.map((x) => ({ id: x.id, text: x.text, source: x.provenance.source, callDateISO: x.provenance.callDateISO, from: x.kind ?? "call" })),
   };
 }
 
@@ -1374,7 +1488,9 @@ export async function portalStrategy(enrollment: { id: string; clientId: string 
   const { stripMoneySentences } = await import("@/lib/text");
   const stored = parseStoredSections(released.sectionsJson);
   const sections = (stored?.sections ?? [])
-    .filter((s) => !INTERNAL_HEADING.test(s.heading))
+    // A08: the drafter's gap list and a legacy appended proposal are the
+    // team's notes — the release refuses them; this is the second guard.
+    .filter((s) => !INTERNAL_HEADING.test(s.heading) && s.id !== "gaps" && !s.id.startsWith("proposal-"))
     .map((s) => ({ id: s.id, heading: s.heading, body: stripMoneySentences(s.text) }))
     .filter((s) => s.body.trim().length > 0);
   let summary: PortalStrategyView["summary"] = null;
@@ -1421,18 +1537,29 @@ export type PortalPlanning = {
   earliestSessionISO: string | null;
   /** "Plan without a call" may be offered — the enrollment's call mode allows it and it is not switched off for this client. */
   noCallEligible: boolean;
-  /** Written path: answers submitted for every selected topic. */
+  /** Written path: answers submitted for every selected topic (R01: the allowance's topics — never an extra). */
   answersSubmitted: boolean;
+  /** R01: the allowance's topics whose answers the client still owes (planningState answersOwed). */
   interviewsOpen: number;
+  /** §6.4: when the client (or staff) explicitly chose this month's route; null = never chosen. */
+  chosenAtISO: string | null;
+  /** §6.4: "Schedule later" — kept as history; the booking step stays outstanding. */
+  deferredAtISO: string | null;
+  /** R01: the month through the one planning reader, or null when it could not be read. */
+  planning: MonthPlanning | null;
 };
+
+/** Steps past the answers stage: the material is in, or the script is. */
+const PAST_ANSWERS: ReadonlySet<PlanStep> = new Set<PlanStep>(["WRITING", "TEAM_REVIEW", "READY_FOR_YOU", "CHANGES_REQUESTED", "APPROVED", "FILMED"]);
 
 export async function portalPlanning(enrollment: { id: string; clientId: string }, monthId?: string | null): Promise<PortalPlanning | null> {
   const month = monthId
     ? await prisma.contentMonth.findFirst({ where: { id: monthId, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, historical: true } })
     : await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, historical: true } });
   if (!month) return null;
-  const { recalcProgramMonth, callModeOf } = await import("@/lib/programMonths");
-  const [r, e, record, interviews] = await Promise.all([
+  const { recalcProgramMonth } = await import("@/lib/programMonths");
+  const { planningForMonth } = await import("@/lib/planningFacts");
+  const [r, e, record, interviews, pf] = await Promise.all([
     recalcProgramMonth(month.id, { dryRun: true }),
     prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { callMode: true, strategyCallRequired: true, noCallEligible: true, timezone: true } }),
     prisma.programCallRecord.findFirst({
@@ -1440,10 +1567,15 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
       orderBy: { scheduledStart: "desc" }, select: { scheduledStart: true, scheduledEnd: true, meetLink: true, timezone: true },
     }),
     prisma.contentInterview.findMany({ where: { enrollmentId: enrollment.id, monthId: month.id }, select: { status: true, submittedAt: true } }),
+    planningForMonth(month.id).catch(() => null),
   ]);
   if (!r || !e) return null;
   const d = r.after;
-  const mode = callModeOf(e);
+  // The EFFECTIVE mode (§3: the first call is required, later ones optional) —
+  // the derivation's, so this card and the reminder evaluator agree.
+  const mode = d.callMode;
+  const planning = pf?.planning ?? null;
+  const inAllowance = planning?.topics.filter((t) => t.inAllowance) ?? [];
   return {
     monthId: month.id, monthKey: month.monthKey, callMode: mode, callStatus: d.strategyCallStatus,
     callAtISO: (record?.scheduledStart ?? d.strategyCallAt)?.toISOString() ?? null, callEndISO: record?.scheduledEnd?.toISOString() ?? null,
@@ -1451,8 +1583,13 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
     planningMode: d.planningMode, preparationStatus: d.preparationStatus, earliestSessionISO: d.earliestSessionAt?.toISOString() ?? null,
     // REQUIRED wins over any per-client flag; NOT_INCLUDED already IS the written path, so the offer is moot there.
     noCallEligible: mode === "OPTIONAL_WRITTEN" && e.noCallEligible !== false,
-    answersSubmitted: interviews.length > 0 && interviews.every((i) => i.status === "SUBMITTED" || !!i.submittedAt),
-    interviewsOpen: interviews.filter((i) => i.status !== "SUBMITTED" && !i.submittedAt).length,
+    // R01: counted over the allowance through the planning reader — an extra,
+    // or a topic the call already covered, is not an interview they owe.
+    answersSubmitted: planning ? inAllowance.length > 0 && inAllowance.every((t) => PAST_ANSWERS.has(t.step)) : interviews.length > 0 && interviews.every((i) => i.status === "SUBMITTED" || !!i.submittedAt),
+    interviewsOpen: planning ? planning.answersOwed : interviews.filter((i) => i.status !== "SUBMITTED" && !i.submittedAt).length,
+    chosenAtISO: pf?.chosenAt?.toISOString() ?? null,
+    deferredAtISO: pf?.deferredAt?.toISOString() ?? null,
+    planning,
   };
 }
 

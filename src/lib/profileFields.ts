@@ -237,7 +237,9 @@ export type ExtractedProposal = {
   confidential?: boolean;
 };
 export type CallKnowledgeContext = {
-  enrollmentId: string; clientId: string; targetMonthId: string; callRecordId?: string | null; transcriptSourceId?: string | null;
+  /** null for the one-time brand-discovery call (6.2, Sep 25 2026): it plans no month, so a
+   *  "this month only" fact from it has no month to belong to and is kept as permanent. */
+  enrollmentId: string; clientId: string; targetMonthId: string | null; callRecordId?: string | null; transcriptSourceId?: string | null;
   callDate: Date | null; unattended: boolean; sourceRef: string; runId?: string | null;
 };
 export type CallKnowledgeResult = { facts: number; confidentialFacts: number; proposals: number; fieldProposals: number; sectionProposals: number; confidentialProposals: number };
@@ -249,7 +251,7 @@ export async function applyCallKnowledge(o: CallKnowledgeContext, out: { facts?:
     const r = await createFact({
       clientId: o.clientId, enrollmentId: o.enrollmentId, category: f.category, fieldKey: f.fieldKey ?? null, body: f.body, source: "call", sourceRef: o.sourceRef, callRecordId: o.callRecordId ?? null, transcriptSourceId: o.transcriptSourceId ?? null,
       excerpt: f.excerpt ? [{ time: f.excerpt.time ?? null, speaker: f.excerpt.speaker, text: f.excerpt.text }] : null, speaker: f.speaker ?? f.excerpt?.speaker ?? null, factDate: o.callDate ?? new Date(),
-      scope: f.scope, monthId: f.scope === "MONTH" ? o.targetMonthId : null, confidential: f.confidential === true, confidence: typeof f.confidence === "number" ? f.confidence : null, aiRunId: o.runId ?? null, unattended: o.unattended,
+      scope: f.scope === "MONTH" && !o.targetMonthId ? "PERMANENT" : f.scope, monthId: f.scope === "MONTH" ? o.targetMonthId : null, confidential: f.confidential === true, confidence: typeof f.confidence === "number" ? f.confidence : null, aiRunId: o.runId ?? null, unattended: o.unattended,
     });
     if (!r.existed) { facts++; if (f.confidential) confidentialFacts++; }
     // A standing preference that CHANGED also proposes the change — for a

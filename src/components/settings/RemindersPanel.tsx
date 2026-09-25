@@ -69,6 +69,24 @@ const rowActionId = (r: DryRunRow) => `${r.monthId}#${laneOfRow(r)}`;
 const decisionTone = (d: string): "ok" | "warn" | "bad" | "muted" => (d === "send" ? "ok" : d === "wait" ? "warn" : d === "suppressed" ? "bad" : d === "escalate" ? "warn" : "muted");
 const stateTone = (s: string): "ok" | "warn" | "bad" | "muted" => (s === "SENT" ? "ok" : s === "QUEUED" || s === "PENDING" ? "warn" : s === "FAILED" || s === "BOUNCED" || s === "UNKNOWN" ? "bad" : "muted");
 
+/**
+ * 6.5 (Jordan, Sep 25 2026): the script-approval values in words, read from
+ * the policy JSON above so the sentence always matches what is saved or typed.
+ */
+function ScriptApprovalLine({ json }: { json: string }) {
+  type ScriptApprovalHours = { clientLeadHours?: number; deadlineHoursBefore?: number; deskTaskLeadHours?: number; ownerBellLeadHours?: number };
+  let sa: ScriptApprovalHours | null = null;
+  try { sa = (JSON.parse(json) as { scriptApproval?: ScriptApprovalHours }).scriptApproval ?? null; } catch { sa = null; }
+  if (!sa) return null;
+  return (
+    <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">
+      <strong className="text-foreground">Scripts before filming:</strong> one email {sa.clientLeadHours ?? 48} hours before the session (moved into office hours, Friday for a Monday shoot),
+      asking for approval {sa.deadlineHoursBefore ?? 24} hours before filming; Kyle gets a follow-up at {sa.deskTaskLeadHours ?? 24} hours and the scripts owner a bell at {sa.ownerBellLeadHours ?? 72} hours while
+      scripts are still with us. The session is never cancelled or moved. Edit <code>scriptApproval</code> above to change the hours.
+    </p>
+  );
+}
+
 export function RemindersPanel({ state }: { state: RemindersPanelState }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -119,6 +137,7 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
         {validation.ok && validation.errors.length === 0 && (
           <p className="text-xs text-success"><Check className="inline size-3" /> Valid shape.</p>
         )}
+        <ScriptApprovalLine json={json} />
         {validation.warnings.length > 0 && (
           <ul className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">{validation.warnings.map((w) => <li key={w}>• {w}</li>)}</ul>
         )}
@@ -157,7 +176,9 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
                         <td className="px-2 py-1.5 text-muted">{r.reason}{r.to ? ` → ${r.to}` : ""}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-muted">{fmt(r.nextEligibleAt)}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
-                          {r.action && (
+                          {/* APPROVE_SCRIPTS rows (6.5) are per session and read-only here:
+                              the buttons below act on a month's planning lane. */}
+                          {r.action && r.action !== "APPROVE_SCRIPTS" && (
                             <span className="flex gap-1">
                               <Btn busy={pending} title={`Render the text + a portal link to paste yourself (records an attempt). Acts on this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} lane.`} onClick={() => start(async () => { const c = await copyReminderLinkAction(rowActionId(r)); setMsg({ ok: c.ok, text: c.message }); if (c.ok && c.link && c.body) setCopied({ monthId: r.monthId, link: c.link, body: c.body }); })}><Copy className="size-3" /> Copy link</Btn>
                               <Btn busy={pending} title={`Owner only. Still blocked while the switch is off; still holds outside the send window. Sends this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} message.`} onClick={() => run(() => sendReminderNowAction(rowActionId(r)))}><Send className="size-3" /> Send now</Btn>

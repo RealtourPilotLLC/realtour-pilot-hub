@@ -275,6 +275,10 @@ export type PipelineRow = {
   projectId: string;
   title: string;
   status: string; // EDITING | REVIEW | REVISION
+  /** EDITING rows only: who is actually on it (§7.1) — "In editing — Kim since 9:40am",
+   *  "Paused — Kim …" or "In editing — not confirmed". The stage alone is not work:
+   *  paused, board-dragged and never-started jobs all sit at EDITING. Null otherwise. */
+  workWord: string | null;
   clientName: string | null;
   clientAvatarUrl: string | null; // see OpsShoot.clientAvatarUrl
   services: string[];
@@ -801,8 +805,14 @@ export async function buildOpsDay(): Promise<OpsDay> {
     };
   });
 
+  // The row's chip read the STAGE, so Jordan's home could say "0 being edited
+  // now" above five rows marked "editing" (batch-2 review, Sep 25 2026). The
+  // same reader as the pill, the queue and the Working-now panel.
+  const { workStateFor, workLabel } = await import("@/lib/editorWork");
+  const pipelineWork = await workStateFor(pipelineProjects.filter((p) => p.status === "EDITING").map((p) => p.id)).catch(() => new Map());
   const pipelineRows: PipelineRow[] = pipelineProjects.map((p) => {
     const { ev, qc: e } = parseEvidence(p.statusEvidence);
+    const w = p.status === "EDITING" ? workLabel("EDITING", pipelineWork.get(p.id), { now }) : null;
     const brief = p.revisionBriefs[0] ?? null;
     let items: string[] = [];
     if (p.status === "REVISION" && brief?.itemsJson) {
@@ -817,6 +827,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
       projectId: p.id,
       title: p.title.split(",")[0],
       status: p.status,
+      workWord: w ? (w.label === "In editing" && w.chip ? `In editing — ${w.chip}` : w.label === "Paused" ? w.chip ?? "Paused" : w.label) : null,
       // WHO the job is for and WHAT was ordered — Jordan: the pipeline check
       // "should have more details on who it is, what it's for."
       clientName: p.client?.name ?? null,

@@ -53,8 +53,14 @@ export async function ensureOnboardingRecord(enrollmentId: string): Promise<{ id
   if (!e) throw new Error("Enrollment not found.");
   const existing = await prisma.programOnboarding.findUnique({ where: { enrollmentId }, select: { id: true } });
   if (existing) return { id: existing.id, created: false };
-  const row = await prisma.programOnboarding.create({ data: { enrollmentId, clientId: e.clientId }, select: { id: true } });
-  return { id: row.id, created: true };
+  // ON CONFLICT DO NOTHING, then read (Sep 25 2026): two activations of one
+  // enrollment (two checkouts from one buyer, now serialised onto the SAME
+  // enrollment by stripeSignups' buyer lock) reach here together, and the
+  // loser's plain create threw a unique violation that failed its whole
+  // discovery step. Whoever inserts, both return the one row.
+  const inserted = await prisma.programOnboarding.createMany({ data: [{ enrollmentId, clientId: e.clientId }], skipDuplicates: true });
+  const row = await prisma.programOnboarding.findUniqueOrThrow({ where: { enrollmentId }, select: { id: true } });
+  return { id: row.id, created: inserted.count === 1 };
 }
 
 /** Discovery is waivable only explicitly, with a reason (spec §21 / schema row). */
@@ -227,6 +233,47 @@ export async function onProgramActivated(
       : { outcome: "booked", detail: `discovery call ${booking.id} (${booking.status}) linked; the scheduling task is closed` };
   }
 
+  // PAYER ≠ INVITEE, DISCOVERY BOOKED FIRST (unified handoff §6.1, Sep 25
+  // 2026). No booking carries this client, but one may be theirs under another
+  // address (candidateDiscoveryBookingsFor says why). Asking Kyle to "book the
+  // call" would chase a client who has booked it, so the SAME task (same key,
+  // so the match still closes it) asks him to confirm the booking instead. The
+  // address is proposed as an alias, exactly as the conflict branch above does,
+  // so there is something on Settings for him to verify; verifying it is what
+  // makes the next sync MATCH the booking. Nothing here matches or merges.
+  const maybe = await (async () => {
+    try {
+      const { candidateDiscoveryBookingsFor, proposeClientEmailAlias } = await import("@/lib/contentCallRecords");
+      const rows = await candidateDiscoveryBookingsFor(enrollment.clientId);
+      for (const r of rows) if (r.inviteeEmail) await proposeClientEmailAlias(enrollment.clientId, enrollmentId, r.inviteeEmail, "signup").catch(() => {});
+      return rows;
+    } catch {
+      return [];
+    }
+  })();
+  if (maybe.length) {
+    if (isTest) return { outcome: "skipped", detail: "TEST client — no desk task raised" };
+    const when = (d: Date | null) => (d ? `${d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET` : "time not given");
+    await openProgramDeskTask({
+      dedupeKey: `${DISCOVERY_TASK_PREFIX}${enrollmentId}`,
+      clientId: enrollment.clientId,
+      clientName: client?.name ?? "",
+      title: `Confirm the discovery booking is ${client?.name ?? "this client"}'s`,
+      lines: [
+        "A Content Program signup is paid and active. A brand discovery call was booked from a different email address, so the hub cannot be sure it is theirs, and nobody should ask them to book again.",
+        ...maybe.map((m) => `Booked by: ${m.inviteeName ?? "name not given"} <${m.inviteeEmail ?? "no email"}> for ${when(m.scheduledStart)} (call record ${m.id})`),
+        opts.payerEmail ? `Paid by: ${opts.payerName ?? "name not given at checkout"} <${opts.payerEmail}>` : "The checkout carried no email address.",
+        opts.checkoutId ? `Stripe checkout ${opts.checkoutId}` : "",
+        "If the booking is theirs: on Settings → Calendly & calls, verify the booking address as their alias (or confirm the call for them). The next hourly sync then matches it and this task closes itself.",
+        "If it is not theirs: they still need to book, and this task stays open until a booking appears on their record.",
+      ].filter(Boolean),
+      assignedKey: "kyle",
+      reasonCreated: "A paid Content Program signup may already have a discovery booking under another address",
+      reopenIfClosed: true,
+    });
+    return { outcome: "task_open", detail: `a discovery booking from ${maybe.map((m) => m.inviteeEmail ?? "an unknown address").join(", ")} may be theirs — Kyle confirms it` };
+  }
+
   if (isTest) return { outcome: "skipped", detail: "TEST client — no desk task raised" };
   await openProgramDeskTask({
     dedupeKey: `${DISCOVERY_TASK_PREFIX}${enrollmentId}`,
@@ -325,7 +372,11 @@ export async function advanceOnboarding(enrollmentId: string, opts: { now?: Date
       // only ever a DRAFT — nothing here approves, activates or releases it, so
       // an existing approved strategy is never replaced by this.
       const alreadyDrafted = (await prisma.contentStrategyVersion.count({ where: { enrollmentId, callRecordId: call.id } })) > 0;
-      if (opts.enqueue && !alreadyDrafted) {
+      // A04 (Sep 25 2026): AMBIGUOUS_CLIENT stays in `calls` so the record
+      // keeps its pin and its rung, but a call whose owner is in question
+      // queues no client-facing work — it waits for a person to confirm.
+      const verified = call.matchState === "MATCHED" || call.matchState === "CONFIRMED_BY_STAFF";
+      if (opts.enqueue && !alreadyDrafted && verified) {
         const job = await enqueueTranscriptJob({ callRecordId: call.id, kind: "STRATEGY_DRAFT", enrollmentId, requestedBy: opts.requestedBy ?? "onboarding" });
         if (job.created) actions.push(`STRATEGY_DRAFT job queued (${job.id})`);
       }
@@ -342,10 +393,16 @@ export async function advanceOnboarding(enrollmentId: string, opts: { now?: Date
   const callDraft = call
     ? await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId, callRecordId: call.id, sourceKind: "discovery_call" }, orderBy: { versionNo: "desc" } })
     : null;
-  const draft = callDraft ?? (ob.strategyDraftVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: ob.strategyDraftVersionId } }) : null);
+  // THE DRAFT IN REVIEW IS THE NEWEST EDIT OF IT (A08, Sep 25 2026). Jordan's
+  // hand edit or feedback revision of the AI draft is a new version based on
+  // it; re-reading "the call's draft" every sweep pointed the record straight
+  // back at v1 and would have rung the bell for a draft he had already worked.
+  const draft = (callDraft ? await newestDescendant(callDraft) : null) ?? (ob.strategyDraftVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: ob.strategyDraftVersionId } }) : null);
   if (draft) {
     const newlyRecorded = draft.id !== ob.strategyDraftVersionId;
-    if (newlyRecorded) { data.strategyDraftVersionId = draft.id; data.strategyGenerationRunId = draft.aiRunId; actions.push(`draft v${draft.versionNo} recorded`); }
+    // The generation run is the discovery draft's; a hand edit (no run) or a
+    // feedback revision does not replace that pointer.
+    if (newlyRecorded) { data.strategyDraftVersionId = draft.id; if (draft.sourceKind === "discovery_call") data.strategyGenerationRunId = draft.aiRunId; actions.push(`draft v${draft.versionNo} recorded`); }
     raise("STRATEGY_DRAFTED");
     const missing = missingItemsFrom(draft.sectionsJson);
     data.missingItemsJson = JSON.stringify(missing);
@@ -415,6 +472,24 @@ export async function advanceOnboarding(enrollmentId: string, opts: { now?: Date
   if (status !== ob.status) { data.status = status; actions.push(`${ob.status} → ${status}`); }
   if (Object.keys(data).length) await prisma.programOnboarding.update({ where: { id }, data });
   return { id, from, to: status, actions };
+}
+
+type VersionRow = NonNullable<Awaited<ReturnType<typeof prisma.contentStrategyVersion.findUnique>>>;
+/**
+ * The newest non-rejected version whose basedOn chain reaches `root` — the
+ * AI draft as edited since — or `root` itself. Bounded: a strategy has tens
+ * of versions, not thousands.
+ */
+async function newestDescendant(root: VersionRow): Promise<VersionRow> {
+  const later = await prisma.contentStrategyVersion.findMany({ where: { strategyId: root.strategyId, versionNo: { gt: root.versionNo } }, orderBy: { versionNo: "asc" }, take: 200 });
+  const inLine = new Set([root.id]);
+  let best: VersionRow = root;
+  for (const v of later) {
+    if (!v.basedOnVersionId || !inLine.has(v.basedOnVersionId)) continue;
+    inLine.add(v.id);
+    if (v.status !== "REJECTED") best = v;
+  }
+  return best;
 }
 
 /** The "Gaps the draft could not fill" section, as items — explicit, never padded. */
@@ -500,7 +575,7 @@ export async function reconcileDiscoveryTasks(max = 25): Promise<number> {
  * A user action (unattended=false), so it runs while the switches are off;
  * the result is still a DRAFT that Jordan reviews.
  */
-export async function draftStrategyNow(enrollmentId: string, by: string): Promise<{ versionId: string; versionNo: number; gaps: number }> {
+export async function draftStrategyNow(enrollmentId: string, by: string): Promise<{ versionId: string; versionNo: number; gaps: number; stripped: number; analysed: boolean }> {
   const { id } = await ensureOnboardingRecord(enrollmentId);
   const ob = await prisma.programOnboarding.findUnique({ where: { id } });
   const call = ob?.discoveryCallRecordId
@@ -508,13 +583,20 @@ export async function draftStrategyNow(enrollmentId: string, by: string): Promis
     : await prisma.programCallRecord.findFirst({ where: { enrollmentId, callType: "BRAND_DISCOVERY", transcriptState: { in: ["CONFIRMED", "ANALYZED"] } }, orderBy: { scheduledStart: "desc" } });
   if (!call || !call.clientId) throw new Error("No brand-discovery call with a confirmed transcript is on file for this client.");
   if (call.callType !== "BRAND_DISCOVERY") throw new Error("Only a brand-discovery call drafts the strategy — a monthly call never replaces the brand foundation.");
+  if (call.matchState !== "MATCHED" && call.matchState !== "CONFIRMED_BY_STAFF") throw new Error("Whose call this is is in question — confirm the client on Settings → Calendly & calls first.");
   const sources = await prisma.programTranscriptSource.findMany({ where: { callRecordId: call.id, matchState: "CONFIRMED", text: { not: null } }, orderBy: { version: "desc" }, select: { text: true } });
   const transcript = sources.map((s) => s.text ?? "").filter(Boolean).join("\n\n----\n\n");
   if (transcript.trim().length < 200) throw new Error("The confirmed transcript is empty or a stub — paste or upload the real one first.");
-  const r = await draftStrategyFromTranscript({ enrollmentId, clientId: call.clientId, transcript, callRecordId: call.id, intakeText: ob?.intakeJson ?? null, requestedBy: by, unattended: false });
+  // A09: a person may draft before the call's analysis has run (with the
+  // switches off it never runs). The transcript is still scrubbed of marked
+  // and "said in confidence" lines, but confidential FACTS the analysis would
+  // have marked are not known yet — the caller says so.
+  const { discoveryAnalysisDone } = await import("@/lib/contentGeneration");
+  const analysed = await discoveryAnalysisDone(call.id, call.transcriptState, call.rawJson);
+  const r = await draftStrategyFromTranscript({ enrollmentId, clientId: call.clientId, transcript, callRecordId: call.id, callDate: call.scheduledStart, intakeText: ob?.intakeJson ?? null, requestedBy: by, unattended: false });
   await prisma.programOnboarding.update({ where: { id }, data: { strategyDraftVersionId: r.versionId, strategyGenerationRunId: r.runId, status: rank(ob?.status ?? "NOT_STARTED") < rank("STRATEGY_DRAFTED") ? "STRATEGY_DRAFTED" : undefined } });
   await advanceOnboarding(enrollmentId, { enqueue: false, requestedBy: by });
-  return { versionId: r.versionId, versionNo: r.versionNo, gaps: r.gaps };
+  return { versionId: r.versionId, versionNo: r.versionNo, gaps: r.gaps, stripped: r.stripped, analysed };
 }
 
 /**
@@ -528,7 +610,12 @@ export async function releaseStrategyToPortal(strategyVersionId: string, by: str
   if (v.status !== "APPROVED") throw new Error("Approve the version before releasing it.");
   if (!v.releasedAt) await releaseStrategyVersion(strategyVersionId, by);
   const notice = await queueStrategyReadyNotice({ enrollmentId: v.enrollmentId, strategyVersionId, by });
-  await advanceOnboarding(v.enrollmentId, { enqueue: false, requestedBy: by }).catch(() => {});
+  // A08: this is now the Release button for EVERY client, so it records the
+  // release on an onboarding that exists and never mints one for a client who
+  // was never onboarded here (the eleven lifted strategies).
+  if (await prisma.programOnboarding.findUnique({ where: { enrollmentId: v.enrollmentId }, select: { id: true } })) {
+    await advanceOnboarding(v.enrollmentId, { enqueue: false, requestedBy: by }).catch(() => {});
+  }
   if (!notice) return { released: true, email: "suppressed", message: "Released to the portal. Email suppressed: script_share_email is off — launch is not authorised." };
   return { released: true, email: "queued", message: notice.created ? "Released to the portal; the 'strategy ready' email is queued." : "Released to the portal; the email was already queued." };
 }

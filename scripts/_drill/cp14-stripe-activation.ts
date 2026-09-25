@@ -41,6 +41,24 @@
 //  12. A Stripe row left ERROR is replayed by webhookRetry.
 //  13. Docs guard: every doc naming /api/webhooks/stripe has a route behind it.
 //
+// Extended Sep 25 2026 (unified handoff §6.1 + Stripe webhook readiness; OLD
+// is f2555f7's stripeSignups, loaded from git the same way):
+//  14. PRICE FIRST. OLD: a renamed product on a known price is "not_program"
+//      (a paying client silently ignored), and a known program product on an
+//      unknown price with an odd name is too. NEW: the known price activates
+//      it with no note; an unknown price on a "Video Pro" name parks for review
+//      with the "unrecognised price" note and one bell; the two Accelerator
+//      M2M prices both land MONTH_TO_MONTH with billingRate = what was paid; a
+//      known product on an unknown price is claimed and parked, never silence;
+//      a coupon is noted and does not park.
+//  15. Poll truncation: a 5th page that still has_more says truncated:true.
+//  16. The webhook card's secret: the tester refuses a malformed whsec_ (and
+//      never repeats it), saves a good one, and the receiver then verifies with
+//      it. The coverage bell: a poll-only activation of a checkout older than
+//      15 minutes, opened after the secret was saved, with no webhook row, rings
+//      ONE owner bell and counts it; a second pass rings none; a delivered
+//      checkout, a checkout older than the secret, and no secret at all ring none.
+//
 // ISOLATION: PGlite on 127.0.0.1:5521 via the shared harness. Stripe, Google's
 // token endpoint and Gmail's send are FAKES answering inside the fence (GET-
 // only for Stripe; a write to Stripe is refused); nothing else may leave.
@@ -70,6 +88,8 @@ const products = new Map<string, string>();
 const subs = new Map<string, { id: string; status: string; billing_cycle_anchor: number }>();
 const stripeWrites: string[] = [];
 let sessionFetches = 0;
+let listHasMore = false; // §15: make every list page say there is more
+let listCalls = 0;
 
 // ---- the fake Gmail (token + send) -------------------------------------------
 type Mail = { to: string; subject: string; body: string };
@@ -95,8 +115,9 @@ const fence = fenceFetch(async (url, init) => {
   if ((init?.method ?? "GET").toUpperCase() !== "GET") { stripeWrites.push(url); return json({ error: { message: "drill: the hub never writes to Stripe" } }, 405); }
   const p = u.pathname;
   if (p === "/v1/checkout/sessions") {
+    listCalls++;
     const gte = Number(u.searchParams.get("created[gte]") ?? 0);
-    return json({ data: [...sessions.values()].filter((s) => s.created >= gte).sort((a, b) => b.created - a.created), has_more: false });
+    return json({ data: [...sessions.values()].filter((s) => s.created >= gte).sort((a, b) => b.created - a.created), has_more: listHasMore });
   }
   let m = /^\/v1\/checkout\/sessions\/([^/]+)$/.exec(p);
   if (m) { sessionFetches++; const s = sessions.get(m[1]); return s ? json(s) : json({ error: { message: "No such checkout.session" } }, 404); }
@@ -110,13 +131,18 @@ const fence = fenceFetch(async (url, init) => {
 let seq = 0;
 const nowSec = () => Math.floor(Date.now() / 1000);
 function addProduct(name: string): string { const id = `prod_drill${++seq}`; products.set(id, name); return id; }
-function addSession(o: { name: string | null; email: string | null; product: string; amount?: number; mode?: string; status?: string; payment_status?: string; created?: number; subscription?: string | null }): FakeSession {
+// The real catalogue price a drill product sells at (Sep 25 2026: activation
+// reads the PRICE first, so a program checkout on an invented price id parks
+// for review — which is now the right answer for an unknown price, and the
+// wrong fixture for every section that means "a normal signup").
+const PRICE_OF = new Map<string, string>();
+function addSession(o: { name: string | null; email: string | null; product: string; price?: string; amount?: number; mode?: string; status?: string; payment_status?: string; created?: number; subscription?: string | null }): FakeSession {
   const id = `cs_live_drill${String(++seq).padStart(4, "0")}${crypto.randomBytes(3).toString("hex")}`;
   const s: FakeSession = {
     id, object: "checkout.session", status: o.status ?? "complete", payment_status: o.payment_status ?? "paid", mode: o.mode ?? "subscription",
     amount_total: o.amount ?? 149900, created: o.created ?? nowSec() - 600, customer: `cus_drill${seq}`, subscription: o.subscription ?? null,
     customer_details: { email: o.email, name: o.name, phone: null },
-    line_items: { data: [{ description: products.get(o.product) ?? "?", price: { id: `price_drill${seq}`, product: o.product } }] },
+    line_items: { data: [{ description: products.get(o.product) ?? "?", price: { id: o.price ?? PRICE_OF.get(o.product) ?? `price_drill${seq}`, product: o.product } }] },
   };
   sessions.set(id, s);
   return s;
@@ -136,7 +162,22 @@ function writeBaseCopies(): { dir: string; signups: string } {
   return { dir, signups };
 }
 
+/** `commit`'s copies of `files` (paths under src/, no extension), wired to each
+ *  other; every other `@/` import aimed at this tree. */
+function oldCopies(commit: string, files: string[]): { dir: string; at: (f: string) => string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cp14-${commit}-`));
+  fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
+  const at = (f: string) => path.join(dir, `${f.replace(/\//g, "_")}.old.ts`);
+  for (const f of files) {
+    const src = execFileSync("git", ["show", `${commit}:src/${f}.ts`], { cwd: REPO, encoding: "utf8" });
+    fs.writeFileSync(at(f), src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${files.includes(p) ? at(p) : path.join(REPO, "src", p)}${q}`));
+  }
+  return { dir, at };
+}
+const OLD_BASE = "f2555f7"; // pinned: the commit batch 2 starts from
+
 async function main() {
+  delete process.env.STRIPE_WEBHOOK_SECRET; // the receiver's second source; only the Connection row is under test
   const { stop } = await bootDrillDb({ port: PORT });
   const quiet = quietPrismaErrors();
   const c = makeChecker();
@@ -156,6 +197,8 @@ async function main() {
   await prisma.programCalendlyEventMapping.create({ data: { eventTypeUri: "https://api.calendly.com/event_types/drill-discovery", eventName: "Brand discovery", publicUrl: "https://calendly.com/realtourpilot/brand-discovery", purpose: "BRAND_DISCOVERY", enabled: true, validationStatus: "VALID" } });
   const ACC_1Y = addProduct("Video Accelerator - 1-Year Commitment");
   const START_M2M = addProduct("Video Starter — Month-to-Month");
+  PRICE_OF.set(ACC_1Y, "price_1ToRWNRrlUAkQjeVnlqXzQZp"); // $1,499 — the default amount below
+  PRICE_OF.set(START_M2M, "price_1ToRRzRrlUAkQjeVchi3zx8W"); // $1,299
   const PHOTO = addProduct("Listing Photos — 25 images");
 
   const signupRow = (checkoutId: string) => prisma.programSignup.findUnique({ where: { checkoutId } });
@@ -468,6 +511,170 @@ async function main() {
     c.ok("the 'authorize me and I will create it' offer is gone", !/Alternatively, authorize me/i.test(now));
     c.ok("the docs state polling and its real delay", /every hour at :00/.test(now) && /within the hour/.test(now));
   }
+
+  // =========================================================================
+  c.head("14 · price first: the verified catalogue decides, the name is only a fallback");
+  // =========================================================================
+  const old = oldCopies(OLD_BASE, ["lib/stripeSignups"]);
+  const oldSs = (await import(old.at("lib/stripeSignups"))) as { processCheckoutSession: typeof ss.processCheckoutSession; sweepStripeSignups: () => Promise<Record<string, unknown>> };
+  const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+  const bellsFor = (checkoutId: string) => prisma.notification.count({ where: { dedupeKey: { startsWith: `signup-${checkoutId}-` } } });
+  const enrollmentOf = async (checkoutId: string) => {
+    const r = await signupRow(checkoutId);
+    return r?.enrollmentId ? prisma.contentEnrollment.findUnique({ where: { id: r.enrollmentId } }) : null;
+  };
+  {
+    // (a) A product renamed in Stripe, on a price the hub knows by heart.
+    const RENAMED = addProduct("Content Accelerator 1-Year");
+    const s = addSession({ name: "Rena Renamed", email: "rena.renamed@example.com", product: RENAMED, price: "price_1ToRWNRrlUAkQjeVnlqXzQZp", amount: 149900 });
+    const o = await oldSs.processCheckoutSession(clone(s), "poll");
+    c.ok("OLD: a renamed product on a known price is 'not_program' — a paying client ignored, no row", o === "not_program" && (await prisma.programSignup.count({ where: { checkoutId: s.id } })) === 0, o);
+    const n = await ss.processCheckoutSession(clone(s), "poll");
+    const row = await signupRow(s.id);
+    const e = await enrollmentOf(s.id);
+    c.ok("NEW: it activates, ACTIVATED, with no note", n === "activated" && row?.status === "ACTIVATED" && row.note == null, `${n} ${row?.status} ${row?.note}`);
+    c.ok("NEW: as Accelerator MONTHLY_CONTRACT 12 — from the price, not the name", e?.package === "Accelerator" && e.billingType === "MONTHLY_CONTRACT" && e.billingMonths === 12, `${e?.package} ${e?.billingType} ${e?.billingMonths}`);
+  }
+  {
+    // (b) An unknown price on a "Video Pro" name: the name still works, but a person confirms.
+    const PRO = addProduct("Video Pro — Month-to-Month");
+    const s = addSession({ name: "Uma Unknown", email: "uma.unknown@example.com", product: PRO, price: "price_drillUnknownPro01", amount: 380000 });
+    const n = await ss.processCheckoutSession(clone(s), "poll");
+    const row = await signupRow(s.id);
+    const e = await enrollmentOf(s.id);
+    c.ok("an unknown price activates from the name, parked NEEDS_REVIEW", n === "activated" && row?.status === "NEEDS_REVIEW" && e?.package === "Pro" && e.billingType === "MONTH_TO_MONTH", `${n} ${row?.status} ${e?.package} ${e?.billingType}`);
+    c.ok("… with the 'unrecognised price' note naming the price", /Unrecognised price price_drillUnknownPro01/.test(row?.note ?? ""), row?.note ?? "");
+    const bell = await prisma.notification.findFirst({ where: { dedupeKey: { startsWith: `signup-${s.id}-` } } });
+    c.ok("… and ONE owner bell that says it needs a look", (await bellsFor(s.id)) === 1 && /needs a look/.test(bell?.body ?? ""), bell?.body ?? "");
+  }
+  {
+    // (c) The two live Accelerator month-to-month prices.
+    const M2M = addProduct("Video Accelerator — Month-to-Month");
+    const a = addSession({ name: "Mia Fifteen", email: "mia.1599@example.com", product: M2M, price: "price_1U2ue2RrlUAkQjeVSGwsZXpB", amount: 159900 });
+    const b = addSession({ name: "Moe Sixteen", email: "moe.1699@example.com", product: M2M, price: "price_1ToRVeRrlUAkQjeVGVfJSGkR", amount: 169900 });
+    await ss.processCheckoutSession(clone(a), "poll");
+    await ss.processCheckoutSession(clone(b), "poll");
+    const ea = await enrollmentOf(a.id);
+    const eb = await enrollmentOf(b.id);
+    c.ok("$1599 and $1699 both land Accelerator MONTH_TO_MONTH", ea?.package === "Accelerator" && ea.billingType === "MONTH_TO_MONTH" && eb?.package === "Accelerator" && eb.billingType === "MONTH_TO_MONTH");
+    c.ok("… billingRate is what each paid (1599 / 1699), and neither is parked", ea?.billingRate === 1599 && eb?.billingRate === 1699 && (await signupRow(a.id))?.status === "ACTIVATED" && (await signupRow(b.id))?.status === "ACTIVATED", `${ea?.billingRate} ${eb?.billingRate}`);
+  }
+  {
+    // (d) A known program PRODUCT, an unknown price, and a name nobody would parse.
+    products.set("prod_Uo3fPtSRRQuBSQ", "Legacy bundle (renamed)");
+    const s = addSession({ name: "Kit Knownproduct", email: "kit.kp@example.com", product: "prod_Uo3fPtSRRQuBSQ", price: "price_drillNewProPrice", amount: 360000 });
+    const o = await oldSs.processCheckoutSession(clone(s), "poll");
+    c.ok("OLD: a known program product on a new price with an odd name is 'not_program' — silence", o === "not_program" && (await prisma.programSignup.count({ where: { checkoutId: s.id } })) === 0, o);
+    const n = await ss.processCheckoutSession(clone(s), "poll");
+    const row = await signupRow(s.id);
+    const e = await enrollmentOf(s.id);
+    c.ok("NEW: claimed and parked NEEDS_REVIEW, terms from the product's catalogue row (Pro M2M)", n === "activated" && row?.status === "NEEDS_REVIEW" && /Unrecognised price/.test(row.note ?? "") && e?.package === "Pro" && e.billingType === "MONTH_TO_MONTH", `${n} ${row?.status} ${e?.package}`);
+  }
+  {
+    // (e) A coupon: a known price, paid below list. Noted, not parked.
+    const START_1Y = addProduct("Video Starter — 1-Year Commitment");
+    const s = addSession({ name: "Cody Coupon", email: "cody.coupon@example.com", product: START_1Y, price: "price_1ToRTeRrlUAkQjeVRfr0qRRP", amount: 99900 });
+    await ss.processCheckoutSession(clone(s), "poll");
+    const row = await signupRow(s.id);
+    const e = await enrollmentOf(s.id);
+    c.ok("a payment below list is ACTIVATED with an informational note", row?.status === "ACTIVATED" && /Paid \$999 against the list price of \$1,199/.test(row.note ?? ""), `${row?.status} ${row?.note}`);
+    c.ok("… billingRate is what was paid, and the bell does not say 'needs a look'", e?.billingRate === 999 && !/needs a look/.test((await prisma.notification.findFirst({ where: { dedupeKey: { startsWith: `signup-${s.id}-` } } }))?.body ?? ""));
+  }
+  {
+    // Pure: the resolution order itself.
+    const cat = { price_x: { productId: "prod_x", productName: "X", package: "Starter" as const, billingType: "TRIAL" as const, billingMonths: 1, amountCents: 1000 } };
+    const byPrice = ss.programTermsFor({ priceId: "price_x", productId: "prod_other", name: "Video Pro — Pay in Full", recurring: false, amountCents: 1000 }, cat);
+    const byName = ss.programTermsFor({ priceId: "price_y", productId: "prod_y", name: "Listing Photos", recurring: false, amountCents: 1000 }, cat);
+    c.ok("programTermsFor: the price beats the name; a non-program name is null", byPrice?.source === "price" && byPrice.terms.package === "Starter" && byName === null);
+  }
+
+  // =========================================================================
+  c.head("15 · a poll that stops at page 5 says so");
+  // =========================================================================
+  {
+    listHasMore = true;
+    const before = listCalls;
+    const oldR = await oldSs.sweepStripeSignups();
+    c.ok("OLD: the 5th page's has_more is dropped — no 'truncated' in the result", !("truncated" in oldR), JSON.stringify(oldR));
+    const mid = listCalls;
+    const r = await ss.sweepStripeSignups();
+    c.ok("NEW: truncated:true after 5 pages (CronRun.summary carries every step's result)", r.truncated === true && listCalls - mid === 5 && mid - before === 5, `${JSON.stringify(r)} pages ${listCalls - mid}`);
+    listHasMore = false;
+    c.ok("… and false when Stripe has no more", (await ss.sweepStripeSignups()).truncated === false);
+  }
+
+  // =========================================================================
+  c.head("16 · the webhook card's secret, and the coverage bell");
+  // =========================================================================
+  {
+    const { connectApiKey } = await import("@/app/connections/actions");
+    const { getSecret, disconnect } = await import("@/lib/integrations/connections");
+    const form = (key: string) => { const f = new FormData(); f.set("provider", "stripe_webhook"); f.set("key", key); return f; };
+    const before = await getSecret("stripe_webhook");
+    const badValue = "whsec_tooShort";
+    const bad = await connectApiKey(null, form(badValue));
+    const bad2 = await connectApiKey(null, form(["sk", "live", "notAWebhookSecretAtAll123456"].join("_") /* built at run time: a literal trips GitHub push protection */));
+    c.ok("a malformed whsec_ is refused by the tester, and nothing is saved", !bad.ok && !bad2.ok && (await getSecret("stripe_webhook")) === before, bad.message);
+    c.ok("… and the refusal never repeats the value", !bad.message.includes(badValue) && !bad2.message.includes("sk_live_notAWebhook"));
+    const GOOD = `whsec_${crypto.randomBytes(24).toString("hex")}`;
+    const good = await connectApiKey(null, form(GOOD));
+    c.ok("a well-formed secret is saved encrypted, and the message does not echo it", good.ok && (await getSecret("stripe_webhook")) === GOOD && !good.message.includes(GOOD), good.message);
+    const row = await prisma.connection.findUniqueOrThrow({ where: { provider: "stripe_webhook" } });
+    c.ok("… the stored column is ciphertext, not the value", !!row.secretEncrypted && !row.secretEncrypted.includes(GOOD.slice(6)) && row.accountLabel === "Stripe webhook signing secret");
+
+    const { POST } = await import("@/app/api/webhooks/stripe/route");
+    const { NextRequest } = await import("next/server");
+    const viaCard = addSession({ name: "Vic Viacard", email: "vic.viacard@example.com", product: ACC_1Y });
+    const raw = JSON.stringify({ id: "evt_drill_card_secret", object: "event", type: "checkout.session.completed", livemode: true, created: nowSec(), data: { object: { id: viaCard.id, object: "checkout.session" } } });
+    const t = nowSec();
+    const res = await POST(new NextRequest("http://127.0.0.1/api/webhooks/stripe", { method: "POST", body: raw, headers: { "stripe-signature": `t=${t},v1=${crypto.createHmac("sha256", GOOD).update(`${t}.${raw}`).digest("hex")}` } }));
+    const ev = await prisma.webhookEvent.findFirst({ where: { provider: "stripe", externalId: "evt_drill_card_secret" } });
+    c.ok("the receiver verifies with the secret the card saved: 200, PROCESSED, activated by webhook", res.status === 200 && ev?.status === "PROCESSED" && (await signupRow(viaCard.id))?.activatedVia === "webhook", `${res.status} ${ev?.status}`);
+
+    // The secret was "saved" two hours ago, so checkouts opened since then are ones Stripe should have delivered.
+    // (A JS Date, not SQL now(): the column is a UTC timestamp without a zone,
+    // and the database session's own zone must not shift it.)
+    await prisma.connection.update({ where: { provider: "stripe_webhook" }, data: { updatedAt: new Date(Date.now() - 2 * 3600_000) } });
+    c.ok("(setup) the secret now reads as saved two hours ago", Math.abs((await prisma.connection.findUniqueOrThrow({ where: { provider: "stripe_webhook" } })).updatedAt.getTime() - (Date.now() - 2 * 3600_000)) < 60_000);
+    const missedBells = () => prisma.notification.count({ where: { dedupeKey: { startsWith: "stripe-webhook-missed:" } } });
+    const counter = async () => {
+      const v = (await prisma.appSetting.findUnique({ where: { key: ss.WEBHOOK_COVERAGE_KEY } }))?.value;
+      return v ? (JSON.parse(v) as { missed: number }).missed : 0;
+    };
+    const baseline = await missedBells();
+    c.ok("no coverage bell has rung in any earlier section (young checkouts, or no secret)", baseline === 0, String(baseline));
+
+    const missed = addSession({ name: "Moira Missed", email: "moira.missed@example.com", product: ACC_1Y, created: nowSec() - 30 * 60 });
+    await ss.sweepStripeSignups();
+    const bell = await prisma.notification.findFirst({ where: { dedupeKey: { startsWith: `stripe-webhook-missed:${missed.id}` } } });
+    c.ok("a poll-only activation, 30 min old, no webhook row → ONE owner bell, counted", (await missedBells()) === 1 && !!bell && (await counter()) === 1 && (await signupRow(missed.id))?.activatedVia === "poll", bell?.title);
+    c.ok("… the bell is the owner's, has no amount, and points at Connections", bell?.href === "/connections" && !/\$|\d{3,}/.test(bell.body ?? "") && bell.audience === JSON.stringify(["OWNER"]), `${bell?.audience} ${bell?.body}`);
+    await ss.sweepStripeSignups();
+    c.ok("a second pass rings none", (await missedBells()) === 1 && (await counter()) === 1);
+
+    const delivered = addSession({ name: "Del Delivered", email: "del.delivered@example.com", product: ACC_1Y, created: nowSec() - 30 * 60 });
+    await prisma.webhookEvent.create({ data: { provider: "stripe", eventType: "checkout.session.completed", externalId: "evt_drill_errored", payload: JSON.stringify({ id: "evt_drill_errored", type: "checkout.session.completed", objectId: delivered.id, livemode: true, created: nowSec() }), status: "ERROR", error: "drill: the handler failed" } });
+    await ss.sweepStripeSignups();
+    c.ok("a checkout Stripe DID deliver (the row errored; the poll finished it) rings none", (await missedBells()) === 1 && (await signupRow(delivered.id))?.activatedVia === "poll");
+
+    const young = addSession({ name: "Yael Young", email: "yael.young@example.com", product: ACC_1Y, created: nowSec() - 5 * 60 });
+    await ss.sweepStripeSignups();
+    c.ok("a checkout under 15 minutes old rings none", (await missedBells()) === 1 && (await signupRow(young.id))?.status === "ACTIVATED");
+
+    const older = addSession({ name: "Otto Older", email: "otto.older@example.com", product: ACC_1Y, created: nowSec() - 3 * 3600 });
+    await ss.sweepStripeSignups();
+    c.ok("a checkout opened before the secret was saved rings none (Stripe had nowhere to send it)", (await missedBells()) === 1 && (await signupRow(older.id))?.activatedVia === "poll");
+
+    await disconnect("stripe_webhook");
+    const noSecret = addSession({ name: "Nell Nosecret", email: "nell.nosecret@example.com", product: ACC_1Y, created: nowSec() - 30 * 60 });
+    await ss.sweepStripeSignups();
+    c.ok("with no secret saved, a poll-only activation rings none", (await missedBells()) === 1 && (await counter()) === 1 && (await signupRow(noSecret.id))?.activatedVia === "poll");
+
+    const st = await ss.stripeWebhookStatus();
+    c.ok("the card's facts: no secret now, last delivery and last refusal on file, 30-day counts by path, 1 missed", !st.secretStored && !st.secretReadable && !!st.lastProcessed && st.lastRejected?.code === "bad-signature" && st.pollOnly30d > 0 && st.webhook30d > 0 && st.missed.count === 1 && st.endpointUrl === "https://hub.realtourpilot.com/api/webhooks/stripe" && st.events.length === 5, JSON.stringify({ ...st, events: st.events.length }));
+    c.ok("… and nothing in them is the secret", !JSON.stringify(st).includes("whsec_"));
+  }
+  try { fs.unlinkSync(path.join(old.dir, "node_modules")); fs.rmSync(old.dir, { recursive: true, force: true }); } catch { /* harmless */ }
 
   c.head("isolation");
   c.ok("nothing was written to Stripe", stripeWrites.length === 0, stripeWrites.join(", "));

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { portalApproveScript, portalRequestScriptChanges } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalTopic } from "@/lib/portal";
+import { CTA_WORDS } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT'S OWN VERDICT ON A SCRIPT (F09) — one component, lifted verbatim
@@ -94,8 +95,8 @@ export function ScriptApprovalCard({ script, onResult, run, busy: parentBusy, la
         <>
           {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it — have another read.</p>}
           <div className="flex flex-wrap items-center gap-1.5">
-            <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> I&rsquo;ll film this</button>
-            <button type="button" onClick={() => { setChanging(!changing); setChangeNote(""); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Change something</button>
+            <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>
+            <button type="button" onClick={() => { setChanging(!changing); setChangeNote(""); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> {CTA_WORDS.CHANGES}</button>
             {!onResult && busy && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</span>}
           </div>
           {changing && (

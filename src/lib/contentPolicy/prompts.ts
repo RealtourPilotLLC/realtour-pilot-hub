@@ -181,10 +181,101 @@ export function buildStrategyPrompt(ctx: ClientContext, opts: { intakeText?: str
     "",
     SPEAKER_ATTRIBUTION_RULE,
     "",
+    STRATEGY_CONFIDENTIALITY_RULE,
+    "",
     "OUTPUT: one JSON object matching the schema. Unsupported facts become gap objects (e.g. price positioning not discussed → pricePositioning null + a gap).",
   ].join("\n");
   const user = [contextBlock(ctx), opts.intakeText ? `\nBRAND DISCOVERY INTAKE (verbatim, the client's own answers unless marked otherwise):\n${opts.intakeText}` : "", opts.priorStrategyNote ? `\nNOTE ON THE PRIOR STRATEGY: ${opts.priorStrategyNote}` : ""].filter(Boolean).join("\n");
   return { name: "strategy", system, user, outputSchema: STRATEGY_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+}
+
+/**
+ * A09 (Sep 25 2026): the strategy is the one client-visible document built
+ * straight from a raw call, so the confidentiality rule the old analyser
+ * carried (contentPipeline CONTENT_RULES §3) is stated here too. The drafter
+ * also removes marked, "said in confidence" and confidential-fact lines from
+ * the transcript before this prompt is built; this rule is the second guard.
+ * A held-back item is recorded as a gap WITHOUT its content — the gap kinds
+ * are the policy's, so it rides on insufficient-context with field
+ * "confidential".
+ */
+export const STRATEGY_CONFIDENTIALITY_RULE = `CONFIDENTIALITY (mandatory — this document is shown to the client and may be shared)
+- Anything the client framed as private ("between us", "off the record", "don't share this yet") must NEVER appear in any field, not even paraphrased.
+- Categorically private, however it was said: unannounced brokerage moves or exits, internal business plans, recruiting, financial, legal or personal disclosures, and negative remarks about named people or companies.
+- When you hold something back, record ONLY that you did: a gap {"kind": "insufficient-context", "field": "confidential", "text": "Held back: said in confidence", "question": null}. Never its content.`;
+
+// ---------------------------------------------------------------------------
+// 1b. Strategy revision with feedback (A08, Sep 25 2026). A PERSON asks for
+// it — Jordan's notes plus the client's own suggestions — and the output is
+// only the sections that change, each by id with its full new text. The code
+// swaps exactly those sections into a copy of the version, so a small
+// correction can never quietly regenerate the whole document: every section
+// the model does not name stays byte-identical, by construction rather than
+// by instruction.
+// ---------------------------------------------------------------------------
+
+export const STRATEGY_REVISION_OUTPUT_SCHEMA: JsonSchema = {
+  type: "object",
+  required: ["changes", "summary", "unaddressed"],
+  additionalProperties: false,
+  properties: {
+    changes: {
+      type: "array",
+      description: "ONLY the sections the feedback requires changing. A section not listed here is kept exactly as it is.",
+      items: {
+        type: "object",
+        required: ["sectionId", "text"],
+        additionalProperties: false,
+        properties: {
+          sectionId: { type: "string", description: "The id of the section, exactly as listed under CURRENT VERSION" },
+          text: { type: "string", description: "The COMPLETE new body of that section (no heading line), in the section's existing layout and labels" },
+        },
+      },
+    },
+    summary: { type: "string", description: "One plain sentence: what changed" },
+    unaddressed: { type: "array", items: { type: "string" }, description: "Feedback you could not apply without inventing facts, or that no section fits" },
+  },
+};
+
+export type StrategyRevisionFeedback = {
+  /** Jordan's (or staff's) own notes, verbatim. */
+  notes: string | null;
+  /** Client suggestions from the portal, each with the section it names when it names one. */
+  clientSuggestions: { summary: string; sectionHeading: string | null; proposedText: string | null }[];
+};
+
+export function buildStrategyRevisionPrompt(
+  ctx: ClientContext,
+  base: { label: string; sections: { id: string; heading: string; text: string }[] },
+  feedback: StrategyRevisionFeedback,
+): PromptBundle {
+  assertClientScoped(ctx);
+  const system = [
+    systemHeader("You are revising a client's Social Content Strategy for Realtour Pilot. A person reviewed the current version and asked for specific changes."),
+    "",
+    "REVISION RULES (mandatory):",
+    "- Change ONLY what the feedback asks for. Every other sentence stays exactly as written.",
+    "- Return only the sections you change, each by its id, with that section's COMPLETE new body. Never return an unchanged section.",
+    "- Keep the section's own layout and labels (\"Core Values:\", \"Pillar 2: <name>\", \"Purpose:\", \"Focus Areas:\", bullets). Never rename a heading, never add or remove a section.",
+    "- Use only facts already in the current version or stated in the feedback. Anything you cannot apply without inventing goes in unaddressed.",
+    "- Plain, natural language; do not introduce em dashes.",
+    "",
+    STRATEGY_CONFIDENTIALITY_RULE,
+    "",
+    "OUTPUT: one JSON object matching the schema.",
+  ].join("\n");
+  const lines: string[] = [`CLIENT: ${ctx.clientName} (id ${ctx.clientId})`, "", `CURRENT VERSION (${base.label}) — sections by id:`];
+  for (const sec of base.sections) lines.push("", `[id: ${sec.id}] ${sec.heading}`, sec.text || "(empty)");
+  lines.push("", "FEEDBACK TO APPLY:");
+  if (feedback.notes?.trim()) lines.push(`From Jordan: ${feedback.notes.trim()}`);
+  for (const c of feedback.clientSuggestions) {
+    lines.push(`From the client${c.sectionHeading ? ` (about "${c.sectionHeading}")` : ""}: ${c.summary}${c.proposedText ? `\n  Their suggested wording: ${c.proposedText}` : ""}`);
+  }
+  if (ctx.preferences?.explicit.length || ctx.knownFacts?.length) {
+    lines.push("", "BACKGROUND (accepted facts; use only where the feedback calls for it):", ...[...(ctx.preferences?.explicit ?? []), ...(ctx.knownFacts ?? [])].map((f) => `- ${f}`));
+  }
+  lines.push("", "Everything above belongs to this one client. Nothing from any other client is available and none may be assumed.");
+  return { name: "strategy", system, user: lines.join("\n"), outputSchema: STRATEGY_REVISION_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------

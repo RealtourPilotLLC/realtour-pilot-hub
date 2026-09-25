@@ -333,6 +333,15 @@ export type InterviewContext = {
    * old behaviour exactly (no gap phase).
    */
   sufficiency?: SufficiencyContext | null;
+  /**
+   * 6.5 (Sep 25 2026): "FULL" (the default) walks the six questions, then the
+   * gap phase. "GAPS_ONLY" is for a topic the client already talked through
+   * on a call: it asks the base question for each piece a script still lacks
+   * (premise, stance, points — at most three, each once) and nothing else, so
+   * a client is never sent back through a questionnaire they answered out
+   * loud. It needs `sufficiency`; without it the mode reads as FULL.
+   */
+  mode?: "FULL" | "GAPS_ONLY";
 };
 
 /** The stored per-topic sentence for a step, when one exists and is usable. */
@@ -361,6 +370,20 @@ function fill(template: string, ctx: InterviewContext): string {
  */
 export function nextQuestion(answers: InterviewAnswer[], ctx: InterviewContext): NextStep {
   const byId = new Map(answers.map((a) => [a.questionId, a]));
+  if (ctx.mode === "GAPS_ONLY" && ctx.sufficiency) {
+    // Only what the call left missing, each base question asked once: an
+    // answered or skipped one is not asked again, whatever it said.
+    const suff = evaluateSufficiency(answers, ctx.sufficiency);
+    for (const field of suff.missing) {
+      const q = INTERVIEW_QUESTION_PLAN.find((x) => x.id === FIELD_QUESTION[field])!;
+      const a = byId.get(q.id);
+      if (!a || a.status === "pending") return { kind: "question", question: q, prompt: phrased(ctx, q.id) ?? fill(q.template, ctx) };
+    }
+    const answered = answers.filter((a) => a.status === "answered").length;
+    const skipped = answers.filter((a) => a.status === "skipped" || a.status === "dont-know").length;
+    const substantiveAnswered = INTERVIEW_QUESTION_PLAN.filter((q) => q.substantive && isSubstantive(byId.get(q.id))).length;
+    return { kind: "done", answered, skipped, substantiveAnswered };
+  }
   for (const q of INTERVIEW_QUESTION_PLAN) {
     const a = byId.get(q.id);
     if (!a || a.status === "pending") return { kind: "question", question: q, prompt: phrased(ctx, q.id) ?? fill(q.template, ctx) };

@@ -29,7 +29,7 @@
 export type ReminderAction =
   | "CHOOSE_PATH" | "BOOK_CALL" | "COMPLETE_ANSWERS" | "BOOK_SESSION" | "REVIEW_WORK"
   | "SCRIPTS_READY" | "STRATEGY_READY" | "SESSION_REQUEST_FOLLOWUP" | "DIGEST" | "ESCALATION"
-  | "CONFIRM_ADDRESS";
+  | "CONFIRM_ADDRESS" | "APPROVE_SCRIPTS";
 
 export type TemplateVars = {
   firstName: string;
@@ -71,6 +71,22 @@ export type TemplateVars = {
   areaText?: string | null;
   /** CONFIRM_ADDRESS: THIS session's address form — never the portal sign-in link. */
   addressLink?: string | null;
+  /** APPROVE_SCRIPTS (6.5, Sep 25 2026): the session, in words ("Thursday, October 8"). */
+  sessionDay?: string | null;
+  /** APPROVE_SCRIPTS: the approval deadline, 24 hours before filming, in words ("Wednesday, October 7 at 10:00 AM ET"). */
+  approvalDeadline?: string | null;
+  /** STRATEGY_READY v2 (6.2, Sep 25 2026), composed at send time: the first
+   *  monthly strategy call already on the books, in words ("Tuesday, October 6
+   *  at 2:00 PM ET"), or null. */
+  firstCallAtET?: string | null;
+  /** STRATEGY_READY v2: where to book that call when none is booked. */
+  callLink?: string | null;
+  /** STRATEGY_READY v2: the brand setup items still missing, in plain words
+   *  ("logo", "brand colors"); empty or null = setup is complete, no step. */
+  setupMissing?: string[] | null;
+  /** STRATEGY_READY v2: an UPDATED strategy for a client who already had one
+   *  released — no "first strategy call" step (that was long ago). */
+  strategyUpdate?: boolean;
 };
 
 export type ReminderTemplate = {
@@ -251,6 +267,71 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
   },
 };
 
+/** "logo, headshot and brand colors" — a plain list for a sentence. */
+const andList = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+// v2 (6.2, Sep 25 2026): Jordan's "Your Content Strategy is Ready + Next
+// Steps" (the subject is outbox.subjectFor's). Numbered next steps: read it and
+// suggest changes on the page; the first strategy call, booked or to book; and
+// the brand setup, only while something is missing. No em dashes anywhere,
+// sign-off included (Jordan's rule for anything a client reads). v1 is kept
+// for the ledger's history only: it is RETIRED below, because its body cannot
+// go out under v2's subject.
+REMINDER_TEMPLATES["strategy_ready.v2"] = {
+  id: "strategy_ready.v2",
+  action: "STRATEGY_READY",
+  version: "2",
+  purpose: "The approved content strategy was released to the client's portal, with the next steps: read it, the first strategy call, and brand setup.",
+  render: (v) => {
+    const call = v.strategyUpdate
+      ? (v.firstCallAtET ? [`Your next strategy call is booked for ${v.firstCallAtET}.`] : [])
+      : [v.firstCallAtET
+        ? `Your first strategy call is booked for ${v.firstCallAtET}. That's where we plan your first month of videos together.`
+        // The link ends its line: a period straight after a URL breaks it in some mail apps.
+        : `Book your first strategy call, where we plan your first month of videos together${v.callLink ? `: ${v.callLink}` : ". You can book it from your portal."}`];
+    const steps = [
+      `Read your strategy: ${v.portalLink}\n   If anything needs adjusting, suggest it right on that page and we'll take care of it.`,
+      ...call,
+      ...(v.setupMissing?.length ? [`Add your ${andList(v.setupMissing)} in your portal so your ${v.strategyUpdate ? "" : "first "}videos match your look. It only takes a few minutes.`] : []),
+    ];
+    return [
+      `Hi ${v.firstName},`,
+      "",
+      v.strategyUpdate ? "Your content strategy has been updated. It's the foundation every month's topics and scripts are built on." : "Your content strategy is ready. It's the foundation every month's topics and scripts are built on.",
+      "",
+      "Here's what's next:",
+      "",
+      ...steps.flatMap((t, i) => [`${i + 1}. ${t}`, ""]),
+      "Jordan and the RealTour Pilot team",
+      "(Reply to this email and it comes straight to us.)",
+    ].join("\n");
+  },
+};
+
+// 6.5 (Sep 25 2026, Jordan's answer): ONE email, 48 elapsed hours before the
+// session (moved into office hours, Friday for a Monday shoot), asking for the
+// scripts to be approved by 24 hours before filming — and saying plainly that
+// the session goes ahead either way. It never threatens a cancellation because
+// there is none. No em dashes (Jordan's rule for anything a client reads).
+REMINDER_TEMPLATES["reminder.approve_scripts.v1"] = {
+  id: "reminder.approve_scripts.v1",
+  action: "APPROVE_SCRIPTS",
+  version: "1",
+  purpose: "Scripts shared for a coming filming session have not been approved: one email 48 hours before, deadline 24 hours before, the shoot goes ahead either way.",
+  render: (v) =>
+    [
+      `Hi ${v.firstName},`,
+      "",
+      `Please read and approve your ${v.titles.length === 1 ? "script" : "scripts"} for ${v.sessionDay ?? "your filming session"}${v.approvalDeadline ? ` by ${v.approvalDeadline}` : ""}:`,
+      list(v.titles),
+      "",
+      `We film either way. Approving now means the video matches the words you chose, and if something should change, tell us on the same page: ${v.portalLink}`,
+      "",
+      "Jordan and the RealTour Pilot team",
+      "(Reply to this email and it comes straight to us.)",
+    ].join("\n"),
+};
+
 /** The default template id per action — the policy JSON (`templates`) may point an action at a newer version. */
 export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ESCALATION" | "SESSION_REQUEST_FOLLOWUP">, string> = {
   CHOOSE_PATH: "reminder.choose_path.v1",
@@ -259,8 +340,9 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   BOOK_SESSION: "reminder.book_session.v1",
   REVIEW_WORK: "reminder.review_work.v2",
   SCRIPTS_READY: "scripts_ready.v1",
-  STRATEGY_READY: "strategy_ready.v1",
+  STRATEGY_READY: "strategy_ready.v2",
   CONFIRM_ADDRESS: "reminder.confirm_address.v1",
+  APPROVE_SCRIPTS: "reminder.approve_scripts.v1",
 };
 
 /** Resolve a template by id, refusing an id nobody has (a typo in the policy
@@ -271,9 +353,23 @@ export function reminderTemplate(id: string): ReminderTemplate {
   return t;
 }
 
-/** The template for an action, honouring the policy's overrides. */
+/**
+ * Template ids that may no longer be sent, and what replaces each. A body
+ * whose SUBJECT moved on cannot go out under it: outbox.subjectFor names the
+ * strategy notice "Your Content Strategy is Ready + Next Steps" (v2's words),
+ * and v1 has no next steps. A saved reminders policy keeps a full copy of the
+ * template map from the day it was saved, so a v1 pinned there is a stale
+ * default, not a choice — and a notice queued before v2 existed is not sent
+ * yet, so nothing that already went out changes. The row stays for history.
+ * (Batch-2 review, Sep 25 2026.)
+ */
+export const RETIRED_TEMPLATE_IDS: Readonly<Record<string, string>> = { "strategy_ready.v1": "strategy_ready.v2" };
+/** The id a send renders: a retired id resolves to its replacement. */
+export const sendableTemplateId = (id: string): string => RETIRED_TEMPLATE_IDS[id] ?? id;
+
+/** The template for an action, honouring the policy's overrides (a retired id resolves to its replacement). */
 export function templateForAction(action: keyof typeof DEFAULT_TEMPLATE_IDS, overrides?: Record<string, unknown> | null): ReminderTemplate {
-  const chosen = overrides && typeof overrides[action] === "string" ? (overrides[action] as string) : DEFAULT_TEMPLATE_IDS[action];
+  const chosen = sendableTemplateId(overrides && typeof overrides[action] === "string" ? (overrides[action] as string) : DEFAULT_TEMPLATE_IDS[action]);
   const t = reminderTemplate(chosen);
   if (t.action !== action) throw new Error(`Template "${chosen}" is for ${t.action}, not ${action}.`);
   return t;

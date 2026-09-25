@@ -30,6 +30,10 @@ export const AUTOMATION_KEYS = [
   "ai_runs", // §13 master switch for any ProgramAiRun execution
   "publishing", // §12 Instagram (no credentials exist today)
   "script_share_email", // §22 "Approve & share" → email to the client
+  // 6.5 (unified handoff, Sep 25 2026). Drafting, SHARING WITHOUT JORDAN'S
+  // INDIVIDUAL APPROVAL, and the share email are three separate controls; this
+  // is the middle one, OFF until Jordan turns it on (§3). lib/scriptAutoShare.ts.
+  "script_auto_share", // §22 a clean sweep-drafted script is approved + released after a hold, without a person
   "portal_invites", // §2 stage B — invite a real client
   "portal_login_email", // §2 magic-link sign-in email (transactional; D14)
   "topic_refresh", // §18 the unattended topic bank: the initial bank after strategy approval + per-pillar refills (suggestions only; Jordan accepts)
@@ -38,6 +42,11 @@ export const AUTOMATION_KEYS = [
   // is its own switch, dry-run first (carryUnfilmedTopics({ dryRun: true })).
   "topic_carryover", // §3 on the 1st, scripted-but-unfilmed topics carry into the new month's allowance (swappable by the client)
   "strategy_generation", // §21 discovery → strategy draft
+  // A04 (unified handoff, Sep 25 2026). The pre-mapping call sweeps
+  // (contentCalls.ts: Calendly by invitee email, Drive by the title's NAME,
+  // first-name fallback included) used to come back on their own whenever no
+  // Calendly mapping was enabled. Retired behind this; never deleted.
+  "legacy_call_sweeps", // §20 the old name-matched Calendly/Drive/Notetaker sweeps, only while no mapping is enabled
   "session_booking", // §4 true self-booking against Aryeo — also needs the client in config.authorizedFixtureClientIds (CP-04)
   // CP-05 (Sep 24 2026). An exact address a client gives for a session is
   // ALWAYS saved and verified by readback; this only decides whether the hub

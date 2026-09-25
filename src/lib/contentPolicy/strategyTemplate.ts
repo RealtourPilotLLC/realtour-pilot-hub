@@ -113,6 +113,25 @@ export const POLICY_DEFAULT_FRAMEWORK: { preamble: string; parts: FrameworkPart[
   ],
 };
 
+/**
+ * The Video Structure Framework of a NEW strategy (A08, Sep 25 2026). A draft
+ * the hub writes carries the policy's framework as its own section 4 — the
+ * Arielle / Kristin / Mike documents all have one — so the renderer prints it
+ * like any client document's. The drafter used to pass `framework: null`,
+ * which made every AI draft read "(framework: policy default — the client
+ * document defines none)": an annotation meant for an IMPORTED document that
+ * lacks one (Rick), sitting in Jordan's draft and its stored text.
+ */
+export function policyFrameworkSection(): NonNullable<StrategyDocument["framework"]> {
+  return {
+    heading: STRATEGY_TEMPLATE.sections[3].heading,
+    preamble: [POLICY_DEFAULT_FRAMEWORK.preamble],
+    parts: POLICY_DEFAULT_FRAMEWORK.parts.map((p) => ({ ...p })),
+    style: null,
+    otherFields: [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Document shapes
 // ---------------------------------------------------------------------------

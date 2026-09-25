@@ -382,17 +382,18 @@ async function main() {
       // own word for C is "Approved"; its downloadable flag is the same fact.
       const libDelivered = (k: string) => lib.rows.filter((r) => r.monthKey === k && r.countsTowardAllowance && r.downloadable).length;
 
-      console.log(`    ${who}: selected ${tm?.selected}+${tm?.overflow} over (portal) · ${prog.topics.selected} incl. ${prog.topics.overflow} over (progress) · ${row?.work.topicsSelected} (overview) | ` +
+      console.log(`    ${who}: selected ${tm?.selected}+${tm?.overflow} over (portal) · ${prog.topics.selected}+${prog.topics.overflow} over (progress) · ${row?.work.topicsSelected} (overview) | ` +
         `client-approved ${decided("APPROVED")}/${prog.scripts.clientApproved} | changes ${decided("CHANGES_REQUESTED")}/${prog.scripts.changesRequested} | ` +
         `sessions ${sched?.sessionsRequired}-${sched?.sessionsMissing}/${prog.sessions.required}-${prog.sessions.missing}/${row?.session.required}-${row?.session.missing} | ` +
         `delivered ${libDelivered(s.monthKey)}/${counts.get(s.monthKey)?.delivered}/${prog.production.delivered}/${row?.production.delivered}`);
 
       c.ok(`${who}: the overview lists the month`, !!row && !!tm && !!sched && !!planning, `${!!row} ${!!tm} ${!!sched} ${!!planning}`);
-      // The portal's month card counts within-allowance and overflow apart
-      // (monthCapacity); monthProgress and the overview count every topic on
-      // the month and say how many are over. Same five topics, same one over.
+      // R01 (batch 2): ONE allowance reader — every surface counts the topics
+      // inside the allowance as "selected" and the extras beyond it apart.
+      // (monthProgress used to count every topic on the month and say how many
+      // were over, so the three read 4+1 / 5 incl. 1 / 5.)
       c.ok(`${who}: selected — portal month card = monthProgress = overview`,
-        tm!.selected + tm!.overflow === prog.topics.selected && tm!.overflow === prog.topics.overflow && row!.work.topicsSelected === prog.topics.selected,
+        tm!.selected === prog.topics.selected && tm!.overflow === prog.topics.overflow && row!.work.topicsSelected === prog.topics.selected,
         `${tm!.selected}+${tm!.overflow} / ${prog.topics.selected}+${prog.topics.overflow} / ${row!.work.topicsSelected}`);
       c.ok(`${who}: topics on the month — portal rows = the month card's count`, onMonth.length === tm!.selected + tm!.overflow, `${onMonth.length} rows`);
       c.ok(`${who}: client-approved scripts — portal verdicts = monthProgress (1)`, decided("APPROVED") === prog.scripts.clientApproved && prog.scripts.clientApproved === 1, `${decided("APPROVED")} / ${prog.scripts.clientApproved}`);
@@ -407,7 +408,14 @@ async function main() {
         libDelivered(s.monthKey) === counts.get(s.monthKey)!.delivered && counts.get(s.monthKey)!.delivered === prog.production.delivered && row!.production.delivered === prog.production.delivered,
         `${libDelivered(s.monthKey)} / ${counts.get(s.monthKey)!.delivered} / ${prog.production.delivered} / ${row!.production.delivered}`);
       c.ok(`${who}: last month's deliveries agree too`, libDelivered(s.lastMonthKey) === counts.get(s.lastMonthKey)!.delivered, `${libDelivered(s.lastMonthKey)} / ${counts.get(s.lastMonthKey)!.delivered}`);
-      c.ok(`${who}: planning — one interview still open (D), the portal and the overview agree`, planning!.interviewsOpen === 1 && !planning!.answersSubmitted, `open ${planning!.interviewsOpen}, submitted ${planning!.answersSubmitted}, overview outstanding ${row!.planning.answersOutstanding}`);
+      // R01 (batch 2): D's thin interview is not owed — on the Accelerator
+      // variants D is the fifth topic on a 4-video month (an EXTRA, never
+      // asked), and on the full tier it is already filmed. The overview now
+      // reads the same count as the portal (it used to count every open row).
+      const dStep = onMonth.find((t) => t.id === s.topics.D)?.plan?.step ?? null;
+      c.ok(`${who}: planning — D's thin interview is not owed (${s.tier === "full" ? "filmed" : "an extra"}), and the portal and the overview agree`,
+        dStep === (s.tier === "full" ? "FILMED" : "EXTRA") && planning!.interviewsOpen === 0 && row!.planning.answersOutstanding === planning!.interviewsOpen,
+        `D ${dStep}, open ${planning!.interviewsOpen}, submitted ${planning!.answersSubmitted}, overview outstanding ${row!.planning.answersOutstanding}`);
       const ivC = await portal.portalInterview(pair, s.interviews.C);
       const ivD = await portal.portalInterview(pair, s.interviews.D);
       const cScript = onMonth.find((t) => t.id === s.topics.C)?.script;

@@ -38,7 +38,17 @@ const ROLE_OF: Record<InterviewQuestionId, string> = {
 const QUESTION_IDS = new Set<string>(INTERVIEW_QUESTION_PLAN.map((q) => q.id));
 const followUpKey = (qid: InterviewQuestionId, cond: FollowUpCondition) => `${qid}:fu:${cond}`;
 
-export async function getOrCreateInterview(topicId: string, monthId: string, actor: { staffUserId?: string | null; clientUserId?: string | null }): Promise<string> {
+/**
+ * 6.5 (Sep 25 2026): an interview opened for a topic the client already talked
+ * through on a call is a CALL interview — it asks only what the call left
+ * missing (GAPS_ONLY) instead of the six questions from the top. A caller that
+ * knows better passes `sourceKind`; otherwise it is CALL when R01's one
+ * planning reader says the month is on the CALL route, the call has been HELD,
+ * and the client's own words about this topic (confidential-scrubbed) exist.
+ * Anything unreadable stays WRITTEN — the full questionnaire is never wrong,
+ * only longer.
+ */
+export async function getOrCreateInterview(topicId: string, monthId: string, actor: { staffUserId?: string | null; clientUserId?: string | null }, opts: { sourceKind?: "WRITTEN" | "CALL" } = {}): Promise<string> {
   const existing = await prisma.contentInterview.findUnique({ where: { topicId_monthId: { topicId, monthId } }, select: { id: true } });
   if (existing) return existing.id;
   const [t, m] = await Promise.all([
@@ -47,12 +57,13 @@ export async function getOrCreateInterview(topicId: string, monthId: string, act
   ]);
   if (!t || !m) throw new Error("Topic or month not found.");
   if (t.enrollmentId !== m.enrollmentId) throw new Error("That month belongs to another client.");
+  const sourceKind = opts.sourceKind ?? (await callRouteWithWords(topicId, monthId, t.clientId) ? "CALL" : "WRITTEN");
   const [policy, strategy] = await Promise.all([activePolicyVersion(), approvedStrategy(t.enrollmentId)]);
   try {
     const row = await prisma.contentInterview.create({
       data: {
         topicId, monthId, enrollmentId: t.enrollmentId, clientId: t.clientId, strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id,
-        sourceKind: "WRITTEN", status: "NOT_STARTED", questionPlanJson: JSON.stringify(INTERVIEW_QUESTION_PLAN.map((q) => ({ key: q.id, role: ROLE_OF[q.id], text: q.template }))),
+        sourceKind, status: "NOT_STARTED", questionPlanJson: JSON.stringify(INTERVIEW_QUESTION_PLAN.map((q) => ({ key: q.id, role: ROLE_OF[q.id], text: q.template }))),
         startedByClientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? null, lastActivityAt: new Date(),
       },
       select: { id: true },
@@ -65,6 +76,14 @@ export async function getOrCreateInterview(topicId: string, monthId: string, act
   }
 }
 
+/** The month is on the call route, its call was held, and the client talked about this topic on it. */
+async function callRouteWithWords(topicId: string, monthId: string, clientId: string): Promise<boolean> {
+  const facts = await import("@/lib/planningFacts").then((m) => m.planningForMonth(monthId)).catch(() => null);
+  if (!facts || facts.route !== "CALL" || facts.call !== "HELD") return false;
+  const { kept } = await safeTopicExcerpts(topicId, monthId, clientId).catch(() => ({ kept: [] as TopicExcerpt[] }));
+  return kept.some((e) => e.speaker === "client" && e.text.trim().split(/\s+/).length >= 5);
+}
+
 /** The live (non-superseded) answer rows, newest version per question key. */
 export async function currentAnswers(interviewId: string) {
   const rows = await prisma.contentInterviewAnswer.findMany({ where: { interviewId }, orderBy: [{ questionKey: "asc" }, { version: "desc" }] });
@@ -72,7 +91,7 @@ export async function currentAnswers(interviewId: string) {
   return rows.filter((r) => (seen.has(r.questionKey) ? false : (seen.add(r.questionKey), true)));
 }
 
-async function topicForInterview(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; row: NonNullable<Awaited<ReturnType<typeof prisma.contentInterview.findUnique>>>; sufficiency: SufficiencyContext; excerpts: TopicExcerpt[] }> {
+async function topicForInterview(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; row: NonNullable<Awaited<ReturnType<typeof prisma.contentInterview.findUnique>>>; sufficiency: SufficiencyContext; excerpts: TopicExcerpt[]; mode: "FULL" | "GAPS_ONLY" }> {
   const row = await prisma.contentInterview.findUnique({ where: { id: interviewId } });
   if (!row) throw new Error("Interview not found.");
   const [t, client, strategy, pillars, safe] = await Promise.all([
@@ -83,12 +102,18 @@ async function topicForInterview(interviewId: string): Promise<{ topic: Topic; a
     safeTopicExcerpts(row.topicId, row.monthId, row.clientId),
   ]);
   if (!t) throw new Error("Topic not found.");
-  const pillarName = pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillar ?? "(no pillar)";
+  // U01: no invented name. "(no pillar)" used to reach the script prompt, come
+  // back as the script's category and show on a client's card; an empty name
+  // leaves the category to the strategy, and the validator reports
+  // pillar.missing (overridable with a note) instead.
+  const pillarName = pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillar ?? "";
   const topic: Topic = {
     id: t.id, clientId: t.clientId, title: t.title, description: t.concept, pillarRef: { pillarId: t.pillarId, pillarName }, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage,
     source: "STAFF", sourceRef: null, state: "SELECTED", selectedForMonth: row.monthId, proposedState: null, importedMark: null, history: [], strategyVersion: strategy?.label ?? null, stamp: null,
   };
-  return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row, sufficiency: sufficiencyContextFor(t, safe.kept), excerpts: safe.kept };
+  // 6.5: a CALL interview asks only the gaps (see getOrCreateInterview).
+  const mode = row.sourceKind === "CALL" ? "GAPS_ONLY" : "FULL";
+  return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row, sufficiency: sufficiencyContextFor(t, safe.kept), excerpts: safe.kept, mode };
 }
 
 /**
@@ -159,6 +184,8 @@ export type InterviewState = {
   nextKey: string | null;
   /** The next step is a targeted gap question (CP-08), not one of the six. */
   nextIsGap: boolean;
+  /** 6.5: GAPS_ONLY when the call already covered this topic — only what is missing is asked. */
+  mode: "FULL" | "GAPS_ONLY";
 };
 
 /** The sufficiencyJson every writer stores — one shape. */
@@ -167,10 +194,10 @@ const sufficiencyJson = (suff: SufficiencyResult, gaps: { text: string }[]) =>
 
 /** Where the interview stands: the next question (or done), completeness, and the answers so far. Pure over the rows; safe to call on every render. */
 export async function interviewState(interviewId: string, opts: { readOnly?: boolean } = {}): Promise<InterviewState> {
-  const { topic, audience, clientName, row, sufficiency } = await topicForInterview(interviewId);
+  const { topic, audience, clientName, row, sufficiency, mode } = await topicForInterview(interviewId);
   const rows = await currentAnswers(interviewId);
   const answers = toPolicyAnswers(rows);
-  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson), sufficiency });
+  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson), sufficiency, mode });
   const inputs = assembleScriptInputs(answers, topic, row.strategyVersionId, sufficiency);
   const suff = inputs.sufficiency!;
   const nextKey = next.kind === "question" ? next.question.id : next.kind === "follow-up" ? followUpKey(next.question.id, next.condition) : null;
@@ -185,7 +212,7 @@ export async function interviewState(interviewId: string, opts: { readOnly?: boo
   if (nextIsGap && !row.gapQuestionsAskedAt) data.gapQuestionsAskedAt = new Date();
   if (Object.keys(data).length && !opts.readOnly) await prisma.contentInterview.update({ where: { id: interviewId }, data }).catch(() => {});
   return {
-    interviewId, status: STICKY.has(row.status) ? row.status : status, answeredCount: rows.length, next, nextKey, nextIsGap,
+    interviewId, status: STICKY.has(row.status) ? row.status : status, answeredCount: rows.length, next, nextKey, nextIsGap, mode,
     sufficiency: { ready: suff.ready, substantiveAnswered: inputs.completeness.substantiveAnswered, substantiveTotal: inputs.completeness.substantiveTotal, gaps: inputs.gaps, satisfied: suff.satisfied, missing: suff.missing, seedsFromCall: suff.seedsFromCall },
     answers: rows.map((r) => ({ questionKey: r.questionKey, questionText: r.questionText, answerText: r.answerText, answerKind: r.answerKind, version: r.version, answeredAt: r.answeredAt.toISOString() })),
   };
@@ -244,7 +271,9 @@ export async function answerQuestion(interviewId: string, questionKey: string, i
   let provenance: { answerKind: string; callRecordId: string | null; excerptJson: string | null; flagsJson: string | null } | null = null;
   if (input.kind === "TYPED" && input.suggestionId) {
     const sug = (await suggestedAnswersFor(interviewId)).find((x) => x.id === input.suggestionId) ?? null;
-    if (sug) {
+    if (sug && sug.kind === "profile") {
+      provenance = { answerKind: "TYPED", callRecordId: null, excerptJson: null, flagsJson: JSON.stringify({ basedOnSuggestion: { id: sug.id, factId: sug.provenance.factId ?? null, source: "profile" } }) };
+    } else if (sug) {
       const verbatim = sug.text.replace(/\s+/g, " ").trim() === (text ?? "").replace(/\s+/g, " ").trim();
       provenance = verbatim
         ? { answerKind: "EXTRACTED", callRecordId: sug.provenance.callRecordId, excerptJson: JSON.stringify([{ time: sug.provenance.time, speaker: "client", text: sug.text }]), flagsJson: null }
@@ -319,7 +348,63 @@ export async function submitInterview(interviewId: string, actor: { staffUserId?
 // with a confidential fact, or another enrolled client's name drops the line.
 // ---------------------------------------------------------------------------
 
-export type SuggestedAnswer = { id: string; text: string; provenance: { callRecordId: string | null; callDateISO: string | null; time: string | null; source: string } };
+export type SuggestedAnswer = {
+  id: string; text: string;
+  /** "call": their own words on a planning call. "profile" (6.5): an accepted note on their file, in their own words. */
+  kind?: "call" | "profile";
+  provenance: { callRecordId: string | null; callDateISO: string | null; time: string | null; source: string; factId?: string | null };
+};
+
+/**
+ * 6.5 (Sep 25 2026): what the client's file already holds about this topic,
+ * offered as an optional, editable starting point beside the call's lines.
+ * Deliberately narrow, because a fact is usually a staff paraphrase and a
+ * suggestion puts words in front of the client:
+ *   · accepted, AI-allowed, never confidential (marker, flag, phrase or an
+ *     overlap with a confidential fact — clientFacts.confidentialFilter);
+ *   · THEIR words: visible to the client, or spoken by the client;
+ *   · a decision, commitment, piece of feedback, reported result or brand
+ *     preference — never an internal note, a production preference or an
+ *     unreviewed proposal;
+ *   · permanent, or scoped to this month;
+ *   · about this topic: it shares its content words.
+ * Never more than three, and shown as a suggestion with where it came from.
+ */
+const PROFILE_CATEGORIES = ["DECISION", "COMMITMENT", "FEEDBACK", "PERFORMANCE_REPORTED", "BRAND_PREFERENCE"];
+const contentWords = (s: string | null | undefined) => new Set((s ?? "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 4));
+
+async function profileSuggestionsFor(row: { clientId: string; monthId: string; topicId: string }): Promise<SuggestedAnswer[]> {
+  const topic = await prisma.contentTopic.findUnique({ where: { id: row.topicId }, select: { title: true, concept: true } });
+  if (!topic) return [];
+  const topicWords = contentWords(`${topic.title} ${topic.concept ?? ""}`);
+  if (!topicWords.size) return [];
+  const facts = await prisma.clientFact.findMany({
+    where: {
+      clientId: row.clientId, status: "ACCEPTED", aiContext: "ALLOWED", confidential: false, category: { in: PROFILE_CATEGORIES },
+      OR: [{ scope: "PERMANENT" }, { scope: "MONTH", monthId: row.monthId }],
+      AND: [{ OR: [{ visibility: "CLIENT" }, { speaker: "client" }] }],
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 60,
+    select: { id: true, body: true, factDate: true, updatedAt: true },
+  });
+  if (!facts.length) return [];
+  const { confidentialFilter } = await import("@/lib/clientFacts");
+  const secret = await confidentialFilter(row.clientId);
+  const need = topicWords.size <= 3 ? 1 : 2;
+  const out: SuggestedAnswer[] = [];
+  for (const f of facts) {
+    const text = f.body.replace(/\s+/g, " ").trim();
+    // A bracketed marker ("[§25 acceptance fixture]", "[internal]") is a staff
+    // note's, never a client's sentence.
+    if (/\[[^\]]+\]/.test(text) || text.split(" ").length < 5 || secret(text)) continue;
+    const shared = [...contentWords(text)].filter((w) => topicWords.has(w)).length;
+    if (shared < need) continue;
+    out.push({ id: sha256(`fact:${f.id}\n${text}`).slice(0, 24), text, kind: "profile", provenance: { callRecordId: null, callDateISO: (f.factDate ?? f.updatedAt).toISOString(), time: null, source: "your profile notes", factId: f.id } });
+    if (out.length >= 3) break;
+  }
+  return out;
+}
 
 export async function suggestedAnswersFor(interviewId: string): Promise<SuggestedAnswer[]> {
   const row = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { topicId: true, monthId: true, clientId: true } });
@@ -333,9 +418,10 @@ export async function suggestedAnswersFor(interviewId: string): Promise<Suggeste
     if (text.split(/\s+/).length < 5 || seen.has(text.toLowerCase())) continue;
     seen.add(text.toLowerCase());
     const time = /\b(\d{1,2}:\d{2}(?::\d{2})?)\b/.exec(e.source)?.[1] ?? null;
-    out.push({ id: sha256(`${e.callRecordId ?? "call"}\n${text}`).slice(0, 24), text, provenance: { callRecordId: e.callRecordId, callDateISO: e.callDateISO, time, source: e.source } });
+    out.push({ id: sha256(`${e.callRecordId ?? "call"}\n${text}`).slice(0, 24), text, kind: "call", provenance: { callRecordId: e.callRecordId, callDateISO: e.callDateISO, time, source: e.source } });
   }
-  return out.slice(0, 6);
+  const profile = await profileSuggestionsFor(row).catch(() => []);
+  return [...out.slice(0, 6), ...profile.filter((p) => !seen.has(p.text.toLowerCase()))].slice(0, 8);
 }
 
 export async function interviewsForMonth(monthId: string) {

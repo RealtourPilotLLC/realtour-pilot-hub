@@ -87,7 +87,19 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   // Topaz's tester calls the FREE credit-balance endpoint and nothing else —
   // no estimate, no render, nothing that could reserve or spend a credit.
   topaz: testTopazKey,
+  // The Stripe webhook SIGNING SECRET (Sep 25 2026, the /connections "Stripe
+  // webhook" card). A shape check and nothing else: there is no Stripe call
+  // that proves a whsec_ value is right — only a signed post can, and the
+  // card shows the last one received or refused. The error never repeats the
+  // value, and the label says nothing about it either.
+  stripe_webhook: async (key: string) =>
+    STRIPE_WHSEC_RE.test(key)
+      ? { ok: true as const, label: "Stripe webhook signing secret" }
+      : { ok: false as const, error: "that isn't a Stripe webhook signing secret. It starts with whsec_ and is shown once, on the endpoint's page in Stripe (Developers → Webhooks → the endpoint → Signing secret)." },
 };
+
+/** A Stripe webhook signing secret: `whsec_` and at least 16 more letters or digits. */
+const STRIPE_WHSEC_RE = /^whsec_[A-Za-z0-9]{16,}$/;
 
 // Epidemic Sound "Test connection" (Sep 15): re-runs the same probe the
 // connect step ran — the key still works, and what the partner agreement
@@ -216,6 +228,13 @@ export async function connectApiKey(_prev: ActionResult | null, formData: FormDa
     await saveSecret(provider, key);
   }
   revalidatePath("/connections");
+  if (provider === "stripe_webhook") {
+    return {
+      ok: true,
+      message:
+        "Saved. The hub now checks every Stripe post against this secret. Nothing changes in Stripe from here, and the hourly check keeps activating signups either way.",
+    };
+  }
   return { ok: true, message: "Connected." };
 }
 

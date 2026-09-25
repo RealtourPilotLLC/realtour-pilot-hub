@@ -1,12 +1,13 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Compass, Layers, Loader2, Send, Upload, X } from "lucide-react";
+import { Check, Compass, Layers, Loader2, MessageSquareText, Mic, Pencil, Send, Trash2, Upload, Wand2, X } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { StrategyDocView, type StrategyDocSection } from "@/components/content/StrategyDocView";
 import {
-  addPillar, approveStrategy, confirmPillarMappingAction, createPillarsFromStrategy, dismissPillarLabelAction, previewStrategyBackfill, rejectStrategy, releaseStrategy,
-  renamePillarAction, resolveStrategyProposal, saveMonthPriorities, saveStrategyBackfill, setDutyOwner, type StrategyPreview,
+  addPillar, approveStrategy, confirmPillarMappingAction, createPillarsFromStrategy, dismissPillarLabelAction, draftStrategyFromDiscovery, editStrategySection, previewStrategyBackfill, rejectStrategy, releaseStrategy,
+  renamePillarAction, resolveStrategyProposal, reviseStrategy, saveMonthPriorities, saveStrategyBackfill, setDutyOwner, waiveDiscoveryAction, type StrategyPreview,
 } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
@@ -21,9 +22,30 @@ import {
 // accepting drafts a new version with only that section changed. One with no
 // section is "Unplaced": place it on a section (and write the text), or accept
 // it as before and fold it in by hand.
+//
+// A08 / U01 (Sep 25 2026): a version reads as a formatted document
+// (StrategyDocView — labelled rows, lists, one card per pillar), and Jordan
+// can correct it without re-uploading anything:
+//   · Edit / Remove on any one section → a new version, that section only, no
+//     AI (the "Gaps the draft could not fill" list is removed this way once
+//     it is folded in — the release refuses while it is there);
+//   · Revise with feedback → one AI run with his notes and the client's own
+//     suggestions; only the sections it names change;
+//   · Draft from the discovery call → the first draft, by a click, with the
+//     automatic switches off.
 // ---------------------------------------------------------------------------
 
-export type VersionRow = { id: string; versionNo: number; status: string; structureTemplate: string; sourceKind: string; sourceRef: string | null; createdBy: string | null; createdAt: string; approvedBy: string | null; approvedAt: string | null; releasedAt: string | null; changeSummary: string | null; sections: { heading: string; text: string }[]; pillarNames: string[] };
+export type VersionRow = { id: string; versionNo: number; status: string; structureTemplate: string; sourceKind: string; sourceRef: string | null; createdBy: string | null; createdAt: string; approvedBy: string | null; approvedAt: string | null; releasedAt: string | null; changeSummary: string | null; sections: StrategyDocSection[]; pillarNames: string[] };
+/** The brand-discovery call behind the first strategy (A08), for the strip above the versions. */
+export type DiscoveryUi = {
+  required: boolean;
+  waived: { reason: string | null; by: string | null } | null;
+  call: { id: string; whenISO: string | null; status: string; transcriptState: string; verified: boolean } | null;
+  /** The version the call already produced, if any. */
+  draftedVersionNo: number | null;
+  /** The call's analysis has run (so what was said in confidence is marked). */
+  analysed: boolean;
+};
 export type ProposalRow = { id: string; kind: string; summary: string; impact: string | null; sourceKind: string; sourceRef: string | null; createdAt: string };
 export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string };
 export type MappingRowUi = { label: string; topicCount: number; sample: string[]; proposedPillarId: string | null; proposedPillarName: string | null; confidence: number; isQualityDimension: boolean };
@@ -35,10 +57,10 @@ const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2";
 
-export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [] }: {
+export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], discovery = null }: {
   enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; mapping: MappingRowUi[]; owners: OwnerUi[];
   staff: { id: string; name: string }[]; isOwner: boolean; month: { id: string; label: string; priorities: string[]; sourceRef: string | null } | null;
-  targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[];
+  targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[]; discovery?: DiscoveryUi | null;
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -47,6 +69,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   const [preview, setPreview] = useState<StrategyPreview | null>(null);
   const approved = versions.find((v) => v.status === "APPROVED") ?? null;
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
+  const clientSuggestions = proposals.filter((p) => p.sourceKind === "client");
 
   return (
     <div className="space-y-5">
@@ -64,6 +87,10 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
           </span>
         ))}
       </div>
+
+      {discovery && <DiscoveryStrip d={discovery} busy={busy} isOwner={isOwner} hasVersions={versions.length > 0}
+        onDraft={() => run(() => draftStrategyFromDiscovery(enrollmentId))}
+        onWaive={(reason) => run(() => waiveDiscoveryAction(enrollmentId, reason))} />}
 
       {/* Proposals from calls / clients */}
       {proposals.length > 0 && (
@@ -107,23 +134,32 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
             <div key={v.id} className="px-5 py-3">
               <button onClick={() => setOpen(open === v.id ? null : v.id)} className="flex w-full flex-wrap items-center gap-2 text-left">
                 <span className="text-[15px] font-semibold">v{v.versionNo}</span>
-                <StatusChip status={v.status} released={!!v.releasedAt} />
+                <StatusChip status={v.status} released={!!v.releasedAt} everApproved={!!v.approvedAt} />
                 <span className="text-[12px] text-muted">{v.structureTemplate} · {v.sourceKind.replace("_", " ")}{v.sourceRef ? ` · ${v.sourceRef}` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}</span>
-                {v.approvedAt && <span className="text-[12px] text-success">approved {fmt(v.approvedAt)} by {v.approvedBy}</span>}
+                {v.approvedAt && v.status !== "SUPERSEDED" && <span className="text-[12px] text-success">approved {fmt(v.approvedAt)} by {v.approvedBy}</span>}
                 {v.releasedAt && <span className="text-[12px] text-success">released {fmt(v.releasedAt)}</span>}
               </button>
               {v.changeSummary && <p className="mt-1 text-[12px] text-muted">{v.changeSummary}</p>}
               {open === v.id && (
                 <div className="mt-2 space-y-2">
                   {v.pillarNames.length > 0 && <p className="text-[12px]"><span className="text-muted-2">Pillars in this version:</span> {v.pillarNames.join(" · ")}</p>}
-                  {v.sections.map((s, i) => (
-                    <details key={i} className="rounded-xl border border-border px-3 py-2"><summary className="cursor-pointer text-sm font-medium">{s.heading}</summary><p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{s.text || "(empty)"}</p></details>
-                  ))}
+                  <StrategyDocView
+                    sections={v.sections}
+                    collapsible
+                    openFirst
+                    size="xs"
+                    actions={EDITABLE.includes(v.status) ? (s) => <SectionEdit key={`${v.id}:${s.id}`} section={s} approved={v.status === "APPROVED"} last={v.sections.length === 1} busy={busy}
+                      onSave={(text) => run(() => editStrategySection(v.id, s.id, text))}
+                      onRemove={() => run(() => editStrategySection(v.id, s.id, null))} /> : undefined}
+                  />
+                  {EDITABLE.includes(v.status) && <ReviseBox versionNo={v.versionNo} approved={v.status === "APPROVED"} suggestions={clientSuggestions} busy={busy}
+                    onRevise={(notes, ids) => run(() => reviseStrategy(v.id, notes, ids))} />}
                   <div className="flex flex-wrap gap-1.5">
                     {v.status !== "APPROVED" && v.status !== "REJECTED" && v.status !== "SUPERSEDED" && (
                       <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{v.versionNo}</button>
                     )}
-                    {v.status === "SUPERSEDED" && <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={quiet}>Re-approve this older version</button>}
+                    {/* Only a version that WAS in force can be put back; a draft replaced by a later edit is history. */}
+                    {v.status === "SUPERSEDED" && v.approvedAt && <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={quiet}>Re-approve this older version</button>}
                     {v.status === "APPROVED" && !v.releasedAt && isOwner && (
                       <button disabled={busy} onClick={() => run(() => releaseStrategy(v.id))} className={`${btn} bg-brand text-white`}>Release to the portal</button>
                     )}
@@ -169,10 +205,105 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   );
 }
 
-function StatusChip({ status, released }: { status: string; released: boolean }) {
+function StatusChip({ status, released, everApproved }: { status: string; released: boolean; everApproved: boolean }) {
   const cls = status === "APPROVED" ? "bg-success-soft text-success" : status === "DRAFT" || status === "INTERNAL_REVIEW" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted";
-  const label = status === "APPROVED" ? (released ? "in force · released" : "in force") : status === "INTERNAL_REVIEW" ? "needs your OK" : status.toLowerCase();
+  const label = status === "APPROVED" ? (released ? "in force · released" : "in force")
+    : status === "INTERNAL_REVIEW" ? "needs your OK"
+    : status === "SUPERSEDED" && !everApproved ? "replaced by a later edit"
+    : status.toLowerCase();
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
+}
+
+/** Versions a person may still change (a new version each time; the one edited is kept). */
+const EDITABLE = ["DRAFT", "INTERNAL_REVIEW", "APPROVED"];
+
+/** The discovery call behind the first strategy: when it was, whether its transcript is in, and the one-click draft. */
+function DiscoveryStrip({ d, busy, isOwner, hasVersions, onDraft, onWaive }: { d: DiscoveryUi; busy: boolean; isOwner: boolean; hasVersions: boolean; onDraft: () => void; onWaive: (reason: string) => void }) {
+  const ready = !!d.call && d.call.verified && (d.call.transcriptState === "CONFIRMED" || d.call.transcriptState === "ANALYZED");
+  const when = d.call?.whenISO ? new Date(d.call.whenISO).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
+  let line: string;
+  if (d.waived) line = `Discovery waived${d.waived.reason ? `: ${d.waived.reason}` : ""}${d.waived.by ? ` (${d.waived.by})` : ""}.`;
+  else if (!d.call) line = "No brand discovery call on file yet.";
+  else if (!d.call.verified) line = `Discovery call ${when ?? ""} — whose call it is needs confirming on Settings → Calendly & calls before anything is drafted from it.`;
+  else if (d.draftedVersionNo) line = `Discovery call ${when ?? ""} — drafted as v${d.draftedVersionNo}.`;
+  else if (ready) line = `Discovery call ${when ?? ""} — transcript confirmed${d.analysed ? " and analysed" : "; its analysis hasn't run yet"}. Ready to draft the strategy.`;
+  else line = `Discovery call ${when ?? ""} — ${d.call.transcriptState === "NONE" || d.call.transcriptState === "AWAITING" ? "waiting for its transcript" : `transcript: ${d.call.transcriptState.toLowerCase().replace(/_/g, " ")}`}.`;
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-[13px]">
+      <Mic className="size-4 text-muted-2" />
+      <span className="min-w-0 flex-1">{line}</span>
+      {ready && !d.draftedVersionNo && !d.waived && (
+        <button disabled={busy} onClick={onDraft} className={`${btn} bg-brand text-white`} title="One AI draft in the house format, from the confirmed transcript. It lands as a draft for you to edit and approve.">
+          <Wand2 className="mr-1 inline size-3" />Draft from the discovery call
+        </button>
+      )}
+      {isOwner && !d.waived && d.required && !hasVersions && (
+        <button disabled={busy} onClick={() => { const r = window.prompt("Why is discovery not needed for this client? (e.g. their strategy came from an earlier program)") ?? ""; if (r.trim()) onWaive(r); }} className={quiet}>Waive discovery</button>
+      )}
+    </div>
+  );
+}
+
+/** Edit or remove ONE section — a new version, nothing else touched. */
+function SectionEdit({ section, approved, last, busy, onSave, onRemove }: { section: StrategyDocSection; approved: boolean; last: boolean; busy: boolean; onSave: (text: string) => void; onRemove: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(section.text);
+  if (!editing) {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button disabled={busy} onClick={() => { setText(section.text); setEditing(true); }} className={quiet}><Pencil className="mr-1 inline size-3" />Edit this section</button>
+        {!last && <button disabled={busy} onClick={() => { if (window.confirm(`Remove “${section.heading}”? It becomes a new version without it; this version is kept.`)) onRemove(); }} className={quiet}><Trash2 className="mr-1 inline size-3" />Remove</button>}
+        {approved && <span className="text-[11px] text-muted-2">Editing the version in force makes a new version for you to approve.</span>}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={4} aria-label={`Text of ${section.heading}`} className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs leading-relaxed" />
+      <p className="text-[11px] text-muted-2">Keep the labels (“Core Values:”, “Pillar 2: …”, “Purpose:”) and bullets — they are what the formatting reads.</p>
+      <div className="flex gap-1.5">
+        <button disabled={busy || !text.trim() || text.trim() === section.text.trim()} onClick={() => { onSave(text); setEditing(false); }} className={`${btn} bg-brand text-white`}>Save as a new version</button>
+        <button onClick={() => setEditing(false)} className={quiet}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/** Jordan's notes + the client's suggestions → one revision where only the named sections change. */
+function ReviseBox({ versionNo, approved, suggestions, busy, onRevise }: { versionNo: number; approved: boolean; suggestions: ProposalRow[]; busy: boolean; onRevise: (notes: string, proposalIds: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  if (!open) {
+    return (
+      <button disabled={busy} onClick={() => setOpen(true)} className={quiet}>
+        <MessageSquareText className="mr-1 inline size-3" />Revise v{versionNo} with feedback{suggestions.length ? ` (${suggestions.length} client suggestion${suggestions.length === 1 ? "" : "s"})` : ""}
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-surface-2/40 p-3">
+      <p className="text-[12px] text-muted">One AI revision. Only the sections your feedback touches change; everything else stays word for word.{approved ? " The version in force stays in force until you approve the revision." : ""}</p>
+      <AutoTextarea value={notes} onChange={(e) => setNotes(e.target.value)} minRows={2} placeholder="What should change? e.g. “Make the brand voice warmer and drop the luxury angle from pillar 3.”" className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs" />
+      {suggestions.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Fold in the client&rsquo;s suggestions</p>
+          {suggestions.map((sg) => (
+            <label key={sg.id} className="flex items-start gap-2 text-[12px]">
+              <input type="checkbox" className="mt-0.5 accent-[var(--brand)]" checked={picked.includes(sg.id)} onChange={(e) => setPicked((cur) => (e.target.checked ? [...cur, sg.id] : cur.filter((x) => x !== sg.id)))} />
+              <span>{sg.summary} <span className="text-muted-2">· {fmt(sg.createdAt)}</span></span>
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-1.5">
+        <button disabled={busy || (!notes.trim() && picked.length === 0)} onClick={() => { onRevise(notes, picked); setOpen(false); setNotes(""); setPicked([]); }} className={`${btn} bg-brand text-white`}>
+          <Wand2 className="mr-1 inline size-3" />Revise
+        </button>
+        <button onClick={() => setOpen(false)} className={quiet}>Cancel</button>
+      </div>
+    </div>
+  );
 }
 
 function ProposalItem({ p, target, sections, busy, onResolve }: {

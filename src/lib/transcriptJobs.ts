@@ -63,6 +63,13 @@ export type TranscriptJobOutcome =
    *  the job goes back on the queue with its attempt given back, so the moment
    *  the switch returns it runs. See the sweep's `paused` branch. */
   | { ok: false; paused: string }
+  /** THIS job cannot run yet, for a reason of its own — its call's client is
+   *  in question, or the analysis it must follow has not finished (A04/A09,
+   *  Sep 25 2026). Re-queued with the attempt given back and a later
+   *  nextAttemptAt, and the sweep MOVES ON: `paused` stops the whole tick
+   *  (right for a global switch), and a per-job wait that did that would sit
+   *  at the head of the oldest-first queue and starve every other call. */
+  | { ok: false; waiting: string; retryInMs?: number }
   | { ok: false; error: string; retryable?: boolean };
 
 export type TranscriptJobContext = {
@@ -179,7 +186,7 @@ export async function availableHandlers(): Promise<TranscriptJobHandlers> {
 // The driver.
 // ---------------------------------------------------------------------------
 export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: number; leaseBy?: string; now?: Date } = {}): Promise<
-  { skipped: string } | { ran: number; succeeded: number; failed: number; needsReview: number; paused: string | null; waitingForHandler: number; recovered: number }
+  { skipped: string } | { ran: number; succeeded: number; failed: number; needsReview: number; paused: string | null; waitingForHandler: number; recovered: number; waiting: number }
 > {
   if (!(await isAutomationEnabled("transcript_jobs"))) return { skipped: "transcript_jobs is off" };
   const now = opts.now ?? new Date();
@@ -226,7 +233,7 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
     waitingForHandler += r.count;
   }
 
-  let ran = 0, succeeded = 0, failed = 0, needsReview = 0;
+  let ran = 0, succeeded = 0, failed = 0, needsReview = 0, waiting = 0;
   let lastError: string | null = null;
   let paused: string | null = null;
   while (ran < max && Date.now() - started < budget && runnable.length > 0) {
@@ -276,6 +283,17 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
       paused = outcome.paused.slice(0, 300);
       ran--;
       break; // the switch is global — every remaining job would refuse the same way
+    } else if ("waiting" in outcome) {
+      // A per-job wait: the attempt is given back, the reason is on the row
+      // (the panel shows it), and it is not picked again THIS tick — the
+      // retry lands after the later of the tick's clock and the real one.
+      const base = Math.max(Date.now(), now.getTime());
+      await prisma.programTranscriptJob.update({
+        where: { id: job.id },
+        data: { state: "QUEUED", leaseUntil: null, leaseBy: null, startedAt: null, attempts: { decrement: 1 }, nextAttemptAt: new Date(base + (outcome.retryInMs ?? 5 * 60_000)), lastError: `waiting: ${outcome.waiting}`.slice(0, 1000), lastErrorAt: finishedAt },
+      });
+      waiting++;
+      ran--;
     } else if ("needsReview" in outcome) {
       await prisma.programTranscriptJob.update({
         where: { id: job.id },
@@ -306,7 +324,7 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
   // `paused` is not passed: a stop the owner asked for is not a failed run, and
   // programMonitoring turns a stamped lastError into an hourly alert.
   await recordAutomationRun("transcript_jobs", lastError);
-  return { ran, succeeded, failed, needsReview, paused, waitingForHandler, recovered };
+  return { ran, succeeded, failed, needsReview, paused, waitingForHandler, recovered, waiting };
 }
 
 /** For the monitoring view: counts per state × kind, plus which kinds have a handler in this build. */

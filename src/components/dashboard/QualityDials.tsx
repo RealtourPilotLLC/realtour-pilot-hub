@@ -8,7 +8,8 @@ import type { OwnerDials } from "@/lib/queries";
 // warning/danger) — no hard-coded colors.
 //
 //   1) VIDEO SLA — a compact roll-up of the in-flight video bench: "N video jobs
-//      in editing · M past SLA", linking into /editing (the Editor Queue's full
+//      in production · K being edited now · M past SLA" (K is the editors' own
+//      Start, never the stage — §7.1), linking into /editing (the Editor Queue's full
 //      Video-SLA table). We DON'T re-list the individual overdue jobs — most of
 //      them already surface in the Stuck Jobs panel above (shot 48h+ undelivered
 //      / past deliveryDue); this is the aggregate signal + a jump to the queue,

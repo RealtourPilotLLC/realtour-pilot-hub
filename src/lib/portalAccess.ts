@@ -496,6 +496,16 @@ export async function composeWelcomeEmail(input: { name: string | null; clientNa
   const discovery = await prisma.programCalendlyEventMapping
     .findFirst({ where: { purpose: "BRAND_DISCOVERY", enabled: true, publicUrl: { not: null } }, select: { publicUrl: true } })
     .catch(() => null);
+  // §6.1 (Sep 25 2026): a booking that MAY be theirs under another address
+  // (paid from gmail, booked from the brokerage) is not one we can name to
+  // them, and not one we may tell them to repeat either. The sentence below
+  // covers both without saying which booking we mean.
+  const maybeBooked = !booked && input.clientId && input.reason === "welcome"
+    ? await import("@/lib/contentCallRecords")
+        .then(({ candidateDiscoveryBookingsFor }) => candidateDiscoveryBookingsFor(input.clientId!))
+        .then((rows) => rows.length > 0)
+        .catch(() => false)
+    : false;
   const signIn = `${appBase()}/portal/login`;
   if (input.reason === "teammate") {
     return [
@@ -524,9 +534,11 @@ export async function composeWelcomeEmail(input: { name: string | null; clientNa
       ? booked.scheduledStart.getTime() > Date.now()
         ? `1. Your brand discovery call is booked for ${booked.scheduledStart.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} Eastern. That call is where we build your strategy, so bring anything you want us to know.`
         : `1. We had your brand discovery call on ${booked.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" })}, and your strategy is built from it. We'll let you know when it's ready to read.`
-      : discovery?.publicUrl
-        ? `1. Book your brand discovery call at ${discovery.publicUrl}. That call is where we build your strategy, and it only happens once.`
-        : "1. Book your brand discovery call. That call is where we build your strategy, and it only happens once.",
+      : maybeBooked
+        ? `1. If you've already booked your brand discovery call, you're all set and we'll confirm it with you. If not, ${discovery?.publicUrl ? `book it at ${discovery.publicUrl}` : "just reply to this email and we'll find a time"}. That call is where we build your strategy, and it only happens once.`
+        : discovery?.publicUrl
+          ? `1. Book your brand discovery call at ${discovery.publicUrl}. That call is where we build your strategy, and it only happens once.`
+          : "1. Book your brand discovery call. That call is where we build your strategy, and it only happens once.",
     "2. Add your logo, headshot and brand colors in the portal so the editing team matches your look from the very first video.",
     "3. Pick your topics for the month, and we'll get you on the filming calendar.",
     "",

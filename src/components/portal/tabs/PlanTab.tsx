@@ -11,6 +11,7 @@ import { InterviewFlow } from "@/components/portal/InterviewFlow";
 import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
+import { YourMonth, type YourMonthData } from "@/components/portal/YourMonth";
 
 // ---------------------------------------------------------------------------
 // MY PLAN — the v2 layout (UI-01, Sep 24 2026). What used to be one long
@@ -27,6 +28,11 @@ import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
 // ?iv=<id> opens one topic's questions (InterviewFlow) inside the plan. All
 // of it is the shipped data: portalTopics / portalInterview / portalStrategy,
 // partitioned by portalHome.planModel — no new query, no new rule.
+//
+// YOUR MONTH (§6.4 / §11, Sep 25 2026): the page is "Your Month" and its month
+// view is the guided plan — route, topics, answers or the call, Book filming
+// (or Schedule later), scripts — in components/portal/YourMonth. The counts on
+// every subview come from the one planning reader (R01) through planModel.
 // ---------------------------------------------------------------------------
 
 export type PlanTabData = {
@@ -44,6 +50,8 @@ export type PlanTabData = {
   filter: string | undefined;
   /** My Plan's own address for each subview (query-only). */
   hrefs: Record<PlanView, string>;
+  /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
+  yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
 };
 
 export function PlanTab({ d }: { d: PlanTabData }) {
@@ -61,10 +69,10 @@ export function PlanTab({ d }: { d: PlanTabData }) {
   return (
     <div className="mt-6 space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">My Plan</h1>
-        <p className="mt-0.5 text-xs text-muted">What we&rsquo;re making this month, the scripts waiting on you, your bank of ideas and the strategy behind them.</p>
+        <h1 className="text-xl font-semibold tracking-tight">Your Month</h1>
+        <p className="mt-0.5 text-xs text-muted">Plan this month&rsquo;s videos step by step, read the scripts waiting on you, browse your bank of ideas and the strategy behind them.</p>
       </div>
-      <SubNav label="My Plan" items={tabs.map((t) => ({ href: d.hrefs[t.key], label: t.label, short: t.short, active: d.view === t.key, count: t.count, countLabel: t.countLabel }))} />
+      <SubNav label="Your Month" items={tabs.map((t) => ({ href: d.hrefs[t.key], label: t.label, short: t.short, active: d.view === t.key, count: t.count, countLabel: t.countLabel }))} />
 
       {d.view === "strategy" ? (
         <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} canSuggest={d.canAct} readOnly={d.readOnly} />
@@ -72,13 +80,18 @@ export function PlanTab({ d }: { d: PlanTabData }) {
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (
         <ScriptsView plan={plan} canAct={d.canAct} readOnly={d.readOnly} monthHref={d.hrefs.month} />
+      ) : d.view === "month" && d.yourMonth ? (
+        <YourMonth d={{
+          ...d.yourMonth, topics: d.topics, readOnly: d.readOnly, filter: d.filter,
+          hrefs: { month: d.hrefs.month, bank: d.hrefs.bank, scripts: d.hrefs.scripts, schedule: d.yourMonth.scheduleHref },
+        }} />
       ) : (
         <>
           {d.view === "month" && plan.month && (
             <p className="text-sm text-muted">
               {plan.month.selected} of {plan.month.owed} video{plan.month.owed === 1 ? "" : "s"} chosen for {monthLabel(plan.month.monthKey)}
-              {plan.toAnswer.length > 0 && <> · {plan.toAnswer.length} still need{plan.toAnswer.length === 1 ? "s" : ""} your answers</>}
-              {plan.month.selected < plan.month.owed && d.canAct && !d.readOnly && <> · <Link href={d.hrefs.bank} className="font-medium text-brand hover:underline">pick {plan.month.owed - plan.month.selected} more from your bank</Link></>}
+              {plan.month.planning && <> · {plan.month.planning.headline.text}</>}
+              {plan.month.selected < plan.month.owed && d.canAct && !d.readOnly && <> · <Link href={d.hrefs.bank} className="font-medium text-brand hover:underline">choose {plan.month.owed - plan.month.selected} more from your bank</Link></>}
             </p>
           )}
           <TopicBank
@@ -146,7 +159,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
       {plan.monthTopics.length > 0 && (
         <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
           <CheckCheck className="size-3.5" aria-hidden /> This month:
-          {plan.monthTopics.length} topic{plan.monthTopics.length === 1 ? "" : "s"} chosen — <Link href={monthHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">open the month <ChevronRight className="size-3" aria-hidden /></Link>
+          {plan.month ? `${plan.month.selected} of ${plan.month.owed}` : plan.monthTopics.length} topic{(plan.month?.owed ?? plan.monthTopics.length) === 1 ? "" : "s"} chosen — <Link href={monthHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">open the month <ChevronRight className="size-3" aria-hidden /></Link>
           {plan.toAnswer.length > 0 && <span className="inline-flex items-center gap-1"><PencilLine className="size-3" aria-hidden /> {plan.toAnswer.length} still need{plan.toAnswer.length === 1 ? "s" : ""} your answers</span>}
         </p>
       )}

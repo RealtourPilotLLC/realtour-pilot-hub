@@ -3,7 +3,7 @@
 import { useRef, useState, useTransition } from "react";
 import { AlertTriangle, FileUp, Loader2, Upload } from "lucide-react";
 import { Section } from "@/components/ui/Section";
-import { ScriptBody } from "@/components/portal/ScriptBody";
+import { ScriptView } from "@/components/script/ScriptView";
 import { applyImportAction, previewImportUpload, runProgramMigrations } from "@/app/content/actions";
 import type { ImportKind, ImportPreview, ItemMode } from "@/lib/contentImport";
 
@@ -76,7 +76,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars, isOwn
                   </div>
                   {it.conflictNote && <p className="text-[11px] text-warning">{it.conflictNote}</p>}
                   {it.warnings.length > 0 && <p className="text-[11px] text-muted-2">{it.warnings.slice(0, 2).join(" · ")}</p>}
-                  <details className="mt-1"><summary className="cursor-pointer text-[11px] text-muted">source text (verbatim)</summary>{it.kind === "SCRIPT" ? <ScriptBody body={it.sourceText.slice(0, 3000)} size="xs" /> : <pre className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/80">{it.sourceText.slice(0, 3000)}</pre>}</details>
+                  <details className="mt-1"><summary className="cursor-pointer text-[11px] text-muted">source text (verbatim)</summary>{it.kind === "SCRIPT" ? <ScriptView body={it.sourceText.slice(0, 3000)} size="xs" audience="staff" actions={false} /> : <pre className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/80">{it.sourceText.slice(0, 3000)}</pre>}</details>
                 </div>
               ))}
             </div>

@@ -16,6 +16,8 @@ import { TopazLane, type TopazLaneJob, type TopazLaneStats } from "@/components/
 import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
 import { TranscriptionCard } from "@/components/connections/TranscriptionCard";
 import { InstagramCard } from "@/components/connections/InstagramCard";
+import { StripeWebhookCard } from "@/components/connections/StripeWebhookCard";
+import { stripeWebhookStatus } from "@/lib/stripeSignups";
 import { transcriptionCardData } from "@/lib/cutTranscripts";
 import { instagramCardData } from "@/lib/publishing";
 import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
@@ -176,6 +178,7 @@ export default async function ConnectionsPage({
     topazHistory,
     transcription,
     instagram,
+    stripeWebhook,
   ] = await Promise.all([
     webhookLaneHealth().catch(() => null),
     unresolvedWebhookFailures().catch(() => null),
@@ -233,6 +236,10 @@ export default async function ConnectionsPage({
     // null = the read failed; the card slot then says so instead of 500ing.
     transcriptionCardData().catch(() => null),
     instagramCardData().catch(() => null),
+    // The Stripe webhook card (Sep 25 2026): database reads only — whether a
+    // signing secret is saved and readable, the last delivery and refusal,
+    // and how signups were activated. Never calls Stripe.
+    stripeWebhookStatus().catch(() => null),
   ]);
 
   // Dates out, ISO strings in: the card is a client component, and the house
@@ -452,6 +459,14 @@ export default async function ConnectionsPage({
           unresolvedTotal={webhookUnresolvedTotal}
           degraded={webhookLanes === null || webhookFailures === null}
         />
+
+        {/* Stripe's receiver is not a lane on the strip above on purpose (the
+            poll is the activation path), so it gets its own card: the signing
+            secret, the last delivery and refusal, and whether the hourly check
+            had to cover for a delivery that never came. Shown once Stripe is
+            connected, or whenever a secret is on file. */}
+        {(byProvider.get("stripe")?.status === "CONNECTED" || byProvider.has("stripe_webhook")) &&
+          (stripeWebhook ? <StripeWebhookCard status={stripeWebhook} /> : <CardUnavailable name="Stripe webhook" />)}
 
         {/* Sync health: cron run history + webhook rejections + unsigned receivers. */}
         <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />

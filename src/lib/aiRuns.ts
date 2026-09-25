@@ -36,7 +36,10 @@ export class QuotaExceededError extends Error {
 export type AiRunKind =
   | "call_analysis" | "fact_extract" | "strategy_draft" | "topic_bank" | "topic_refresh" | "recommendation"
   | "interview_plan" | "script_draft" | "script_revise" | "creative_review" | "caption" | "transcript" | "script_match" | "profile_draft"
-  | "import_split";
+  | "import_split"
+  // A08 (Sep 25 2026): a person's "revise the strategy with this feedback" —
+  // staff-initiated only, never a sweep; writes a new version for review.
+  | "strategy_revise";
 
 // Anthropic first-party rates, USD per million tokens (cached Sep 2026). A
 // cost ESTIMATE for the ledger — the invoice is the truth; cache reads are

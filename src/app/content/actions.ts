@@ -42,6 +42,8 @@ export async function runProgramSweep(): Promise<Result> {
     const { sweepStripeSignups } = await import("@/lib/stripeSignups");
     const sg = await sweepStripeSignups();
     signupNote = sg.activated > 0 ? `${sg.activated} website signup${sg.activated === 1 ? "" : "s"} activated · ` : "";
+    // More than 250 checkouts this month: the oldest were not read on this pass.
+    if (sg.truncated) signupNote += "Stripe had more checkouts than one pass reads, so the oldest were skipped this time · ";
   } catch {
     signupNote = "Stripe unreachable — signups unchecked · ";
   }
@@ -265,36 +267,15 @@ export async function addContentNote(clientId: string, body: string, intelligenc
 // Shared file→plain-text extraction for the uploads (strategies + the Import tab).
 // (The old AI-split script backfill — status APPROVED, no version, no batch —
 // was deleted Sep 17: scripts are imported on the Import tab, historical only.)
+// A08 (Sep 25 2026): the extraction itself is lib/documentText.ts, shared with
+// the strategy reference manifest so both read a file the same way.
 async function extractUploadText(form: FormData): Promise<{ ok: true; text: string; name: string } | { ok: false; message: string }> {
   const file = form.get("file");
   if (!(file instanceof File)) return { ok: false, message: "No file." };
-  if (file.size > 15 * 1024 * 1024) return { ok: false, message: "File too large (max 15 MB)." };
-  let text = "";
-  const buf = Buffer.from(await file.arrayBuffer());
-  try {
-    if (/\.pdf$/i.test(file.name)) {
-      const { PDFParse } = await import("pdf-parse");
-      const parser = new PDFParse({ data: new Uint8Array(buf) });
-      try {
-        const r = await parser.getText();
-        text = r.text ?? "";
-      } finally {
-        await parser.destroy().catch(() => {});
-      }
-    } else if (/\.docx$/i.test(file.name)) {
-      const mammoth = await import("mammoth");
-      text = (await mammoth.extractRawText({ buffer: buf })).value;
-    } else if (/\.(txt|md)$/i.test(file.name)) {
-      text = buf.toString("utf-8");
-    } else {
-      return { ok: false, message: "Use a PDF, Word (.docx), or text file." };
-    }
-  } catch (e) {
-    return { ok: false, message: `Couldn't read the file: ${e instanceof Error ? e.message : "unknown error"}` };
-  }
-  text = text.trim();
-  if (!text) return { ok: false, message: "The file has no readable text." };
-  return { ok: true, text, name: file.name };
+  const { extractDocumentText, MAX_DOCUMENT_BYTES } = await import("@/lib/documentText");
+  if (file.size > MAX_DOCUMENT_BYTES) return { ok: false, message: "File too large (max 15 MB)." };
+  const r = await extractDocumentText(Buffer.from(await file.arrayBuffer()), file.name);
+  return r.ok ? { ok: true, text: r.text, name: file.name } : r;
 }
 
 // ---------------------------------------------------------------------------
@@ -818,16 +799,91 @@ export async function createPillarsFromStrategy(versionId: string): Promise<Resu
   } catch (e) { return fail(e); }
 }
 
+/**
+ * Release an approved version to the client's portal. A08 (Sep 25 2026): this
+ * goes through programOnboarding.releaseStrategyToPortal, so the "Your Content
+ * Strategy is Ready + Next Steps" email is queued behind script_share_email
+ * (off → nothing queued, and the message says so; the drain also holds real
+ * clients while testClientsOnly is on). It used to call the bare release, so
+ * the notice could never be queued from the product at all.
+ */
 export async function releaseStrategy(versionId: string): Promise<Result> {
   try { await requireOwner(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
     if (!v) return { ok: false, message: "Version not found." };
     const me = await actor();
-    const { releaseStrategyVersion } = await import("@/lib/contentStrategy");
-    await releaseStrategyVersion(versionId, me.email);
+    const { releaseStrategyToPortal } = await import("@/lib/programOnboarding");
+    const r = await releaseStrategyToPortal(versionId, me.email);
     path(v.enrollmentId);
-    return { ok: true, message: "Released — the portal may show this version (the portal's own gate is switched by the portal builder)." };
+    return { ok: true, message: r.message };
+  } catch (e) { return fail(e); }
+}
+
+// ---- strategy: drafting, editing and revising (A08, Sep 25 2026) ------------------------
+// All four are the STRATEGY duty owner's (Jordan by default), and none of them
+// approves or releases anything: each ends as a version for review.
+
+/** Draft the strategy NOW from the confirmed brand-discovery transcript — a person's click, so it runs with the sweep switches off. */
+export async function draftStrategyFromDiscovery(enrollmentId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    await assertDutyOwner("STRATEGY", enrollmentId, null, me);
+    const { draftStrategyNow } = await import("@/lib/programOnboarding");
+    const r = await draftStrategyNow(enrollmentId, me.email);
+    path(enrollmentId);
+    const held = r.stripped ? ` ${r.stripped} transcript line${r.stripped === 1 ? " was" : "s were"} held back as confidential or about another client.` : "";
+    const early = r.analysed ? "" : " The call's analysis hasn't run yet, so only lines marked or said in confidence were held back — read the draft with that in mind.";
+    return { ok: true, message: `Drafted v${r.versionNo} from the discovery call${r.gaps ? ` · ${r.gaps} gap${r.gaps === 1 ? "" : "s"} listed for you to fill, not invented` : ""}. Edit it here, then approve.${held}${early}` };
+  } catch (e) { return fail(e); }
+}
+
+/** Edit one section of a version by hand (text), or remove it (text null). A new version; no AI; the version edited is kept. */
+export async function editStrategySection(versionId: string, sectionId: string, text: string | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
+    if (!v) return { ok: false, message: "Version not found." };
+    const me = await actor();
+    await assertDutyOwner("STRATEGY", v.enrollmentId, null, me);
+    const { editStrategyVersionSection } = await import("@/lib/contentStrategy");
+    const r = await editStrategyVersionSection(versionId, String(sectionId ?? ""), typeof text === "string" ? text : null, me.email);
+    path(v.enrollmentId);
+    if (!r.changedSectionIds.length) return { ok: true, message: "Nothing changed — the text is the same." };
+    if (r.existed) return { ok: true, message: `That matches v${r.versionNo} already — nothing new was saved.` };
+    return { ok: true, message: `${typeof text === "string" ? "Saved" : "Removed"} “${r.heading}” as v${r.versionNo}. Every other section is exactly as it was; approve v${r.versionNo} when it's right.` };
+  } catch (e) { return fail(e); }
+}
+
+/** Revise a version with Jordan's notes and the client's suggestions — one AI run, only the sections the feedback touches change. */
+export async function reviseStrategy(versionId: string, notes: string, proposalIds: string[]): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
+    if (!v) return { ok: false, message: "Version not found." };
+    const me = await actor();
+    await assertDutyOwner("STRATEGY", v.enrollmentId, null, me);
+    const { reviseStrategyWithFeedback } = await import("@/lib/contentGeneration");
+    const r = await reviseStrategyWithFeedback(versionId, { notes: typeof notes === "string" ? notes : null, proposalIds: Array.isArray(proposalIds) ? proposalIds.map(String) : [] }, me.email);
+    path(v.enrollmentId);
+    const left = r.unaddressed.length ? ` Not applied: ${r.unaddressed.slice(0, 3).join("; ")}.` : "";
+    if (r.versionId === versionId) return { ok: true, message: `The revision changed nothing.${left}` };
+    if (r.existed && !r.changedSections.length) return { ok: true, message: `Already revised with that feedback — it's v${r.versionNo}.` };
+    return { ok: true, message: `Revised as v${r.versionNo}: ${r.changedSections.join(", ") || "no sections"} changed, everything else kept word for word${r.proposalsFolded ? ` · ${r.proposalsFolded} client suggestion${r.proposalsFolded === 1 ? "" : "s"} folded in` : ""}.${left} Approve it when it's right.` };
+  } catch (e) { return fail(e); }
+}
+
+/** Discovery is waived only explicitly, with a reason — for a client whose strategy arrives by import. Owner only. */
+export async function waiveDiscoveryAction(enrollmentId: string, reason: string): Promise<Result> {
+  try { await requireOwner(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { waiveDiscovery, advanceOnboarding } = await import("@/lib/programOnboarding");
+    await waiveDiscovery(enrollmentId, me.email, String(reason ?? ""));
+    await advanceOnboarding(enrollmentId, { enqueue: false, requestedBy: me.email }).catch(() => {});
+    path(enrollmentId);
+    return { ok: true, message: "Discovery waived, with your reason on the record." };
   } catch (e) { return fail(e); }
 }
 
@@ -1013,6 +1069,61 @@ export async function suggestionAction(suggestionId: string, action: "ACCEPT" | 
     await lib.regenerateSuggestion(suggestionId, me.email);
     revalidatePath("/content");
     return { ok: true, message: "Regenerated — a replacement suggestion is in the list." };
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * 6.3 staff bank controls (Sep 25 2026): approve every suggestion shown, hold
+ * the selected ones (out of the queue, off the client's pages, never
+ * re-suggested — until released), or regenerate the selected ones. Each row
+ * goes through the same single-suggestion function as its own button.
+ */
+export async function suggestionBulkAction(ids: string[], action: "ACCEPT" | "HOLD" | "REGENERATE", opts: { monthId?: string | null; note?: string | null } = {}): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const lib = await import("@/lib/contentTopics");
+    const list = [...new Set(ids)].slice(0, 100);
+    if (!list.length) return { ok: false, message: "Nothing selected." };
+    if (action === "ACCEPT") {
+      const r = await lib.acceptSuggestions(list, me.email, { monthId: opts.monthId ?? null });
+      revalidatePath("/content");
+      return { ok: r.errors.length === 0, message: `${r.accepted} approved into the bank${r.skipped ? ` · ${r.skipped} already handled` : ""}${r.errors.length ? ` · ${r.errors.length} failed: ${r.errors[0].error}` : ""}.` };
+    }
+    let done = 0;
+    const errors: string[] = [];
+    for (const id of list) {
+      try {
+        if (action === "HOLD") await lib.holdSuggestion(id, me.email, opts.note ?? null);
+        else await lib.regenerateSuggestion(id, me.email);
+        done++;
+      } catch (e) { errors.push(e instanceof Error ? e.message : String(e)); }
+    }
+    revalidatePath("/content");
+    const verb = action === "HOLD" ? "held — off the review list and the client's pages until released" : "regenerated — replacements are in the list";
+    return { ok: errors.length === 0, message: `${done} ${verb}${errors.length ? ` · ${errors.length} could not be: ${errors[0]}` : ""}.` };
+  } catch (e) { return fail(e); }
+}
+
+export async function releaseSuggestionHoldAction(id: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { releaseSuggestionHold } = await import("@/lib/contentTopics");
+    await releaseSuggestionHold(id, me.email);
+    revalidatePath("/content");
+    return { ok: true, message: "Released — it is back on the review list." };
+  } catch (e) { return fail(e); }
+}
+
+/** The one line a client reads beside a recommended topic (6.3). */
+export async function setSuggestionReasonAction(id: string, text: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { setSuggestionClientReason } = await import("@/lib/contentTopics");
+    await setSuggestionClientReason(id, text);
+    revalidatePath("/content");
+    return { ok: true, message: text.trim() ? "Saved — this is what the client reads beside the topic." : "Cleared — the client sees no reason line." };
   } catch (e) { return fail(e); }
 }
 
@@ -1305,6 +1416,24 @@ export async function ignoreFieldProposalAction(proposalId: string, note?: strin
     const r = await ignoreFieldProposal(String(proposalId ?? ""), me.email, typeof note === "string" ? note : null);
     revalidatePath("/content");
     return r;
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * "Said in confidence" (A09, Sep 25 2026): mark a fact confidential after the
+ * fact. It leaves every prompt, the call line it came from stops reaching
+ * scripts and suggested answers, open proposals made from it are rejected, and
+ * the portal's prefilled answers are rebuilt without it.
+ */
+export async function factConfidential(factId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { markFactConfidential } = await import("@/lib/clientFacts");
+    const r = await markFactConfidential(String(factId ?? ""), me.email);
+    revalidatePath("/content");
+    if (r.alreadyConfidential) return { ok: true, message: "Already confidential — it stays out of every prompt and the client's pages." };
+    return { ok: true, message: `Marked confidential — it's out of every prompt and the client's suggested answers now${r.proposalsRejected ? `, and ${r.proposalsRejected} proposal${r.proposalsRejected === 1 ? "" : "s"} made from it ${r.proposalsRejected === 1 ? "was" : "were"} rejected` : ""}.` };
   } catch (e) { return fail(e); }
 }
 

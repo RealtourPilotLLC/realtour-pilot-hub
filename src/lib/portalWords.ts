@@ -1,6 +1,7 @@
 import type { ClientVideoState } from "@/lib/contentVideos";
 import type { PortalTopicState } from "@/lib/portal";
 import type { ClientSessionCard } from "@/lib/monthProgress";
+import type { PlanStep } from "@/lib/planningState";
 
 // ---------------------------------------------------------------------------
 // ONE CLIENT VOCABULARY (UI-01, Sep 24 2026). The audit asked for a consistent
@@ -34,6 +35,57 @@ export const TOPIC_WORDS: Record<PortalTopicState, Word> = {
   PREPARING: { label: "Preparing", tone: "warning", icon: "preparing" },
   FILMED: { label: "Filmed", tone: "success", icon: "filmed" },
 };
+
+/**
+ * WHERE A TOPIC STANDS IN ITS MONTH (R01 / §11 precise progress, Sep 25 2026).
+ * One sentence per planningState step — "Preparing" used to cover answered,
+ * writing, team review and ready-for-you alike. Every topic row on an open
+ * month (Your Month, the topic bank, Home's month card) reads its chip here,
+ * so a refresh after an answer, a selection or an approval shows the server's
+ * step, not a transient message.
+ */
+export const PLAN_STEP_WORDS: Record<PlanStep, Word> = {
+  FILMED: { label: "Filmed", tone: "success", icon: "filmed" },
+  EXTRA: { label: "Extra — waits its turn", tone: "muted", icon: "clock" },
+  APPROVED: { label: "Script approved", tone: "success", icon: "check" },
+  CHANGES_REQUESTED: { label: "We're making your changes", tone: "warning", icon: "changes" },
+  READY_FOR_YOU: { label: "Ready for your review", tone: "brand", icon: "script" },
+  TEAM_REVIEW: { label: "Our team is reviewing", tone: "muted", icon: "preparing" },
+  CONFIRMING: { label: "From your call — confirming", tone: "muted", icon: "clock" },
+  WRITING: { label: "We're writing your script", tone: "warning", icon: "preparing" },
+  NEEDS_MORE: { label: "We need one more answer", tone: "brand", icon: "alert" },
+  ON_CALL: { label: "We'll cover this on your call", tone: "muted", icon: "calendar" },
+  CHOSEN: { label: "Chosen", tone: "brand", icon: "selected" },
+  NEEDS_ANSWERS: { label: "Needs your answers", tone: "brand", icon: "script" },
+};
+
+/** The chip for a step, with the gap count said out loud ("We need 2 more answers"). */
+export function planStepWord(step: PlanStep, missing = 0): Word {
+  const w = PLAN_STEP_WORDS[step];
+  if (step !== "NEEDS_MORE") return w;
+  return { ...w, label: missing > 1 ? `We need ${missing} more answers` : missing === 1 ? "We need one more answer" : "We need a few answers" };
+}
+
+/**
+ * THE BUTTONS (§11 plain labels). One word for one act on every page:
+ * TopicBank, ScriptApprovalCard, Home's next step and Your Month read these.
+ */
+export const CTA_WORDS = {
+  CHOOSE: "Choose this topic",
+  SWAP: "Choose another topic",
+  ANSWER: "Answer questions",
+  ANSWER_MORE: "Answer one more question",
+  REVIEW: "Review script",
+  APPROVE: "Approve script",
+  CHANGES: "Request changes",
+  BOOK: "Book filming",
+  LATER: "Schedule later",
+} as const;
+
+/** The questions button for a topic: the gap count when there is one, else the plain label. */
+export function answerCta(missing: number): string {
+  return missing === 1 ? CTA_WORDS.ANSWER_MORE : missing > 1 ? `Answer ${missing} more questions` : CTA_WORDS.ANSWER;
+}
 
 export type ScriptWordKey = "AWAITING" | "APPROVED" | "CHANGES_REQUESTED";
 export const SCRIPT_WORDS: Record<ScriptWordKey, Word> = {

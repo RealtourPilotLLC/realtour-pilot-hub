@@ -393,6 +393,16 @@ async function main() {
   // =========================================================================
   {
     const H = await owe("What a price cut costs you after week two", "Every price cut after week two costs more than the cut itself, because buyers smell it.");
+    // R01 (batch 2): X and G filled the Pro month's allowance, so H is an
+    // EXTRA — kept, shown, never drafted unattended. That is the rule, and it
+    // is asserted here on purpose; then the office raises the month's
+    // allowance (§3: staff may change it immediately) so H is owed, which is
+    // what this section's crash recovery is about.
+    const hBefore = (await scriptWorkForMonth(seed.monthId)).find((w) => w.topicId === H)?.readiness;
+    c.ok("R01: a topic past the month's allowance is an EXTRA, not owed", hBefore === "EXTRA", String(hBefore));
+    const owedBefore = (await prisma.contentMonth.findUniqueOrThrow({ where: { id: seed.monthId }, select: { videosOwed: true } })).videosOwed;
+    await prisma.contentMonth.update({ where: { id: seed.monthId }, data: { videosOwed: owedBefore + 4 } });
+    c.ok("…the office raises the allowance, and H is owed (FROM_CALL)", (await scriptWorkForMonth(seed.monthId)).find((w) => w.topicId === H)?.readiness === "FROM_CALL");
     const t0 = new Date();
     const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       const p = spawn(process.execPath, [...process.execArgv, __filename], {

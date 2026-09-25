@@ -83,6 +83,19 @@ export const EXTRA_SHOOT_STATUS = "Extra video owed";
  */
 export const CHECK_NEEDED_STATUS = "Check needed";
 
+/**
+ * The files are in and the handoff is not (O01/A32, Sep 25): the engine could
+ * not call the job ready — the flow and vision, the wrap-up, how many videos
+ * were filmed are still owed by the photographer. "Ready for editing" said the
+ * opposite of the edit card and the delivery board. The row reads this, and
+ * the engine's own sentence rides under it as `blocker` — stored on the job
+ * by ensureEditorHandoff and READ here, never recomputed, so the queue, the
+ * card and the board quote the same words. Worn, not picked: it clears itself
+ * when the handoff completes. Not the editor's move, so the page counts it
+ * with Waiting, not as work to edit.
+ */
+export const WAITING_ON_INSTRUCTIONS = "Waiting on instructions";
+
 export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[] }> {
   const rules = await editorRouting();
   const now = new Date();
@@ -428,6 +441,15 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // lifecycle — the office can pin a stage, not a person's afternoon.
     const w = upcoming || p.status === "DELIVERED" ? undefined : work.get(p.id);
     const wl = workLabel(effectiveStatus, w, { baseLabel: STATUS_LABEL[effectiveStatus] ?? effectiveStatus, now });
+    // WAITING ON INSTRUCTIONS (O01/A32). Files in, handoff incomplete, nobody
+    // on it: the row says so instead of "Ready for editing". Somebody who has
+    // pressed Start keeps their words (they chose to begin; the blocker still
+    // shows under the pill), and an office pin is the office's word.
+    const blockedBy =
+      !upcoming && p.status !== "DELIVERED" && (effectiveStatus === "SHOT" || effectiveStatus === "EDITING")
+        ? p.handoffBlockedReason?.trim().replace(/\.$/, "") || null
+        : null;
+    if (blockedBy && !pinned && wl.label === "Ready for editing") wl.label = WAITING_ON_INSTRUCTIONS;
     // ---- FOUR VIDEOS, ONE WORD (Jordan, Sep 18) --------------------------
     //
     // "She has 4 videos. 1 is ready for review, and the rest are in editing.
@@ -489,6 +511,9 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         paused: (w?.paused ?? []).map((a) => ({ key: a.editorKey, name: a.name, sinceISO: a.sinceISO, outputTitle: a.outputTitle, onBehalfBy: a.onBehalfBy })),
       },
       workChip: upcoming || reopened ? null : wl.chip,
+      // The handoff engine's sentence for what the photographer still owes
+      // (O01) — the same words the edit card and the delivery board print.
+      blocker: reopened ? null : blockedBy,
       // The office is holding this job in Waiting (Sep 11): the pill on the
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job

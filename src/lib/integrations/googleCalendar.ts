@@ -256,12 +256,28 @@ export type CalendarEventDetail = {
   /** conferenceData.conferenceId — the Meet code ("abc-defg-hij"). */
   conferenceId: string | null;
   attendees: { email: string; name: string | null; responseStatus: string | null; organizer: boolean }[];
+  /**
+   * Drive files attached to the event (6.2, Sep 25 2026). Google Meet attaches
+   * the "Notes by Gemini" doc to the meeting's own calendar event once the
+   * notes exist — a direct file id for THIS booking, stronger than any title
+   * or time match. Empty before the call, and on an account where Meet does
+   * not attach (then the title + start rule is all there is).
+   */
+  attachments: { fileId: string; title: string | null; mimeType: string | null }[];
 };
 
 type RawEventDetail = Omit<RawEvent, "attendees"> & {
   conferenceData?: { conferenceId?: string; entryPoints?: { entryPointType?: string; uri?: string }[] };
   attendees?: { email?: string; displayName?: string; responseStatus?: string; organizer?: boolean; self?: boolean }[];
+  attachments?: { fileId?: string; fileUrl?: string; title?: string; mimeType?: string }[];
 };
+
+/** A Drive file id from an attachment: fileId when Google gives it, else parsed out of the /d/<id>/ URL. */
+function attachmentFileId(a: { fileId?: string; fileUrl?: string }): string | null {
+  if (a.fileId?.trim()) return a.fileId.trim();
+  const m = /\/d\/([A-Za-z0-9_-]{10,})/.exec(a.fileUrl ?? "") ?? /[?&]id=([A-Za-z0-9_-]{10,})/.exec(a.fileUrl ?? "");
+  return m ? m[1] : null;
+}
 
 /**
  * The event, or null when Google says it is gone (404/410). Any other failure
@@ -291,5 +307,8 @@ export async function getCalendarEvent(eventId: string): Promise<CalendarEventDe
     attendees: (ev.attendees ?? [])
       .filter((a): a is { email: string; displayName?: string; responseStatus?: string; organizer?: boolean } => !!a.email)
       .map((a) => ({ email: a.email.toLowerCase(), name: a.displayName ?? null, responseStatus: a.responseStatus ?? null, organizer: !!a.organizer })),
+    attachments: (ev.attachments ?? [])
+      .map((a) => ({ fileId: attachmentFileId(a), title: a.title?.trim() || null, mimeType: a.mimeType ?? null }))
+      .filter((a): a is { fileId: string; title: string | null; mimeType: string | null } => !!a.fileId),
   };
 }

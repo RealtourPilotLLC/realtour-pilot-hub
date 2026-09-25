@@ -6,6 +6,7 @@ import { cutReleasedAt, isDeliveredProgramVideo } from "@/lib/contentVideos";
 import { DELIVERED_STAMP, NOT_A_CUT } from "@/lib/reviewCuts";
 import { fmtDay, journeySteps, type JourneyInput, type JourneyStep } from "@/lib/contentStatus";
 import type { Entitlement } from "@/lib/cutEntitlement";
+import type { MonthPlanning } from "@/lib/planningState";
 
 // ---------------------------------------------------------------------------
 // ONE MONTHLY-PROGRESS READER (completion audit CP-10, Sep 24 2026).
@@ -129,8 +130,12 @@ export type MonthProgress = {
   muted: boolean;
   videosOwed: number;
   owners: OwnerMap;
-  call: { status: string; atISO: string | null; required: boolean };
+  /** `required`/`mode`: the month's EFFECTIVE call mode (programMonths.effectiveCallMode via the planning reader) — the first call is required, later ones optional (§3). */
+  call: { status: string; atISO: string | null; required: boolean; mode: string | null };
+  /** selected = the month's allowance that is chosen, overflow = the extras beyond it (R01: the planning reader's allowance, one count). */
   topics: { selected: number; overflow: number; needed: number; clientSupplies: boolean };
+  /** R01: the month through the one planning reader — route, call, each topic's step, the headline. Null when there is no month row or it could not be read. */
+  planning: MonthPlanning | null;
   scripts: {
     total: number; drafting: number; needsJordan: number; ready: number;
     releasedAwaitingClient: number; clientApproved: number; changesRequested: number; openSuggestions: number;
@@ -359,6 +364,12 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       : Promise.resolve([]),
     opts.owners === false ? Promise.resolve(new Map<string, OwnerMap>()) : ownersForMany(pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthId: p.monthId }))),
   ]);
+  // R01: the allowance and each topic's step, through the ONE planning reader
+  // (a fixed set of queries for every month at once). Unreadable → the
+  // union below, with the extras no longer counted twice.
+  const plannedMonths = monthIds.length
+    ? await import("@/lib/planningFacts").then((m) => m.planningFactsForMonths(monthIds, { now })).catch(() => null)
+    : null;
 
   const projectIds = sessionRows.projects.map((p) => p.id);
   const pointerIds = [...new Set(videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x))];
@@ -408,10 +419,21 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     const videosOwed = m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0);
 
     // ---- topics ------------------------------------------------------------
+    // The planning reader's allowance: chosen = IN, overflow = EXTRA. The old
+    // reading took the frozen row flag for overflow and then unioned every
+    // topic pointing at the month back into "selected" — contentTopics sets
+    // that pointer on an extra too — so each extra was counted twice.
+    const planning = mid ? plannedMonths?.get(mid)?.planning ?? null : null;
     const selected = new Set<string>();
     let overflow = 0;
-    for (const s of selections) if (s.monthId === mid) { if (s.overflow) overflow++; else selected.add(s.topicId); }
-    for (const t of monthTopics) if (t.monthId === mid) selected.add(t.id);
+    if (planning) {
+      for (const t of planning.topics) if (t.inAllowance) selected.add(t.topicId);
+      overflow = planning.extras;
+    } else {
+      const extras = new Set<string>();
+      for (const s of selections) if (s.monthId === mid) { if (s.overflow) { overflow++; extras.add(s.topicId); } else selected.add(s.topicId); }
+      for (const t of monthTopics) if (t.monthId === mid && !extras.has(t.id)) selected.add(t.id);
+    }
 
     // ---- scripts -----------------------------------------------------------
     const sc = { total: 0, drafting: 0, needsJordan: 0, ready: 0, releasedAwaitingClient: 0, clientApproved: 0, changesRequested: 0, openSuggestions: 0 };
@@ -602,8 +624,13 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       portalApprover: e.status === "ACTIVE" && !e.accessRevokedAt && hasOwnerSeat.has(e.id),
       monthId: mid, monthKey: pair.monthKey, monthStatus: m?.status ?? "NONE", historical: !!m?.historical, muted, videosOwed,
       owners,
-      call: { status: m?.strategyCallStatus ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"), atISO: m?.strategyCallAt?.toISOString() ?? null, required: e.strategyCallRequired },
+      call: {
+        status: m?.strategyCallStatus ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"), atISO: m?.strategyCallAt?.toISOString() ?? null,
+        required: mid && plannedMonths?.get(mid) ? plannedMonths.get(mid)!.callMode === "REQUIRED" : e.strategyCallRequired,
+        mode: mid ? plannedMonths?.get(mid)?.callMode ?? null : null,
+      },
       topics: { selected: selected.size, overflow, needed: Math.max(0, videosOwed - selected.size), clientSupplies: e.clientSuppliesTopics },
+      planning,
       scripts: sc,
       sessions, filming, production, unknowns,
       nextAction: null,
@@ -649,7 +676,16 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
       ? { text: `Strategy call is booked${p.call.atISO ? ` for ${fmtDay(p.call.atISO)}` : ""} — paste the transcript after`, cta: "Open the call", href: "#call", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody" }
       : { text: "The strategy call isn't booked yet", cta: "Handle the call", href: "#call", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
   }
+  // §6.4: a month that may be planned either way and has not been is the
+  // CLIENT's next step (choose here or book a call), not ours.
+  if (p.planning?.route === "UNDECIDED" && p.call.status === "NOT_SCHEDULED" && (p.planning.counts.CHOSEN > 0 || !topicsDone)) {
+    return { text: `They haven't chosen how to plan ${monthShort} — topics in the portal, or a call`, cta: "See the month", href: "#call", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
+  }
   if (!topicsDone) return { text: `Pick ${monthShort}'s topics`, cta: "Pick topics", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "us" };
+  // A call's proposals fill allowance slots (R01 counts them, last) but are not
+  // the plan until a person keeps or drops them — that is the step, not "drafting".
+  const proposed = p.planning?.counts.CONFIRMING ?? 0;
+  if (proposed > 0) return { text: `${plural(proposed, "topic")} proposed on the call — keep or drop ${proposed === 1 ? "it" : "them"}`, cta: "Reconcile topics", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "us" };
   if (!scriptsDone) {
     return awaiting > 0
       ? { text: `${plural(awaiting, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" }

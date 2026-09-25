@@ -134,7 +134,7 @@ function AddressForm({ sessionKey, onDone }: { sessionKey: string; onDone: () =>
 }
 
 export function PortalScheduler({
-  months, bookingUrl, days = [], readOnly = false, timezone = "America/New_York",
+  months, bookingUrl, days = [], readOnly = false, timezone = "America/New_York", embedded = false,
 }: {
   /** This month and the open ones after it — each with its gate, capacity and requests. Empty = no open month yet. */
   months: PortalScheduleMonth[];
@@ -145,6 +145,12 @@ export function PortalScheduler({
   readOnly?: boolean;
   /** IANA zone every time on the card is printed in. */
   timezone?: string;
+  /**
+   * Your Month's "Book filming" step (§6.4): the same picker, the same data and
+   * the same server actions, without the card's own planning row — the steps
+   * above it already say where the call and the answers stand.
+   */
+  embedded?: boolean;
 }) {
   const tz = timezone;
   const router = useRouter();
@@ -236,7 +242,7 @@ export function PortalScheduler({
           {months.length === 1 && <div className="mt-1 text-sm font-semibold">{monthLabel(month.monthKey)}</div>}
 
           {/* Strategy call / planning — a slim row when handled, a clear CTA when not. */}
-          <div className="mt-3">
+          {!embedded && <div className="mt-3">
             {writtenPath ? (
               <StatusRow icon={month.locked ? Clock : CheckCircle2} tone={month.locked ? "muted" : "ok"}>
                 {month.locked ? "Planning in writing: send us your answers and session booking opens" : "Planning in writing: answers received"}
@@ -274,10 +280,10 @@ export function PortalScheduler({
                 </a>
               </div>
             )}
-          </div>
+          </div>}
 
           {/* Filming sessions — one row per DISTINCT session on the calendar. */}
-          <div className="mt-3 border-t border-border pt-3">
+          <div className={cn("mt-3", !embedded && "border-t border-border pt-3")}>
             {sessions.length > 0 && (
               <ul className="space-y-2">
                 {sessions.map((s, i) => (

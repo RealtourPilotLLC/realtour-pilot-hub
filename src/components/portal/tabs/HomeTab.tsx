@@ -6,7 +6,7 @@ import type { LibraryAttention, VideoListRow } from "@/lib/contentVideos";
 import type { ClientMonthProgress } from "@/lib/monthProgress";
 import type { HomeAction } from "@/lib/portalHome";
 import { awaitingScript } from "@/lib/portalHome";
-import { SCRIPT_WORDS, TOPIC_WORDS, VIDEO_WORDS } from "@/lib/portalWords";
+import { SCRIPT_WORDS, TOPIC_WORDS, VIDEO_WORDS, planStepWord } from "@/lib/portalWords";
 import { Card, CardTitle, CountBadge, LoadFailed, RowLink, StatusChip, fmtDate, fmtShort, fmtTime, tzShort } from "@/components/portal/ui";
 import { cn } from "@/lib/utils";
 import { SetupCard, type SetupCardData } from "@/components/portal/PortalProfile";
@@ -62,7 +62,9 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
   const readyWithFile = d.attention ? d.attention.readyWithFile > 0 : readyRows.some((v) => v.hasFinalFile);
   const currentMonth = d.topics?.months.find((m) => m.monthKey === d.monthKey) ?? d.topics?.months[0] ?? null;
   const selectedTopics = d.topics ? d.topics.groups.flatMap((g) => g.topics).filter((t) => t.selection && currentMonth && t.selection.monthId === currentMonth.id) : [];
-  const interviewsToFinish = selectedTopics.filter((t) => t.state !== "FILMED" && (!t.interview || t.interview.status !== "SUBMITTED"));
+  // R01: the planning reader's owed answers — the month's allowance only, and
+  // never a topic the call covered or a script already in review.
+  const interviewsToFinish = selectedTopics.filter((t) => t.plan?.step === "NEEDS_ANSWERS" || t.plan?.step === "NEEDS_MORE");
   // Sessions from the month-progress reader: one card per DISTINCT session,
   // "Filmed" only when somebody confirmed it, and "Book your filming session"
   // whenever a session the package owes is still missing (CP-10) — a Pro month
@@ -77,8 +79,8 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
   if (!d.readOnly) {
     if (p && p.planningMode !== "WRITTEN" && p.callStatus === "NOT_SCHEDULED") actions.push({ href: href("schedule"), icon: CalendarClock, text: "Book your strategy call — we plan the month on it", tone: "brand" });
     if (needReviewCount) actions.push({ href: href("videos"), icon: PlayCircle, text: `Review ${needReviewCount} video${needReviewCount === 1 ? "" : "s"} waiting on you`, tone: "brand" });
-    if (currentMonth && currentMonth.selected < currentMonth.owed && d.perms.suggest) actions.push({ href: href("topics"), icon: Lightbulb, text: `Pick ${currentMonth.owed - currentMonth.selected} more topic${currentMonth.owed - currentMonth.selected === 1 ? "" : "s"} for ${monthLabel(currentMonth.monthKey)}` });
-    if (p?.planningMode === "WRITTEN" && interviewsToFinish.length && d.perms.suggest) actions.push({ href: href("topics"), icon: PenLine, text: `Answer the questions for ${interviewsToFinish.length === 1 ? `“${interviewsToFinish[0].title}”` : `${interviewsToFinish.length} topics`}` });
+    if (currentMonth && currentMonth.selected < currentMonth.owed && d.perms.suggest) actions.push({ href: href("topics"), icon: Lightbulb, text: `Choose ${currentMonth.owed - currentMonth.selected} more topic${currentMonth.owed - currentMonth.selected === 1 ? "" : "s"} for ${monthLabel(currentMonth.monthKey)}` });
+    if (interviewsToFinish.length && d.perms.suggest) actions.push({ href: href("topics"), icon: PenLine, text: `Answer the questions for ${interviewsToFinish.length === 1 ? `“${interviewsToFinish[0].title}”` : `${interviewsToFinish.length} topics`}` });
     if (sv.offerBooking) actions.push({ href: href("schedule"), icon: Camera, text: sv.required > 1 && sv.missing < sv.required ? `Book your next filming session (${sv.required - sv.missing} of ${sv.required} booked)` : "Book your filming session" });
     if (readyCount && readyWithFile) actions.push({ href: href("videos"), icon: Download, text: `Download and post ${readyCount === 1 && readyRows.length === 1 ? `“${readyRows[0].title}”` : `${readyCount} finished video${readyCount === 1 ? "" : "s"}`}` });
   }
@@ -162,7 +164,7 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Selected topics</div>
             <ul className="mt-1 space-y-1">
               {selectedTopics.map((t) => (
-                <li key={t.id} className="flex items-center gap-2 text-sm"><Lightbulb className="size-3.5 shrink-0 text-brand" /> <span className="min-w-0 flex-1">{t.title}</span> <span className="text-[11px] text-muted-2">{t.state === "FILMED" ? "filmed" : t.interview?.status === "SUBMITTED_WITH_GAPS" ? "sent — we'll follow up" : t.state === "PREPARING" ? "preparing" : t.interview?.status === "SUBMITTED" ? "answers in" : "selected"}</span></li>
+                <li key={t.id} className="flex items-center gap-2 text-sm"><Lightbulb className="size-3.5 shrink-0 text-brand" /> <span className="min-w-0 flex-1">{t.title}</span> <span className="text-[11px] text-muted-2">{t.plan ? planStepWord(t.plan.step, t.plan.missing).label : t.state === "FILMED" ? "filmed" : "selected"}</span></li>
               ))}
             </ul>
             <Link href={href("topics")} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">Video Topics <ChevronRight className="size-3" /></Link>
@@ -238,7 +240,7 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
         ) : p.planningMode === "WRITTEN" ? (
           <div className="mt-2 text-sm">
             <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing</div>
-            <p className="mt-0.5 text-xs text-muted">{p.answersSubmitted ? "Your answers are in — we're preparing the month." : plan ? "No call this month — answer the questions in your plan." : "No call this month — answer the questions under Video Topics."}</p>
+            <p className="mt-0.5 text-xs text-muted">{p.answersSubmitted ? "Your answers are in — we're preparing the month." : plan ? "No call this month — answer the questions in Your Month." : "No call this month — answer the questions under Video Topics."}</p>
             <Link href={plan?.href ?? href("topics")} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">{plan?.label ?? "Video Topics"} <ChevronRight className="size-3" /></Link>
           </div>
         ) : p.callStatus === "COMPLETED" ? (
@@ -268,7 +270,8 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
           <div className="mt-2 text-sm">
             <div className="text-muted">Not booked yet</div>
             {!d.readOnly && <a href={d.bookingUrl} target="_blank" rel="noopener noreferrer" className={bookCls}>Book the call <ChevronRight className="size-3.5" /></a>}
-            {p.noCallEligible && !d.readOnly && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">or plan without a call →</Link>}
+            {/* v2: the route is chosen in Your Month (§6.4); v1 keeps its Schedule link. */}
+            {p.noCallEligible && !d.readOnly && <Link href={plan ? `${plan.href}#step-route` : href("schedule")} className="mt-1 block text-xs text-muted hover:underline">{plan ? "or choose your topics here →" : "or plan without a call →"}</Link>}
           </div>
         )}
       </Card>
@@ -402,7 +405,7 @@ export function HomeV2({ d, actions, href }: {
 
       {/* 5. Appointments — the same cards and derivations as v1. */}
       <section aria-label="Appointments">
-        <AppointmentCards d={d} href={href} quiet plan={{ href: href("plan"), label: "Open my plan" }} />
+        <AppointmentCards d={d} href={href} quiet plan={{ href: href("plan"), label: "Open Your Month" }} />
       </section>
 
       {/* 6. Ready to download. */}
@@ -431,7 +434,7 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
   const prod = d.progress?.production ?? null;
   return (
     <Card>
-      <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>My Plan →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
+      <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
       {/* A count that failed to load is unknown, not zero. */}
       {d.countsFailed || !d.program ? (
         <p className="mt-2 text-xs text-warning">We couldn&rsquo;t count this month&rsquo;s videos just now — refresh to try again, or open your Content Library to see them.</p>
@@ -456,14 +459,17 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
       ) : selected.length > 0 ? (
         <div className="mt-3">
           {/* The heading counts within the allowance; the surplus is said out
-              loud and each extra is tagged — five rows under "4 of 4" read as
-              a mistake (Sep 24; TopicBank's own words for the same thing). */}
-          <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Topics this month{month ? ` · ${month.selected} of ${month.owed}${month.overflow > 0 ? ` · +${month.overflow} waiting` : ""}` : ""}</div>
+              loud and each extra says so on its own chip — five rows under
+              "4 of 4" read as a mistake (Sep 24). R01: the count, the chips
+              and the headline all come from the one planning reader, so the
+              heading and the rows can no longer disagree. */}
+          <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Topics this month{month ? ` · ${month.selected} of ${month.owed}${month.overflow > 0 ? ` · +${month.overflow} extra` : ""}` : ""}</div>
+          {month?.planning && <p className="mt-0.5 text-xs text-muted">{month.planning.headline.text}{month.planning.progress ? ` · ${month.planning.progress}` : ""}</p>}
           <ul className="mt-1 space-y-1.5">
             {selected.map((t) => (
               <li key={t.id} className="flex flex-wrap items-center gap-1.5 text-sm">
-                <span className="min-w-0 flex-1 basis-40 break-words">{t.title}{t.selection?.overflow && <span className="text-xs text-muted"> (extra — waits its turn)</span>}</span>
-                {awaitingScript(t) ? <StatusChip word={SCRIPT_WORDS.AWAITING} /> : <StatusChip word={TOPIC_WORDS[t.state]} />}
+                <span className="min-w-0 flex-1 basis-40 break-words">{t.title}</span>
+                {t.plan ? <StatusChip word={planStepWord(t.plan.step, t.plan.missing)} /> : awaitingScript(t) ? <StatusChip word={SCRIPT_WORDS.AWAITING} /> : <StatusChip word={TOPIC_WORDS[t.state]} />}
               </li>
             ))}
           </ul>

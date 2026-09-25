@@ -694,6 +694,17 @@ export function estimateSpokenSeconds(script: CanonicalScript, wordsPerSec: numb
 export type RenderScriptOptions = {
   /** Include the internal fields under a divider (staff view). Default false = client-facing lines only. */
   includeInternal?: boolean;
+  /**
+   * "client" (U01, Sep 25 2026): a script with no pillar linked renders NO
+   * Category line, rather than the placeholder "(no pillar linked)" — which a
+   * client's portal showed as a chip reading "(NO PILLAR LINKED)". The stored
+   * body (contentScripts.bodyFor) keeps the default, so nothing already saved
+   * changes; only what a client is handed does. The same goes for an empty
+   * block: staff see "(no hook)" / "(empty)" / "(no close)" as the gap it is;
+   * a client's copy leaves the empty block out (batch-2 review — the posting
+   * kit's Copy / Download handed clients those placeholders).
+   */
+  audience?: "client" | "staff";
 };
 
 function pointLabel(p: TalkingPoint, i: number): string {
@@ -701,13 +712,33 @@ function pointLabel(p: TalkingPoint, i: number): string {
   return spec ? `Talking Point ${i + 1}: ${spec.label}` : `Talking Point ${i + 1}`;
 }
 
+/**
+ * A STORED body shown to a client (a historical import, a script with no
+ * versions): the staff render's placeholder lines removed, and nothing else.
+ * Re-parsing such a body loses text (postingKit measured it), so this touches
+ * only lines that are exactly a placeholder renderScript writes.
+ */
+export function stripRenderPlaceholders(body: string): string {
+  return body.split("\n").filter((l) => !/^\s*(Category:\s*\(no pillar linked\)|\(no hook\)|\(empty\)|\(no close\))\s*$/i.test(l)).join("\n");
+}
+
 export function renderScript(script: CanonicalScript, opts: RenderScriptOptions = {}): string {
   const out: string[] = [];
   out.push(script.title || "(untitled)");
-  out.push(`Category: ${script.pillarRef?.pillarName ?? script.pillarRef?.categoryAsDelivered ?? "(no pillar linked)"}`);
-  out.push("HOOK");
-  out.push(...(script.hook?.lines.length ? script.hook.lines : ["(no hook)"]));
+  const category = script.pillarRef?.pillarName ?? script.pillarRef?.categoryAsDelivered ?? null;
+  const realCategory = category && !/^\(?\s*no\s+pillar/i.test(category.trim()) ? category : null;
+  if (opts.audience === "client") {
+    if (realCategory) out.push(`Category: ${realCategory}`);
+  } else {
+    out.push(`Category: ${category ?? "(no pillar linked)"}`);
+  }
+  const client = opts.audience === "client";
+  if (script.hook?.lines.length || !client) {
+    out.push("HOOK");
+    out.push(...(script.hook?.lines.length ? script.hook.lines : ["(no hook)"]));
+  }
   script.points.forEach((p, i) => {
+    if (client && !p.lines.length) return;
     out.push(pointLabel(p, i));
     out.push(...(p.lines.length ? p.lines : ["(empty)"]));
   });
@@ -715,8 +746,10 @@ export function renderScript(script: CanonicalScript, opts: RenderScriptOptions 
     out.push(extra.kind === "re-hook" ? "Re-hook (as delivered)" : extra.kind === "payoff" ? "Payoff (as delivered)" : extra.label ?? "(block)");
     out.push(...extra.lines);
   }
-  out.push("Close / Call to action");
-  out.push(...(script.close?.lines.length ? script.close.lines : ["(no close)"]));
+  if (script.close?.lines.length || !client) {
+    out.push("Close / Call to action");
+    out.push(...(script.close?.lines.length ? script.close.lines : ["(no close)"]));
+  }
   if (script.captionCta) {
     out.push("Optional Caption CTA");
     out.push(...script.captionCta.split("\n"));

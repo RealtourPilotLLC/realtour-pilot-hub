@@ -64,7 +64,13 @@ export type ScriptReadiness =
    */
   | "THIN_ANSWERS"
   /** The call proposed it; no one has reconciled the month's plan yet. */
-  | "WAITING_ON_PLANNING";
+  | "WAITING_ON_PLANNING"
+  /**
+   * R01: beyond the month's allowance (planningState.allowanceOrder). Kept and
+   * waiting its turn — never drafted by the sweep and never counted as owed
+   * material. A person may still draft it on purpose, from the topic.
+   */
+  | "EXTRA";
 
 export type ScriptWorkItem = {
   topicId: string;
@@ -135,6 +141,11 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
   if (!selections.length) return [];
 
   const topicIds = selections.map((s) => s.topicId);
+  // R01: the ONE planning reader — which of these are the allowance, and how
+  // many scrubbed client/Jordan lines THIS month's call left for each (from
+  // the selection's evidence, or a DISCUSSED event when the client had already
+  // picked the topic in the portal). Unreadable → the old per-row count.
+  const reader = await import("@/lib/planningFacts").then((m) => m.planningForMonth(monthId)).catch(() => null);
   const [topics, scripts, interviews] = await Promise.all([
     prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }),
     // monthId is part of the identity: a bank-level script (monthId IS NULL) is
@@ -171,7 +182,8 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
 
   return selections.map((sel): ScriptWorkItem => {
     const iv = interviewOf.get(sel.topicId) ?? null;
-    const n = excerptCount(sel.evidenceJson);
+    const fact = reader?.facts.find((f) => f.topicId === sel.topicId) ?? null;
+    const n = fact ? fact.callExcerpts : excerptCount(sel.evidenceJson);
     const scriptId = scriptOf.get(sel.topicId) ?? null;
     const base = {
       topicId: sel.topicId,
@@ -188,6 +200,9 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
       excerpts: n,
     };
     if (scriptId) return { ...base, readiness: "HAS_SCRIPT", why: "Drafted." };
+    if (reader?.allowance.slots.get(sel.topicId) === "EXTRA") {
+      return { ...base, readiness: "EXTRA", why: "An extra beyond this month's allowance — it waits its turn. Draft it from the topic if you want it now." };
+    }
     // A person has not yet said this is the month's plan.
     if (sel.status === "PROPOSED") {
       return { ...base, readiness: "WAITING_ON_PLANNING", why: "The call proposed this — it needs reconciling before we script it." };
@@ -284,6 +299,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
         });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "topic", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       }
+      await noteOutcome(w, "drafted");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // Losing the dedupe race is not a failure — somebody else is drafting it.
@@ -298,6 +314,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
       // the real failures it exists to show. A refusal we asked for is a skip.
       const paused = e instanceof Error && e.name === "AutomationDisabledError";
       outcomes.push({ topicId: w.topicId, title: w.title, result: raced || paused ? "skipped" : "failed", readiness: w.readiness, note: msg.slice(0, 300) });
+      if (!raced && !paused) await noteOutcome(w, "failed", msg);
       if (paused) { pausedBy = msg.slice(0, 300); break; }
     }
   }
@@ -309,6 +326,19 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
     paused: pausedBy,
     outcomes,
   };
+}
+
+/**
+ * 6.5 (Sep 25 2026): a draft that fails twice in a row for the same topic and
+ * month becomes the scripts owner's task (programDeskTasks.noteDraftOutcome);
+ * the next success closes it. Best-effort: the bookkeeping never turns a
+ * drafted script into a failure, or a failure into a crash.
+ */
+async function noteOutcome(w: ScriptWorkItem, result: "drafted" | "failed", error?: string): Promise<void> {
+  try {
+    const { noteDraftOutcome } = await import("@/lib/programDeskTasks");
+    await noteDraftOutcome({ topicId: w.topicId, monthId: w.monthId, monthKey: w.monthKey, enrollmentId: w.enrollmentId, clientId: w.clientId, clientName: w.clientName, title: w.title }, result, error ?? null);
+  } catch { /* the desk task is a second signal; the outcome above is the record */ }
 }
 
 /**
@@ -425,6 +455,12 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
     select: { topicId: true, monthId: true, carriedFromMonthId: true },
   });
   const scripted = new Set(scriptRows.flatMap((r) => [`${r.topicId}:${r.monthId}`, ...(r.carriedFromMonthId ? [`${r.topicId}:${r.carriedFromMonthId}`] : [])]));
+  // R01: no questions phrased (and no credit spent) for a topic nobody will be
+  // asked about: an extra waiting its turn, a topic the booked call will cover,
+  // one whose material is already in, or one already being scripted.
+  const NO_QUESTIONS = new Set(["EXTRA", "ON_CALL", "WRITING", "TEAM_REVIEW"]);
+  const readers = await import("@/lib/planningFacts").then((m) => m.planningFactsForMonths([...new Set(selections.map((x) => x.monthId))])).catch(() => null);
+  const stepOf = (topicId: string, monthId: string) => readers?.get(monthId)?.planning.topics.find((t) => t.topicId === topicId)?.step ?? null;
 
   const { getOrCreateInterview, interviewPlanningContext } = await import("@/lib/contentInterview");
   const { planInterviewQuestions } = await import("@/lib/contentGeneration");
@@ -435,6 +471,8 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   for (const sel of selections) {
     if (planned >= max || Date.now() - started > budgetMs) break;
     if (scripted.has(`${sel.topicId}:${sel.monthId}`)) continue;
+    const step = stepOf(sel.topicId, sel.monthId);
+    if (step && NO_QUESTIONS.has(step)) continue;
     try {
       const interviewId = await getOrCreateInterview(sel.topicId, sel.monthId, {});
       const ctx = await interviewPlanningContext(interviewId);

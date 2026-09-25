@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { sha256 } from "@/lib/aiRuns";
 import { createPillar, listPillars } from "@/lib/contentPillars";
-import { CONFIDENTIAL_RE } from "@/lib/clientFacts";
+import { CONFIDENTIAL_RE, confidentialFilter } from "@/lib/clientFacts";
 import {
   parseStrategyDocument, normalizeStrategyLines, validateStrategyStructure, detectStructureVersion,
   type ParsedStrategy, type StrategyDocument, type StrategyStructureVersion,
@@ -247,18 +247,118 @@ export async function repairStrategyIdentities(): Promise<{ repaired: number }> 
   return { repaired };
 }
 
+/**
+ * Sections that are the TEAM's working notes, never the client's document
+ * (A08, Sep 25 2026): the drafter's "Gaps the draft could not fill" list and
+ * a legacy accepted proposal appended as its own section with its raw
+ * "path: from → to" diff. The portal hid neither (its heading filter reads
+ * framework/caption/production/internal), so approving and releasing an AI
+ * draft as it came would have shown the client the internal gap list. The
+ * release refuses them; the portal drops them as a second guard.
+ */
+export function isInternalStrategySection(s: { id: string }): boolean {
+  return s.id === "gaps" || s.id.startsWith("proposal-");
+}
+
+/** A section's text in checkable pieces — lines, then sentences — so one confidential sentence is found without a long section tripping the word-overlap rule on its own. */
+function checkablePieces(text: string): string[] {
+  return text.split(/\n+|(?<=[.!?])\s+/).map((x) => x.trim()).filter((x) => x.split(/\s+/).length >= 2);
+}
+
 /** Release to the portal — a separate act from approval; only an approved version can be released. */
 export async function releaseStrategyVersion(versionId: string, by: string): Promise<void> {
-  const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { id: true, status: true, strategyId: true, sectionsJson: true } });
+  const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { id: true, status: true, strategyId: true, sectionsJson: true, clientId: true } });
   if (!v) throw new Error("Strategy version not found.");
   if (v.status !== "APPROVED") throw new Error("Approve the version before releasing it to the portal.");
+  const sections = parseStoredSections(v.sectionsJson)?.sections ?? [];
+  const internal = sections.find(isInternalStrategySection);
+  if (internal) throw new Error(`The "${internal.heading}" section is the team's working notes, not the client's — fold it into the strategy or remove it (as a new version) before releasing this to the client.`);
   // CP-11: the portal renders every released section verbatim, so a marker of
   // confidential knowledge anywhere in the text stops the release outright.
-  const leaking = (parseStoredSections(v.sectionsJson)?.sections ?? []).find((s) => CONFIDENTIAL_RE.test(s.text) || CONFIDENTIAL_RE.test(s.heading));
+  const leaking = sections.find((s) => CONFIDENTIAL_RE.test(s.text) || CONFIDENTIAL_RE.test(s.heading));
   if (leaking) throw new Error(`The "${leaking.heading}" section carries a [CONFIDENTIAL] marker — take it out (as a new version) before releasing this to the client.`);
+  // A09: nor may it repeat something this client said in confidence — a fact
+  // marked confidential, found by the same test the generators use. The
+  // "said in confidence" phrases are left out here: strategy prose is written
+  // by us, and "buy with confidence" is not a secret.
+  const secret = await confidentialFilter(v.clientId, { phrases: false });
+  for (const s of sections) {
+    const hit = checkablePieces(s.text).find(secret);
+    if (hit) throw new Error(`The "${s.heading}" section repeats something marked confidential ("${hit.slice(0, 80)}${hit.length > 80 ? "…" : ""}") — take it out (as a new version) before releasing this to the client.`);
+  }
   const now = new Date();
   await prisma.contentStrategyVersion.update({ where: { id: versionId }, data: { releasedAt: now, releasedBy: by } });
   await prisma.contentStrategy.update({ where: { id: v.strategyId }, data: { releasedAt: now, releasedBy: by } });
+}
+
+// ---------------------------------------------------------------------------
+// EDITING A VERSION (A08, Sep 25 2026). There was no way to correct a draft
+// short of re-uploading the whole document. A change is now made to ONE
+// section (or a section is removed) and lands as a NEW version based on the
+// one edited: every other section keeps its id, order, heading and text byte
+// for byte, no AI runs, and the version edited is left exactly as it was.
+//   · DRAFT / INTERNAL_REVIEW base → the new version replaces it as the one
+//     to review; the base is marked SUPERSEDED (never approved, so it stays
+//     history — nothing reads it as "was in force"), which keeps exactly one
+//     open draft and makes a stale second tab's edit fail loudly instead of
+//     forking the document.
+//   · APPROVED base → it stays in force; the edit is a new INTERNAL_REVIEW
+//     version for Jordan to approve.
+// createStrategyVersion's content hash keeps a double click to one version.
+// ---------------------------------------------------------------------------
+const EDITABLE = ["DRAFT", "INTERNAL_REVIEW", "APPROVED"];
+
+export type DerivedVersion = { versionId: string; versionNo: number; existed: boolean; changedSectionIds: string[] };
+
+/** A new version from `baseId` with some sections' text replaced and/or some removed. Shared by the manual edit and the AI revision. */
+export async function deriveStrategyVersion(o: {
+  baseId: string; replace?: Map<string, string>; remove?: Set<string>; by: string;
+  sourceKind: "manual" | "ai"; aiRunId?: string | null; changeSummary: string;
+}): Promise<DerivedVersion> {
+  const base = await prisma.contentStrategyVersion.findUnique({ where: { id: o.baseId } });
+  if (!base) throw new Error("Strategy version not found.");
+  if (!EDITABLE.includes(base.status)) throw new Error(`v${base.versionNo} is ${base.status.toLowerCase()} — make the change on the newest version instead.`);
+  const stored = parseStoredSections(base.sectionsJson);
+  if (!stored) throw new Error("That version's sections can't be read.");
+  const changed: string[] = [];
+  const sections: StoredSection[] = [];
+  for (const sec of stored.sections) {
+    if (o.remove?.has(sec.id)) { changed.push(sec.id); continue; }
+    const next = o.replace?.get(sec.id);
+    if (next != null && next.trim() !== sec.text.trim()) { changed.push(sec.id); sections.push({ ...sec, text: next.trim() }); }
+    else sections.push(sec);
+  }
+  if (!changed.length) return { versionId: base.id, versionNo: base.versionNo, existed: true, changedSectionIds: [] };
+  if (!sections.length) throw new Error("A strategy needs at least one section — edit this one instead of removing it.");
+  const next: StoredSections = { ...stored, sections, document: refreshedDocument(stored, sections) };
+  const title = titleBlockOf(base.rawText, stored.sections[0]?.heading);
+  const r = await createStrategyVersion({
+    enrollmentId: base.enrollmentId, stored: next, rawText: [title, ...sections.map((x) => `${x.heading}\n${x.text}`)].filter(Boolean).join("\n\n"),
+    sourceKind: o.sourceKind, sourceRef: base.sourceRef, callRecordId: base.callRecordId, aiRunId: o.aiRunId ?? null, policyVersionId: base.policyVersionId,
+    basedOnVersionId: base.id, createdBy: o.by, status: "INTERNAL_REVIEW", changeSummary: o.changeSummary.slice(0, 1000),
+  });
+  if (!r.existed && base.status !== "APPROVED") {
+    await prisma.contentStrategyVersion.updateMany({ where: { id: base.id, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, data: { status: "SUPERSEDED" } });
+  }
+  return { versionId: r.versionId, versionNo: r.versionNo, existed: r.existed, changedSectionIds: changed };
+}
+
+/** Jordan edits (or removes, with text null) ONE section of a version. No AI; see the block above. */
+export async function editStrategyVersionSection(versionId: string, sectionId: string, text: string | null, by: string): Promise<DerivedVersion & { heading: string }> {
+  const base = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { sectionsJson: true } });
+  if (!base) throw new Error("Strategy version not found.");
+  const sec = parseStoredSections(base.sectionsJson)?.sections.find((x) => x.id === sectionId);
+  if (!sec) throw new Error("That section isn't in this version any more — reload and try again.");
+  if (text != null) {
+    if (!text.trim()) throw new Error("Write the section's text, or remove the section instead.");
+    if (CONFIDENTIAL_RE.test(text)) throw new Error("Take the [CONFIDENTIAL] marker out — this document is shown to the client once it's released.");
+  }
+  const r = await deriveStrategyVersion({
+    baseId: versionId, by, sourceKind: "manual",
+    ...(text == null ? { remove: new Set([sectionId]) } : { replace: new Map([[sectionId, text]]) }),
+    changeSummary: text == null ? `Removed the "${sec.heading}" section (edited by ${by})` : `Edited the "${sec.heading}" section by hand (${by})`,
+  });
+  return { ...r, heading: sec.heading };
 }
 
 export async function rejectStrategyVersion(versionId: string, by: string, note?: string): Promise<void> {
@@ -503,13 +603,29 @@ function refreshedDocument(before: StoredSections, sections: StoredSection[]): S
   if (!before.document) return null;
   try {
     // Headings are stored verbatim, numbering included ("2. Content Goals").
-    const text = sections.map((s) => `${s.heading}\n${s.text}`).join("\n");
+    // The team's working-notes sections (the drafter's gap list, a legacy
+    // appended proposal) are not part of the document and would make every
+    // re-parse of an AI draft "different" — so an edit to a draft that still
+    // had its gap list kept the OLD structured read, and approving it would
+    // have created pillars from the words before the edit (A08).
+    const body = sections.filter((s) => !isInternalStrategySection(s));
+    const text = body.map((s) => `${s.heading}\n${s.text}`).join("\n");
     const parsed = parseStrategyDocument(text);
-    const same = parsed.sections.length === sections.length && parsed.sections.every((s, i) => s.heading === sections[i].heading);
-    return same ? parsed : before.document;
+    const same = parsed.sections.length === body.length && parsed.sections.every((s, i) => s.heading === body[i].heading);
+    // The sections carry no title block, so the re-parse has no client name,
+    // year or subtitle; those are the document's, unchanged by a section edit
+    // (A08: an edited draft still reads "<Client> / 2026 Social Content Strategy").
+    return same ? { ...parsed, clientName: parsed.clientName ?? before.document.clientName, year: parsed.year ?? before.document.year, subtitle: parsed.subtitle ?? before.document.subtitle } : before.document;
   } catch {
     return before.document;
   }
+}
+
+/** The title lines of a version's text — everything before its first section heading — so a derived version's text keeps them. */
+function titleBlockOf(rawText: string | null, firstHeading: string | undefined): string {
+  if (!rawText || !firstHeading) return "";
+  const at = rawText.indexOf(firstHeading);
+  return at > 0 ? rawText.slice(0, at).trim() : "";
 }
 
 export async function rejectStrategyProposal(proposalId: string, by: string, note?: string): Promise<void> {

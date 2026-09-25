@@ -10,7 +10,7 @@ import { Card, CardTitle, Empty, LoadFailed, StatusChip, fmtShort } from "@/comp
 import { CutReview } from "@/components/portal/CutReview";
 import { PostingKitPanel } from "@/components/portal/PostingKitPanel";
 import { PortalPlayer } from "@/components/portal/PortalPlayer";
-import { ScriptBody } from "@/components/portal/ScriptBody";
+import { ScriptView } from "@/components/script/ScriptView";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
                 <summary className="cursor-pointer text-sm font-bold">{d.kit.script.title} <span className="ml-1 text-[11px] font-normal text-muted-2">{d.kit.script.historical ? "from your script history" : d.kit.script.versionLabel ? `script ${d.kit.script.versionLabel}` : "script"}{d.kit.script.strategyLabel ? ` \u00b7 strategy ${d.kit.script.strategyLabel}` : ""}</span></summary>
                 {/* An imported script is a record we hold, not this video's script (Jordan's ruling: imported scripts stay history). Say so before the words. */}
                 {d.kit.script.historical && <p className="mt-2 text-xs text-muted">This is an earlier script we have on file for this topic — kept as history, not the script this video was made from.</p>}
-                <ScriptBody body={d.kit.script.body} />
+                <ScriptView body={d.kit.script.body} fileTitle={d.kit.script.title} />
               </details>
             ) : (
               <p className="text-sm text-muted">No script is linked to this video.</p>
@@ -489,7 +489,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
               <details className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
                 <summary className={cn("cursor-pointer text-sm font-bold", focus)}>{d.kit.script.title} <span className="ml-1 text-[11px] font-normal text-muted-2">{d.kit.script.historical ? "from your script history" : d.kit.script.versionLabel ? `script ${d.kit.script.versionLabel}` : "script"}</span></summary>
                 {d.kit.script.historical && <p className="mt-2 text-xs text-muted">This is an earlier script we have on file for this topic — kept as history, not the script this video was made from.</p>}
-                <ScriptBody body={d.kit.script.body} />
+                <ScriptView body={d.kit.script.body} fileTitle={d.kit.script.title} />
               </details>
             )}
             {d.kit?.transcript.text && (

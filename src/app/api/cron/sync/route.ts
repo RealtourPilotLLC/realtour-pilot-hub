@@ -344,6 +344,14 @@ export async function GET(req: NextRequest) {
     const drafts = await sweepOwedScripts({ max: 6, budgetMs: 45_000 });
     return { plans, drafts };
   }, { maxMs: 90_000 });
+  // 6.5: share a clean sweep-drafted script WITHOUT Jordan's individual
+  // approval, after its hold. Behind `script_auto_share` — OFF at the database
+  // (a missing row), so this reports `skipped`. The share email is its own
+  // switch (script_share_email) either way.
+  await step("scriptAutoShare", async () => {
+    const { sweepAutoShare } = await import("@/lib/scriptAutoShare");
+    return sweepAutoShare();
+  }, { maxMs: 20_000 });
   // CP-07: the topic bank keeps itself stocked — the initial bank after a
   // strategy is approved, per-pillar refills when usable stock falls below the
   // target. Behind `topic_refresh` (and `ai_runs` under it); every result is a
@@ -352,6 +360,13 @@ export async function GET(req: NextRequest) {
     const { sweepTopicBanks } = await import("@/lib/contentTopics");
     return sweepTopicBanks({ max: 2, budgetMs: 60_000 });
   }, { maxMs: 75_000 });
+  // 6.3: the client's recommendations for each open month, re-ranked only
+  // when the month's slots, plan or bank changed. Pure ranking — no AI, no
+  // spend, nothing sent. Behind `topic_refresh` (off → skipped).
+  await step("topicRecommendations", async () => {
+    const { sweepRecommendations } = await import("@/lib/contentTopics");
+    return sweepRecommendations({ max: 60 });
+  }, { maxMs: 20_000 });
   // Session requests: REQUESTED → CONFIRMED when the Aryeo appointment (synced
   // above) appears at the slot; CONFIRMED → CANCELLED when Aryeo cancels it;
   // stale ones expire. Read-only against Aryeo — it reads the rows the
@@ -399,6 +414,16 @@ export async function GET(req: NextRequest) {
     const answerGaps = await reconcileAnswerGapTasks().catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
     return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10), answerGaps };
   }, { maxMs: 20_000 });
+  // 6.5 (Jordan, Sep 25 2026): scripts not approved before filming. Desk truth,
+  // outside every switch (the address task's rule): Kyle's follow-up 24 hours
+  // before a session with scripts still unapproved, the scripts owner's bell
+  // 72 hours out while scripts sit in our queue, and closing both when they
+  // stop being true. It contacts no client and never touches a session — the
+  // client's email is the reminders step's SCRIPTS lane, behind `reminders`.
+  await step("scriptApprovalTasks", async () => {
+    const { reconcileScriptApprovalTasks } = await import("@/lib/programDeskTasks");
+    return reconcileScriptApprovalTasks();
+  }, { maxMs: 15_000 });
   // CONTENT PROGRAM REMINDERS + SHARE NOTICES (W2-F, Sep 17 2026, spec §24/§22).
   // Both are OFF at the database (missing ProgramAutomation row = off) and
   // report `skipped` until Jordan authorises launch. When on: reconcile what

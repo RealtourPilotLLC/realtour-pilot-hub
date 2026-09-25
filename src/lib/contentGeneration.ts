@@ -2,15 +2,15 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, sha256, type AiRunKind } from "@/lib/aiRuns";
-import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText } from "@/lib/contentStrategy";
+import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText, parseStoredSections, deriveStrategyVersion } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
 import { assembleInterviewInputs } from "@/lib/contentInterview";
 import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameOf, type VersionParts } from "@/lib/contentScripts";
-import { factsForPrompt, factLines, CONFIDENTIAL_RE, type FactCategory } from "@/lib/clientFacts";
+import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDENTIAL_PHRASE_RE, type FactCategory } from "@/lib/clientFacts";
 import { CONTENT_RULES } from "@/lib/contentPipeline";
 import {
-  buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy,
+  buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection,
   GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument,
 } from "@/lib/contentPolicy";
@@ -32,9 +32,8 @@ import {
 
 // --- client context ---------------------------------------------------------------
 
-async function otherClientNames(clientId: string): Promise<string[]> {
-  const enrolled = await prisma.contentEnrollment.findMany({ where: { clientId: { not: clientId } }, select: { clientId: true } });
-  const clients = await prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { name: true } });
+/** The names a client's lines are scrubbed of: every OTHER enrolled client's full name and its first two words. */
+function namesToScrub(clients: { name: string | null }[]): string[] {
   const out: string[] = [];
   for (const c of clients) {
     const n = (c.name ?? "").trim();
@@ -44,13 +43,74 @@ async function otherClientNames(clientId: string): Promise<string[]> {
   return [...new Set(out.filter((n) => n.length >= 5))];
 }
 
-/** Drop every line that names another enrolled client. Deterministic; logged on the run's inputRefs. */
-export async function scrubOtherClients(clientId: string, lines: string[]): Promise<{ kept: string[]; stripped: number }> {
-  const names = await otherClientNames(clientId);
+async function otherClientNames(clientId: string): Promise<string[]> {
+  const enrolled = await prisma.contentEnrollment.findMany({ where: { clientId: { not: clientId } }, select: { clientId: true } });
+  const clients = await prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { name: true } });
+  return namesToScrub(clients);
+}
+
+const scrubWith = (names: string[], lines: string[]): { kept: string[]; stripped: number } => {
   if (!names.length) return { kept: lines, stripped: 0 };
   const re = new RegExp(`\\b(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
   const kept = lines.filter((l) => !re.test(l));
   return { kept, stripped: lines.length - kept.length };
+};
+
+/** Drop every line that names another enrolled client. Deterministic; logged on the run's inputRefs. */
+export async function scrubOtherClients(clientId: string, lines: string[]): Promise<{ kept: string[]; stripped: number }> {
+  return scrubWith(await otherClientNames(clientId), lines);
+}
+
+/**
+ * scrubOtherClients for several clients at once — the same names, the same
+ * rule, two queries however many clients (R01, Sep 25 2026: the planning
+ * reader scrubs a whole roster's call lines and must not cost a query pair
+ * per client).
+ */
+export async function otherClientScrubbers(clientIds: string[]): Promise<Map<string, (lines: string[]) => string[]>> {
+  const out = new Map<string, (lines: string[]) => string[]>();
+  if (!clientIds.length) return out;
+  const enrolled = await prisma.contentEnrollment.findMany({ select: { clientId: true } });
+  const clients = await prisma.client.findMany({ where: { id: { in: [...new Set(enrolled.map((e) => e.clientId))] } }, select: { id: true, name: true } });
+  for (const id of new Set(clientIds)) {
+    const names = namesToScrub(clients.filter((c) => c.id !== id));
+    out.set(id, (lines) => scrubWith(names, lines).kept);
+  }
+  return out;
+}
+
+/**
+ * A RAW CALL on its way into a CLIENT-FACING generator (A09, Sep 25 2026).
+ * The strategy drafter handed the model the whole discovery transcript — up
+ * to 120k characters, unfiltered — and the strategy is released to the
+ * client. Line by line, this drops:
+ *   · a line carrying a [CONFIDENTIAL] marker anywhere in it;
+ *   · a line that SAYS it is private ("between you and me", "off the
+ *     record", "don't share this", "hasn't been announced");
+ *   · a line overlapping a fact of this client marked confidential (the call's
+ *     own analysis marks them — which is why the strategy job waits for it);
+ *   · a line naming another enrolled client.
+ * Single-word lines ("Right.", "Okay.") are never judged by overlap: a word
+ * shared with a secret is not the secret. The counts go on the run's
+ * inputRefs, so what was held back is on the record without its content.
+ */
+export async function scrubTranscriptForGeneration(clientId: string, text: string): Promise<{ text: string; stripped: number; reasons: { marker: number; phrase: number; confidentialFact: number; otherClient: number } }> {
+  const overlapsSecret = await confidentialFilter(clientId, { phrases: false });
+  const reasons = { marker: 0, phrase: 0, confidentialFact: 0, otherClient: 0 };
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t) { kept.push(line); continue; }
+    if (CONFIDENTIAL_RE.test(t)) { reasons.marker++; continue; }
+    if (CONFIDENTIAL_PHRASE_RE.test(t)) { reasons.phrase++; continue; }
+    if (t.split(/\s+/).length >= 2 && overlapsSecret(t)) { reasons.confidentialFact++; continue; }
+    kept.push(line);
+  }
+  const others = await scrubOtherClients(clientId, kept);
+  // scrubOtherClients also "strips" blank lines only if they name someone — they never do.
+  reasons.otherClient = others.stripped;
+  const stripped = reasons.marker + reasons.phrase + reasons.confidentialFact + reasons.otherClient;
+  return { text: others.kept.join("\n").replace(/\n{3,}/g, "\n\n"), stripped, reasons };
 }
 
 export type BuiltContext = { ctx: ClientContext; enrollmentId: string; clientId: string; strategyVersionId: string | null; strategyLabel: string | null; policyVersionId: string; inputRefs: Record<string, unknown> };
@@ -108,7 +168,8 @@ function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, 
 async function policyTopic(topicId: string): Promise<{ topic: Topic; row: NonNullable<Awaited<ReturnType<typeof prisma.contentTopic.findUnique>>> }> {
   const t = await prisma.contentTopic.findUnique({ where: { id: topicId } });
   if (!t) throw new Error("Topic not found.");
-  const pillarName = (await pillarNameOf(t.pillarId, t.enrollmentId)) ?? t.pillar ?? "(no pillar)";
+  // U01: never an invented "(no pillar)" name — it came back as the script's category.
+  const pillarName = (await pillarNameOf(t.pillarId, t.enrollmentId)) ?? t.pillar ?? "";
   return {
     row: t,
     topic: { id: t.id, clientId: t.clientId, title: t.title, description: t.concept, pillarRef: { pillarId: t.pillarId, pillarName }, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: "STAFF", sourceRef: null, state: "SELECTED", selectedForMonth: t.monthId, proposedState: null, importedMark: null, history: [], strategyVersion: null, stamp: null },
@@ -251,7 +312,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const [s, base] = await Promise.all([prisma.contentScript.findUnique({ where: { id: scriptId } }), prisma.contentScriptVersion.findUnique({ where: { id: baseId } })]);
   if (!s || !base) throw new Error("Script not found.");
   const built = await buildClientContext(s.enrollmentId, { monthId: s.monthId });
-  const topic = s.topicId ? (await policyTopic(s.topicId)).topic : makeTopic({ title: s.title, pillarName: base.categoryLabel ?? "(no pillar)", clientId: s.clientId });
+  const topic = s.topicId ? (await policyTopic(s.topicId)).topic : makeTopic({ title: s.title, pillarName: base.categoryLabel ?? "", clientId: s.clientId });
   // Same other-client scrub as the first draft — a call excerpt naming another enrolled client never reaches a revision prompt either.
   const rawExcerpts = s.topicId ? await excerptsForTopic(s.topicId, s.monthId) : [];
   const scrub = await scrubOtherClients(s.clientId, rawExcerpts.map((e) => e.text));
@@ -515,15 +576,95 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
   return { callKind: out.callKind, plannedMonthKey: planned, targetMonthId, proposedSelections, keptSelections: kept, withheldSelections: withheld, discussed, rejected, facts: factsN, confidentialFacts: confidentialN, proposals, priorities: priorities.length, todos: todos.length, runId: run.runId };
 }
 
+/**
+ * THE ONE-TIME BRAND DISCOVERY CALL IS NOT A MONTH (6.2, Sep 25 2026; §3
+ * "Initial discovery … not a monthly task").
+ *
+ * The call record honoured that (applyTarget files discovery on the
+ * onboarding record, never a month), but its ANALYSIS went through the monthly
+ * path: callAndTranscript upserted the month of the call's own date — creating
+ * it with strategyCallStatus COMPLETED, which quietly satisfied the required
+ * first strategy call without one — and the analyser then filed PROPOSED
+ * selections on it, merged "priorities" and appended "call to-dos" to its
+ * notes. Now a discovery transcript runs the SAME model call (same schema,
+ * same dedupe key) and keeps only what discovery is for:
+ *   · facts and strategy proposals (profileFields.applyCallKnowledge, with no
+ *     month — a "this month only" fact is kept as permanent);
+ *   · topics the client raised, as PROPOSED bank ideas with no month;
+ *   · ideas they declined, as proposed rejections for a person to rule on.
+ * No month is created or touched, no selection, no priorities, no to-dos.
+ */
+export type DiscoveryAnalysisResult = { callKind: string; bankIdeas: number; raisedAgain: number; rejected: number; facts: number; confidentialFacts: number; proposals: number; ignoredPriorities: number; ignoredTodos: number; runId: string };
+
+export async function analyzeDiscoveryKnowledge(o: { enrollmentId: string; clientId: string; transcript: string; callRecordId: string; transcriptSourceId?: string | null; callDate: Date | null; requestedBy: string; unattended: boolean }): Promise<DiscoveryAnalysisResult> {
+  const built = await buildClientContext(o.enrollmentId);
+  const [historyRows, enrollment] = await Promise.all([
+    prisma.contentTopic.findMany({ where: { enrollmentId: o.enrollmentId }, orderBy: { createdAt: "desc" }, take: 120, select: { title: true, status: true } }),
+    prisma.contentEnrollment.findUnique({ where: { id: o.enrollmentId }, select: { videosPerMonth: true } }),
+  ]);
+  const history = historyRows.length ? historyRows.map((t) => `- [${t.status}] ${t.title}`).join("\n") : "none yet";
+  const context = built.ctx.strategy?.document ? `APPROVED STRATEGY (${built.strategyLabel}):\n${renderStrategy(built.ctx.strategy.document, { preserveSourceHeadings: true })}` : "APPROVED STRATEGY: none on file yet — this call is where it comes from.";
+  const facts = [...(built.ctx.preferences?.explicit ?? []), ...(built.ctx.knownFacts ?? [])];
+  const headings = (await approvedStrategy(o.enrollmentId).catch(() => null))?.stored.sections.map((s) => s.heading).filter(Boolean) ?? [];
+  const when = o.callDate ? o.callDate.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : "date not recorded";
+  const run = await runAiJson<Analysis>({
+    kind: "call_analysis", enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { monthId: null, callRecordId: o.callRecordId, transcriptSourceId: o.transcriptSourceId ?? null, callType: "BRAND_DISCOVERY" }, inputRefs: { ...built.inputRefs, transcriptHash: sha256(o.transcript) },
+    promptKey: "call-analysis", promptVersion: `${GENERATION_POLICY_VERSION}/analysis.3-discovery`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
+    // The same key as the monthly path: one analysis per call record, whichever path asks.
+    dedupeKey: `analyze:${o.callRecordId}`,
+    system: ANALYSIS_SYSTEM(enrollment?.videosPerMonth ?? 4, history),
+    prompt: `CALL TYPE: BRAND DISCOVERY — the client's one-time onboarding call. It plans NO month: set plannedMonthKey to null. Topics the client liked are ideas for their topic bank, not selections for a month. Leave priorities and todos empty.\nCLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${when}\n\n${context}\n\n${headings.length ? `APPROVED STRATEGY SECTION HEADINGS (use one exactly in strategyProposals[].section):\n${headings.map((h) => `- ${h}`).join("\n")}\n\n` : ""}${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
+    schema: ANALYSIS_SCHEMA, maxTokens: 10_000,
+  });
+  const out = run.output;
+  const actor: Actor = { kind: "AI" };
+  const sourceRef = `ProgramCallRecord:${o.callRecordId}`;
+  const toExcerpts = (ex: Excerpt[] | undefined): SourceExcerpt[] => (Array.isArray(ex) ? ex : []).filter((x) => x && typeof x.text === "string").slice(0, 8).map((x) => ({ speaker: x.speaker === "client" || x.speaker === "jordan" ? x.speaker : "third-party", speakerName: x.speakerName ?? null, source: `discovery call${x.time ? ` ${x.time}` : ""}`, text: x.text.slice(0, 1200) }));
+  let bankIdeas = 0, raisedAgain = 0, rejected = 0;
+  // Agreed or merely discussed, a discovery topic is a bank IDEA — never a selection.
+  for (const t of [...(Array.isArray(out.selectedTopics) ? out.selectedTopics : []), ...(Array.isArray(out.discussedTopics) ? out.discussedTopics : [])]) {
+    if (!t?.title?.trim()) continue;
+    const excerpts = toExcerpts(t.excerpts);
+    const r = await createTopic({ enrollmentId: o.enrollmentId, title: t.title, concept: t.concept, pillarLabel: t.pillar, source: "discovery_call", sourceRef, status: "SAVED", approvalState: "PROPOSED", actor, eventKind: "DISCUSSED", evidence: { excerpts }, note: "Raised on the brand discovery call" });
+    if (!r.existed) bankIdeas++;
+    else { raisedAgain++; await recordTopicEvent(r.id, o.enrollmentId, "DISCUSSED", actor, { monthId: null, sourceRef, evidence: { excerpts }, note: "Raised again on the brand discovery call — no status changed" }); }
+  }
+  for (const t of Array.isArray(out.rejectedIdeas) ? out.rejectedIdeas : []) {
+    if (!t?.title?.trim()) continue;
+    const note = `Declined on the discovery call per the transcript${t.reason ? `: ${t.reason}` : ""} — a proposed rejection; reject it on Video Topics to make it stick`;
+    const r = await createTopic({ enrollmentId: o.enrollmentId, title: t.title, source: "discovery_call", sourceRef, status: "SAVED", approvalState: "PROPOSED", proposedState: "REJECTED", actor, eventKind: "DISCUSSED", note });
+    if (r.existed) await recordTopicEvent(r.id, o.enrollmentId, "DISCUSSED", actor, { monthId: null, sourceRef, note });
+    else await prisma.contentTopic.update({ where: { id: r.id }, data: { rejectionReason: t.reason ?? null } });
+    rejected++;
+  }
+  const { applyCallKnowledge } = await import("@/lib/profileFields");
+  const knowledge = await applyCallKnowledge(
+    { enrollmentId: o.enrollmentId, clientId: o.clientId, targetMonthId: null, callRecordId: o.callRecordId, transcriptSourceId: o.transcriptSourceId ?? null, callDate: o.callDate, unattended: o.unattended, sourceRef, runId: run.runId },
+    { facts: out.facts, strategyProposals: out.strategyProposals },
+  );
+  await setRunOutputRef(run.runId, sourceRef);
+  const count = (x: unknown) => (Array.isArray(x) ? x.filter((v) => typeof v === "string" && v.trim()).length : 0);
+  return {
+    callKind: out.callKind, bankIdeas, raisedAgain, rejected, facts: knowledge.facts, confidentialFacts: knowledge.confidentialFacts, proposals: knowledge.proposals + knowledge.fieldProposals,
+    ignoredPriorities: count(out.priorities), ignoredTodos: count(out.todos), runId: run.runId,
+  };
+}
+
 // --- the transcript-job handler registry (for W1-B's driver) ------------------------------------
 
 export type TranscriptJobInput = { id: string; kind: string; callRecordId: string; transcriptSourceId?: string | null; enrollmentId?: string | null; requestedBy?: string | null; /** Refresh the driver's lease between long AI calls. */ heartbeat?: () => Promise<void> };
-export type TranscriptJobOutcome = { ok: true; resultJson: Record<string, unknown>; aiRunId?: string | null } | { ok: false; paused: string } | { ok: false; reviewReason?: string; error?: string; aiRunId?: string | null };
+export type TranscriptJobOutcome = { ok: true; resultJson: Record<string, unknown>; aiRunId?: string | null } | { ok: false; paused: string } | { ok: false; waiting: string } | { ok: false; reviewReason?: string; error?: string; aiRunId?: string | null };
 
 async function callAndTranscript(job: TranscriptJobInput) {
   const call = await prisma.programCallRecord.findUnique({ where: { id: job.callRecordId } });
   if (!call) return { error: "Call record not found." } as const;
   if (!call.enrollmentId || !call.clientId) return { reviewReason: "The call is not matched to a client yet — confirm the invitee first." } as const;
+  // A04 (Sep 25 2026): an identity that became uncertain keeps its ids on the
+  // record (so the month keeps its call on file), and that used to be all this
+  // checked — so analysis and a client-facing strategy draft still ran for a
+  // call whose owner was in question. It waits now, attempt given back, until
+  // a person confirms the client (confirmCallRecordClient re-arms it).
+  if (call.matchState !== "MATCHED" && call.matchState !== "CONFIRMED_BY_STAFF") return { waiting: "the call's client is in question — confirm it on Settings → Calendly & calls" } as const;
   // CONFIRMED sources on this call only — never a candidate copy, never ContentMonth.transcriptText.
   const sources = job.transcriptSourceId
     ? await prisma.programTranscriptSource.findMany({ where: { id: job.transcriptSourceId, callRecordId: call.id, matchState: "CONFIRMED" } })
@@ -532,6 +673,8 @@ async function callAndTranscript(job: TranscriptJobInput) {
   if (!text.trim()) return { reviewReason: "No confirmed transcript text on this call." } as const;
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: call.enrollmentId }, select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true } });
   if (!enrollment) return { error: "Enrollment not found." } as const;
+  // Brand discovery plans no month (6.2): nothing is read, created or upserted.
+  if (call.callType === "BRAND_DISCOVERY") return { call, text, enrollment, month: null, sourceId: sources[0]?.id ?? null } as const;
   // The month the call plans: explicit on the record; else its target key; else the call's own month.
   const { etMonthKey } = await import("@/lib/contentProgram");
   const monthKey = call.targetMonthKey ?? etMonthKey(call.scheduledStart ?? new Date());
@@ -554,22 +697,37 @@ export async function runTranscriptJob(job: TranscriptJobInput): Promise<Transcr
     const ct = await callAndTranscript(job);
     if ("error" in ct) return { ok: false, error: ct.error };
     if ("reviewReason" in ct) return { ok: false, reviewReason: ct.reviewReason };
+    if ("waiting" in ct) return { ok: false, waiting: ct.waiting };
     const { call, text, enrollment, month, sourceId } = ct;
     const beat = async () => { if (job.heartbeat) await job.heartbeat().catch(() => {}); };
     await beat();
     switch (job.kind) {
       case "ANALYZE":
       case "FACT_EXTRACT": {
+        if (call.callType === "BRAND_DISCOVERY") {
+          const r = await analyzeDiscoveryKnowledge({ enrollmentId: enrollment.id, clientId: enrollment.clientId, transcript: text, callRecordId: call.id, transcriptSourceId: sourceId, callDate: call.scheduledStart, requestedBy, unattended });
+          await prisma.programCallRecord.update({ where: { id: call.id }, data: { analysisRunId: r.runId, transcriptState: "ANALYZED", analysisJson: JSON.stringify(r) } }).catch(() => {});
+          return { ok: true, resultJson: { ...r }, aiRunId: r.runId };
+        }
+        if (!month) return { ok: false, error: "Month not found." };
         const r = await analyzeTranscriptText({ enrollmentId: enrollment.id, clientId: enrollment.clientId, monthId: month.id, monthKey: month.monthKey, transcript: text, callDate: call.scheduledStart, videosOwed: month.videosOwed, requestedBy, unattended, callRecordId: call.id, transcriptSourceId: sourceId });
         await prisma.programCallRecord.update({ where: { id: call.id }, data: { analysisRunId: r.runId, transcriptState: "ANALYZED", analysisJson: JSON.stringify(r) } }).catch(() => {});
         return { ok: true, resultJson: { ...r }, aiRunId: r.runId };
       }
       case "STRATEGY_DRAFT": {
         if (call.callType !== "BRAND_DISCOVERY") return { ok: false, reviewReason: "A strategy is drafted from a brand-discovery call only; this call is " + call.callType.toLowerCase() + "." };
-        const r = await draftStrategyFromTranscript({ enrollmentId: enrollment.id, clientId: enrollment.clientId, transcript: text, callRecordId: call.id, requestedBy, unattended });
-        return { ok: true, resultJson: { strategyVersionId: r.versionId, versionNo: r.versionNo, gaps: r.gaps }, aiRunId: r.runId };
+        // A09: the call's own analysis is what marks the things said in
+        // confidence, and the draft's transcript scrub reads those marks. So
+        // the client-facing draft waits for it — unless the legacy sweep had
+        // already analysed this transcript (then no ANALYZE was queued).
+        if (!(await discoveryAnalysisDone(call.id, call.transcriptState, call.rawJson))) {
+          return { ok: false, waiting: "waiting for the call's analysis to finish, so anything said in confidence is marked before a client-facing strategy is drafted" };
+        }
+        const r = await draftStrategyFromTranscript({ enrollmentId: enrollment.id, clientId: enrollment.clientId, transcript: text, callRecordId: call.id, callDate: call.scheduledStart, requestedBy, unattended });
+        return { ok: true, resultJson: { strategyVersionId: r.versionId, versionNo: r.versionNo, gaps: r.gaps, stripped: r.stripped }, aiRunId: r.runId };
       }
       case "SCRIPT_DRAFT": {
+        if (!month) return { ok: false, reviewReason: "A brand discovery call plans no month — scripts are drafted from a monthly planning call or the client's answers." };
         // Only RECONCILED/SELECTED topics get scripts; call-proposed ones wait for a person.
         const sels = await prisma.contentTopicSelection.findMany({ where: { monthId: month.id, status: { in: ["SELECTED", "RECONCILED"] } }, select: { topicId: true } });
         const done: string[] = [];
@@ -600,29 +758,129 @@ export async function runTranscriptJob(job: TranscriptJobInput): Promise<Transcr
   }
 }
 
-/** Discovery call → a DRAFT strategy version in the house template, with gaps instead of inventions. Jordan approves. */
-export async function draftStrategyFromTranscript(o: { enrollmentId: string; clientId: string; transcript: string; callRecordId?: string | null; intakeText?: string | null; requestedBy: string; unattended: boolean }): Promise<{ versionId: string; versionNo: number; gaps: number; runId: string }> {
+/**
+ * Has the discovery call's ANALYZE finished (A09)? Done = the job SUCCEEDED,
+ * or the record says ANALYZED, or the legacy sweep had already analysed the
+ * transcript (raw.analysis.skipped — then no ANALYZE was ever queued).
+ */
+export async function discoveryAnalysisDone(callRecordId: string, transcriptState: string, rawJson: string | null): Promise<boolean> {
+  if (transcriptState === "ANALYZED") return true;
+  try { if ((JSON.parse(rawJson ?? "{}") as { analysis?: { skipped?: string } }).analysis?.skipped) return true; } catch { /* unreadable raw — fall through to the job */ }
+  const job = await prisma.programTranscriptJob.findFirst({ where: { callRecordId, kind: "ANALYZE" }, orderBy: { createdAt: "desc" }, select: { state: true } });
+  return job?.state === "SUCCEEDED";
+}
+
+/** The calendar year in New York (a draft written on Dec 31 at 9 pm ET is that year's strategy). */
+const etYear = (d: Date) => Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric" }).format(d));
+
+/**
+ * Discovery call → a DRAFT strategy version in the house template, with gaps instead of inventions. Jordan approves.
+ *
+ * A08/A09 (Sep 25 2026): the draft carries the policy's Video Structure
+ * Framework as its own section 4 (no "policy default" annotation); its year is
+ * the New York year of the discovery call, not the server's UTC clock; and the
+ * transcript and intake reach the model only after scrubTranscriptForGeneration
+ * — the counts of what was held back are on the run's inputRefs.
+ */
+export async function draftStrategyFromTranscript(o: { enrollmentId: string; clientId: string; transcript: string; callRecordId?: string | null; callDate?: Date | null; intakeText?: string | null; requestedBy: string; unattended: boolean }): Promise<{ versionId: string; versionNo: number; gaps: number; runId: string; stripped: number }> {
   const built = await buildClientContext(o.enrollmentId);
-  const excerptCtx: ClientContext = { ...built.ctx, sourceExcerpts: [{ speaker: "client", speakerName: built.ctx.clientName, source: "discovery-call transcript (speaker turns not separated — treat lines as the client's only where the transcript says so)", text: o.transcript.slice(0, 120_000) }] };
-  const bundle = buildStrategyPrompt(excerptCtx, { intakeText: o.intakeText ?? null, priorStrategyNote: built.ctx.strategy ? `An approved strategy (${built.strategyLabel}) exists; this draft is a proposed new version, not a replacement.` : null });
+  const scrub = await scrubTranscriptForGeneration(o.clientId, o.transcript);
+  // The intake is stored as JSON; one answer per line, so a private answer is held back without the rest.
+  const intakeLines = (() => { if (!o.intakeText) return null; try { return JSON.stringify(JSON.parse(o.intakeText), null, 1); } catch { return o.intakeText; } })();
+  const intake = intakeLines ? await scrubTranscriptForGeneration(o.clientId, intakeLines) : null;
+  const excerptCtx: ClientContext = { ...built.ctx, sourceExcerpts: [{ speaker: "client", speakerName: built.ctx.clientName, source: "discovery-call transcript (speaker turns not separated — treat lines as the client's only where the transcript says so)", text: scrub.text.slice(0, 120_000) }] };
+  const bundle = buildStrategyPrompt(excerptCtx, { intakeText: intake?.text ?? null, priorStrategyNote: built.ctx.strategy ? `An approved strategy (${built.strategyLabel}) exists; this draft is a proposed new version, not a replacement.` : null });
   type StrategyOut = { clientName: string; subtitle: string; brandOverview: { coreValues: string; brandMessage: string; shortBrandStatement: string | null; brandVoice: string }; targetAudience: { primaryServiceAreas: string; pricePositioning: string | null; primaryClientTypes: string; longTermPositioningGoal: string }; contentGoals: string[]; contentPillars: { preamble: string; pillars: { name: string; purpose: string; focusAreas: string; contentApproach: string | null }[] }; framework: string; captionCtaExamples: string[]; strategicDirection: string; gaps: Gap[] };
-  const run = await runAiJson<StrategyOut>({ kind: "strategy_draft", enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, transcriptHash: sha256(o.transcript) }, promptKey: "strategy", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: o.callRecordId ? `strategy:${o.callRecordId}` : null, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 12_000 });
+  const run = await runAiJson<StrategyOut>({ kind: "strategy_draft", enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, transcriptHash: sha256(o.transcript), stripped: scrub.stripped, strippedBy: scrub.reasons, intakeStripped: intake?.stripped ?? 0 }, promptKey: "strategy", promptVersion: `${GENERATION_POLICY_VERSION}/strategy.2-scrubbed`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: o.callRecordId ? `strategy:${o.callRecordId}` : null, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 12_000 });
   const out = run.output;
   const doc: StrategyDocument = {
-    clientName: out.clientName || built.ctx.clientName, year: new Date().getUTCFullYear(), subtitle: out.subtitle,
+    clientName: out.clientName || built.ctx.clientName, year: etYear(o.callDate ?? new Date()), subtitle: out.subtitle,
     brandOverview: { coreValues: out.brandOverview.coreValues, brandMessage: out.brandOverview.brandMessage, shortBrandStatement: out.brandOverview.shortBrandStatement, brandVoice: out.brandOverview.brandVoice, otherFields: [], paragraphs: [] },
     targetAudience: { present: true, heading: "Target Audience", primaryServiceAreas: out.targetAudience.primaryServiceAreas, pricePositioning: out.targetAudience.pricePositioning, primaryClientTypes: out.targetAudience.primaryClientTypes, longTermPositioningGoal: out.targetAudience.longTermPositioningGoal, otherFields: [], paragraphs: [] },
     contentGoals: { heading: "Content Goals", items: out.contentGoals, numbered: false },
     contentPillars: { heading: "Content Pillars", preamble: [out.contentPillars.preamble], pillars: out.contentPillars.pillars.map((p, i) => ({ number: i + 1, name: p.name, heading: `Pillar ${i + 1}: ${p.name}`, purpose: p.purpose, focusAreas: p.focusAreas, contentApproach: p.contentApproach, otherFields: [] })) },
-    framework: null, captionCtaExamples: { heading: "Caption CTA Examples", items: out.captionCtaExamples }, strategicDirection: { heading: "Strategic Direction", paragraphs: [out.strategicDirection] }, otherSections: [],
+    framework: policyFrameworkSection(), captionCtaExamples: { heading: "Caption CTA Examples", items: out.captionCtaExamples }, strategicDirection: { heading: "Strategic Direction", paragraphs: [out.strategicDirection] }, otherSections: [],
   };
   const text = renderStrategy(doc);
   const { stored } = structuredFromText(text);
   const gaps = Array.isArray(out.gaps) ? out.gaps : [];
   if (gaps.length) stored.sections.push({ id: "gaps", number: null, heading: "Gaps the draft could not fill (from the call)", order: stored.sections.length + 1, text: gaps.map((g) => `• [${g.kind}${g.field ? ` · ${g.field}` : ""}] ${g.text}${g.question ? ` → ${g.question}` : ""}`).join("\n") });
-  const r = await createStrategyVersion({ enrollmentId: o.enrollmentId, stored, rawText: text, sourceKind: "discovery_call", sourceRef: o.callRecordId ?? "discovery transcript", callRecordId: o.callRecordId ?? null, aiRunId: run.runId, policyVersionId: built.policyVersionId, basedOnVersionId: built.strategyVersionId, createdBy: "ai", status: "DRAFT", changeSummary: `AI draft from the discovery call (${gaps.length} gap${gaps.length === 1 ? "" : "s"} listed, not filled)` });
+  const r = await createStrategyVersion({ enrollmentId: o.enrollmentId, stored, rawText: text, sourceKind: "discovery_call", sourceRef: o.callRecordId ?? "discovery transcript", callRecordId: o.callRecordId ?? null, aiRunId: run.runId, policyVersionId: built.policyVersionId, basedOnVersionId: built.strategyVersionId, createdBy: "ai", status: "DRAFT", changeSummary: `AI draft from the discovery call (${gaps.length} gap${gaps.length === 1 ? "" : "s"} listed, not filled${scrub.stripped ? `; ${scrub.stripped} transcript line${scrub.stripped === 1 ? "" : "s"} held back as confidential or about another client` : ""})` });
   await setRunOutputRef(run.runId, `ContentStrategyVersion:${r.versionId}`);
-  return { versionId: r.versionId, versionNo: r.versionNo, gaps: gaps.length, runId: run.runId };
+  return { versionId: r.versionId, versionNo: r.versionNo, gaps: gaps.length, runId: run.runId, stripped: scrub.stripped };
+}
+
+// ---------------------------------------------------------------------------
+// REVISE THE STRATEGY WITH FEEDBACK (A08, Sep 25 2026) — Jordan's notes plus
+// the client's own suggestions from the portal, in ONE staff-initiated run
+// (unattended=false: a person pressed the button, so no sweep switch applies;
+// ai_runs governs sweeps only). The model returns only the sections that
+// change; deriveStrategyVersion swaps exactly those into a copy, so every
+// other section is byte-identical by construction. The included client
+// suggestions are claimed compare-and-set (PROPOSED → ACCEPTED, pointing at
+// the new version) — this is the one revision; there is no client re-approval
+// loop. The same notes + suggestions asked twice return the first result
+// without a second paid run.
+// ---------------------------------------------------------------------------
+type RevisionOut = { changes: { sectionId: string; text: string }[]; summary: string; unaddressed: string[] };
+
+export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?: string | null; proposalIds?: string[] | null }, by: string): Promise<{ versionId: string; versionNo: number; existed: boolean; changedSections: string[]; unaddressed: string[]; ignoredSections: string[]; proposalsFolded: number; runId: string | null }> {
+  const base = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId } });
+  if (!base) throw new Error("Strategy version not found.");
+  if (!["DRAFT", "INTERNAL_REVIEW", "APPROVED"].includes(base.status)) throw new Error(`v${base.versionNo} is ${base.status.toLowerCase()} — revise the newest version instead.`);
+  const stored = parseStoredSections(base.sectionsJson);
+  if (!stored?.sections.length) throw new Error("That version's sections can't be read.");
+  const notes = (fb.notes ?? "").trim().slice(0, 4000);
+  if (CONFIDENTIAL_RE.test(notes)) throw new Error("Take the [CONFIDENTIAL] marker out of your notes — the strategy is shown to the client.");
+  const ids = [...new Set((fb.proposalIds ?? []).filter((x) => typeof x === "string" && x))];
+  const proposals = ids.length
+    ? await prisma.contentStrategyProposal.findMany({ where: { id: { in: ids }, enrollmentId: base.enrollmentId, status: "PROPOSED", OR: [{ targetKey: null }, { NOT: { targetKey: { startsWith: "profile." } } }] }, orderBy: { createdAt: "asc" } })
+    : [];
+  if (!notes && !proposals.length) throw new Error("Write what should change, or pick a client suggestion to fold in.");
+  const feedbackKey = sha256(JSON.stringify({ base: base.id, notes, ids: proposals.map((p) => p.id).sort() })).slice(0, 24);
+  // Asked before (a second click, a retry after a slow response): the version it made, no second run.
+  const prior = await prisma.programAiRun.findFirst({ where: { kind: "strategy_revise", enrollmentId: base.enrollmentId, status: "SUCCEEDED", scopeJson: { contains: feedbackKey }, outputRef: { startsWith: "ContentStrategyVersion:" } }, orderBy: { createdAt: "desc" }, select: { id: true, outputRef: true } });
+  if (prior?.outputRef) {
+    const v = await prisma.contentStrategyVersion.findUnique({ where: { id: prior.outputRef.slice("ContentStrategyVersion:".length) }, select: { id: true, versionNo: true } });
+    if (v) return { versionId: v.id, versionNo: v.versionNo, existed: true, changedSections: [], unaddressed: [], ignoredSections: [], proposalsFolded: 0, runId: prior.id };
+  }
+  const headingOf = (targetKey: string | null) => (targetKey?.startsWith("strategy.section:") ? stored.sections.find((x) => x.id === targetKey.slice("strategy.section:".length))?.heading ?? null : null);
+  const toOf = (diffJson: string | null) => { try { return ((JSON.parse(diffJson ?? "[]") as { to?: string }[])[0]?.to ?? null) || null; } catch { return null; } };
+  const built = await buildClientContext(base.enrollmentId);
+  const bundle = buildStrategyRevisionPrompt(built.ctx, { label: `v${base.versionNo}`, sections: stored.sections.map((x) => ({ id: x.id, heading: x.heading, text: x.text })) }, {
+    notes: notes || null,
+    clientSuggestions: proposals.map((p) => ({ summary: p.summary, sectionHeading: headingOf(p.targetKey), proposedText: toOf(p.diffJson) })),
+  });
+  const run = await runAiJson<RevisionOut>({
+    kind: "strategy_revise", enrollmentId: base.enrollmentId, clientId: base.clientId, scope: { strategyVersionId: base.id, proposalIds: proposals.map((p) => p.id), feedbackKey },
+    inputRefs: { ...built.inputRefs, notesHash: sha256(notes), proposalIds: proposals.map((p) => p.id) }, promptKey: "strategy-revise", promptVersion: `${GENERATION_POLICY_VERSION}/strategy-revise.1`,
+    policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: by, unattended: false,
+    dedupeKey: `strategy-revise:${base.id}:${feedbackKey}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 8000,
+  });
+  try {
+    const known = new Set(stored.sections.map((x) => x.id));
+    const replace = new Map<string, string>();
+    const ignoredSections: string[] = [];
+    for (const c of Array.isArray(run.output.changes) ? run.output.changes : []) {
+      if (c && typeof c.sectionId === "string" && known.has(c.sectionId) && typeof c.text === "string" && c.text.trim()) replace.set(c.sectionId, c.text);
+      else ignoredSections.push(String(c?.sectionId ?? "?"));
+    }
+    const unaddressed = Array.isArray(run.output.unaddressed) ? run.output.unaddressed.filter((x) => typeof x === "string" && x.trim()) : [];
+    const summary = typeof run.output.summary === "string" && run.output.summary.trim() ? run.output.summary.trim() : "changes from the feedback";
+    const r = await deriveStrategyVersion({ baseId: base.id, replace, by, sourceKind: "ai", aiRunId: run.runId, changeSummary: `Revised with feedback${proposals.length ? ` (${proposals.length} client suggestion${proposals.length === 1 ? "" : "s"} folded in)` : ""}: ${summary}` });
+    let proposalsFolded = 0;
+    if (r.versionId !== base.id && proposals.length) {
+      const won = await prisma.contentStrategyProposal.updateMany({
+        where: { id: { in: proposals.map((p) => p.id) }, status: "PROPOSED" },
+        data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: `Folded into v${r.versionNo} by a feedback revision`, resultVersionId: r.versionId },
+      });
+      proposalsFolded = won.count;
+    }
+    await setRunOutputRef(run.runId, `ContentStrategyVersion:${r.versionId}`);
+    return { versionId: r.versionId, versionNo: r.versionNo, existed: r.existed, changedSections: r.changedSectionIds.map((id) => stored.sections.find((x) => x.id === id)?.heading ?? id), unaddressed, ignoredSections, proposalsFolded, runId: run.runId };
+  } finally {
+    await releaseRunKey(run.runId);
+  }
 }
 
 /**
@@ -673,4 +931,4 @@ export async function planInterviewQuestions(interviewId: string, o: { requested
   return { runId: run.runId, questions, followUps };
 }
 
-export const GENERATION_KINDS: AiRunKind[] = ["call_analysis", "strategy_draft", "topic_bank", "topic_refresh", "recommendation", "script_draft", "script_revise", "interview_plan"];
+export const GENERATION_KINDS: AiRunKind[] = ["call_analysis", "strategy_draft", "strategy_revise", "topic_bank", "topic_refresh", "recommendation", "script_draft", "script_revise", "interview_plan"];

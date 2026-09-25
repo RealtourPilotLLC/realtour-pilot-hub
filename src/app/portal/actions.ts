@@ -49,6 +49,9 @@ const stamp = (v: PortalViewer) => ({
   clientUserId: v.actor.kind === "CLIENT" ? v.actor.clientUserId : null,
   staffUserId: v.actor.kind === "STAFF" ? v.actor.staffUserId : null,
 });
+/** Who made a choice, for a single `…By` column: the person, staff on their behalf, or the emailed link. */
+const choiceBy = (v: PortalViewer): string =>
+  v.actor.kind === "CLIENT" ? `client:${v.actor.clientUserId}` : v.actor.kind === "STAFF" ? `staff:${v.actor.staffUserId}` : "link";
 
 async function ownerBell(kind: string, title: string, body: string, href: string, dedupeKey: string) {
   try {
@@ -825,10 +828,12 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
   if (!p.noCallEligible) return fail("Your program plans each month on a strategy call — book it and we'll take it from there.");
   if (p.planningMode === "WRITTEN") return { ok: true, message: "You're already planning this month in writing." };
   const { setPlanningMode } = await import("@/lib/programMonths");
-  await setPlanningMode(month.id, "WRITTEN");
+  // §6.4: the explicit choice is stamped (planningChosenAt/By). Nothing else
+  // moves — no call record, no session request, no selection or script.
+  await setPlanningMode(month.id, "WRITTEN", choiceBy(v));
   await ownerBell("portal_planning", `Planning in writing — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} chose to plan ${month.monthKey} without a call.${p.callStatus === "SCHEDULED" ? " A call is still booked — cancel it on Calendly if it is no longer needed." : ""}`, `/content/${v.enrollment.id}`, `portal-planning-${month.id}`);
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — this month is planned in writing. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — this month is planned in writing. Pick your topics and answer the questions; session booking opens once your answers are in." };
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — you're choosing your topics here. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — you're choosing your topics here. Pick your topics and answer the questions; filming opens once your answers are in." };
 }
 
 /**
@@ -847,12 +852,34 @@ export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Pro
   const p = await portalPlanning(v.enrollment, month.id);
   if (!p) return fail("Pick one of your open program months.");
   if (!p.noCallEligible) return fail("Your program already plans each month on a strategy call.");
-  if (p.planningMode !== "WRITTEN") return { ok: true, message: "This month is already on the strategy-call path." };
+  // An UNDECIDED month is a real choice too (§6.4's opening prompt), so it is
+  // stamped like one; only a month already chosen for the call is a no-op.
+  if (p.planningMode === "CALL" && p.chosenAtISO) return { ok: true, message: "This month is already on the strategy-call path." };
   const { setPlanningMode } = await import("@/lib/programMonths");
-  await setPlanningMode(month.id, "CALL");
-  await ownerBell("portal_planning", `Back to a strategy call — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} moved ${month.monthKey} back to the strategy-call path.`, `/content/${v.enrollment.id}`, `portal-planning-back-${month.id}`);
+  await setPlanningMode(month.id, "CALL", choiceBy(v));
+  const back = p.planningMode === "WRITTEN";
+  await ownerBell("portal_planning", `${back ? "Back to a strategy call" : "Planning on a call"} — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} ${back ? "moved" : "chose to plan"} ${month.monthKey} ${back ? "back to the strategy-call path" : "on a strategy call"}.`, `/content/${v.enrollment.id}`, `portal-planning-back-${month.id}`);
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — this month is back on the call path, and your call is already booked." : "Done — book your strategy call and we'll plan the month on it." };
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — we'll talk your topics through on the call you've booked." : "Done — book your strategy call and we'll plan the month on it. You can book filming as soon as the call is booked." };
+}
+
+/**
+ * "Schedule later" (§6.4, Sep 25 2026). The client saw the filming step and
+ * chose not to book yet. Stamped once (schedulingDeferredAt/By) so the choice
+ * survives a refresh; booking later needs nothing undone, and the stamp stays
+ * as history. Deliberately NOT a reminder control: the month's existing
+ * booking reminder (programReminders' BOOK_SESSION lane) keeps its own cadence
+ * and no second stream is started — the step simply stays outstanding.
+ */
+export async function portalScheduleLater(auth: PortalAuth, monthId: string): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const month = await openMonthForEnrollment(v.enrollment.id, monthId);
+  if (!month) return fail("Pick one of your open program months.");
+  // Idempotent: a second tap (or a second tab) keeps the first stamp.
+  await prisma.contentMonth.updateMany({ where: { id: month.id, enrollmentId: v.enrollment.id, schedulingDeferredAt: null }, data: { schedulingDeferredAt: new Date(), schedulingDeferredBy: choiceBy(v) } });
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: true, message: "Saved — book filming any time from this step. We'll remind you as usual." };
 }
 
 /** Cancel one of the client's own session requests (a confirmed one becomes a cancellation request the desk actions). */

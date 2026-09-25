@@ -931,8 +931,11 @@ export async function finalizeUpload(
   }
 
   // Raws are in → refresh the evidence and run the FULL editor handoff now
-  // (bench ping + edit_video task + Luma dispatch + editorId), instead of
-  // waiting up to an hour for the cron. The old wiring only pinged Slack and
+  // (the files-received notice, the edit_video task, the readiness check with
+  // its one "ready for editing" notice when the handoff is complete, and
+  // editorId), instead of waiting up to an hour for the cron. There is no
+  // automatic vendor dispatch here: work goes to the outside agency (Luma
+  // Visuals today) only when the office picks it in the Editing Room. The old wiring only pinged Slack and
   // never minted the editor's work item (July 2026 audit: "both photographer
   // 'done' buttons suppress the editor handoff"). syncProjectStatuses re-reads
   // Aryeo/Dropbox and calls the idempotent ensureEditorHandoff inside. A
@@ -950,7 +953,8 @@ export async function finalizeUpload(
       const { syncProjectStatuses } = await import("@/lib/projectStatus");
       await syncProjectStatuses({ projectId });
     } catch {
-      // Evidence sync failed (Dropbox blip?) — at least announce the raws; the
+      // Evidence sync failed (Dropbox blip?) — at least say the files arrived
+      // (received, never "ready": readiness is the handoff's to announce); the
       // hourly sweep will complete the handoff.
       try {
         const { notifyRawsLanded } = await import("@/lib/tasks");

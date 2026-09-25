@@ -106,6 +106,7 @@ import {
   providerWriteDecision,
 } from "../src/lib/testClients";
 import { assertIsolatedDatabase, REPRESENTATIVE_MARKER, type RepresentativeTier, type RepresentativeVariant } from "./_fixtures/representativeMonth";
+import { FIXTURE_PILLAR, FIXTURE_PILLAR_BY, FIXTURE_SUGGESTION_CONCEPTS, FIXTURE_TOPICS } from "./repair-test-fixture-wording";
 
 const ARGS = process.argv.slice(2);
 const FLAGS = new Set(ARGS.filter((a) => a.startsWith("--") && !a.includes("=")));
@@ -136,6 +137,8 @@ const BRAND_ASSETS_PATH = `/RealTour Pilot TEST FIXTURES/${NAME}/Brand Assets`;
 
 /** Every row this script writes for §25 carries this, so a re-run tops up and a reader can tell. */
 export const SCENARIO_TAG = "[§25 acceptance fixture]";
+// U02 (Sep 25 2026): the fixture's sample wording lives with its repair, so the
+// seeder and the script that fixes an earlier run's rows cannot drift apart.
 
 // ---------------------------------------------------------------------------
 // THE READ-ONLY CONNECTION (--dry-run only). Postgres refuses every write on
@@ -533,23 +536,27 @@ async function scenarioFixtures(clientId: string, enrollmentId: string, monthId:
   console.log(`\n--- §25 fixtures ---`);
 
   // A pillar to hang topics on.
-  let pillar = await prisma.contentPillar.findFirst({ where: { enrollmentId, name: "Acceptance pillar" } });
+  //
+  // U02 (Sep 25 2026): the TEST portal is what Jordan demos, and it showed a
+  // pillar called "Acceptance pillar" whose purpose read "[§25 acceptance
+  // fixture] a pillar for the §25 walkthrough", over topics that each said
+  // "Discussed on the acceptance call.". The sample content is now coherent
+  // and the marker lives ONLY in staff fields: pillar.createdBy, topic.notes,
+  // the proposal and the refresh run. The pillar is found by who made it, not
+  // by its name, so a re-run neither recreates the old name nor duplicates the
+  // new one (scripts/repair-test-fixture-wording.ts renames the rows an
+  // earlier run left behind).
+  let pillar = await prisma.contentPillar.findFirst({ where: { enrollmentId, createdBy: FIXTURE_PILLAR_BY }, orderBy: { createdAt: "asc" } });
   if (!pillar) {
     pillar = await prisma.contentPillar.create({
-      data: { enrollmentId, clientId, name: "Acceptance pillar", purpose: `${SCENARIO_TAG} a pillar for the §25 walkthrough`, createdBy: "acceptance-fixture" },
+      data: { enrollmentId, clientId, name: FIXTURE_PILLAR.name, purpose: FIXTURE_PILLAR.purpose, createdBy: FIXTURE_PILLAR_BY },
     });
   }
   console.log(`pillar              ${pillar.id}`);
 
   // Scenario 2: FIVE ideas discussed, THREE selected. The other two stay in
   // the bank — they are not deleted, and they must not feed the month.
-  const titles = [
-    "What a pre-listing inspection saves you",
-    "The three questions every seller forgets to ask",
-    "Why the first weekend decides your price",
-    "A street-level tour of the neighbourhood",
-    "What staging actually costs in this market",
-  ];
+  const titles = FIXTURE_TOPICS.map((t) => t.title);
   const topicIds: string[] = [];
   for (let i = 0; i < titles.length; i++) {
     const selected = i < 3;
@@ -559,7 +566,7 @@ async function scenarioFixtures(clientId: string, enrollmentId: string, monthId:
       t = await prisma.contentTopic.create({
         data: {
           enrollmentId, clientId, title, pillarId: pillar.id, pillar: pillar.name,
-          concept: "Discussed on the acceptance call.",
+          concept: FIXTURE_TOPICS[i].concept,
           source: "strategy_call", status: selected ? "SELECTED" : "SAVED",
           monthId: selected ? monthId : null,
           notes: `${SCENARIO_TAG} ${selected ? "explicitly chosen on the call" : "raised on the call, NOT chosen — stays in the bank"}`,
@@ -640,7 +647,9 @@ async function scenarioFixtures(clientId: string, enrollmentId: string, monthId:
     const s = await prisma.contentTopicSuggestion.findFirst({ where: { refreshRunId: run.id, title } });
     if (!s) {
       await prisma.contentTopicSuggestion.create({
-        data: { refreshRunId: run.id, enrollmentId, clientId, pillarId: pillar.id, kind: "BANK", title, description: `${SCENARIO_TAG} suggested by a refresh after the month's scripts were approved.`, disposition: "PENDING" },
+        // U02: the description becomes the topic's concept if staff accept it, so
+        // it is sample wording; the marker rides in the staff-only rationale.
+        data: { refreshRunId: run.id, enrollmentId, clientId, pillarId: pillar.id, kind: "BANK", title, description: FIXTURE_SUGGESTION_CONCEPTS[title] ?? null, rationale: `${SCENARIO_TAG} suggested by a refresh after the month's scripts were approved.`, disposition: "PENDING" },
       });
     }
   }

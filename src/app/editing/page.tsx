@@ -3,11 +3,12 @@ import { MessageSquare } from "lucide-react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
 import { getCurrentUser } from "@/lib/auth/user";
-import { editorScopeOf } from "@/lib/auth/guards";
+import { editorScopeOf, isUnmappedEditor } from "@/lib/auth/guards";
 import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
-import { buildEditorQueue, unreadThreadCount, WAITING_ON_OFFICE } from "@/lib/editorQueue";
+import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
+import { buildEditorQueue, unreadThreadCount, WAITING_ON_INSTRUCTIONS, WAITING_ON_OFFICE } from "@/lib/editorQueue";
 import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
 import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
 import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
@@ -101,8 +102,11 @@ export default async function EditorQueuePage() {
             !mid
               ? "Your login isn't linked to a roster profile yet — ask Jordan or Kyle to finish it."
               : inEdit
-                ? `${inEdit} of your job${inEdit === 1 ? "" : "s"} in the edit — open one to fix what you told the editor`
-                : "Nothing of yours in the edit right now"
+                ? // "in production", not "in the edit": this counts every open
+                  // job, and "in the edit" is what the edit page says only
+                  // while an editor has pressed Start (§7.1).
+                  `${inEdit} of your job${inEdit === 1 ? "" : "s"} still in production — open one to fix what you told the editor`
+                : "Nothing of yours in production right now"
           }
         />
         <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
@@ -130,8 +134,12 @@ export default async function EditorQueuePage() {
   // WORKLOAD, NOT A ROW COUNT (R08, Sep 18). The open rows PLUS the upcoming
   // ones, because a job whose footage has not landed is a real thing on the
   // board and the whole point of the lanes is that it is not editing work.
+  // A job waiting on the photographer's instructions (O01) is not work the
+  // editor can move, so it goes in the lane that says so — the one whose owner
+  // is "the photographer or the office, nobody can edit yet" — rather than
+  // laneOf's catch-all "Owed to the editor".
   const workloadRows = (rows: QueueRow[]): WorkloadRow[] =>
-    rows.map((r) => ({ status: r.status, editorKey: r.editorKey, editor: r.editor, videos: r.videos, dueISO: r.dueISO, late: r.late }));
+    rows.map((r) => ({ status: r.status === WAITING_ON_INSTRUCTIONS ? "Waiting" : r.status, editorKey: r.editorKey, editor: r.editor, videos: r.videos, dueISO: r.dueISO, late: r.late }));
 
   // THE EDITOR'S VIEW — the same table, filtered to rows whose resolved editor
   // (open task → Project.editor → routing rules, exactly what the owner's
@@ -149,16 +157,33 @@ export default async function EditorQueuePage() {
     const WAITING_ON_US = WAITING_ON_OFFICE;
     // A Waiting row is not work either (Sep 11 review): the footage is not
     // in — the office is holding the job there, or the photographer has not
-    // submitted — so it is counted on its own, never as "to edit".
-    const myWaiting = myNotDone.filter((r) => r.status === "Waiting");
-    const myToEdit = myNotDone.filter((r) => !WAITING_ON_US.has(r.status) && r.status !== "Waiting");
+    // submitted — so it is counted on its own, never as "to edit". Nor is a
+    // job whose footage is in but whose instructions are not (O01).
+    const isWaiting = (r: QueueRow) => r.status === "Waiting" || r.status === WAITING_ON_INSTRUCTIONS;
+    const myWaiting = myNotDone.filter(isWaiting);
+    const myToEdit = myNotDone.filter((r) => !WAITING_ON_US.has(r.status) && !isWaiting(r));
     const inReview = myNotDone.length - myToEdit.length - myWaiting.length;
     const overdue = myToEdit.filter((r) => r.late).length;
-    const waitingNote = myWaiting.length ? ` · ${myWaiting.length} waiting on footage` : "";
+    const waitingInstr = myWaiting.filter((r) => r.status === WAITING_ON_INSTRUCTIONS).length;
+    const waitingNote = myWaiting.length
+      ? ` · ${myWaiting.length} waiting on ${waitingInstr === 0 ? "footage" : waitingInstr === myWaiting.length ? "instructions" : "footage or instructions"}`
+      : "";
     const unread = await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id));
     // What they said they're on (§7.1). A failed read shows no banner — the
     // pill on each row still starts and pauses.
     const desk = await myDesk(editorScope).catch(() => null);
+    // THEIR OWN REVIEW RESULTS (§8.4), here where they work — not only behind
+    // /quality. Scoped to their assigned key (editorScopeOf, never the login
+    // name), so an editor sees their own numbers and examples and no one
+    // else's; the team view stays on /quality for James and Jordan. The same
+    // 90-day window. A failed read leaves the card off, never a zero.
+    const quality = isUnmappedEditor(editorScope)
+      ? null
+      : await (async () => {
+          const { editorQuality } = await import("@/lib/editorQuality");
+          const now = new Date();
+          return editorQuality({ editorKey: editorScope, from: new Date(now.getTime() - 90 * 24 * 3600_000), to: now });
+        })().catch(() => null);
 
     return (
       <div>
@@ -183,6 +208,7 @@ export default async function EditorQueuePage() {
           {desk && <EditorDesk active={desk.active} unconfirmed={desk.unconfirmed} />}
           <WorkloadPanel view={await editingWorkload(workloadRows([...myNotDone, ...myUpcoming]))} mine />
           <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
+          {quality && <EditorQualityCard report={quality} own />}
         </div>
       </div>
     );

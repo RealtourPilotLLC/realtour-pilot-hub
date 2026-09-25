@@ -22,6 +22,15 @@ export type FactScope = "PERMANENT" | "MONTH" | "PROJECT";
 
 export const CONFIDENTIAL_RE = /\[CONFIDENTIAL[^\]]*\]/i;
 
+/**
+ * What people actually SAY when something is private (A09, Sep 25 2026) —
+ * nobody on a call types "[CONFIDENTIAL]". Used to hold lines back from a
+ * client-facing generator (the strategy draft) and from topic excerpts; never
+ * to classify a fact. "between us and the other agents" is not a secret, so
+ * "between us" followed by "and" does not count.
+ */
+export const CONFIDENTIAL_PHRASE_RE = /\b(?:between (?:you and me|us)(?! and\b)|off the record|in confidence|(?:don'?t|do not) (?:share|post|mention|repeat) (?:this|that|it)\b|keep (?:this|that|it) (?:quiet|between us|to yourself|under wraps)|not public yet|(?:hasn'?t|has not|isn'?t|is not) (?:been )?announced)/i;
+
 // Field keys whose routine, high-confidence updates MAY auto-accept when the
 // fact_extraction switch is on (still undoable). Brand positioning, audience,
 // strategy, pricing, package and billing are NEVER on this list (design §3.4).
@@ -129,6 +138,59 @@ export async function setFactAiContext(id: string, allowed: boolean, by: string)
   if (!f) throw new Error("Fact not found.");
   if (allowed && f.confidential) throw new Error("A confidential fact can never be AI context.");
   await prisma.clientFact.update({ where: { id }, data: { aiContext: allowed ? "ALLOWED" : "DENIED", reviewedBy: by, reviewedAt: new Date() } });
+}
+
+/**
+ * The ONE confidentiality test for text on its way to a generator or a
+ * client (A09, Sep 25 2026) — lifted out of contentTopics.safeTopicExcerpts so
+ * the strategy draft, the release guard and the topic excerpts cannot drift.
+ * True = hold it back: a [CONFIDENTIAL] marker anywhere in it, a
+ * "said in confidence" phrase (unless `phrases: false`), or an overlap with
+ * any fact of this client that is marked confidential — its body or the
+ * excerpt it was quoted from (the same containment / 60 %-of-the-words rule
+ * the excerpts always used). Loads the client's confidential facts once.
+ */
+export async function confidentialFilter(clientId: string, opts: { phrases?: boolean } = {}): Promise<(text: string) => boolean> {
+  const rows = await prisma.clientFact.findMany({ where: { clientId, confidential: true }, select: { body: true, excerptJson: true }, take: 200 });
+  const secrets: string[] = [];
+  for (const f of rows) {
+    secrets.push(f.body);
+    try { for (const e of (JSON.parse(f.excerptJson ?? "[]") as { text?: string }[])) if (e?.text) secrets.push(e.text); } catch { /* shape-tolerant */ }
+  }
+  const prepared = secrets.map((sec) => ({ n: normalizeTitle(sec), words: normalizeTitle(sec).split(" ").filter((w) => w.length >= 4) })).filter((x) => x.n);
+  const phrases = opts.phrases !== false;
+  return (text: string) => {
+    if (CONFIDENTIAL_RE.test(text)) return true;
+    if (phrases && CONFIDENTIAL_PHRASE_RE.test(text)) return true;
+    const t = normalizeTitle(text);
+    if (!t) return false;
+    return prepared.some(({ n, words }) => {
+      if (t.includes(n) || n.includes(t)) return true;
+      if (words.length < 3) return false;
+      return words.filter((w) => t.includes(w)).length / words.length >= 0.6;
+    });
+  };
+}
+
+/**
+ * "Said in confidence" (A09 gap b, Sep 25 2026): a fact the extractor did
+ * not mark can be marked afterwards, by a person. It becomes confidential and
+ * never AI context again (factsForPrompt excludes it), it joins the overlap
+ * test above — so the call line it came from stops reaching script prompts
+ * and suggested answers — any open proposal made from it is rejected, and the
+ * portal's prefilled answers are rebuilt without it. Idempotent.
+ */
+export async function markFactConfidential(id: string, by: string): Promise<{ proposalsRejected: number; alreadyConfidential: boolean }> {
+  const f = await prisma.clientFact.findUnique({ where: { id }, select: { enrollmentId: true, confidential: true } });
+  if (!f) throw new Error("Fact not found.");
+  const now = new Date();
+  await prisma.clientFact.update({ where: { id }, data: { confidential: true, aiContext: "DENIED", reviewedBy: by, reviewedAt: now } });
+  const r = await prisma.contentStrategyProposal.updateMany({ where: { factId: id, status: "PROPOSED" }, data: { status: "REJECTED", resolvedBy: by, resolvedAt: now, resolutionNote: "source marked confidential" } });
+  if (f.enrollmentId) {
+    const { invalidatePortalPrefill } = await import("@/lib/portalPrefill");
+    await invalidatePortalPrefill(f.enrollmentId);
+  }
+  return { proposalsRejected: r.count, alreadyConfidential: f.confidential };
 }
 
 export type PromptFact = { id: string; category: FactCategory; body: string; scope: FactScope; factDate: Date | null; source: string; monthId: string | null; projectId: string | null };

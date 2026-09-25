@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { transcriptForCut } from "@/lib/cutTranscripts";
 import { canonicalFromParts, partsFromBody, pointsFromJson } from "@/lib/contentScripts";
-import { renderScript, buildCaptionPrompt, type CanonicalScript } from "@/lib/contentPolicy";
+import { renderScript, stripRenderPlaceholders, buildCaptionPrompt, type CanonicalScript } from "@/lib/contentPolicy";
 import { videoForEnrollment } from "@/lib/contentVideos";
 import { actorLabel, can } from "@/lib/portalAccess";
 import { WHY, captionTarget, videoEntitlement, type Entitlement, type EntitlementBasis, type EntitlementBlock, type EntitlementVideo, type FinalFile } from "@/lib/cutEntitlement";
@@ -224,10 +224,14 @@ async function scriptForVideo(video: { id: string; topicId: string | null; scrip
   const strategy = strategyId ? await prisma.contentStrategyVersion.findUnique({ where: { id: strategyId }, select: { versionNo: true } }) : null;
   if (v) {
     const canonical = canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, v.clientId);
-    return { canonical, title: v.title, body: renderScript(canonical), versionLabel: `v${v.versionNo}`, strategyLabel: strategy ? `v${strategy.versionNo}` : null, clientId: v.clientId, historical };
+    // `body` is what the client's posting kit shows AND hands over through
+    // Copy / Download .txt — the client's rendering, so no "(no pillar
+    // linked)" or empty-block placeholder rides along (§11). The staff caption
+    // prompt reads `canonical`, not this.
+    return { canonical, title: v.title, body: renderScript(canonical, { audience: "client" }), versionLabel: `v${v.versionNo}`, strategyLabel: strategy ? `v${strategy.versionNo}` : null, clientId: v.clientId, historical };
   }
   const canonical = canonicalFromParts(partsFromBody(script.title, script.body), script.clientId);
-  return { canonical, title: script.title, body: script.body, versionLabel: null, strategyLabel: strategy ? `v${strategy.versionNo}` : null, clientId: script.clientId, historical };
+  return { canonical, title: script.title, body: stripRenderPlaceholders(script.body), versionLabel: null, strategyLabel: strategy ? `v${strategy.versionNo}` : null, clientId: script.clientId, historical };
 }
 
 const captionView = (c: { id: string; kind: string; body: string; alternativesJson: string | null; versionNo: number; authorKind: string; status: string; staleReason: string | null; basedOnId: string | null; createdAt: Date }): CaptionView => {

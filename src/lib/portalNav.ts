@@ -2,8 +2,8 @@
 // THE PORTAL'S ADDRESSES (UI-01, Sep 24 2026) — pure, so the pages, the client
 // components and the drill all read the same map.
 //
-// The audit's client IA is five destinations — Home · My Plan · Content
-// Library · Schedule · More (Brand Profile, Messages, Resources, Settings &
+// The audit's client IA is five destinations — Home · My Plan (named "Your
+// Month" since Sep 25) · Content Library · Schedule · More (Brand Profile, Messages, Resources, Settings &
 // Team, Terms) — served as the "v2" layout behind `portal_layout_v2`
 // (lib/portalLayout.ts). Today's six tabs are "v1" and stay exactly as they
 // are for every real client until Jordan flips the switch.
@@ -155,7 +155,9 @@ export function portalNav(input: { publishedResources: number; badges?: NavBadge
   ];
   const primary: NavItem[] = [
     { dest: "home", label: "Home", short: "Home", badge: 0 },
-    { dest: "plan", label: "My Plan", short: "Plan", badge: n(b.plan) },
+    // §11 (Sep 25 2026): "Your Month" — planning and booking as one guided
+    // page. The destination key stays "plan", so every link still lands.
+    { dest: "plan", label: "Your Month", short: "Month", badge: n(b.plan) },
     { dest: "library", label: "Content Library", short: "Library", badge: n(b.library) },
     { dest: "schedule", label: "Schedule", short: "Schedule", badge: 0 },
     // More carries the unread replies so they are never hidden behind it.

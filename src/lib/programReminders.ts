@@ -214,6 +214,17 @@ export type ReminderPolicy = {
   /** One client email per enrollment per ET day across every lane, so two
    *  cadences falling together produce one message (§12). */
   maxClientEmailsPerDay: number;
+  /**
+   * 6.5 (Jordan, Sep 25 2026): scripts not approved before filming. ONE client
+   * email `clientLeadHours` ELAPSED hours before the session starts (moved
+   * into office hours, back to Friday for a Monday shoot — the address lane's
+   * rule), quoting a deadline `deadlineHoursBefore` hours before filming; at
+   * `deskTaskLeadHours` Kyle gets a follow-up task; while scripts still sit in
+   * Jordan's queue within `ownerBellLeadHours`, the scripts owner gets a bell.
+   * The shoot is NEVER cancelled or moved by any of it. The email rides the
+   * `reminders` switch; the task and the bell are internal and always on.
+   */
+  scriptApproval: { clientLeadHours: number; deadlineHoursBefore: number; deskTaskLeadHours: number; ownerBellLeadHours: number };
 };
 
 export const REMINDER_DEFAULTS: ReminderPolicy = {
@@ -239,7 +250,7 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
     "booked", "no_call_chosen", "preparation_submitted", "paused", "ended", "snoozed",
     "pending_session_request", "stale_scheduler_sync", "access_revoked", "launch_not_authorised",
     "no_recipient", "test_client_real_address", "quiet_hours", "first_cycle_exempt",
-    "catch_up_owed", "another_reminder_today", "no_template_yet",
+    "catch_up_owed", "another_reminder_today", "no_template_yet", "scripts_approved",
   ],
   templates: { ...DEFAULT_TEMPLATE_IDS },
   testClientsOnly: true,
@@ -261,6 +272,7 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   reviewMaxAttempts: 2,
   addressReminderHoursBefore: 48,
   maxClientEmailsPerDay: 1,
+  scriptApproval: { clientLeadHours: 48, deadlineHoursBefore: 24, deskTaskLeadHours: 24, ownerBellLeadHours: 72 },
 };
 
 // ---- policy validation (the settings panel and the action share it) ---------
@@ -319,6 +331,20 @@ export function validateReminderPolicy(input: unknown): PolicyValidation {
   num("reviewMaxAttempts", 0, 6);
   num("addressReminderHoursBefore", 1, 336);
   num("maxClientEmailsPerDay", 1, 5);
+  {
+    const sa = p.scriptApproval as unknown;
+    if (!sa || typeof sa !== "object" || Array.isArray(sa)) errors.push("scriptApproval must be {clientLeadHours, deadlineHoursBefore, deskTaskLeadHours, ownerBellLeadHours}.");
+    else {
+      const o = { ...REMINDER_DEFAULTS.scriptApproval, ...(sa as Record<string, unknown>) } as Record<string, unknown>;
+      for (const [k, min, max] of [["clientLeadHours", 1, 336], ["deadlineHoursBefore", 0, 168], ["deskTaskLeadHours", 1, 168], ["ownerBellLeadHours", 1, 336]] as const) {
+        const v = o[k];
+        if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) errors.push(`scriptApproval.${k} must be a number of hours between ${min} and ${max}.`);
+      }
+      if (typeof o.clientLeadHours === "number" && typeof o.deadlineHoursBefore === "number" && o.clientLeadHours <= o.deadlineHoursBefore)
+        errors.push("scriptApproval.clientLeadHours must be more than deadlineHoursBefore — the email has to arrive before the deadline it quotes.");
+      p.scriptApproval = o as ReminderPolicy["scriptApproval"];
+    }
+  }
   // A mid-month milestone that lands on or before the opening day is not a
   // milestone, it is a second first email. Refuse the save rather than let the
   // collision rule quietly swallow one of them.
@@ -1037,8 +1063,13 @@ async function evaluateMonth(
   if (month.status !== "OPEN") return out({ action: null, decision: "none", reason: `month is ${month.status}` });
 
   // ---- the ONE action for THIS lane -----------------------------------------
-  const callHeld = d.strategyCallStatus === "COMPLETED";
-  const callBooked = d.strategyCallStatus === "SCHEDULED";
+  // A call on the WRITTEN route is the §6.4 "call to discuss scripts": it does
+  // not plan the month, so it neither silences the answers reminder (booked)
+  // nor counts as planning done (held). The filming gate reads it the same way
+  // (portal.sessionGate), so the reminder never contradicts the lock.
+  const writtenRoute = d.planningMode === "WRITTEN";
+  const callHeld = d.strategyCallStatus === "COMPLETED" && !writtenRoute;
+  const callBooked = d.strategyCallStatus === "SCHEDULED" && !writtenRoute;
   // "Skip the strategy call this month" is an answer, not silence. It arrives
   // either as an explicit SKIPPED stamp or as the written path being chosen;
   // §12 says do not nag someone who chose it, so the call lane closes and only
@@ -1631,6 +1662,9 @@ export type EvaluateResult = {
   /** §8's missing-address lane (CP-05): one row per session that still has
    *  only a general area — sent, waiting or suppressed, with the reason. */
   addressLane: AddressReminderPreview[];
+  /** 6.5: the scripts-not-approved lane — one row per upcoming session with
+   *  shared scripts still waiting on the client, sent, waiting or suppressed. */
+  scriptApprovalLane: ScriptApprovalPreview[];
   /** A run that went quiet for an infrastructure reason, in words, for the
    *  automation row's lastError and the settings panel. null = healthy. */
   healthError: string | null;
@@ -1645,7 +1679,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const now = opts.now ?? new Date();
   const { enabled, policy, source } = await reminderPolicy({ orDefaults: opts.dryRun });
   if (!policy || (!enabled && !opts.dryRun)) {
-    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
+    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], scriptApprovalLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
   }
   const [feeds, clientWindowOpen] = await Promise.all([bookingFeeds(now, policy), clientTextWindowOpen(now)]);
   const sync = feeds.call;
@@ -1667,6 +1701,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const escalations: EvaluateResult["escalations"] = [];
   const kyleFollowUps: EvaluateResult["kyleFollowUps"] = [];
   const addressLane: AddressReminderPreview[] = [];
+  const scriptApprovalLane: ScriptApprovalPreview[] = [];
   let sends = 0;
   for (const m of months) {
     const en = enrollments.find((e) => e.id === m.enrollmentId);
@@ -1688,6 +1723,19 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
         if (a.decision !== "send") continue;
         if (sends >= policy.maxSendsPerRun) { sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${a.clientName} address reminder waits for the next run` }); continue; }
         const r = await dispatchAddress(a, e, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", feeds, clientWindowOpen });
+        sent.push(r);
+        if (r.outcome === "sent") sends++;
+      }
+    }
+    // SCRIPTS SECOND (6.5): an approval deadline a day away beats the planning
+    // cadence to the one-email-a-day slot, and loses it only to a missing address.
+    const scripts = await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {});
+    scriptApprovalLane.push(...scripts);
+    if (!opts.dryRun) {
+      for (const a of scripts) {
+        if (a.decision !== "send") continue;
+        if (sends >= policy.maxSendsPerRun) { sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${a.clientName} script-approval reminder waits for the next run` }); continue; }
+        const r = await dispatchScriptApproval(a, e, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", clientWindowOpen, byAppUserId: opts.byAppUserId ?? null });
         sent.push(r);
         if (r.outcome === "sent") sends++;
       }
@@ -1728,7 +1776,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     : null;
   if (!opts.dryRun && healthError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, healthError);
   return {
-    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, healthError,
+    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, healthError,
     note: opts.dryRun ? `dry run: ${wouldSend} would send, ${candidates.filter((c) => c.decision === "suppressed").length} suppressed, ${candidates.filter((c) => c.decision === "wait").length} waiting` : `${sends} sent`,
   };
 }
@@ -1978,6 +2026,252 @@ export function addressReminderSessionKey(dedupeKey: string | null): string | nu
   return m ? m[1] : null;
 }
 
+// ---- the SCRIPTS lane (6.5, Jordan's answer Sep 25 2026) ---------------------------
+//
+// A script shared with the client and not approved before filming. ONE email
+// per session, `scriptApproval.clientLeadHours` (48) elapsed hours before it
+// starts, moved into office hours (back to Friday for a Monday shoot — the
+// address lane's rule), quoting a deadline `deadlineHoursBefore` (24) hours
+// before filming and saying the shoot goes ahead either way. Kyle's follow-up
+// at 24 hours and the scripts owner's bell are internal and always on
+// (programDeskTasks.reconcileScriptApprovalTasks); this lane is only the
+// client's email, and it rides `reminders` like every other lane. Nothing
+// here — or anywhere — cancels or moves a session over a script.
+
+export type ScriptApprovalPreview = {
+  enrollmentId: string; clientName: string; monthKey: string; monthId: string;
+  /** the session's identity (countDistinctSessions key) — one reminder per session */
+  sessionKey: string;
+  shootAt: Date; remindAt: Date; movedOffWeekend: boolean; deadlineAt: Date;
+  /** Released scripts on this month's plan still waiting on the client's answer. */
+  titles: string[];
+  decision: ReminderDecision;
+  suppressionReason: string | null;
+  nextEligibleAt: Date | null;
+  dedupeKey: string;
+  retryOfId: string | null;
+  reason: string;
+};
+
+/** The one attempt a session gets: `<enrollment>:<month>:APPROVE_SCRIPTS:<sessionKey>:1`. */
+export const scriptApprovalReminderKey = (enrollmentId: string, monthKey: string, sessionKey: string) => `${enrollmentId}:${monthKey}:APPROVE_SCRIPTS:${sessionKey}:1`;
+
+/**
+ * When the approval email goes: `clientLeadHours` elapsed hours before the
+ * session, moved INTO office hours. A weekend moment moves back to the Friday
+ * opening (addressReminderAt's rule); an evening one moves back to that day's
+ * opening; an early-morning one moves up to that morning's opening. Every one
+ * of them lands well before the deadline it quotes.
+ */
+export function scriptApprovalReminderAt(shootStart: Date, p: ReminderPolicy): Date {
+  const raw = new Date(shootStart.getTime() - p.scriptApproval.clientLeadHours * 3_600_000);
+  const key = etDayKey(raw);
+  const [h, m] = p.businessHours.start.split(":").map(Number);
+  if (isWeekendKey(key)) return etAt(previousWeekdayKeyET(key), h, m);
+  const mins = zonedParts(raw, p.timezone).minutes;
+  if (mins < hhmm(p.businessHours.start) || mins >= hhmm(p.businessHours.end)) return etAt(key, h, m);
+  return raw;
+}
+
+/** The approval deadline a client is told: `deadlineHoursBefore` before the session starts. */
+export const scriptApprovalDeadline = (shootStart: Date, p: ReminderPolicy) => new Date(shootStart.getTime() - p.scriptApproval.deadlineHoursBefore * 3_600_000);
+
+export type MonthScriptApprovals = {
+  /** Shared with the client, no answer on the version they can read (a changed
+   *  script after an approval counts: its new words need a new answer). */
+  awaitingClient: { scriptId: string; topicId: string; title: string }[];
+  /** Shared, and the client asked for changes — the ball is ours. */
+  changesRequested: { scriptId: string; topicId: string; title: string }[];
+  /** On the plan and not shared with the client yet: not drafted, in review, or approved and withheld. */
+  notShared: { topicId: string; title: string; stage: "not drafted" | "in review" | "approved, not shared" }[];
+};
+
+/**
+ * Where this month's planned scripts stand with the client. The plan is the
+ * month's allowance selections (overflow extras are not owed before this
+ * shoot); a historical import is never a script to approve.
+ */
+export async function monthScriptApprovals(monthId: string): Promise<MonthScriptApprovals> {
+  const out: MonthScriptApprovals = { awaitingClient: [], changesRequested: [], notShared: [] };
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true } });
+  if (!month) return out;
+  // The allowance is R01's one rule (planningFacts.monthAllowances →
+  // allowanceOrder): extras beyond it are not owed before this shoot. A call's
+  // PROPOSED row is not the plan yet. Unreadable → committed rows not flagged
+  // overflow.
+  const allowance = await import("@/lib/planningFacts").then((mod) => mod.monthAllowances([monthId])).then((mm) => mm.get(monthId) ?? null).catch(() => null);
+  const sels = await prisma.contentTopicSelection.findMany({ where: { monthId, status: { in: ["SELECTED", "RECONCILED", "CARRIED"] } }, select: { topicId: true, overflow: true } });
+  const topicIds = sels.filter((x) => (allowance ? allowance.slots.get(x.topicId) === "IN" : !x.overflow)).map((x) => x.topicId);
+  if (!topicIds.length) return out;
+  const [topics, scripts] = await Promise.all([
+    prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true, status: true } }),
+    prisma.contentScript.findMany({ where: { topicId: { in: topicIds }, monthId }, orderBy: { updatedAt: "desc" }, select: { id: true, topicId: true, title: true, status: true, historical: true, releaseState: true, sharedVersionId: true, approvedVersionId: true, currentVersionId: true } }),
+  ]);
+  const { scriptVisibility } = await import("@/lib/postingKit");
+  const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
+  const decisions = await scriptDecisionsFor(month.enrollmentId, scripts.map((x) => x.id)).catch(() => new Map());
+  // The TITLE a script goes by is its version's. ContentScript.title is written
+  // once, from the first draft, and nothing updates it — so a draft renamed
+  // before it was shared put the unreleased working title in the client's
+  // APPROVE_SCRIPTS email (batch-2 review, Sep 25 2026). The shared version
+  // for what the client is asked about (what the portal and SCRIPTS_READY
+  // show); the approved, else current, one for the team's "not shared" list.
+  const versionIds = [...new Set(scripts.flatMap((x) => [x.sharedVersionId, x.approvedVersionId, x.currentVersionId]).filter((x): x is string => !!x))];
+  const versionTitle = new Map(
+    versionIds.length ? (await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, title: true } })).map((v) => [v.id, v.title.trim() || null] as const) : [],
+  );
+  const titleOf = (id: string | null | undefined) => (id ? versionTitle.get(id) ?? null : null);
+  for (const t of topics) {
+    if (["FILMED", "EDITING", "DELIVERED"].includes(t.status)) continue;
+    // A script handled outside the hub's version flow is not ours to chase:
+    // an import (history — the script lives in the client's own documents),
+    // or a legacy released script with no version the client could approve.
+    if (scripts.some((x) => x.topicId === t.id && x.historical)) continue;
+    const sc = scripts.find((x) => x.topicId === t.id && !x.historical) ?? null;
+    if (!sc) { out.notShared.push({ topicId: t.id, title: t.title, stage: "not drafted" }); continue; }
+    const released = scriptVisibility(sc) === "released";
+    if (released && !sc.sharedVersionId) continue;
+    if (!released) { out.notShared.push({ topicId: t.id, title: titleOf(sc.approvedVersionId) || titleOf(sc.currentVersionId) || sc.title || t.title, stage: sc.approvedVersionId && sc.releaseState === "withheld" ? "approved, not shared" : "in review" }); continue; }
+    const d = decisions.get(sc.id)?.decision ?? null;
+    if (d === "APPROVED") continue;
+    (d === "CHANGES_REQUESTED" ? out.changesRequested : out.awaitingClient).push({ scriptId: sc.id, topicId: t.id, title: titleOf(sc.sharedVersionId) || sc.title || t.title });
+  }
+  return out;
+}
+
+/** One preview per upcoming session of the month whose shared scripts still wait on the client. The preview and the send share this function. */
+async function evaluateScriptApprovalLane(
+  e: EnrollmentRow,
+  month: { id: string; monthKey: string; remindersSnoozedUntil: Date | null },
+  now: Date,
+  p: ReminderPolicy,
+  clientWindowOpen: boolean,
+  opts: { ignoreReminderId?: string | null; onlySessionKey?: string | null },
+): Promise<ScriptApprovalPreview[]> {
+  const { upcomingProgramSessions } = await import("@/lib/sessionAddress");
+  const sessions = (await upcomingProgramSessions(month.id, now)).filter((x) => !opts.onlySessionKey || x.key === opts.onlySessionKey);
+  if (!sessions.length) return [];
+  const pending = await monthScriptApprovals(month.id);
+  const isTest = isTestClientName(e.client.name);
+  const out: ScriptApprovalPreview[] = [];
+  for (const x of sessions) {
+    const remindAt = scriptApprovalReminderAt(x.startsAt, p);
+    const raw = new Date(x.startsAt.getTime() - p.scriptApproval.clientLeadHours * 3_600_000);
+    const deadlineAt = scriptApprovalDeadline(x.startsAt, p);
+    const dedupeKey = scriptApprovalReminderKey(e.id, month.monthKey, x.key);
+    const base = {
+      enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, monthId: month.id, sessionKey: x.key, shootAt: x.startsAt, remindAt,
+      movedOffWeekend: isWeekendKey(etDayKey(raw)), deadlineAt, titles: pending.awaitingClient.map((a) => a.title), dedupeKey, retryOfId: null as string | null,
+    };
+    const push = (decision: ReminderDecision, reason: string, suppressionReason: string | null = null, nextEligibleAt: Date | null = null) =>
+      out.push({ ...base, decision, reason, suppressionReason, nextEligibleAt });
+    if (!pending.awaitingClient.length) { push("none", "no shared script is waiting on the client for this session", "scripts_approved"); continue; }
+    const existing = await prisma.programReminder.findUnique({ where: { dedupeKey }, select: { id: true, state: true, nextAttemptAt: true } });
+    if (existing && existing.id !== opts.ignoreReminderId) {
+      if (existing.state === "FAILED" && existing.nextAttemptAt && existing.nextAttemptAt <= now) base.retryOfId = existing.id;
+      else { push("none", `this session's script-approval email already exists (${existing.state.toLowerCase()})`); continue; }
+    }
+    if (e.status !== "ACTIVE") { push("suppressed", `the program is ${e.status.toLowerCase()}`, "paused"); continue; }
+    if (e.accessRevokedAt) { push("suppressed", "portal access is revoked", "access_revoked"); continue; }
+    // A staff snooze stops every email to this month (evaluateMonth's rule, in
+    // the same place in the order). This lane missed it, so "no emails for two
+    // weeks" still sent the approval email (batch-2 review, Sep 25 2026).
+    if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) { push("suppressed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`, "snoozed"); continue; }
+    if (now < remindAt) { push("wait", `script approval reminder due ${fmtDay(remindAt)}`, null, remindAt); continue; }
+    // Past the deadline it would quote: an email asking for "by <a time that
+    // has gone>" helps nobody. Kyle's task is the backstop from here.
+    if (now >= deadlineAt) { push("suppressed", "the approval deadline has passed — Kyle's follow-up task covers it", "state_changed"); continue; }
+    if (p.testClientsOnly && !isTest) { push("suppressed", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised", "launch_not_authorised"); continue; }
+    const to = await recipientFor(e);
+    if (!to) { push("suppressed", "no email address on the portal seat or the client record", "no_recipient"); continue; }
+    if (isTest && !isStaffControlledEmail(to.email)) { push("suppressed", `TEST client's address ${maskToRef("email", to.email)} is not staff-controlled`, "test_client_real_address"); continue; }
+    const dayFrom = etAt(etDayKey(now), 0);
+    const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
+    const sentToday = await prisma.programReminder.count({
+      where: {
+        enrollmentId: e.id, channel: { in: ["email", "copy"] },
+        ...(opts.ignoreReminderId ? { id: { not: opts.ignoreReminderId } } : {}),
+        OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }],
+      },
+    });
+    if (sentToday >= p.maxClientEmailsPerDay) {
+      const next = nextPolicyWindowOpen(etAt(shiftKey(etDayKey(now), 1), 0), p);
+      push("wait", `${sentToday} program email already went to this client today — the next one waits until ${fmtDay(next)}`, "another_reminder_today", next);
+      continue;
+    }
+    if (!(inPolicyWindow(now, p) && clientWindowOpen)) { const next = nextPolicyWindowOpen(now, p); push("wait", `outside the send window — next opening ${fmtDay(next)}`, "quiet_hours", next); continue; }
+    push("send", `${pending.awaitingClient.length} shared script${pending.awaitingClient.length === 1 ? "" : "s"} not yet approved for the ${fmtDay(x.startsAt)} session`);
+  }
+  return out;
+}
+
+const fmtWhen = (d: Date) => `${d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} ET`;
+
+/** One APPROVE_SCRIPTS send: ledger row → recheck → link → outbox → outcome (the address lane's shape). */
+async function dispatchScriptApproval(a: ScriptApprovalPreview, e: EnrollmentRow, p: ReminderPolicy, now: Date, opts: { requestedBy: string; clientWindowOpen: boolean; byAppUserId: string | null }): Promise<DispatchOutcome> {
+  const leaseBy = `${opts.requestedBy}:${process.pid}`;
+  const templateKey = templateForAction("APPROVE_SCRIPTS", p.templates).id;
+  let reminderId: string;
+  if (a.retryOfId) {
+    const won = await prisma.programReminder.updateMany({ where: { id: a.retryOfId, state: "FAILED" }, data: { state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, nextAttemptAt: null } });
+    if (won.count === 0) return { reminderId: a.retryOfId, outcome: "duplicate", detail: "another run already took this retry" };
+    reminderId = a.retryOfId;
+  } else {
+    try {
+      const row = await prisma.programReminder.create({
+        data: {
+          enrollmentId: e.id, clientId: e.clientId, monthId: a.monthId, monthKey: a.monthKey, action: "APPROVE_SCRIPTS", templateKey, templateVersion: reminderTemplate(templateKey).version,
+          channel: "email", attempt: 1, state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, manual: false, requestedBy: opts.requestedBy, dedupeKey: a.dedupeKey, nextEligibleAt: a.remindAt,
+        },
+        select: { id: true },
+      });
+      reminderId = row.id;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { reminderId: null, outcome: "duplicate", detail: `the script-approval reminder for ${a.sessionKey} already exists` };
+      throw err;
+    }
+  }
+  // RECHECK — approved since the evaluation, session moved or gone, paused…
+  const [enrollment, freshMonth] = await Promise.all([
+    prisma.contentEnrollment.findUnique({ where: { id: e.id }, select: { status: true, accessRevokedAt: true } }),
+    // The snooze as it stands NOW — one set since the evaluation still stops this send.
+    prisma.contentMonth.findUnique({ where: { id: a.monthId }, select: { remindersSnoozedUntil: true } }),
+  ]);
+  const fresh = enrollment && freshMonth ? (await evaluateScriptApprovalLane({ ...e, status: enrollment.status, accessRevokedAt: enrollment.accessRevokedAt }, { id: a.monthId, monthKey: a.monthKey, remindersSnoozedUntil: freshMonth.remindersSnoozedUntil }, now, p, opts.clientWindowOpen, { ignoreReminderId: reminderId, onlySessionKey: a.sessionKey }))[0] ?? null : null;
+  if (!fresh || fresh.decision !== "send") {
+    const reason = fresh?.suppressionReason ?? (fresh ? (fresh.decision === "wait" ? "quiet_hours" : "state_changed") : "state_changed");
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, leaseUntil: null, leaseBy: null, lastError: fresh?.reason ?? "the session is no longer upcoming" } });
+    return { reminderId, outcome: "suppressed", detail: reason };
+  }
+  const to = await recipientFor(e);
+  if (!to) {
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_recipient", leaseUntil: null, leaseBy: null } });
+    return { reminderId, outcome: "suppressed", detail: "no recipient" };
+  }
+  const link = await resolvePortalLink(e, to, opts.byAppUserId, now);
+  if (!link) {
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_portal_link", toRef: to.email, leaseUntil: null, leaseBy: null } });
+    return { reminderId, outcome: "suppressed", detail: "no portal link could be produced (no seat, no token)" };
+  }
+  const body = renderReminder(reminderTemplate(templateKey), {
+    firstName: firstNameOf(e.client.name), month: monthName(a.monthKey), portalLink: link.url, bookCallLink: null, noCallEligible: false, answersStarted: false,
+    sessionNote: null, earliestSession: null, itemCount: fresh.titles.length, titles: fresh.titles, updatedTitles: [], deadline: null,
+    sessionDay: fmtDay(fresh.shootAt), approvalDeadline: fmtWhen(fresh.deadlineAt),
+  });
+  await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, evaluatedStateJson: JSON.stringify({ sessionKey: a.sessionKey, shootAt: a.shootAt.toISOString(), deadlineAt: fresh.deadlineAt.toISOString(), titles: fresh.titles, portalLinkKind: link.kind }) } });
+  const r = await sendThroughOutbox(
+    { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("APPROVE_SCRIPTS", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy },
+    { workerId: leaseBy },
+  );
+  return recordSendResult(reminderId, r, now);
+}
+
+/** The session an APPROVE_SCRIPTS ledger row is about, out of its dedupeKey. */
+export function scriptApprovalSessionKey(dedupeKey: string | null): string | null {
+  const m = /:APPROVE_SCRIPTS:(.+):\d+$/.exec(dedupeKey ?? "");
+  return m ? m[1] : null;
+}
+
 /** ONE task per ET day for the whole run, whoever the affected clients are —
  *  the fault is the integration's, not any one client's. TEST-only runs make no
  *  owner work, the same rule the rest of this file follows. */
@@ -2049,10 +2343,10 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
         const switchOff = !switchOnFor(r.action);
         // CP-05: the exact address arrived while the email waited — it would
         // now ask for something the client has already given us.
-        const addressIn = r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey));
+        const addressIn = (r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) || (r.action === "APPROVE_SCRIPTS" && !!r.monthId && (await monthScriptApprovals(r.monthId)).awaitingClient.length === 0);
         const stop = switchOff || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn;
         if (stop) {
-          const why = switchOff ? "the automation was switched off" : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? "address_received" : booked ? "booked" : "snoozed";
+          const why = switchOff ? "the automation was switched off" : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : "address_received") : booked ? "booked" : "snoozed";
           const released = await markFailed(r.outboxMessageId, `cancelled before send: ${why}`);
           if (released) {
             await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: switchOff ? "switched_off" : why, lastError: `cancelled before send: ${why}`, lastErrorAt: now } });

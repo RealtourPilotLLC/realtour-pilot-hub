@@ -1370,7 +1370,8 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
                         "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
                         r.status === "REVISION" ? "bg-warning/15 text-warning" : r.status === "REVIEW" ? "bg-brand/15 text-brand" : "bg-surface-2 text-muted",
                       )}>
-                        {r.status === "REVISION" ? "revision" : r.status === "REVIEW" ? "in review" : "editing"}
+                        {/* §7.1: an EDITING row says who is on it, not the stage — the pill above counts active work only. */}
+                        {r.status === "REVISION" ? "revision" : r.status === "REVIEW" ? "in review" : r.workWord ?? "In editing — not confirmed"}
                       </span>
                       {r.editor && <span className="shrink-0 text-xs text-muted">→ {r.editor}</span>}
                     </div>

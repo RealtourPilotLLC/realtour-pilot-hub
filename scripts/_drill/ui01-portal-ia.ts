@@ -302,9 +302,14 @@ async function main() {
     // belongs to one, ANSWER_QUESTIONS to the other, never both.
     const active = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, unread: 2 });
     const kinds = (r: ReturnType<typeof home.homeActions>) => [r.primary!, ...r.more].map((a) => a.kind).join(",");
-    c.ok("ACTIVE, call month, everything true: every kind in HOME_PRIORITY order", kinds(active) === home.HOME_PRIORITY.filter((k) => k !== "ANSWER_QUESTIONS").join(","), kinds(active));
+    // Batch 2 (Sep 25): CHOOSE_ROUTE is the call step's place on a month that
+    // may be planned either way (neither input here is one), and answers are
+    // asked whenever the planning reader says they are OWED — toAnswer is that list.
+    // …and on the call route the topics are chosen on the call (§6.4), so
+    // PICK_TOPICS is not a client to-do there.
+    c.ok("ACTIVE, call month, everything true: every kind in HOME_PRIORITY order", kinds(active) === home.HOME_PRIORITY.filter((k) => k !== "ANSWER_QUESTIONS" && k !== "CHOOSE_ROUTE" && k !== "PICK_TOPICS").join(","), kinds(active));
     const written = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "WRITTEN", callStatus: "NOT_REQUIRED" }, toAnswer: [{ title: "Kitchen" }] });
-    c.ok("…a written month asks for the answers instead of the call", kinds(written) === home.HOME_PRIORITY.filter((k) => k !== "BOOK_CALL" && k !== "READ_REPLY").join(","), kinds(written));
+    c.ok("…a written month asks for the answers instead of the call", kinds(written) === home.HOME_PRIORITY.filter((k) => k !== "BOOK_CALL" && k !== "READ_REPLY" && k !== "CHOOSE_ROUTE").join(","), kinds(written));
     const viewerSeat = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, perms: { session: false, suggest: false, request: false, approve: false, profile: false } });
     c.ok("a view-only seat is never asked to review, approve, book or set up — only to download", [viewerSeat.primary, ...viewerSeat.more].filter(Boolean).map((a) => a!.kind).join(",") === "DOWNLOAD");
     await prisma.contentEnrollment.update({ where: { id: T.enrollmentId }, data: { status: "ENDED" } });
@@ -442,11 +447,13 @@ async function main() {
 
     // Findings 13 / 16 — the v2 pages' words and weight.
     const sched = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "schedule" } });
-    c.ok("v2 Schedule names 'your plan', not a 'Video Topics' page that is not in the nav", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "your plan");
+    // Batch 2 (Sep 25): the plan is "Your Month", and the route choice lives
+    // there — Schedule links to its route step instead of carrying the buttons.
+    c.ok("v2 Schedule names 'Your Month', not a 'Video Topics' page that is not in the nav, and routes the choice there", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "Your Month" && find(sched, "ScheduleTab")[0]?.props.routeHref === "?tab=plan#step-route");
     const oldSchedV1 = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
     c.ok("…while v1's Schedule still says Video Topics (no prop passed, its tree is HEAD's)", find(oldSchedV1, "ScheduleTab")[0]?.props.topicsLabel === undefined);
     const hv2 = find((await homeOf(testOwner)).tree, "AppointmentCards", new Set(["HomeV2"]))[0];
-    c.ok("v2 Home's appointment cards are quiet (links, not two more orange buttons) and point at the plan", hv2?.props.quiet === true && hv2.props.plan?.label === "Open my plan" && hv2.props.plan?.href === "?tab=plan");
+    c.ok("v2 Home's appointment cards are quiet (links, not two more orange buttons) and point at Your Month", hv2?.props.quiet === true && hv2.props.plan?.label === "Open Your Month" && hv2.props.plan?.href === "?tab=plan");
     c.ok("the video-change hint names no page (v1 'My Videos' / v2 'Content Library')", !/My Videos|Content Library/.test((await import("@/lib/programMessages")).VIDEO_CHANGES_HINT));
     const team = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "team" } });
     const st = find(team, "SettingsTab")[0]?.props.d;
@@ -455,7 +462,9 @@ async function main() {
 
     // Finding 20 — the month card marks extras.
     const hm = read("src/components/portal/tabs/HomeTab.tsx");
-    c.ok("Home's month card: '+N waiting' in the heading and each extra tagged", /month\.overflow > 0 \? ` · \+\$\{month\.overflow\} waiting` : ""/.test(hm) && /t\.selection\?\.overflow && <span/.test(hm));
+    // Batch 2 (R01): the extras count and each row's chip come from the one
+    // planning reader — an extra's own chip says "Extra — waits its turn".
+    c.ok("Home's month card: '+N extra' in the heading and each row's chip from the planning step", /month\.overflow > 0 \? ` · \+\$\{month\.overflow\} extra` : ""/.test(hm) && /t\.plan \? <StatusChip word=\{planStepWord\(t\.plan\.step, t\.plan\.missing\)\} \/>/.test(hm));
 
     // Finding 21 — Kyle's line, not "text us".
     const words = await import("@/lib/portalWords");

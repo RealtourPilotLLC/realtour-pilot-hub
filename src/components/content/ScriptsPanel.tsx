@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { Check, CircleDashed, FileText, History, Loader2, PenLine, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
-import { ScriptBody } from "@/components/portal/ScriptBody";
+import { ScriptView } from "@/components/script/ScriptView";
 // policy.ts is pure data with no imports of its own ("no node:crypto so this
 // file can be imported from client components") — the 20–30 s target is read
 // from it rather than copied, so the chip, the findings row and the validator
@@ -31,7 +31,9 @@ export type VersionUi = { id: string; versionNo: number; status: string; source:
 /** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
 export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
 
-export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null; clientVerdict: "APPROVED" | "CHANGES_REQUESTED" | "STALE" | null; clientVerdictAt: string | null };
+export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null; clientVerdict: "APPROVED" | "CHANGES_REQUESTED" | "STALE" | null; clientVerdictAt: string | null;
+  /** 6.5: the client changed an answer after this script was drafted — nothing redrafts on its own. */
+  answersChanged?: boolean };
 
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
@@ -136,6 +138,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
         )}
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
         {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
+        {s.answersChanged && <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning" title="The client edited an answer after this draft. Revise it, or draft again from the answers.">answers changed since this draft</span>}
       </summary>
       <div className="mt-2">
         {cur && (
@@ -188,7 +191,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
               <button onClick={() => { setBody(cur?.body ?? ""); setMode("read"); }} className={quiet}>Cancel</button>
             </div>
           </div>
-        ) : cur ? <ScriptBody body={cur.body} size="sm" /> : null}
+        ) : cur ? <ScriptView body={cur.body} size="sm" audience="staff" pillarName={s.pillarName} fileTitle={s.title} /> : null}
         {mode === "revise" && (
           <div className="mt-2">
             <AutoTextarea value={instr} onChange={(e) => setInstr(e.target.value)} minRows={2} placeholder="Tell the AI what to change — the current version is kept as is" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs" />

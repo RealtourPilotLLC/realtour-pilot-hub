@@ -56,7 +56,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // branch already resolved the submission anyway.
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id },
-    select: { projectId: true, assetPath: true, finalPath: true, blobUrl: true, fileName: true },
+    select: {
+      projectId: true, assetPath: true, finalPath: true, blobUrl: true, fileName: true,
+      // The editor's check and the bytes it was bound to (§8.2) — see voidCheckOnDrift.
+      status: true, selfCheckId: true, selfCheckedAt: true, sourceRev: true,
+    },
   });
 
   const media = req.nextUrl.searchParams.get("m");
@@ -201,10 +205,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     let link = cached && Date.now() - cached.at < LINK_TTL_MS ? cached.link : null;
     if (!link) {
       const { dbx } = await import("@/lib/integrations/dropbox");
-      const r = await dbx<{ link?: string }>("files/get_temporary_link", { path });
+      const r = await dbx<{ link?: string; metadata?: { content_hash?: string; rev?: string } }>("files/get_temporary_link", { path });
       if (!r.link) throw new Error("Dropbox returned no link");
       link = r.link;
       linkCache.set(id, { link, at: Date.now() });
+      // The link came with the file's metadata for free: if these are not the
+      // bytes the editor checked, the check stops standing for them now.
+      if (path === sub.assetPath) await voidCheckOnDrift(id, sub, r.metadata);
     }
     // Dropbox has named a live link for this exact path — a cached one was
     // named the same way, minutes ago, for the same path. The two exits below
@@ -262,6 +269,43 @@ async function stampHandOff(req: NextRequest, submissionId: string, wantsFile: b
     await markCutDownloaded(submissionId, me.name ?? me.email ?? null);
   } catch {
     // Deliberately silent: a stamp that did not land costs a sentence on a row.
+  }
+}
+
+/**
+ * NEW BYTES VOID THE CHECK — the stream route's half of §8.2 (Sep 25).
+ *
+ * A Final-folder cut is served by PATH, so an editor re-exporting over the same
+ * name puts different bytes in front of the reviewer under a check made on the
+ * old ones. The verdict buttons already re-read Dropbox before they rule
+ * (selfCheckStore.folderDriftCheck); this is the earlier sighting, when the
+ * cut is merely played: Dropbox hands back the file's content_hash with every
+ * link it mints, and a hash that is not the one the check was bound to voids
+ * the check, takes the cut back out of review (held for a fresh check) and
+ * rings the editor — the same words and the same effect as the verdict's own
+ * re-read, so whichever notices first, the outcome is one.
+ *
+ * Only a cut still waiting on a verdict (PENDING) with a VALID check bound to
+ * a known hash; an approved cut's history is never rewritten, an upload
+ * (immutable — new bytes are a new version) is never re-read, and metadata
+ * that carries no hash proves nothing. Only on a freshly minted link: a cached
+ * one was checked when it was minted. The bytes are still served — a reviewer
+ * or the editor may watch what is there; nobody can rule on it until it is
+ * checked again. Never throws, never fails the response.
+ */
+async function voidCheckOnDrift(
+  submissionId: string,
+  sub: { status: string; blobUrl: string | null; assetPath: string | null; selfCheckId: string | null; selfCheckedAt: Date | null; sourceRev: string | null },
+  meta: { content_hash?: string; rev?: string } | undefined,
+): Promise<void> {
+  if (sub.status !== "PENDING" || sub.blobUrl || !sub.assetPath || !sub.selfCheckId || !sub.selfCheckedAt || !sub.sourceRev) return;
+  const now = meta?.content_hash ?? meta?.rev ?? null;
+  if (!now || now === sub.sourceRev) return;
+  try {
+    const { voidSelfCheck } = await import("@/lib/selfCheckStore");
+    await voidSelfCheck(submissionId, "The file in the Final folder was replaced after the editor checked it.", { release: true, notify: true });
+  } catch {
+    // The verdict's own re-read still refuses these bytes.
   }
 }
 

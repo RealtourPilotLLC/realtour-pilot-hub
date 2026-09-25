@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   CheckCircle2, Clock, MapPin, Loader2, Sparkles, Copy, Send, ExternalLink,
@@ -8,7 +8,7 @@ import {
   PencilLine, Cpu, CircleDot, User, Users, Square, CheckSquare, ShieldAlert, Repeat,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem } from "@/app/actions";
+import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem, editCardWork, type EditCardWork } from "@/app/actions";
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { acknowledgeQcCategory } from "@/app/ops/actions";
@@ -454,6 +454,63 @@ function StepsChecklist({ taskId, items, interactive }: {
   );
 }
 
+// ---- WHO IS ON AN EDIT CARD'S JOB (§7.1, A64) --------------------------------
+// An edit card's own status says nothing about whether anyone is cutting the
+// job now: "In progress" is set by the editor's Start and stays through a
+// Pause, a reassign and a restore. The truth is the editor's declared work, so
+// every edit card asks for it — batched: the cards that mount together share
+// ONE server read (server functions run one at a time, and a read per card
+// would queue in front of the next Complete). A failed read says so.
+type WorkAnswer = { failed: true } | { failed: false; card: EditCardWork | null };
+const workWaiters = new Map<string, ((a: WorkAnswer) => void)[]>();
+let workTimer: ReturnType<typeof setTimeout> | null = null;
+function loadEditWork(taskId: string): Promise<WorkAnswer> {
+  return new Promise((resolve) => {
+    workWaiters.set(taskId, [...(workWaiters.get(taskId) ?? []), resolve]);
+    if (workTimer) return;
+    workTimer = setTimeout(() => {
+      workTimer = null;
+      const batch = new Map(workWaiters);
+      workWaiters.clear();
+      void editCardWork([...batch.keys()])
+        .catch(() => ({ ok: false, cards: {} as Record<string, EditCardWork> }))
+        .then((r) => {
+          for (const [id, fns] of batch) for (const f of fns) f(r.ok ? { failed: false, card: r.cards[id] ?? null } : { failed: true });
+        });
+    }, 25);
+  });
+}
+
+const WORK_TONE: Record<EditCardWork["tone"], string> = {
+  active: "bg-[#8b5cf6]/15 text-[#8b5cf6]",
+  paused: "bg-surface-2 text-muted",
+  waiting: "bg-warning/15 text-warning",
+  none: "bg-surface-2 text-muted-2",
+};
+
+function EditWorkChip({ task }: { task: QueueTask }) {
+  const [answer, setAnswer] = useState<WorkAnswer | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void loadEditWork(task.id).then((a) => { if (alive) setAnswer(a); });
+    return () => { alive = false; };
+    // Re-asked when the server sends the card back changed (a status or an
+    // assignee move) — the work may have moved with it.
+  }, [task.id, task.status, task.assignedKey]);
+  if (!answer) return null;
+  if (answer.failed) return <p className="mt-1.5 text-[11px] text-muted-2">Couldn&rsquo;t check who is editing this right now.</p>;
+  const w = answer.card;
+  if (!w) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium ${WORK_TONE[w.tone]}`} title="Only the editor's Start (on the edit page) marks a job as being edited">
+        <CircleDot className="size-3" /> {w.text}
+      </span>
+      {w.blocker && <span className="text-muted">{w.blocker}</span>}
+    </div>
+  );
+}
+
 // editorView: the viewer is an EDITOR — their role can't open /projects or
 // /clients (those redirect non-admins home), so the card's links point at their
 // own surfaces instead: the project goes to /edit/<id> (the editor brief), and
@@ -475,6 +532,9 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
   const [noteMsg, setNoteMsg] = useState<string | null>(null);
   const [savingNote, startNote] = useTransition();
   const [assigning, startAssign] = useTransition();
+  // A status the server refused (an edit card's "In progress" — §7.1): its
+  // reason, shown in the footer instead of a silently snapped-back select.
+  const [statusNote, setStatusNote] = useState<string | null>(null);
 
   const assignee = editorMeta(task.assignedKey);
   const delegated = isDelegated(task.assignedKey);
@@ -528,7 +588,13 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
   // Drafted-message tasks open expanded so the message is visible to review/send.
   const [open, setOpen] = useState(predrafted);
 
-  const run = (status: string) => start(async () => setSmartTaskStatus(task.id, status));
+  const run = (status: string) =>
+    start(async () => {
+      setStatusNote(null);
+      const r = await setSmartTaskStatus(task.id, status);
+      if (r && !r.ok) setStatusNote(r.message);
+    });
+  const isEditCard = task.taskType === "edit_video";
   const assign = (key: string) => startAssign(async () => setTaskAssignee(task.id, key));
   const sendText = () =>
     startSend(async () => {
@@ -653,6 +719,11 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
         </div>
       )}
 
+      {/* An edit card: who is actually on the job right now (§7.1), or what
+          the handoff is still waiting on (O01) — never read off the card's
+          own status. */}
+      {isEditCard && !done && <EditWorkChip task={task} />}
+
       {/* Expandable body — the "what happened" summary + details. */}
       {open && hasBody && (
         <div className="mt-2.5 space-y-2.5 rounded-xl border border-border bg-surface-2/40 p-3">
@@ -744,7 +815,11 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             className="w-[6.5rem] min-w-0 rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none"
           >
             {STATUSES.map((s) => (
-              <option key={s} value={s}>{s.replace(/_/g, " ").toLowerCase()}</option>
+              // On an edit card "in progress" is the Start button's record,
+              // not a claim anyone is cutting it now (the chip above says
+              // that) — so it reads "started" there, and picking it is
+              // refused with the way to the real Start.
+              <option key={s} value={s}>{isEditCard && s === "IN_PROGRESS" ? "started" : s.replace(/_/g, " ").toLowerCase()}</option>
             ))}
           </select>
         )}
@@ -844,6 +919,14 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
         </div>
       </div>
       {sendMsg && <p className="mt-2 text-xs text-muted">{sendMsg}</p>}
+      {statusNote && (
+        <p className="mt-2 text-xs text-warning">
+          {statusNote}
+          {isEditCard && task.projectId && (
+            <> <Link href={`/edit/${task.projectId}`} className="font-medium underline">Open the edit page</Link></>
+          )}
+        </p>
+      )}
 
       {noteOpen && (
         <div className="mt-3 rounded-xl border bg-surface-2/60 p-3">

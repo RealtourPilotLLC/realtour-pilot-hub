@@ -400,7 +400,8 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     case "portal_invite": return "You've been added to your RealTour Pilot content portal";
     case "program_reminder": return programReminderSubject(dedupeKey ?? null);
     case "script_share": return "Your scripts are ready in your RealTour Pilot portal";
-    case "strategy_ready": return "Your content strategy is ready in your RealTour Pilot portal";
+    // Jordan's wording for the strategy notice (6.2, Sep 25 2026).
+    case "strategy_ready": return "Your Content Strategy is Ready + Next Steps";
     case "program_message": return "New reply in your RealTour Pilot portal";
     default: return "RealTour Pilot";
   }
@@ -421,6 +422,9 @@ function programReminderSubject(dedupeKey: string | null): string {
     case "SESSION_REQUEST_FOLLOWUP": return `About${forMonth} session request`;
     // CP-05: the per-session address reminder.
     case "CONFIRM_ADDRESS": return month ? `Where are we filming your ${month} session?` : "Where are we filming your session?";
+    // 6.5: the one script-approval email before a session. Without its own
+    // case it fell to "Let's plan …", hiding what it asks and by when.
+    case "APPROVE_SCRIPTS": return month ? `Please approve your ${month} scripts before filming` : "Please approve your scripts before filming";
     default: return `Let's plan${forMonth}`;
   }
 }

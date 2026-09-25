@@ -43,7 +43,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
         {sub}
         <MonthHeader ctx={ctx} tab="plan" view="topics" title={`Topics — ${monthName}`} />
         <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
-          suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} />
+          suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} held={d.held} />
       </div>
     );
   }
@@ -71,7 +71,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
     return (
       <div className="space-y-5">
         {sub}
-        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} />
+        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} discovery={d.discovery} />
       </div>
     );
   }

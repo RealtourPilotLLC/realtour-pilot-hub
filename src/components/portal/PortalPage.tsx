@@ -37,7 +37,7 @@ import { isLibraryFilter } from "@/lib/portalWords";
 import { PortalShell } from "@/components/portal/PortalShell";
 import { HomeV2 } from "@/components/portal/tabs/HomeTab";
 import { LibraryV2, VideoDetailV2, type LibraryV2Data } from "@/components/portal/tabs/VideosTab";
-import { PlanTab } from "@/components/portal/tabs/PlanTab";
+import { PlanTab, type PlanTabData } from "@/components/portal/tabs/PlanTab";
 import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 
 // ---------------------------------------------------------------------------
@@ -410,9 +410,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         review: { count: reviewCount, single: reviewCount === 1 && waiting.length === 1 ? { id: waiting[0].id, title: waiting[0].title } : null, soonestDeadlineLabel: soonest?.label ?? null },
         scripts: (hp?.scripts ?? []).map((t) => ({ topicId: t.id, title: t.title })),
         unread: messagesUnread,
-        planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus } : null,
+        planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
         month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
-        toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title })),
+        toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
         session: { offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing },
         addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
         setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
@@ -435,6 +435,30 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     const planHrefs: Record<PlanView, string> = {
       month: portalHref(v2Base, "plan"), scripts: portalHref(v2Base, "plan", "pv=scripts"), bank: portalHref(v2Base, "plan", "pv=bank"), strategy: portalHref(v2Base, "plan", "pv=strategy"),
     };
+
+    // ---- Your Month: the guided plan needs the month's planning, its
+    // scheduling card and (to book) the live slots — the same loads the
+    // Schedule page makes, each wrapped so a failure reads "couldn't load".
+    let yourMonth: PlanTabData["yourMonth"] = null;
+    if (route.dest === "plan" && route.planView === "month" && !interviewRes) {
+      const [p, sm] = await Promise.all([
+        attempt("planning", () => portalPlanning(enrollment)),
+        attempt("schedule months", () => portalScheduleMonths(enrollment)),
+      ]);
+      const thisMonth = p.ok && p.data && sm.ok ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? null : null;
+      let days: PortalSlotDay[] = [];
+      if (thisMonth && perms.session && !readOnly && !thisMonth.locked && (thisMonth.capacity.remaining > 0 || thisMonth.requests.some((r) => r.canChange))) {
+        const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
+        days = await companySlotDays({ package: pkg }).catch(() => []);
+      }
+      yourMonth = {
+        planning: p.ok ? p.data : null, planningFailed: !p.ok,
+        schedule: thisMonth, scheduleFailed: !sm.ok,
+        slotDays: days, bookingUrl: STRATEGY_CALL_BOOKING_URL,
+        can: { suggest: perms.suggest, session: perms.session },
+        scheduleHref: portalHref(v2Base, "schedule"),
+      };
+    }
     const setupLeft = setupMore?.ok && !setupMore.data.complete ? Math.max(0, setupMore.data.total - setupMore.data.done) : null;
     return (
       <PortalShell
@@ -457,7 +481,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
             topics: topicsAll.ok ? topicsAll.data : null, topicsFailed: !topicsAll.ok,
             interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
             strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
-            monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs,
+            monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
           }} />
         )}
         {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={v2Href} /> : <LibraryV2 d={library} failed={libraryFailed} href={v2Href} />)}
@@ -466,7 +490,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
             planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
             months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
             slotDays={slotDays} bookingUrl={STRATEGY_CALL_BOOKING_URL} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
-            topicsHref={planHrefs.month} topicsLabel="your plan"
+            topicsHref={planHrefs.month} topicsLabel="Your Month" routeHref={`${planHrefs.month}#step-route`}
           />
         )}
         {route.dest === "more" && (

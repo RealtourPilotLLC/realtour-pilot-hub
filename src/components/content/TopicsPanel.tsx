@@ -1,14 +1,16 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Ban, Check, ClipboardCopy, History, Lightbulb, Loader2, MessageSquare, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
+import { Ban, Check, ClipboardCopy, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
 import type { PillarStock } from "@/lib/contentTopics";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
+import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy/topicBank";
 import {
   addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, generateScriptForTopicAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
   startInterview, suggestionAction, topicDecision, undeclineTopicAction,
+  suggestionBulkAction, releaseSuggestionHoldAction, setSuggestionReasonAction,
 } from "@/app/content/actions";
 import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
 
@@ -26,6 +28,9 @@ import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
 // scripts marked on the month, a parked script re-usable for the month, the
 // carry-over check, and the internal alignment flag on a client's own idea.
 // CP-08: "Copy follow-up link" on an interview whose answers stop short.
+// 6.3 (Sep 25 2026): the recommendation's CLIENT line (what the client reads
+// on Your Month, editable here) apart from the staff "why now"; approve all
+// shown; hold / regenerate the selected suggestions; the held list with Release.
 // ---------------------------------------------------------------------------
 
 export type TopicUi = {
@@ -38,7 +43,7 @@ export type TopicUi = {
 };
 export type GroupUi = { pillarId: string | null; pillarName: string; topics: TopicUi[] };
 export type ProposedUi = { topic: TopicUi; evidence: { speaker: string; text: string }[]; clientSpoken: boolean; overflow: boolean };
-export type SuggestionUi = { id: string; kind: string; rank: number | null; title: string; description: string | null; pillarName: string | null; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; rationale: string | null; whyNow: string | null; linkedGoal: string | null; priorContentRelation: string | null; relatedTopicId: string | null; runSummary: string | null };
+export type SuggestionUi = { id: string; kind: string; rank: number | null; title: string; description: string | null; pillarName: string | null; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; rationale: string | null; whyNow: string | null; linkedGoal: string | null; priorContentRelation: string | null; relatedTopicId: string | null; runSummary: string | null; clientReason?: string | null };
 export type RunUi = { id: string; kind: string; status: string; createdAt: string; changeSummary: string | null; missing: string[]; requestedBy: string | null };
 export type EventUi = { kind: string; actorKind: string; note: string | null; createdAt: string; monthKey: string | null };
 
@@ -46,11 +51,13 @@ const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
 const fmt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 
-export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [] }: {
+export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [] }: {
   enrollmentId: string; month: { id: string; label: string; short: string } | null; capacity: { owed: number; selected: number; overflow: number } | null;
   groups: GroupUi[]; proposed: ProposedUi[]; monthTopics: TopicUi[]; suggestions: SuggestionUi[]; recommended: SuggestionUi[]; runs: RunUi[];
   interviews: Record<string, InterviewUi>; histories: Record<string, EventUi[]>; pillars: { id: string; name: string }[]; topicsPerPillar: number; isOwner: boolean; archivedCount: number;
   declined?: TopicUi[]; stock?: PillarStock[];
+  /** 6.3: suggestions on hold — off the review list, the client's pages and every refresh until released. */
+  held?: SuggestionUi[];
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -59,6 +66,10 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
   const [carryPreview, setCarryPreview] = useState<number | null>(null);
   const checkCarry = () => start(async () => { const r = await carryNowAction(enrollmentId, true); setNote(r.message); setCarryPreview(r.ok ? r.candidates?.length ?? 0 : null); });
   const doCarry = () => start(async () => { const r = await carryNowAction(enrollmentId, false); setNote(r.message); setCarryPreview(null); });
+  /** 6.3: the suggestions ticked for "hold" / "regenerate". */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const toggle = (id: string) => setPicked((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const bulk = (action: "ACCEPT" | "HOLD" | "REGENERATE", ids: string[]) => run(async () => { const r = await suggestionBulkAction(ids, action); if (r.ok) setPicked(new Set()); return r; });
 
   return (
     <div className="space-y-5">
@@ -118,8 +129,9 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
               <dl className="mt-1 grid gap-x-4 gap-y-0.5 text-[12px] sm:grid-cols-2">
                 <div><dt className="inline text-muted-2">Goal: </dt><dd className="inline">{s.linkedGoal ?? "no goal matched"}</dd></div>
                 <div><dt className="inline text-muted-2">Prior content: </dt><dd className="inline">{s.priorContentRelation === "NO_VERIFIED_HISTORY" ? "No verified filming history" : (s.priorContentRelation ?? "—").toLowerCase().replace("_", " ")}</dd></div>
-                <div className="sm:col-span-2"><dt className="inline text-muted-2">Why now: </dt><dd className="inline">{s.whyNow}</dd></div>
+                <div className="sm:col-span-2"><dt className="inline text-muted-2">Why now (staff): </dt><dd className="inline">{s.whyNow}</dd></div>
               </dl>
+              <ClientReason s={s} busy={busy} run={run} />
               <div className="mt-1.5 flex gap-1.5">
                 <button disabled={busy || !month} onClick={() => run(() => suggestionAction(s.id, "ACCEPT", { monthId: month?.id }))} className={`${btn} bg-brand text-white`}>Select for {month?.short ?? "the month"}</button>
                 <button disabled={busy} onClick={() => run(() => suggestionAction(s.id, "ARCHIVE"))} className={quiet}>Dismiss</button>
@@ -172,11 +184,44 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
             {runs[0].missing.length > 0 && <ul className="mt-1 list-inside list-disc text-warning">{runs[0].missing.map((m, i) => <li key={i}>{m}</li>)}</ul>}
           </div>
         )}
+        {suggestions.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-5 py-2 text-[11px]">
+            <button disabled={busy} onClick={() => bulk("ACCEPT", suggestions.map((s) => s.id))} className={`${btn} bg-success/15 text-success`}><Check className="mr-1 inline size-3" />Approve all shown ({suggestions.length})</button>
+            <span className="text-muted-2">{picked.size ? `${picked.size} ticked:` : "Tick suggestions to"}</span>
+            <button disabled={busy || picked.size === 0} onClick={() => bulk("HOLD", [...picked])} className={quiet}><PauseCircle className="mr-1 inline size-3" />Hold</button>
+            <button disabled={busy || picked.size === 0} onClick={() => bulk("REGENERATE", [...picked])} className={quiet}><RefreshCw className="mr-1 inline size-3" />Regenerate</button>
+            <span className="text-muted-2">Approved topics become visible to the client; held ones stay off their pages and out of every refresh.</span>
+          </div>
+        )}
         <div className="divide-y divide-border">
           {suggestions.length === 0 && <p className="px-5 py-3 text-sm text-muted">No suggestions waiting. A refresh adds candidates under the approved pillars — it never touches selected, approved or in-production topics, and archived ideas never come back.</p>}
-          {suggestions.map((s) => <SuggestionRow key={s.id} s={s} busy={busy} monthId={month?.id ?? null} run={run} />)}
+          {suggestions.map((s) => (
+            <div key={s.id} className="flex items-start gap-2 pl-3">
+              <input type="checkbox" checked={picked.has(s.id)} onChange={() => toggle(s.id)} aria-label={`Tick “${s.title}”`} className="mt-4 size-3.5 shrink-0 accent-brand" />
+              <div className="min-w-0 flex-1"><SuggestionRow s={s} busy={busy} monthId={month?.id ?? null} run={run} /></div>
+            </div>
+          ))}
         </div>
       </Section>
+
+      {/* On hold (6.3) */}
+      {held.length > 0 && (
+        <Section icon={PauseCircle} title="On hold" count={held.length} flush>
+          <p className="border-b border-border px-5 py-2 text-[12px] text-muted">Held suggestions are off the review list and the client&rsquo;s pages, and a refresh never suggests them again. Release one to review it.</p>
+          <div className="divide-y divide-border">
+            {held.map((s) => (
+              <div key={s.id} className="flex items-start gap-3 px-5 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[15px] font-medium">{s.title}</div>
+                  {s.description && <p className="text-[12px] text-muted">{s.description}</p>}
+                  {s.rationale && <p className="text-[11px] text-muted-2">{s.rationale}</p>}
+                </div>
+                <button disabled={busy} onClick={() => run(() => releaseSuggestionHoldAction(s.id))} className={quiet}><Undo2 className="mr-1 inline size-3" />Release</button>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* The bank by pillar */}
       <Section icon={Lightbulb} title="Video Topics — the bank" count={groups.reduce((n2, g) => n2 + g.topics.length, 0)} flush
@@ -218,8 +263,8 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             <span className="text-[15px] font-medium">{t.title}</span>
             {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}</span>}
             {t.approvalState === "APPROVED" && <span className="text-[11px] text-success">approved</span>}
-            {t.proposedState && <span className="text-[11px] text-warning">{t.source === "strategy_call" ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
-            {(t.source === "strategy_call" || t.source === "ai") && t.approvalState !== "APPROVED" && !t.proposedState && <span className="text-[11px] text-muted-2">hidden from the client until approved</span>}
+            {t.proposedState && <span className="text-[11px] text-warning">{topicSourceIsCall(t.source) ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
+            {topicSourceNeedsApproval(t.source) && t.approvalState !== "APPROVED" && !t.proposedState && <span className="text-[11px] text-muted-2">hidden from the client until approved</span>}
             {t.carriedFrom && <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] text-warning">carried from {t.carriedFrom} — unfilmed, swappable</span>}
             {parkedScript && <span className="text-[11px] text-muted-2">scripted, not filmed</span>}
             {t.alignment && <span className="text-[11px] text-warning" title="Internal only — the client can still use it">check: {t.alignment}</span>}
@@ -272,6 +317,25 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
         </ul>
       )}
       {open === "interview" && interview && <div className="mt-2"><InterviewPanel iv={interview} /></div>}
+    </div>
+  );
+}
+
+/** The one line the CLIENT reads beside a recommended topic — shown, and editable in place. */
+function ClientReason({ s, busy, run }: { s: SuggestionUi; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(s.clientReason ?? "");
+  return (
+    <div className="mt-1 text-[12px]">
+      {editing ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input value={text} onChange={(e) => setText(e.target.value)} maxLength={200} aria-label="What the client reads about why" placeholder="One plain sentence the client reads" className="min-w-0 flex-1 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
+          <button disabled={busy} onClick={() => { run(() => setSuggestionReasonAction(s.id, text)); setEditing(false); }} className={`${btn} bg-brand text-white`}>Save</button>
+          <button onClick={() => { setText(s.clientReason ?? ""); setEditing(false); }} className={quiet}>Cancel</button>
+        </div>
+      ) : (
+        <p><span className="text-muted-2">Client reads: </span>{s.clientReason ? `“${s.clientReason}”` : <em className="text-muted-2">no reason line</em>} <button onClick={() => setEditing(true)} className="ml-1 text-brand hover:underline" aria-label="Edit what the client reads"><Pencil className="inline size-3" /> edit</button></p>
+      )}
     </div>
   );
 }
