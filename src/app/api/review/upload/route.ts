@@ -88,9 +88,14 @@ const CACHE_MAX_AGE_SECONDS = 60; // the documented floor; the SDK sends whateve
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = (await req.json()) as HandleUploadBody;
   try {
+    const { cutUploadToken } = await import("@/lib/reviewCuts");
     const result = await handleUpload({
       body,
       request: req,
+      // The private store's token once it is connected (reviewCuts,
+      // cutUploadToken); without this handleUpload signs with
+      // BLOB_READ_WRITE_TOKEN — the public store — whatever the browser asks.
+      token: cutUploadToken(),
       onBeforeGenerateToken: async (pathname, clientPayload) => {
         const { getCurrentUser } = await import("@/lib/auth/user");
         const { authEnforced } = await import("@/lib/auth/guards");
@@ -136,9 +141,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // NOT refused: refusing here would strand a finished export the editor
         // has already spent an hour uploading, which is a worse trade than one
         // more object to re-home.
-        const { ownCutObject, finalizeCutUpload } = await import("@/lib/reviewCuts");
+        const { ownCutObject, finalizeCutUpload, cutStoreAccess } = await import("@/lib/reviewCuts");
         const landed = ownCutObject(blob.url);
-        if (process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" && landed.ok && landed.access === "public") {
+        if (cutStoreAccess() === "private" && landed.ok && landed.access === "public") {
           console.error("[review] cut landed in a PUBLIC store while the hub is configured private:", blob.pathname);
         }
         // …and the same sentence for the other half-flipped state: bytes in a

@@ -55,6 +55,11 @@ import type { SelfCheckInput } from "@/lib/selfCheck";
 // 18: finishCutUpload accepts an object on any store the hub holds a token for,
 // under review-cuts/ — see that note's §2), so this upload path needs no
 // further change before an editor meets the private store.
+//
+// Sep 25 2026: the server now says which store this upload is for —
+// startCutUpload returns `access` from reviewCuts.cutStoreAccess(), which
+// follows the private store's connection. This constant is only the fallback
+// for a server that predates that field.
 const CUT_STORE_ACCESS = process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" ? "private" : "public";
 
 export type CutRow = {
@@ -463,7 +468,7 @@ export function CutUploader({
     let landed: string | null = null;
     try {
       const blob = await upload(started.pathname, file, {
-        access: CUT_STORE_ACCESS,
+        access: started.access ?? CUT_STORE_ACCESS,
         handleUploadUrl: "/api/review/upload",
         clientPayload: JSON.stringify({ submissionId: started.submissionId }),
         multipart: true,

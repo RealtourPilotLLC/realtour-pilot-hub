@@ -1622,7 +1622,7 @@ export async function startCutUpload(input: {
   /** §8.2: the editor's self-check for THIS file. Required — without it
    *  nothing is reserved. Bound to the bytes at finalize. */
   selfCheck?: import("@/lib/selfCheck").SelfCheckInput | null;
-}): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean }> {
+}): Promise<{ ok: true; submissionId: string; pathname: string; round: number; access: "private" | "public" } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean }> {
   const reason = (input.reopenReason ?? "").trim();
   // A reason is what turns this into a REPLACEMENT, which is the one upload an
   // editor may make on a job whose task is closed — see uploadAuthor. Without
@@ -1834,7 +1834,10 @@ export async function startCutUpload(input: {
       },
     }).catch(() => {});
   }
-  return { ok: true, submissionId: row.id, pathname: uploadPathnameFor(input.projectId, row.id, input.fileName), round };
+  // The store decides the browser's access word (reviewCuts.cutStoreAccess):
+  // the page no longer bakes it in at build time.
+  const { cutStoreAccess } = await import("@/lib/reviewCuts");
+  return { ok: true, submissionId: row.id, pathname: uploadPathnameFor(input.projectId, row.id, input.fileName), round, access: cutStoreAccess() };
 }
 
 // `held` (§8.2): the bytes are safe in the store but they are not the file the

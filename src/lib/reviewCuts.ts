@@ -886,9 +886,39 @@ export const uploadPathnameFor = (projectId: string, submissionId: string, fileN
  *  window in handover §4, where a row's only pointer was cleared and then
  *  nothing was deleted. It comes out again once every row has moved. */
 export function blobStoreTokens(): string[] {
-  return [process.env.BLOB_READ_WRITE_TOKEN, process.env.BLOB_READ_WRITE_TOKEN_LEGACY]
+  return [process.env.REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN, process.env.BLOB_READ_WRITE_TOKEN, process.env.BLOB_READ_WRITE_TOKEN_LEGACY]
     .map((t) => (t ?? "").trim())
-    .filter((t) => t.length > 0);
+    .filter((t, i, all) => t.length > 0 && all.indexOf(t) === i);
+}
+
+// THE PRIVATE STORE, BY CONNECTION (Sep 25 2026). The private store exists
+// (`review-cuts-private`) and is connected to the project with the env prefix
+// REVIEW_CUTS_PRIVATE_, so its token arrives as
+// REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN beside the public store's
+// integration-managed BLOB_READ_WRITE_TOKEN — which cannot simply be
+// overwritten while the public store is still connected. So instead of the
+// handover's env swap, the PRESENCE of the private token decides both halves
+// of the upload at once: blobStoreTokens() lists it first (new uploads land
+// there; the public store becomes the legacy slot, still readable and
+// deletable while its objects move), and cutStoreAccess() tells the browser
+// "private" through startCutUpload. One setting, so the token and the
+// browser's access word can never disagree — the half-flipped state the
+// handover's step 3 had to choreograph. Nothing changes while the variable is
+// absent: the public store and the old NEXT_PUBLIC flag behave as before.
+
+/** The token new cut uploads are signed with: the private store's once it is
+ *  connected, else the public store's. handleUpload is given it explicitly —
+ *  by default it would read BLOB_READ_WRITE_TOKEN, the public store. */
+export function cutUploadToken(): string | undefined {
+  return blobStoreTokens()[0];
+}
+
+/** The `access` word the browser must send on its own PUT for the store
+ *  cutUploadToken() names. A mismatch is refused by the control plane
+ *  ("Cannot use public access on a private store"), so this is never guessed. */
+export function cutStoreAccess(): "private" | "public" {
+  if ((process.env.REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN ?? "").trim()) return "private";
+  return process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" ? "private" : "public";
 }
 
 /** The store id a read-write token names: the fourth underscore-separated
