@@ -83,7 +83,7 @@ const fence = fenceFetch(async (url, init) => {
 function writeBaseCopy(file: string): { dir: string; path: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cp05-base-"));
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
-  const src = execFileSync("git", ["show", `HEAD:${file}`], { cwd: REPO, encoding: "utf8" });
+  const src = execFileSync("git", ["show", `e26cacd:${file}`], { cwd: REPO, encoding: "utf8" });
   const out = path.join(dir, path.basename(file).replace(/\.ts$/, ".base.ts"));
   fs.writeFileSync(out, src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`));
   return { dir, path: out };
@@ -310,6 +310,12 @@ async function main() {
     c.ok("read back equal → SYNCED", row?.syncState === "SYNCED" && /"source":"aryeo"/.test(row.readbackJson ?? ""), row?.syncState);
     const proj = await prisma.project.findUnique({ where: { id: S1.projectId }, select: { addressLine: true } });
     c.ok("and the job shows the street after the order sync", proj?.addressLine === "117 Kyle Lane", proj?.addressLine ?? "(null)");
+    // Jordan, Sep 24 2026: Aryeo is the authority on travel once it has the address.
+    c.ok("once synced, Aryeo is asked whether the creative is still clear", fake.reads.some((r) => r.startsWith(`/appointments/${S1.aryeoApptId}/availability`) && r.includes(`assignee_id=${DRILL_TEAM.james.tm}`)), fake.reads.filter((r) => r.includes("availability")).join(" | ") || "no availability read");
+    // In Aryeo, James also holds the other client's 13:00 session (O1), which
+    // overlaps this 10:00–14:00 one — so Aryeo's answer is a clash, and it is
+    // Aryeo's answer that reaches Kyle.
+    c.ok("  …Aryeo reports James's overlapping 13:00 job, so Kyle gets the clash task", (await tasksFor(S1.key)).some((t) => /aryeo-conflict/.test(t.dedupeKey ?? "") && /Aryeo reports a clash/.test(t.title)));
     await sa.syncSessionAddresses({});
     c.ok("a second run: no further PATCH", fake.writes.filter((w) => w.method === "PATCH").length - p0 === 1);
     // Another client, not authorised, with an address of their own.
@@ -427,6 +433,34 @@ async function main() {
     c.ok("Kyle is told the new location may affect travel", !!t && /may affect travel/.test(t.title), t?.title);
     const after = await prisma.appointment.findUnique({ where: { id: V1.apptId }, select: { startAt: true } });
     c.ok("and the session time did not move", before?.startAt?.getTime() === after?.startAt?.getTime());
+  }
+
+  // ======================================================================
+  c.head("11b · travel, when the hub syncs the address: Aryeo decides, not our 90-minute rule");
+  {
+    // Jordan, Sep 24 2026: "Aryeo's scheduling API should show the live
+    // availability and allow travel time between one address to another."
+    const w = await client("Address Clash TEST", "clash-drill@realtourpilot.com");
+    const W1 = await addSession(w, et("2026-10-27", 10));
+    await setSwitch("address_sync", true, { authorizedFixtureClientIds: [w.clientId] });
+    // In ARYEO (not in our DB), James has another job overlapping this session.
+    fake.appts.set("0198ffff-0000-4000-8000-00000000c1a5", { id: "0198ffff-0000-4000-8000-00000000c1a5", status: "SCHEDULED", start_at: et("2026-10-27", 12).toISOString().replace(".000Z", "Z"), end_at: et("2026-10-27", 13).toISOString().replace(".000Z", "Z"), orderId: "elsewhere", tmIds: [DRILL_TEAM.james.tm], updated_at: new Date().toISOString() });
+    await sa.submitSessionAddress({ kind: "STAFF", enrollmentId: w.enrollmentId, sessionKey: W1.key, by: "kyle@drill" }, EXACT);
+    c.ok("no home-made travel guess at submit — Aryeo will be asked", !(await tasksFor(W1.key)).some((t) => /:travel:/.test(t.dedupeKey ?? "")));
+    await sa.syncSessionAddresses({});
+    c.ok("the address synced", (await rowOf(W1.key))?.syncState === "SYNCED", (await rowOf(W1.key))?.syncState);
+    const clash = (await tasksFor(W1.key)).find((t) => /aryeo-conflict/.test(t.dedupeKey ?? ""));
+    c.ok("Aryeo reports the clash, so Kyle gets the task", !!clash && /Aryeo reports a clash/.test(clash.title), clash?.title ?? "none");
+    const appt = await prisma.appointment.findUnique({ where: { id: W1.apptId }, select: { startAt: true } });
+    c.ok("  …and nothing was moved", appt?.startAt?.getTime() === et("2026-10-27", 10).getTime());
+    // The other job is cancelled in Aryeo and the client corrects the unit:
+    // Aryeo now says clear, and no new clash task is raised for the new version.
+    fake.appts.get("0198ffff-0000-4000-8000-00000000c1a5")!.status = "CANCELED";
+    await sa.submitSessionAddress({ kind: "STAFF", enrollmentId: w.enrollmentId, sessionKey: W1.key, by: "kyle@drill" }, { ...EXACT, unit: "3" });
+    await sa.syncSessionAddresses({});
+    const v = (await rowOf(W1.key))?.version;
+    c.ok("with the clash gone, Aryeo says clear: no clash task for the new address", (await rowOf(W1.key))?.syncState === "SYNCED" && !(await tasksFor(W1.key)).some((t) => (t.dedupeKey ?? "").endsWith(`aryeo-conflict:v${v}`) && t.status !== "CANCELLED" && t.status !== "COMPLETED"), `v${v}`);
+    await setSwitch("address_sync", false);
   }
 
   // ======================================================================

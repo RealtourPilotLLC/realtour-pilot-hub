@@ -361,7 +361,10 @@ export async function submitSessionAddress(actor: AddressActor, input: ExactAddr
       body: `The client gave ${formatAddressLine(value)} for the session starting ${session.startsAt.toISOString()}. Make sure the creative knows today.`,
     });
   }
-  await travelCheck(updated, session, now).catch(() => null);
+  // Aryeo is the authority on travel once the address reaches the booking
+  // (aryeoConflictCheck, after the sync). Our own same-day heads-up is only for
+  // the addresses Kyle carries to Aryeo by hand — the hub cannot ask for those.
+  if (!(await aryeoWillBeAsked(updated.clientId))) await travelCheck(updated, session, now).catch(() => null);
   return { ok: true, message: "Saved. We are updating your booking.", state: "PENDING" };
 }
 
@@ -447,10 +450,14 @@ async function closeAddressTasks(row: ProgramSessionAddress): Promise<void> {
 }
 
 /**
- * TRAVEL (Jordan, Sep 24 2026): same creative, same day, another appointment
- * within `adjacentMinutes` (90) of this one → Kyle is told the new location may
- * affect travel. The time is never moved. The mileage rule stays off until
- * Jordan gives a number (travelAlertMiles null).
+ * TRAVEL, the fallback. Jordan, Sep 24 2026: "Aryeo's scheduling API should
+ * show the live availability and allow travel time between one address to
+ * another." So when the hub syncs the address itself, Aryeo decides
+ * (aryeoConflictCheck). This same-day heads-up — same creative, another
+ * appointment within `adjacentMinutes` (90) — runs only for an address Kyle
+ * will carry to Aryeo by hand. The time is never moved. There is no mileage
+ * rule: Jordan chose Aryeo's availability over a distance threshold
+ * (travelAlertMiles stays null).
  */
 async function travelCheck(row: ProgramSessionAddress, s: ProgramSession, now: Date): Promise<void> {
   if (!s.appointmentId) return;
@@ -471,6 +478,49 @@ async function travelCheck(row: ProgramSessionAddress, s: ProgramSession, now: D
     body: `${appt.assignedTo?.name ?? "The creative"} has another appointment ${others.map((o) => `${when(o.startAt)}–${when(o.endAt)}`).join(", ")} within ${cfg.adjacentMinutes} minutes of this session, and the client just gave ${formatAddressLine({ streetNumber: row.streetNumber, streetName: row.streetName, unit: row.unitNumber, city: row.city, stateCode: row.stateCode, postalCode: row.postalCode })}. Check the drive. The session time was not changed.`,
   });
   void now;
+}
+
+/** Will the hub itself put this client's address on the Aryeo booking? Only
+ *  then can Aryeo be asked about travel (the address_sync permit rule). */
+async function aryeoWillBeAsked(clientId: string): Promise<boolean> {
+  const { automationConfig } = await import("@/lib/programAutomation");
+  const cfg = await automationConfig<{ authorizedFixtureClientIds: unknown }>("address_sync", { authorizedFixtureClientIds: [] });
+  return !!cfg && Array.isArray(cfg.authorizedFixtureClientIds) && cfg.authorizedFixtureClientIds.includes(clientId);
+}
+
+/**
+ * THE AUTHORITY ON TRAVEL, once the exact address is ON the Aryeo order: ask
+ * Aryeo whether the booked creative is still clear for this appointment
+ * (GET /appointments/{id}/availability — its own scheduling rules, including
+ * any travel allowance it applies between addresses). A clash is Kyle's task;
+ * nothing is moved automatically. A read only — no permit needed, nothing
+ * written. Whether has_conflicts counts the appointment itself, and whether
+ * Aryeo's answer includes drive time, are settled by the supervised provider
+ * test before address_sync is switched on for anyone.
+ */
+async function aryeoConflictCheck(row: ProgramSessionAddress): Promise<"clear" | "conflict" | "unknown"> {
+  if (!row.aryeoAppointmentId) return "unknown";
+  const { AryeoBooking, teamMemberIdByUserId } = await import("@/lib/integrations/aryeo");
+  let conflict: boolean;
+  let who = "The creative";
+  try {
+    const appt = await AryeoBooking.getAppointment(row.aryeoAppointmentId);
+    const teamMemberId = appt.teamMemberIds[0] ?? (appt.userIds[0] ? (await teamMemberIdByUserId()).get(appt.userIds[0]) : undefined);
+    if (!teamMemberId || !appt.start_at) return "unknown";
+    const minutes = appt.end_at ? Math.max(30, Math.round((new Date(appt.end_at).getTime() - new Date(appt.start_at).getTime()) / 60_000)) : 240;
+    const local = await prisma.appointment.findUnique({ where: { aryeoId: row.aryeoAppointmentId }, select: { assignedTo: { select: { name: true } } } });
+    who = local?.assignedTo?.name ?? who;
+    conflict = await AryeoBooking.appointmentHasConflicts(row.aryeoAppointmentId, teamMemberId, minutes);
+  } catch {
+    return "unknown";
+  }
+  if (conflict) {
+    await kyleTask(row, `${TASK_PREFIX}${row.sessionKey}:aryeo-conflict:v${row.version}`, {
+      title: "Aryeo reports a clash at the new filming address",
+      body: `${who}'s availability in Aryeo no longer clears this session now that the exact address is on the booking (${formatAddressLine({ streetNumber: row.streetNumber, streetName: row.streetName, unit: row.unitNumber, city: row.city, stateCode: row.stateCode, postalCode: row.postalCode })}). Check their day in Aryeo and move one of the appointments. The session time was not changed.`,
+    });
+  }
+  return conflict ? "conflict" : "clear";
 }
 
 async function addressConfig(): Promise<AddressConfig> {
@@ -637,6 +687,8 @@ async function syncOne(row: ProgramSessionAddress, now: Date): Promise<"SYNCED" 
 async function synced(row: ProgramSessionAddress, now: Date, target: { addressId: string; orderId: string }, readback: unknown): Promise<"SYNCED"> {
   await prisma.programSessionAddress.update({ where: { id: row.id }, data: { syncState: "SYNCED", syncedAt: now, aryeoAddressId: target.addressId, readbackJson: JSON.stringify({ source: "aryeo", address: readback }).slice(0, 10_000), lastError: null, lastErrorAt: null, nextAttemptAt: null } });
   await closeAddressTasks(row);
+  // Now that Aryeo has the exact address, Aryeo says whether it still works.
+  await aryeoConflictCheck(row).catch(() => "unknown");
   // Best-effort: pull the order so Project.addressLine shows the street here too.
   try {
     const { syncAryeoOrders } = await import("@/lib/integrations/aryeo");

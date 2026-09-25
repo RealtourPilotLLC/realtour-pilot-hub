@@ -47,7 +47,7 @@ import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErro
 
 const PORT = Number(process.env.DRILL_PORT ?? 5512);
 const REPO = path.resolve(__dirname, "../..");
-const BASE = "HEAD";
+const BASE = "e26cacd"; // pinned: the commit batches B–D start from (HEAD moved on once they were committed)
 
 installNextStubs();
 
