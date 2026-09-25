@@ -434,8 +434,26 @@ async function main() {
     const auth = { token: f.portalToken };
     const sat = await pa.portalRequestSession(auth, { monthId: f.monthId, slotISO: at("2026-10-10", 10).toISOString(), location: "West Chester, PA", creativeTeamMemberId: DRILL_TEAM.james.tm });
     c.ok("a Saturday slot POSTed straight at the action is refused", !sat.ok && /Monday through Friday/.test(sat.message), sat.message);
-    const soon = new Date(Date.now() + 20 * HOUR);
-    const tomorrow = await pa.portalRequestSession(auth, { monthId: f.monthId, slotISO: soon.toISOString(), location: "West Chester, PA", creativeTeamMemberId: DRILL_TEAM.james.tm });
+    // Pinned to Tue Oct 6, 18:00 ET, so "20 hours out" is Wed 14:00 ET — a
+    // weekday. On the real clock it failed every Friday morning: 20 hours out
+    // is a Saturday, and the weekend rule (correctly) answers first.
+    const PINNED_NOW = Date.parse("2026-10-06T22:00:00Z");
+    const soon = new Date(PINNED_NOW + 20 * HOUR);
+    const RealDate = Date;
+    class PinnedDate extends RealDate {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      constructor(...args: any[]) { if (args.length === 0) super(PINNED_NOW); else super(...(args as [number])); }
+      static now(): number { return PINNED_NOW; }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Date = PinnedDate;
+    let tomorrow: Awaited<ReturnType<typeof pa.portalRequestSession>>;
+    try {
+      tomorrow = await pa.portalRequestSession(auth, { monthId: f.monthId, slotISO: soon.toISOString(), location: "West Chester, PA", creativeTeamMemberId: DRILL_TEAM.james.tm });
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).Date = RealDate;
+    }
     c.ok("a slot 20 hours out is refused with Kyle's number", !tomorrow.ok && tomorrow.message.includes("(215) 645-4889"), tomorrow.message);
     c.ok("zero calls to Aryeo for either", fake.writes.length === w0);
     c.ok("and no request row was written", (await prisma.programSessionRequest.count({ where: { enrollmentId: f.enrollmentId } })) === 0);

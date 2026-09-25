@@ -791,21 +791,29 @@ async function main() {
   check("in cover, routine sends now with no redirect", rInHours.send === "now" && rInHours.toOnCall === null);
 
   console.log("\n4e. The INTERRUPTIVE channels obey it — driven through notifyStaffSms");
+  // PINNED TO SATURDAY 10:00 ET. notifyStaffSms reads the clock itself, and
+  // this section used to run on the REAL one, so its "out of hours" held only
+  // when the drill happened to run out of hours (it failed on a Friday morning,
+  // Sep 25). OLD, stated first: in cover, the same urgent page is NOT
+  // redirected — which is what the unpinned drill saw during a working day.
+  slackCalls.length = 0;
+  const inCover = await withClock(MON.getTime() - RealDate.now(), () => notifyStaffSms([harrison.id], "Client still unanswered — 58 Windrow Dr, 3h (in cover)", "reply_sla", { urgency: "urgent" }));
+  check("OLD: on a working-day clock the page is NOT redirected to the on-call", inCover.length === 1 && inCover[0].teamMemberId === harrison.id, inCover.map((r) => r.name).join(","));
   slackCalls.length = 0;
   blockedUrls.length = 0;
-  const urgentOut = await notifyStaffSms([harrison.id], "Client still unanswered — 58 Windrow Dr, 3h", "reply_sla", { urgency: "urgent" });
+  const urgentOut = await withClock(SAT.getTime() - RealDate.now(), () => notifyStaffSms([harrison.id], "Client still unanswered — 58 Windrow Dr, 3h", "reply_sla", { urgency: "urgent" }));
   console.log(`     notifyStaffSms(urgent) → ${JSON.stringify(urgentOut.map((r) => ({ name: r.name, outcome: r.outcome })))}`);
   check("an urgent out-of-hours page is redirected to the on-call, not the caller's list", urgentOut.length === 1 && urgentOut[0].teamMemberId === kyle.id, urgentOut.map((r) => r.name).join(","));
   check("it reached him on Slack", slackCalls.some((c) => c.fn === "dm" && c.to === "U-KYLE"), slackCalls.map((c) => `${c.fn}:${c.to}`).join(" "));
   check("nothing was texted", blockedUrls.length === 0, blockedUrls.join(" ") || "no outbound attempts");
 
   slackCalls.length = 0;
-  const routineOut = await notifyStaffSms([harrison.id], "Cut ready to review — 58 Windrow Dr", "cut_ready", { urgency: "routine" });
+  const routineOut = await withClock(SAT.getTime() - RealDate.now(), () => notifyStaffSms([harrison.id], "Cut ready to review — 58 Windrow Dr", "cut_ready", { urgency: "routine" }));
   console.log(`     notifyStaffSms(routine) → ${JSON.stringify(routineOut.map((r) => ({ name: r.name, outcome: r.outcome })))}`);
   check("a routine out-of-hours alert is DEFERRED, not sent", routineOut.every((r) => r.outcome === "deferred"), routineOut.map((r) => r.outcome).join(","));
   check("no Slack DM went out either — a DM buzzes a phone like a text", !slackCalls.some((c) => c.fn === "dm"), slackCalls.map((c) => `${c.fn}:${c.to}`).join(" ") || "none");
   const held = await prisma.pendingSms.findFirst({ where: { teamMemberId: harrison.id }, orderBy: { createdAt: "desc" }, select: { line: true, deferUntil: true, sentAt: true } });
-  check("the line is captured in the queue, dated forward", !!held?.deferUntil && held.deferUntil > NOW, held?.deferUntil?.toISOString() ?? "null");
+  check("the line is captured in the queue, dated forward", !!held?.deferUntil && held.deferUntil > SAT, held?.deferUntil?.toISOString() ?? "null");
   check("and it is unsent", held?.sentAt === null);
 
   console.log("\n4f. The same coverage governs the person bridge (notifyInApp → Slack/SMS)");

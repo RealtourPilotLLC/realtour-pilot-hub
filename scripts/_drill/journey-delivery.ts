@@ -380,6 +380,14 @@ async function main() {
     where: { projectId: j1.id }, select: { id: true, slot: true, deliveredAt: true }, orderBy: { slot: "asc" },
   });
   const shotOn = new Date().toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
+  // OLD: the check compared noon ET of the chosen day with the clock, so a
+  // morning upload for a same-day shoot was refused. Stated with fixed instants
+  // (this check itself only failed when the drill ran before noon ET).
+  {
+    const { etAt: etAtOld } = await import("../../src/lib/datetime");
+    const morning = Date.parse("2026-09-25T14:38:00Z"); // Fri 10:38 ET
+    ok("OLD: before noon, today's date read as 'hasn't happened yet'", etAtOld("2026-09-25", 12).getTime() > morning);
+  }
   const addon = await reopenForAdditionalShoot(j1.id, { type: "SOCIAL_REEL", shotOn, note: "Agent asked for a twilight reel" });
   say("portal answer", `${addon.ok ? "ACCEPTED" : "REFUSED"} — ${addon.message}`);
   ok("the extra shoot is accepted on a delivered job", addon.ok, addon.message);

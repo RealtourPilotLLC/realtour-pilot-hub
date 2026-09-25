@@ -1256,7 +1256,11 @@ export async function reopenForAdditionalShoot(
   // A shoot that has not happened is a BOOKING, and bookings are Aryeo's job.
   // This also keeps the client-text sweep out of it: a future date on a job is
   // a shoot to confirm, and nothing on this screen may cause an outbound text.
-  if (shotOn.getTime() > Date.now()) {
+  // The DAY is compared, not noon of it: `shotOn` is noon ET (above), so before
+  // noon a photographer uploading footage shot that same morning was told
+  // "That day hasn't happened yet" (since 534e46f, Sep 18). Only a day that has
+  // not STARTED yet in Eastern time is a future booking.
+  if (etDayStartUtc(shotOn).getTime() > Date.now()) {
     return { ok: false, message: "That day hasn't happened yet — this is for footage you've already shot." };
   }
   // …and it cannot predate the job's own shoot. A typo there would put the
