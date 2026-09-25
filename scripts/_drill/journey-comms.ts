@@ -845,27 +845,40 @@ async function main() {
   check("still nothing actually sent from this process", blockedUrls.length === 0, blockedUrls.join(" ") || "no outbound attempts");
 
   console.log("\n4g. BACKGROUND SWEEP — sweepReplySla() on a Sunday, then on a Monday");
+  // PINNED TO A REAL SUNDAY. This section used to stamp its two texts at
+  // "3 hours before the real clock" and run its first sweep on the real clock,
+  // while the second sweep ran on the pinned MON. It was written on Sunday
+  // Sep 20, when now−3h fell just before MON. From Tuesday Sep 22 on, the texts
+  // are stamped AFTER MON, so Monday's sweep could not see anyone waiting — and
+  // the "Sunday" sweep was whatever day the drill happened to run.
+  const SUN = new RealDate("2026-09-20T18:00:00.000Z"); // Sun 14:00 ET
+  const WAITED_SINCE = new RealDate(SUN.getTime() - 3 * HOUR); // Sun 11:00 ET
+  check(
+    "OLD: a text stamped from the real clock (now − 3 h) lands after the pinned Monday sweep, so that sweep could never see it",
+    ago(3 * HOUR).getTime() > MON.getTime(),
+    `${ago(3 * HOUR).toISOString()} vs MON ${MON.toISOString()}`,
+  );
   const quiet = await mkClient("Marcus Delaney", "(610) 555-0166");
   const quietProject = await mkProject("9 Rosewood Ct, Wayne, PA 19087", quiet.id);
   const QUIET_ASK = "Are the Rosewood twilight shots part of the package or an add-on?";
-  await inbound({ clientId: quiet.id, clientName: quiet.name, phone: "6105550166", projectId: quietProject.id, body: QUIET_ASK, at: ago(3 * HOUR) });
+  await inbound({ clientId: quiet.id, clientName: quiet.name, phone: "6105550166", projectId: quietProject.id, body: QUIET_ASK, at: WAITED_SINCE });
   // A complaint alongside it, on a client this sweep has never paged about —
   // Priya's tiers were already spent in journey 3e, and a spent dedupe key
   // would have made this read like a suppression it is not.
   const cross = await mkClient("Trent Howell", "(484) 555-0188");
   const crossProject = await mkProject("240 Birchmere Way, Malvern, PA 19355", cross.id);
   const CROSS_ASK = "This is unacceptable — the twilight set was due Friday and nobody has answered me.";
-  await inbound({ clientId: cross.id, clientName: cross.name, phone: "4845550188", projectId: crossProject.id, body: CROSS_ASK, at: ago(3 * HOUR) });
+  await inbound({ clientId: cross.id, clientName: cross.name, phone: "4845550188", projectId: crossProject.id, body: CROSS_ASK, at: WAITED_SINCE });
 
-  const waiting = await findUnansweredInbound(NOW, { families: ["phone"] });
+  const waiting = await findUnansweredInbound(SUN, { families: ["phone"] });
   const marcusWait = waiting.find((w) => w.clientId === quiet.id);
   const trentWait = waiting.find((w) => w.clientId === cross.id);
   check("both clients are genuinely waiting past tier 2", (marcusWait?.ageMin ?? 0) > 120 && (trentWait?.ageMin ?? 0) > 120, `${marcusWait?.ageMin}m / ${trentWait?.ageMin}m`);
   check("one is routine and one is a complaint", marcusWait?.unhappy === false && trentWait?.unhappy === true, `${marcusWait?.unhappy} / ${trentWait?.unhappy}`);
 
   slackCalls.length = 0;
-  const sunday = await sweepReplySla();
-  console.log(`     sweepReplySla (Sunday) → checked=${sunday.checked} tier1=${sunday.tier1} tier2=${sunday.tier2}`);
+  const sunday = await withClock(SUN.getTime() - RealDate.now(), () => sweepReplySla());
+  console.log(`     sweepReplySla (Sunday 14:00 ET) → checked=${sunday.checked} tier1=${sunday.tier1} tier2=${sunday.tier2}`);
   const marcusPagedSun = await prisma.notification.count({ where: { dedupeKey: { startsWith: `sla-1-${quiet.id}-` } } });
   const trentPagedSun = await prisma.notification.count({ where: { dedupeKey: { startsWith: `sla-1-${cross.id}-` } } });
   check("the ROUTINE wait is not paged on a Sunday", marcusPagedSun === 0, `${marcusPagedSun} bell rows`);
