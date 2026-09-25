@@ -115,6 +115,9 @@ export async function POST(req: NextRequest) {
 // Process one Studio event end-to-end. THROWS on failure — including "no linked
 // hub project", so an event for a job that isn't linked YET gets a retry after
 // the link lands instead of vanishing. Exported for the webhookRetry dispatcher.
+/** Prisma's cuid(): "c" then lower-case letters and digits (25 in practice). */
+const HUB_ID_SHAPE = /^c[a-z0-9]{20,32}$/;
+
 export async function processScriptingEvent(
   event: string,
   data: StudioProject & Record<string, unknown>,
@@ -132,6 +135,13 @@ export async function processScriptingEvent(
     // into the /connections badge and the hourly retry loop. Only an event that
     // CARRIES a hub id is a real linkage failure worth retrying.
     if (!hubId) return;
+    // …and the same for an external_id that is not shaped like a hub id at
+    // all. Studio's own test projects carry ids like "skit_test" or
+    // "link_test" (13 of them in September): no hub row can ever have that
+    // id, so retrying six times and then counting a failure on /connections
+    // only buries the real linkage failures. A hub id is a cuid; anything that
+    // could be one still throws and retries.
+    if (!HUB_ID_SHAPE.test(hubId)) return;
     throw new Error(`No linked hub project (external_id=${hubId}, studio id=${data.id ?? "none"}).`);
   }
 

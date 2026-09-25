@@ -72,6 +72,8 @@ change the design:
 | When (ET) | What | How | Backout |
 |---|---|---|---|
 | Sep 25 | `review_room` seats saved: James primary, Kyle backup, Jordan fallback (row was absent; every other value = its default) | one `putSetting` after `validateReviewSeats(…, "OWNER")`; chain read back: all three canRule | delete the `review_room` AppSetting row (→ unconfigured, the old OWNER+ADMIN broadcast) |
+| Sep 25 | **Stripe webhook registered** (authorised): endpoint `we_1UJhFVRrlUAkQjeVojLRmkXt` → `https://hub.realtourpilot.com/api/webhooks/stripe`, 5 events, status enabled; signing secret saved encrypted (Connection `stripe_webhook`, never printed) and read back. Proven: a post signed with the saved secret → 200 (test-mode, ignored); a wrong signature → 400. | `scripts/_ops/register-stripe-webhook.ts --apply` (dry run first) | `… --rollback we_1UJhFVRrlUAkQjeVojLRmkXt` (deletes the endpoint, removes only its own secret); polling keeps activating signups |
+| Sep 25 | **Review cuts switched to the private store.** Code `3a301ad` (the private token's presence decides the upload token and the browser's access word together). Store connected for production + development with prefix `REVIEW_CUTS_PRIVATE_`; deployed from a detached worktree at `3a301ad` (Vercel `eclgh0s6v`). Row backup first: `~/rtp-backup-2026-09-25-cut-rows-pre-private-store.json` (32 rows, 4.8 GB, all public, none uploading). Then `migrate-cut-store.ts --apply` (ledger in the session scratchpad, copied beside the backup). | see the cutover section below | disconnect the store (the public token is primary again) and `migrate-cut-store.ts --rollback --ledger <ledger> --apply`; originals were never deleted |
 | Sep 25 | **Private review-cut store created**: `review-cuts-private` (`store_Ivpn6ZpIy2r0feKR`, iad1, access private). Connected to the project for **development only**, env prefix `REVIEW_CUTS_PRIVATE_` → `REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN`. Production untouched. | `vercel blob create-store --access private` from an unlinked folder; `vercel integration-resource connect … --environment development --prefix REVIEW_CUTS_PRIVATE_` | `vercel blob delete-store store_Ivpn6ZpIy2r0feKR` |
 
 ### Private store — first real proof (Sep 25)
@@ -87,7 +89,29 @@ URL fetches with no headers (the Dropbox/Topaz/Meta path) → 200 and 206;
 Still not exercised: copying objects between stores (`migrate-cut-store.ts
 --apply`), the rollback, and a real editor upload in the browser.
 
-**Cutover plan (after batch 2's deploy):** only review cuts use Blob, but
+**Cutover — DONE (Sep 25).** `3a301ad` deployed; `migrate-cut-store.ts --apply`:
+**moved 32 · skipped 0 · failed 0**, each copy HEAD-verified by size before
+its row changed; ledger `~/rtp-cut-store-migration-ledger-2026-09-25.jsonl`.
+Proven afterwards (read-only DB connection): all 32 rows name
+`ivpn6zpiy2r0fekr.private…`; identity pinned on all 32; a bearer ranged read
+answers 206 for **32/32**; an anonymous read is refused for **32/32**; a
+presigned URL (the Dropbox/Topaz path) answers 206. **Through the live hub**
+(Jordan's session, the browser pane): `/api/review/cut/<id>/stream` with a
+range → 206 with the right total size for two moved cuts, proxied — the store
+address never reaches the browser.
+
+**Still open (Jordan's call):**
+- **The old public objects still answer an anonymous GET (206)** — copying
+  revokes nothing. Deleting them (handover step 7) is what finally closes every
+  link that ever left the building. Recommended: after about a week of the new
+  store serving, delete the old store's objects, then disconnect and delete the
+  old store. Not done: it is a permanent deletion.
+- **The first real editor upload into the private store** is the last untested
+  path (the browser's own PUT with `access: private`). The mechanism passed with
+  a client-token upload from Node; the next real upload's row should name the
+  private host — the configuration probe will show it.
+
+**Earlier plan, kept for the record (after batch 2's deploy):** only review cuts use Blob, but
 `BLOB_READ_WRITE_TOKEN` is integration-managed, so rather than swapping it the
 code will treat `REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN` as the primary store
 when present (the public one becomes the legacy slot), pass that token to
