@@ -244,6 +244,21 @@ export async function dropboxCreateFolder(path: string): Promise<void> {
   }
 }
 
+/** Create a folder and say what Dropbox made: its permanent id (which survives
+ *  a rename by hand) and the path as Dropbox spells it. null = something is
+ *  already at that path — the caller decides whether that is its folder.
+ *  CP-09's topic folders record the id so they can still be found after
+ *  somebody renames one. Real failures throw, as dropboxCreateFolder does. */
+export async function dropboxCreateFolderMeta(path: string): Promise<{ id: string | null; path: string } | null> {
+  try {
+    const r = await dbx<{ metadata?: { id?: string; path_display?: string } }>("files/create_folder_v2", { path, autorename: false });
+    return { id: r?.metadata?.id ?? null, path: r?.metadata?.path_display ?? path };
+  } catch (e) {
+    if (e instanceof DropboxError && /conflict|already/i.test(e.message)) return null;
+    throw e;
+  }
+}
+
 // Move/rename a folder. Distinguishes "destination already exists" (returns
 // false — caller decides) from real failures (throws). Used by the folder
 // engine for reschedules (month changed) and cancellations (archive).
@@ -260,8 +275,8 @@ export async function dropboxMoveFolder(fromPath: string, toPath: string): Promi
 export async function dropboxListFolder(
   path: string,
   opts: { recursive?: boolean } = {},
-): Promise<{ name: string; tag: string; path: string }[]> {
-  type Page = { entries: { name: string; [".tag"]: string; path_display?: string }[]; has_more?: boolean; cursor?: string };
+): Promise<{ name: string; tag: string; path: string; id: string | null }[]> {
+  type Page = { entries: { name: string; [".tag"]: string; path_display?: string; id?: string }[]; has_more?: boolean; cursor?: string };
   // PAGINATED: a 400-raw shoot folder exceeds one page and used to be silently
   // truncated, which under-counted photos (and photo-editing cost).
   // RECURSIVE (opt-in): camera dumps land as nested folders (Sony/Canon card
@@ -278,7 +293,9 @@ export async function dropboxListFolder(
     res = await dbx<Page>("files/list_folder/continue", { cursor: res.cursor });
     all.push(...(res.entries ?? []));
   }
-  return all.map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "" }));
+  // `id` is Dropbox's permanent id ("id:…"), the one handle that survives a
+  // rename — CP-09's topic folders match on it.
+  return all.map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "", id: e.id ?? null }));
 }
 
 // Turn a Dropbox share URL into a direct/raw URL that OpenPhone can fetch.
@@ -320,11 +337,15 @@ export async function dropboxUploadPublic(path: string, bytes: Uint8Array): Prom
   return dropboxSharedLink(j.path_display ?? path);
 }
 
+/** Upload a file. Returns where it actually landed: with autorename on, a
+ *  collision puts "logo.png" at "logo (1).png", and a caller that records the
+ *  file (the brand registry, CP-06) must point at the renamed path, not the
+ *  one it asked for. Callers that ignore the result are unaffected. */
 export async function dropboxUpload(
   path: string,
   bytes: Buffer | Uint8Array,
   opts: { overwrite?: boolean } = {},
-): Promise<void> {
+): Promise<{ pathDisplay: string }> {
   const token = await dropboxAccessToken();
   const mode = opts.overwrite ? "overwrite" : "add";
   const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
@@ -342,6 +363,8 @@ export async function dropboxUpload(
     const t = await res.text();
     throw new DropboxError(`Dropbox upload failed: ${t.slice(0, 160)}`, res.status);
   }
+  const j = (await res.json().catch(() => ({}))) as { path_display?: string };
+  return { pathDisplay: j.path_display ?? path };
 }
 
 // Download a file's raw bytes (content API). Throws DropboxError (status 409 with

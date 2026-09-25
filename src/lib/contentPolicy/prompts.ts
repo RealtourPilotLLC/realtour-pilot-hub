@@ -274,7 +274,7 @@ export const SCRIPT_OUTPUT_SCHEMA: JsonSchema = {
   properties: {
     title: { type: "string" },
     category: { type: "string", description: "The linked approved pillar name, verbatim." },
-    hook: { type: "string", description: "Spoken. No greeting, no introduction. Specific and scroll-stopping." },
+    hook: { type: "string", description: "Spoken. ONE sentence, 12 spoken words at most. No greeting, no introduction. Specific and scroll-stopping." },
     points: {
       type: "array",
       minItems: 3,
@@ -282,11 +282,11 @@ export const SCRIPT_OUTPUT_SCHEMA: JsonSchema = {
       items: {
         type: "object",
         required: ["role", "text"],
-        properties: { role: { type: "string", enum: ["re-hook", "build-up", "payoff"] }, text: { type: "string", description: "Spoken. Short punchy lines." } },
+        properties: { role: { type: "string", enum: ["re-hook", "build-up", "payoff"] }, text: { type: "string", description: "Spoken. 14 spoken words at most — one detail, short punchy lines." } },
       },
       description: "Exactly three, in this order: re-hook, build-up, payoff. Never four.",
     },
-    close: { type: "string", description: "Spoken. A memorable takeaway or a natural invitation; not a transactional CTA." },
+    close: { type: "string", description: "Spoken. 10 spoken words at most. A memorable takeaway or a natural invitation; not a transactional CTA." },
     captionCta: { type: ["string", "null"], description: "Optional, unspoken. The direct contact ask, modelled on the strategy's Caption CTA Examples when they exist." },
     filmingNotes: { type: ["string", "null"], description: "Internal. Location, visual, prop, delivery note. Never spoken." },
     contentPillarCheck: {
@@ -301,8 +301,20 @@ export const SCRIPT_OUTPUT_SCHEMA: JsonSchema = {
 };
 
 export type ScriptPromptSource =
-  | { path: "written-answers"; input: ScriptGeneratorInput }
+  /** `excerpts` (CP-08): the call's speaker-tagged lines about this topic, beside the answers — so a topic chosen on a call is scripted from what the client SAID there, without anyone retyping it as an answer. Already confidential- and other-client-scrubbed by the caller. */
+  | { path: "written-answers"; input: ScriptGeneratorInput; excerpts?: SourceExcerpt[] }
   | { path: "transcript"; topic: Topic; excerpts: SourceExcerpt[]; selectedOnCall: boolean };
+
+/**
+ * THE PART BUDGETS (CP-08, Sep 24 2026). The 45–65-word total on its own did
+ * not keep drafts short: the model met it by compressing EVERYTHING it was
+ * given into long lines, and two drafts were estimated at about 39 s and 51 s
+ * from their word counts (an estimate, never a measurement). Budgets per part
+ * plus "evidence, not copy" address the cause. The duration check stays a
+ * visible WARNING (scriptFormat's timing finding) — Jordan reviews; nothing
+ * here hard-blocks on length.
+ */
+export const SCRIPT_PART_BUDGETS = { hookWords: 12, pointWords: 14, closeWords: 10 } as const;
 
 export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource): PromptBundle {
   const topic =
@@ -331,6 +343,8 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
     CANONICAL_SCRIPT_PRESENTATION,
     "",
     `HARD RULES: one clear idea; exactly three connected talking points in the order re-hook → build up → payoff; the payoff delivers on the hook; a specific scroll-stopping hook; a strong close; no greeting or introduction; spoken content targets ${t.targetSec[0]}–${t.targetSec[1]} seconds (about ${t.heuristicWords[0]}–${t.heuristicWords[1]} spoken words — a heuristic, not proof; write short punchy lines and tighten rather than rush). The category is the linked approved pillar. Match the client's approved voice; the prior scripts show voice and specificity, not length or structure.`,
+    `PART BUDGETS (spoken words): hook ≤${SCRIPT_PART_BUDGETS.hookWords} (one sentence); each talking point ≤${SCRIPT_PART_BUDGETS.pointWords}; close ≤${SCRIPT_PART_BUDGETS.closeWords}; the whole spoken script never above ${t.heuristicWords[1]}. When in doubt, cut — a shorter draft is easier to review than a long one is to trim.`,
+    "EVIDENCE, NOT COPY: the client's answers and any call excerpts are evidence, not copy. Choose ONE concrete detail per point and say it plainly; do not compress everything they said into the script.",
     captionExamples.length ? `CAPTION CTA: write one in the style of the strategy's Caption CTA Examples:\n${captionExamples.map((c) => `- ${c}`).join("\n")}` : "CAPTION CTA: the strategy lists no Caption CTA Examples; write one only if the client supplied a next step, otherwise null.",
     "",
     SPEAKER_ATTRIBUTION_RULE,
@@ -356,6 +370,10 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
     userParts.push(`STORY / VISUAL: ${inp.storyOrVisual ?? "none offered — do not force one"}`);
     userParts.push(`VIEWER NEXT STEP: ${inp.viewerNextStep ?? "none supplied — takeaway close, captionCta null"}`);
     if (inp.gaps.length) userParts.push("", "KNOWN GAPS FROM THE INTERVIEW (carry these through; do not fill them):", ...inp.gaps.map((g) => `- [${g.kind}${g.field ? ` · ${g.field}` : ""}] ${g.text}`));
+    if (source.excerpts?.length) {
+      userParts.push("", "CALL EXCERPTS (speaker-tagged; evidence, not copy — only a client-spoken line is the client's own experience):");
+      for (const e of source.excerpts) userParts.push(`[${e.speaker}${e.speakerName ? ` · ${e.speakerName}` : ""} · ${e.source}] ${e.text}`);
+    }
   } else {
     userParts.push("", `SELECTED ON THE CALL: ${source.selectedOnCall ? "yes" : "no — discussed only; selection is not implied"}`);
     userParts.push("TOPIC-SPECIFIC EXCERPTS (speaker-tagged):");
@@ -462,6 +480,7 @@ export const INTERVIEW_PLAN_OUTPUT_SCHEMA: JsonSchema = {
 
 export function buildInterviewPlanPrompt(ctx: ClientContext, opts: { topic: Topic; plan: readonly InterviewQuestion[] }): PromptBundle {
   assertClientScoped(ctx, opts.topic);
+  const established = [...(ctx.preferences?.explicit ?? []), ...(ctx.knownFacts ?? [])].filter((l) => l.trim() && !/\[CONFIDENTIAL/i.test(l)).slice(0, 30);
   const system = [
     "You phrase the questions a Realtour Pilot client answers about ONE video topic, so a writer can script it in their voice.",
     "",
@@ -477,6 +496,7 @@ export function buildInterviewPlanPrompt(ctx: ClientContext, opts: { topic: Topi
     "- suggest the answer, or offer an example, number, outcome or story for them to agree with. An unanswered question becomes a recorded gap; a leading question becomes a fabricated script.",
     "- ask for anything the house question does not ask for",
     "- ask a generic brand-questionnaire question",
+    "- ask the client for something the ALREADY ESTABLISHED list below answers. Build on it instead, and never paste a fact back verbatim.",
     "",
     NO_INVENTION_RULE,
     "",
@@ -489,6 +509,11 @@ export function buildInterviewPlanPrompt(ctx: ClientContext, opts: { topic: Topi
     opts.topic.audienceNeed ? `AUDIENCE NEED: ${opts.topic.audienceNeed}` : "",
     opts.topic.businessGoal ? `BUSINESS GOAL: ${opts.topic.businessGoal}` : "",
     opts.topic.intendedMessage ? `INTENDED TAKEAWAY: ${opts.topic.intendedMessage}` : "",
+    // CP-08: "never ask for facts already in approved context". The caller's
+    // facts are ACCEPTED, AI-allowed and non-confidential (factsForPrompt), and
+    // a line still carrying a [CONFIDENTIAL] mark is dropped here as well — a
+    // question is client-facing.
+    established.length ? `\nALREADY ESTABLISHED (approved facts on file — build on these, never ask the client to restate them):\n${established.map((l) => `- ${l}`).join("\n")}` : "",
     "",
     "THE HOUSE QUESTIONS — rewrite each one for this topic:",
     ...opts.plan.map((q) => `- id "${q.id}" · rule: ${q.rule} · captures: ${q.captures} · house wording: ${q.template}`),

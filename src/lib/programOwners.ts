@@ -7,7 +7,8 @@ import { OWNER_DUTIES, ownersFor, setOwnerOverride, assertDutyOwner, type OwnerD
 //
 // The ProgramOwnerAssignment rows and the single-enrollment reads live in
 // contentProgram.ts (W1-C minted the DEFAULT rows: Jordan = STRATEGY / SCRIPTS
-// / ESCALATION, Kyle = SCHEDULING / DELIVERY / REMINDERS). This module is the
+// / ESCALATION, Kyle = SCHEDULING / DELIVERY / REMINDERS, and since CP-13
+// Kyle = MESSAGES, the client's program conversation). This module is the
 // one import every consumer uses — the portfolio overview's owner column, the
 // client file's Settings tab, and the reminder evaluator's escalation owner —
 // so nobody re-derives "who is Kyle" from a role. It adds the BATCH read the
@@ -25,6 +26,7 @@ export const DUTY_WORDS: Record<OwnerDuty, string> = {
   DELIVERY: "delivery",
   ESCALATION: "escalation",
   REMINDERS: "reminders",
+  MESSAGES: "client messages", // CP-13: the program conversation's owner (Kyle by default)
 };
 
 export type OwnerMap = Record<OwnerDuty, DutyOwner>;

@@ -1,0 +1,146 @@
+{
+  "note": "Drafts for /content/resources. Unpublished; publishing is Jordan's.",
+  "guides": [
+    {
+      "file": "01-how-your-month-works.md",
+      "slug": "how-your-month-works",
+      "title": "How your month works",
+      "groupKey": "YOUR_MONTH",
+      "summary": "The six steps every month follows, from planning to posting.",
+      "body": "Every month follows the same six steps, and your portal shows where you are in each one.\n\n1. **Plan the month.** On your strategy call we look at what is working and choose the month's topics together. If you plan in writing instead, you pick topics under **Video Topics** and answer a few short questions about each one.\n2. **Scripts.** We write a short script for every topic. You read them under **Video Topics** and approve them or ask for changes.\n3. **Filming.** You book your session under **Schedule**. Starter and Accelerator months have one session. Pro months have two separate four-hour sessions. Sessions are on weekdays.\n4. **Editing.** Your videos are edited within 7 to 10 business days of the end of each session.\n5. **Review.** Each finished video appears under **My Videos**. Approve it, or pause it and leave a note wherever you want a change.\n6. **Download and post.** Once you approve a video, its download and caption are on the same page.\n\n**How many videos.** Your package sets the number each month: Starter 2, Accelerator 4, Pro 8.\n\n**Calendar month, not billing date.** Production runs by calendar month. Your billing stays on the date you signed up.\n\n**A topic you did not get to film.** If a topic was scripted but not filmed, it moves into the next month with its script. If your plans changed, you can swap it for a different topic.\n\n**Questions at any point?** Open **Messages** from the menu and ask. For anything inside 24 hours, call or text Kyle at (215) 645-4889.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [],
+      "sortOrder": 1,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "02-choosing-topics-and-answering-questions.md",
+      "slug": "choosing-topics-and-answering-questions",
+      "title": "Choosing topics and answering questions",
+      "groupKey": "YOUR_MONTH",
+      "summary": "How the topic bank works, adding your own ideas, and what makes a good answer.",
+      "body": "Your topic bank lives under **Video Topics**. It is organised by the content pillars in your strategy, and we keep 10 to 15 ready topics in each pillar.\n\n**Pick your topics.** Choose the ones you want for the month. The page shows how many your package includes and how many you have picked.\n\n**Add your own ideas.** Anything you add is yours to use. It does not need our approval.\n\n**Not for you?** Tap **Not interested**. You can tell us why if you like, and that topic will not come back. Changed your mind? Put it back from the set aside list.\n\n**Answer the questions.** When you plan in writing, each topic has a few short questions. Your answers are what the script is written from, so specific beats long:\n\n- a real example from your own work\n- a number, a price or a timeline\n- a short story about a client you helped\n\n**If something is missing.** When an answer is too thin to write from, we ask one or two follow-up questions before we write the script. We only ask for things we do not already know about you.\n\n**Already filmed.** Topics you have already filmed do not come back into your bank.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "answer_interview"
+      ],
+      "sortOrder": 2,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "03-approving-scripts.md",
+      "slug": "approving-your-scripts",
+      "title": "Approving your scripts",
+      "groupKey": "YOUR_MONTH",
+      "summary": "What every script looks like, and how to approve it or ask for changes.",
+      "body": "Every script has the same shape, so it is easy to read out loud:\n\n1. a title\n2. a strong opening hook\n3. exactly three talking points\n4. a close with your call to action\n\n**Where to find them.** Scripts appear under **Video Topics** as soon as they are ready for you.\n\n**Read it the way you will say it.** If a line does not sound like you, tell us. Nothing is too small to change.\n\n**Approve** when it is right. You approve the exact version on your screen. If we update a script while you have it open, the portal asks you to read the new version before you approve.\n\n**Ask for changes** and tell us what to fix. We revise it and send it back to you.\n\n**Short on purpose.** Scripts are written to be short. If one looks long for the video it is meant for, we will point that out, and the decision is still yours.\n\nApprove your scripts before your filming session so everything is ready when we arrive.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [],
+      "sortOrder": 3,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "04-preparing-for-your-session.md",
+      "slug": "preparing-for-your-filming-session",
+      "title": "Preparing for your filming session",
+      "groupKey": "PREPARING_SESSION",
+      "summary": "Booking, the address, what to wear and how to set up the space.",
+      "body": "**Book it early.** Sessions are on weekdays. Pick a time at least two full weekdays away so we have time to prepare your scripts and plan the shoot. Starter sessions are two hours. Accelerator sessions are four hours. Pro months have two separate four-hour sessions.\n\n**Anything inside 24 hours needs a person.** To change or cancel a session that close, call or text Kyle at (215) 645-4889.\n\n**Where we are filming.** You can book with a general area. We will ask for the exact address before the session, so please send it as soon as you know it.\n\n**Scripts approved.** Approve your scripts under **Video Topics** before the day. That is what we film from.\n\n**What to wear.**\n\n- Solid colours film best. Avoid thin stripes, small checks and busy patterns.\n- Skip logos you do not own.\n- Bring a second outfit if you would like some variety across the videos.\n\n**The space.**\n\n- Tidy the background you want in the shot.\n- Open the blinds for natural light.\n- Turn off anything that hums or ticks: fans, dishwashers, air conditioning if you can.\n- Silence your phone.\n\n**On the day.** Have water nearby and give yourself a few minutes to settle in. We guide you through every take.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "prepare_session"
+      ],
+      "sortOrder": 1,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "05-reviewing-and-requesting-changes.md",
+      "slug": "reviewing-a-video-and-asking-for-changes",
+      "title": "Reviewing a video and asking for changes",
+      "groupKey": "REVIEWING_VIDEOS",
+      "summary": "How to leave notes on the exact moment, send changes, and approve.",
+      "body": "**Find it.** Open **My Videos**. Videos waiting on you are at the top.\n\n**Watch it through once.** Then play it again and pause wherever you want something changed.\n\n**Leave a note at that moment.** Each note is pinned to the exact second, so your editor sees exactly what you saw.\n\n**Send your changes** once all your notes are in. They go to your editor together as one request.\n\n**Approve** when it is right. Approving unlocks the download and the caption.\n\n**Good to know.**\n\n- Your package includes two rounds of changes on each video.\n- We aim to turn changes around within one to two business days.\n- Please review each video within four business days of it arriving.\n\n**Changes go on the video.** Use **Messages** for general questions. Notes about a video belong on the video itself, so nothing gets lost between the two.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "review_cut",
+        "approve_cut"
+      ],
+      "sortOrder": 1,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "06-downloading-and-saving.md",
+      "slug": "downloading-and-saving-your-videos",
+      "title": "Downloading and saving your videos",
+      "groupKey": "POSTING_CONTENT",
+      "summary": "How to download on a computer, an iPhone and an Android phone, and where the file goes.",
+      "body": "Downloads open once you approve a video. Tap **Download** on the video's page.\n\n**On a computer.** The file saves to your Downloads folder. This is the most reliable way to get the full quality file.\n\n**On an iPhone (Safari).**\n\n1. Tap **Download**. Safari asks if you want to download the file; tap **Download** again.\n2. The file goes to the **Files** app, in **Downloads**. It does not go straight into Photos.\n3. To put it in Photos, open the video in Files, tap the share button, and choose **Save Video**.\n\n**On Android (Chrome).**\n\n1. Tap **Download**.\n2. The file saves to your **Downloads** folder. Open it from the Files app. Many phones also show it in Photos or Gallery, under Downloads.\n\n**If a download stops.** Videos are large files. Try again on Wi-Fi, or open the same page on a computer. Still stuck? Send us a message and we will get you the file another way.\n\n**Keep the quality.** Always post the file you downloaded. A screen recording, or a copy that went through a text message or email, is lower quality.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "download_final"
+      ],
+      "sortOrder": 1,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "07-posting-at-high-quality.md",
+      "slug": "posting-at-high-quality",
+      "title": "Posting at high quality",
+      "groupKey": "POSTING_CONTENT",
+      "summary": "A few settings and habits that keep your videos sharp once they are posted.",
+      "body": "**Post the downloaded file.** Upload the file you downloaded from the portal. Copies sent by text message or email are compressed and lose sharpness.\n\n**Use Wi-Fi.** Apps often lower quality on mobile data to save your data plan.\n\n**Turn on high quality uploads in Instagram.** In the Instagram app, open your settings, find **Media quality**, and turn on **Upload at highest quality**. The exact menu names change from time to time; if you cannot find it, message us and we will walk you through it.\n\n**Do not re-export.** Each time a video is trimmed or saved again in another app, it loses a little quality. If you need a change, ask us.\n\n**Vertical is ready to go.** Most of your videos are vertical (9 by 16), ready for Instagram Reels, TikTok, YouTube Shorts and Facebook Reels without cropping.\n\n**Give it a moment.** After posting, a video can look soft for a few minutes while the app finishes processing it.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "post_video"
+      ],
+      "sortOrder": 2,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "08-captions.md",
+      "slug": "writing-your-captions",
+      "title": "Writing your captions",
+      "groupKey": "POSTING_CONTENT",
+      "summary": "Where your caption lives, how to edit it, and what makes one work.",
+      "body": "**Where it lives.** Each approved video has a caption box on its page. When a suggested caption is ready, it appears there, written from the video's script. You can also write your own.\n\n**Edit it in place.** Your changes are saved with the video, so you can come back to it later.\n\n**What makes a caption work.**\n\n- **The first line matters most.** Most people only see it before they tap more. Make it the reason to keep reading.\n- **Say one thing.** The caption backs up the video; it does not need to repeat it.\n- **End with your call to action.** Tell people exactly what to do next: send a message, visit a link, book a call.\n- **A few specific hashtags** beat a long list of general ones.\n\n**Posting it.** Copy the caption from the video's page and paste it into the app when you post.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "edit_caption"
+      ],
+      "sortOrder": 3,
+      "owner": "Kyle",
+      "published": false
+    },
+    {
+      "file": "09-thumbnail-covers.md",
+      "slug": "choosing-a-thumbnail-cover",
+      "title": "Choosing a thumbnail cover",
+      "groupKey": "POSTING_CONTENT",
+      "summary": "How to pick the still frame people see on your profile.",
+      "body": "A cover is the still image people see on your profile before they tap play. A good one gets your video opened.\n\n**Pick a strong frame.**\n\n- Your face clear and your eyes open.\n- A moment that matches the topic.\n- Nothing blurry: pause and check before you choose it.\n\n**Keep the important part in the middle.** Profile grids crop covers to a taller shape than the video, so keep your face and any words near the centre.\n\n**Words on the cover.** A few words, large and high contrast, are easier to read on a small screen than a full sentence.\n\n**Where to set it.**\n\n- **Instagram:** when you post, tap **Edit cover** and slide to choose a frame, or add an image from your camera roll.\n- **TikTok:** tap **Select cover** before you post and choose a frame.\n- **YouTube Shorts:** choose a frame from the video when you upload.\n\nThe menu names change from time to time. If you cannot find the option, send us a message.",
+      "platform": "general",
+      "deviceContext": "any",
+      "linkedActions": [
+        "choose_cover"
+      ],
+      "sortOrder": 4,
+      "owner": "Kyle",
+      "published": false
+    }
+  ]
+}

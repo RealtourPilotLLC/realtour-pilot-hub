@@ -21,28 +21,35 @@ import { getSecret } from "@/lib/integrations/connections";
 //                 → create/activate the ContentEnrollment with the package +
 //                   billing terms parsed from the product name
 //                 → current-month workspace
+//                 → DISCOVERY, in either order (§4.3): re-match a booking made
+//                   before the payment, link it, or raise the task to make one
+//                   (CP-14: this now runs BEFORE access, so the welcome is
+//                   written from what is on file)
 //                 → ACCOUNT ACCESS: a portal seat for the buyer and ONE
 //                   welcome (Sep 21 2026 — see grantProgramAccess). Both are
 //                   idempotent on (enrollment, email) and both are HELD while
 //                   `portal_invites` is off, which it is.
-//                 → DISCOVERY, in either order (§4.3): link a booking that
-//                   already exists, or raise the task to make one
 //                 → owner/admin bell (package only — no dollar amounts, no
 //                   billing term; how a client pays is owner-only)
 //
-// Polling, not a webhook, on purpose: registering a webhook endpoint WRITES to
-// the Stripe account, which is Jordan's to do, and the hourly cron + Sync-now
-// button already give the freshness this flow needs. Phase 0 (Sep 21 2026)
-// confirmed GET /v1/webhook_endpoints returns count=0 — there is no endpoint
-// on the live account and no receiver in this repo. Reading Stripe's ledger IS
-// the "verified by Stripe" truth the spec demands; the browser redirect is
-// never consulted.
+// POLLING IS THE ACTIVATION PATH (Jordan, Sep 24 2026 — CP-14). Registering a
+// webhook endpoint WRITES to the Stripe account, which is Jordan's to do, and
+// the hourly cron (:00) + the /content Sync-now button give the freshness
+// this flow needs: a paid signup is activated within the hour, occasionally
+// two if an hourly run skips the step (CronRun.summary says so). Phase 0 (Sep
+// 21 2026) confirmed GET /v1/webhook_endpoints returns count=0. Reading
+// Stripe's ledger IS the "verified by Stripe" truth the spec demands; the
+// browser redirect is never consulted.
 //
-// WHEN THE WEBHOOK ARRIVES, nothing here is rewritten. A receiver's job is to
-// build the same `base` record and call the same claim + activateSignup: the
-// claim is the unique checkoutId, so a webhook and the poll racing on one
-// checkout produce one activation, and grantProgramAccess collapses a repeated
-// `checkout.session.completed` into the same seat and the same welcome.
+// THE RECEIVER EXISTS NOW AND IS NOT REGISTERED (src/app/api/webhooks/stripe,
+// src/lib/stripeWebhook.ts). It verifies Stripe's signature, then calls
+// processCheckoutSessionById — the SAME claim and activateSignup the poll
+// uses, reading Stripe's own copy of the session. The claim is the unique
+// checkoutId, taken with INSERT … ON CONFLICT DO NOTHING, so a webhook and the
+// poll racing on one checkout produce one activation, and grantProgramAccess
+// collapses a repeated `checkout.session.completed` into the same seat and the
+// same welcome (drilled: scripts/_drill/cp14-stripe-activation.ts). If Jordan
+// never registers it, nothing is lost.
 //
 // Spec rule 15 honoured: web-activated enrollments get statusManual=true and
 // packageSource="website", so the Aryeo social-flag sweep can never pause,
@@ -75,7 +82,7 @@ async function stripeGet<T>(path: string, query: Record<string, string | number 
   return res.json() as Promise<T>;
 }
 
-type SessionRow = {
+export type StripeCheckoutSession = {
   id: string;
   status: string | null;
   payment_status: string | null;
@@ -135,12 +142,53 @@ const idOf = (v: string | { id: string } | null | undefined): string | null =>
 const CLAIM_STALE_MS = 30 * 60_000;
 
 /**
+ * THE ONLY PAYMENT STATE THAT ACTIVATES A PROGRAM (CP-14, named Sep 24 2026).
+ *
+ * A checkout activates only when Stripe says `status: complete` AND
+ * `payment_status: paid`. Everything else is left alone, deliberately:
+ *   · `unpaid` — an ASYNCHRONOUS payment (a bank debit) still settling. It
+ *     activates when Stripe flips it to paid: the poll sees the flip on its
+ *     next pass, the webhook sees `checkout.session.async_payment_succeeded`.
+ *   · `no_payment_required` — a $0 checkout: a 100% coupon, or a trial Stripe
+ *     reports as nothing owed. Jordan, Sep 24: a $0 checkout does NOT start a
+ *     program on its own. That was already the behaviour; this constant is
+ *     where it is now written down, so a later edit has to change it on
+ *     purpose rather than by loosening a comparison.
+ */
+export const ACTIVATING_PAYMENT_STATUS = "paid" as const;
+export const isActivatingSession = (s: { status: string | null; payment_status: string | null }): boolean =>
+  s.status === "complete" && s.payment_status === ACTIVATING_PAYMENT_STATUS;
+
+/** How a signup was activated — stamped on ProgramSignup.activatedVia. */
+export type ActivationVia = "poll" | "webhook" | "manual";
+export type CheckoutOutcome =
+  | "not_paid" // not complete + paid (unpaid async, $0, open, expired) — nothing written
+  | "not_program" // a photo payment, a bio video: not ours
+  | "known" // already activated, or another runner holds the claim
+  | "activated"
+  | "parked"; // activation failed — NEEDS_REVIEW, retried by the next pass
+
+type ProductLookup = (id: string) => Promise<string>;
+/** Product names, cached for one pass (a sweep may see the same product fifty times). */
+function productLookup(): ProductLookup {
+  const cache = new Map<string, string>();
+  return async (id: string) => {
+    if (cache.has(id)) return cache.get(id)!;
+    const p = await stripeGet<{ id: string; name: string }>(`/products/${id}`, {});
+    cache.set(id, p.name);
+    return p.name;
+  };
+}
+
+/**
  * Activate paid website signups. Idempotent (checkoutId unique = the claim);
- * safe to run hourly and from the Sync-now button, concurrently.
+ * safe to run hourly and from the Sync-now button, concurrently — and, since
+ * CP-14, concurrently with the Stripe webhook receiver, which calls the same
+ * processCheckoutSession below.
  */
 export async function sweepStripeSignups(): Promise<{ scanned: number; activated: number; skippedKnown: number; parked: number }> {
   const since = Math.floor((Date.now() - 30 * 86_400_000) / 1000);
-  const sessions: SessionRow[] = [];
+  const sessions: StripeCheckoutSession[] = [];
   let startingAfter: string | null = null;
   for (let page = 0; page < 5; page++) {
     const q: Record<string, string | number | string[]> = {
@@ -149,117 +197,154 @@ export async function sweepStripeSignups(): Promise<{ scanned: number; activated
       "expand[]": ["data.line_items"],
     };
     if (startingAfter) q.starting_after = startingAfter;
-    const res = await stripeGet<{ data: SessionRow[]; has_more: boolean }>("/checkout/sessions", q);
+    const res = await stripeGet<{ data: StripeCheckoutSession[]; has_more: boolean }>("/checkout/sessions", q);
     sessions.push(...res.data);
     if (!res.has_more || res.data.length === 0) break;
     startingAfter = res.data[res.data.length - 1].id;
   }
 
-  const productName = new Map<string, string>();
-  const lookupProduct = async (id: string): Promise<string> => {
-    if (productName.has(id)) return productName.get(id)!;
-    const p = await stripeGet<{ id: string; name: string }>(`/products/${id}`, {});
-    productName.set(id, p.name);
-    return p.name;
-  };
-
+  const lookup = productLookup();
   let scanned = 0, activated = 0, skippedKnown = 0, parked = 0;
   for (const s of sessions) {
-    if (s.status !== "complete" || s.payment_status !== "paid") continue;
+    if (!isActivatingSession(s)) continue;
     scanned++;
-
-    // What was bought — first line item wins (the website sells one product
-    // per checkout).
-    let item = s.line_items?.data?.[0] ?? null;
-    if (!item) {
-      const full = await stripeGet<SessionRow>(`/checkout/sessions/${s.id}`, { "expand[]": ["line_items"] }).catch(() => null);
-      item = full?.line_items?.data?.[0] ?? null;
-    }
-    const productId = idOf(item?.price?.product ?? null);
-    if (!productId) continue;
-    const name =
-      (typeof item?.price?.product === "object" && item?.price?.product?.name) ||
-      item?.description ||
-      (await lookupProduct(productId).catch(() => ""));
-    const recurring = s.mode === "subscription";
-    const amount = Math.round(((s.amount_total ?? 0) / 100) * 100) / 100;
-    const terms = name ? parseProgramProduct(name, { recurring, amount }) : null;
-    if (!terms) continue; // not a program product — a photo payment, a bio video, etc.
-
-    const base = {
-      subscriptionId: idOf(s.subscription),
-      stripeCustomerId: idOf(s.customer),
-      email: s.customer_details?.email?.trim() || null,
-      name: s.customer_details?.name?.trim() || null,
-      phone: s.customer_details?.phone?.trim() || null,
-      productId,
-      productName: name || productId,
-      priceId: item?.price?.id ?? null,
-      amount,
-      recurring,
-      paidAt: new Date(s.created * 1000),
-    };
-
-    // --- THE CLAIM. Creating the row IS the lock: a concurrent runner's
-    // create hits the unique checkoutId and bows out. An earlier failed run
-    // left NEEDS_REVIEW (no enrollment) or a stale PROCESSING row — retry
-    // those; a finished row (ACTIVATED, or reviewed-with-enrollment) is done.
-    let claimId: string;
-    try {
-      const claim = await prisma.programSignup.create({
-        data: { checkoutId: s.id, ...base, status: "PROCESSING" },
-        select: { id: true },
-      });
-      claimId = claim.id;
-    } catch {
-      const row = await prisma.programSignup.findUnique({
-        where: { checkoutId: s.id },
-        select: { id: true, status: true, enrollmentId: true, createdAt: true },
-      });
-      if (!row) continue; // create failed for a non-duplicate reason — next sweep retries
-      const retryable =
-        row.enrollmentId == null &&
-        (row.status === "NEEDS_REVIEW" ||
-          (row.status === "PROCESSING" && Date.now() - row.createdAt.getTime() > CLAIM_STALE_MS));
-      if (!retryable) { skippedKnown++; continue; }
-      claimId = row.id;
-      await prisma.programSignup.update({ where: { id: row.id }, data: { status: "PROCESSING", ...base } });
-    }
-
-    try {
-      const done = await activateSignup({ checkoutId: s.id, ...base, terms });
-      await prisma.programSignup.update({
-        where: { id: claimId },
-        data: {
-          clientId: done.clientId,
-          enrollmentId: done.enrollmentId,
-          status: done.note ? "NEEDS_REVIEW" : "ACTIVATED",
-          note: done.note,
-        },
-      });
-      activated++;
-    } catch (e) {
-      parked++;
-      await prisma.programSignup
-        .update({
-          where: { id: claimId },
-          data: { status: "NEEDS_REVIEW", note: `Activation failed: ${(e as Error).message.slice(0, 250)} — will retry.` },
-        })
-        .catch(() => {});
-      try {
-        const { notifyInApp } = await import("@/lib/notify");
-        await notifyInApp({
-          kind: "program_signup",
-          title: `Website signup needs a look — ${base.name ?? base.email ?? "unknown buyer"}`,
-          body: "Payment confirmed on Stripe but the hub couldn't activate it automatically. It'll keep retrying.",
-          href: "/content",
-          targets: [{ roles: ["OWNER"] }],
-          dedupeKey: `signup-fail-${s.id}`,
-        });
-      } catch { /* bell is best-effort */ }
-    }
+    const outcome = await processCheckoutSession(s, "poll", lookup);
+    if (outcome === "activated") activated++;
+    else if (outcome === "known") skippedKnown++;
+    else if (outcome === "parked") parked++;
   }
   return { scanned, activated, skippedKnown, parked };
+}
+
+/**
+ * Fetch ONE checkout session from Stripe and process it. The webhook receiver
+ * calls this with the id from the event and nothing else: the event body is
+ * never trusted for what was bought (it carries no line items anyway), who
+ * paid, or whether it is paid — Stripe's own record is read, exactly as the
+ * poll reads it.
+ */
+export async function processCheckoutSessionById(checkoutId: string, via: ActivationVia, opts: { paidAt?: Date } = {}): Promise<CheckoutOutcome> {
+  if (!/^cs_[A-Za-z0-9_]{6,200}$/.test(checkoutId)) throw new Error(`"${checkoutId.slice(0, 40)}" is not a Stripe checkout session id.`);
+  const s = await stripeGet<StripeCheckoutSession>(`/checkout/sessions/${checkoutId}`, { "expand[]": ["line_items"] });
+  return processCheckoutSession(s, via, productLookup(), opts);
+}
+
+/**
+ * One checkout, start to finish: paid? ours? claim it, activate it, stamp how.
+ * The loop body of the old sweep, lifted out so the poll, the webhook and a
+ * staff replay share one path — the audit's requirement that a webhook and the
+ * poll racing on one checkout create ONE enrollment, ONE seat, ONE welcome.
+ */
+export async function processCheckoutSession(
+  s: StripeCheckoutSession,
+  via: ActivationVia,
+  lookupProduct: ProductLookup = productLookup(),
+  opts: { paidAt?: Date } = {},
+): Promise<CheckoutOutcome> {
+  if (!isActivatingSession(s)) return "not_paid";
+
+  // What was bought — first line item wins (the website sells one product
+  // per checkout).
+  let item = s.line_items?.data?.[0] ?? null;
+  if (!item) {
+    const full = await stripeGet<StripeCheckoutSession>(`/checkout/sessions/${s.id}`, { "expand[]": ["line_items"] }).catch(() => null);
+    item = full?.line_items?.data?.[0] ?? null;
+  }
+  const productId = idOf(item?.price?.product ?? null);
+  if (!productId) return "not_program";
+  const name =
+    (typeof item?.price?.product === "object" && item?.price?.product?.name) ||
+    item?.description ||
+    (await lookupProduct(productId).catch(() => ""));
+  const recurring = s.mode === "subscription";
+  const amount = Math.round(((s.amount_total ?? 0) / 100) * 100) / 100;
+  const terms = name ? parseProgramProduct(name, { recurring, amount }) : null;
+  if (!terms) return "not_program"; // not a program product — a photo payment, a bio video, etc.
+
+  const base = {
+    subscriptionId: idOf(s.subscription),
+    stripeCustomerId: idOf(s.customer),
+    email: s.customer_details?.email?.trim() || null,
+    name: s.customer_details?.name?.trim() || null,
+    phone: s.customer_details?.phone?.trim() || null,
+    productId,
+    productName: name || productId,
+    priceId: item?.price?.id ?? null,
+    amount,
+    recurring,
+    // An asynchronous payment settles days after the checkout opened; the
+    // webhook passes the settlement moment. The poll cannot know it and keeps
+    // the checkout's own timestamp, as it always has.
+    paidAt: opts.paidAt ?? new Date(s.created * 1000),
+  };
+
+  // --- THE CLAIM. createMany + skipDuplicates is INSERT … ON CONFLICT DO
+  // NOTHING: exactly one runner inserts (count 1) and every other runner gets
+  // count 0 — no unique-violation exception to catch. The old
+  // create-then-catch did the same job, but read any failure at all as "the
+  // other runner won", so a database blip on the insert was indistinguishable
+  // from a duplicate. An earlier failed run left NEEDS_REVIEW (no enrollment)
+  // or a stale PROCESSING row — retry those; a finished row (ACTIVATED, or
+  // reviewed-with-enrollment) is done.
+  let claimId: string;
+  const inserted = await prisma.programSignup.createMany({ data: [{ checkoutId: s.id, ...base, status: "PROCESSING" }], skipDuplicates: true });
+  const row = await prisma.programSignup.findUnique({
+    where: { checkoutId: s.id },
+    select: { id: true, status: true, enrollmentId: true, createdAt: true },
+  });
+  if (!row) return "parked"; // cannot happen after an insert; the next pass retries
+  if (inserted.count === 1) {
+    claimId = row.id;
+  } else {
+    const stale = row.status === "PROCESSING" && Date.now() - row.createdAt.getTime() > CLAIM_STALE_MS;
+    const retryable = row.enrollmentId == null && (row.status === "NEEDS_REVIEW" || stale);
+    if (!retryable) return "known";
+    // Compare-and-set on the state we read: of two runners retrying one
+    // NEEDS_REVIEW row, only one moves it to PROCESSING. (A stale PROCESSING
+    // row has no such witness — two runners could both retry it, and both
+    // would land on the same enrollment, seat and welcome, which are
+    // idempotent in their own right.)
+    const took = await prisma.programSignup.updateMany({
+      where: { id: row.id, status: row.status, enrollmentId: null },
+      data: { status: "PROCESSING", ...base },
+    });
+    if (took.count === 0) return "known";
+    claimId = row.id;
+  }
+
+  try {
+    const done = await activateSignup({ checkoutId: s.id, ...base, terms });
+    await prisma.programSignup.update({
+      where: { id: claimId },
+      data: {
+        clientId: done.clientId,
+        enrollmentId: done.enrollmentId,
+        status: done.note ? "NEEDS_REVIEW" : "ACTIVATED",
+        note: done.note,
+        activatedVia: via,
+      },
+    });
+    return "activated";
+  } catch (e) {
+    await prisma.programSignup
+      .update({
+        where: { id: claimId },
+        data: { status: "NEEDS_REVIEW", note: `Activation failed: ${(e as Error).message.slice(0, 250)} — will retry.` },
+      })
+      .catch(() => {});
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      await notifyInApp({
+        kind: "program_signup",
+        title: `Website signup needs a look — ${base.name ?? base.email ?? "unknown buyer"}`,
+        body: "Payment confirmed on Stripe but the hub couldn't activate it automatically. It'll keep retrying.",
+        href: "/content",
+        targets: [{ roles: ["OWNER"] }],
+        dedupeKey: `signup-fail-${s.id}`,
+      });
+    } catch { /* bell is best-effort */ }
+    return "parked";
+  }
 }
 
 /**
@@ -453,6 +538,35 @@ async function activateSignup(sig: {
   const { ensureCurrentMonths } = await import("@/lib/contentProgram");
   await ensureCurrentMonths().catch(() => {});
 
+  // ---- DISCOVERY FIRST, THEN ACCESS (CP-14, Sep 24 2026). The two blocks
+  // below used to run the other way round, and the audit's own acceptance case
+  // failed on it: a client who booked discovery before the payment was polled
+  // had their welcome composed while the booking was still unmatched (no
+  // ACTIVE enrollment existed for the matcher to find), so it told them to
+  // book the call they had booked, and Kyle got a task to chase it. Now the
+  // booking is re-matched against the new enrollment, the onboarding record
+  // and Kyle's task read it, and only THEN is the welcome composed — from
+  // what is actually on file. (While `portal_invites` is off the welcome is
+  // held and composed at release, which reads the same facts.)
+  try {
+    const { rematchDiscoveryForClient } = await import("@/lib/contentCallRecords");
+    await rematchDiscoveryForClient(client.id);
+  } catch { /* the sync's next pass matches it; nothing here depends on it succeeding */ }
+
+  // ---- DISCOVERY, IN EITHER ORDER (§4.3). Payment may land before the call
+  // is booked or after it; both arrive here, and both are idempotent. This
+  // links a booking that already exists, clears the "book the discovery call"
+  // task when it does, raises it when it does not, and routes a payer/invitee
+  // address mismatch to Kyle rather than merging it.
+  const discovery = await (async () => {
+    try {
+      const { onProgramActivated } = await import("@/lib/programOnboarding");
+      return await onProgramActivated(enrollmentId, { payerEmail: sig.email, payerName: sig.name, checkoutId: sig.checkoutId });
+    } catch (e) {
+      return { outcome: "error" as const, detail: e instanceof Error ? e.message : String(e) };
+    }
+  })();
+
   // ---- ACCOUNT ACCESS (F02 / §4.1, Sep 21 2026). Until today the chain
   // stopped at the enrollment, and Phase 0 measured what that meant on live
   // data: three verified buyers, zero seats, no welcome ever composed. The
@@ -476,19 +590,6 @@ async function activateSignup(sig: {
     note = `${note ? note + " " : ""}The checkout carried no email address, so there is nobody to open an account for.`;
   }
 
-  // ---- DISCOVERY, IN EITHER ORDER (§4.3). Payment may land before the call
-  // is booked or after it; both arrive here, and both are idempotent. This
-  // links a booking that already exists, clears the "book the discovery call"
-  // task when it does, raises it when it does not, and routes a payer/invitee
-  // address mismatch to Kyle rather than merging it.
-  const discovery = await (async () => {
-    try {
-      const { onProgramActivated } = await import("@/lib/programOnboarding");
-      return await onProgramActivated(enrollmentId, { payerEmail: sig.email, payerName: sig.name, checkoutId: sig.checkoutId });
-    } catch (e) {
-      return { outcome: "error" as const, detail: e instanceof Error ? e.message : String(e) };
-    }
-  })();
   console.info(`[signup] ${sig.checkoutId}: ${access}; discovery ${discovery.outcome}${"detail" in discovery && discovery.detail ? ` (${discovery.detail})` : ""}`);
   if (discovery.outcome === "conflict" && "detail" in discovery && discovery.detail) note = `${note ? note + " " : ""}${discovery.detail}`;
 
@@ -548,27 +649,55 @@ export async function sweepSubscriptionHealth(): Promise<{ checked: number; aler
     where: { subscriptionId: { not: null }, enrollmentId: { not: null } },
     orderBy: { paidAt: "desc" },
     take: 25,
-    select: { id: true, subscriptionId: true, name: true, email: true, enrollmentId: true },
+    select: { subscriptionId: true },
   });
   let checked = 0, alerts = 0;
   for (const r of rows) {
-    const sub = await stripeGet<{ id: string; status: string }>(`/subscriptions/${r.subscriptionId}`, {}).catch(() => null);
-    if (!sub) continue;
+    const c = await checkSubscription(r.subscriptionId!).catch(() => null);
+    if (!c) continue;
     checked++;
-    if (["canceled", "unpaid", "past_due", "incomplete_expired"].includes(sub.status)) {
-      try {
-        const { notifyInApp } = await import("@/lib/notify");
-        await notifyInApp({
-          kind: "program_signup",
-          title: `Content subscription ${sub.status.replace("_", " ")} — ${r.name ?? r.email ?? "client"}`,
-          body: "Stripe reports the monthly plan lapsed. The enrollment stays active until you pause it.",
-          href: `/content/${r.enrollmentId}`,
-          targets: [{ roles: ["OWNER"] }],
-          dedupeKey: `sub-${r.subscriptionId}-${sub.status}`,
-        });
-        alerts++;
-      } catch { /* bell is best-effort */ }
-    }
+    if (c.alerted) alerts++;
   }
   return { checked, alerts };
+}
+
+const LAPSED = ["canceled", "unpaid", "past_due", "incomplete_expired"];
+
+/**
+ * One subscription, read from Stripe (never from an event body): ring the
+ * owner once per lapsed state, and record the billing anchor. Shared by the
+ * hourly health sweep and the webhook's `customer.subscription.*` events
+ * (CP-14). null = not a program subscription we activated.
+ *
+ * The anchor is recorded, never acted on: billing stays on its Stripe
+ * anniversary, production runs by ET calendar month (ensureCurrentMonths),
+ * and nothing in the hub writes to Stripe.
+ */
+export async function checkSubscription(subscriptionId: string): Promise<{ status: string; alerted: boolean } | null> {
+  const r = await prisma.programSignup.findFirst({
+    where: { subscriptionId, enrollmentId: { not: null } },
+    orderBy: { paidAt: "desc" },
+    select: { name: true, email: true, enrollmentId: true },
+  });
+  if (!r) return null;
+  const sub = await stripeGet<{ id: string; status: string; billing_cycle_anchor?: number | null }>(`/subscriptions/${subscriptionId}`, {});
+  if (typeof sub.billing_cycle_anchor === "number") {
+    await prisma.programSignup.updateMany({ where: { subscriptionId }, data: { billingAnchorAt: new Date(sub.billing_cycle_anchor * 1000) } }).catch(() => {});
+  }
+  let alerted = false;
+  if (LAPSED.includes(sub.status)) {
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      await notifyInApp({
+        kind: "program_signup",
+        title: `Content subscription ${sub.status.replace("_", " ")} — ${r.name ?? r.email ?? "client"}`,
+        body: "Stripe reports the monthly plan lapsed. The enrollment stays active until you pause it.",
+        href: `/content/${r.enrollmentId}`,
+        targets: [{ roles: ["OWNER"] }],
+        dedupeKey: `sub-${subscriptionId}-${sub.status}`,
+      });
+      alerted = true;
+    } catch { /* bell is best-effort */ }
+  }
+  return { status: sub.status, alerted };
 }

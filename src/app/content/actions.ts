@@ -760,9 +760,24 @@ export async function approveStrategy(versionId: string): Promise<Result> {
     await assertDutyOwner("STRATEGY", v.enrollmentId, null, me);
     const { approveStrategyVersion } = await import("@/lib/contentStrategy");
     const r = await approveStrategyVersion(versionId, me.email);
+    // CP-07: the initial topic bank is QUEUED the moment a strategy is approved
+    // — a row, no AI call, no spend. It runs on the hourly tick once
+    // `topic_refresh` is on, or the moment somebody presses Refresh topics
+    // (which takes the queued run over rather than paying twice).
+    let bankNote = "";
+    try {
+      const approvedAt = (await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { approvedAt: true } }))?.approvedAt ?? new Date(0);
+      const since = await prisma.contentTopicRefreshRun.count({ where: { enrollmentId: v.enrollmentId, kind: { in: ["BANK", "REFRESH"] }, status: { notIn: ["FAILED", "CANCELLED"] }, createdAt: { gte: approvedAt } } });
+      if (!since) {
+        const { queueTopicRefresh } = await import("@/lib/contentTopics");
+        const bankTopics = await prisma.contentTopic.count({ where: { enrollmentId: v.enrollmentId, status: { notIn: ["REJECTED", "ARCHIVED"] } } });
+        await queueTopicRefresh({ enrollmentId: v.enrollmentId, kind: bankTopics ? "REFRESH" : "BANK", requestedBy: me.email, reason: "initial bank after strategy approval" });
+        bankNote = " The topic bank is queued: it builds on its own once the automatic topic bank is switched on, or press Refresh topics on Video Topics to build it now.";
+      }
+    } catch { /* the approval stands; the bank can still be built by hand */ }
     path(v.enrollmentId);
-    if (r.alreadyApproved) return { ok: true, message: r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : "Already approved — its pillars exist; nothing changed." };
-    return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}. Release it to the portal when you want the client to see it.` };
+    if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : "Already approved — its pillars exist; nothing changed.") + bankNote };
+    return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}. Release it to the portal when you want the client to see it.${bankNote}` };
   } catch (e) { return fail(e); }
 }
 
@@ -807,7 +822,14 @@ export async function rejectStrategy(versionId: string, note: string): Promise<R
   } catch (e) { return fail(e); }
 }
 
-export async function resolveStrategyProposal(proposalId: string, accept: boolean, note: string): Promise<Result> {
+/**
+ * Accept or reject a strategy proposal (the STRATEGY duty owner). CP-11: a
+ * proposal aimed at one section replaces that section only, in a new draft
+ * (`text` = the replacement as the person edited it); the version in force is
+ * untouched until someone approves the draft. A profile-change proposal is
+ * refused here — it is applied from the Facts tab.
+ */
+export async function resolveStrategyProposal(proposalId: string, accept: boolean, note: string, text?: string | null, sectionId?: string | null): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const p = await prisma.contentStrategyProposal.findUnique({ where: { id: proposalId }, select: { enrollmentId: true } });
@@ -816,9 +838,14 @@ export async function resolveStrategyProposal(proposalId: string, accept: boolea
     await assertDutyOwner("STRATEGY", p.enrollmentId, null, me);
     const { acceptStrategyProposal, rejectStrategyProposal } = await import("@/lib/contentStrategy");
     if (accept) {
-      const r = await acceptStrategyProposal(proposalId, me.email, note);
+      const r = await acceptStrategyProposal(proposalId, me.email, note, { text: typeof text === "string" ? text : null, sectionId: typeof sectionId === "string" && sectionId ? sectionId : null });
       path(p.enrollmentId);
-      return { ok: true, message: r.versionId ? "Accepted — a new draft version carries the change; approve it to make it the strategy in force." : "Accepted and recorded (no approved strategy to base a draft on yet)." };
+      return {
+        ok: true,
+        message: r.sectionHeading
+          ? `Accepted — a new draft changes only the "${r.sectionHeading}" section; approve it to make it the strategy in force. The current version stays in force until then.`
+          : r.versionId ? "Accepted — a new draft version carries the change; approve it to make it the strategy in force." : "Accepted and recorded (no approved strategy to base a draft on yet).",
+      };
     }
     await rejectStrategyProposal(proposalId, me.email, note);
     path(p.enrollmentId);
@@ -973,6 +1000,72 @@ export async function setTopicsPerPillarAction(n: number): Promise<Result> {
     const p = await setTopicsPerPillar(n);
     revalidatePath("/content");
     return { ok: true, message: `Topics per pillar: ${p.topicsPerPillar}.` };
+  } catch (e) { return fail(e); }
+}
+
+// ---- CP-07 / CP-08 (Sep 24 2026) --------------------------------------------------
+
+/** Staff put a topic the client said "not interested" to back in their bank (on the record). */
+export async function undeclineTopicAction(topicId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { undeclineTopicForClient } = await import("@/lib/contentTopics");
+    await undeclineTopicForClient(topicId, { kind: "STAFF", staffUserId: me.email });
+    revalidatePath("/content");
+    return { ok: true, message: "Back in the client's bank (recorded as reintroduced)." };
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * Carry this client's scripted-but-unfilmed topics into the current month, by
+ * hand — the same work `topic_carryover` does on the 1st. `dryRun` lists what
+ * would move and changes nothing; that is the first click, always.
+ */
+export async function carryNowAction(enrollmentId: string, dryRun: boolean): Promise<Result & { candidates?: { title: string; from: string; to: string }[] }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { carryUnfilmedTopics } = await import("@/lib/contentTopics");
+    const r = await carryUnfilmedTopics(enrollmentId, { dryRun, actor: { kind: "STAFF", staffUserId: me.email } });
+    const candidates = r.candidates.map((c) => ({ title: c.title, from: c.fromMonthKey, to: c.toMonthKey }));
+    if (!r.candidates.length) return { ok: true, message: "Nothing to carry — no past month has a scripted topic that was not filmed.", candidates };
+    if (dryRun) return { ok: true, message: `${r.candidates.length} would carry into ${r.candidates[0].toMonthKey}: ${r.candidates.map((c) => `“${c.title}” (${c.fromMonthKey})`).join(", ")}.`, candidates };
+    revalidatePath("/content");
+    return { ok: true, message: `${r.carried} carried into ${r.candidates[0].toMonthKey}${r.skipped.length ? ` · ${r.skipped.length} left where they were (${r.skipped.map((x) => x.why).join("; ")})` : ""}. Each keeps its script and every version; the client can swap it.`, candidates };
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * The follow-up for answers that stop short of a script (CP-08): the questions
+ * still open, and a link that opens them directly. For a person to paste into
+ * their own message — this sends nothing, so it works with every switch off.
+ */
+export async function answerFollowUpLinkAction(interviewId: string): Promise<Result & { url?: string; body?: string }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const [{ answerGapFollowUp }, { resolvePortalLink }] = await Promise.all([import("@/lib/programDeskTasks"), import("@/lib/programReminders")]);
+    const gap = await answerGapFollowUp(interviewId);
+    if (!gap) return { ok: false, message: "Their answers are already enough for a script — nothing to follow up." };
+    const iv = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { enrollmentId: true } });
+    const e = iv ? await prisma.contentEnrollment.findUnique({ where: { id: iv.enrollmentId }, select: { id: true, portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true } }) : null;
+    if (!e) return { ok: false, message: "Enrollment not found." };
+    const seat = await prisma.clientMembership.findFirst({ where: { enrollmentId: e.id, revokedAt: null, role: "OWNER" }, orderBy: { invitedAt: "asc" }, select: { id: true, clientUserId: true } });
+    // The enrollment's own page link first: it lasts, and a text Kyle sends this
+    // afternoon must still open tonight. A one-time sign-in link (15 minutes,
+    // and minting it voids the one they hold) only when there is no page link.
+    const now = new Date();
+    const link = (await resolvePortalLink(e, null, me.id, now, { path: gap.path }))
+      ?? (seat ? await resolvePortalLink(e, { membershipId: seat.id, clientUserId: seat.clientUserId }, me.id, now, { path: gap.path }) : null);
+    if (!link) return { ok: false, message: "No portal link exists for this client yet (no seat, no token)." };
+    const body = [
+      `Quick one on "${gap.topicTitle}" so we can write it:`,
+      ...gap.questions.map((q) => `- ${q}`),
+      "",
+      `Answer here: ${link.url}`,
+    ].join("\n");
+    return { ok: true, message: link.kind === "login" ? "Copied — a one-time sign-in link (good for 15 minutes); send it now." : "Copied — the questions and the link.", url: link.url, body };
   } catch (e) { return fail(e); }
 }
 
@@ -1149,7 +1242,46 @@ export async function factDecision(factId: string, decision: "ACCEPT" | "REJECT"
     else await lib.undoFactReview(factId, me.email);
     if (f?.enrollmentId) { const { invalidatePortalPrefill } = await import("@/lib/portalPrefill"); await invalidatePortalPrefill(f.enrollmentId); }
     revalidatePath("/content");
-    return { ok: true, message: decision === "ACCEPT" ? "Accepted — it now reaches generation and the editor brief." : decision === "REJECT" ? "Rejected (kept as history)." : "Undone — back to needs-review, out of every prompt." };
+    // CP-11: say what accepting actually does. It REMEMBERS the fact (prompts
+    // read it; a production preference is also on the editor brief since the
+    // brief reads accepted facts); it never changes the client's profile — a
+    // proposed change is applied separately, by a person.
+    let accepted = "Remembered — generation uses it from now on. It doesn't change their profile; a proposed change is applied separately.";
+    if (decision === "ACCEPT") {
+      const now = await prisma.clientFact.findUnique({ where: { id: factId }, select: { category: true, scope: true } });
+      if (now?.category === "PRODUCTION_PREFERENCE" || now?.scope === "PROJECT") accepted = "Remembered — generation uses it, and it's on the editor brief. It doesn't change their profile; a proposed change is applied separately.";
+    }
+    return { ok: true, message: decision === "ACCEPT" ? accepted : decision === "REJECT" ? "Rejected (kept as history)." : "Undone — back to needs-review, out of every prompt." };
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * CP-11: APPLY a proposed profile change from a call — the separate, human act
+ * (Jordan or Kyle: these are operational editor preferences, not the
+ * strategy). `value` lets the person correct the proposed wording; `note` is
+ * kept on the proposal. Refused on drift, on anything confidential, and on a
+ * proposal already handled; applying also remembers the fact.
+ */
+export async function applyFieldProposalAction(proposalId: string, value?: string | null, note?: string | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { applyFieldProposal } = await import("@/lib/profileFields");
+    const r = await applyFieldProposal(String(proposalId ?? ""), { email: me.email, appUserId: me.id }, { value: typeof value === "string" ? value : null, note: typeof note === "string" ? note : null });
+    revalidatePath("/content");
+    return { ok: r.ok, message: r.message };
+  } catch (e) { return fail(e); }
+}
+
+/** CP-11: IGNORE a proposed profile change — the profile is untouched. */
+export async function ignoreFieldProposalAction(proposalId: string, note?: string | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { ignoreFieldProposal } = await import("@/lib/profileFields");
+    const r = await ignoreFieldProposal(String(proposalId ?? ""), me.email, typeof note === "string" ? note : null);
+    revalidatePath("/content");
+    return r;
   } catch (e) { return fail(e); }
 }
 

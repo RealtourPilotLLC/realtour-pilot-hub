@@ -34,13 +34,14 @@ export type PortalPermission =
   | "comment" // drop a timestamped note on a cut
   | "suggest" // suggest a change to a script
   | "requestSession" // ask for a filming session
-  | "manageTeam"; // invite / remove the client's own assistant (§4.9-4.10)
+  | "manageTeam" // invite / remove the client's own assistant (§4.9-4.10)
+  | "message"; // write on the program conversation (CP-13) — a VIEWER watches, so it cannot
 
 const ALL: Record<PortalPermission, boolean> = {
-  approveEdits: true, requestChanges: true, editBrandProfile: true, connectPublishing: true, comment: true, suggest: true, requestSession: true, manageTeam: true,
+  approveEdits: true, requestChanges: true, editBrandProfile: true, connectPublishing: true, comment: true, suggest: true, requestSession: true, manageTeam: true, message: true,
 };
 const NONE: Record<PortalPermission, boolean> = {
-  approveEdits: false, requestChanges: false, editBrandProfile: false, connectPublishing: false, comment: false, suggest: false, requestSession: false, manageTeam: false,
+  approveEdits: false, requestChanges: false, editBrandProfile: false, connectPublishing: false, comment: false, suggest: false, requestSession: false, manageTeam: false, message: false,
 };
 
 /** The matrix, in one place. OWNER decides; COLLABORATOR works the month but
@@ -63,7 +64,7 @@ const NONE: Record<PortalPermission, boolean> = {
  *  fourth role, which is a schema change nobody has authorised. */
 export const PERMISSIONS: Record<PortalRole, Record<PortalPermission, boolean>> = {
   OWNER: ALL,
-  COLLABORATOR: { ...NONE, requestChanges: true, comment: true, suggest: true, requestSession: true },
+  COLLABORATOR: { ...NONE, requestChanges: true, comment: true, suggest: true, requestSession: true, message: true },
   VIEWER: NONE,
 };
 
@@ -101,7 +102,7 @@ export function actorLabel(viewer: PortalViewer): string {
 export function refusalMessage(viewer: PortalViewer, permission: PortalPermission): string {
   if (viewer.access === "READ_ONLY") {
     return viewer.enrollment.status === "PAUSED"
-      ? "Your program is paused, so this is view-only for now — text us and we'll pick it back up."
+      ? "Your program is paused, so this is view-only for now. Call or text Kyle at (215) 645-4889 and we'll pick it back up."
       : "Your program has ended, so this is view-only — your finished content stays here for you.";
   }
   if (viewer.actor.kind === "CLIENT" && viewer.actor.membershipRole === "VIEWER") return "Your access is view-only. Ask the program owner if you need to make changes.";
@@ -392,12 +393,20 @@ export async function grantProgramAccess(input: {
   if (existing?.revokedAt) {
     return { outcome: "CONFLICT", note: `${email} had access to this program and it was revoked. A person should decide whether the payment restores it.` };
   }
-  const membershipId = existing
-    ? existing.id
-    : (await prisma.clientMembership.create({
-        data: { clientUserId: person.id, enrollmentId: input.enrollmentId, clientId: target.clientId, role, invitedByAppUserId: input.byAppUserId ?? null },
-        select: { id: true },
-      })).id;
+  // createMany/skipDuplicates, then read (CP-14, Sep 24 2026): a Stripe
+  // webhook and the hourly poll can reach here for the same payer at once,
+  // and a plain create would throw the loser's unique violation up through
+  // activateSignup as "access needs a person". ON CONFLICT DO NOTHING lets
+  // both arrive at the one seat.
+  if (!existing) {
+    await prisma.clientMembership.createMany({
+      data: [{ clientUserId: person.id, enrollmentId: input.enrollmentId, clientId: target.clientId, role, invitedByAppUserId: input.byAppUserId ?? null }],
+      skipDuplicates: true,
+    });
+  }
+  const seat = existing ?? (await prisma.clientMembership.findUnique({ where: { clientUserId_enrollmentId: { clientUserId: person.id, enrollmentId: input.enrollmentId } }, select: { id: true, revokedAt: true } }));
+  if (!seat) return { outcome: "CONFLICT", note: "The seat could not be opened. Nothing was sent; the next pass tries again." };
+  const membershipId = seat.id;
 
   const welcome = await queueWelcome({
     membershipId, email, name, clientName: target.name, clientId: target.clientId, isTestClient: target.isTest,
@@ -449,7 +458,9 @@ async function queueWelcome(input: {
   const allowed =
     (await isAutomationEnabled("portal_invites")) || (input.isTestClient && isVerifiedTestDestinationEmail(input.email));
   if (!allowed) return "suppressed";
-  const body = await composeWelcomeEmail({ name: input.name, clientName: input.clientName, reason: input.reason });
+  // Composed NOW, not when access was first owed: a held welcome released
+  // later reads the discovery booking as it stands at that moment (CP-14).
+  const body = await composeWelcomeEmail({ name: input.name, clientName: input.clientName, reason: input.reason, clientId: input.clientId });
   const { sendThroughOutbox } = await import("@/lib/outbox");
   const r = await sendThroughOutbox({
     channel: "email", toRef: input.email, body,
@@ -467,8 +478,21 @@ async function queueWelcome(input: {
  * a link that still works after the 15-minute link in some other email has
  * expired, and /portal/login mints a fresh one on request.
  */
-export async function composeWelcomeEmail(input: { name: string | null; clientName: string; reason: "welcome" | "teammate" }): Promise<string> {
+export async function composeWelcomeEmail(input: { name: string | null; clientName: string; reason: "welcome" | "teammate"; clientId?: string | null }): Promise<string> {
   const first = (input.name ?? "").trim().split(/\s+/)[0] || "there";
+  // CP-14: a client who booked discovery BEFORE the payment was polled must
+  // not be told to book it (the audit's acceptance case). Only a booking the
+  // matcher tied to THIS client counts — a CANDIDATE or an unverified alias is
+  // not a booking we can name to them.
+  const booked = input.clientId && input.reason === "welcome"
+    ? await prisma.programCallRecord
+        .findFirst({
+          where: { clientId: input.clientId, callType: "BRAND_DISCOVERY", status: { notIn: ["CANCELLED", "RESCHEDULED"] }, matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF"] }, scheduledStart: { not: null } },
+          orderBy: { scheduledStart: "desc" },
+          select: { scheduledStart: true },
+        })
+        .catch(() => null)
+    : null;
   const discovery = await prisma.programCalendlyEventMapping
     .findFirst({ where: { purpose: "BRAND_DISCOVERY", enabled: true, publicUrl: { not: null } }, select: { publicUrl: true } })
     .catch(() => null);
@@ -496,9 +520,13 @@ export async function composeWelcomeEmail(input: { name: string | null; clientNa
     `Sign in any time with this email address at ${signIn}. We send you a one time link, so there is no password to set up.`,
     "",
     "Here's the way forward:",
-    discovery?.publicUrl
-      ? `1. Book your brand discovery call at ${discovery.publicUrl}. That call is where we build your strategy, and it only happens once.`
-      : "1. Book your brand discovery call. That call is where we build your strategy, and it only happens once.",
+    booked?.scheduledStart
+      ? booked.scheduledStart.getTime() > Date.now()
+        ? `1. Your brand discovery call is booked for ${booked.scheduledStart.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} Eastern. That call is where we build your strategy, so bring anything you want us to know.`
+        : `1. We had your brand discovery call on ${booked.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" })}, and your strategy is built from it. We'll let you know when it's ready to read.`
+      : discovery?.publicUrl
+        ? `1. Book your brand discovery call at ${discovery.publicUrl}. That call is where we build your strategy, and it only happens once.`
+        : "1. Book your brand discovery call. That call is where we build your strategy, and it only happens once.",
     "2. Add your logo, headshot and brand colors in the portal so the editing team matches your look from the very first video.",
     "3. Pick your topics for the month, and we'll get you on the filming calendar.",
     "",
@@ -520,6 +548,42 @@ export async function pendingProgramAccess(): Promise<OwedAccess[]> {
     } catch { /* a hand-edited row is not a reason to fail the page */ }
   }
   return out.sort((a, b) => a.since.localeCompare(b.since));
+}
+
+/**
+ * The access owed on ONE program, oldest first (CP-06). With `portal_invites`
+ * off, a real client's teammate invitation is only this AppSetting row — no
+ * ClientUser, no seat — so a team page that read memberships alone lost it on
+ * reload and could not take it back. The client's Settings page lists these as
+ * "held" beside the live seats.
+ */
+export async function owedAccessFor(enrollmentId: string): Promise<OwedAccess[]> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: `${OWED_PREFIX}${enrollmentId}:` } }, select: { value: true } });
+  const out: OwedAccess[] = [];
+  for (const r of rows) {
+    try {
+      const v = JSON.parse(r.value) as OwedAccess;
+      if (v && typeof v.email === "string" && v.enrollmentId === enrollmentId) out.push(v);
+    } catch { /* a hand-edited row is not a reason to fail the page */ }
+  }
+  return out.sort((a, b) => a.since.localeCompare(b.since));
+}
+
+/**
+ * Take back a HELD teammate invitation before it was ever sent. Teammate debts
+ * only: the payer's own "welcome" debt is the account they paid for, and no
+ * client (or client screen) may cancel it.
+ */
+export async function cancelOwedAccess(enrollmentId: string, emailRaw: string): Promise<{ ok: boolean; note: string }> {
+  const email = emailRaw.trim().toLowerCase();
+  const key = owedKey(enrollmentId, email);
+  const row = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+  if (!row) return { ok: false, note: "That invitation isn't waiting any more." };
+  let reason: string | null = null;
+  try { reason = (JSON.parse(row.value) as OwedAccess).reason ?? null; } catch { reason = null; }
+  if (reason !== "teammate") return { ok: false, note: "That's the account owner's own access, which can't be cancelled here." };
+  await prisma.appSetting.deleteMany({ where: { key } });
+  return { ok: true, note: "Cancelled — nothing was ever sent to them." };
 }
 
 /**

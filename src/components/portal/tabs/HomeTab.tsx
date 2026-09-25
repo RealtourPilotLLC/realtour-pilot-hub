@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clapperboard, Clock, Compass, Download, Lightbulb, ListChecks, MapPin, PenLine, PlayCircle, Video } from "lucide-react";
+import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clapperboard, Clock, Compass, Download, Lightbulb, ListChecks, MapPin, MessageSquare, PenLine, PlayCircle, Video } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
-import { homeSessionView, type PortalPlanning, type PortalScheduleMonth, type PortalTopicsData } from "@/lib/portal";
+import { homeSessionView, readOnlyNotice, type PortalPlanning, type PortalScheduleMonth, type PortalTopicsData } from "@/lib/portal";
 import type { LibraryAttention, VideoListRow } from "@/lib/contentVideos";
 import type { ClientMonthProgress } from "@/lib/monthProgress";
 import { Card, CardTitle, LoadFailed, RowLink, fmtDate, fmtShort, fmtTime, tzShort } from "@/components/portal/ui";
 import { cn } from "@/lib/utils";
+import { SetupCard, type SetupCardData } from "@/components/portal/PortalProfile";
 
 // ---------------------------------------------------------------------------
 // HOME answers four questions (spec §1): what to do next, when the two
@@ -40,6 +41,11 @@ export type HomeData = {
   /** WHICH read-only state, so this tab and the banner above it never say
    *  different things about the same account (review blocker, Sep 17). */
   readOnlyState: "PAUSED" | "ENDED" | null;
+  /** CP-06: the account-setup checklist (derived, never stored as done), each
+   *  item with its link already built. Absent for a read-only viewer. */
+  setup?: SetupCardData | null;
+  /** CP-13: replies on the program conversation this viewer has not opened. */
+  messages?: { unread: number; href: string } | null;
 };
 
 export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: string) => string }) {
@@ -69,6 +75,9 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
 
   // The action list — derived, in the order a client should do them.
   const actions: { href: string; icon: typeof ListChecks; text: string; tone?: "brand" }[] = [];
+  // A reply from the office comes first, and reaches a paused account too: it
+  // is something to read, not something to start.
+  if (d.messages && d.messages.unread > 0) actions.push({ href: d.messages.href, icon: MessageSquare, text: `${d.messages.unread === 1 ? "A new reply" : `${d.messages.unread} new replies`} from the team`, tone: "brand" });
   if (!d.readOnly) {
     if (p && p.planningMode !== "WRITTEN" && p.callStatus === "NOT_SCHEDULED") actions.push({ href: href("schedule"), icon: CalendarClock, text: "Book your strategy call — we plan the month on it", tone: "brand" });
     if (needReviewCount) actions.push({ href: href("videos"), icon: PlayCircle, text: `Review ${needReviewCount} video${needReviewCount === 1 ? "" : "s"} waiting on you`, tone: "brand" });
@@ -82,11 +91,22 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
     <div className="mt-6 space-y-4">
       <h1 className="text-2xl font-semibold tracking-tight">Hi {d.first} 👋</h1>
 
+      {/* 0. Account setup, until it is complete (CP-06) — skippable, and a
+          skipped item is still counted as not done. */}
+      {d.setup && !d.readOnly && !d.setup.complete && <SetupCard d={d.setup} />}
+
       {/* 1. What do I need to do next? */}
       <Card>
         <CardTitle icon={ListChecks}>Next up</CardTitle>
         {actions.length === 0 ? (
-          <p className="mt-2 flex items-center gap-2 text-sm text-muted"><CheckCircle2 className="size-4 text-success" /> Nothing waiting on you right now{d.readOnly ? (d.readOnlyState === "PAUSED" ? " — your program is paused." : " — your program has ended.") : "."}</p>
+          <>
+            <p className="mt-2 flex items-center gap-2 text-sm text-muted"><CheckCircle2 className="size-4 text-success" /> Nothing waiting on you right now{d.readOnly ? (d.readOnlyState === "PAUSED" ? " — your program is paused." : " — your program has ended.") : "."}</p>
+            {/* CP-12: the way back, beside the state it answers — the same link as the banner. */}
+            {d.readOnly && (() => {
+              const n = readOnlyNotice(d.readOnlyState ?? "ENDED");
+              return <a href={n.cta.href} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{n.cta.label} <ChevronRight className="size-3.5" /></a>;
+            })()}
+          </>
         ) : (
           <ol className="mt-2 space-y-1.5">
             {actions.slice(0, 5).map((a, i) => (
@@ -241,7 +261,7 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Selected topics</div>
             <ul className="mt-1 space-y-1">
               {selectedTopics.map((t) => (
-                <li key={t.id} className="flex items-center gap-2 text-sm"><Lightbulb className="size-3.5 shrink-0 text-brand" /> <span className="min-w-0 flex-1">{t.title}</span> <span className="text-[11px] text-muted-2">{t.state === "FILMED" ? "filmed" : t.state === "PREPARING" ? "preparing" : t.interview?.status === "SUBMITTED" ? "answers in" : "selected"}</span></li>
+                <li key={t.id} className="flex items-center gap-2 text-sm"><Lightbulb className="size-3.5 shrink-0 text-brand" /> <span className="min-w-0 flex-1">{t.title}</span> <span className="text-[11px] text-muted-2">{t.state === "FILMED" ? "filmed" : t.interview?.status === "SUBMITTED_WITH_GAPS" ? "sent — we'll follow up" : t.state === "PREPARING" ? "preparing" : t.interview?.status === "SUBMITTED" ? "answers in" : "selected"}</span></li>
               ))}
             </ul>
             <Link href={href("topics")} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">Video Topics <ChevronRight className="size-3" /></Link>

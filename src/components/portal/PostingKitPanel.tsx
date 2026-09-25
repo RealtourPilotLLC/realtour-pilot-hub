@@ -2,19 +2,22 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Copy, Download, Loader2, Sparkles, TriangleAlert } from "lucide-react";
+import { CheckCircle2, Copy, Loader2, Sparkles, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { portalDraftCaption, portalMarkPosted, portalSaveCaption } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
-import type { CaptionView } from "@/lib/postingKit";
+import { DownloadButton } from "@/components/portal/DownloadButton";
+import type { CaptionView, DownloadPlan } from "@/lib/postingKit";
 
 // ---------------------------------------------------------------------------
 // The posting kit's interactive half (spec §10): download (through the gated
 // door — the href carries a media token, never the portal link), the editable
 // caption (a save is a new version; nothing overwrites), "Draft a caption"
 // which the server refuses with a reason while the assistant is off, and the
-// two client-recorded facts — Downloaded / Marked as posted by me — which are
-// never a verified publication.
+// client-recorded facts — Download started / Saved, and Marked as posted by
+// me — which are never a verified publication. "Started" (the door opened)
+// and "Saved" (the page received every byte) are shown apart on purpose
+// (CP-12): the first used to be labelled "Downloaded".
 //
 // `access` is the server's release rule (cutEntitlement, CP-01): until the
 // client has approved the version in front of them (or it was delivered to
@@ -26,16 +29,20 @@ import type { CaptionView } from "@/lib/postingKit";
 const KIND_LABEL: Record<string, string> = { CAPTION: "Caption", SHORT_CAPTION: "Shorter caption", CTA: "Call to action", COVER_TITLE: "Cover title" };
 const fmt = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, captions, assistant, postedAtISO, downloadedAtISO, canEdit, transcriptGap, access }: {
+export function PostingKitPanel({ videoId, title, downloadHref, download, finalLabel, finalNote, captions, assistant, postedAtISO, downloadStartedAtISO, downloadCompletedAtISO, canEdit, transcriptGap, access }: {
   videoId: string;
+  title: string;
   downloadHref: string | null;
+  /** How to fetch it (CP-12): proxied with progress, or a plain link. */
+  download: DownloadPlan | null;
   access: { download: boolean; captions: boolean; why: string | null };
   finalLabel: string | null;
   finalNote: string | null;
   captions: CaptionView[];
   assistant: { enabled: boolean; why: string | null };
   postedAtISO: string | null;
-  downloadedAtISO: string | null;
+  downloadStartedAtISO: string | null;
+  downloadCompletedAtISO: string | null;
   canEdit: boolean;
   transcriptGap: string | null;
 }) {
@@ -62,18 +69,21 @@ export function PostingKitPanel({ videoId, downloadHref, finalLabel, finalNote, 
       <div className="rounded-xl border border-border bg-surface p-3">
         <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Final file</div>
         {downloadHref ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <a href={downloadHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-              <Download className="size-4" /> Download {finalLabel ?? "final"}
-            </a>
-            <span className="text-xs text-muted">{downloadedAtISO ? `Downloaded ${fmt(downloadedAtISO)}` : "Not downloaded yet"}</span>
+          <div className="mt-1.5 space-y-1.5">
+            <DownloadButton videoId={videoId} href={downloadHref} plan={download ?? { mode: "redirect", fileName: null, sizeBytes: null, ref: null }} label={finalLabel ?? "final"} title={title} />
+            {/* Two facts, never merged: the door opening is not the file arriving. */}
+            <p className="flex flex-wrap gap-x-3 text-xs text-muted">
+              <span>{downloadStartedAtISO ? `Download started ${fmt(downloadStartedAtISO)}` : "Not downloaded yet"}</span>
+              {/* "Download finished", not "Saved": the page knows the file left it
+                  (shared, or handed to the browser's save), not what the phone did next. */}
+              {downloadCompletedAtISO && <span className="text-success">Download finished {fmt(downloadCompletedAtISO)}</span>}
+            </p>
           </div>
         ) : (
           <p className="mt-1.5 flex items-start gap-1.5 text-sm text-muted"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /> {finalNote ?? access.why ?? "No file yet."}</p>
         )}
         {/* An earlier approved version is being served while a newer one waits for review — say which. */}
         {downloadHref && access.why && <p className="mt-1.5 text-xs text-muted">{access.why}</p>}
-        {downloadHref && <p className="mt-1.5 text-[11px] text-muted-2">If a download fails on your phone, open this page on a computer or text us — we&rsquo;ll send the file another way.</p>}
       </div>
 
       {/* Caption & CTA */}

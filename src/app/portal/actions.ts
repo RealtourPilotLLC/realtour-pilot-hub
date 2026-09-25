@@ -68,7 +68,7 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
   const open = await prisma.scriptSuggestion.count({
     where: { enrollmentId: enrollment.id, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
   });
-  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already — we're on them! Text us if it's urgent.");
+  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already — we're on them! If it's urgent, send us a message from Messages in the menu.");
   await prisma.scriptSuggestion.create({
     data: { scriptId, enrollmentId: enrollment.id, body: clip(text, 2000), ...stamp(v) },
   });
@@ -232,35 +232,71 @@ export async function portalResolveComment(auth: PortalAuth, commentId: string, 
   return setCommentResolved(v, commentId, !!resolved);
 }
 
-/** Client updates their own brand + preference fields (Agent Profile). */
+/**
+ * Client updates their own Brand Profile (CP-06). `undefined` leaves a field
+ * alone; `null` or "" CLEARS it — the old rule ("blank means leave it alone")
+ * made clearing impossible, and a mixed save reported "Saved" while silently
+ * keeping the value the client had just removed. The work is
+ * saveClientBrandProfile (src/lib/brandProfile.ts): client-owned fields only
+ * (the internal editingPreferences/clientPreferences are admin-authored notes
+ * a public token must never rewrite — adversarial review, Aug 28), a history
+ * row per changed field, and the editor's banner + Kyle's confirmation task.
+ */
 export async function portalSaveProfile(
   auth: PortalAuth,
-  input: { brandColors?: string; videoStyle?: string; preferences?: string },
-): Promise<R> {
+  input: import("@/lib/brandProfile").BrandPatch,
+): Promise<R & { saved?: string[]; cleared?: string[] }> {
   const v = await viewerFor(auth, "editBrandProfile");
   if (typeof v === "string") return fail(v);
   const { enrollment } = v;
-  // Blank means "leave it alone", never "erase". The style/preference text
-  // lands in CLIENT-OWNED columns (portalVideoStyle / portalPreferences) —
-  // the internal editingPreferences/clientPreferences are admin-authored
-  // notes a public token must never rewrite (adversarial review, Aug 28).
-  const data: { brandColors?: string; portalVideoStyle?: string; portalPreferences?: string } = {};
-  const bc = clip((input.brandColors ?? "").trim(), 300);
-  const vs = clip((input.videoStyle ?? "").trim(), 1500);
-  const pf = clip((input.preferences ?? "").trim(), 1500);
-  if (bc) data.brandColors = bc;
-  if (vs) data.portalVideoStyle = vs;
-  if (pf) data.portalPreferences = pf;
-  if (Object.keys(data).length === 0) return fail("Nothing to save.");
-  await prisma.client.update({ where: { id: enrollment.clientId }, data });
-  await ownerBell(
-    "portal_profile",
-    `Profile updated — ${enrollment.clientName || "a client"}`,
-    `${actorLabel(v)} updated the brand or preferences on the portal.`,
-    `/clients/${enrollment.clientId}`,
-    `portal-profile-${enrollment.id}-${new Date().toISOString().slice(0, 13)}`,
-  );
-  return { ok: true, message: "Saved — your team sees this on every job." };
+  const { saveClientBrandProfile } = await import("@/lib/brandProfile");
+  const r = await saveClientBrandProfile(v, input ?? {});
+  if (!r.ok) return fail(r.message);
+  if (r.changeIds.length) {
+    await ownerBell(
+      "portal_profile",
+      `Profile updated — ${enrollment.clientName || "a client"}`,
+      `${actorLabel(v)} updated the brand profile on the portal${r.cleared.length ? ` (cleared ${r.cleared.join(", ").toLowerCase()})` : ""}.`,
+      `/clients/${enrollment.clientId}`,
+      `portal-profile-${enrollment.id}-${new Date().toISOString().slice(0, 13)}`,
+    );
+  }
+  try { revalidatePath(`/content/${enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: true, message: r.message, saved: r.saved, cleared: r.cleared };
+}
+
+/** The account-setup checklist (CP-06), as this person sees it. */
+export async function portalSetupChecklist(auth: PortalAuth): Promise<{ ok: boolean; message: string; checklist?: import("@/lib/portalSetup").SetupChecklist }> {
+  const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? null });
+  if (!r.ok) return fail(r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : LINK_DEAD);
+  const { setupChecklist } = await import("@/lib/portalSetup");
+  return { ok: true, message: "", checklist: await setupChecklist(r.viewer) };
+}
+
+/** "Skip for now" on a setup step, or put it back. Never marks anything done. */
+export async function portalSkipSetupItem(auth: PortalAuth, key: string, skip: boolean): Promise<R> {
+  const v = await viewerFor(auth, "editBrandProfile");
+  if (typeof v === "string") return fail(v);
+  const { skipSetupItem } = await import("@/lib/portalSetup");
+  return skipSetupItem(v, String(key ?? ""), skip !== false);
+}
+
+/**
+ * "This is my logo" / "This is my headshot" on a file already in their brand
+ * folder: filed on the profile without uploading it a second time. The server
+ * finds the file in their own folder by name (brandProfile.claimFolderFileForPortal).
+ */
+export async function portalUseFolderFile(auth: PortalAuth, name: string, kind: "LOGO" | "HEADSHOT"): Promise<R> {
+  const v = await viewerFor(auth, "editBrandProfile");
+  if (typeof v === "string") return fail(v);
+  const { claimFolderFileForPortal } = await import("@/lib/brandProfile");
+  try {
+    const r = await claimFolderFileForPortal(v, { name: String(name ?? "").slice(0, 200), kind });
+    if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
 }
 
 export type SessionRequestResult = R & { requestId?: string; label?: string; duplicate?: boolean };
@@ -297,7 +333,7 @@ export type SessionRequestResult = R & { requestId?: string; label?: string; dup
  */
 export async function portalRequestSession(
   auth: PortalAuth,
-  input: { monthId: string; when?: string; slotISO?: string; location: string },
+  input: { monthId: string; when?: string; slotISO?: string; location: string; creativeTeamMemberId?: string | null },
 ): Promise<SessionRequestResult> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
@@ -306,6 +342,21 @@ export async function portalRequestSession(
   if (!location) return fail("Tell us where we're filming.");
   const monthId = String(input.monthId ?? "");
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return fail("Pick one of your program months.");
+
+  // CP-04: weekends and the 24-hour line are refused FIRST, server-side, with
+  // their own words — a slot POSTed straight at this action never reaches the
+  // picker that hides them, and neither rule depends on the month's planning
+  // state. Inside 24 hours the answer is Kyle's number, not "the prep window"
+  // (which is what the gate's 24-hour floor used to say).
+  if (input.slotISO) {
+    const picked = new Date(input.slotISO);
+    if (!Number.isFinite(picked.getTime())) return fail("Pick a time from the list.");
+    const { sessionSlotRefusal } = await import("@/lib/portal");
+    const weekend = sessionSlotRefusal(picked);
+    if (weekend) return fail(weekend);
+    const { within24hElapsed, INSIDE_24H_MESSAGE } = await import("@/lib/sessionBooking");
+    if (within24hElapsed(picked, new Date())) return fail(INSIDE_24H_MESSAGE);
+  }
 
   const { sessionGate } = await import("@/lib/portal");
   const gate = await sessionGate(enrollment.id, monthId); // refuses a month that is not this enrollment's
@@ -333,28 +384,110 @@ export async function portalRequestSession(
     a.kind === "CLIENT" ? { kind: "CLIENT" as const, clientUserId: a.clientUserId }
     : a.kind === "STAFF" ? { kind: "STAFF" as const, userId: a.staffUserId }
     : { kind: "TOKEN" as const };
+  // CP-04: the creative the client picked must be one Aryeo assigns to their
+  // package's product. An id we cannot place is refused; an Aryeo we cannot
+  // reach is not the client's problem — the adapter rechecks before any write.
+  let creative: { teamMemberId: string; name: string | null } | null = null;
+  const creativeId = String(input.creativeTeamMemberId ?? "").trim();
+  if (creativeId) {
+    if (!/^[0-9a-f-]{20,40}$/i.test(creativeId)) return fail("Pick a videographer from the list.");
+    const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }))?.package ?? null;
+    const { aryeoProductFor } = await import("@/lib/contentProgram");
+    const product = aryeoProductFor(pkg);
+    if (!product) return fail("Pick a videographer from the list.");
+    const { productProvidersFor } = await import("@/lib/integrations/aryeo");
+    const roster = await productProvidersFor(product.productId).catch(() => null);
+    const hit = roster?.find((p) => p.teamMemberId === creativeId && p.bookable) ?? null;
+    if (roster && !hit) return fail("That videographer isn't available for your package. Pick another time or person.");
+    creative = { teamMemberId: creativeId, name: hit?.name ?? null };
+  }
   const { createSessionRequest, sessionRequestLabel } = await import("@/lib/sessionRequests");
   const r = await createSessionRequest({
     enrollmentId: enrollment.id,
     monthId,
     slot: { startISO, endISO, timezone: null, when: when || null, locationText: location, notes: `Requested on the portal by ${actorLabel(v)}.` },
     actor,
+    creative,
   });
   if (!r.ok) return fail(r.reason);
+  // Self-booking (only for a client the guard authorises): book it now, inside
+  // this request, so the client sees "Booked" rather than waiting for the hour.
+  // Anything that does not finish here, the cron finishes; nothing is lost.
+  let state = { status: r.status, bookingState: "NONE" as string };
+  if (!r.duplicate) {
+    const row = await prisma.programSessionRequest.findUnique({ where: { id: r.id }, select: { status: true, bookingState: true } });
+    if (row?.bookingState === "QUEUED") {
+      const { bookSessionRequest } = await import("@/lib/sessionBooking");
+      await bookSessionRequest(r.id, { worker: "portal", budgetMs: 25_000 }).catch(() => null);
+    }
+    const after = await prisma.programSessionRequest.findUnique({ where: { id: r.id }, select: { status: true, bookingState: true } });
+    if (after) state = after;
+  }
   // Best-effort: the owner's workspace re-reads on its next render anyway,
   // and outside a request scope (a probe calling the action directly) Next
   // throws here — the request row is already written, so never let that
   // turn a successful request into an error.
   try { revalidatePath(`/content/${enrollment.id}`); } catch { /* not in a request */ }
+  const label = sessionRequestLabel(state.status, state.bookingState);
   return {
-    ok: true,
+    ok: state.bookingState !== "CONFLICT",
     message: r.duplicate
-      ? "We already have this request — it stays “awaiting confirmation” until we book it in Aryeo."
-      : "Requested — it stays “awaiting confirmation” until we book it in Aryeo, then the date shows here.",
+      ? "We already have this request. It shows here as requested until it is on the calendar."
+      : state.status === "CONFIRMED" ? "Booked. Your session is on the calendar."
+      : state.bookingState === "CONFLICT" ? label
+      : r.message,
     requestId: r.id,
-    label: sessionRequestLabel(r.status),
+    label,
     duplicate: r.duplicate,
   };
+}
+
+/** Move one of the client's own sessions (CP-04). Inside 24 hours → Kyle's number. */
+export async function portalRescheduleSession(
+  auth: PortalAuth,
+  requestId: string,
+  input: { slotISO: string; creativeTeamMemberId?: string | null; location?: string | null },
+): Promise<R & { id?: string }> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  if (!/^[a-z0-9]{10,40}$/i.test(requestId)) return fail("That request isn't on your page.");
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { id: true, enrollmentId: true, monthId: true } });
+  if (!r || r.enrollmentId !== v.enrollment.id) return fail("That request isn't on your page.");
+  const slot = new Date(input.slotISO ?? "");
+  if (!Number.isFinite(slot.getTime())) return fail("Pick a time from the list.");
+  const { sessionGate } = await import("@/lib/portal");
+  const gate = await sessionGate(v.enrollment.id, r.monthId);
+  const { within24hElapsed, INSIDE_24H_MESSAGE } = await import("@/lib/sessionBooking");
+  if (within24hElapsed(slot, new Date())) return fail(INSIDE_24H_MESSAGE);
+  if (gate.locked) return fail(gate.reason);
+  if (slot < gate.earliest) return fail("That time is inside the prep window after your strategy call. Pick a later slot.");
+  const creativeId = String(input.creativeTeamMemberId ?? "").trim();
+  const creative = creativeId && /^[0-9a-f-]{20,40}$/i.test(creativeId) ? { teamMemberId: creativeId, name: null } : null;
+  const hours = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionHours: true } }))?.sessionHours ?? 2;
+  const a = v.actor;
+  const actor =
+    a.kind === "CLIENT" ? { kind: "CLIENT" as const, clientUserId: a.clientUserId }
+    : a.kind === "STAFF" ? { kind: "STAFF" as const, userId: a.staffUserId }
+    : { kind: "TOKEN" as const };
+  const { requestReschedule } = await import("@/lib/sessionRequests");
+  const out = await requestReschedule(r.id, { startISO: slot.toISOString(), endISO: new Date(slot.getTime() + hours * 3600_000).toISOString(), locationText: input.location ? clip(input.location.trim(), 300) : null }, creative, actor);
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return out;
+}
+
+/** The exact filming address for one session, from the signed-in portal (CP-05). */
+export async function portalSubmitSessionAddress(
+  auth: PortalAuth,
+  sessionKey: string,
+  input: { street: string; unit?: string | null; city: string; state: string; zip: string },
+): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  if (!/^(appt|project|request):[A-Za-z0-9_-]{6,60}$/.test(sessionKey ?? "")) return fail("That session isn't on your page.");
+  const { submitSessionAddress } = await import("@/lib/sessionAddress");
+  const r = await submitSessionAddress({ kind: "PORTAL", enrollmentId: v.enrollment.id, sessionKey, by: actorLabel(v) }, input);
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: r.ok, message: r.message };
 }
 
 // ===========================================================================
@@ -384,7 +517,7 @@ export async function portalSelectTopic(auth: PortalAuth, topicId: string, month
     const r = await selectTopicForMonth(topic.id, month.id, { source: "client", actor: topicActor(v), status: "SELECTED" });
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     const { monthLabel } = await import("@/lib/contentProgram");
-    if (r.outcome === "WITHHELD") return fail("That topic was set aside earlier — text us if you'd like it back on the table.");
+    if (r.outcome === "WITHHELD") return fail("That topic was set aside earlier. Send us a message from Messages in the menu if you'd like it back on the table.");
     return {
       ok: true, overflow: r.overflow, capacity: r.capacity,
       message: r.overflow
@@ -414,8 +547,14 @@ export async function portalRemoveSelection(auth: PortalAuth, topicId: string, m
   }
 }
 
-/** The client suggests a topic of their own. It joins their bank as theirs, proposed for staff to shape. */
-export async function portalSuggestTopic(auth: PortalAuth, input: { title: string; concept?: string; pillarId?: string | null; monthId?: string | null }): Promise<RId> {
+/**
+ * The client suggests a topic of their own. It joins their bank as theirs and
+ * is usable at once — no approval (Jordan, Sep 24) — and, when they ask, goes
+ * straight into a month (CP-07). The selection's outcome comes back to them:
+ * a full month says "added as an extra", a failure says it failed, instead of
+ * the old `.catch(() => {})` reporting success over nothing.
+ */
+export async function portalSuggestTopic(auth: PortalAuth, input: { title: string; concept?: string; pillarId?: string | null; monthId?: string | null }): Promise<RId & { monthId?: string | null; selected?: boolean }> {
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
   const title = clip((input.title ?? "").trim(), 200);
@@ -427,25 +566,118 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
     pillarId = p?.id ?? null;
   }
   const recent = await prisma.contentTopic.count({ where: { enrollmentId: v.enrollment.id, source: "client", createdAt: { gte: new Date(Date.now() - 86_400_000) } } });
-  if (recent >= 20) return fail("That's a lot of ideas for one day — we love it, but let's talk them through. Text us!");
-  const { createTopic } = await import("@/lib/contentTopics");
+  if (recent >= 20) return fail("That's a lot of ideas for one day — we love it, but let's talk them through. Send us a message from Messages in the menu!");
+  const { createTopic, selectTopicForMonth, undeclineTopicForClient, flagClientTopicAlignment, adoptTopicAsClientIdea } = await import("@/lib/contentTopics");
+  const month = input.monthId ? await openMonthForEnrollment(v.enrollment.id, input.monthId) : null;
+  if (input.monthId && !month) return fail("Pick one of your open program months.");
   try {
     const actor = topicActor(v);
     const r = await createTopic({
       enrollmentId: v.enrollment.id, title, concept, pillarId, source: "client", clientUserId: actor.clientUserId, clientWording: title,
       approvalState: "PROPOSED", actor, eventKind: "CREATED", note: `Suggested on the portal by ${actorLabel(v)}`,
     });
-    if (r.existed) return { ok: true, message: "That idea is already in your bank.", id: r.id };
-    if (input.monthId) {
-      const month = await openMonthForEnrollment(v.enrollment.id, input.monthId);
-      if (month) {
-        const { selectTopicForMonth } = await import("@/lib/contentTopics");
-        await selectTopicForMonth(r.id, month.id, { source: "client", actor, status: "SELECTED" }).catch(() => {});
+    let adopted = false;
+    if (r.existed) {
+      // The same idea again. Theirs to set aside was theirs to bring back; one
+      // the office set aside is a conversation, not a silent revival.
+      const prior = await prisma.contentTopic.findUnique({ where: { id: r.id }, select: { clientDeclinedAt: true, status: true, approvalState: true } });
+      if (prior?.clientDeclinedAt) await undeclineTopicForClient(r.id, actor);
+      if (prior && (prior.status === "REJECTED" || prior.status === "ARCHIVED" || prior.approvalState === "REJECTED" || prior.approvalState === "ARCHIVED")) {
+        const { discussTopic } = await import("@/lib/contentTopics");
+        await discussTopic(r.id, `The client suggested this again on the portal (${actorLabel(v)}) — it was set aside earlier; reintroduce it if that changed`, { kind: "SYSTEM" }, "portal");
+        return { ok: true, message: "We set that one aside earlier — we'll talk it through with you.", id: r.id };
+      }
+      // A call's or the AI's topic they cannot see yet: their typing it makes
+      // it theirs (usable without approval), rather than "already on your list"
+      // about something that is not on their page.
+      adopted = await adoptTopicAsClientIdea(r.id, v.enrollment.id, actor, title);
+      if (adopted) await flagClientTopicAlignment(r.id).catch(() => null);
+      else if (!prior?.clientDeclinedAt && !month) return { ok: true, message: "We already have that idea on your list.", id: r.id };
+    } else {
+      // Internal only, and never a block: a client's idea is usable as is.
+      await flagClientTopicAlignment(r.id).catch(() => null);
+    }
+    let selected = false;
+    let message = r.existed && !adopted ? "It's back in your bank." : "Added to your bank — it's yours to use.";
+    if (month) {
+      const { monthLabel } = await import("@/lib/contentProgram");
+      try {
+        const sel = await selectTopicForMonth(r.id, month.id, { source: "client", actor, status: "SELECTED" });
+        if (sel.outcome === "WITHHELD") message = "Added to your bank, but that one was set aside earlier. Send us a message from Messages in the menu if you'd like it for this month.";
+        else {
+          selected = true;
+          message = sel.overflow
+            ? `Added for ${monthLabel(month.monthKey)} as an extra — your package covers ${month.videosOwed} video${month.videosOwed === 1 ? "" : "s"} that month, so this one waits its turn (nothing is thrown away).`
+            : `Added and selected for ${monthLabel(month.monthKey)}.`;
+        }
+      } catch (e) {
+        return { ok: false, message: `Your idea is saved in your bank, but it couldn't be added to ${monthLabel(month.monthKey)}: ${e instanceof Error ? e.message : "try selecting it again"}`, id: r.id };
       }
     }
-    await ownerBell("portal_topic", `Topic idea — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(title, 120)}`, `/content/${v.enrollment.id}?tab=topics`, `portal-topic-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
+    await ownerBell("portal_topic", `Topic idea — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(title, 120)}${selected && month ? ` (selected for ${month.monthKey})` : ""}`, `/content/${v.enrollment.id}?tab=topics`, `portal-topic-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Added to your bank — we'll shape it with you.", id: r.id };
+    return { ok: true, message, id: r.id, monthId: selected ? month!.id : null, selected };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/** "Not interested" (CP-07): out of their bank with an optional reason, never re-suggested, and undoable. */
+export async function portalDeclineTopic(auth: PortalAuth, topicId: string, reason?: string | null): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const topic = await topicForEnrollment(v.enrollment.id, topicId);
+  if (!topic) return fail("That topic isn't in your bank.");
+  const { declineTopicForClient } = await import("@/lib/contentTopics");
+  const why = clip((reason ?? "").trim(), 500) || null;
+  try {
+    await declineTopicForClient(topic.id, topicActor(v), why);
+    await ownerBell("portal_topic_declined", `Topic set aside — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: not interested in "${clip(topic.title, 100)}"${why ? ` — ${clip(why, 120)}` : ""}`, `/content/${v.enrollment.id}?tab=ideas`, `portal-topic-declined-${topic.id}`);
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: "Set aside — we won't suggest it again. You can undo this below." };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/** Undo "not interested". */
+export async function portalUndeclineTopic(auth: PortalAuth, topicId: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const topic = await topicForEnrollment(v.enrollment.id, topicId, { allowDeclined: true });
+  if (!topic) return fail("That topic isn't in your bank.");
+  const { undeclineTopicForClient } = await import("@/lib/contentTopics");
+  try {
+    await undeclineTopicForClient(topic.id, topicActor(v));
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: "Back in your bank." };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/**
+ * Swap a carried-over, unfilmed script for another topic (CP-07). The script
+ * and its history are kept ("scripted, not filmed"); the new topic takes the
+ * slot, so the allowance is never counted twice.
+ */
+export async function portalSwapCarriedTopic(auth: PortalAuth, selectionId: string, replacementTopicId: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  if (!/^[a-z0-9]{10,40}$/i.test(selectionId ?? "")) return fail("That isn't on your plan.");
+  const sel = await prisma.contentTopicSelection.findUnique({ where: { id: selectionId }, select: { id: true, enrollmentId: true, monthId: true } });
+  if (!sel || sel.enrollmentId !== v.enrollment.id) return fail("That isn't on your plan.");
+  const month = await openMonthForEnrollment(v.enrollment.id, sel.monthId);
+  if (!month) return fail("That month is closed. Send us a message from Messages in the menu if something needs to change.");
+  const repl = await topicForEnrollment(v.enrollment.id, replacementTopicId);
+  if (!repl) return fail("Pick a topic from your bank to swap in.");
+  const { swapCarriedTopic } = await import("@/lib/contentTopics");
+  try {
+    await swapCarriedTopic(sel.id, repl.id, topicActor(v));
+    const { monthLabel } = await import("@/lib/contentProgram");
+    await ownerBell("portal_topic", `Carried script swapped — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} swapped a carried-over script for "${clip(repl.title, 100)}" in ${month.monthKey}.`, `/content/${v.enrollment.id}?tab=ideas`, `portal-topic-swap-${sel.id}`);
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: `Swapped — "${clip(repl.title, 80)}" is on ${monthLabel(month.monthKey)} now. The earlier script is kept under "Scripted, not filmed".` };
   } catch (e) {
     return fail(e instanceof Error ? e.message : "That didn't save — try again.");
   }
@@ -489,7 +721,7 @@ async function interviewOwned(enrollmentId: string, interviewId: string) {
 }
 
 /** Answer, skip or "I don't know" one question. Every answer is a new row; the earlier one stays. */
-export async function portalAnswerInterview(auth: PortalAuth, interviewId: string, questionKey: string, text: string, kind: "TYPED" | "SKIPPED" | "DONT_KNOW", questionText?: string | null): Promise<R> {
+export async function portalAnswerInterview(auth: PortalAuth, interviewId: string, questionKey: string, text: string, kind: "TYPED" | "SKIPPED" | "DONT_KNOW", questionText?: string | null, suggestionId?: string | null): Promise<R> {
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
   const iv = await interviewOwned(v.enrollment.id, interviewId);
@@ -499,15 +731,23 @@ export async function portalAnswerInterview(auth: PortalAuth, interviewId: strin
   const { answerQuestion } = await import("@/lib/contentInterview");
   try {
     const a = topicActor(v);
-    await answerQuestion(iv.id, questionKey, { text: k === "TYPED" ? clip((text ?? "").trim(), 8000) : null, kind: k, actor: { clientUserId: a.clientUserId, staffUserId: a.staffUserId }, questionText: questionText ?? null });
+    // A suggestion id is only a pointer; answerQuestion re-resolves it on the server.
+    const sid = suggestionId && /^[a-f0-9]{10,40}$/i.test(suggestionId) ? suggestionId : null;
+    await answerQuestion(iv.id, questionKey, { text: k === "TYPED" ? clip((text ?? "").trim(), 8000) : null, kind: k, actor: { clientUserId: a.clientUserId, staffUserId: a.staffUserId }, questionText: questionText ?? null, suggestionId: sid });
     return { ok: true, message: k === "TYPED" ? "Saved." : k === "SKIPPED" ? "Skipped." : "Noted — no worries." };
   } catch (e) {
     return fail(e instanceof Error ? e.message : "That didn't save — try again.");
   }
 }
 
-/** Send the answers: the month's written planning moves on and we draft the script from them (staff-side). */
-export async function portalSubmitInterview(auth: PortalAuth, interviewId: string): Promise<R> {
+/**
+ * Send the answers. CP-08: "we'll draft the script" is said only when the
+ * answers can carry one (SUBMITTED). Answers that cannot are refused unless the
+ * client chooses to send what they have (`acknowledgeGaps`), which is
+ * SUBMITTED_WITH_GAPS: nothing is drafted, the preparation clock does not
+ * start, Kyle follows up — and the client is told exactly that.
+ */
+export async function portalSubmitInterview(auth: PortalAuth, interviewId: string, opts: { acknowledgeGaps?: boolean } = {}): Promise<R & { status?: "SUBMITTED" | "SUBMITTED_WITH_GAPS" }> {
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
   const iv = await interviewOwned(v.enrollment.id, interviewId);
@@ -515,14 +755,23 @@ export async function portalSubmitInterview(auth: PortalAuth, interviewId: strin
   const { submitInterview } = await import("@/lib/contentInterview");
   try {
     const a = topicActor(v);
-    await submitInterview(iv.id, { clientUserId: a.clientUserId, staffUserId: a.staffUserId });
-    // The month's derived state (written path: preparation completes on submission) is recomputed by the program layer.
+    const r = await submitInterview(iv.id, { clientUserId: a.clientUserId, staffUserId: a.staffUserId }, { acknowledgeGaps: opts?.acknowledgeGaps === true });
+    // The month's derived state (written path: preparation completes on a SUFFICIENT submission) is recomputed by the program layer.
     const { recalcProgramMonth } = await import("@/lib/programMonths");
     await recalcProgramMonth(iv.monthId).catch(() => {});
     const topic = await prisma.contentTopic.findUnique({ where: { id: iv.topicId }, select: { title: true } });
-    await ownerBell("portal_interview", `Planning answers in — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} answered the questions for "${topic?.title ?? "a topic"}" — ready to draft.`, `/content/${v.enrollment.id}?tab=topics`, `portal-interview-${iv.id}`);
+    const gaps = r.status === "SUBMITTED_WITH_GAPS";
+    await ownerBell(
+      "portal_interview",
+      gaps ? `Planning answers sent with gaps — ${v.enrollment.clientName || "a client"}` : `Planning answers in — ${v.enrollment.clientName || "a client"}`,
+      gaps ? `${actorLabel(v)} sent what they have for "${topic?.title ?? "a topic"}" — not enough to draft yet; Kyle has the follow-up.` : `${actorLabel(v)} answered the questions for "${topic?.title ?? "a topic"}" — ready to draft.`,
+      `/content/${v.enrollment.id}?tab=ideas`,
+      `portal-interview-${iv.id}${gaps ? "-gaps" : ""}`,
+    );
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Sent — we'll draft the script from your answers and share it here for your read-through." };
+    return gaps
+      ? { ok: true, status: r.status, message: "Sent — thank you. It isn't quite enough to write the script yet, so we'll follow up with a question or two. Nothing is drafted until then, and you can add more here any time." }
+      : { ok: true, status: r.status, message: "Sent — we'll draft the script from your answers and share it here for your read-through." };
   } catch (e) {
     return fail(e instanceof Error ? e.message : "That didn't send — try again.");
   }
@@ -535,13 +784,20 @@ export async function portalProposeStrategyCorrection(auth: PortalAuth, input: {
   const summary = clip((input.summary ?? "").trim(), 500);
   if (summary.length < 3) return fail("Tell us what to correct.");
   const open = await prisma.contentStrategyProposal.count({ where: { enrollmentId: v.enrollment.id, status: "PROPOSED", sourceKind: "client" } });
-  if (open >= 10) return fail("You have a few corrections in already — we'll go through them with you. Text us if it's urgent.");
+  if (open >= 10) return fail("You have a few corrections in already — we'll go through them with you. If it's urgent, send us a message from Messages in the menu.");
   const { createStrategyProposal } = await import("@/lib/contentStrategy");
   try {
     const section = clip((input.section ?? "").trim(), 120);
+    // CP-11: a correction that names a section of the strategy in force is
+    // aimed at THAT section (Jordan writes the replacement when he accepts it);
+    // one that names nothing recognisable stays unplaced, as before.
+    const { approvedStrategy } = await import("@/lib/contentStrategy");
+    const { resolveSection, SECTION_TARGET_PREFIX } = await import("@/lib/profileFields");
+    const hit = section ? resolveSection((await approvedStrategy(v.enrollment.id).catch(() => null))?.stored ?? null, section) : null;
     await createStrategyProposal({
       enrollmentId: v.enrollment.id, kind: "STRATEGY", summary: section ? `[${section}] ${summary}` : summary, sourceKind: "client", sourceRef: `portal:${actorLabel(v)}`,
       clientUserId: v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, impact: "Client correction from the portal — review against the released version before accepting.",
+      ...(hit ? { targetKey: `${SECTION_TARGET_PREFIX}${hit.id}`, diff: [{ path: `${SECTION_TARGET_PREFIX}${hit.id}`, from: hit.text, to: "" }] } : {}),
     });
     await ownerBell("portal_strategy_proposal", `Strategy correction — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(summary, 120)}`, `/content/${v.enrollment.id}?tab=strategy`, `portal-strategy-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
@@ -607,9 +863,12 @@ export async function portalCancelSessionRequest(auth: PortalAuth, requestId: st
   if (!r || r.enrollmentId !== v.enrollment.id) return fail("That request isn't on your page.");
   if (!["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"].includes(r.status)) return fail("That request is already closed.");
   const { cancelSessionRequest } = await import("@/lib/sessionRequests");
-  await cancelSessionRequest(r.id, v.actor.kind === "STAFF" ? v.actor.staffUserId : v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, clip((reason ?? "").trim(), 300) || `Cancelled on the portal by ${actorLabel(v)}`);
+  // CP-04: inside 24 hours a client's cancel is a phone call (Kyle's number);
+  // a session the hub booked is cancelled in Aryeo and read back; a hand-booked
+  // one goes to Kyle as a CANCELLATION, not a booking.
+  const out = await cancelSessionRequest(r.id, v.actor.kind === "STAFF" ? v.actor.staffUserId : v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, clip((reason ?? "").trim(), 300) || `Cancelled on the portal by ${actorLabel(v)}`, { actor: v.actor.kind === "STAFF" ? "STAFF" : "CLIENT" });
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: r.status === "CONFIRMED" ? "Cancellation requested — the session is on the calendar, so we'll confirm once it's taken off." : "Cancelled." };
+  return { ok: out.ok, message: out.message };
 }
 
 /** "Marked as posted by me" — the client's own note, never a verified publication. */
@@ -633,205 +892,95 @@ export async function portalDraftCaption(auth: PortalAuth, videoId: string): Pro
   return draftCaptionForVideo(v, videoId);
 }
 
+/**
+ * CP-12: the page read every byte of a download — "Saved", distinct from the
+ * door's "Download started". Resolve only, deliberately NOT can(): downloads
+ * stay open to paused/ended programs and to view-only seats, so recording one
+ * must too. The lib proves the video and the file (`ref`) are the ones the
+ * release rule serves this viewer right now.
+ */
+export async function portalDownloadCompleted(auth: PortalAuth, videoId: string, ref: string): Promise<R> {
+  const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? null });
+  if (!r.ok) return fail(r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : LINK_DEAD);
+  const { recordDownloadCompleted } = await import("@/lib/postingKit");
+  return recordDownloadCompleted(r.viewer, videoId, ref);
+}
+
 // ===========================================================================
 // THE CLIENT'S OWN TEAM (F19 / §4.9-4.10, Sep 21 2026)
 //
-// "The client can invite an assistant/teammate by name and email. Send that
-// person their own sign-in path. They have full program access for this client
-// … All actions identify the actual person."
-//
-// Everything below runs through the same four steps as every other action in
-// this file: resolve WHO is asking, check they MAY (manageTeam, which only an
-// OWNER seat holds — and never the shared link, because a forwarded link has
-// no author to attribute an invitation to), prove the row belongs to THIS
-// enrollment, then write. A seat is scoped to one enrollmentId, so "full
-// program access" is still access to one client's program: the resolver reads
-// memberships per request and refuses anything else (src/lib/portal.ts), and
-// nothing on the portal renders internal staff notes, payroll or billing.
-//
-// WHILE LAUNCH IS NOT AUTHORISED nothing here reaches an inbox. The invitation
-// is composed and the seat is HELD: grantProgramAccess creates no ClientUser,
-// no ClientMembership and no outbox row while `portal_invites` is off, and
-// records the debt so the whole queue can be granted in one pass when Jordan
-// turns it on. The client is told the truth ("we'll send it the moment we
-// switch invitations on"), not a fiction.
+// The logic lives in src/lib/portalTeam.ts since CP-06 (Sep 24 2026), so the
+// Settings & team page and the drills run exactly what these actions run.
+// Each wrapper resolves WHO is asking and checks manageTeam (only an OWNER
+// seat — never the shared link); the lib re-checks and proves every row
+// belongs to this enrollment before writing. With `portal_invites` off an
+// invitation is HELD — nothing is created or sent — and it is listed on the
+// page and can be cancelled (portalCancelHeldInvite).
 // ===========================================================================
 
-export type TeamSeat = {
-  membershipId: string;
-  email: string;
-  name: string | null;
-  role: "OWNER" | "COLLABORATOR" | "VIEWER";
-  invitedAtISO: string;
-  acceptedAtISO: string | null;
-  lastSignInISO: string | null;
-  isYou: boolean;
-  pending: boolean; // invited, never signed in
-};
+export type TeamSeat = import("@/lib/portalTeam").TeamSeat;
 
-/** Who is on this account, for the Settings screen. Live seats only. */
-export async function portalTeamMembers(auth: PortalAuth): Promise<{ ok: boolean; message: string; seats: TeamSeat[]; invitationsOn: boolean }> {
+/** Who is on this account, for the Settings screen: live seats and held invitations. */
+export async function portalTeamMembers(auth: PortalAuth): Promise<{ ok: boolean; message: string; seats: TeamSeat[]; invitationsOn: boolean; signInEmailOn?: boolean }> {
   const v = await viewerFor(auth, "manageTeam");
   if (typeof v === "string") return { ok: false, message: v, seats: [], invitationsOn: false };
-  const rows = await prisma.clientMembership.findMany({
-    where: { enrollmentId: v.enrollment.id, revokedAt: null },
-    orderBy: { invitedAt: "asc" },
-    select: { id: true, clientUserId: true, role: true, invitedAt: true, acceptedAt: true },
-  });
-  const users = rows.length
-    ? await prisma.clientUser.findMany({ where: { id: { in: rows.map((r) => r.clientUserId) } }, select: { id: true, email: true, name: true, lastLoginAt: true } })
-    : [];
-  const byId = new Map(users.map((u) => [u.id, u]));
-  const me = v.actor.kind === "CLIENT" ? v.actor.clientUserId : null;
-  const { isPortalRole } = await import("@/lib/portalAccess");
-  const { isAutomationEnabled } = await import("@/lib/programAutomation");
-  return {
-    ok: true,
-    message: "",
-    invitationsOn: await isAutomationEnabled("portal_invites"),
-    seats: rows.map((r) => {
-      const u = byId.get(r.clientUserId);
-      return {
-        membershipId: r.id,
-        email: u?.email ?? "",
-        name: u?.name ?? null,
-        role: isPortalRole(r.role) ? r.role : "VIEWER",
-        invitedAtISO: r.invitedAt.toISOString(),
-        acceptedAtISO: r.acceptedAt ? r.acceptedAt.toISOString() : null,
-        lastSignInISO: u?.lastLoginAt ? u.lastLoginAt.toISOString() : null,
-        isYou: !!me && r.clientUserId === me,
-        pending: !r.acceptedAt,
-      };
-    }),
-  };
+  const { teamSeats } = await import("@/lib/portalTeam");
+  return teamSeats(v);
 }
 
-/**
- * Invite an assistant BY NAME AND EMAIL (§4.9). The name is required and it is
- * the person's, typed by the client — never derived from the address, which
- * §4.4 forbids outright and which would put "Klciarmella" at the top of
- * somebody's welcome email.
- *
- * The default role is OWNER because §4.9's list (scheduling, branding, topic
- * answers, script and video approvals, revisions) IS the OWNER row of the
- * permission matrix. The client may choose a narrower seat instead, and the
- * message says plainly what each one means.
- */
+/** Invite an assistant by name and email (§4.9). Default role OWNER — full program access. */
 export async function portalInviteTeammate(
   auth: PortalAuth,
   input: { name: string; email: string; role?: string },
 ): Promise<R & { membershipId?: string; held?: boolean }> {
   const v = await viewerFor(auth, "manageTeam");
   if (typeof v === "string") return fail(v);
-  const name = clip((input.name ?? "").trim(), 120);
-  if (name.length < 2) return fail("Add their name so we know who we're writing to, and so their actions show up under their own name.");
-  const email = (input.email ?? "").trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("That doesn't look like an email address.");
-  const { isPortalRole, grantProgramAccess } = await import("@/lib/portalAccess");
-  const role = isPortalRole(input.role) ? input.role : "OWNER";
-
-  // Already here? Say so rather than sending a second welcome.
-  const existing = await prisma.clientUser.findUnique({ where: { email }, select: { id: true } });
-  if (existing) {
-    const seat = await prisma.clientMembership.findUnique({
-      where: { clientUserId_enrollmentId: { clientUserId: existing.id, enrollmentId: v.enrollment.id } },
-      select: { id: true, revokedAt: true },
-    });
-    if (seat && !seat.revokedAt) return { ok: true, message: `${name} already has access to this account.`, membershipId: seat.id };
-    // SOMEBODY ELSE'S PERSON (Sep 21 2026). This check used to look only at the
-    // caller's own enrollment, so an address belonging to a DIFFERENT client
-    // fell straight through into grantProgramAccess — which is keyed on the
-    // email globally and would have written this client's typed name onto that
-    // other person's row. grantProgramAccess now refuses it outright; the stop
-    // is repeated here so the client gets a sentence that makes sense to them
-    // instead of a staff-shaped refusal.
-    const elsewhere = await prisma.clientMembership.findFirst({
-      where: { clientUserId: existing.id, revokedAt: null, clientId: { not: v.enrollment.clientId } },
-      select: { id: true },
-    });
-    if (elsewhere) {
-      return fail("That email address already has an account with us under a different client. Reply to any of our emails and we'll get them added to your account the right way.");
-    }
-  }
-
-  const g = await grantProgramAccess({
-    enrollmentId: v.enrollment.id, emailRaw: email, name, role, reason: "teammate",
-    requestedBy: `portal:${actorLabel(v)}`,
-  });
-  if (g.outcome === "CONFLICT") return fail(g.note);
-  await ownerBell(
-    "portal_teammate",
-    `Teammate added — ${v.enrollment.clientName || "a client"}`,
-    `${actorLabel(v)} gave ${name} <${email}> ${role.toLowerCase()} access${g.outcome === "HELD" ? " (held: invitations are switched off)" : ""}.`,
-    `/content/${v.enrollment.id}`,
-    `portal-teammate-${v.enrollment.id}-${email}`,
-  );
-  if (g.outcome === "HELD") {
-    return {
-      ok: true, held: true,
-      message: `Saved. ${name} is on your account, and we'll send their sign-in email the moment we switch invitations on. Nothing has gone to them yet.`,
-    };
-  }
-  return {
-    ok: true, membershipId: g.membershipId,
-    message:
-      role === "OWNER"
-        ? `${name} is in. They can do everything you can on this account, including approving videos, and we've emailed them their sign-in link.`
-        : role === "COLLABORATOR"
-          ? `${name} is in. They can plan, comment and request changes, and you keep the approvals. We've emailed them their sign-in link.`
-          : `${name} is in, with view-only access. We've emailed them their sign-in link.`,
-  };
+  const { inviteTeammate } = await import("@/lib/portalTeam");
+  return inviteTeammate(v, input ?? { name: "", email: "" });
 }
 
 /** Change what a teammate may do. The account cannot be left with nobody who can approve. */
 export async function portalSetTeammateRole(auth: PortalAuth, membershipId: string, role: string): Promise<R> {
   const v = await viewerFor(auth, "manageTeam");
   if (typeof v === "string") return fail(v);
-  const { isPortalRole, setMembershipRole } = await import("@/lib/portalAccess");
-  if (!isPortalRole(role)) return fail("Pick owner, collaborator or viewer.");
-  const seat = await prisma.clientMembership.findFirst({
-    where: { id: membershipId, enrollmentId: v.enrollment.id, revokedAt: null },
-    select: { id: true, role: true },
-  });
-  if (!seat) return fail("That person isn't on this account.");
-  if (seat.role === "OWNER" && role !== "OWNER" && (await lastOwnerSeat(v.enrollment.id, seat.id))) {
-    return fail("Someone has to be able to approve your videos. Give another person owner access first, then change this one.");
-  }
-  await setMembershipRole(seat.id, role);
-  return { ok: true, message: "Updated." };
+  const { setTeammateRole } = await import("@/lib/portalTeam");
+  return setTeammateRole(v, String(membershipId ?? ""), String(role ?? ""));
 }
 
 /** Remove a teammate. Immediate — the resolver re-reads seats on every request. */
 export async function portalRevokeTeammate(auth: PortalAuth, membershipId: string): Promise<R> {
   const v = await viewerFor(auth, "manageTeam");
   if (typeof v === "string") return fail(v);
-  const seat = await prisma.clientMembership.findFirst({
-    where: { id: membershipId, enrollmentId: v.enrollment.id, revokedAt: null },
-    select: { id: true, role: true, clientUserId: true },
-  });
-  if (!seat) return fail("That person isn't on this account.");
-  // Two doors that must not lock behind you: your own seat, and the last one
-  // that can approve. Either would leave a paying client unable to use their
-  // own account, and only staff could undo it.
-  if (v.actor.kind === "CLIENT" && seat.clientUserId === v.actor.clientUserId) {
-    return fail("You can't remove your own access. Text us and we'll help you hand the account over.");
-  }
-  if (seat.role === "OWNER" && (await lastOwnerSeat(v.enrollment.id, seat.id))) {
-    return fail("That's the only person who can approve videos on this account. Give someone else owner access first.");
-  }
-  const { revokeMembership } = await import("@/lib/portalAccess");
-  await revokeMembership(seat.id, null);
-  await ownerBell(
-    "portal_teammate",
-    `Teammate removed — ${v.enrollment.clientName || "a client"}`,
-    `${actorLabel(v)} removed a person from the account.`,
-    `/content/${v.enrollment.id}`,
-    `portal-teammate-off-${seat.id}`,
-  );
-  return { ok: true, message: "Removed. They lose access straight away." };
+  const { revokeTeammate } = await import("@/lib/portalTeam");
+  return revokeTeammate(v, String(membershipId ?? ""));
 }
 
-async function lastOwnerSeat(enrollmentId: string, exceptId: string): Promise<boolean> {
-  const others = await prisma.clientMembership.count({ where: { enrollmentId, revokedAt: null, role: "OWNER", id: { not: exceptId } } });
-  return others === 0;
+/** Take back an invitation that is still held (never sent). */
+export async function portalCancelHeldInvite(auth: PortalAuth, email: string): Promise<R> {
+  const v = await viewerFor(auth, "manageTeam");
+  if (typeof v === "string") return fail(v);
+  const { cancelHeldTeammate } = await import("@/lib/portalTeam");
+  return cancelHeldTeammate(v, String(email ?? ""));
+}
+
+// ---------------------------------------------------------------------------
+// CP-13 — THE PROGRAM CONVERSATION. One thread per account with the office;
+// the rules (owner, task, bell, what it will NOT do with a video change) live
+// in lib/programMessages.ts. A VIEWER seat and a paused/ended program are
+// refused by the same `can()` every other action uses.
+// ---------------------------------------------------------------------------
+
+/** Write on the program conversation. Staff through the owner iframe are stored as the office, never as the client. */
+export async function portalPostMessage(
+  auth: PortalAuth,
+  input: { body: string; replyToId?: string | null; ref?: { kind: "TOPIC" | "SCRIPT" | "VIDEO"; id: string } | null },
+): Promise<RId> {
+  const v = await viewerFor(auth, "message");
+  if (typeof v === "string") return fail(v);
+  const { postClientMessage } = await import("@/lib/programMessages");
+  const r = await postClientMessage(v, { body: String(input?.body ?? ""), replyToId: input?.replyToId ?? null, ref: input?.ref ?? null });
+  if (r.ok) {
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  }
+  return r;
 }

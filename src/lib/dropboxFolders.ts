@@ -1,9 +1,10 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { dropboxCreateFolder, dropboxListFolder, dropboxMoveFolder, dropboxConfigured, DropboxError } from "@/lib/integrations/dropbox";
+import { dropboxCreateFolder, dropboxCreateFolderMeta, dropboxListFolder, dropboxMoveFolder, dropboxConfigured, DropboxError } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
+import { isAutomationEnabled } from "@/lib/programAutomation";
 
 // ---------------------------------------------------------------------------
 // Mirrors the Zapier "AutoHDR" folder convention so the hub knows exactly where
@@ -385,8 +386,13 @@ const ENSURE_SELECT = {
 // a burst of bookings can't trip Dropbox rate limits.
 export async function ensureFoldersForUpcomingShoots(): Promise<{
   checked: number; created: number; moved: number; archived: number; repaired: number; conflicts: string[]; failed: string[];
+  /** CP-09 — null when the topic_folders switch is off (nothing was looked at) */
+  topicFolders: { checked: number; created: number; adopted: number; failed: string[] } | null;
 }> {
-  const out = { checked: 0, created: 0, moved: 0, archived: 0, repaired: 0, conflicts: [] as string[], failed: [] as string[] };
+  const out = {
+    checked: 0, created: 0, moved: 0, archived: 0, repaired: 0, conflicts: [] as string[], failed: [] as string[],
+    topicFolders: null as { checked: number; created: number; adopted: number; failed: string[] } | null,
+  };
   if (!dropboxConfigured() || !(await getSecret("dropbox"))) return out;
   const windowStart = new Date(Date.now() - 86_400_000);
   const [upcoming, cancelled] = await Promise.all([
@@ -412,6 +418,250 @@ export async function ensureFoldersForUpcomingShoots(): Promise<{
     } catch {
       out.failed.push(p.title.split(",")[0]);
     }
+  }
+
+  // CP-09: the topic folders of every content session in the same window —
+  // AFTER the loop above, so a listing folder made this pass is on record.
+  // Keyed on the session's appointments as well as shootDate: a Pro month on
+  // one project carries the FIRST session's date, and its second session a
+  // week later still needs folders for what is left. And on a recent submit:
+  // an extra filmed on site whose folder the submit could not make (a Dropbox
+  // blip) is made here, however long ago the session was. Behind
+  // topic_folders; a missing row is off, and then not one Dropbox call is made
+  // for it.
+  if (await isAutomationEnabled("topic_folders")) {
+    const until = new Date(Date.now() + 60 * 86_400_000);
+    const content = await prisma.project.findMany({
+      where: {
+        contentMonthId: { not: null },
+        status: { not: "CANCELLED" },
+        dropboxFolder: { not: null },
+        OR: [
+          { shootDate: { gte: windowStart, lte: until } },
+          { appointments: { some: { startAt: { gte: windowStart, lte: until } } } },
+          { debriefSubmittedAt: { gte: new Date(Date.now() - 14 * 86_400_000) } },
+        ],
+      },
+      orderBy: { shootDate: "asc" },
+      take: 40,
+      select: { id: true, title: true },
+    });
+    const tf = { checked: 0, created: 0, adopted: 0, failed: [] as string[] };
+    for (const p of content) {
+      tf.checked++;
+      try {
+        const r = await ensureTopicFolders(p.id);
+        tf.created += r.created;
+        tf.adopted += r.adopted;
+        if (r.failed.length) tf.failed.push(p.title.split(",")[0]);
+      } catch {
+        tf.failed.push(p.title.split(",")[0]);
+      }
+    }
+    out.topicFolders = tf;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// CP-09 — ONE RAW FOLDER PER TOPIC (Sep 24 2026, batch C).
+//
+// A content session films four or eight different videos into ONE
+// 02-RAW-Video folder, and the editor had to work out from the clips which
+// were which. Now each of the session's topics gets its own folder:
+//
+//     02-RAW-Video/01 Pricing in week one [a1b2c3d4]
+//
+// The number is the topic's place on the month's list when the folder was
+// made; the bracket is the last eight characters of the topic's PERMANENT id.
+// The bracket is what identifies it, never the words — so:
+//   · a topic RENAMED in the hub keeps its folder. The hub does not rename it
+//     to match (a rename would move the clips under the photographer's feet
+//     mid-upload); the brief shows the new title beside the old folder name.
+//   · a folder RENAMED BY HAND is found again by its bracket, or failing that
+//     by its Dropbox id (recorded at creation, and it survives any rename), and
+//     adopted under its new name.
+//   · nothing here renames, moves or deletes. The only Dropbox calls are one
+//     listing of 02-RAW-Video and a create for a topic with no folder, and a
+//     create that finds something already there adopts it.
+//
+// The hub makes a topic's folder in the job's CURRENT listing folder, which the
+// folder engine above owns — no listing folder on record, nothing is made here
+// (making 02-RAW-Video would create the listing outside the engine's
+// one-folder-per-job rules). A topic confirmed at another session of the month
+// is that session's, and gets no folder here.
+//
+// Behind the topic_folders switch (a missing row is off): it is the first
+// automated write inside a job folder beyond the five numbered subfolders.
+// Raws-in detection is unaffected — folderFileCount and videoFilesUnder are
+// recursive, so a clip in a topic folder is still footage in 02-RAW-Video.
+// ---------------------------------------------------------------------------
+
+/** The part of a topic folder's name that never changes: the id's last eight. */
+export function topicFolderTag(topicId: string): string {
+  return `[${topicId.slice(-8)}]`;
+}
+
+/**
+ * "01 Pricing in week one [a1b2c3d4]". Dropbox refuses / \ : ? * < > " | and a
+ * trailing dot or space, so those go; a long title is cut at a word near 60
+ * characters so the bracket is always on the end.
+ */
+export function topicFolderName(rank: number, title: string, topicId: string): string {
+  const clean = title
+    .replace(/[/\\:?*<>"|]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const short = clean.length <= 60 ? clean : clean.slice(0, 60).replace(/\s+\S*$/, "").trim() || clean.slice(0, 60).trim();
+  const words = short.replace(/[. ]+$/, "") || "Topic";
+  return `${String(Math.max(1, Math.min(99, Math.round(rank)))).padStart(2, "0")} ${words} ${topicFolderTag(topicId)}`;
+}
+
+export type TopicFolderResult = {
+  /** off = the switch; skipped = nothing to do here (reason says why); done = it looked */
+  state: "off" | "skipped" | "done";
+  reason: string | null;
+  created: number;
+  /** found under a name the hub did not give it (renamed by hand, or made by a person) */
+  adopted: number;
+  /** already on record and still where the record says */
+  kept: number;
+  /** topic titles whose folder could not be made this run */
+  failed: string[];
+};
+
+/**
+ * Make sure every topic of this session has its raw folder, adopting any that
+ * already exist. Idempotent and safe to run from anywhere at once: a create
+ * that loses a race finds the folder and adopts it, and the record is
+ * createMany + skipDuplicates on (projectId, topicId).
+ */
+export async function ensureTopicFolders(projectId: string): Promise<TopicFolderResult> {
+  const out: TopicFolderResult = { state: "skipped", reason: null, created: 0, adopted: 0, kept: 0, failed: [] };
+  // The switch FIRST — before the project is read, and long before Dropbox.
+  if (!(await isAutomationEnabled("topic_folders"))) return { ...out, state: "off", reason: "topic_folders is off" };
+  if (!dropboxConfigured() || !(await getSecret("dropbox"))) return { ...out, reason: "Dropbox is not connected" };
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { ...ENSURE_SELECT, contentMonthId: true } });
+  if (!p?.contentMonthId) return { ...out, reason: "not a content session" };
+  if (p.status === "CANCELLED") return { ...out, reason: "the job is cancelled" };
+  if (!p.dropboxFolder?.trim() || p.dropboxFolder.includes("/Canceled/")) return { ...out, reason: "the job's own folder is not on record yet" };
+
+  const { topicsForSession } = await import("@/lib/filmedTopics");
+  const session = await topicsForSession(projectId);
+  // The rank is the topic's place on the month's WHOLE list, so the numbers on
+  // two sessions' folders agree with each other and with the portal.
+  const wanted = (session?.topics ?? [])
+    .map((t, i) => ({ topicId: t.topicId, title: t.title, rank: i + 1, elsewhere: !!t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId }))
+    .filter((t) => !t.elsewhere);
+  if (!wanted.length) return { ...out, reason: "no topics on this session" };
+
+  const rawVideo = actualFolderPaths(p).rawVideo;
+  let children: { name: string; path: string; id: string | null }[];
+  try {
+    children = (await dropboxListFolder(rawVideo)).filter((e) => e.tag === "folder");
+  } catch (e) {
+    // The engine repairs a missing 02-RAW-Video on its next pass; making it
+    // here would make the listing folder behind the engine's back.
+    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return { ...out, reason: "02-RAW-Video is not there yet" };
+    throw e; // auth / rate limit — the caller must not read this as "nothing to do"
+  }
+  const rows = await prisma.contentTopicFolder.findMany({
+    where: { projectId },
+    select: { id: true, topicId: true, dropboxPath: true, dropboxId: true, label: true, state: true },
+  });
+  const rowOf = new Map(rows.map((r) => [r.topicId, r]));
+  const claimed = new Set<string>();
+
+  const record = async (topicId: string, data: { dropboxPath: string; dropboxId: string | null; label: string; state: string; lastError: string | null }) => {
+    const made = await prisma.contentTopicFolder.createMany({ data: [{ projectId, topicId, ...data }], skipDuplicates: true });
+    if (!made.count) {
+      // A FAILED row learns where the folder is; a good row keeps the id it
+      // already has when this read did not bring one.
+      await prisma.contentTopicFolder.updateMany({
+        where: { projectId, topicId },
+        data: { dropboxPath: data.dropboxPath, label: data.label, state: data.state, lastError: data.lastError, ...(data.dropboxId ? { dropboxId: data.dropboxId } : {}) },
+      });
+    }
+  };
+
+  out.state = "done";
+  for (const t of wanted) {
+    const row = rowOf.get(t.topicId) ?? null;
+    const tag = topicFolderTag(t.topicId).toLowerCase();
+    // Its Dropbox id first (survives any rename), then its bracket.
+    const byId = row?.dropboxId ? children.find((c) => c.id === row.dropboxId && !claimed.has(c.path.toLowerCase())) : undefined;
+    const byTag = children
+      .filter((c) => c.name.toLowerCase().endsWith(tag) && !claimed.has(c.path.toLowerCase()))
+      .sort((a, b) => (a.name === row?.label ? -1 : b.name === row?.label ? 1 : a.name.localeCompare(b.name)));
+    const found = byId ?? byTag[0];
+    try {
+      if (found) {
+        const path = found.path || `${rawVideo}/${found.name}`;
+        claimed.add(path.toLowerCase());
+        const known = !!row && row.state !== "FAILED" && row.label === found.name;
+        // Same name: kept. Only the path moved (the engine moved the listing
+        // on a reschedule, and the folder rode along) — the record follows.
+        if (known && row!.dropboxPath.toLowerCase() === path.toLowerCase() && (!found.id || row!.dropboxId === found.id)) {
+          out.kept++;
+          continue;
+        }
+        await record(t.topicId, {
+          dropboxPath: path,
+          dropboxId: found.id,
+          label: found.name,
+          // Who made it stays true: the hub's own folder renamed by hand is
+          // still CREATED; one the hub never made (or lost track of) is ADOPTED.
+          state: row && row.state !== "FAILED" ? row.state : "ADOPTED",
+          lastError: null,
+        });
+        if (known) out.kept++;
+        else out.adopted++;
+        continue;
+      }
+      const name = topicFolderName(t.rank, t.title, t.topicId);
+      const path = `${rawVideo}/${name}`;
+      const meta = await dropboxCreateFolderMeta(path);
+      claimed.add(path.toLowerCase());
+      // null = something already sits at exactly that path (a run racing this
+      // one): it carries this topic's bracket, so it is this topic's folder.
+      await record(t.topicId, { dropboxPath: meta?.path ?? path, dropboxId: meta?.id ?? null, label: name, state: meta ? "CREATED" : "ADOPTED", lastError: null });
+      if (meta) out.created++;
+      else out.adopted++;
+    } catch (e) {
+      const error = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 500);
+      out.failed.push(t.title);
+      await record(t.topicId, {
+        dropboxPath: row?.dropboxPath ?? `${rawVideo}/${topicFolderName(t.rank, t.title, t.topicId)}`,
+        dropboxId: row?.dropboxId ?? null,
+        label: row?.label ?? topicFolderName(t.rank, t.title, t.topicId),
+        state: "FAILED",
+        lastError: error,
+      }).catch(() => {});
+    }
+  }
+  return out;
+}
+
+/**
+ * Where each topic's folder IS, for the upload page and the editor's brief:
+ * the recorded folder NAME under the job's CURRENT 02-RAW-Video. The stored
+ * path is not trusted on its own — the folder engine moves the whole listing
+ * on a reschedule (files and topic folders ride along), and the name is what
+ * travels. A FAILED row has no folder behind it, so it has no link.
+ */
+export async function topicFolderLinksFor(projectId: string): Promise<Map<string, { label: string; path: string; url: string }>> {
+  const out = new Map<string, { label: string; path: string; url: string }>();
+  const rows = await prisma.contentTopicFolder.findMany({
+    where: { projectId, state: { not: "FAILED" } },
+    select: { topicId: true, label: true, dropboxPath: true },
+  });
+  if (!rows.length) return out;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, client: { select: { name: true } } } });
+  const rawVideo = p ? actualFolderPaths(p).rawVideo : null;
+  for (const r of rows) {
+    const path = rawVideo ? `${rawVideo}/${r.label}` : r.dropboxPath;
+    out.set(r.topicId, { label: r.label, path, url: dropboxWebUrl(path) });
   }
   return out;
 }

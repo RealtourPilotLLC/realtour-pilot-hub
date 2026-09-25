@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { portalAddComment, portalApproveCut, portalDeleteComment, portalRequestRevision, portalResolveComment } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { PortalPlayer, type PortalPlayerHandle } from "@/components/portal/PortalPlayer";
+import { contactLine } from "@/components/portal/ContactTeam";
 import type { CutVersion, CommentView } from "@/lib/clientDecisions";
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   const resolve = (id: string, resolved: boolean) => start(async () => done(await portalResolveComment(portalAuthFromLocation(), id, resolved).catch(() => ({ ok: false, message: "Couldn't update that note." }))));
   const submitChanges = () => start(async () => {
     if (!requestKey.current) requestKey.current = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `rk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const r: { ok: boolean; message: string; needsFeeAck?: boolean; ackText?: string | null } = await portalRequestRevision(portalAuthFromLocation(), current.submissionId, overall, { requestKey: requestKey.current, acknowledgeExtraFee: needsAck && feeAck }).catch(() => ({ ok: false, message: "That didn't send — text us and we'll get on it." }));
+    const r: { ok: boolean; message: string; needsFeeAck?: boolean; ackText?: string | null } = await portalRequestRevision(portalAuthFromLocation(), current.submissionId, overall, { requestKey: requestKey.current, acknowledgeExtraFee: needsAck && feeAck }).catch(() => ({ ok: false, message: `That didn't send. Try again, or ${contactLine()} and we'll get on it.` }));
     if (r.ok) { setAsking(false); setOverall(""); setFeeAck(false); setServerAck(null); requestKey.current = null; }
     else if (r.needsFeeAck && r.ackText) setServerAck(r.ackText);
     done(r);
@@ -182,7 +183,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
         <div ref={playerBox} onContextMenu={(e) => e.preventDefault()}>
           <PortalPlayer ref={player} src={current.assetUrl} poster={poster} onError={() => setPlayerFailed(true)} />
         </div>
-      ) : <p className="text-sm text-muted">This version has no playable file — text us and we&rsquo;ll sort it.</p>}
+      ) : <p className="text-sm text-muted">This version has no playable file. {contactLine().replace(/^c/, "C")} and we&rsquo;ll sort it.</p>}
 
       {/* Receipt — persisted decisions on THIS version. */}
       {current.decisions.length > 0 && (

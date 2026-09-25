@@ -888,6 +888,263 @@ export async function bindTopicVideosToSlots(projectId: string, opts: { notes?: 
   return out;
 }
 
+// ===========================================================================
+// CP-09 (batch C) — WHAT EACH OWED VIDEO IS, FOR THE EDITOR.
+//
+// Binding (above) put the topic on the slot. The editor still only ever read
+// "4 videos were filmed on this session — cut this many" in the printed brief
+// and "Video 2 of 4" on the page: nothing said WHICH of the client's topics a
+// video is, what the photographer said about it on site, which words the
+// client approved, or where its clips are. filmingBriefFor is that answer, in
+// one place, and the printed brief, the project summary and /edit all read it
+// — so the three can never describe the same video differently.
+//
+// Read-only and derived. The title is the topic's title NOW (a rename shows at
+// once — the binding is by id, never by words); the script is the exact
+// version the client approved when the video was confirmed, else the version
+// shared with them (and whether they have approved it), else the office's
+// approved or working copy, said plainly; the folder is wherever the topic's
+// raw folder is today (dropboxFolders.topicFolderLinksFor). A report the
+// photographer submitted that has not landed yet is listed too, from the row
+// itself, so the editor is never told less than the photographer said.
+// ===========================================================================
+
+export type FilmingBriefScript = {
+  title: string;
+  versionNo: number | null;
+  /** the spoken words, clipped — null when the script has no words on file */
+  text: string | null;
+  /** the client approved THESE words (the version on screen), per the one ledger reader */
+  clientApproved: boolean;
+  /** how far these words got, in a phrase an editor can read */
+  standing: string;
+};
+
+export type FilmingBriefRow = {
+  /** the slot key (deliverableId:slot) when bound; "video:<id>" when not */
+  key: string;
+  slot: number | null;
+  /** "Personal Branding Reel — Video 2 of 4"; null for a confirmed video with no slot */
+  slotLabel: string | null;
+  topicId: string | null;
+  /** the topic's title as it reads NOW, else the video's own title */
+  topicTitle: string;
+  /** the photographer's note to the editor about this video */
+  note: string | null;
+  /** beyond the plan — null for a planned topic */
+  extra: null | "added_on_site" | "beyond_plan";
+  script: FilmingBriefScript | null;
+  folder: { label: string; path: string; url: string } | null;
+};
+
+export type FilmingBrief = {
+  monthKey: string | null;
+  /** bound slots in slot order, then confirmed videos the job had no free slot for */
+  rows: FilmingBriefRow[];
+  /** owed video slots with no topic recorded against them */
+  slotsWithoutTopic: number;
+  /** the newest report that has NOT landed, with what it says */
+  pending: {
+    state: string;
+    attempts: number;
+    lastError: string | null;
+    topics: { title: string; note: string | null; extra: boolean }[];
+  } | null;
+};
+
+const SCRIPT_TEXT_CAP = 4000;
+const parseJsonOr = <T,>(s: string | null | undefined, fallback: T): T => {
+  if (!s) return fallback;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+/**
+ * The editor's per-video brief for a content session. Null for a job with no
+ * content month (a listing shoot has no topics — the printed brief keeps its
+ * plain count there).
+ */
+export async function filmingBriefFor(projectId: string): Promise<FilmingBrief | null> {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true } });
+  if (!project?.contentMonthId) return null;
+  const month = await prisma.contentMonth.findUnique({ where: { id: project.contentMonthId }, select: { id: true, monthKey: true, enrollmentId: true } });
+
+  const [outputs, videos, pendingRow, slots] = await Promise.all([
+    prisma.deliverableOutput.findMany({
+      where: { projectId, removedFromOrderAt: null, waivedAt: null },
+      orderBy: [{ slot: "asc" }],
+      select: { id: true, deliverableId: true, slot: true, topicId: true, filmingNote: true },
+    }),
+    prisma.contentVideo.findMany({
+      where: { projectId, filmedConfirmedAt: { not: null }, status: { not: "ARCHIVED" } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, topicId: true, title: true, kind: true, outputId: true, scriptId: true, scriptVersionId: true, selectionId: true, notes: true },
+    }),
+    prisma.contentFilmingReport.findFirst({
+      where: { projectId, state: { not: "APPLIED" } },
+      orderBy: { createdAt: "desc" },
+      select: { state: true, attempts: true, lastError: true, topicIdsJson: true, extrasJson: true, notesJson: true },
+    }),
+    cutSlots(projectId).catch(() => [] as CutSlot[]),
+  ]);
+  const labelByKey = new Map(slots.map((s) => [slotKeyOf(s.deliverableId, s.slot), s.label]));
+  // A slot's order is cutSlots' order (the monthly row first), the same one
+  // outputsForProject and the Review Room print.
+  const orderByKey = new Map(slots.map((s, i) => [slotKeyOf(s.deliverableId, s.slot), i]));
+  const bound = outputs
+    .filter((o) => o.topicId)
+    .sort((a, b) => (orderByKey.get(slotKeyOf(a.deliverableId, a.slot)) ?? 9_000 + a.slot) - (orderByKey.get(slotKeyOf(b.deliverableId, b.slot)) ?? 9_000 + b.slot));
+  const videoByOutput = new Map(videos.filter((v) => v.outputId).map((v) => [v.outputId!, v]));
+  const boundOutputIds = new Set(bound.map((o) => o.id));
+  // Confirmed videos no slot could take — the office has a task for them; the
+  // editor should still know they exist.
+  const loose = videos.filter((v) => !v.outputId || !boundOutputIds.has(v.outputId));
+
+  const pendingIds = parseJsonOr<string[]>(pendingRow?.topicIdsJson, []).filter((x) => typeof x === "string");
+  const topicIds = [...new Set([...bound.map((o) => o.topicId!), ...videos.map((v) => v.topicId).filter((x): x is string => !!x), ...pendingIds])];
+  const [topics, selections, directScripts, folders] = await Promise.all([
+    topicIds.length
+      ? prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true, sourceRef: true } })
+      : Promise.resolve([] as { id: string; title: string; sourceRef: string | null }[]),
+    month && topicIds.length
+      ? prisma.contentTopicSelection.findMany({ where: { monthId: month.id, topicId: { in: topicIds } }, select: { topicId: true, overflow: true } })
+      : Promise.resolve([] as { topicId: string; overflow: boolean }[]),
+    // A script written after the video was confirmed is not on the video row;
+    // the topic's own newest live script stands in for it.
+    month && topicIds.length
+      ? prisma.contentScript.findMany({
+          where: { enrollmentId: month.enrollmentId, topicId: { in: topicIds }, historical: false },
+          orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+          select: { id: true, topicId: true },
+        })
+      : Promise.resolve([] as { id: string; topicId: string | null }[]),
+    import("@/lib/dropboxFolders").then((m) => m.topicFolderLinksFor(projectId)).catch(() => new Map<string, { label: string; path: string; url: string }>()),
+  ]);
+  const topicOf = new Map(topics.map((t) => [t.id, t]));
+  const overflowOf = new Map(selections.map((s) => [s.topicId, s.overflow]));
+  const scriptForTopic = new Map<string, string>();
+  for (const s of directScripts) if (s.topicId && !scriptForTopic.has(s.topicId)) scriptForTopic.set(s.topicId, s.id);
+
+  // ---- the scripts, read once --------------------------------------------
+  const scriptIds = [...new Set([...videos.map((v) => v.scriptId).filter((x): x is string => !!x), ...scriptForTopic.values()])];
+  const scripts = scriptIds.length
+    ? await prisma.contentScript.findMany({
+        where: { id: { in: scriptIds } },
+        select: { id: true, title: true, body: true, sharedVersionId: true, approvedVersionId: true, currentVersionId: true },
+      })
+    : [];
+  const versionIds = [
+    ...new Set([
+      ...videos.map((v) => v.scriptVersionId),
+      ...scripts.flatMap((s) => [s.sharedVersionId, s.approvedVersionId]),
+    ].filter((x): x is string => !!x)),
+  ];
+  const [versions, verdicts] = await Promise.all([
+    versionIds.length
+      ? prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, versionNo: true, title: true, body: true } })
+      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string }[]),
+    // R1: ONE rule for "did the client approve this" — the ledger reader the
+    // portal, the staff panel and the upload page all ask.
+    month && scripts.length
+      ? import("@/lib/scriptDecisions").then((m) => m.scriptDecisionsFor(month.enrollmentId, scripts.map((s) => s.id))).catch(() => new Map())
+      : Promise.resolve(new Map()),
+  ]);
+  const scriptOf = new Map(scripts.map((s) => [s.id, s]));
+  const versionOf = new Map(versions.map((v) => [v.id, v]));
+  const clip = (s: string | null | undefined) => {
+    const t = (s ?? "").trim();
+    return t ? (t.length > SCRIPT_TEXT_CAP ? `${t.slice(0, SCRIPT_TEXT_CAP - 1).trimEnd()}…` : t) : null;
+  };
+  const scriptFor = (v: { scriptId: string | null; scriptVersionId: string | null } | null, topicId: string | null): FilmingBriefScript | null => {
+    const sid = v?.scriptId ?? (topicId ? scriptForTopic.get(topicId) ?? null : null);
+    const sc = sid ? scriptOf.get(sid) : undefined;
+    if (!sc) return null;
+    const approvedNow = (verdicts.get(sc.id) as { decision?: string | null } | undefined)?.decision === "APPROVED";
+    // 1. The exact words the client had approved when this video was confirmed
+    //    (confirmFilmedTopics records only an APPROVED version here).
+    const filmedAs = v?.scriptVersionId ? versionOf.get(v.scriptVersionId) : undefined;
+    if (filmedAs) {
+      return { title: filmedAs.title || sc.title, versionNo: filmedAs.versionNo, text: clip(filmedAs.body), clientApproved: true, standing: "approved by the client before filming" };
+    }
+    // 2. The version the client has been shown, and their verdict on it.
+    const shared = sc.sharedVersionId ? versionOf.get(sc.sharedVersionId) : undefined;
+    if (shared) {
+      return {
+        title: shared.title || sc.title,
+        versionNo: shared.versionNo,
+        text: clip(shared.body),
+        clientApproved: approvedNow,
+        standing: approvedNow ? "approved by the client" : "shared with the client — not approved by them yet",
+      };
+    }
+    // 3. Never shown to the client: the office's approved copy, else the draft.
+    const approved = sc.approvedVersionId ? versionOf.get(sc.approvedVersionId) : undefined;
+    return approved
+      ? { title: approved.title || sc.title, versionNo: approved.versionNo, text: clip(approved.body), clientApproved: false, standing: "approved by the office, not shared with the client" }
+      : { title: sc.title, versionNo: null, text: clip(sc.body), clientApproved: false, standing: "a working draft — not approved" };
+  };
+  const extraOf = (topicId: string | null, kind: string | null): FilmingBriefRow["extra"] => {
+    const t = topicId ? topicOf.get(topicId) : undefined;
+    if (t?.sourceRef?.startsWith("FilmingReport:") || (!topicId && kind === "EXTRA")) return "added_on_site";
+    if ((topicId && overflowOf.get(topicId)) || kind === "EXTRA") return "beyond_plan";
+    return null;
+  };
+
+  const rows: FilmingBriefRow[] = [
+    ...bound.map((o): FilmingBriefRow => {
+      const v = videoByOutput.get(o.id) ?? videos.find((x) => x.topicId === o.topicId) ?? null;
+      const key = slotKeyOf(o.deliverableId, o.slot);
+      return {
+        key,
+        slot: o.slot,
+        slotLabel: labelByKey.get(key) ?? `Video ${o.slot}`,
+        topicId: o.topicId,
+        topicTitle: topicOf.get(o.topicId!)?.title?.trim() || v?.title?.trim() || "(untitled topic)",
+        note: o.filmingNote?.trim() || null,
+        extra: extraOf(o.topicId, v?.kind ?? null),
+        script: scriptFor(v, o.topicId),
+        folder: folders.get(o.topicId!) ?? null,
+      };
+    }),
+    ...loose.map((v): FilmingBriefRow => ({
+      key: `video:${v.id}`,
+      slot: null,
+      slotLabel: null,
+      topicId: v.topicId,
+      topicTitle: (v.topicId ? topicOf.get(v.topicId)?.title?.trim() : null) || v.title?.trim() || "(untitled video)",
+      note: v.notes?.trim() || null,
+      extra: extraOf(v.topicId, v.kind),
+      script: scriptFor(v, v.topicId),
+      folder: v.topicId ? folders.get(v.topicId) ?? null : null,
+    })),
+  ];
+
+  let pending: FilmingBrief["pending"] = null;
+  if (pendingRow) {
+    const notes = parseJsonOr<Record<string, string>>(pendingRow.notesJson, {});
+    const extras = parseJsonOr<{ title?: string; note?: string | null }[]>(pendingRow.extrasJson, []);
+    pending = {
+      state: pendingRow.state,
+      attempts: pendingRow.attempts,
+      lastError: pendingRow.lastError,
+      topics: [
+        ...pendingIds.map((id) => ({ title: topicOf.get(id)?.title ?? "(a topic no longer on file)", note: notes[id]?.trim() || null, extra: false })),
+        ...extras.filter((x) => typeof x?.title === "string" && x.title.trim()).map((x) => ({ title: x.title!.trim(), note: x.note?.trim() || null, extra: true })),
+      ],
+    };
+  }
+
+  return {
+    monthKey: month?.monthKey ?? null,
+    rows,
+    slotsWithoutTopic: outputs.filter((o) => !o.topicId).length,
+    pending,
+  };
+}
+
 const SWEEP_HEALTH_KEY = "deliverable_outputs_sweep";
 type SweepHealth = {
   failing: Record<string, { title: string; error: string; since: string; runs: number }>;

@@ -1,5 +1,6 @@
 import "server-only";
 import { createHash } from "crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { dbx, dropboxListFolder, DropboxError } from "@/lib/integrations/dropbox";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -131,26 +132,42 @@ export async function ensureVideoClientAssetFolders(limit = 15): Promise<{ ensur
 
 export const ASSET_TYPES = [
   "LOGO", "COLOR_PALETTE", "BRANDING_CARD", "FONT", "HEADSHOT", "APPROVED_PHOTO", "EXAMPLE_VIDEO", "PRONUNCIATION", "CONTACT_CARD",
-  "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE", "OTHER",
+  "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE",
+  // CP-06 (Sep 24 2026): the three structured Brand Profile fields that had no
+  // home. They are single-valued TEXT slots (ClientAsset.profileKey) owned by
+  // the client, versioned like everything else here. Listed so assetRegistry
+  // stops coercing them to OTHER.
+  "WEBSITE", "SOCIAL_LINKS", "MUSIC_PREFERENCE",
+  "OTHER",
 ] as const;
 export type AssetType = (typeof ASSET_TYPES)[number];
 export const isAssetType = (t: unknown): t is AssetType => typeof t === "string" && (ASSET_TYPES as readonly string[]).includes(t);
 export const ASSET_TYPE_WORDS: Record<AssetType, string> = {
   LOGO: "Logo", COLOR_PALETTE: "Brand colours", BRANDING_CARD: "Branding card / end card", FONT: "Font or font reference", HEADSHOT: "Headshot", APPROVED_PHOTO: "Approved photo",
-  EXAMPLE_VIDEO: "Example video", PRONUNCIATION: "Pronunciation", CONTACT_CARD: "Contact details", EDITING_INSTRUCTIONS: "Persistent editing instructions", PRODUCTION_PREFERENCE: "Production preference", OTHER: "Other",
+  EXAMPLE_VIDEO: "Example video", PRONUNCIATION: "Pronunciation", CONTACT_CARD: "Contact details", EDITING_INSTRUCTIONS: "Persistent editing instructions", PRODUCTION_PREFERENCE: "Production preference",
+  WEBSITE: "Website", SOCIAL_LINKS: "Social links", MUSIC_PREFERENCE: "Music preference", OTHER: "Other",
 };
 /** Types whose value is TEXT (typed on the tab), not a file. */
-export const TEXT_ASSET_TYPES: readonly AssetType[] = ["COLOR_PALETTE", "PRONUNCIATION", "CONTACT_CARD", "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE", "FONT", "EXAMPLE_VIDEO"];
+export const TEXT_ASSET_TYPES: readonly AssetType[] = ["COLOR_PALETTE", "PRONUNCIATION", "CONTACT_CARD", "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE", "FONT", "EXAMPLE_VIDEO", "WEBSITE", "SOCIAL_LINKS", "MUSIC_PREFERENCE"];
 export const OWNERSHIPS = ["CLIENT", "AGENCY", "LICENSED"] as const;
 
-export type AssetVersionRow = { id: string; versionNo: number; source: string; fileRef: string | null; fileName: string | null; valueText: string | null; note: string | null; uploadedBy: string | null; createdAt: Date; url: string | null };
+export type AssetVersionRow = { id: string; versionNo: number; source: string; fileRef: string | null; fileName: string | null; valueText: string | null; note: string | null; uploadedBy: string | null; createdAt: Date; url: string | null; cleared: boolean };
 export type AssetRow = {
   id: string; type: AssetType; name: string; ownership: string; status: string; notes: string | null; sortOrder: number; createdBy: string | null; updatedAt: Date;
+  /** CP-06: the Brand Profile slot this asset IS (fonts, website, social, music, or a staff slot), or null for an ordinary asset. */
+  profileKey: string | null;
   active: AssetVersionRow | null; versionCount: number;
 };
 
-function verRow(v: { id: string; versionNo: number; source: string; fileRef: string | null; fileName: string | null; valueText: string | null; note: string | null; uploadedByStaffUserId: string | null; uploadedByClientUserId: string | null; createdAt: Date }, url: string | null): AssetVersionRow {
-  return { id: v.id, versionNo: v.versionNo, source: v.source, fileRef: v.fileRef, fileName: v.fileName, valueText: v.valueText, note: v.note, uploadedBy: v.uploadedByStaffUserId ?? (v.uploadedByClientUserId ? "client" : null), createdAt: v.createdAt, url };
+/** A version that records "the client cleared this" (CP-06). Its valueText is
+ *  null and its valueJson says so — distinct from a version that never had a
+ *  value, which cannot exist (addAssetVersion refuses one). */
+export const CLEARED_VALUE_JSON = JSON.stringify({ cleared: true });
+export const isClearedVersion = (v: { valueJson?: string | null; valueText?: string | null; fileRef?: string | null }): boolean =>
+  !v.fileRef && !v.valueText && v.valueJson === CLEARED_VALUE_JSON;
+
+function verRow(v: { id: string; versionNo: number; source: string; fileRef: string | null; fileName: string | null; valueText: string | null; valueJson: string | null; note: string | null; uploadedByStaffUserId: string | null; uploadedByClientUserId: string | null; createdAt: Date }, url: string | null): AssetVersionRow {
+  return { id: v.id, versionNo: v.versionNo, source: v.source, fileRef: v.fileRef, fileName: v.fileName, valueText: v.valueText, note: v.note, uploadedBy: v.uploadedByStaffUserId ?? (v.uploadedByClientUserId ? "client" : null), createdAt: v.createdAt, url, cleared: isClearedVersion(v) };
 }
 
 /** Temporary Dropbox link for a version that points at a file in the client folder (4h, re-minted per render). */
@@ -172,6 +189,7 @@ export async function assetRegistry(clientId: string, opts: { links?: boolean; i
     const active = mine.find((v) => v.id === a.activeVersionId) ?? mine[0] ?? null;
     out.push({
       id: a.id, type: (isAssetType(a.type) ? a.type : "OTHER"), name: a.name, ownership: a.ownership, status: a.status, notes: a.notes, sortOrder: a.sortOrder, createdBy: a.createdBy, updatedAt: a.updatedAt,
+      profileKey: a.profileKey ?? null,
       active: active ? verRow(active, await linkFor(active.fileRef, connected)) : null, versionCount: mine.length,
     });
   }
@@ -187,39 +205,62 @@ export async function assetVersions(assetId: string, opts: { links?: boolean } =
 }
 
 export type NewAssetVersion = {
-  source: "dropbox" | "upload" | "aryeo" | "client_portal" | "manual" | "import";
+  // "fact" (CP-11): a person applied a change proposed from a call.
+  source: "dropbox" | "upload" | "aryeo" | "client_portal" | "manual" | "import" | "fact";
   fileRef?: string | null; fileName?: string | null; mimeType?: string | null; sizeBytes?: number | null;
-  valueText?: string | null; valueJson?: string | null; note?: string | null; by: string | null;
+  valueText?: string | null; valueJson?: string | null; note?: string | null;
+  /** The staff member (email) who recorded it; null for a client. */
+  by: string | null;
+  /** CP-06: the portal person who recorded it. The column existed and nothing wrote it. */
+  byClientUserId?: string | null;
+  /** CP-06: this version records that the value was deliberately CLEARED. */
+  cleared?: boolean;
 };
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** Where a write goes: the shared client, or the transaction a caller holds.
+ *  Inside a transaction EVERY statement must go through `tx` — a query on the
+ *  shared client while the transaction is open waits on a second connection
+ *  (and on a single-session database, on itself). */
+type Db = Prisma.TransactionClient;
+
 /** Register a new asset with its first version (v1 becomes active). */
-export async function createAssetWithVersion(input: { clientId: string; enrollmentId?: string | null; type: AssetType; name: string; ownership?: string; notes?: string | null } & NewAssetVersion): Promise<{ assetId: string; versionId: string }> {
+export async function createAssetWithVersion(
+  input: { clientId: string; enrollmentId?: string | null; type: AssetType; name: string; ownership?: string; notes?: string | null; profileKey?: string | null } & NewAssetVersion,
+  db: Db = prisma,
+): Promise<{ assetId: string; versionId: string }> {
   if (!isAssetType(input.type)) throw new Error("Unknown asset type.");
   const name = input.name.trim();
   if (name.length < 2) throw new Error("Give the asset a name.");
-  if (!input.fileRef && !input.valueText?.trim()) throw new Error("An asset needs a file or a value.");
+  if (!input.fileRef && !input.valueText?.trim() && !input.cleared) throw new Error("An asset needs a file or a value.");
   if (input.ownership && !(OWNERSHIPS as readonly string[]).includes(input.ownership)) throw new Error("Unknown ownership.");
-  const asset = await prisma.clientAsset.create({
-    data: { clientId: input.clientId, enrollmentId: input.enrollmentId ?? null, type: input.type, name, ownership: input.ownership ?? "CLIENT", notes: input.notes?.trim() || null, createdBy: input.by },
+  const asset = await db.clientAsset.create({
+    data: {
+      clientId: input.clientId, enrollmentId: input.enrollmentId ?? null, type: input.type, name, ownership: input.ownership ?? "CLIENT", notes: input.notes?.trim() || null,
+      createdBy: input.by ?? (input.byClientUserId ? `client:${input.byClientUserId}` : null), profileKey: input.profileKey ?? null,
+    },
     select: { id: true },
   });
-  const { versionId } = await addAssetVersion(asset.id, input);
+  const { versionId } = await addAssetVersion(asset.id, input, db);
   return { assetId: asset.id, versionId };
 }
 
 /**
  * A new version = the new default for future work. Never edits or deletes an
  * earlier version; the previous file stays where it is.
+ *
+ * A CLEARED version (CP-06) is how a text slot is emptied: the history keeps
+ * the value that was there, and the active version says "nothing, on purpose"
+ * — so a later reader can tell a deliberate clear from a slot never filled.
  */
-export async function addAssetVersion(assetId: string, v: NewAssetVersion): Promise<{ versionId: string; versionNo: number }> {
-  const asset = await prisma.clientAsset.findUnique({ where: { id: assetId }, select: { id: true, status: true } });
+export async function addAssetVersion(assetId: string, v: NewAssetVersion, db: Db = prisma): Promise<{ versionId: string; versionNo: number }> {
+  const asset = await db.clientAsset.findUnique({ where: { id: assetId }, select: { id: true, status: true } });
   if (!asset) throw new Error("Asset not found.");
   if (asset.status !== "ACTIVE") throw new Error("This asset is retired — reactivate it first.");
-  if (!v.fileRef && !v.valueText?.trim()) throw new Error("A version needs a file or a value.");
-  const last = await prisma.clientAssetVersion.findFirst({ where: { assetId }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, contentHash: true } });
-  const contentHash = sha(`${v.fileRef ?? ""}|${(v.valueText ?? "").trim()}|${v.valueJson ?? ""}`);
+  if (!v.cleared && !v.fileRef && !v.valueText?.trim()) throw new Error("A version needs a file or a value.");
+  const last = await db.clientAssetVersion.findFirst({ where: { assetId }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, contentHash: true } });
+  const contentHash = v.cleared ? sha("cleared") : sha(`${v.fileRef ?? ""}|${(v.valueText ?? "").trim()}|${v.valueJson ?? ""}`);
   if (last && last.contentHash === contentHash) {
     // Same file / same text as the HIGHEST version: nothing new to record —
     // but the highest version is not necessarily the ACTIVE one. After a
@@ -227,17 +268,19 @@ export async function addAssetVersion(assetId: string, v: NewAssetVersion): Prom
     // "saved as version 2, it is the default from here on" while the asset was
     // still pointing at v1. So make the claim true: point the asset at the
     // version we are handing back.
-    await prisma.clientAsset.update({ where: { id: assetId }, data: { activeVersionId: last.id } });
+    await db.clientAsset.update({ where: { id: assetId }, data: { activeVersionId: last.id } });
     return { versionId: last.id, versionNo: last.versionNo };
   }
-  const row = await prisma.clientAssetVersion.create({
+  const row = await db.clientAssetVersion.create({
     data: {
-      assetId, versionNo: (last?.versionNo ?? 0) + 1, source: v.source, fileRef: v.fileRef ?? null, fileName: v.fileName ?? null, mimeType: v.mimeType ?? null, sizeBytes: v.sizeBytes ?? null,
-      valueText: v.valueText?.trim() || null, valueJson: v.valueJson ?? null, contentHash, uploadedByStaffUserId: v.by, note: v.note?.trim() || null,
+      assetId, versionNo: (last?.versionNo ?? 0) + 1, source: v.source,
+      fileRef: v.cleared ? null : v.fileRef ?? null, fileName: v.cleared ? null : v.fileName ?? null, mimeType: v.cleared ? null : v.mimeType ?? null, sizeBytes: v.cleared ? null : v.sizeBytes ?? null,
+      valueText: v.cleared ? null : v.valueText?.trim() || null, valueJson: v.cleared ? CLEARED_VALUE_JSON : v.valueJson ?? null, contentHash,
+      uploadedByStaffUserId: v.by, uploadedByClientUserId: v.byClientUserId ?? null, note: v.note?.trim() || null,
     },
     select: { id: true, versionNo: true },
   });
-  await prisma.clientAsset.update({ where: { id: assetId }, data: { activeVersionId: row.id } });
+  await db.clientAsset.update({ where: { id: assetId }, data: { activeVersionId: row.id } });
   return { versionId: row.id, versionNo: row.versionNo };
 }
 

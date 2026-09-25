@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { FolderOpen, History, Image as ImageIcon, Info, Palette, Plus, Quote, Sparkles } from "lucide-react";
+import { BellRing, FolderOpen, History, Image as ImageIcon, Info, Palette, Plus, Quote, Sparkles } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import {
   createAssetAction, addAssetVersionAction, setActiveAssetVersionAction, retireAssetAction,
@@ -24,10 +24,21 @@ import {
 // six AgentProfile blobs, and the client's Dropbox folder. A file in the
 // folder can be promoted into a tracked asset in one click; until somebody
 // does, it is listed as "in the folder, not tracked".
+//
+// CP-06 (Sep 24 2026): the client's own Brand Profile slots (fonts, website,
+// social, music) are tracked assets too, marked "client profile"; a CLEARED
+// version reads as cleared, not blank; and "Brand changes" shows every change,
+// who made it, whether the editor was told and whether they have it. Every
+// edit here is recorded the same way (workspaceActions → recordStaffAssetChange).
 // ---------------------------------------------------------------------------
 
-export type AssetVersionUi = { id: string; versionNo: number; source: string; fileName: string | null; valueText: string | null; note: string | null; uploadedBy: string | null; createdAtISO: string; url: string | null };
-export type AssetUi = { id: string; type: string; typeWord: string; name: string; ownership: string; status: string; notes: string | null; isText: boolean; active: AssetVersionUi | null; versions: AssetVersionUi[] };
+export type AssetVersionUi = { id: string; versionNo: number; source: string; fileName: string | null; valueText: string | null; note: string | null; uploadedBy: string | null; createdAtISO: string; url: string | null; cleared?: boolean };
+export type AssetUi = { id: string; type: string; typeWord: string; name: string; ownership: string; status: string; notes: string | null; isText: boolean; profileKey?: string | null; active: AssetVersionUi | null; versions: AssetVersionUi[] };
+/** One brand change (ClientBrandChange) and what became of its alert. */
+export type BrandChangeUi = {
+  id: string; label: string; kind: string; fromText: string | null; toText: string | null; source: string; actorLabel: string | null; createdAtISO: string;
+  alertChannel: string | null; alertEditorKeys: string | null; ackAtISO: string | null; ackBy: string | null;
+};
 export type SourcesUi = {
   client: { brandColors: string | null; brandAssetsPath: string | null; avatarUrl: string | null; portalVideoStyle: string | null; portalPreferences: string | null; generalNotes: string | null };
   profile: Record<string, Record<string, string>>;
@@ -41,13 +52,18 @@ const quiet = "rounded-md border border-border px-2 py-0.5 text-[11px] font-medi
 const input = "rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm";
 const day = (isoStr: string) => new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" });
 
-const TEXT_TYPES = new Set(["COLOR_PALETTE", "PRONUNCIATION", "CONTACT_CARD", "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE", "FONT", "EXAMPLE_VIDEO"]);
+const TEXT_TYPES = new Set(["COLOR_PALETTE", "PRONUNCIATION", "CONTACT_CARD", "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE", "FONT", "EXAMPLE_VIDEO", "WEBSITE", "SOCIAL_LINKS", "MUSIC_PREFERENCE"]);
+const ALERT_WORDS: Record<string, string> = {
+  slack: "editor messaged on Slack", sms: "editor texted", bell: "editor's bell only", deduped: "covered by this hour's message",
+  pending: "editor not messaged (alerts off) — on their brief", sending: "sending…", none: "editor not reachable", no_editor: "no editor on their work",
+  skipped_test: "test client — nobody told",
+};
 
 export function BrandAssetsPanel({
-  enrollmentId, clientId, assets, types, sources, provenance, canEdit,
+  enrollmentId, clientId, assets, types, sources, provenance, canEdit, changes = [],
 }: {
   enrollmentId: string; clientId: string; assets: AssetUi[]; types: { key: string; word: string }[];
-  sources: SourcesUi; provenance: ProvenanceUi; canEdit: boolean;
+  sources: SourcesUi; provenance: ProvenanceUi; canEdit: boolean; changes?: BrandChangeUi[];
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -83,6 +99,27 @@ export function BrandAssetsPanel({
       </Section>
 
       {canEdit && <NewAsset enrollmentId={enrollmentId} clientId={clientId} types={types} busy={busy} start={start} say={say} />}
+
+      {/* ---- CP-06: every brand change, and whether the editor has it ---- */}
+      {changes.length > 0 && (
+        <Section icon={BellRing} title="Brand changes" count={changes.length} flush action={<span className="hidden text-[11px] text-muted-2 sm:inline">the editor sees unacknowledged ones as a banner on the brief</span>}>
+          <div className="divide-y divide-border">
+            {changes.map((c) => (
+              <div key={c.id} className="px-5 py-2 text-[13px]">
+                <p>
+                  <span className="font-medium">{c.label}</span>{" "}
+                  {c.kind === "FILE_ADDED" ? `— new file ${c.toText ?? ""}` : c.kind === "FILE_REPLACED" ? `— replaced${c.fromText ? ` ${c.fromText}` : ""} → ${c.toText ?? ""}` : c.toText ? `— ${c.fromText ? `“${c.fromText.slice(0, 80)}” → ` : ""}“${c.toText.slice(0, 120)}”` : `— cleared${c.fromText ? ` (was “${c.fromText.slice(0, 80)}”)` : ""}`}
+                </p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-2">
+                  <span>{day(c.createdAtISO)} · {c.source === "client_portal" ? "client portal" : c.source === "fact" ? "applied from a call" : "staff"}{c.actorLabel ? ` · ${c.actorLabel}` : ""}</span>
+                  <span className="rounded-full bg-surface-2 px-1.5 py-0.5">{c.alertChannel ? ALERT_WORDS[c.alertChannel] ?? c.alertChannel : "alert pending"}{c.alertEditorKeys ? ` (${c.alertEditorKeys})` : ""}</span>
+                  {c.ackAtISO ? <span className="rounded-full bg-success/15 px-1.5 py-0.5 font-medium text-success">editor has it · {c.ackBy}</span> : <span className="rounded-full bg-warning/15 px-1.5 py-0.5 font-medium text-warning">not acknowledged yet</span>}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* ---- THE SOURCES, shown as sources ---- */}
       <Section icon={Info} title="Where this client's brand lives today" flush>
@@ -183,6 +220,7 @@ function AssetRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">{a.name}</span>
         <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2">{a.ownership.toLowerCase()}</span>
+        {a.profileKey && <span className="rounded-full bg-brand-soft px-1.5 py-0.5 text-[10px] font-medium text-brand">{["fonts", "website", "social", "music"].includes(a.profileKey) ? "client profile" : "profile preference"}</span>}
         {a.status !== "ACTIVE" && <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted-2">retired</span>}
         {a.active && <span className="text-[11px] text-muted-2">v{a.active.versionNo} · {day(a.active.createdAtISO)}{a.active.uploadedBy ? ` · ${a.active.uploadedBy}` : ""}</span>}
         {canEdit && (
@@ -196,6 +234,7 @@ function AssetRow({
         )}
       </div>
       {a.active?.valueText && <p className="mt-1 whitespace-pre-wrap text-[13px] text-foreground/85">{a.active.valueText}</p>}
+      {a.active?.cleared && <p className="mt-1 text-[13px] italic text-muted">Cleared — nothing on file, on purpose.</p>}
       {a.active?.fileName && (
         <p className="mt-1 text-[13px]">
           {a.active.url ? <a href={a.active.url} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">{a.active.fileName}</a> : a.active.fileName}
@@ -248,7 +287,7 @@ function AssetRow({
               <div key={v.id} className="flex flex-wrap items-center gap-2 text-[12px]">
                 <span className={v.id === a.active?.id ? "font-semibold" : "text-muted"}>v{v.versionNo}</span>
                 <span className="text-muted-2">{day(v.createdAtISO)} · {v.source}{v.uploadedBy ? ` · ${v.uploadedBy}` : ""}</span>
-                <span className="min-w-0 flex-1 truncate">{v.valueText ?? v.fileName ?? "—"}</span>
+                <span className="min-w-0 flex-1 truncate">{v.cleared ? "(cleared)" : v.valueText ?? v.fileName ?? "—"}</span>
                 {v.note && <span className="text-muted-2">{v.note}</span>}
                 {canEdit && v.id !== a.active?.id && (
                   <button className={quiet} disabled={busy} onClick={() => start(async () => say(await setActiveAssetVersionAction(enrollmentId, a.id, v.id)))}>Make current</button>

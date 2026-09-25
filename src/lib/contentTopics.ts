@@ -1,9 +1,12 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { sha256, activePolicyVersion } from "@/lib/aiRuns";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { approvedStrategy } from "@/lib/contentStrategy";
-import { normalizeTitle, rankRecommendations, GENERATION_POLICY, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal } from "@/lib/contentPolicy";
+import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
+import { CONFIDENTIAL_RE } from "@/lib/clientFacts";
+import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, GENERATION_POLICY, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
 // Video Topics (spec §5/§18/§27). A topic carries audience need, business
@@ -20,22 +23,25 @@ import { normalizeTitle, rankRecommendations, GENERATION_POLICY, type Topic, typ
 // in contentGeneration.ts; this file owns the bookkeeping.
 // ---------------------------------------------------------------------------
 
-export type TopicEventKind = "CREATED" | "IMPORTED" | "SUGGESTED" | "DISCUSSED" | "SELECTED" | "DESELECTED" | "APPROVED" | "REJECTED" | "ARCHIVED" | "SCRIPTED" | "FILMED" | "DELIVERED" | "EDITED" | "RECONCILED" | "CARRIED" | "REINTRODUCED";
+export type TopicEventKind = "CREATED" | "IMPORTED" | "SUGGESTED" | "DISCUSSED" | "SELECTED" | "DESELECTED" | "APPROVED" | "REJECTED" | "ARCHIVED" | "SCRIPTED" | "FILMED" | "DELIVERED" | "EDITED" | "RECONCILED" | "CARRIED" | "REINTRODUCED" | "DECLINED";
 export type Actor = { kind: "CLIENT" | "STAFF" | "AI" | "SYSTEM" | "IMPORT"; clientUserId?: string | null; staffUserId?: string | null };
+/** The shared client, or the transaction a caller is already inside. PGlite (the drills) is one session, so a write inside a transaction must go through ITS client or it waits on itself. */
+type Db = Prisma.TransactionClient;
 
 export function topicDedupeHash(title: string): string {
   return sha256(normalizeTitle(title));
 }
 
-export async function recordTopicEvent(topicId: string, enrollmentId: string, kind: TopicEventKind, actor: Actor, opts: { monthId?: string | null; fromStatus?: string | null; toStatus?: string | null; sourceRef?: string | null; evidence?: unknown; note?: string | null } = {}): Promise<void> {
-  await prisma.contentTopicEvent.create({
+export async function recordTopicEvent(topicId: string, enrollmentId: string, kind: TopicEventKind, actor: Actor, opts: { monthId?: string | null; fromStatus?: string | null; toStatus?: string | null; sourceRef?: string | null; evidence?: unknown; note?: string | null; db?: Db } = {}): Promise<void> {
+  const db = opts.db ?? prisma;
+  await db.contentTopicEvent.create({
     data: {
       topicId, enrollmentId, kind, monthId: opts.monthId ?? null, fromStatus: opts.fromStatus ?? null, toStatus: opts.toStatus ?? null,
       actorKind: actor.kind, clientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? null,
       sourceRef: opts.sourceRef ?? null, evidenceJson: opts.evidence ? JSON.stringify(opts.evidence).slice(0, 20_000) : null, note: opts.note?.slice(0, 2000) ?? null,
     },
   });
-  await prisma.contentTopic.update({ where: { id: topicId }, data: { lastEventAt: new Date() } }).catch(() => {});
+  await db.contentTopic.updateMany({ where: { id: topicId }, data: { lastEventAt: new Date() } });
 }
 
 export type CreateTopicInput = {
@@ -92,6 +98,18 @@ export async function updateTopicFields(topicId: string, patch: { title?: string
 // ---- selection ---------------------------------------------------------------
 
 /**
+ * The selection statuses that occupy a month's allowance — the ONE list.
+ * CARRIED was read in six places and counted in none of the arithmetic: the
+ * portal's month card counted it and monthCapacity did not, so the day a carry
+ * was written selectTopicForMonth would have treated the carried slot as free
+ * and double-counted the allowance (CP-07, Sep 24 2026).
+ */
+export const ALLOWANCE_SELECTION_STATUSES = ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"];
+/** Production states: a topic here has a script or footage somewhere. */
+const PRODUCTION_STATUSES = ["SCRIPTED", "FILMED", "EDITING", "DELIVERED"];
+const FOOTAGE_VIDEO_STATUSES = ["FILMED", "EDITING", "CLIENT_REVIEW", "APPROVED", "DELIVERED"];
+
+/**
  * How full a month's plan is. `overflow` is DERIVED from the two numbers, not
  * read off the rows: ContentTopicSelection.overflow is a flag frozen when the
  * row was inserted, and enrollmentChanges rewrites ContentMonth.videosOwed
@@ -101,13 +119,43 @@ export async function updateTopicFields(topicId: string, patch: { title?: string
  * per-row "beyond capacity" marker reads, because that one is about the row's
  * own history; the MONTH's arithmetic is arithmetic.
  */
-export async function monthCapacity(monthId: string): Promise<{ owed: number; selected: number; overflow: number }> {
-  const m = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { videosOwed: true } });
-  const sel = await prisma.contentTopicSelection.findMany({ where: { monthId, status: { in: ["SELECTED", "RECONCILED", "PROPOSED"] } }, select: { overflow: true } });
+export async function monthCapacity(monthId: string, db: Db = prisma): Promise<{ owed: number; selected: number; overflow: number }> {
+  const m = await db.contentMonth.findUnique({ where: { id: monthId }, select: { videosOwed: true } });
+  const sel = await db.contentTopicSelection.findMany({ where: { monthId, status: { in: ALLOWANCE_SELECTION_STATUSES } }, select: { overflow: true } });
   const owed = m?.videosOwed ?? 0;
   const total = sel.length;
   const overflow = Math.max(0, total - owed);
   return { owed, selected: total - overflow, overflow };
+}
+
+// ---- what the CLIENT may see, and what counts as stock ---------------------------
+
+type VisibilityInput = { status: string; approvalState: string | null; source: string; proposedState: string | null; clientDeclinedAt: Date | string | null };
+
+/**
+ * May the client see this topic in their bank? (CP-07.)
+ *
+ * A call analysis creates its discussed ideas and its "declined on the call"
+ * ideas as bank topics, PROPOSED and unreviewed — and the bank read filtered on
+ * status alone, so both reached the client's page the moment the call was
+ * analysed (ContentTopic.clientVisible, "server-enforced", was read nowhere).
+ * Jordan's rule: an AI- or call-generated topic is not the client's until he
+ * approves it. The exception is the call's own PROPOSED selection for a month,
+ * which the portal shows as "proposed on your call" — the client chose it out
+ * loud. The client's own ideas, staff topics and imported banks are visible.
+ */
+export function clientCanSeeTopic(t: VisibilityInput, hasLiveSelection: boolean): boolean {
+  if (t.status === "REJECTED" || t.status === "ARCHIVED") return false;
+  if (t.approvalState === "REJECTED" || t.approvalState === "ARCHIVED") return false;
+  if (t.clientDeclinedAt) return false;
+  if (t.proposedState === "REJECTED") return false;
+  if ((t.source === "strategy_call" || t.source === "ai") && t.approvalState !== "APPROVED" && !hasLiveSelection) return false;
+  return true;
+}
+
+/** A topic the bank can still offer: unselected, not declined, visible to the client. What replenishment counts. */
+export function isUsableStock(t: VisibilityInput): boolean {
+  return ["IDEA", "SAVED", "RECOMMENDED"].includes(t.status) && clientCanSeeTopic(t, false);
 }
 
 export type SelectOutcome = "SELECTED" | "PROPOSED" | "KEPT" | "WITHHELD";
@@ -124,56 +172,107 @@ export type SelectOutcome = "SELECTED" | "PROPOSED" | "KEPT" | "WITHHELD";
  * KEPT and the mention lands on the history; a REMOVED row stays removed; a
  * REJECTED/ARCHIVED topic is WITHHELD with a DISCUSSED event. A person
  * selecting a rejected topic must reintroduce it first — on the record.
+ *
+ * CP-07: a person selecting a topic that is SCRIPTED and not yet filmed — a
+ * script parked by a swap, or one left in a past month — re-uses that script:
+ * the selection is handed to carryScriptedTopic, which moves the pointers and
+ * keeps every version, so the month never drafts a second script for it.
+ * `db` lets a caller run this inside its own transaction (the swap does).
  */
-export async function selectTopicForMonth(topicId: string, monthId: string, opts: { source: "client" | "call" | "staff" | "ai" | "import"; actor: Actor; callRecordId?: string | null; evidence?: unknown; status?: "PROPOSED" | "SELECTED" }): Promise<{ overflow: boolean; capacity: { owed: number; selected: number }; outcome: SelectOutcome }> {
+export async function selectTopicForMonth(topicId: string, monthId: string, opts: { source: "client" | "call" | "staff" | "ai" | "import"; actor: Actor; callRecordId?: string | null; evidence?: unknown; status?: "PROPOSED" | "SELECTED"; db?: Db }): Promise<{ overflow: boolean; capacity: { owed: number; selected: number }; outcome: SelectOutcome }> {
+  const db = opts.db ?? prisma;
   const [t, m] = await Promise.all([
-    prisma.contentTopic.findUnique({ where: { id: topicId }, select: { id: true, enrollmentId: true, clientId: true, status: true, approvalState: true, monthId: true } }),
-    prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, videosOwed: true } }),
+    db.contentTopic.findUnique({ where: { id: topicId }, select: { id: true, enrollmentId: true, clientId: true, status: true, approvalState: true, monthId: true, clientDeclinedAt: true } }),
+    db.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, videosOwed: true } }),
   ]);
   if (!t || !m) throw new Error("Topic or month not found.");
   if (t.enrollmentId !== m.enrollmentId) throw new Error("That month belongs to another client.");
-  const cap = await monthCapacity(monthId);
   const status = opts.status ?? "SELECTED";
-  const existing = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId, monthId } } });
+  // THE CLIENT SAID "NOT INTERESTED" (review, Sep 24 2026). That set the topic
+  // aside for good — but only rejected/archived were ruled out here, so a later
+  // call that mentioned it again re-proposed it into the NEXT month (a new row,
+  // so the REMOVED one below never fired): it took an allowance slot, showed on
+  // the client's month card, and staff "Keep" scripted it while it was still
+  // marked declined. A proposal is withheld with the mention on the record; a
+  // person selecting it undoes the "not interested" first, on the record (the
+  // client's own re-suggestion does exactly that in the portal).
+  if (t.clientDeclinedAt) {
+    if (status === "SELECTED") throw new Error("The client marked this topic \"Not interested\" — undo that first (it is recorded), then select it.");
+    await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) but the client marked this "Not interested" — not re-proposed; undo that by hand if they changed their mind`, db });
+    return { overflow: false, capacity: { owed: m.videosOwed, selected: (await monthCapacity(monthId, db)).selected }, outcome: "WITHHELD" };
+  }
+  if (status === "SELECTED" && t.status === "SCRIPTED") {
+    // `monthId: { not }` alone would skip a PARKED script: SQL's `<>` is never
+    // true of NULL, and a parked script is exactly the one with no month.
+    const parked = await db.contentScript.findFirst({ where: { topicId, historical: false, OR: [{ monthId: null }, { monthId: { not: monthId } }] }, orderBy: { updatedAt: "desc" }, select: { id: true } });
+    if (parked) {
+      const r = await carryScriptedTopic(topicId, monthId, { actor: opts.actor, reason: "RESELECTED", source: opts.source, db: opts.db });
+      if (r.outcome === "SELECTED") return { overflow: !!r.overflow, capacity: r.capacity ?? { owed: m.videosOwed, selected: 0 }, outcome: "SELECTED" };
+      if (r.refusal) throw new Error(r.refusal);
+    }
+  }
+  const cap = await monthCapacity(monthId, db);
+  const existing = await db.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId, monthId } } });
   const ruledOut = t.status === "REJECTED" || t.status === "ARCHIVED" || t.approvalState === "REJECTED" || t.approvalState === "ARCHIVED";
   if (ruledOut) {
     if (status === "SELECTED") throw new Error("This topic was rejected or archived — reintroduce it first (that is recorded), then select it.");
-    await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) but this topic is ${t.status === "REJECTED" || t.approvalState === "REJECTED" ? "rejected" : "archived"} — not re-proposed; reintroduce it by hand if that changed` });
+    await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) but this topic is ${t.status === "REJECTED" || t.approvalState === "REJECTED" ? "rejected" : "archived"} — not re-proposed; reintroduce it by hand if that changed`, db });
     return { overflow: false, capacity: { owed: m.videosOwed, selected: cap.selected }, outcome: "WITHHELD" };
   }
   if (status === "PROPOSED" && existing) {
     if (existing.status === "SELECTED" || existing.status === "RECONCILED" || existing.status === "CARRIED") {
-      await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) — already ${existing.status.toLowerCase()} for this month by ${existing.staffUserId ?? existing.clientUserId ?? existing.source}; left as is` });
+      await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) — already ${existing.status.toLowerCase()} for this month by ${existing.staffUserId ?? existing.clientUserId ?? existing.source}; left as is`, db });
       return { overflow: existing.overflow, capacity: { owed: m.videosOwed, selected: cap.selected }, outcome: "KEPT" };
     }
     if (existing.status === "REMOVED") {
-      await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) — it was removed from this month by ${existing.removedBy ?? "staff"}; not revived, select it by hand if that changed` });
+      await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", opts.actor, { monthId, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: `Raised again (${opts.source}) — it was removed from this month by ${existing.removedBy ?? "staff"}; not revived, select it by hand if that changed`, db });
       return { overflow: existing.overflow, capacity: { owed: m.videosOwed, selected: cap.selected }, outcome: "WITHHELD" };
     }
   }
-  const overflow = existing ? existing.overflow : cap.selected >= Math.max(m.videosOwed, 1);
-  await prisma.contentTopicSelection.upsert({
+  // A row that is live already holds its slot; a REMOVED one being revived
+  // takes a slot again, so its overflow is re-derived rather than inherited.
+  const live = !!existing && ALLOWANCE_SELECTION_STATUSES.includes(existing.status);
+  const overflow = live ? existing!.overflow : cap.selected >= Math.max(m.videosOwed, 1);
+  await db.contentTopicSelection.upsert({
     where: { topicId_monthId: { topicId, monthId } },
     create: { topicId, monthId, enrollmentId: t.enrollmentId, clientId: t.clientId, status, source: opts.source, clientUserId: opts.actor.clientUserId ?? null, staffUserId: opts.actor.staffUserId ?? null, callRecordId: opts.callRecordId ?? null, evidenceJson: opts.evidence ? JSON.stringify(opts.evidence).slice(0, 20_000) : null, overflow },
-    update: { status, removedAt: null, removedBy: null, source: opts.source, clientUserId: opts.actor.clientUserId ?? undefined, staffUserId: opts.actor.staffUserId ?? undefined, callRecordId: opts.callRecordId ?? undefined },
+    update: { status, overflow, removedAt: null, removedBy: null, removedReason: null, replacedByTopicId: null, source: opts.source, clientUserId: opts.actor.clientUserId ?? undefined, staffUserId: opts.actor.staffUserId ?? undefined, callRecordId: opts.callRecordId ?? undefined },
   });
   // The legacy single pointer follows a real (non-proposed) selection so every
   // existing reader (roster, tracker, script generator) keeps working.
-  if (status === "SELECTED" && !["SCRIPTED", "FILMED", "EDITING", "DELIVERED"].includes(t.status)) {
-    await prisma.contentTopic.update({ where: { id: topicId }, data: { monthId, status: "SELECTED" } });
+  if (status === "SELECTED" && !PRODUCTION_STATUSES.includes(t.status)) {
+    await db.contentTopic.update({ where: { id: topicId }, data: { monthId, status: "SELECTED" } });
   }
-  await recordTopicEvent(topicId, t.enrollmentId, "SELECTED", opts.actor, { monthId, fromStatus: t.status, toStatus: status === "SELECTED" ? "SELECTED" : t.status, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: overflow ? "Beyond this month's capacity — kept as overflow" : status === "PROPOSED" ? "Proposed from a call — not selected until reconciled" : null });
-  return { overflow, capacity: { owed: m.videosOwed, selected: cap.selected + (overflow || existing ? 0 : 1) }, outcome: status };
+  await recordTopicEvent(topicId, t.enrollmentId, "SELECTED", opts.actor, { monthId, fromStatus: t.status, toStatus: status === "SELECTED" ? "SELECTED" : t.status, sourceRef: opts.callRecordId ?? null, evidence: opts.evidence, note: overflow ? "Beyond this month's capacity — kept as overflow" : status === "PROPOSED" ? "Proposed from a call — not selected until reconciled" : null, db });
+  return { overflow, capacity: { owed: m.videosOwed, selected: cap.selected + (overflow || live ? 0 : 1) }, outcome: status };
 }
 
-/** Remove an uncommitted selection (a scripted/filmed topic stays where it is). */
+/**
+ * Remove an uncommitted selection. CP-07: "committed" is about THIS month —
+ * a script or footage for this topic IN this month — not the topic's global
+ * status. The old test refused on status alone, so reconcileSelection(keep=
+ * false) threw on a call's PROPOSED re-mention of a topic scripted months ago.
+ * A PROPOSED row is the call's suggestion and is always removable.
+ */
 export async function deselectTopic(topicId: string, monthId: string, actor: Actor): Promise<void> {
   const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, status: true, monthId: true } });
   if (!t) throw new Error("Topic not found.");
-  if (["SCRIPTED", "FILMED", "EDITING", "DELIVERED"].includes(t.status)) throw new Error("This topic already has a script or footage — it stays on the month.");
-  await prisma.contentTopicSelection.updateMany({ where: { topicId, monthId, status: { in: ["SELECTED", "PROPOSED", "RECONCILED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: actor.staffUserId ?? actor.clientUserId ?? actor.kind } });
-  if (t.monthId === monthId) await prisma.contentTopic.update({ where: { id: topicId }, data: { monthId: null, status: "SAVED" } });
-  await recordTopicEvent(topicId, t.enrollmentId, "DESELECTED", actor, { monthId, fromStatus: t.status, toStatus: "SAVED" });
+  const sel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId, monthId } }, select: { status: true } });
+  if (sel?.status !== "PROPOSED") {
+    const [script, footage] = await Promise.all([
+      prisma.contentScript.findFirst({ where: { topicId, monthId, historical: false }, select: { id: true } }),
+      prisma.contentVideo.findFirst({ where: { topicId, monthId, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } }),
+    ]);
+    if (script || footage) throw new Error(sel?.status === "CARRIED" ? "This is a carried-over script — swap it for another topic instead (the script is kept)." : "This topic already has a script or footage for this month — it stays on the month.");
+  }
+  await prisma.contentTopicSelection.updateMany({ where: { topicId, monthId, status: { in: ["SELECTED", "PROPOSED", "RECONCILED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: actor.staffUserId ?? actor.clientUserId ?? actor.kind, removedReason: "DESELECTED" } });
+  // The legacy pointer goes back to the bank only when the topic has no script
+  // anywhere: a topic scripted in an earlier month stays SCRIPTED.
+  if (t.monthId === monthId) {
+    const anyScript = await prisma.contentScript.findFirst({ where: { topicId, historical: false }, select: { id: true } });
+    await prisma.contentTopic.update({ where: { id: topicId }, data: anyScript ? { monthId: null } : { monthId: null, status: "SAVED" } });
+  }
+  await recordTopicEvent(topicId, t.enrollmentId, "DESELECTED", actor, { monthId, fromStatus: t.status, toStatus: t.monthId === monthId && !PRODUCTION_STATUSES.includes(t.status) ? "SAVED" : t.status });
 }
 
 /** Staff reconcile a call's PROPOSED selections into real ones (or drop them). */
@@ -231,10 +330,20 @@ export async function topicHistory(topicId: string) {
 
 // ---- the bank, grouped by pillar (Arielle's presentation) ----------------------
 
-export type BankTopic = { id: string; title: string; concept: string | null; pillarId: string | null; pillarLabel: string | null; status: string; approvalState: string | null; source: string; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; monthId: string | null; importedMark: string | null; proposedState: string | null; lastEventAt: string | null };
+export type BankTopic = {
+  id: string; title: string; concept: string | null; pillarId: string | null; pillarLabel: string | null; status: string; approvalState: string | null; source: string;
+  audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; monthId: string | null; importedMark: string | null; proposedState: string | null; lastEventAt: string | null;
+  /** CP-07: the client said "not interested", and why (optional). */
+  clientDeclinedAt: string | null; clientDeclineReason: string | null;
+};
 export type BankGroup = { pillarId: string | null; pillarName: string; topics: BankTopic[] };
 
-export async function topicBankByPillar(enrollmentId: string): Promise<{ groups: BankGroup[]; total: number; archived: number }> {
+/**
+ * The bank by pillar. `declined` is returned BESIDE the groups, not inside
+ * them: a topic the client set aside is not stock, is not on their page, and is
+ * never re-suggested — but it is kept, with the reason, for staff to read.
+ */
+export async function topicBankByPillar(enrollmentId: string): Promise<{ groups: BankGroup[]; total: number; archived: number; declined: BankTopic[] }> {
   const [topics, pillars] = await Promise.all([
     prisma.contentTopic.findMany({ where: { enrollmentId, status: { notIn: ["REJECTED", "ARCHIVED"] } }, orderBy: [{ createdAt: "asc" }] }),
     listPillars(enrollmentId),
@@ -243,21 +352,207 @@ export async function topicBankByPillar(enrollmentId: string): Promise<{ groups:
   const toRow = (t: (typeof topics)[number]): BankTopic => ({
     id: t.id, title: t.title, concept: t.concept, pillarId: t.pillarId, pillarLabel: t.pillar, status: t.status, approvalState: t.approvalState, source: t.source,
     audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, monthId: t.monthId, importedMark: t.importedMark, proposedState: t.proposedState, lastEventAt: t.lastEventAt?.toISOString() ?? null,
+    clientDeclinedAt: t.clientDeclinedAt?.toISOString() ?? null, clientDeclineReason: t.clientDeclineReason,
   });
-  const groups: BankGroup[] = pillars.map((p) => ({ pillarId: p.id, pillarName: p.name, topics: topics.filter((t) => t.pillarId === p.id).map(toRow) }));
-  const unmapped = topics.filter((t) => !t.pillarId || !pillars.some((p) => p.id === t.pillarId));
+  const live = topics.filter((t) => !t.clientDeclinedAt);
+  const groups: BankGroup[] = pillars.map((p) => ({ pillarId: p.id, pillarName: p.name, topics: live.filter((t) => t.pillarId === p.id).map(toRow) }));
+  const unmapped = live.filter((t) => !t.pillarId || !pillars.some((p) => p.id === t.pillarId));
   if (unmapped.length) groups.push({ pillarId: null, pillarName: "Not yet linked to a pillar", topics: unmapped.map(toRow) });
-  return { groups, total: topics.length, archived };
+  return { groups, total: live.length, archived, declined: topics.filter((t) => t.clientDeclinedAt).map(toRow) };
+}
+
+// ---- "Not interested" (CP-07) -----------------------------------------------------
+
+/**
+ * The client says a topic is not for them, optionally why. Nothing is deleted:
+ * the topic stays on the record with the reason, leaves their bank, stops
+ * counting as stock (so replenishment can fill the gap), and its title joins
+ * blockedTopicHashes so no refresh offers it again. Undo is one click.
+ *
+ * Refused for a topic that is already COMMITTED for a month — a reconciled or
+ * carried selection, or a script or footage for that month. Declining is about
+ * the bank; changing a month's plan is a swap.
+ */
+export async function declineTopicForClient(topicId: string, actor: Actor, reason: string | null): Promise<void> {
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, status: true, monthId: true, clientDeclinedAt: true } });
+  if (!t) throw new Error("Topic not found.");
+  if (t.clientDeclinedAt) return;
+  const live = await prisma.contentTopicSelection.findMany({ where: { topicId, status: { in: ALLOWANCE_SELECTION_STATUSES } }, select: { monthId: true, status: true } });
+  for (const s of live) {
+    if (s.status === "RECONCILED" || s.status === "CARRIED") throw new Error("This one is already planned for a month — swap it for another topic instead.");
+    const [script, footage] = await Promise.all([
+      prisma.contentScript.findFirst({ where: { topicId, monthId: s.monthId, historical: false }, select: { id: true } }),
+      prisma.contentVideo.findFirst({ where: { topicId, monthId: s.monthId, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } }),
+    ]);
+    if (script || footage) throw new Error("This one already has a script or footage — swap it for another topic instead.");
+  }
+  const by = actor.clientUserId ?? actor.staffUserId ?? actor.kind;
+  const clean = reason?.trim().slice(0, 500) || null;
+  await prisma.contentTopicSelection.updateMany({ where: { topicId, status: { in: ["SELECTED", "PROPOSED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: by, removedReason: "DECLINED" } });
+  const anyScript = await prisma.contentScript.findFirst({ where: { topicId, historical: false }, select: { id: true } });
+  await prisma.contentTopic.update({
+    where: { id: topicId },
+    data: { clientDeclinedAt: new Date(), clientDeclinedBy: by, clientDeclineReason: clean, ...(t.monthId ? { monthId: null } : {}), ...(t.status === "SELECTED" && !anyScript ? { status: "SAVED" } : {}) },
+  });
+  await recordTopicEvent(topicId, t.enrollmentId, "DECLINED", actor, { fromStatus: t.status, note: clean ? `Not interested: ${clean}` : "Not interested (no reason given)" });
+}
+
+/** Undo "not interested" — back in their bank, on the record. */
+export async function undeclineTopicForClient(topicId: string, actor: Actor): Promise<void> {
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, status: true, clientDeclinedAt: true } });
+  if (!t) throw new Error("Topic not found.");
+  if (!t.clientDeclinedAt) return;
+  await prisma.contentTopic.update({ where: { id: topicId }, data: { clientDeclinedAt: null, clientDeclinedBy: null, clientDeclineReason: null } });
+  await recordTopicEvent(topicId, t.enrollmentId, "REINTRODUCED", actor, { fromStatus: t.status, toStatus: t.status, note: "Back in the bank — the \"not interested\" was undone" });
+}
+
+/**
+ * The client typed an idea that is already on file but HIDDEN from them — a
+ * call's or the AI's topic Jordan has not approved, or one the call recorded as
+ * a proposed rejection (review, Sep 24 2026). createTopic de-duplicates onto
+ * that row, and the portal used to answer "We already have that idea on your
+ * list" about a topic the client could neither see nor select. Jordan's rule is
+ * that a client's own idea is usable without approval, so the row becomes
+ * theirs: source "client", their words and name on it, the call's proposed
+ * rejection cleared — and the event keeps where it came from. Nothing else
+ * moves (approval state, pillar, history). Returns false if it was already
+ * visible, or is not this enrollment's.
+ */
+export async function adoptTopicAsClientIdea(topicId: string, enrollmentId: string, actor: Actor, wording: string): Promise<boolean> {
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true } });
+  if (!t || t.enrollmentId !== enrollmentId) return false;
+  const live = (await prisma.contentTopicSelection.count({ where: { topicId, status: { in: ALLOWANCE_SELECTION_STATUSES } } })) > 0;
+  if (clientCanSeeTopic({ ...t, clientDeclinedAt: null }, live)) return false;
+  // Rejected or archived by the office is a conversation, not an adoption.
+  if (t.status === "REJECTED" || t.status === "ARCHIVED" || t.approvalState === "REJECTED" || t.approvalState === "ARCHIVED") return false;
+  await prisma.contentTopic.update({
+    where: { id: topicId },
+    data: { source: "client", clientUserId: actor.clientUserId ?? undefined, clientWording: wording.slice(0, 200), ...(t.proposedState === "REJECTED" ? { proposedState: null } : {}) },
+  });
+  await recordTopicEvent(topicId, t.enrollmentId, "CREATED", actor, {
+    fromStatus: t.status, toStatus: t.status,
+    evidence: { adoptedFrom: { source: t.source, approvalState: t.approvalState, proposedState: t.proposedState } },
+    note: `The client suggested this themselves on the portal — it was already on file (${t.source === "strategy_call" ? "from a call" : t.source}${t.proposedState === "REJECTED" ? ", as a proposed rejection" : ", not yet approved"}); it is now their idea and usable without approval`,
+  });
+  return true;
+}
+
+/**
+ * An INTERNAL flag on a client's own idea (CP-07): no pillar, or a title close
+ * to something set aside before. Recorded as a DISCUSSED event by SYSTEM for
+ * staff to see. It never blocks — a client's idea is usable without approval
+ * (Jordan, Sep 24).
+ */
+export async function flagClientTopicAlignment(topicId: string): Promise<string | null> {
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, title: true, pillarId: true } });
+  if (!t) return null;
+  const notes: string[] = [];
+  if (!t.pillarId) notes.push("no pillar chosen");
+  const setAside = await prisma.contentTopic.findMany({
+    where: { enrollmentId: t.enrollmentId, id: { not: topicId }, OR: [{ status: { in: ["REJECTED", "ARCHIVED"] } }, { approvalState: { in: ["REJECTED", "ARCHIVED"] } }, { clientDeclinedAt: { not: null } }, { proposedState: "REJECTED" }] },
+    select: { title: true },
+    take: 400,
+  });
+  const close = setAside.find((x) => normalizeTitle(x.title) === normalizeTitle(t.title) || titleSimilarity(x.title, t.title) >= NEAR_DUPLICATE_THRESHOLD);
+  if (close) notes.push(`close to “${close.title}”, which was set aside before`);
+  if (!notes.length) return null;
+  const note = `Alignment check: ${notes.join("; ")} — the client can still use it; worth a look`;
+  await recordTopicEvent(topicId, t.enrollmentId, "DISCUSSED", { kind: "SYSTEM" }, { note });
+  return note;
+}
+
+// ---- the call's own words about a topic (CP-07/CP-08) ------------------------------
+
+export type TopicExcerpt = SourceExcerpt & { callRecordId: string | null; callDateISO: string | null };
+
+/**
+ * Speaker-tagged excerpts recorded for a topic by call analysis — this month's
+ * selection first, else the newest event that carries evidence. Moved here
+ * from contentGeneration so the interview (sufficiency, suggested answers) and
+ * the script generator read ONE source. Shape-tolerant: the evidence JSON has
+ * two historical shapes.
+ */
+export async function topicCallExcerpts(topicId: string, monthId: string | null): Promise<TopicExcerpt[]> {
+  // This month's selection first; then any selection of the topic that carries
+  // call excerpts (a carried topic's excerpts are on the month it came from);
+  // then the newest event that does. "Carries excerpts" (a quoted line has a
+  // `"text"` key in both historical shapes), not merely "has evidence": CARRIED
+  // and swap events hold script ids, and taking one of those would read as "no
+  // call excerpts" and quietly drop them from a revision.
+  const HAS_EXCERPTS = { contains: '"text"' };
+  const sel = (monthId ? await prisma.contentTopicSelection.findFirst({ where: { topicId, monthId, evidenceJson: HAS_EXCERPTS }, select: { evidenceJson: true, callRecordId: true } }) : null)
+    ?? (await prisma.contentTopicSelection.findFirst({ where: { topicId, evidenceJson: HAS_EXCERPTS }, orderBy: { createdAt: "desc" }, select: { evidenceJson: true, callRecordId: true } }));
+  let ev = sel?.evidenceJson ?? null;
+  let callRecordId = sel?.callRecordId ?? null;
+  if (!ev) {
+    const e = await prisma.contentTopicEvent.findFirst({ where: { topicId, evidenceJson: HAS_EXCERPTS }, orderBy: { createdAt: "desc" }, select: { evidenceJson: true, sourceRef: true } });
+    ev = e?.evidenceJson ?? null;
+    if (e?.sourceRef?.startsWith("ProgramCallRecord:")) callRecordId = e.sourceRef.slice("ProgramCallRecord:".length);
+  }
+  if (!ev) return [];
+  let arr: unknown[] = [];
+  try {
+    const v = JSON.parse(ev) as { excerpts?: unknown[] } | unknown[];
+    arr = Array.isArray(v) ? v : Array.isArray(v?.excerpts) ? v.excerpts : [];
+  } catch { return []; }
+  const call = callRecordId ? await prisma.programCallRecord.findUnique({ where: { id: callRecordId }, select: { scheduledStart: true } }).catch(() => null) : null;
+  return arr
+    .filter((x): x is { speaker?: string; speakerName?: string | null; source?: string; text: string } => !!x && typeof (x as { text?: unknown }).text === "string")
+    .map((x): TopicExcerpt => ({
+      speaker: x.speaker === "client" || x.speaker === "jordan" ? x.speaker : "third-party",
+      speakerName: x.speakerName ?? null, source: x.source ?? "call", text: x.text.slice(0, 1200),
+      callRecordId, callDateISO: call?.scheduledStart?.toISOString() ?? null,
+    }))
+    .slice(0, 12);
+}
+
+const squashWords = (s: string) => normalizeTitle(s).split(" ").filter((w) => w.length >= 4);
+
+/**
+ * The excerpts that may reach anything a client could read — a question, a
+ * suggested answer, a script. The raw excerpt list applied no confidentiality
+ * filter at all (excerptsForTopic, found Sep 24), so this drops:
+ *   · a line carrying a [CONFIDENTIAL] mark;
+ *   · a line that overlaps a confidential ClientFact of this client (same
+ *     words, or most of the fact's content words);
+ *   · a line naming another enrolled client (scrubOtherClients).
+ */
+export async function safeTopicExcerpts(topicId: string, monthId: string | null, clientId: string): Promise<{ kept: TopicExcerpt[]; stripped: number }> {
+  const raw = await topicCallExcerpts(topicId, monthId);
+  if (!raw.length) return { kept: [], stripped: 0 };
+  const confidential = await prisma.clientFact.findMany({ where: { clientId, confidential: true }, select: { body: true, excerptJson: true }, take: 200 });
+  const secretTexts: string[] = [];
+  for (const f of confidential) {
+    secretTexts.push(f.body);
+    try { for (const e of (JSON.parse(f.excerptJson ?? "[]") as { text?: string }[])) if (e?.text) secretTexts.push(e.text); } catch { /* shape-tolerant */ }
+  }
+  const overlaps = (text: string) => {
+    const t = normalizeTitle(text);
+    return secretTexts.some((sec) => {
+      const n = normalizeTitle(sec);
+      if (!n) return false;
+      if (t.includes(n) || n.includes(t)) return true;
+      const words = squashWords(sec);
+      if (words.length < 3) return false;
+      const hit = words.filter((w) => t.includes(w)).length;
+      return hit / words.length >= 0.6;
+    });
+  };
+  const cleared = raw.filter((e) => !CONFIDENTIAL_RE.test(e.text) && !overlaps(e.text));
+  const { scrubOtherClients } = await import("@/lib/contentGeneration");
+  const scrub = await scrubOtherClients(clientId, cleared.map((e) => e.text));
+  const kept = cleared.filter((e) => scrub.kept.includes(e.text));
+  return { kept, stripped: raw.length - kept.length };
 }
 
 // ---- refresh runs + suggestions ---------------------------------------------------
 
 export type RefreshKind = "BANK" | "REFRESH" | "RECOMMENDATION";
 
-/** Everything a refresh must not re-suggest: archived/rejected topics and archived suggestions, by dedupe hash. */
+/** Everything a refresh must not re-suggest: archived/rejected topics, topics the client said "not interested" to (CP-07), and archived suggestions, by dedupe hash. */
 export async function blockedTopicHashes(enrollmentId: string): Promise<Set<string>> {
   const [topics, suggs] = await Promise.all([
-    prisma.contentTopic.findMany({ where: { enrollmentId, OR: [{ status: { in: ["REJECTED", "ARCHIVED"] } }, { approvalState: { in: ["REJECTED", "ARCHIVED"] } }] }, select: { title: true, dedupeHash: true } }),
+    prisma.contentTopic.findMany({ where: { enrollmentId, OR: [{ status: { in: ["REJECTED", "ARCHIVED"] } }, { approvalState: { in: ["REJECTED", "ARCHIVED"] } }, { clientDeclinedAt: { not: null } }] }, select: { title: true, dedupeHash: true } }),
     prisma.contentTopicSuggestion.findMany({ where: { enrollmentId, disposition: "ARCHIVED" }, select: { title: true, dedupeHash: true } }),
   ]);
   const set = new Set<string>();
@@ -271,13 +566,14 @@ export async function pendingSuggestionHashes(enrollmentId: string): Promise<Set
   return new Set(rows.map((r) => r.dedupeHash ?? topicDedupeHash(r.title)));
 }
 
+type RefreshRequest = { enrollmentId: string; kind: RefreshKind; monthId?: string | null; topicsPerPillar?: number | null; pillarId?: string | null; keep?: number | null };
+
 /**
- * Start (or join) a refresh run. Duplicate clicks with the same inputs
- * collide on dedupeKey while a run is active → the caller gets the existing
- * run back. Execution is synchronous for a staff click (the AI half is in
- * contentGeneration.ts); the row records lease/attempts either way.
+ * The run's inputs and its dedupe key — ONE computation, so a person's click
+ * and the unattended queue collide on the same key for the same work (a click
+ * while the cron's run is queued claims that run instead of paying twice).
  */
-export async function startTopicRefresh(opts: { enrollmentId: string; kind: RefreshKind; requestedBy: string; monthId?: string | null; topicsPerPillar?: number | null; pillarId?: string | null; unattended?: boolean; /** Store only the top N new suggestions (a single-suggestion regeneration keeps 1); the prompt itself always asks for the policy's count. */ keep?: number | null }): Promise<{ runId: string; joined: boolean }> {
+async function refreshPlan(opts: RefreshRequest) {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: opts.enrollmentId }, select: { clientId: true } });
   if (!e) throw new Error("Enrollment not found.");
   const [policy, strategy] = await Promise.all([activePolicyVersion(), approvedStrategy(opts.enrollmentId)]);
@@ -286,23 +582,70 @@ export async function startTopicRefresh(opts: { enrollmentId: string; kind: Refr
   const perPillar = Math.min(Math.max(opts.topicsPerPillar ?? policy.topicsPerPillar, GENERATION_POLICY.topicsPerPillar.min), policy.topicsPerPillarMax);
   const keep = opts.keep && opts.keep > 0 ? Math.floor(opts.keep) : null;
   const inputsHash = sha256(JSON.stringify({ s: strategy?.versionId ?? null, p: policy.id, n: perPillar, m: opts.monthId ?? null, pillar: opts.pillarId ?? null, keep }));
-  const dedupeKey = `${opts.enrollmentId}:${opts.kind}:${inputsHash}`;
-  // A run left RUNNING past its lease (function timeout, deploy mid-call) must
-  // not hold the dedupe key forever — every later click would "join" a corpse.
+  return {
+    clientId: e.clientId, policyId: policy.id, strategyVersionId: strategy?.versionId ?? null, perPillar, keep,
+    dedupeKey: `${opts.enrollmentId}:${opts.kind}:${inputsHash}`,
+    inputs: { strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, topicsPerPillar: perPillar, pillarId: opts.pillarId ?? null, keep },
+  };
+}
+
+/** A run left RUNNING past its lease (function timeout, deploy mid-call) must not hold the dedupe key forever — every later click would "join" a corpse. */
+async function expireStaleRefreshLeases(): Promise<void> {
   await prisma.contentTopicRefreshRun.updateMany({
     where: { status: "RUNNING", leaseUntil: { lt: new Date() } },
     data: { status: "FAILED", lastError: "Lease expired — the run never finished (timed out or the server restarted). Start it again.", lastErrorAt: new Date(), finishedAt: new Date(), dedupeKey: null, leaseUntil: null, leaseBy: null },
   }).catch(() => {});
-  const active = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true } });
+}
+
+/** Take a QUEUED run for execution. count === 1 is the only proof the run is ours. */
+async function claimQueuedRun(runId: string, leaseBy: string): Promise<boolean> {
+  const r = await prisma.contentTopicRefreshRun.updateMany({
+    where: { id: runId, status: "QUEUED" },
+    data: { status: "RUNNING", leaseUntil: new Date(Date.now() + 10 * 60_000), leaseBy, attempts: { increment: 1 }, startedAt: new Date(), nextAttemptAt: null },
+  });
+  return r.count === 1;
+}
+
+/**
+ * Start (or join) a refresh run. Duplicate clicks with the same inputs
+ * collide on dedupeKey while a run is active → the caller gets the existing
+ * run back. Execution is synchronous for a staff click (the AI half is in
+ * contentGeneration.ts); the row records lease/attempts either way.
+ *
+ * CP-07: a person's whole-bank click (no pillar) takes over a whole-bank run
+ * the queue is still holding — approving a strategy queues one, and it only
+ * runs once `topic_refresh` is on. Joining it would have told Jordan "already
+ * running" about a job that may never start; running it is what he asked for.
+ */
+export async function startTopicRefresh(opts: RefreshRequest & { requestedBy: string; unattended?: boolean; /** Store only the top N new suggestions (a single-suggestion regeneration keeps 1); the prompt itself always asks for the policy's count. */ keep?: number | null }): Promise<{ runId: string; joined: boolean }> {
+  const plan = await refreshPlan(opts);
+  const { dedupeKey, keep } = plan;
+  await expireStaleRefreshLeases();
+  const person = !opts.unattended;
+  const active = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true, status: true } });
+  if (active && !(person && active.status === "QUEUED")) return { runId: active.id, joined: true };
+  const queuedWhole = person && !opts.pillarId && !keep && opts.kind !== "RECOMMENDATION"
+    ? active ?? (await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: opts.enrollmentId, status: "QUEUED", kind: { in: ["BANK", "REFRESH"] } }, orderBy: { createdAt: "asc" }, select: { id: true, inputsJson: true } }))
+        .find((r) => { try { return !(JSON.parse(r.inputsJson ?? "{}") as { pillarId?: string | null }).pillarId; } catch { return false; } }) ?? null
+    : active;
+  if (queuedWhole && (await claimQueuedRun(queuedWhole.id, opts.requestedBy))) {
+    // The queued row's own inputs, not this click's: it may be a pillar refill
+    // with the same key, and its `keep` is part of what was asked for.
+    const row = await prisma.contentTopicRefreshRun.findUnique({ where: { id: queuedWhole.id }, select: { inputsJson: true } });
+    let inputs: { pillarId?: string | null; keep?: number | null } = {};
+    try { inputs = JSON.parse(row?.inputsJson ?? "{}"); } catch { inputs = {}; }
+    await executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null });
+    return { runId: queuedWhole.id, joined: false };
+  }
   if (active) return { runId: active.id, joined: true };
   let runId: string;
   try {
     const row = await prisma.contentTopicRefreshRun.create({
       data: {
-        enrollmentId: opts.enrollmentId, clientId: e.clientId, kind: opts.kind, strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id,
+        enrollmentId: opts.enrollmentId, clientId: plan.clientId, kind: opts.kind, strategyVersionId: plan.strategyVersionId, policyVersionId: plan.policyId,
         requestedBy: opts.requestedBy, monthId: opts.monthId ?? null, status: "RUNNING", attempts: 1, leaseUntil: new Date(Date.now() + 10 * 60_000), leaseBy: opts.requestedBy,
-        topicsPerPillar: perPillar, dedupeKey, startedAt: new Date(),
-        inputsJson: JSON.stringify({ strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, topicsPerPillar: perPillar, pillarId: opts.pillarId ?? null, keep }),
+        topicsPerPillar: plan.perPillar, dedupeKey, startedAt: new Date(),
+        inputsJson: JSON.stringify(plan.inputs),
       },
       select: { id: true },
     });
@@ -312,17 +655,207 @@ export async function startTopicRefresh(opts: { enrollmentId: string; kind: Refr
     if (again) return { runId: again.id, joined: true };
     throw new Error("Could not start the refresh.");
   }
-  try {
-    if (opts.kind === "RECOMMENDATION") await executeRecommendationRun(runId);
-    else {
-      const { executeTopicRefreshRun } = await import("@/lib/contentGeneration");
-      await executeTopicRefreshRun(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep });
-    }
-  } catch (e) {
-    await prisma.contentTopicRefreshRun.update({ where: { id: runId }, data: { status: "FAILED", lastError: (e instanceof Error ? e.message : String(e)).slice(0, 2000), lastErrorAt: new Date(), finishedAt: new Date(), dedupeKey: null, leaseUntil: null } }).catch(() => {});
-    throw e;
+  if (opts.kind === "RECOMMENDATION") {
+    try { await executeRecommendationRun(runId); } catch (e) { await failRefreshRun(runId, e); throw e; }
+  } else {
+    await executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep });
   }
   return { runId, joined: false };
+}
+
+async function failRefreshRun(runId: string, e: unknown): Promise<void> {
+  await prisma.contentTopicRefreshRun.update({ where: { id: runId }, data: { status: "FAILED", lastError: (e instanceof Error ? e.message : String(e)).slice(0, 2000), lastErrorAt: new Date(), finishedAt: new Date(), dedupeKey: null, leaseUntil: null, leaseBy: null } }).catch(() => {});
+}
+
+/** Run a BANK/REFRESH row we hold the lease on. A failure is recorded and rethrown; the caller decides whether a closed switch is a pause. */
+async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null }): Promise<void> {
+  const { executeTopicRefreshRun } = await import("@/lib/contentGeneration");
+  try {
+    await executeTopicRefreshRun(runId, o);
+  } catch (e) {
+    // A closed switch is a PAUSE, not a failure (the transcriptJobs rule,
+    // 4b8658e): the run goes back on the queue with its attempt refunded, so
+    // turning `ai_runs` back on resumes it instead of leaving a FAILED row
+    // somebody has to notice and re-click.
+    if (e instanceof Error && e.name === "AutomationDisabledError") {
+      await prisma.contentTopicRefreshRun.update({ where: { id: runId }, data: { status: "QUEUED", attempts: { decrement: 1 }, leaseUntil: null, leaseBy: null, startedAt: null } }).catch(() => {});
+    } else {
+      await failRefreshRun(runId, e);
+    }
+    throw e;
+  }
+}
+
+// ---- the bank keeps itself stocked (CP-07) -------------------------------------------
+//
+// Until today the ONLY callers of bank generation were two staff buttons. The
+// onboarding ladder "checked for" a bank run and nothing created one, and
+// `topic_refresh` — the switch the settings screen said gated this — was read by
+// nothing at all. Now:
+//   · approving a strategy QUEUES the initial bank (no AI call, no spend);
+//   · the hourly sweep, behind `topic_refresh`, runs queued work and queues a
+//     per-pillar refill when a pillar's usable stock falls below the policy's
+//     target (10) — pending suggestions count as stock, so an unreviewed
+//     backlog stops new spend, and a pillar is refilled at most once a week;
+//   · `ai_runs` still gates the model call underneath, and a closed switch puts
+//     the run back on the queue rather than failing it.
+// Suggestions are what a run produces, never topics: Jordan approves every
+// AI topic before a client can see it.
+
+/** Queue a BANK/REFRESH run for the unattended drain. Spends nothing. Joins an active run with the same inputs. */
+export async function queueTopicRefresh(opts: { enrollmentId: string; kind: "BANK" | "REFRESH"; requestedBy: string; pillarId?: string | null; keep?: number | null; reason: string }): Promise<{ runId: string; joined: boolean }> {
+  const plan = await refreshPlan(opts);
+  await expireStaleRefreshLeases();
+  const active = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey: plan.dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true } });
+  if (active) return { runId: active.id, joined: true };
+  try {
+    const row = await prisma.contentTopicRefreshRun.create({
+      data: {
+        enrollmentId: opts.enrollmentId, clientId: plan.clientId, kind: opts.kind, strategyVersionId: plan.strategyVersionId, policyVersionId: plan.policyId,
+        requestedBy: opts.requestedBy, status: "QUEUED", attempts: 0, topicsPerPillar: plan.perPillar, dedupeKey: plan.dedupeKey,
+        inputsJson: JSON.stringify({ ...plan.inputs, reason: opts.reason.slice(0, 200) }),
+      },
+      select: { id: true },
+    });
+    return { runId: row.id, joined: false };
+  } catch {
+    const again = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey: plan.dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true } });
+    if (again) return { runId: again.id, joined: true };
+    throw new Error("Could not queue the topic bank.");
+  }
+}
+
+/** Run up to `max` queued BANK/REFRESH runs, oldest first. A closed `ai_runs` switch stops the drain and leaves every run queued. */
+export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: number; now?: Date } = {}): Promise<{ ran: number; succeeded: number; failed: number; paused: string | null; lastError: string | null }> {
+  const started = Date.now();
+  const max = opts.max ?? 2;
+  const budgetMs = opts.budgetMs ?? 60_000;
+  await expireStaleRefreshLeases();
+  const now = opts.now ?? new Date();
+  const due = await prisma.contentTopicRefreshRun.findMany({
+    where: { status: "QUEUED", kind: { in: ["BANK", "REFRESH"] }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+    orderBy: { createdAt: "asc" },
+    take: max * 3,
+    select: { id: true, enrollmentId: true, inputsJson: true },
+  });
+  let ran = 0, succeeded = 0, failed = 0;
+  let paused: string | null = null;
+  let lastError: string | null = null;
+  for (const run of due) {
+    if (ran >= max || Date.now() - started > budgetMs) break;
+    if (!(await claimQueuedRun(run.id, "topic-bank-cron"))) continue;
+    ran++;
+    let inputs: { pillarId?: string | null; keep?: number | null } = {};
+    try { inputs = JSON.parse(run.inputsJson ?? "{}"); } catch { inputs = {}; }
+    try {
+      await executeClaimedRefresh(run.id, { unattended: true, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null });
+      const done = await prisma.contentTopicRefreshRun.findUnique({ where: { id: run.id }, select: { status: true, generatedCount: true } });
+      if (done?.status === "SUCCEEDED") {
+        succeeded++;
+        if (done.generatedCount > 0) await bellSuggestionsReady(run.id, run.enrollmentId, done.generatedCount);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (e instanceof Error && e.name === "AutomationDisabledError") { paused = msg.slice(0, 300); ran--; break; }
+      failed++;
+      lastError = msg.slice(0, 300);
+    }
+  }
+  return { ran, succeeded, failed, paused, lastError };
+}
+
+/** Jordan's bell when unattended suggestions are waiting. Internal; never for a TEST client. */
+async function bellSuggestionsReady(runId: string, enrollmentId: string, n: number): Promise<void> {
+  try {
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+    const c = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }) : null;
+    const { isTestClientName } = await import("@/lib/testClients");
+    if (isTestClientName(c?.name)) return;
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "topic_suggestions_ready",
+      title: `Topic suggestions to review — ${c?.name ?? "client"}`.slice(0, 90),
+      body: `${n} new suggestion${n === 1 ? "" : "s"} for the bank. Nothing reaches the client until you accept it.`,
+      href: `/content/${enrollmentId}?tab=ideas`,
+      targets: [{ roles: ["OWNER"] }],
+      dedupeKey: `topic-suggestions:${runId}`,
+    });
+  } catch { /* the bell is best-effort; the suggestions are on the Video Topics tab either way */ }
+}
+
+export type PillarStock = { pillarId: string; pillarName: string; usable: number; pending: number; declined: number; target: number; need: number };
+
+/** Usable topics per active pillar against the policy's target. Pending suggestions count — Jordan's backlog is stock he has not reviewed yet. */
+export async function bankStock(enrollmentId: string): Promise<PillarStock[]> {
+  const [policy, pillars, topics, pending] = await Promise.all([
+    activePolicyVersion(),
+    listPillars(enrollmentId),
+    prisma.contentTopic.findMany({ where: { enrollmentId, pillarId: { not: null } }, select: { pillarId: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true } }),
+    prisma.contentTopicSuggestion.groupBy({ by: ["pillarId"], where: { enrollmentId, disposition: "PENDING", kind: "BANK" }, _count: { _all: true } }),
+  ]);
+  const target = policy.topicsPerPillar;
+  return pillars.map((p) => {
+    const mine = topics.filter((t) => t.pillarId === p.id);
+    const usable = mine.filter(isUsableStock).length;
+    const waiting = pending.find((g) => g.pillarId === p.id)?._count._all ?? 0;
+    return { pillarId: p.id, pillarName: p.name, usable, pending: waiting, declined: mine.filter((t) => t.clientDeclinedAt).length, target, need: Math.max(0, target - usable - waiting) };
+  });
+}
+
+const REFILL_COOLDOWN_MS = 7 * 86_400_000;
+const FAILED_INITIAL_BACKOFF_MS = 86_400_000;
+
+/**
+ * HOURLY, behind `topic_refresh`. For each ACTIVE enrollment with an approved
+ * strategy and pillars: queue the initial bank if none has run since the
+ * approval, else queue a targeted refill for each pillar below target (at most
+ * once a week per pillar). Then drain. Nothing here reaches a client.
+ */
+export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; now?: Date } = {}): Promise<{ skipped: string } | { queued: number; initial: number; refills: number; drained: Awaited<ReturnType<typeof drainTopicRefreshQueue>> }> {
+  if (!(await isAutomationEnabled("topic_refresh"))) return { skipped: "topic_refresh is off" };
+  const now = opts.now ?? new Date();
+  let queued = 0, initial = 0, refills = 0;
+  let lastError: string | null = null;
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  for (const e of live) {
+    try {
+      const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: e.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { approvedAt: true, createdAt: true } });
+      if (!approved) continue;
+      const pillars = await listPillars(e.id);
+      if (!pillars.length) continue;
+      const since = approved.approvedAt ?? approved.createdAt;
+      const runs = await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: e.id, kind: { in: ["BANK", "REFRESH"] }, createdAt: { gte: since } }, select: { status: true, inputsJson: true, createdAt: true } });
+      const counted = runs.filter((r) => r.status !== "FAILED" && r.status !== "CANCELLED");
+      if (!counted.length) {
+        // A run that failed in the last day is not retried every hour — a
+        // deterministic failure would otherwise be a 16k-token loop.
+        if (runs.some((r) => r.status === "FAILED" && r.createdAt.getTime() > now.getTime() - FAILED_INITIAL_BACKOFF_MS)) continue;
+        const bankTopics = await prisma.contentTopic.count({ where: { enrollmentId: e.id, status: { notIn: ["REJECTED", "ARCHIVED"] } } });
+        const r = await queueTopicRefresh({ enrollmentId: e.id, kind: bankTopics ? "REFRESH" : "BANK", requestedBy: "cron", reason: "initial bank after strategy approval" });
+        if (!r.joined) { queued++; initial++; }
+        continue;
+      }
+      const pillarOf = (r: { inputsJson: string | null }) => { try { return (JSON.parse(r.inputsJson ?? "{}") as { pillarId?: string | null }).pillarId ?? null; } catch { return null; } };
+      const active = await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: e.id, kind: { in: ["BANK", "REFRESH"] }, status: { in: ["QUEUED", "RUNNING"] } }, select: { inputsJson: true } });
+      // A whole-bank run still waiting covers every pillar.
+      if (active.some((r) => !pillarOf(r))) continue;
+      // The weekly cooldown is per pillar and counts only that pillar's own
+      // refills, whatever became of them.
+      const recent = await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: e.id, kind: "REFRESH", createdAt: { gte: new Date(now.getTime() - REFILL_COOLDOWN_MS) } }, select: { inputsJson: true } });
+      for (const p of await bankStock(e.id)) {
+        if (p.need <= 0) continue;
+        if (active.some((r) => pillarOf(r) === p.pillarId) || recent.some((r) => pillarOf(r) === p.pillarId)) continue;
+        const r = await queueTopicRefresh({ enrollmentId: e.id, kind: "REFRESH", requestedBy: "cron", pillarId: p.pillarId, keep: p.need, reason: `${p.pillarName}: ${p.usable} usable + ${p.pending} pending of ${p.target}` });
+        if (!r.joined) { queued++; refills++; }
+      }
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  const drained = await drainTopicRefreshQueue({ max: opts.max ?? 2, budgetMs: opts.budgetMs ?? 60_000, now });
+  // A pause Jordan asked for is not an error on the monitoring screen.
+  await recordAutomationRun("topic_refresh", lastError ?? drained.lastError).catch(() => {});
+  return { queued, initial, refills, drained };
 }
 
 export async function finishRefreshRun(runId: string, patch: { status: "SUCCEEDED" | "NEEDS_INPUT" | "FAILED"; generatedCount?: number; changeSummary?: string | null; missingContext?: unknown; pillarCount?: number; aiRunId?: string | null; lastError?: string | null }): Promise<void> {
@@ -476,4 +1009,218 @@ export async function executeRecommendationRun(runId: string): Promise<void> {
     })),
   });
   await finishRefreshRun(runId, { status: "SUCCEEDED", generatedCount: rows.length, pillarCount: pillars.length, changeSummary: `${result.recommended.length} recommended · ${result.alternatives.length} alternatives · ${result.excluded.length} excluded · ${result.historyNote}${unlinkedNote}` });
+}
+
+// ---- CARRYOVER AND SWAP (CP-07, Sep 24 2026) ---------------------------------------
+//
+// "Topics carried forward occupy the next month's allowance, but can be
+// replaced if unfilmed" (the audit's workflow, Jordan's rule). Until today
+// CARRIED was READ in six places and WRITTEN in none: a month was minted with
+// nothing carried into it, and a scripted-but-unfilmed topic simply stayed on a
+// past month where no reader of "this month's scripts" would ever see it.
+//
+// A carry MOVES THE POINTERS and records where they came from. Seven readers
+// key "this month's script" on ContentScript.monthId (drafting, filming,
+// preparation, the overview, the workspace), so moving the script's month is
+// what makes every one of them agree without touching any of them; the old
+// month is kept on the row (carriedFromMonthId) and on a CARRIED event with the
+// versions, so nothing about the script's history is lost. The previous month's
+// selection is left exactly as it was: that WAS the plan then.
+//
+// A swap PARKS the script (monthId → null, status stays SCRIPTED — "scripted,
+// not filmed") and puts the replacement in the freed slot, in one transaction,
+// so the allowance never counts both. Selecting a parked topic again re-uses
+// its script through the same carry — nothing is drafted twice.
+
+export type CarryReason = "ROLLOVER" | "RESELECTED";
+export type CarryResult = {
+  outcome: "CARRIED" | "SELECTED" | "SKIPPED";
+  /** A person-facing refusal (the caller throws it); absent on a quiet skip. */
+  refusal?: string;
+  note?: string;
+  selectionId?: string;
+  scriptId?: string;
+  fromMonthId?: string | null;
+  overflow?: boolean;
+  capacity?: { owed: number; selected: number };
+};
+
+const monthIsOpen = (m: { historical: boolean; status: string }) => !m.historical && !["CLOSED", "CANCELLED", "IMPORTED"].includes(m.status);
+
+/** Move a scripted, unfilmed topic (and its script) into `toMonthId`. Runs in its own transaction unless given one. */
+export async function carryScriptedTopic(topicId: string, toMonthId: string, opts: { actor: Actor; reason: CarryReason; source?: string; db?: Db; now?: Date }): Promise<CarryResult> {
+  const work = async (tx: Db): Promise<CarryResult> => {
+    const [t, to] = await Promise.all([
+      tx.contentTopic.findUnique({ where: { id: topicId }, select: { id: true, enrollmentId: true, clientId: true, status: true, monthId: true, title: true } }),
+      tx.contentMonth.findUnique({ where: { id: toMonthId }, select: { id: true, enrollmentId: true, monthKey: true, videosOwed: true, historical: true, status: true } }),
+    ]);
+    if (!t || !to) return { outcome: "SKIPPED", refusal: "Topic or month not found." };
+    if (t.enrollmentId !== to.enrollmentId) return { outcome: "SKIPPED", refusal: "That month belongs to another client." };
+    if (!monthIsOpen(to)) return { outcome: "SKIPPED", refusal: "That month is closed." };
+    if (["FILMED", "EDITING", "DELIVERED"].includes(t.status)) return { outcome: "SKIPPED", note: "already filmed" };
+    const footage = await tx.contentVideo.findFirst({ where: { topicId, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } });
+    if (footage) return { outcome: "SKIPPED", note: "already filmed" };
+    const script = await tx.contentScript.findFirst({ where: { topicId, historical: false }, orderBy: { updatedAt: "desc" }, select: { id: true, monthId: true, carriedFromMonthId: true, currentVersionId: true, sharedVersionId: true, clientApprovedVersionId: true } });
+    if (!script) return { outcome: "SKIPPED", note: "no script to carry" };
+    if (script.monthId === toMonthId) return { outcome: "SKIPPED", note: "already on that month" };
+    // Still planned in a month that is open now or later — including the one
+    // its script sits in: moving the script would take it from a month that is
+    // about to film it. A past month's selection is history and does not count.
+    const elsewhere = await tx.contentTopicSelection.findMany({ where: { topicId, monthId: { not: toMonthId }, status: { in: ALLOWANCE_SELECTION_STATUSES } }, select: { monthId: true } });
+    if (elsewhere.length) {
+      const { etMonthKey } = await import("@/lib/contentProgram");
+      const current = etMonthKey(opts.now ?? new Date());
+      const others = await tx.contentMonth.findMany({ where: { id: { in: elsewhere.map((x) => x.monthId) } }, select: { id: true, monthKey: true, historical: true, status: true } });
+      const live = others.find((m) => monthIsOpen(m) && m.monthKey >= current);
+      if (live) return { outcome: "SKIPPED", refusal: `This topic is already planned for ${live.monthKey} — swap it out there first.` };
+    }
+    const cap = await monthCapacity(toMonthId, tx);
+    const existing = await tx.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId, monthId: toMonthId } } });
+    const live = !!existing && ALLOWANCE_SELECTION_STATUSES.includes(existing.status);
+    const overflow = live ? existing!.overflow : cap.selected >= Math.max(to.videosOwed, 1);
+    const status = opts.reason === "ROLLOVER" ? "CARRIED" : "SELECTED";
+    const fromMonthId = script.monthId ?? script.carriedFromMonthId ?? null;
+    const source = opts.source ?? (opts.reason === "ROLLOVER" ? "carryover" : opts.actor.kind === "CLIENT" ? "client" : "staff");
+    const sel = await tx.contentTopicSelection.upsert({
+      where: { topicId_monthId: { topicId, monthId: toMonthId } },
+      create: {
+        topicId, monthId: toMonthId, enrollmentId: t.enrollmentId, clientId: t.clientId, status, source, overflow,
+        clientUserId: opts.actor.clientUserId ?? null, staffUserId: opts.actor.staffUserId ?? null, carriedFromMonthId: fromMonthId, carriedScriptId: script.id,
+      },
+      update: { status, overflow, source, removedAt: null, removedBy: null, removedReason: null, replacedByTopicId: null, carriedFromMonthId: fromMonthId, carriedScriptId: script.id },
+      select: { id: true },
+    });
+    await tx.contentScript.update({ where: { id: script.id }, data: { monthId: toMonthId, carriedFromMonthId: fromMonthId } });
+    await tx.contentTopic.update({ where: { id: topicId }, data: { monthId: toMonthId } });
+    await recordTopicEvent(topicId, t.enrollmentId, "CARRIED", opts.actor, {
+      monthId: toMonthId, fromStatus: t.status, toStatus: t.status, db: tx,
+      evidence: { fromMonthId, scriptId: script.id, currentVersionId: script.currentVersionId, sharedVersionId: script.sharedVersionId, clientApprovedVersionId: script.clientApprovedVersionId, reason: opts.reason },
+      note: opts.reason === "ROLLOVER" ? `Scripted and not filmed — carried into ${to.monthKey}; the script and every version come with it, and it can be swapped for another topic.` : `Its script (not filmed yet) is re-used for ${to.monthKey} — nothing new is drafted.`,
+    });
+    return { outcome: opts.reason === "ROLLOVER" ? "CARRIED" : "SELECTED", selectionId: sel.id, scriptId: script.id, fromMonthId, overflow, capacity: { owed: to.videosOwed, selected: cap.selected + (overflow || live ? 0 : 1) } };
+  };
+  if (opts.db) return work(opts.db);
+  return prisma.$transaction((tx) => work(tx), { maxWait: 15_000, timeout: 30_000 });
+}
+
+export type CarryCandidate = { topicId: string; title: string; fromMonthKey: string; toMonthKey: string; scriptId: string };
+
+/**
+ * Carry every scripted, unfilmed topic from a PAST month of this enrollment into
+ * the current ET month. `dryRun` returns the list and writes nothing — Jordan
+ * sees exactly which scripts would move before the switch goes on. A parked
+ * topic (monthId null, after a swap) is never auto-carried: someone chose to
+ * take it off a month.
+ */
+export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Date; dryRun?: boolean; actor?: Actor } = {}): Promise<{ candidates: CarryCandidate[]; carried: number; skipped: { topicId: string; why: string }[] }> {
+  const now = opts.now ?? new Date();
+  const { etMonthKey } = await import("@/lib/contentProgram");
+  const currentKey = etMonthKey(now);
+  const current = await prisma.contentMonth.findUnique({ where: { enrollmentId_monthKey: { enrollmentId, monthKey: currentKey } }, select: { id: true, monthKey: true, historical: true, status: true } });
+  if (!current || !monthIsOpen(current)) return { candidates: [], carried: 0, skipped: [] };
+  const past = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false, monthKey: { lt: currentKey } }, select: { id: true, monthKey: true } });
+  if (!past.length) return { candidates: [], carried: 0, skipped: [] };
+  const keyOf = new Map(past.map((m) => [m.id, m.monthKey]));
+  const topics = await prisma.contentTopic.findMany({ where: { enrollmentId, status: "SCRIPTED", monthId: { in: past.map((m) => m.id) } }, select: { id: true, title: true, monthId: true } });
+  const candidates: CarryCandidate[] = [];
+  for (const t of topics) {
+    const [script, footage, ahead] = await Promise.all([
+      prisma.contentScript.findFirst({ where: { topicId: t.id, historical: false }, orderBy: { updatedAt: "desc" }, select: { id: true } }),
+      prisma.contentVideo.findFirst({ where: { topicId: t.id, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } }),
+      prisma.contentTopicSelection.findFirst({ where: { topicId: t.id, status: { in: ALLOWANCE_SELECTION_STATUSES }, monthId: { notIn: past.map((m) => m.id) } }, select: { id: true } }),
+    ]);
+    if (!script || footage || ahead) continue;
+    candidates.push({ topicId: t.id, title: t.title, fromMonthKey: keyOf.get(t.monthId!) ?? "?", toMonthKey: current.monthKey, scriptId: script.id });
+  }
+  if (opts.dryRun) return { candidates, carried: 0, skipped: [] };
+  let carried = 0;
+  const skipped: { topicId: string; why: string }[] = [];
+  for (const c of candidates) {
+    const r = await carryScriptedTopic(c.topicId, current.id, { actor: opts.actor ?? { kind: "SYSTEM" }, reason: "ROLLOVER", now });
+    if (r.outcome === "CARRIED") carried++;
+    else skipped.push({ topicId: c.topicId, why: r.refusal ?? r.note ?? "skipped" });
+  }
+  return { candidates, carried, skipped };
+}
+
+/** HOURLY, behind `topic_carryover` (a missing row is OFF). Must run after the month is minted (contentProgram). */
+export async function sweepCarryover(opts: { now?: Date } = {}): Promise<{ skipped: string } | { enrollments: number; carried: number; skippedTopics: number }> {
+  if (!(await isAutomationEnabled("topic_carryover"))) return { skipped: "topic_carryover is off" };
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  let carried = 0, skippedTopics = 0, touched = 0;
+  let lastError: string | null = null;
+  for (const e of live) {
+    try {
+      const r = await carryUnfilmedTopics(e.id, { now: opts.now });
+      if (r.carried) touched++;
+      carried += r.carried;
+      skippedTopics += r.skipped.length;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  await recordAutomationRun("topic_carryover", lastError).catch(() => {});
+  return { enrollments: touched, carried, skippedTopics };
+}
+
+/**
+ * Replace a carried-over, unfilmed topic with another one for the same month.
+ * The carried selection is REMOVED (reason SWAPPED, pointing at the
+ * replacement); its script, every version and every client decision stay
+ * exactly as they are, parked with the topic as "scripted, not filmed"; the
+ * replacement takes the freed slot. One transaction: the allowance never counts
+ * both, and a failure leaves the carry in place.
+ */
+export async function swapCarriedTopic(selectionId: string, replacementTopicId: string, actor: Actor): Promise<{ overflow: boolean; capacity: { owed: number; selected: number } }> {
+  const sel = await prisma.contentTopicSelection.findUnique({ where: { id: selectionId } });
+  if (!sel || !(sel.status === "CARRIED" || (sel.carriedScriptId && ALLOWANCE_SELECTION_STATUSES.includes(sel.status)))) throw new Error("That isn't a carried-over topic any more.");
+  if (sel.topicId === replacementTopicId) throw new Error("Pick a different topic to swap in.");
+  const [month, topic, repl] = await Promise.all([
+    prisma.contentMonth.findUnique({ where: { id: sel.monthId }, select: { id: true, monthKey: true, historical: true, status: true, enrollmentId: true } }),
+    prisma.contentTopic.findUnique({ where: { id: sel.topicId }, select: { id: true, title: true, status: true, enrollmentId: true } }),
+    prisma.contentTopic.findUnique({ where: { id: replacementTopicId }, select: { id: true, title: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true, enrollmentId: true } }),
+  ]);
+  if (!month || !topic || !repl) throw new Error("Topic or month not found.");
+  if (!monthIsOpen(month)) throw new Error("That month is closed.");
+  if (repl.enrollmentId !== month.enrollmentId || topic.enrollmentId !== month.enrollmentId) throw new Error("That topic belongs to another client.");
+  if (["FILMED", "EDITING", "DELIVERED"].includes(topic.status)) throw new Error("That one has been filmed — there is nothing to swap.");
+  const footage = await prisma.contentVideo.findFirst({ where: { topicId: topic.id, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } });
+  if (footage) throw new Error("That one has been filmed — there is nothing to swap.");
+  if (!clientCanSeeTopic(repl, false)) throw new Error("That topic isn't available to swap in.");
+  if (["FILMED", "EDITING", "DELIVERED"].includes(repl.status)) throw new Error("That topic has already been filmed.");
+  const already = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: repl.id, monthId: month.id } }, select: { status: true } });
+  if (already && ALLOWANCE_SELECTION_STATUSES.includes(already.status)) throw new Error("That topic is already planned for this month.");
+  const by = actor.clientUserId ?? actor.staffUserId ?? actor.kind;
+  return prisma.$transaction(async (tx) => {
+    // Guarded: a second swap of the same carried row finds nothing to remove.
+    const removed = await tx.contentTopicSelection.updateMany({ where: { id: sel.id, status: sel.status }, data: { status: "REMOVED", removedAt: new Date(), removedBy: by, removedReason: "SWAPPED", replacedByTopicId: repl.id } });
+    if (removed.count !== 1) throw new Error("That swap already happened.");
+    // Park the script (and its topic): versions, the shared copy and the
+    // client's decisions are untouched rows — only the month pointer moves.
+    const scriptId = sel.carriedScriptId ?? (await tx.contentScript.findFirst({ where: { topicId: topic.id, monthId: month.id, historical: false }, select: { id: true } }))?.id ?? null;
+    if (scriptId) await tx.contentScript.updateMany({ where: { id: scriptId, monthId: month.id }, data: { monthId: null } });
+    await tx.contentTopic.updateMany({ where: { id: topic.id, monthId: month.id }, data: { monthId: null } });
+    await recordTopicEvent(topic.id, month.enrollmentId, "DESELECTED", actor, { monthId: month.id, fromStatus: topic.status, toStatus: topic.status, db: tx, note: `Swapped for “${repl.title}” in ${month.monthKey}. The script is kept — scripted, not filmed — and can be used for another month.`, evidence: { selectionId: sel.id, scriptId, replacedByTopicId: repl.id } });
+    const r = await selectTopicForMonth(repl.id, month.id, { source: actor.kind === "CLIENT" ? "client" : "staff", actor, status: "SELECTED", db: tx });
+    return { overflow: r.overflow, capacity: r.capacity };
+  }, { maxWait: 15_000, timeout: 30_000 });
+}
+
+/**
+ * A late filming confirmation for the month a topic was carried FROM (the
+ * photographer confirms September's session on October 2nd): the carry was
+ * wrong after all. The later month's CARRIED slot is released (reason
+ * FILMED_LATE) and the script goes back to the month it was filmed in.
+ * Called by confirmFilmedTopics after its commit; a no-op for any other topic.
+ */
+export async function releaseCarryAfterLateFilming(topicId: string, filmedMonthId: string): Promise<boolean> {
+  const carried = await prisma.contentTopicSelection.findFirst({ where: { topicId, status: "CARRIED", monthId: { not: filmedMonthId }, carriedFromMonthId: filmedMonthId }, select: { id: true, monthId: true, carriedScriptId: true, enrollmentId: true } });
+  if (!carried) return false;
+  await prisma.$transaction(async (tx) => {
+    await tx.contentTopicSelection.update({ where: { id: carried.id }, data: { status: "REMOVED", removedAt: new Date(), removedBy: "SYSTEM", removedReason: "FILMED_LATE" } });
+    if (carried.carriedScriptId) await tx.contentScript.updateMany({ where: { id: carried.carriedScriptId, monthId: carried.monthId }, data: { monthId: filmedMonthId } });
+    await tx.contentTopic.updateMany({ where: { id: topicId, monthId: carried.monthId }, data: { monthId: filmedMonthId } });
+    await recordTopicEvent(topicId, carried.enrollmentId, "DESELECTED", { kind: "SYSTEM" }, { monthId: carried.monthId, db: tx, note: "Confirmed filmed in the month it was carried from — the carry is undone and that slot is free again." });
+  }, { maxWait: 15_000, timeout: 30_000 });
+  return true;
 }

@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { BrandWordmark } from "@/components/Brand";
 import {
-  BookOpen, CalendarClock, Clapperboard, Compass, Eye, Home, KeyRound, Lightbulb, LogOut, MoreHorizontal, PauseCircle, ScrollText, Sparkles, UserRound,
+  BookOpen, CalendarClock, Clapperboard, Compass, Eye, Home, KeyRound, Lightbulb, LogOut, MessageSquare, MoreHorizontal, PauseCircle, ScrollText, Settings, UserRound,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import {
-  recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress,
+  recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress, readOnlyNotice,
   type PortalViewer, type PortalScheduleMonth, type PortalSlotDay, type PortalTopicsData, type PortalInterviewView, type PortalStrategyView, type PortalPlanning,
 } from "@/lib/portal";
 import { can } from "@/lib/portalAccess";
@@ -16,8 +16,9 @@ import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, libraryAtten
 import { cutHistory, type CutVersion } from "@/lib/clientDecisions";
 import { postingKitFor, type PostingKit } from "@/lib/postingKit";
 import { publishedResources, type ResourceGroupView } from "@/lib/portalResources";
-import { listClientAssets } from "@/lib/clientAssets";
 import { PortalProfile } from "@/components/portal/PortalProfile";
+import { SettingsTab, type SettingsData } from "@/components/portal/tabs/SettingsTab";
+import { LoadFailed } from "@/components/portal/ui";
 import { signOutPortal } from "@/app/portal/login/actions";
 import { HomeTab, type HomeData } from "@/components/portal/tabs/HomeTab";
 import { VideosList, VideoDetail, type VideoDetailData } from "@/components/portal/tabs/VideosTab";
@@ -25,6 +26,8 @@ import { TopicsTab } from "@/components/portal/tabs/TopicsTab";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
 import { ScheduleTab } from "@/components/portal/tabs/ScheduleTab";
 import { ResourcesTab } from "@/components/portal/tabs/ResourcesTab";
+import { MessagesTab, type MessagesTabData } from "@/components/portal/tabs/MessagesTab";
+import { ContactTeam } from "@/components/portal/ContactTeam";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +49,7 @@ import { cn } from "@/lib/utils";
 // components read the address bar when they call an action.
 // ---------------------------------------------------------------------------
 
-export type PortalTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "profile" | "terms";
+export type PortalTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms";
 const MAIN_TABS: { key: PortalTab; label: string; short: string; icon: typeof Home }[] = [
   { key: "home", label: "Home", short: "Home", icon: Home },
   { key: "videos", label: "My Videos", short: "Videos", icon: Clapperboard },
@@ -57,7 +60,7 @@ const MAIN_TABS: { key: PortalTab; label: string; short: string; icon: typeof Ho
 ];
 const PHONE_BAR: PortalTab[] = ["home", "videos", "topics", "strategy"];
 // Old links (`?tab=library`, `?tab=ideas`) keep landing somewhere sensible.
-const LEGACY_TABS: Record<string, PortalTab> = { library: "videos", ideas: "topics", home: "home", videos: "videos", topics: "topics", strategy: "strategy", schedule: "schedule", resources: "resources", profile: "profile", terms: "terms" };
+const LEGACY_TABS: Record<string, PortalTab> = { library: "videos", ideas: "topics", home: "home", videos: "videos", topics: "topics", strategy: "strategy", schedule: "schedule", resources: "resources", messages: "messages", profile: "profile", settings: "settings", team: "settings", terms: "terms" };
 export const portalTabOf = (raw: string | undefined): PortalTab => LEGACY_TABS[raw ?? ""] ?? "home";
 
 /** Everything the address bar may carry besides the tab. */
@@ -173,6 +176,12 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
       perms: { session: perms.session, suggest: perms.suggest, request: perms.request, approve: perms.approve }, readOnly,
       readOnlyState: readOnly ? (enrollment.status === "PAUSED" ? "PAUSED" : "ENDED") : null,
     };
+    // CP-06: the account-setup checklist — derived from what is on file, only
+    // for someone who can act on it, and never on a paused/ended program.
+    if (!readOnly && perms.profile) {
+      const setup = await attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer));
+      if (setup.ok) home.setup = { ...setup.data, items: setup.data.items.map((i) => ({ ...i, href: `${href(i.tab)}#${i.anchor}` })) };
+    }
   }
   if (tab === "videos") {
     const vId = query.v && ID_RE.test(query.v) ? query.v : null;
@@ -200,7 +209,11 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
           current?.clientState === "YOU_APPROVED" ? "APPROVED" : current?.clientState === "AWAITING_YOUR_DECISION" ? "FOR_REVIEW" : current?.clientState === "YOU_REQUESTED_CHANGES" ? "CHANGES_IN_PROGRESS" : video.status === "DELIVERED" ? "DELIVERED" : "IN_PRODUCTION",
         );
         detail = {
-          video: { id: video.id, title: video.title ?? "Video", monthKey: video.monthKey, kind: video.kind, state, filmedAtISO: video.filmedAt?.toISOString() ?? null, deliveredAtISO: video.deliveredAt?.toISOString() ?? null, pillarName: pillar?.name ?? null, format: video.format },
+          video: {
+            id: video.id, title: video.title ?? "Video", monthKey: video.monthKey, kind: video.kind, state, filmedAtISO: video.filmedAt?.toISOString() ?? null, deliveredAtISO: video.deliveredAt?.toISOString() ?? null, pillarName: pillar?.name ?? null, format: video.format,
+            // CP-12: older backfill is "Previous content", never labelled with a month we can't vouch for.
+            section: await import("@/lib/contentVideos").then((m) => m.videoLibrarySection(video)).catch(() => "RECENT" as const),
+          },
           versions, versionsFailed: !hist.ok,
           kit: kitData, kitFailed: !kit.ok,
           // A delivered (Aryeo/Mux) file plays directly — it is a CDN URL, not a hub cut, so no token applies.
@@ -217,7 +230,8 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
     if (!detail) {
       const year = query.year && /^\d{4}$/.test(query.year) ? Number(query.year) : null;
       const page = query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1;
-      videosPage = await attempt("videos", () => portalVideoList(enrollment, { year, page }));
+      // CP-12: `filter=previous` is the flat "Previous content" section.
+      videosPage = await attempt("videos", () => portalVideoList(enrollment, { year, page, section: query.filter === "previous" ? "previous" : null }));
     }
   }
   if (tab === "topics") {
@@ -246,31 +260,81 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
     // Only this enrollment's months (a project on another program's month is not a session here).
     const monthIds = new Set((await prisma.contentMonth.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true } })).map((m) => m.id));
     sessions = sess.filter((x) => x.contentMonthId && monthIds.has(x.contentMonthId));
-    // Live Aryeo slots only when a picker could actually render.
-    if (s.ok && perms.session && !readOnly && s.data.some((m) => !m.locked && m.capacity.remaining > 0)) slotDays = await companySlotDays().catch(() => []);
+    // Live Aryeo slots only when a picker could actually render — to book, or
+    // (CP-04) to move a session. The viewer's OWN package's product: a Starter
+    // client gets the two-hour calendar, not Accelerator's four-hour one.
+    if (s.ok && perms.session && !readOnly && s.data.some((m) => !m.locked && (m.capacity.remaining > 0 || m.requests.some((r) => r.canChange)))) {
+      const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
+      slotDays = await companySlotDays({ package: pkg }).catch(() => []);
+    }
   }
   if (tab === "resources") resourcesRes = await attempt("resources", () => publishedResources());
 
-  // Agent-profile prefill (Jordan: seed from what we already know; the client overwrites).
-  const prefill = { brandColors: client?.brandColors ?? "", videoStyle: client?.portalVideoStyle ?? "", preferences: client?.portalPreferences ?? "" };
+  // CP-13 — THE PROGRAM CONVERSATION and how to reach the office. The unread
+  // count rides on every tab (the menu badge and Home's "new reply" row read
+  // it); the thread loads only on its own tab and is marked read AFTER it is
+  // counted, so the page can show where the new replies start. Staff through
+  // the owner iframe move their own marker, never the client's.
+  const pm = await import("@/lib/programMessages");
+  const contact = await pm.portalContact();
+  const canMessage = can(viewer, "message");
+  const readerKey = pm.readerKeyFor(viewer);
+  const messagesUnread = tab === "messages" ? 0 : await pm.unreadForReader(enrollment.id, readerKey).catch(() => 0);
+  let messagesRes: { ok: true; data: MessagesTabData } | { ok: false } | null = null;
+  if (tab === "messages") {
+    messagesRes = await attempt("messages", async () => {
+      const t = await pm.threadFor(enrollment.id, readerKey, { audience: "client" });
+      await pm.markThreadRead(enrollment.id, readerKey).catch(() => {});
+      const { refusalMessage } = await import("@/lib/portalAccess");
+      return {
+        messages: t.messages, unreadBefore: t.unread,
+        ownerFirst: t.owner.label && t.owner.label !== "unassigned" ? t.owner.label.split(/\s+/)[0] : contact.name,
+        canMessage, refusal: canMessage ? null : refusalMessage(viewer, "message"), contact, hint: pm.VIDEO_CHANGES_HINT,
+      };
+    });
+  }
+  if (home) home.messages = messagesUnread > 0 ? { unread: messagesUnread, href: href("messages") } : null;
+
+  // THE BRAND PROFILE (CP-06). Prefill — Jordan: seed from what we already
+  // know; the client overwrites — applies ONLY to a column that was never set
+  // (NULL). A column the client cleared ("") stays empty: the old truthiness
+  // test put the AI's read straight back after every clear.
+  let brand: import("@/lib/brandProfile").PortalBrandView | null = null;
+  let brandFailed = false;
+  const suggested = { brandColors: "", videoStyle: "", preferences: "" };
   if (tab === "profile") {
-    if (!prefill.videoStyle || !prefill.preferences) {
+    const view = await attempt("brand profile", async () => (await import("@/lib/brandProfile")).portalBrandProfileView(enrollment.clientId));
+    if (view.ok) brand = view.data; else brandFailed = true;
+    if (brand && (brand.columns.videoStyle == null || brand.columns.preferences == null)) {
       const { getPortalPrefill } = await import("@/lib/portalPrefill");
       const extracted = await getPortalPrefill(enrollment.id, enrollment.clientId).catch(() => ({ videoStyle: "", preferences: "" }));
-      if (!prefill.videoStyle) prefill.videoStyle = extracted.videoStyle;
-      if (!prefill.preferences) prefill.preferences = extracted.preferences;
+      suggested.videoStyle = extracted.videoStyle;
+      suggested.preferences = extracted.preferences;
     }
-    if (!prefill.brandColors) {
+    if (brand && brand.columns.brandColors == null) {
       const ap = await prisma.agentProfile.findUnique({ where: { clientId: enrollment.clientId }, select: { brandJson: true } }).catch(() => null);
       const hexes = [...new Set(((ap?.brandJson ?? "").match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g) ?? []))];
-      if (hexes.length) prefill.brandColors = hexes.join(", ");
+      suggested.brandColors = hexes.join(", ");
     }
   }
+  let settings: SettingsData | null = null;
+  if (tab === "settings") {
+    const { teamSeats } = await import("@/lib/portalTeam");
+    const team = can(viewer, "manageTeam") ? await attempt("team", () => teamSeats(viewer)) : null;
+    settings = {
+      who: actor.kind === "CLIENT" ? { name: actor.name, email: actor.email, role: actor.membershipRole } : null,
+      viewerKind: actor.kind, readOnly, programStatus: enrollment.status,
+      canManageTeam: can(viewer, "manageTeam"),
+      team: team && team.ok && team.data.ok ? { seats: team.data.seats, invitationsOn: team.data.invitationsOn } : null,
+      teamFailed: !!team && (!team.ok || !team.data.ok),
+      signInEmailOn: emailSignInLive,
+      profileHref: href("profile"),
+    };
+  }
   const termsSetting = tab === "terms" ? await prisma.appSetting.findUnique({ where: { key: "portal-terms" } }).catch(() => null) : null;
-  const assets = tab === "profile" ? await listClientAssets(enrollment.clientId, { links: true }).catch(() => null) : null;
   const terms = (termsSetting?.value?.trim() || DEFAULT_TERMS).split(/\n\s*\n/);
 
-  const account = { who, staff: actor.kind === "STAFF", first, profileHref: href("profile"), termsHref: href("terms"), tab, canSignOut: actor.kind === "CLIENT", offerSignIn };
+  const account = { who, staff: actor.kind === "STAFF", first, profileHref: href("profile"), settingsHref: href("settings"), termsHref: href("terms"), messagesHref: href("messages"), unread: messagesUnread, tab, canSignOut: actor.kind === "CLIENT", offerSignIn };
 
   return (
     // The Shell renders /portal bare (isBare in src/components/Shell.tsx); this
@@ -287,8 +351,9 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
               <div className="text-[11px] text-muted-2">Content Program</div>
             </div>
             <details className="relative">
-              <summary className="flex size-9 cursor-pointer list-none items-center justify-center rounded-full border border-border bg-surface/80 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden" aria-label="Account menu">
+              <summary className="relative flex size-9 cursor-pointer list-none items-center justify-center rounded-full border border-border bg-surface/80 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden" aria-label="Account menu">
                 <UserRound className="size-4" />
+                {messagesUnread > 0 && <span className="absolute right-0 top-0 size-2.5 rounded-full bg-brand ring-2 ring-background" aria-label={`${messagesUnread} new message${messagesUnread === 1 ? "" : "s"}`} />}
               </summary>
               <div className="absolute right-0 z-10 mt-2 w-60 rounded-2xl border border-border bg-surface p-1.5 shadow-lg"><AccountItems a={account} /></div>
             </details>
@@ -306,15 +371,20 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
         </nav>
 
         {/* NOTICES */}
-        {readOnly && (
-          <div className="mt-5 flex items-start gap-2 rounded-2xl border border-border bg-surface/80 p-3.5 text-sm">
-            <PauseCircle className="mt-0.5 size-4 shrink-0 text-muted" />
-            <div>
-              <div className="font-semibold">{enrollment.status === "PAUSED" ? "Your program is paused" : "Your program has ended"}</div>
-              <div className="text-xs text-muted">Everything we&rsquo;ve delivered stays here for you to watch and download. New requests, notes and bookings are off until it {enrollment.status === "PAUSED" ? "resumes" : "restarts"} — text us any time.</div>
+        {readOnly && (() => {
+          // CP-12: one wording of the paused/ended state, with the way back.
+          const n = readOnlyNotice(enrollment.status);
+          return (
+            <div className="mt-5 flex flex-wrap items-start gap-2 rounded-2xl border border-border bg-surface/80 p-3.5 text-sm">
+              <PauseCircle className="mt-0.5 size-4 shrink-0 text-muted" />
+              <div className="min-w-0 flex-1 basis-56">
+                <div className="font-semibold">{n.title}</div>
+                <div className="text-xs text-muted">{n.body}</div>
+              </div>
+              <a href={n.cta.href} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{n.cta.label}</a>
             </div>
-          </div>
-        )}
+          );
+        })()}
         {actor.kind === "STAFF" && (
           <div className="mt-5 flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
             <Eye className="mt-0.5 size-4 shrink-0 text-warning" />
@@ -353,15 +423,23 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
             topicsHref={href("topics")}
           />
         )}
-        {tab === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} />}
+        {tab === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} contact={contact} messagesHref={canMessage ? href("messages") : null} />}
+        {tab === "messages" && <MessagesTab d={messagesRes?.ok ? messagesRes.data : null} failed={!!messagesRes && !messagesRes.ok} />}
 
         {/* ---------------- MY BRAND PROFILE ---------------- */}
         {tab === "profile" && (
           <div className="mt-6 space-y-4">
             <h1 className="text-xl font-semibold tracking-tight">My Brand Profile</h1>
-            <PortalProfile initial={prefill} assets={(assets?.files ?? []).map((f) => ({ name: f.name, url: f.url }))} readOnly={!perms.profile} />
+            {brand ? (
+              <PortalProfile view={brand} suggested={suggested} readOnly={!perms.profile} />
+            ) : brandFailed ? (
+              <LoadFailed what="your brand profile" />
+            ) : null}
           </div>
         )}
+
+        {/* ---------------- SETTINGS & TEAM (CP-06) ---------------- */}
+        {tab === "settings" && settings && <SettingsTab d={settings} />}
 
         {/* ---------------- TERMS ---------------- */}
         {tab === "terms" && (
@@ -393,9 +471,9 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
           </div>
         )}
 
-        <p className="mt-8 flex items-center justify-center gap-1.5 text-center text-xs text-muted-2">
-          <Sparkles className="size-3.5" /> Questions or topic ideas? Text us any time.
-        </p>
+        {/* CP-13: the footer used to tell clients to text us, with nothing to
+            text. The conversation when this viewer may use it, the office line always. */}
+        {tab !== "messages" && <ContactTeam contact={contact} messagesHref={canMessage ? href("messages") : null} className="mt-8" />}
       </div>
 
       {/* PHONE BAR — Home · Videos · Topics · Strategy · More. */}
@@ -407,8 +485,8 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
             </Link>
           ))}
           <details className="group relative">
-            <summary className={cn("flex min-h-12 cursor-pointer list-none flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden", ["schedule", "resources", "profile", "terms"].includes(tab) ? "text-brand" : "text-muted")}>
-              <MoreHorizontal className="size-5" /> More
+            <summary className={cn("flex min-h-12 cursor-pointer list-none flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden", ["schedule", "resources", "messages", "profile", "settings", "terms"].includes(tab) ? "text-brand" : "text-muted")}>
+              <span className="relative"><MoreHorizontal className="size-5" />{messagesUnread > 0 && <span className="absolute -right-1 -top-0.5 size-2 rounded-full bg-brand" aria-hidden />}</span> More
             </summary>
             <div className="absolute bottom-full right-2 mb-2 w-60 rounded-2xl border border-border bg-surface p-1.5 shadow-lg">
               <MenuLink href={href("schedule")} icon={CalendarClock} active={tab === "schedule"}>Schedule</MenuLink>
@@ -432,7 +510,7 @@ function MenuLink({ href, icon: Icon, active = false, children }: { href: string
   );
 }
 
-type AccountMenu = { who: string | null; staff: boolean; first: string; profileHref: string; termsHref: string; tab: PortalTab; canSignOut: boolean; offerSignIn: boolean };
+type AccountMenu = { who: string | null; staff: boolean; first: string; profileHref: string; settingsHref: string; termsHref: string; messagesHref: string; unread: number; tab: PortalTab; canSignOut: boolean; offerSignIn: boolean };
 /** The account menu's items — shared by the top-right menu and the phone bar's More sheet. */
 function AccountItems({ a }: { a: AccountMenu }) {
   return (
@@ -442,7 +520,11 @@ function AccountItems({ a }: { a: AccountMenu }) {
           {a.staff ? <>Viewing as <span className="font-semibold text-foreground">{a.who}</span> on {a.first}&rsquo;s behalf</> : <>Signed in as <span className="font-semibold text-foreground">{a.who}</span></>}
         </div>
       )}
+      <MenuLink href={a.messagesHref} icon={MessageSquare} active={a.tab === "messages"}>
+        Messages{a.unread > 0 && <span className="ml-auto rounded-full bg-brand px-1.5 text-[11px] font-semibold text-white">{a.unread}</span>}
+      </MenuLink>
       <MenuLink href={a.profileHref} icon={UserRound} active={a.tab === "profile"}>My Brand Profile</MenuLink>
+      <MenuLink href={a.settingsHref} icon={Settings} active={a.tab === "settings"}>Settings &amp; team</MenuLink>
       <MenuLink href={a.termsHref} icon={ScrollText} active={a.tab === "terms"}>Terms</MenuLink>
       {a.canSignOut && (
         <form action={signOutPortal}>

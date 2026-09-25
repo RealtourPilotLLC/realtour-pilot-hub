@@ -9,8 +9,10 @@
 //   faithful archive reader, renderer, spoken-time estimator and NEW-script
 //   validator (scriptFormat.ts); the topic type, Arielle's bank presentation,
 //   bank validator and the pure next-session ranking (topicBank.ts); the §6
-//   guided-interview plan as data (interview.ts); and prompt builders that
-//   return strings + JSON schemas (prompts.ts).
+//   guided-interview plan as data, with the CP-08 sufficiency rule and its
+//   targeted gap questions (interview.ts); and prompt builders that return
+//   strings + JSON schemas, with the script's per-part word budgets
+//   (prompts.ts).
 //
 // WHAT IT DELIBERATELY DOES NOT DO
 //   - No database reads or writes. Nothing here imports prisma. The pipeline /

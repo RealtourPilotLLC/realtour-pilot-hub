@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
-import { recalcProgramMonth, addBusinessDaysET, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
+import { recalcProgramMonth, addBusinessDaysET, replacesPendingMove, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef } from "@/lib/outbox";
@@ -91,9 +91,10 @@ import {
 //   PRIMARY  planning + session booking — the four milestones above.
 //   REVIEW   released cuts waiting on the client — its own clock and its own cap.
 //   ADDRESS  §8's "48 elapsed hours before filming, moved BACK to Friday if it
-//            lands on a weekend". Computed and previewed only: the client-facing
-//            template for it lives in reminderTemplates.ts, which is not this
-//            batch's to write, so this lane can never reach `send`.
+//            lands on a weekend". One email per SESSION booked with only a
+//            general area (CP-05, Sep 24 2026), carrying a per-session link to
+//            that session's address form. It runs FIRST, so on a day both are
+//            due the time-critical one takes the one-email-a-day slot.
 // At most one client email per enrollment per ET day across every lane, so two
 // cadences coinciding produce one message and not two near-identical ones.
 // A month is therefore TWO rows on every internal surface, and the lane has to
@@ -626,6 +627,8 @@ export type ReminderCandidate = {
   kyleFollowUp: { due: boolean; reason: string } | null;
   /** The extra paragraph this particular milestone adds to the template's body. */
   extraParagraph: string | null;
+  /** CP-08: where the portal link lands (`?tab=topics&iv=<id>`) when this reminder is a follow-up on specific open questions. */
+  linkPath?: string | null;
   /** REVIEW lane (CP-02): the release batch this candidate chases, `r<YYYYMMDD>`. */
   reviewTag?: string | null;
   state: EvaluatedState;
@@ -762,7 +765,7 @@ function aryeoLastChangedAt(rawJson: string | null): Date | null {
 async function monthFacts(monthId: string, clientId: string, now: Date, sessionsRequired: number) {
   const [projects, requests, carryover, count, lostRequests] = await Promise.all([
     prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true, shootDate: true, status: true, addressLine: true } }),
-    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { status: true, projectId: true, aryeoAppointmentId: true } }),
+    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { id: true, status: true, projectId: true, aryeoAppointmentId: true, supersedesId: true } }),
     // Work that arrived in this month from an earlier one. Whether the client
     // did not film it or WE were late is not recorded anywhere, and §3 says to
     // hand an unclear shortfall to Kyle rather than invent the answer — so the
@@ -815,6 +818,7 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
   // that is still on the calendar, so it holds no missing slot of its own.
   const pendingSessionRequests = requests.filter(
     (r) => (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") &&
+      !replacesPendingMove(r, requests) &&
       !(r.aryeoAppointmentId && countedKeys.has(`appt:${r.aryeoAppointmentId}`)) &&
       !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
   ).length;
@@ -876,7 +880,9 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
     reviewDeadlineAt: review.deadlineAt,
     reviewTag: review.tag,
     reviewWindows: review.windows,
-    /** Upcoming sessions and where they say they are — the ADDRESS lane's input.
+    /** Upcoming sessions and where they say they are. (Since CP-05 the ADDRESS
+     *  lane reads sessionAddress.upcomingProgramSessions, which carries each
+     *  session's identity and order; this stays for the facts snapshot.)
      *  PER SESSION, not per project: a Pro month's two four-hour legs are two
      *  filming days at two addresses, and one row for the order would have asked
      *  about one of them (§8). `startsAt`, never the end, because the reminder
@@ -907,15 +913,19 @@ async function recipientFor(e: EnrollmentRow): Promise<{ email: string; membersh
  *  enrollment's token page for a token-era client. Minting a login link voids
  *  the person's previous one, so while THEY hold a live link (asked for it in
  *  the last 15 minutes) the token page is used instead of cutting them off. */
-export async function resolvePortalLink(e: Pick<EnrollmentRow, "id" | "portalToken" | "portalTokenExpiresAt" | "accessRevokedAt">, seat: { membershipId: string | null; clientUserId: string | null } | null, byAppUserId: string | null, now: Date): Promise<{ url: string; kind: "login" | "token" } | null> {
-  const tokenLink = e.portalToken && !e.accessRevokedAt && (!e.portalTokenExpiresAt || e.portalTokenExpiresAt > now) ? `${appBase()}/portal/${e.portalToken}` : null;
+export async function resolvePortalLink(e: Pick<EnrollmentRow, "id" | "portalToken" | "portalTokenExpiresAt" | "accessRevokedAt">, seat: { membershipId: string | null; clientUserId: string | null } | null, byAppUserId: string | null, now: Date, opts: { path?: string | null } = {}): Promise<{ url: string; kind: "login" | "token" } | null> {
+  // CP-08: a follow-up can land on the open questions themselves. Only the one
+  // shape the sign-in route will honour is ever appended; anything else is the
+  // plain link.
+  const path = opts.path && /^\?tab=topics&iv=[a-z0-9]{10,40}$/.test(opts.path) ? opts.path : null;
+  const tokenLink = e.portalToken && !e.accessRevokedAt && (!e.portalTokenExpiresAt || e.portalTokenExpiresAt > now) ? `${appBase()}/portal/${e.portalToken}${path ?? ""}` : null;
   if (seat?.membershipId && seat.clientUserId) {
     const u = await prisma.clientUser.findUnique({ where: { id: seat.clientUserId }, select: { loginTokenExpiresAt: true } });
     const holdsLiveLink = !!u?.loginTokenExpiresAt && u.loginTokenExpiresAt > now;
     if (!holdsLiveLink) {
       try {
         const { url } = await mintLoginLink(seat.membershipId, byAppUserId);
-        return { url, kind: "login" };
+        return { url: path ? `${url}?next=${encodeURIComponent(`/portal/me${path}`)}` : url, kind: "login" };
       } catch {
         // Real client while portal_login_email is off, or a revoked seat: fall through to the token page.
       }
@@ -1243,18 +1253,23 @@ async function evaluateMonth(
   const laneAttemptsMade = milestone === "MID_MONTH" ? midRows.filter(isCounted).length : attemptsMade;
 
   const templateKey = templateForAction(action as keyof typeof DEFAULT_TEMPLATE_IDS, p.templates).id;
+  // CP-08: a written-answers month with a topic whose answers stop short of a
+  // script names the (at most two) questions still open and links straight to
+  // them. House or per-topic wording only — never a fact from the file.
+  const answerGap = action === "COMPLETE_ANSWERS" ? await import("@/lib/programDeskTasks").then((m) => m.monthAnswerGapParagraph(month.id)).catch(() => null) : null;
   const extraParagraph = milestone === "MID_MONTH"
     ? MID_MONTH_PARAGRAPH
     : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
       ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, e.videosPerMonth)
-      : null;
+      : answerGap?.paragraph ?? null;
+  const linkPath = answerGap?.path ?? null;
 
   // §12/A28: the roll-over note is the one message that must never reach a
   // client in their first paid production cycle, or a client whose shortfall we
   // caused. Kyle still gets the follow-up; the client is not told they are
   // losing something they are not losing, and is not blamed for work we owe.
   const kyleFollowUp = milestone === "MID_MONTH" ? { due: true, reason: `mid-month check on ${month.monthKey}: still needs ${actionLabel(action)}` } : null;
-  const withMid = { milestone, sessionOrdinal, calendar: cal, kyleFollowUp, extraParagraph, templateKey, deadlineAt, quotedDeadlineAt };
+  const withMid = { milestone, sessionOrdinal, calendar: cal, kyleFollowUp, extraParagraph, linkPath, templateKey, deadlineAt, quotedDeadlineAt };
   if (milestone === "MID_MONTH") {
     const exempt = midMonthExemption({ firstCycle, carryoverUnclassified: facts.carryoverUnclassified });
     if (exempt === "first_cycle_exempt") {
@@ -1500,7 +1515,7 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_recipient", leaseUntil: null, leaseBy: null } });
     return { reminderId, outcome: "suppressed", detail: "no recipient" };
   }
-  const link = await resolvePortalLink(e, to, opts.byAppUserId, now);
+  const link = await resolvePortalLink(e, to, opts.byAppUserId, now, { path: fresh.linkPath });
   if (!link) {
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_portal_link", toRef: to.email, leaseUntil: null, leaseBy: null } });
     return { reminderId, outcome: "suppressed", detail: "no portal link could be produced (no seat, no token)" };
@@ -1613,8 +1628,8 @@ export type EvaluateResult = {
   /** Mid-month milestones that put a follow-up on Kyle, whether or not the
    *  client was written to (§12, A28). */
   kyleFollowUps: { candidate: ReminderCandidate; created: boolean; owner: string }[];
-  /** §8's missing-address lane. Computed on a dry run only, and it can never
-   *  reach `send`: the client-facing template for it is not in this batch. */
+  /** §8's missing-address lane (CP-05): one row per session that still has
+   *  only a general area — sent, waiting or suppressed, with the reason. */
   addressLane: AddressReminderPreview[];
   /** A run that went quiet for an infrastructure reason, in words, for the
    *  automation row's lastError and the settings panel. null = healthy. */
@@ -1663,6 +1678,20 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // a-day rule inside the derivation is what stops the second lane doubling
     // up on the first, and it re-reads the ledger, so it sees a send this loop
     // has only just made.
+    // ADDRESS FIRST (CP-05). A session starting in two days with no street on
+    // file is the one message that cannot wait for tomorrow, so it takes the
+    // one-email-a-day slot and the planning cadence waits a day behind it.
+    const address = await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun });
+    addressLane.push(...address);
+    if (!opts.dryRun) {
+      for (const a of address) {
+        if (a.decision !== "send") continue;
+        if (sends >= policy.maxSendsPerRun) { sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${a.clientName} address reminder waits for the next run` }); continue; }
+        const r = await dispatchAddress(a, e, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", feeds, clientWindowOpen });
+        sent.push(r);
+        if (r.outcome === "sent") sends++;
+      }
+    }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
       const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane);
       if (lane === "REVIEW" && c.action === null && c.decision === "none") continue; // nothing waiting: not worth a row in the preview
@@ -1681,7 +1710,6 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       sent.push(r);
       if (r.outcome === "sent") sends++;
     }
-    if (opts.dryRun) addressLane.push(...(await previewAddressLane(e, m, now, policy)));
   }
   const wouldSend = candidates.filter((c) => c.decision === "send").length;
   // A BROKEN SCHEDULER MUST NOT BE A QUIET ONE. `stale_scheduler_sync` is a
@@ -1749,13 +1777,24 @@ async function raiseMidMonthFollowUp(c: ReminderCandidate, p: ReminderPolicy, no
   return { created: !!task, owner: owner?.label ?? "(unassigned)" };
 }
 
-// ---- the ADDRESS lane (§8), computed and previewed only -------------------------
+// ---- the ADDRESS lane (§8, CP-05) ----------------------------------------------------
 
 export type AddressReminderPreview = {
-  enrollmentId: string; clientName: string; monthKey: string; projectId: string;
+  enrollmentId: string; clientName: string; monthKey: string; monthId: string;
+  /** null when the session is a hub booking whose order has not been imported yet */
+  projectId: string | null;
+  /** the session's identity (countDistinctSessions key) — ONE reminder per session */
+  sessionKey: string;
   shootAt: Date; remindAt: Date; movedOffWeekend: boolean; addressLine: string | null;
   /** Past its moment: §8 says send at the next office opportunity and flag Kyle. */
   overdue: boolean;
+  /** Less than 24 hours between the send and the session: Kyle is told too. */
+  urgent: boolean;
+  decision: ReminderDecision;
+  suppressionReason: string | null;
+  nextEligibleAt: Date | null;
+  dedupeKey: string;
+  retryOfId: string | null;
   reason: string;
 };
 
@@ -1772,27 +1811,171 @@ export function looksLikeGeneralArea(addressLine: string | null): boolean {
   return !/^\d+[A-Za-z]?\s+\S/.test(s);
 }
 
+/** The one attempt a session gets: `<enrollment>:<month>:CONFIRM_ADDRESS:<sessionKey>:1`. */
+export const addressReminderKey = (enrollmentId: string, monthKey: string, sessionKey: string) => `${enrollmentId}:${monthKey}:CONFIRM_ADDRESS:${sessionKey}:1`;
+
 /**
- * §8's missing-address reminder, worked out but never sent. The clock and the
- * weekend rule are here so there is one source of truth for them; the
- * client-facing template belongs to reminderTemplates.ts, which is not this
- * batch's file, so every row this returns is preview-only.
+ * §8's missing-address reminder, per session (CP-05). One attempt per session
+ * (a second email about the same address is noise, and Kyle's urgent task is
+ * the backstop), at 48 elapsed hours before filming moved back to Friday, or
+ * at the next window when that moment has passed. The preview and the send
+ * share this one function, so "what would go out" is what goes out.
  */
-async function previewAddressLane(e: EnrollmentRow, month: { id: string; monthKey: string }, now: Date, p: ReminderPolicy): Promise<AddressReminderPreview[]> {
-  const facts = await monthFacts(month.id, e.clientId, now, e.sessionsPerMonth);
+async function evaluateAddressLane(
+  e: EnrollmentRow,
+  month: { id: string; monthKey: string },
+  now: Date,
+  p: ReminderPolicy,
+  feeds: BookingFeeds,
+  clientWindowOpen: boolean,
+  opts: { dryRun: boolean; ignoreReminderId?: string | null; onlySessionKey?: string | null },
+): Promise<AddressReminderPreview[]> {
+  const { upcomingProgramSessions, sessionNeedsAddress } = await import("@/lib/sessionAddress");
+  const sessions = (await upcomingProgramSessions(month.id, now)).filter((s) => !opts.onlySessionKey || s.key === opts.onlySessionKey);
+  const isTest = isTestClientName(e.client.name);
   const out: AddressReminderPreview[] = [];
-  for (const s of facts.upcomingShoots) {
-    if (!looksLikeGeneralArea(s.addressLine)) continue;
-    const remindAt = addressReminderAt(s.shootDate, p);
-    const raw = new Date(s.shootDate.getTime() - p.addressReminderHoursBefore * 3_600_000);
-    out.push({
-      enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, projectId: s.projectId,
-      shootAt: s.shootDate, remindAt, movedOffWeekend: remindAt.getTime() !== raw.getTime(), addressLine: s.addressLine,
-      overdue: remindAt <= now,
-      reason: "no exact street address on the session yet — this lane is computed only: its client template is not built",
+  for (const s of sessions) {
+    if (!(await sessionNeedsAddress(s))) continue;
+    const remindAt = addressReminderAt(s.startsAt, p);
+    const raw = new Date(s.startsAt.getTime() - p.addressReminderHoursBefore * 3_600_000);
+    const dedupeKey = addressReminderKey(e.id, month.monthKey, s.key);
+    const inWindow = inPolicyWindow(now, p) && clientWindowOpen;
+    const sendAt = now < remindAt ? remindAt : inWindow ? now : nextPolicyWindowOpen(now, p);
+    const base = {
+      enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, monthId: month.id, projectId: s.projectId, sessionKey: s.key,
+      shootAt: s.startsAt, remindAt, movedOffWeekend: remindAt.getTime() !== raw.getTime(), addressLine: s.area, overdue: remindAt <= now,
+      urgent: s.startsAt.getTime() - sendAt.getTime() < 24 * 3_600_000, dedupeKey, retryOfId: null as string | null,
+    };
+    const push = (decision: ReminderDecision, reason: string, suppressionReason: string | null = null, nextEligibleAt: Date | null = null) =>
+      out.push({ ...base, decision, reason, suppressionReason, nextEligibleAt });
+    const existing = await prisma.programReminder.findUnique({ where: { dedupeKey }, select: { id: true, state: true, nextAttemptAt: true } });
+    if (existing && existing.id !== opts.ignoreReminderId) {
+      if (existing.state === "FAILED" && existing.nextAttemptAt && existing.nextAttemptAt <= now) base.retryOfId = existing.id;
+      else { push("none", `this session's address reminder already exists (${existing.state.toLowerCase()})`); continue; }
+    }
+    if (e.status !== "ACTIVE") { push("suppressed", `the program is ${e.status.toLowerCase()}`, "paused"); continue; }
+    if (now < remindAt) { push("wait", `address reminder due ${fmtDay(remindAt)}`, null, remindAt); continue; }
+    // Late is still worth sending, but Kyle is told once: an email read on
+    // the morning of the shoot is too late to be the only safeguard.
+    if (base.urgent && !opts.dryRun) await raiseUrgentAddressTask(e, month, s.key, s.startsAt, s.area, now);
+    if (p.testClientsOnly && !isTest) { push("suppressed", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised", "launch_not_authorised"); continue; }
+    if (!feeds.session.fresh) { push("suppressed", `the Aryeo booking feed is not trustworthy right now (${feeds.session.detail})`, "stale_scheduler_sync"); continue; }
+    const to = await recipientFor(e);
+    if (!to) { push("suppressed", "no email address on the portal seat or the client record", "no_recipient"); continue; }
+    if (isTest && !isStaffControlledEmail(to.email)) { push("suppressed", `TEST client's address ${maskToRef("email", to.email)} is not staff-controlled`, "test_client_real_address"); continue; }
+    const dayFrom = etAt(etDayKey(now), 0);
+    const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
+    const sentToday = await prisma.programReminder.count({
+      where: {
+        enrollmentId: e.id, channel: { in: ["email", "copy"] },
+        ...(opts.ignoreReminderId ? { id: { not: opts.ignoreReminderId } } : {}),
+        OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }],
+      },
     });
+    if (sentToday >= p.maxClientEmailsPerDay) {
+      const next = nextPolicyWindowOpen(etAt(shiftKey(etDayKey(now), 1), 0), p);
+      push("wait", `${sentToday} program email already went to this client today — the next one waits until ${fmtDay(next)}`, "another_reminder_today", next);
+      continue;
+    }
+    if (!inWindow) { const next = nextPolicyWindowOpen(now, p); push("wait", `outside the send window — next opening ${fmtDay(next)}`, "quiet_hours", next); continue; }
+    push("send", `${base.overdue && remindAt.getTime() < now.getTime() - 3_600_000 ? "late: " : ""}exact address still missing for the ${fmtDay(s.startsAt)} session${base.urgent ? " (inside 24 hours — Kyle told too)" : ""}`);
   }
   return out;
+}
+
+/** Kyle hears about a late address once per session (find-then-create). TEST
+ *  clients make no owner work unless a probe asks (PROGRAM_DESK_TASKS_FOR_TEST). */
+async function raiseUrgentAddressTask(e: EnrollmentRow, month: { id: string; monthKey: string }, sessionKey: string, startsAt: Date, area: string | null, now: Date): Promise<void> {
+  if (isTestClientName(e.client.name) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
+  const dedupeKey = `program-address-urgent:${sessionKey}`;
+  if (await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } })) return;
+  const owner = await escalationOwner(e.id, month.id, "SCHEDULING").catch(() => null);
+  await prisma.smartTask.create({
+    data: {
+      taskType: "todo", status: "OPEN", source: "content_program", priority: "URGENT",
+      title: `${e.client.name}: no exact filming address yet`.slice(0, 140),
+      summary: `The session starts ${fmtDay(startsAt)} and all we have is "${area ?? "a general area"}". The reminder email goes at the next office opening, which is under 24 hours before filming.`.slice(0, 500),
+      description: `Call or text the client for the exact address, then put it on the booking (or enter it on /content/${e.id}#sessions).`,
+      reasonCreated: "Content session missing address, inside 24 hours (spec §8, CP-05)",
+      clientId: e.clientId, assignedKey: owner?.assignedKey ?? "kyle", dedupeKey, dueAt: new Date(Math.min(startsAt.getTime(), now.getTime() + 4 * 3_600_000)),
+    },
+  }).catch(() => null);
+}
+
+/** One ADDRESS send: ledger row → recheck → mint the session's link → outbox → outcome. */
+async function dispatchAddress(a: AddressReminderPreview, e: EnrollmentRow, p: ReminderPolicy, now: Date, opts: { requestedBy: string; feeds: BookingFeeds; clientWindowOpen: boolean }): Promise<DispatchOutcome> {
+  const leaseBy = `${opts.requestedBy}:${process.pid}`;
+  const templateKey = "reminder.confirm_address.v1";
+  let reminderId: string;
+  if (a.retryOfId) {
+    const won = await prisma.programReminder.updateMany({ where: { id: a.retryOfId, state: "FAILED" }, data: { state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, nextAttemptAt: null } });
+    if (won.count === 0) return { reminderId: a.retryOfId, outcome: "duplicate", detail: "another run already took this retry" };
+    reminderId = a.retryOfId;
+  } else {
+    try {
+      const row = await prisma.programReminder.create({
+        data: {
+          enrollmentId: e.id, clientId: e.clientId, monthId: a.monthId, monthKey: a.monthKey, action: "CONFIRM_ADDRESS", templateKey, templateVersion: reminderTemplate(templateKey).version,
+          channel: "email", attempt: 1, state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, manual: false, requestedBy: opts.requestedBy, dedupeKey: a.dedupeKey, nextEligibleAt: a.remindAt,
+        },
+        select: { id: true },
+      });
+      reminderId = row.id;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { reminderId: null, outcome: "duplicate", detail: `the address reminder for ${a.sessionKey} already exists` };
+      throw err;
+    }
+  }
+  const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: e.id }, select: { status: true } });
+  const fresh = enrollment ? (await evaluateAddressLane({ ...e, status: enrollment.status }, { id: a.monthId, monthKey: a.monthKey }, now, p, opts.feeds, opts.clientWindowOpen, { dryRun: false, ignoreReminderId: reminderId, onlySessionKey: a.sessionKey }))[0] ?? null : null;
+  if (!fresh || fresh.decision !== "send") {
+    const reason = fresh?.suppressionReason ?? (fresh ? (fresh.decision === "wait" ? "quiet_hours" : "state_changed") : "address_received");
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, leaseUntil: null, leaseBy: null, lastError: fresh?.reason ?? "the session no longer needs an address (given, moved or cancelled)" } });
+    return { reminderId, outcome: "suppressed", detail: reason };
+  }
+  const to = await recipientFor(e);
+  if (!to) {
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_recipient", leaseUntil: null, leaseBy: null } });
+    return { reminderId, outcome: "suppressed", detail: "no recipient" };
+  }
+  // THE SESSION'S OWN LINK, not resolvePortalLink: that one is a 15-minute
+  // sign-in link landing on /portal/me, dead long before a Friday email for a
+  // Monday session is opened. This one opens only this session's form, until
+  // the session starts. Only its hash is stored; the raw token lives in the email.
+  const { upcomingProgramSessions, ensureSessionAddressRow } = await import("@/lib/sessionAddress");
+  const session = (await upcomingProgramSessions(a.monthId, now)).find((s) => s.key === a.sessionKey);
+  if (!session) {
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "state_changed", leaseUntil: null, leaseBy: null } });
+    return { reminderId, outcome: "suppressed", detail: "the session is no longer upcoming" };
+  }
+  const { rawToken } = await ensureSessionAddressRow(session);
+  const addressLink = `${appBase()}/portal/address/${rawToken}`;
+  const body = renderReminder(reminderTemplate(templateKey), {
+    firstName: firstNameOf(e.client.name), month: monthName(a.monthKey), portalLink: addressLink, bookCallLink: null, noCallEligible: false, answersStarted: false,
+    sessionNote: null, earliestSession: null, itemCount: 0, titles: [], updatedTitles: [], deadline: null,
+    sessionWhen: `${session.startsAt.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} ET`,
+    areaText: session.area, addressLink,
+  });
+  await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, evaluatedStateJson: JSON.stringify({ sessionKey: a.sessionKey, shootAt: a.shootAt.toISOString(), area: a.addressLine, urgent: a.urgent, portalLinkKind: "session_address" }) } });
+  const r = await sendThroughOutbox(
+    { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("CONFIRM_ADDRESS", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy },
+    { workerId: leaseBy },
+  );
+  return recordSendResult(reminderId, r, now);
+}
+
+/** Has the exact address for this reminder's session been given? */
+async function addressReceived(dedupeKey: string | null): Promise<boolean> {
+  const key = addressReminderSessionKey(dedupeKey);
+  if (!key) return false;
+  const row = await prisma.programSessionAddress.findUnique({ where: { sessionKey: key }, select: { submittedAt: true } });
+  return !!row?.submittedAt;
+}
+
+/** The session a CONFIRM_ADDRESS ledger row is about, out of its dedupeKey. */
+export function addressReminderSessionKey(dedupeKey: string | null): string | null {
+  const m = /:CONFIRM_ADDRESS:(.+):\d+$/.exec(dedupeKey ?? "");
+  return m ? m[1] : null;
 }
 
 /** ONE task per ET day for the whole run, whoever the affected clients are —
@@ -1864,9 +2047,12 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
         const en = await prisma.contentEnrollment.findUnique({ where: { id: r.enrollmentId }, select: { status: true } });
         const booked = month?.strategyCallStatus === "SCHEDULED" || month?.strategyCallStatus === "COMPLETED";
         const switchOff = !switchOnFor(r.action);
-        const stop = switchOff || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked);
+        // CP-05: the exact address arrived while the email waited — it would
+        // now ask for something the client has already given us.
+        const addressIn = r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey));
+        const stop = switchOff || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn;
         if (stop) {
-          const why = switchOff ? "the automation was switched off" : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : booked ? "booked" : "snoozed";
+          const why = switchOff ? "the automation was switched off" : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? "address_received" : booked ? "booked" : "snoozed";
           const released = await markFailed(r.outboxMessageId, `cancelled before send: ${why}`);
           if (released) {
             await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: switchOff ? "switched_off" : why, lastError: `cancelled before send: ${why}`, lastErrorAt: now } });
@@ -1875,6 +2061,13 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
           }
         }
       }
+    }
+    // A failed address reminder whose address has since arrived is over — its
+    // retry would ask for something we already have (CP-05).
+    if (r.state === "FAILED" && r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) {
+      await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: "address_received", nextAttemptAt: null, lastErrorAt: now } });
+      cancelled++;
+      continue;
     }
     // Persistent failure / unconfirmed delivery → the escalation owner hears about it once.
     const persistent = (r.state === "FAILED" && !r.nextAttemptAt) || r.state === "UNKNOWN" || r.state === "BOUNCED";
@@ -1983,7 +2176,7 @@ export async function previewReminders(monthId: string, opts: { now?: Date } = {
     clientName: e.client.name,
     calendar: monthlyCalendar(month.monthKey, policy),
     lanes,
-    addressLane: await previewAddressLane(e, month, now, policy),
+    addressLane: await evaluateAddressLane(e, month, now, policy, feeds, clientWindowOpen, { dryRun: true }),
   };
 }
 
@@ -2006,7 +2199,7 @@ export async function copyReminderLink(rowId: string, by: { email: string; appUs
   if (c.decision === "suppressed" && c.suppressionReason !== "test_client_real_address") return { ok: false, message: `Nothing to copy — ${c.reason}.`, candidate: c };
   if (!c.action || !c.templateKey) return { ok: false, message: `Nothing to copy — ${c.reason}.`, candidate: c };
   const to = await recipientFor(e);
-  const link = await resolvePortalLink(e, to, by.appUserId ?? null, now);
+  const link = await resolvePortalLink(e, to, by.appUserId ?? null, now, { path: c.linkPath });
   if (!link) return { ok: false, message: "No portal link exists for this client yet (no seat, no token).", candidate: c };
   const body = withExtraParagraph(renderReminder(reminderTemplate(c.templateKey), await templateVarsFor(c, e, link.url, c)), c.extraParagraph);
   const row = await prisma.programReminder.create({

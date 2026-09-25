@@ -138,11 +138,16 @@ export type PromptFact = { id: string; category: FactCategory; body: string; sco
  * facts in scope for this month/project. Reported performance is labelled
  * so no prompt or page can treat it as measured.
  */
-export async function factsForPrompt(clientId: string, opts: { monthId?: string | null; projectId?: string | null; take?: number } = {}): Promise<PromptFact[]> {
+export async function factsForPrompt(clientId: string, opts: { monthId?: string | null; projectId?: string | null; take?: number; production?: boolean } = {}): Promise<PromptFact[]> {
   const rows = await prisma.clientFact.findMany({
     where: {
       clientId, status: "ACCEPTED", aiContext: "ALLOWED", confidential: false,
       OR: [{ scope: "PERMANENT" }, ...(opts.monthId ? [{ scope: "MONTH", monthId: opts.monthId }] : []), ...(opts.projectId ? [{ scope: "PROJECT", projectId: opts.projectId }] : [])],
+      // Narrowed IN the query, before `take` (review, Sep 24 2026): taking the
+      // newest N of every category and filtering afterwards let twenty newer
+      // goal or audience facts push every production preference out of the
+      // editor's brief without a word.
+      ...(opts.production ? { AND: [{ OR: [{ category: "PRODUCTION_PREFERENCE" }, ...(opts.projectId ? [{ scope: "PROJECT", projectId: opts.projectId }] : [])] }] } : {}),
     },
     orderBy: [{ factDate: "desc" }, { createdAt: "desc" }],
     take: opts.take ?? 40,
@@ -161,7 +166,7 @@ export function factLines(facts: PromptFact[]): string[] {
 
 /** Accepted production/editing preferences for an editor brief — reaches the editor only once accepted. */
 export async function productionFactsForProject(clientId: string, projectId: string | null): Promise<string[]> {
-  const facts = await factsForPrompt(clientId, { projectId, take: 20 });
+  const facts = await factsForPrompt(clientId, { projectId, take: 20, production: true });
   return factLines(facts.filter((f) => f.category === "PRODUCTION_PREFERENCE" || (f.scope === "PROJECT" && f.projectId === projectId)));
 }
 

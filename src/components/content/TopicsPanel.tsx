@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, History, Lightbulb, Loader2, MessageSquare, Plus, RefreshCw, Sparkles, Star, X } from "lucide-react";
+import { Ban, Check, ClipboardCopy, History, Lightbulb, Loader2, MessageSquare, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
+import type { PillarStock } from "@/lib/contentTopics";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
 import {
-  addTopic, discussTopicAction, editTopic, generateScriptForTopicAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
-  startInterview, suggestionAction, topicDecision,
+  addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, generateScriptForTopicAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
+  startInterview, suggestionAction, topicDecision, undeclineTopicAction,
 } from "@/app/content/actions";
 import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
 
@@ -18,9 +19,23 @@ import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
 // with per-suggestion accept / edit / archive / regenerate, and the
 // "Recommended for next session" shortlist with its reasons. Every change
 // lands on the topic's history.
+//
+// CP-07 (Sep 24 2026): usable stock per pillar against the target (pending
+// suggestions shown apart), topics the client said "not interested" to (with
+// their reason; reject to make it permanent, or put it back), carried-over
+// scripts marked on the month, a parked script re-usable for the month, the
+// carry-over check, and the internal alignment flag on a client's own idea.
+// CP-08: "Copy follow-up link" on an interview whose answers stop short.
 // ---------------------------------------------------------------------------
 
-export type TopicUi = { id: string; title: string; concept: string | null; pillarId: string | null; pillarLabel: string | null; status: string; approvalState: string | null; source: string; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; monthId: string | null; importedMark: string | null; proposedState: string | null; lastEventAt: string | null; scriptId: string | null };
+export type TopicUi = {
+  id: string; title: string; concept: string | null; pillarId: string | null; pillarLabel: string | null; status: string; approvalState: string | null; source: string; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; monthId: string | null; importedMark: string | null; proposedState: string | null; lastEventAt: string | null; scriptId: string | null;
+  clientDeclinedAt?: string | null; clientDeclineReason?: string | null;
+  /** Carried into this month from `carriedFrom` (a month key), unfilmed. */
+  carriedFrom?: string | null;
+  /** The internal alignment note on a client's own idea — never shown to them, never a block. */
+  alignment?: string | null;
+};
 export type GroupUi = { pillarId: string | null; pillarName: string; topics: TopicUi[] };
 export type ProposedUi = { topic: TopicUi; evidence: { speaker: string; text: string }[]; clientSpoken: boolean; overflow: boolean };
 export type SuggestionUi = { id: string; kind: string; rank: number | null; title: string; description: string | null; pillarName: string | null; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; rationale: string | null; whyNow: string | null; linkedGoal: string | null; priorContentRelation: string | null; relatedTopicId: string | null; runSummary: string | null };
@@ -31,15 +46,19 @@ const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
 const fmt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 
-export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount }: {
+export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [] }: {
   enrollmentId: string; month: { id: string; label: string; short: string } | null; capacity: { owed: number; selected: number; overflow: number } | null;
   groups: GroupUi[]; proposed: ProposedUi[]; monthTopics: TopicUi[]; suggestions: SuggestionUi[]; recommended: SuggestionUi[]; runs: RunUi[];
   interviews: Record<string, InterviewUi>; histories: Record<string, EventUi[]>; pillars: { id: string; name: string }[]; topicsPerPillar: number; isOwner: boolean; archivedCount: number;
+  declined?: TopicUi[]; stock?: PillarStock[];
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
   const [n, setN] = useState(topicsPerPillar);
+  const [carryPreview, setCarryPreview] = useState<number | null>(null);
+  const checkCarry = () => start(async () => { const r = await carryNowAction(enrollmentId, true); setNote(r.message); setCarryPreview(r.ok ? r.candidates?.length ?? 0 : null); });
+  const doCarry = () => start(async () => { const r = await carryNowAction(enrollmentId, false); setNote(r.message); setCarryPreview(null); });
 
   return (
     <div className="space-y-5">
@@ -68,7 +87,17 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
       {/* The month's plan with capacity */}
       {month && capacity && (
         <Section icon={Lightbulb} title={`${month.short}'s video plan`} count={`${capacity.selected + capacity.overflow}/${capacity.owed}`} flush
-          action={capacity.overflow > 0 ? <span className="text-[12px] text-warning">{capacity.overflow} over capacity — kept, not deleted</span> : capacity.selected >= capacity.owed && capacity.owed > 0 ? <span className="text-[12px] text-success">at capacity</span> : undefined}>
+          action={
+            <span className="flex items-center gap-2">
+              {capacity.overflow > 0 ? <span className="text-[12px] text-warning">{capacity.overflow} over capacity — kept, not deleted</span> : capacity.selected >= capacity.owed && capacity.owed > 0 ? <span className="text-[12px] text-success">at capacity</span> : null}
+              {/* The carry-over, by hand: always a dry run first. */}
+              {carryPreview ? (
+                <button disabled={busy} onClick={doCarry} className={`${btn} bg-brand text-white`}>Carry these {carryPreview}</button>
+              ) : (
+                <button disabled={busy} onClick={checkCarry} className="text-xs font-medium text-brand hover:underline disabled:opacity-50">Check carry-over</button>
+              )}
+            </span>
+          }>
           <div className="divide-y divide-border">
             {monthTopics.map((t) => (
               <TopicRow key={t.id} t={t} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} inMonth run={run} />
@@ -100,6 +129,25 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
         </div>
       </Section>
 
+      {/* What the client set aside ("not interested") — kept, with their reason */}
+      {declined.length > 0 && (
+        <Section icon={Ban} title="Client not interested" count={declined.length} flush>
+          <p className="border-b border-border px-5 py-2 text-[12px] text-muted">Set aside by the client on their portal. They are off the client&rsquo;s bank, never re-suggested by a refresh, and no longer count as stock. Reject one to make it permanent, or put it back.</p>
+          <div className="divide-y divide-border">
+            {declined.map((t) => (
+              <div key={t.id} className="flex items-start gap-3 px-5 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[15px] font-medium">{t.title}</div>
+                  <p className="text-[12px] text-muted">{t.clientDeclineReason ? `“${t.clientDeclineReason}”` : "No reason given"}{t.clientDeclinedAt ? ` · ${fmt(t.clientDeclinedAt)}` : ""}</p>
+                </div>
+                <button disabled={busy} onClick={() => run(() => undeclineTopicAction(t.id))} className={quiet}><Undo2 className="mr-1 inline size-3" />Put back</button>
+                <button disabled={busy} onClick={() => run(() => topicDecision(t.id, "REJECT", t.clientDeclineReason ? `Client not interested: ${t.clientDeclineReason}` : "Client not interested"))} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50">Reject</button>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
       {/* Refresh suggestions */}
       <Section icon={RefreshCw} title="Topic refresh — suggestions to review" count={suggestions.length} flush
         action={
@@ -108,6 +156,16 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
             <button disabled={busy} onClick={() => run(() => runTopicRefresh(enrollmentId, "REFRESH"))} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline disabled:opacity-50"><Sparkles className="size-3.5" />Refresh topics</button>
           </span>
         }>
+        {stock.length > 0 && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border px-5 py-2 text-[11px] text-muted">
+            <span className="text-muted-2">Usable per pillar (target {stock[0].target}):</span>
+            {stock.map((p) => (
+              <span key={p.pillarId} className={p.need > 0 ? "text-warning" : undefined}>
+                {p.pillarName} {p.usable}{p.pending ? ` + ${p.pending} to review` : ""}{p.declined ? ` · ${p.declined} set aside` : ""}{p.need > 0 ? ` · needs ${p.need}` : ""}
+              </span>
+            ))}
+          </div>
+        )}
         {runs.length > 0 && (
           <div className="border-b border-border px-5 py-2 text-[11px] text-muted">
             Last run: {fmt(runs[0].createdAt)} · {runs[0].kind.toLowerCase()} · {runs[0].status.toLowerCase().replace("_", " ")}{runs[0].changeSummary ? ` · ${runs[0].changeSummary}` : ""}
@@ -142,6 +200,15 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
   const [form, setForm] = useState({ title: t.title, concept: t.concept ?? "", pillarId: t.pillarId ?? "", audienceNeed: t.audienceNeed ?? "", businessGoal: t.businessGoal ?? "", intendedMessage: t.intendedMessage ?? "" });
   const [disc, setDisc] = useState("");
   const inProduction = ["SCRIPTED", "FILMED", "EDITING", "DELIVERED"].includes(t.status);
+  // A script parked by a swap (scripted, not filmed, on no month) can be used
+  // for this month; selecting it re-uses the script — nothing is drafted twice.
+  const parkedScript = t.status === "SCRIPTED" && !t.monthId;
+  const followUpDue = !!interview && ["NEEDS_FOLLOWUP", "SUBMITTED_WITH_GAPS", "IN_PROGRESS"].includes(interview.status);
+  const copyFollowUp = () => interview && run(async () => {
+    const r = await answerFollowUpLinkAction(interview.interviewId);
+    if (r.ok && r.body) { try { await navigator.clipboard.writeText(r.body); } catch { return { ok: false, message: `Couldn't copy — here it is:\n${r.body}` }; } }
+    return r;
+  });
   return (
     <div className="px-5 py-2.5">
       <div className="flex items-start gap-3">
@@ -152,6 +219,10 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}</span>}
             {t.approvalState === "APPROVED" && <span className="text-[11px] text-success">approved</span>}
             {t.proposedState && <span className="text-[11px] text-warning">{t.source === "strategy_call" ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
+            {(t.source === "strategy_call" || t.source === "ai") && t.approvalState !== "APPROVED" && !t.proposedState && <span className="text-[11px] text-muted-2">hidden from the client until approved</span>}
+            {t.carriedFrom && <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] text-warning">carried from {t.carriedFrom} — unfilmed, swappable</span>}
+            {parkedScript && <span className="text-[11px] text-muted-2">scripted, not filmed</span>}
+            {t.alignment && <span className="text-[11px] text-warning" title="Internal only — the client can still use it">check: {t.alignment}</span>}
             {!t.pillarId && t.pillarLabel && <span className="text-[11px] text-muted-2">label “{t.pillarLabel}” not mapped</span>}
           </div>
           {t.concept && <p className="mt-0.5 text-[13px] leading-relaxed text-muted">{t.concept}</p>}
@@ -160,8 +231,8 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           )}
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
-          {!inMonth && month && !inProduction && t.monthId !== month.id && (
-            <button disabled={busy} onClick={() => run(() => setTopicStatus(t.id, "SELECTED", month.id))} className="rounded-lg border border-brand/40 px-2.5 py-1 text-xs font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">Use for {month.short}</button>
+          {!inMonth && month && (!inProduction || parkedScript) && t.monthId !== month.id && (
+            <button disabled={busy} onClick={() => run(() => setTopicStatus(t.id, "SELECTED", month.id))} className="rounded-lg border border-brand/40 px-2.5 py-1 text-xs font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">{parkedScript ? `Use its script for ${month.short}` : `Use for ${month.short}`}</button>
           )}
           {inMonth && month && !inProduction && <button disabled={busy} title="Back to the bank" onClick={() => run(() => setTopicStatus(t.id, "SAVED", null))} className={quiet}><X className="size-3" /></button>}
           {inMonth && month && !t.scriptId && <button disabled={busy} onClick={() => run(() => generateScriptForTopicAction(t.id, month.id))} className={`${btn} bg-brand text-white`}><Sparkles className="mr-1 inline size-3" />Draft script</button>}
@@ -175,6 +246,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
         <button onClick={() => setOpen(open === "discuss" ? "none" : "discuss")} className="hover:underline">note a discussion</button>
         <button onClick={() => setOpen(open === "history" ? "none" : "history")} className="hover:underline"><History className="mr-0.5 inline size-3" />history ({history.length})</button>
         {interview && <button onClick={() => setOpen(open === "interview" ? "none" : "interview")} className="hover:underline">answers</button>}
+        {followUpDue && <button disabled={busy} onClick={copyFollowUp} className="text-brand hover:underline disabled:opacity-50"><ClipboardCopy className="mr-0.5 inline size-3" />copy follow-up link</button>}
       </div>
       {open === "edit" && (
         <div className="mt-2 grid gap-1.5 sm:grid-cols-2">

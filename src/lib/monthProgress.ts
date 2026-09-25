@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { countDistinctSessions, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
+import { countDistinctSessions, replacesPendingMove, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { cutReleasedAt, isDeliveredProgramVideo } from "@/lib/contentVideos";
 import { DELIVERED_STAMP, NOT_A_CUT } from "@/lib/reviewCuts";
@@ -199,7 +199,7 @@ type SessionProjectRow = {
   deliverables: { type: string; quantity: number | null }[];
 };
 type SessionApptRow = { aryeoId: string; projectId: string; startAt: Date | null; endAt: Date | null; status: string | null; completedAt: Date | null; assignedTo: { name: string } | null };
-type SessionRequestRow = { id: string; monthId: string; status: string; projectId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null };
+type SessionRequestRow = { id: string; monthId: string; status: string; projectId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null; supersedesId: string | null };
 
 type SessionRows = { projects: SessionProjectRow[]; appointments: SessionApptRow[]; requests: SessionRequestRow[] };
 
@@ -218,7 +218,7 @@ async function loadSessionRows(db: ProgramDb, months: { id: string; clientId: st
     }),
     db.programSessionRequest.findMany({
       where: { monthId: { in: months.map((m) => m.id) } },
-      select: { id: true, monthId: true, status: true, projectId: true, aryeoAppointmentId: true, slotStart: true },
+      select: { id: true, monthId: true, status: true, projectId: true, aryeoAppointmentId: true, slotStart: true, supersedesId: true },
     }),
   ]);
   // A job mis-attached to another client's month is hidden by the portal and
@@ -455,6 +455,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     // The same "not already a counted session" filter sessionCapacity applies.
     const pendingRequests = myRequests.filter((r) =>
       (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") &&
+      !replacesPendingMove(r, myRequests) &&
       !(r.aryeoAppointmentId && countedKeys.has(`appt:${r.aryeoAppointmentId}`)) &&
       !(r.projectId && countedKeys.has(`project:${r.projectId}`))).length;
     const confirmed = facts.filter((f) => f.source !== "PROJECT_SHOOT_DATE" || f.state === "FILMED_CONFIRMED").length;

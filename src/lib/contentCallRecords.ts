@@ -895,6 +895,56 @@ export async function confirmCallRecordClient(recordId: string, clientId: string
   await reconcileCallReviewTasks();
 }
 
+/**
+ * A DISCOVERY BOOKING THAT ARRIVED BEFORE ITS CLIENT DID (CP-14, Sep 24 2026).
+ *
+ * The website sends a buyer to the discovery Calendly link, and the booking
+ * very often lands before the hourly Stripe poll: the record is written
+ * UNMATCHED_INVITEE with clientId null, because resolveInviteeIdentity only
+ * knows ACTIVE enrollments and there was none yet. Then activation ran, found
+ * no booking "for this client", told the client in the welcome to book the
+ * call they had already booked, and raised Kyle a task to chase it — until the
+ * next call-record pass matched it.
+ *
+ * Activation now calls this first. It re-asks the SAME question the sync asks
+ * (resolveInviteeIdentity — verified email, backup email or a verified alias;
+ * nothing new, no names, no guesses) for the brand-discovery records still
+ * waiting on a person whose invitee address is on this client's record, and
+ * writes exactly what syncOneBooking would have written on a match, then the
+ * same applyTarget. A record that resolves to anyone else, or to nobody, is
+ * left exactly as it was.
+ */
+export async function rematchDiscoveryForClient(clientId: string): Promise<{ matched: string[] }> {
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { email: true, backupEmail: true } });
+  const emails = [client?.email, client?.backupEmail].filter((e): e is string => !!e).map((e) => e.trim().toLowerCase());
+  if (!emails.length) return { matched: [] };
+  const waiting = await prisma.programCallRecord.findMany({
+    where: {
+      callType: "BRAND_DISCOVERY", clientId: null, status: { notIn: ["CANCELLED", "RESCHEDULED"] },
+      matchState: { in: ["UNMATCHED_INVITEE", "AMBIGUOUS_CLIENT"] },
+      inviteeEmail: { in: emails },
+    },
+    select: { id: true, inviteeEmail: true, inviteeName: true, rawJson: true },
+  });
+  const matched: string[] = [];
+  if (!waiting.length) return { matched };
+  const rules = await callRecordRules();
+  for (const r of waiting) {
+    const idn = await resolveInviteeIdentity(r.inviteeEmail, r.inviteeName);
+    if (idn.state !== "MATCHED" || idn.clientId !== clientId) continue;
+    const raw = readRaw(r.rawJson);
+    raw.identity = { note: `matched via ${idn.via} at activation`, candidates: [] };
+    await prisma.programCallRecord.update({
+      where: { id: r.id },
+      data: { matchState: "MATCHED", clientId: idn.clientId, enrollmentId: idn.enrollmentId, matchNote: `matched via ${idn.via} (at activation)`, rawJson: JSON.stringify(raw) },
+    });
+    await applyTarget(r.id, rules);
+    matched.push(r.id);
+  }
+  if (matched.length) await reconcileCallReviewTasks().catch(() => {});
+  return { matched };
+}
+
 export async function setCallRecordTargetMonth(recordId: string, monthKey: string, by: string | null): Promise<void> {
   if (!/^\d{4}-\d{2}$/.test(monthKey)) throw new Error("Month must look like 2026-10.");
   const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, clientId: true, enrollmentId: true, callType: true, monthId: true, rawJson: true, status: true } });

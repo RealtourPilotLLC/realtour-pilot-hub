@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ChevronRight, TriangleAlert, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { contactLine } from "@/components/portal/ContactTeam";
 
 // Small server-safe building blocks the portal tabs share: one card style,
 // one honest failure notice, one row link. No hooks, no client code.
@@ -27,7 +28,7 @@ export function LoadFailed({ what }: { what: string }) {
   return (
     <div role="alert" className="flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
-      <span className="text-xs">We couldn&rsquo;t load {what} just now — refresh to try again. If it keeps happening, text us.</span>
+      <span className="text-xs">We couldn&rsquo;t load {what} just now — refresh to try again. If it keeps happening, {contactLine()}.</span>
     </div>
   );
 }

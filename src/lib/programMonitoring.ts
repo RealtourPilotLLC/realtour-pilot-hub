@@ -80,7 +80,7 @@ export async function aiQuotaUse(): Promise<QuotaUse> {
 
 export type FailedAutomation = {
   /** which subsystem */
-  kind: "transcript_job" | "ai_run" | "reminder" | "session_booking" | "call_record" | "automation" | "publishing" | "cut_transcript";
+  kind: "transcript_job" | "ai_run" | "reminder" | "session_booking" | "session_address" | "call_record" | "automation" | "publishing" | "cut_transcript";
   ref: string; enrollmentId: string | null; clientId: string | null; monthId: string | null;
   title: string; error: string; at: Date; retryable: boolean; href: string;
 };
@@ -93,21 +93,27 @@ export type FailedAutomation = {
  */
 export async function failedAutomations(opts: { sinceDays?: number; take?: number } = {}): Promise<FailedAutomation[]> {
   const since = new Date(Date.now() - (opts.sinceDays ?? 30) * 864e5);
-  const [jobs, runs, reminders, sessions, calls, switches, pubs, cuts] = await Promise.all([
+  const [jobs, runs, reminders, sessions, calls, switches, pubs, cuts, addresses] = await Promise.all([
     prisma.programTranscriptJob.findMany({ where: { state: { in: ["FAILED", "NEEDS_REVIEW"] }, updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 100 }),
     prisma.programAiRun.findMany({ where: { status: { in: ["FAILED", "QUOTA_BLOCKED"] }, updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 100, select: { id: true, kind: true, enrollmentId: true, clientId: true, error: true, errorAt: true, updatedAt: true, status: true, scopeJson: true } }),
     prisma.programReminder.findMany({ where: { state: { in: ["FAILED", "BOUNCED"] }, updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 100, select: { id: true, enrollmentId: true, clientId: true, monthId: true, action: true, lastError: true, outcome: true, updatedAt: true } }),
-    prisma.programSessionRequest.findMany({ where: { bookingState: "FAILED", updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 50, select: { id: true, enrollmentId: true, clientId: true, monthId: true, lastError: true, updatedAt: true } }),
+    // CP-04: every state in which the booking adapter stopped and handed the
+    // request to a person — not only FAILED, which it never writes.
+    prisma.programSessionRequest.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] }, bookingState: { in: [...BOOKING_NEEDS_PERSON] }, updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 50, select: { id: true, enrollmentId: true, clientId: true, monthId: true, lastError: true, updatedAt: true, bookingState: true } }),
     prisma.programCallRecord.findMany({ where: { OR: [{ lastError: { not: null } }, { transcriptState: { in: ["FAILED", "NEEDS_REVIEW"] } }], updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 100, select: { id: true, enrollmentId: true, clientId: true, monthId: true, lastError: true, transcriptState: true, matchState: true, updatedAt: true, scheduledStart: true } }),
     allAutomations(),
     prisma.programPublishingJob.findMany({ where: { state: "FAILED", updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 50, select: { id: true, enrollmentId: true, clientId: true, lastError: true, updatedAt: true } }).catch(() => []),
     prisma.contentCutTranscript.findMany({ where: { status: "FAILED", updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 50, select: { id: true, submissionId: true, lastError: true, updatedAt: true } }).catch(() => []),
+    // CP-05: an exact address that did not reach the booking is a failure a
+    // person owns — never a quiet "saved".
+    prisma.programSessionAddress.findMany({ where: { syncState: { in: ["FAILED", "CONFLICT", "UNKNOWN"] }, updatedAt: { gte: since } }, orderBy: { updatedAt: "desc" }, take: 50, select: { id: true, enrollmentId: true, clientId: true, monthId: true, syncState: true, lastError: true, updatedAt: true } }).catch(() => []),
   ]);
   const out: FailedAutomation[] = [];
   for (const j of jobs) out.push({ kind: "transcript_job", ref: j.id, enrollmentId: j.enrollmentId, clientId: null, monthId: null, title: `${j.kind} transcript job ${j.state === "NEEDS_REVIEW" ? "needs a person" : "failed"}`, error: j.reviewReason ?? j.lastError ?? "no detail recorded", at: j.lastErrorAt ?? j.updatedAt, retryable: j.state === "FAILED", href: "/content/monitoring#transcripts" });
   for (const r of runs) out.push({ kind: "ai_run", ref: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, monthId: monthIdOf(r.scopeJson), title: `AI run ${r.kind} ${r.status === "QUOTA_BLOCKED" ? "blocked by quota" : "failed"}`, error: r.error ?? "no detail recorded", at: r.errorAt ?? r.updatedAt, retryable: false, href: "/content/monitoring#ai-runs" });
   for (const r of reminders) out.push({ kind: "reminder", ref: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, monthId: r.monthId, title: `Reminder ${r.action} ${r.outcome ?? "failed"}`, error: r.lastError ?? r.outcome ?? "no detail recorded", at: r.updatedAt, retryable: true, href: "/content/monitoring#reminders" });
-  for (const s of sessions) out.push({ kind: "session_booking", ref: s.id, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, title: "Session booking failed", error: s.lastError ?? "no detail recorded", at: s.updatedAt, retryable: true, href: "/content/monitoring#sessions" });
+  for (const s of sessions) out.push({ kind: "session_booking", ref: s.id, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, title: `Session booking needs a person (${s.bookingState.toLowerCase()})`, error: s.lastError ?? "no detail recorded", at: s.updatedAt, retryable: s.bookingState !== "MISMATCH", href: `/content/${s.enrollmentId}#sessions` });
+  for (const a of addresses) out.push({ kind: "session_address", ref: a.id, enrollmentId: a.enrollmentId, clientId: a.clientId, monthId: a.monthId, title: a.syncState === "UNKNOWN" ? "Filming address update unconfirmed" : "Filming address not on the booking", error: a.lastError ?? a.syncState.toLowerCase(), at: a.updatedAt, retryable: false, href: `/content/${a.enrollmentId}#sessions` });
   for (const c of calls) out.push({ kind: "call_record", ref: c.id, enrollmentId: c.enrollmentId, clientId: c.clientId, monthId: c.monthId, title: c.transcriptState === "NEEDS_REVIEW" ? "Call transcript needs a person" : c.transcriptState === "FAILED" ? "Call transcript processing failed" : "Call record error", error: c.lastError ?? `transcript ${c.transcriptState.toLowerCase()}, match ${c.matchState.toLowerCase()}`, at: c.updatedAt, retryable: c.transcriptState === "FAILED", href: "/content/monitoring#calls" });
   for (const s of switches) if (s.lastError && s.lastErrorAt && s.lastErrorAt >= since) out.push({ kind: "automation", ref: s.key, enrollmentId: null, clientId: null, monthId: null, title: `Automation "${s.key}" last run failed`, error: s.lastError, at: s.lastErrorAt, retryable: false, href: "/settings#program-automations" });
   for (const p of pubs) out.push({ kind: "publishing", ref: p.id, enrollmentId: p.enrollmentId, clientId: p.clientId, monthId: null, title: "Publishing job failed", error: p.lastError ?? "no detail recorded", at: p.updatedAt, retryable: true, href: "/content/monitoring" });
@@ -132,11 +138,16 @@ export async function failedAutomationIndex(): Promise<{ byEnrollment: Map<strin
   return { byEnrollment, global };
 }
 
+/** The adapter's hand-over states (CP-04): each one means a person looks.
+ *  UNKNOWN is not one of them — the adapter is still settling it by readback
+ *  (and hands it over as RECONCILE if it cannot); it shows on the stuck card. */
+const BOOKING_NEEDS_PERSON = ["FAILED", "RECONCILE", "REJECTED", "MISMATCH"] as const;
+
 /** Session requests by status + the ones whose booking job is stuck, for the reconcile card. */
 export async function sessionRequestState(): Promise<{ counts: { status: string; n: number }[]; stuck: { id: string; clientName: string; monthKey: string | null; status: string; bookingState: string; attempts: number; lastError: string | null; updatedAt: Date }[] }> {
   const [grouped, stuck] = await Promise.all([
     prisma.programSessionRequest.groupBy({ by: ["status"], _count: { _all: true } }),
-    prisma.programSessionRequest.findMany({ where: { OR: [{ bookingState: { in: ["FAILED", "RECONCILE"] } }, { status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"] } }] }, orderBy: { updatedAt: "desc" }, take: 40 }),
+    prisma.programSessionRequest.findMany({ where: { OR: [{ bookingState: { in: [...BOOKING_NEEDS_PERSON, "UNKNOWN", "CONFLICT", "ORDER_CREATED", "APPT_PENDING"] } }, { status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"] } }] }, orderBy: { updatedAt: "desc" }, take: 40 }),
   ]);
   const clientIds = [...new Set(stuck.map((s) => s.clientId))];
   const monthIds = [...new Set(stuck.map((s) => s.monthId))];

@@ -186,6 +186,12 @@ export type TopicMaterialInput = {
   /** ContentInterview.status for this topic, or null when no interview exists. */
   interviewStatus: string | null;
   interviewSubmittedAt: Date | null;
+  /**
+   * CP-08: the interview's stored sufficiency reading. `false` = a legacy
+   * SUBMITTED row whose answers cannot carry a script; it does not open the
+   * preparation clock. Omitted/null = no reading on the row (not a veto).
+   */
+  interviewSufficient?: boolean | null;
 };
 
 export type SessionReadiness = {
@@ -219,7 +225,15 @@ export type PreparationFollowUp = {
  *  stamp this batch removed. The live status wins whenever there is one. */
 export function topicMaterialReady(t: TopicMaterialInput): boolean {
   if (t.scriptApproved) return true;
-  return t.interviewStatus ? t.interviewStatus === "SUBMITTED" : !!t.interviewSubmittedAt;
+  // SUBMITTED_WITH_GAPS is not SUBMITTED, so it never opens the gate; a
+  // SUBMITTED row that stored "not sufficient" (sent before CP-08) does not either.
+  return t.interviewStatus ? t.interviewStatus === "SUBMITTED" && t.interviewSufficient !== false : !!t.interviewSubmittedAt;
+}
+
+/** The `sufficient` flag an interview row stored, or null when it stored none. */
+function storedSufficiency(json: string | null): boolean | null {
+  if (!json) return null;
+  try { const v = JSON.parse(json) as { sufficient?: unknown }; return typeof v.sufficient === "boolean" ? v.sufficient : null; } catch { return null; }
 }
 
 /** The moment this topic's material landed — the earliest real event, never "now". */
@@ -457,6 +471,20 @@ export function sessionShortfall(required: number, count: BookedSessionCount): {
   const req = Math.max(1, Math.floor(required) || 1);
   const missing = Math.max(0, req - count.accountedFor);
   return { required: req, accountedFor: count.accountedFor, missing, fullyScheduled: missing === 0 };
+}
+
+/**
+ * A pending MOVE takes the place of the session it moves, not a second place
+ * (review of CP-04, Sep 24 2026). The replacement of a booked session is a
+ * REQUESTED row whose supersedesId points at the booked row, now
+ * RESCHEDULE_REQUESTED — and that booked row (or its appointment) is already
+ * counted. Counting the replacement as well showed a Pro client with one
+ * session and one pending move as fully booked, and refused their second
+ * session. The ONE rule for every pending-ask count (sessionCapacity,
+ * monthProgress, the reminder evaluator); `requests` is the month's rows.
+ */
+export function replacesPendingMove(r: { status: string; supersedesId?: string | null }, requests: { id: string; status: string }[]): boolean {
+  return r.status === "REQUESTED" && !!r.supersedesId && requests.some((x) => x.id === r.supersedesId && x.status === "RESCHEDULE_REQUESTED");
 }
 
 export type DeriveInput = {
@@ -921,7 +949,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
       select: { callType: true, status: true, matchState: true, scheduledStart: true, scheduledEnd: true, transcriptState: true },
     }),
     prisma.contentScript.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, approvedVersionId: true, approvedAt: true, historical: true } }),
-    prisma.contentInterview.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, submittedAt: true } }),
+    prisma.contentInterview.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, submittedAt: true, sufficiencyJson: true } }),
     // Topics PLANNED for this month. The bank (monthId null) is not material.
     prisma.contentTopic.findMany({ where: { monthId: month.id }, select: { id: true, title: true, status: true, createdAt: true } }),
   ]);
@@ -944,6 +972,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
       topicId: t.id, status: t.status, title: t.title, createdAt: t.createdAt,
       scriptApproved: script?.approved ?? false, scriptApprovedAt: script?.approvedAt ?? null,
       interviewStatus: iv?.status ?? null, interviewSubmittedAt: iv?.submittedAt ?? null,
+      interviewSufficient: storedSufficiency(iv?.sufficiencyJson ?? null),
     };
   });
   const after = deriveMonthState({

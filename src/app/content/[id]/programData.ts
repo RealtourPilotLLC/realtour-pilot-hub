@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { monthLabel, ownersFor } from "@/lib/contentProgram";
 import { parseStoredSections, openStrategyProposals, strategyVersions, monthPriorities } from "@/lib/contentStrategy";
 import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
-import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity } from "@/lib/contentTopics";
+import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock } from "@/lib/contentTopics";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
 import { scriptsAwaitingReview } from "@/lib/contentScripts";
 import { factsForReview, factCounts } from "@/lib/clientFacts";
@@ -48,13 +48,24 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
 }
 
 export async function loadTopicsTab(enrollmentId: string, month: { id: string; monthKey: string } | null) {
-  const [bank, suggestions, runs, pillars, policy, capacity] = await Promise.all([
+  const [bank, suggestions, runs, pillars, policy, capacity, stock] = await Promise.all([
     topicBankByPillar(enrollmentId), pendingSuggestions(enrollmentId), refreshRuns(enrollmentId, 5), listPillars(enrollmentId), activePolicyVersion(), month ? monthCapacity(month.id) : Promise.resolve(null),
+    // CP-07: usable stock per pillar against the target, pending shown apart.
+    bankStock(enrollmentId).catch(() => []),
   ]);
   const scriptTopics = new Map((await prisma.contentScript.findMany({ where: { enrollmentId, historical: false, topicId: { not: null }, ...(month ? { monthId: month.id } : {}) }, select: { id: true, topicId: true } })).map((s) => [s.topicId!, s.id]));
-  const withScript = (t: Omit<TopicUi, "scriptId">): TopicUi => ({ ...t, scriptId: scriptTopics.get(t.id) ?? null });
+  // CP-07: where a month's topic was carried from, and the internal alignment
+  // flag on a client's own idea (a SYSTEM event — it never blocked them).
+  const monthKeyOfId = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
+  const carriedSel = month ? await prisma.contentTopicSelection.findMany({ where: { monthId: month.id, status: "CARRIED" }, select: { topicId: true, carriedFromMonthId: true } }) : [];
+  const carriedFrom = new Map(carriedSel.map((c) => [c.topicId, c.carriedFromMonthId ? monthKeyOfId.get(c.carriedFromMonthId) ?? "an earlier month" : "an earlier month"]));
+  const alignmentRows = await prisma.contentTopicEvent.findMany({ where: { enrollmentId, kind: "DISCUSSED", actorKind: "SYSTEM", note: { startsWith: "Alignment check:" } }, orderBy: { createdAt: "desc" }, select: { topicId: true, note: true } });
+  const alignmentOf = new Map<string, string>();
+  for (const r of alignmentRows) if (!alignmentOf.has(r.topicId) && r.note) alignmentOf.set(r.topicId, r.note.replace(/^Alignment check:\s*/, ""));
+  const withScript = (t: Omit<TopicUi, "scriptId">): TopicUi => ({ ...t, scriptId: scriptTopics.get(t.id) ?? null, carriedFrom: carriedFrom.get(t.id) ?? null, alignment: alignmentOf.get(t.id) ?? null });
   const groups: GroupUi[] = bank.groups.map((g) => ({ pillarId: g.pillarId, pillarName: g.pillarName, topics: g.topics.filter((t) => !month || t.monthId !== month.id).map(withScript) }));
   const monthTopics: TopicUi[] = month ? bank.groups.flatMap((g) => g.topics).filter((t) => t.monthId === month.id).map(withScript) : [];
+  const declined: TopicUi[] = bank.declined.map(withScript);
   // Call-PROPOSED selections awaiting a person.
   let proposed: ProposedUi[] = [];
   if (month) {
@@ -96,7 +107,7 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
       };
     }
   }
-  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived };
+  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock };
 }
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {

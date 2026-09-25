@@ -601,6 +601,12 @@ export type CutSlot = {
    *  when the caller asked for waived slots (`{ includeWaived: true }`); the
    *  default answer is the work that is genuinely owed. */
   waived?: boolean;
+  /** CP-09: the content topic filmed for this slot, by its title as it reads
+   *  NOW (bound by id on DeliverableOutput.topicId, so a rename shows at once).
+   *  Present only on a content session's bound slots. Deliberately NOT folded
+   *  into `label`: the label is what the approved file and the Review Room's
+   *  cut identity are named by, and a topic rename must not rename a file. */
+  topicTitle?: string;
 };
 
 /** Identity of a cut across rounds — uploaded rows by (deliverable, slot),
@@ -698,6 +704,7 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
     select: {
       packageName: true, videosFilmed: true,
       videosOwedOverride: true, // the office's batch size (Sep 13) — wins over every rule below
+      contentMonthId: true, // CP-09: only a content session can have topics on its slots
       deliverables: {
         where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
         orderBy: { createdAt: "asc" },
@@ -706,6 +713,26 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
     },
   });
   if (!p || p.deliverables.length === 0) return [];
+  // CP-09: the topic each bound slot was filmed for, read by id and titled
+  // live. Two small reads, and only on a content session — every listing job
+  // (the overwhelming majority of callers) skips them. A failure costs the
+  // titles, never the slots.
+  const topicByKey = new Map<string, string>();
+  if (p.contentMonthId) {
+    try {
+      const bound = await prisma.deliverableOutput.findMany({
+        where: { projectId, topicId: { not: null } },
+        select: { deliverableId: true, slot: true, topicId: true },
+      });
+      const ids = [...new Set(bound.map((b) => b.topicId!))];
+      const titles = ids.length ? await prisma.contentTopic.findMany({ where: { id: { in: ids } }, select: { id: true, title: true } }) : [];
+      const titleOf = new Map(titles.map((t) => [t.id, t.title.trim()]));
+      for (const b of bound) {
+        const t = titleOf.get(b.topicId!);
+        if (t) topicByKey.set(slotKeyOf(b.deliverableId, b.slot), t);
+      }
+    } catch { /* titles are a label — the slot list stands without them */ }
+  }
   const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
   const { videoTier } = await import("@/lib/projectStatus");
   const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
@@ -737,6 +764,7 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
         count,
         label: count > 1 ? `${base} — Video ${slot} of ${count}` : base,
         ...(d.waivedAt ? { waived: true } : {}),
+        ...(topicByKey.has(slotKeyOf(d.id, slot)) ? { topicTitle: topicByKey.get(slotKeyOf(d.id, slot))! } : {}),
       });
     }
   }

@@ -23,6 +23,30 @@ import { DISMISS_REASONS, DISMISSED_PREFIX, type DismissReason } from "@/lib/tri
 
 export type ApptResult = { ok: boolean; message: string };
 
+/**
+ * THE PROVIDER-WRITE GUARD on the staff appointment buttons (CP-04, §16).
+ * Ordinary staff work on a real client's appointment is unchanged. What it
+ * refuses is the one case nothing stopped before: a TEST client's appointment,
+ * which Aryeo knows nothing about — it would be a real creative's calendar.
+ * The exception is a fixture Jordan authorised under `session_booking`
+ * (authorizedFixtureClientIds), so the supervised test can be cleaned up here.
+ */
+async function staffApptWriteRefusal(projectId: string, operation: string): Promise<string | null> {
+  const { assertProviderWriteAllowed, ProviderWriteRefusedError } = await import("@/lib/testClients");
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { client: { select: { id: true, name: true } } } });
+  const client = project?.client ?? null;
+  const { automationConfig } = await import("@/lib/programAutomation");
+  const cfg = await automationConfig<{ authorizedFixtureClientIds: unknown }>("session_booking", { authorizedFixtureClientIds: [] });
+  const fixtures = Array.isArray(cfg?.authorizedFixtureClientIds) ? cfg!.authorizedFixtureClientIds : [];
+  try {
+    assertProviderWriteAllowed({ provider: "aryeo", operation, client, sandbox: !!client?.id && fixtures.includes(client.id) });
+    return null;
+  } catch (e) {
+    if (e instanceof ProviderWriteRefusedError) return e.message;
+    throw e;
+  }
+}
+
 // Refresh one appointment from Aryeo into our DB (after a write).
 async function refreshAppointment(aryeoId: string, projectId: string) {
   try {
@@ -64,6 +88,8 @@ export async function rescheduleAppointmentAction(
   const start = new Date(startAtISO);
   if (isNaN(start.getTime())) return { ok: false, message: "Invalid date/time." };
   const end = new Date(start.getTime() + (appt.durationMin ?? 60) * 60000);
+  const refused = await staffApptWriteRefusal(appt.projectId, "appointments.reschedule");
+  if (refused) return { ok: false, message: refused };
 
   try {
     await Aryeo.rescheduleAppointment(appt.aryeoId, {
@@ -99,6 +125,8 @@ export async function cancelAppointmentAction(
   const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
   if (!appt) return { ok: false, message: "Appointment not found." };
   if (!appt.canCancel) return { ok: false, message: "Aryeo says this appointment can't be cancelled." };
+  const refused = await staffApptWriteRefusal(appt.projectId, "appointments.cancel");
+  if (refused) return { ok: false, message: refused };
 
   try {
     await Aryeo.cancelAppointment(appt.aryeoId, { notify_customer: notifyCustomer });

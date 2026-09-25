@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  Camera, CalendarDays, CheckCircle2, Compass, ExternalLink, Eye, FileText, FileUp, Film, FolderOpen, Lightbulb, NotebookPen, Palette, Settings2, User,
+  Camera, CalendarDays, CheckCircle2, Compass, ExternalLink, Eye, FileText, FileUp, Film, FolderOpen, Lightbulb, MessageSquare, NotebookPen, Palette, Settings2, User,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -30,11 +30,13 @@ import { ScriptsPanel } from "@/components/content/ScriptsPanel";
 import { FactsPanel } from "@/components/content/FactsPanel";
 import { ImportPanel } from "@/components/content/ImportPanel";
 import { loadStrategyTab, loadTopicsTab, loadScriptsTab, loadFactsTab, loadImportTab } from "./programData";
-import { loadSettingsTab, loadBrandTab, loadContentTab } from "./workspaceData";
+import { loadSettingsTab, loadBrandTab, loadContentTab, loadFieldProposals, loadStrategyTargets } from "./workspaceData";
 import { SettingsPanel } from "@/components/content/SettingsPanel";
 import { BrandAssetsPanel } from "@/components/content/BrandAssetsPanel";
 import { ContentLibraryPanel } from "@/components/content/ContentLibraryPanel";
 import { PortalAccessCard } from "@/components/content/PortalAccessCard";
+import { SessionsPanel } from "@/components/content/SessionsPanel";
+import { ProgramMessagesPanel } from "@/components/content/ProgramMessagesPanel";
 
 export const dynamic = "force-dynamic";
 // The server actions this page calls run the model (a 16k-token topic refresh,
@@ -51,7 +53,7 @@ export const maxDuration = 300;
 // (versions, approve/release, proposals, pillars) · SCRIPTS (one review queue,
 // versions, approve/release) · FACTS (the review strip) · IMPORT (preview →
 // apply, review items) · CLIENT FILE (profile, notes, settings) · THEIR PORTAL.
-type Tab = "month" | "strategy" | "ideas" | "scripts" | "content" | "brand" | "settings" | "facts" | "import" | "file" | "portal";
+type Tab = "month" | "strategy" | "ideas" | "scripts" | "content" | "brand" | "messages" | "settings" | "facts" | "import" | "file" | "portal";
 const TABS: { key: Tab; label: string; icon: typeof FileText }[] = [
   { key: "month", label: "Overview", icon: CalendarDays },
   { key: "strategy", label: "Strategy", icon: Compass },
@@ -63,6 +65,8 @@ const TABS: { key: Tab; label: string; icon: typeof FileText }[] = [
   { key: "facts", label: "Facts", icon: NotebookPen },
   { key: "import", label: "Import", icon: FileUp },
   { key: "file", label: "Client file", icon: FolderOpen },
+  // CP-13: the client's program conversation, with their texts and emails beside it.
+  { key: "messages", label: "Messages", icon: MessageSquare },
   { key: "portal", label: "Their portal", icon: Eye },
 ];
 // Old bookmarked URLs keep working: ?tab=topics and ?tab=ideas both open Video
@@ -159,7 +163,19 @@ export default async function ContentClientPage({
   // non-cancelled projects as booked sessions, a passed shoot date as filmed,
   // a DELIVERED project's reel quantity as videos delivered — and its comment
   // claimed that matched the roster, which by then read the library instead.
+  // CP-11: what a call proposes to CHANGE (a profile field, one strategy
+  // section) — shown beside the facts and the strategy proposals it belongs to.
+  const [fieldProposals, strategyTargets] = await Promise.all([
+    tab === "facts" ? loadFieldProposals(client.id).catch(() => []) : Promise.resolve([]),
+    tab === "strategy" ? loadStrategyTargets(id).catch(() => ({ targets: {}, sections: [] })) : Promise.resolve({ targets: {}, sections: [] }),
+  ]);
   const progress = month ? await monthProgress(id, month.id) : null;
+  // CP-13: the waiting count rides on the tab everywhere; the thread loads on
+  // its own tab and marks it read for the person looking (never the client).
+  const pmsg = await import("@/lib/programMessages");
+  const messagesWaiting = await pmsg.unansweredCount(id).catch(() => 0);
+  const messagesData = tab === "messages" ? await pmsg.staffMessagesTab(id, { id: me?.id ?? null }).catch(() => null) : null;
+  if (messagesData && me?.id) await pmsg.markThreadRead(id, `au:${me.id}`).catch(() => {});
   const view = progress ? staffMonthView(progress) : null;
   const owedRaw = month?.videosOwed ?? enrollment.videosPerMonth;
   const scriptsAwaiting = progress ? progress.scripts.drafting + progress.scripts.needsJordan : scripts.filter(scriptAwaiting).length;
@@ -237,6 +253,11 @@ export default async function ContentClientPage({
               {t.key === "month" && needsMe > 0 && (
                 <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "month" ? "bg-white/25" : "bg-brand-soft text-brand"}`}>
                   {needsMe}
+                </span>
+              )}
+              {t.key === "messages" && messagesWaiting > 0 && (
+                <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "messages" ? "bg-white/25" : "bg-warning-soft text-warning"}`}>
+                  {messagesWaiting}
                 </span>
               )}
             </Link>
@@ -360,6 +381,9 @@ export default async function ContentClientPage({
                     )}
                   </div>
                 </Section>
+                {/* CP-04/CP-05: the requests behind these sessions (confirm,
+                    decline, retry the hub's booking) and each exact address. */}
+                <SessionsPanel enrollmentId={id} monthId={month.id} />
               </div>
             </div>
 
@@ -416,13 +440,13 @@ export default async function ContentClientPage({
           const d = topicsData!;
           return (
             <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
-              suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} />
+              suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} />
           );
         })()}
 
         {/* ---------- STRATEGY ---------- */}
         {tab === "strategy" && strategyData && (
-          <StrategyPanel enrollmentId={id} versions={strategyData.versions} proposals={strategyData.proposals} pillars={strategyData.pillars} mapping={strategyData.mapping} owners={strategyData.owners} staff={strategyData.staff} isOwner={ownerEyes} month={strategyData.month} />
+          <StrategyPanel enrollmentId={id} versions={strategyData.versions} proposals={strategyData.proposals} pillars={strategyData.pillars} mapping={strategyData.mapping} owners={strategyData.owners} staff={strategyData.staff} isOwner={ownerEyes} month={strategyData.month} targets={strategyTargets.targets} sections={strategyTargets.sections} />
         )}
 
         {/* ---------- SCRIPTS ---------- */}
@@ -438,7 +462,7 @@ export default async function ContentClientPage({
 
         {/* ---------- FACTS ---------- */}
         {tab === "facts" && factsData && (
-          <FactsPanel clientId={client.id} facts={factsData.facts} counts={factsData.counts} months={factsData.months} projects={factsData.projects} />
+          <FactsPanel clientId={client.id} facts={factsData.facts} counts={factsData.counts} months={factsData.months} projects={factsData.projects} fieldProposals={fieldProposals} />
         )}
 
         {/* ---------- IMPORT ---------- */}
@@ -448,7 +472,11 @@ export default async function ContentClientPage({
 
         {/* ---------- CONTENT — the shared video library, staff permissions ---------- */}
         {tab === "content" && contentData && (
-          <ContentLibraryPanel rows={contentData.rows} pipelineOnly={contentData.pipelineOnly} monthLabelText={null} />
+          <ContentLibraryPanel
+            rows={contentData.rows} pipelineOnly={contentData.pipelineOnly} monthLabelText={null}
+            // CP-12: the identity tool, for the roles its actions accept (OWNER/ADMIN).
+            identity={!me || me.role === "OWNER" || me.role === "ADMIN" ? contentData.identity : null}
+          />
         )}
 
         {/* ---------- BRAND & ASSETS ---------- */}
@@ -460,9 +488,13 @@ export default async function ContentClientPage({
             types={brandData.types}
             sources={brandData.sources}
             provenance={brandData.provenance}
+            changes={brandData.changes}
             canEdit
           />
         )}
+
+        {/* ---------- MESSAGES (CP-13) ---------- */}
+        {tab === "messages" && (messagesData ? <ProgramMessagesPanel d={messagesData} /> : <p className="text-sm text-warning">Couldn&rsquo;t load the conversation — refresh to try again.</p>)}
 
         {/* ---------- SETTINGS ---------- */}
         {tab === "settings" && settingsData && (

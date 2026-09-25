@@ -141,6 +141,9 @@ export type OverviewRow = {
     suppressionReason: string | null;
     failure: string | null;
     everSent: boolean;
+    /** CP-13: client messages on the program conversation nobody has answered yet. */
+    messagesWaiting: number;
+    oldestWaitingAt: Date | null;
   };
 
   failures: FailedAutomation[];
@@ -297,6 +300,14 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   ]);
 
   const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  // CP-13: waiting client messages per enrollment — one grouped read, and a
+  // failed read says 0 rather than breaking the roster.
+  const waiting = new Map(
+    (await prisma.programMessage
+      .groupBy({ by: ["enrollmentId"], where: { enrollmentId: { in: enrollmentIds }, authorKind: "CLIENT", handledAt: null }, _count: { _all: true }, _min: { createdAt: true } })
+      .catch(() => []))
+      .map((r) => [r.enrollmentId, { n: r._count._all, oldest: r._min.createdAt ?? null }] as const),
+  );
   const progressOf = (enrollmentId: string, monthId: string | null, key: string): MonthProgress | null =>
     given.get(progressKey(enrollmentId, monthId, key)) ?? progressRead.get(progressKey(enrollmentId, monthId, key)) ?? null;
   // Only the versions the rows actually point at — a script's CURRENT version
@@ -498,6 +509,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       suppressionReason: myReminders.find((r) => r.suppressionReason)?.suppressionReason ?? null,
       failure: myReminders.find((r) => r.state === "FAILED" || r.state === "BOUNCED")?.lastError ?? myReminders.find((r) => r.outcome === "bounced")?.outcome ?? null,
       everSent: !!lastSent,
+      messagesWaiting: waiting.get(e.id)?.n ?? 0,
+      oldestWaitingAt: waiting.get(e.id)?.oldest ?? null,
     };
 
     const myFailures = failures.byEnrollment.get(e.id) ?? [];

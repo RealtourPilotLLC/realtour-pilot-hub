@@ -14,9 +14,19 @@ export const dynamic = "force-dynamic";
 // this route re-checks that the seat / link / staff login is still live,
 // proves the video belongs to that scope's enrollment, and asks the release
 // rule (cutEntitlement, through postingKit.resolveFinalFile) whether the client
-// may have the file at all. Every successful download is recorded as a
-// PortalVisit on /portal/download/<videoId> — the client-recorded
-// "Downloaded" fact; a refusal records nothing.
+// may have the file at all. Every successful hand-over is recorded as a
+// PortalVisit on /portal/download/<videoId> — the client-recorded "Download
+// started" fact; a refusal records nothing.
+//
+// CP-12 (Sep 24 2026): that row used to be read as "Downloaded", but it is
+// written BEFORE the redirect — it proves the door opened, not that a single
+// byte arrived. It is now "started", and the page records completion itself
+// (postingKit.recordDownloadCompleted) when it has read the whole file. A
+// STAFF-scope hit is still recorded, attributed to the staff member, and is
+// no longer counted as the client's own download. The page fetches this door
+// with fetch() for a hub-held cut (the 302 below is same-origin, so the bytes
+// and their Content-Length come through for a progress bar) and navigates to
+// it for everything else.
 //
 // CP-01 (Sep 24 2026): until today the only file checks were "is there one"
 // and "does the hash match the approval, IF the served cut is the approved

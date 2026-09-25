@@ -37,7 +37,7 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
 };
 
 const exec = promisify(execFile);
-const PORT = 5491;
+const PORT = Number(process.env.DRILL_PORT ?? 5491); // DRILL_PORT: run on an assigned port
 const URL_ = `postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres?sslmode=disable`;
 process.env.DATABASE_URL = URL_;
 process.env.DIRECT_URL = URL_;

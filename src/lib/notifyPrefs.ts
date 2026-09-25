@@ -119,6 +119,11 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   // The day-before "Still needed? It closes tomorrow" nudge on a Slack ask
   // (B5 handover, Sep 16) — without a mapping it would be bell-only.
   task_expiring: "job_ping",
+  // CP-06 (Sep 24 2026): a client's brand changed under the editor's work — an
+  // edit-lane ping like a revision, so it rides the editor's "Job pings" switch
+  // (Slack by default for editors). The emitter only runs while the
+  // brand_change_alerts automation is on.
+  brand_updated: "job_ping",
 };
 export function eventForKind(kind: string): NotifyEvent | null {
   return KIND_TO_EVENT[kind] ?? null;

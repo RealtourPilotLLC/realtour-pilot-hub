@@ -7,6 +7,7 @@ import { isFieldFlag } from "@/lib/debrief";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { musicPickLine, readMusicPick } from "@/lib/musicPick";
 import { EXPORT_SPEC, EXPORT_SPEC_LINES } from "@/lib/videoStyles";
+import type { FilmingBrief } from "@/lib/deliverableOutputs";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -40,8 +41,24 @@ const INK = rgb(0.06, 0.09, 0.16);
 const MUTED = rgb(0.39, 0.45, 0.55);
 const RULE = rgb(0.9, 0.91, 0.93);
 
-/** Build a nicely formatted editor brief PDF. Returns the raw bytes. */
-export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Array> {
+/** Build a nicely formatted editor brief PDF. Returns the raw bytes.
+ *
+ *  `filming` is the content session's per-video brief (CP-09,
+ *  deliverableOutputs.filmingBriefFor). Left out, it is read here — so the one
+ *  route that prints this brief needs no change, and a caller that already has
+ *  it (a drill, a batch) passes it in. null = print the plain count, as a
+ *  listing shoot always has. */
+export async function buildEditorBriefPdf(
+  project: FullProject,
+  opts: { filming?: FilmingBrief | null } = {},
+): Promise<Uint8Array> {
+  const filming =
+    opts.filming !== undefined
+      ? opts.filming
+      : await import("@/lib/deliverableOutputs")
+          .then((m) => m.filmingBriefFor(project.id))
+          // A brief with the plain count is better than no brief at all.
+          .catch(() => null);
   const doc = await PDFDocument.create();
   doc.setTitle(`Editor Brief — ${project.title}`);
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -196,7 +213,50 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
   }
 
   // ---- Video: confirmed script + the photographer's instructions --------
-  if (project.videosFilmed != null) {
+  // CP-09: on a content session, WHICH video is which. The count alone ("4
+  // videos were filmed - cut this many") left the editor to work out from the
+  // clips which of the client's topics each one was, which words the client
+  // approved, and what the photographer said about it on site. Each owed video
+  // now carries its topic (titled as it reads now), the note, the script and
+  // its raw folder — the same rows /edit and the project summary read.
+  const filmedRows = filming?.rows ?? [];
+  const pendingTopics = filming?.pending?.topics ?? [];
+  if (filmedRows.length || pendingTopics.length) {
+    heading("Videos filmed - one per topic");
+    const n = project.videosFilmed ?? filmedRows.length;
+    text(`${n} video${n === 1 ? "" : "s"} were filmed on this session - cut this many, one per topic below.`, { size: 11, gap: 6 });
+    for (const r of filmedRows) {
+      y -= 4;
+      text(`${r.slotLabel ?? "Not on a slot yet"}: ${r.topicTitle}`, { size: 11, f: bold, gap: 2 });
+      if (r.extra) {
+        text(r.extra === "added_on_site" ? "Filmed on site - not on the month's plan (edit it like the others)." : "Beyond this month's plan (edit it like the others).", { size: 9, color: MUTED, x: MARGIN + 14, gap: 2 });
+      }
+      if (r.note) text(`Note from the shoot: ${r.note}`, { size: 10, x: MARGIN + 14, gap: 2 });
+      if (r.script) {
+        text(`Script: ${r.script.title}${r.script.versionNo ? ` (v${r.script.versionNo})` : ""} - ${r.script.standing}`, { size: 10, x: MARGIN + 14, gap: 2 });
+        if (r.script.text) text(stripMarkdownSyntax(r.script.text), { size: 9, color: MUTED, x: MARGIN + 28, gap: 2 });
+      } else {
+        text("Script: none on file for this topic.", { size: 10, color: MUTED, x: MARGIN + 14, gap: 2 });
+      }
+      if (r.folder) text(`Raw clips: 02-RAW-Video/${r.folder.label}`, { size: 10, x: MARGIN + 14, gap: 2 });
+    }
+    if (filming && filming.slotsWithoutTopic > 0 && filmedRows.length) {
+      y -= 4;
+      text(`${filming.slotsWithoutTopic} more owed video${filming.slotsWithoutTopic === 1 ? " has" : "s have"} no topic recorded - ask the office which.`, { size: 10, color: MUTED });
+    }
+    // The photographer's report that has not landed yet: what they SAID, so
+    // the editor is never told less than the person who was there.
+    if (pendingTopics.length) {
+      y -= 4;
+      text(
+        `Reported by the photographer, not recorded yet (${filming?.pending?.state === "NEEDS_REVIEW" ? "the office is recording these by hand" : "the hub is still saving these"}):`,
+        { size: 10, f: bold, gap: 2 },
+      );
+      for (const t of pendingTopics) {
+        text(`-  ${t.title}${t.extra ? " (filmed on site)" : ""}${t.note ? ` - ${t.note}` : ""}`, { size: 10, x: MARGIN + 14, gap: 2 });
+      }
+    }
+  } else if (project.videosFilmed != null) {
     heading("Videos filmed");
     text(`${project.videosFilmed} video${project.videosFilmed === 1 ? "" : "s"} were filmed on this session - cut this many.`, { size: 11 });
   }

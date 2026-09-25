@@ -121,6 +121,7 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   task_assigned: "task",
   photos_undelivered: "photos not delivered",
   staff_sms: "staff alert",
+  brand_updated: "brand updated", // CP-06
 };
 export function notifyKindLabel(kind: string): string {
   return NOTIFY_KIND_LABELS[kind] ?? kind.replace(/_/g, " ");

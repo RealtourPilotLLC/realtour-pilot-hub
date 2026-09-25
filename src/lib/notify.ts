@@ -227,6 +227,15 @@ const BELL_RULES: Record<string, BellRule> = {
   shoot_add_on: "all", // sold in the field; it doesn't get invoiced unless someone sees it
   portal_suggestion: "all", // a client asked for a script change
   portal_asset: "all", // a client's brand file: the bell is its ONLY signal, so it stays
+  // CP-06: the assigned editor, told a client's brand changed (brandProfile.ts
+  // alertBrandChanges; sent only while the brand_change_alerts switch is on).
+  brand_updated: "all",
+  // CP-13: a client wrote on their program conversation. Person-addressed to
+  // the MESSAGES owner (tm:) plus an OWNER broadcast (lib/programMessages.ts).
+  // Bell ONLY: it is deliberately absent from notifyPrefs.KIND_TO_EVENT, so no
+  // saved Slack/text switch pages anyone for it — that would be a staff page,
+  // and staff pages ride a switch.
+  program_message: "all",
   reply_sla: "all", // the client pager (see the warning above)
   system: "all", // integration failures — the owner is the only one who can fix them
   slack_id_missing: "all", // a mention had no Slack ID to go to — the office fixes that on People (Sep 15)
@@ -351,6 +360,10 @@ const ROUTINE_KINDS = new Set<string>([
   // preference still beats the rota in the only sense that rule ever meant —
   // the alert is KEPT and dated, never dropped.
   "topaz_ready",
+  // CP-06: a client's new logo or music preference is edit-lane news for the
+  // next working day, never a weekend page (the banner on the brief and
+  // Kyle's task carry it regardless). Kim keeps her own clock (tz above).
+  "brand_updated",
   // review_feedback is deliberately ABSENT (review, Sep 20). It was listed in
   // the first cut and it does not belong: notifyPrefs maps it to shoot_change,
   // BELL_RULES calls it "capture feedback the photographer has to fix", and it

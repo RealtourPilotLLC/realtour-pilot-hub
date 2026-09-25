@@ -28,7 +28,8 @@
 
 export type ReminderAction =
   | "CHOOSE_PATH" | "BOOK_CALL" | "COMPLETE_ANSWERS" | "BOOK_SESSION" | "REVIEW_WORK"
-  | "SCRIPTS_READY" | "STRATEGY_READY" | "SESSION_REQUEST_FOLLOWUP" | "DIGEST" | "ESCALATION";
+  | "SCRIPTS_READY" | "STRATEGY_READY" | "SESSION_REQUEST_FOLLOWUP" | "DIGEST" | "ESCALATION"
+  | "CONFIRM_ADDRESS";
 
 export type TemplateVars = {
   firstName: string;
@@ -64,6 +65,12 @@ export type TemplateVars = {
   reviewDeadline?: string | null;
   /** REVIEW_WORK: review_auto_approve is on, so the email says what expiry does. */
   reviewAutoApprove?: boolean;
+  /** CONFIRM_ADDRESS (CP-05): "Monday, October 5 at 10:00 AM ET". */
+  sessionWhen?: string | null;
+  /** CONFIRM_ADDRESS: the general area on file ("West Chester, PA"), or null. */
+  areaText?: string | null;
+  /** CONFIRM_ADDRESS: THIS session's address form — never the portal sign-in link. */
+  addressLink?: string | null;
 };
 
 export type ReminderTemplate = {
@@ -76,6 +83,9 @@ export type ReminderTemplate = {
 };
 
 const SIGN_OFF = "— Jordan & the RealTour Pilot team\n(Reply to this email and it comes straight to us.)";
+/** Kyle's line (Jordan, Sep 24 2026). A literal here because this module stays
+ *  pure (no server imports); the same number is reviewWindows.URGENT_CONTACT. */
+const KYLE_LINE = "(215) 645-4889";
 
 const noCallLine = (v: TemplateVars) =>
   v.noCallEligible
@@ -204,6 +214,27 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
         SIGN_OFF,
       ].join("\n"),
   },
+  // CP-05. No em dashes anywhere in it (Jordan's rule), including the sign-off,
+  // which is why it does not reuse SIGN_OFF.
+  "reminder.confirm_address.v1": {
+    id: "reminder.confirm_address.v1",
+    action: "CONFIRM_ADDRESS",
+    version: "1",
+    purpose: "A session booked with only a general area: the exact address, via that session's own link (48 hours before, Friday for Monday).",
+    render: (v) =>
+      [
+        `Hi ${v.firstName},`,
+        "",
+        `Your filming session is ${v.sessionWhen ?? "coming up"}. ${v.areaText ? `So far we have ${v.areaText} as the location.` : "So far we only have a general area for it."} Add the exact address here so your videographer knows exactly where to go: ${v.addressLink ?? v.portalLink}`,
+        "",
+        "A good spot has plenty of natural light, room to move around, and says something about the market you work in.",
+        "",
+        `If anything changes within 24 hours of the session, call or text Kyle at ${KYLE_LINE}.`,
+        "",
+        "Jordan and the RealTour Pilot team",
+        "(Reply to this email and it comes straight to us.)",
+      ].join("\n"),
+  },
   "strategy_ready.v1": {
     id: "strategy_ready.v1",
     action: "STRATEGY_READY",
@@ -229,6 +260,7 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   REVIEW_WORK: "reminder.review_work.v2",
   SCRIPTS_READY: "scripts_ready.v1",
   STRATEGY_READY: "strategy_ready.v1",
+  CONFIRM_ADDRESS: "reminder.confirm_address.v1",
 };
 
 /** Resolve a template by id, refusing an id nobody has (a typo in the policy

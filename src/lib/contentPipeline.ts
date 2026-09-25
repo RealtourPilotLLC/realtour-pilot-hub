@@ -164,6 +164,12 @@ export async function reviseScriptWithInstructions(scriptId: string, instruction
 // suggestions Jordan accepts one by one; N per pillar from the policy
 // (10, configurable to 15), archived concepts never resurface, and duplicate
 // clicks join the running job. `created` = suggestions awaiting his review.
+//
+// CP-07 (Sep 24 2026): this is the PERSON's path. The same run is now also
+// queued when a strategy is approved and refilled per pillar by the hourly
+// sweep behind `topic_refresh` (contentTopics.sweepTopicBanks); a click here
+// takes over a whole-bank run the queue is still holding rather than paying
+// for a second one.
 // ---------------------------------------------------------------------------
 export async function seedTopicBank(enrollmentId: string, perPillar?: number | null, opts?: PipelineOpts): Promise<{ created: number; pillars: string[]; runId: string; needsInput: string[] }> {
   const { startTopicRefresh } = await import("@/lib/contentTopics");

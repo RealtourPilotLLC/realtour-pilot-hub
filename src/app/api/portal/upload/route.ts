@@ -4,6 +4,7 @@ import { resolvePortalViewer } from "@/lib/portal";
 import { can, refusalMessage } from "@/lib/portalAccess";
 import { dropboxUpload } from "@/lib/integrations/dropbox";
 import { ensureClientBrandFolder } from "@/lib/clientFolders";
+import { isPortalUploadKind, recordPortalAssetUpload, replaceableAsset } from "@/lib/brandProfile";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -16,6 +17,16 @@ export const maxDuration = 60;
 // the brand-profile permission — so the guards are tight — type allowlist,
 // 25MB cap, sanitized names, and a per-client daily counter so a leaked link
 // can't fill the Dropbox.
+//
+// CP-06 (Sep 24 2026): the file is now also RECORDED. Dropbox stays the file
+// store, but until today a portal upload landed there and nowhere else — no
+// registry row, so the staff Brand tab, the setup checklist and the editor's
+// brief never knew a logo had arrived, and the only signal was an owner bell.
+// The form says what the file IS (`kind`: LOGO | HEADSHOT | FONT | OTHER) and,
+// for a Replace, which of the client's own assets it replaces (`assetId`);
+// the path recorded is the one Dropbox actually wrote (autorename can turn
+// "logo.png" into "logo (1).png"). recordPortalAssetUpload does the rest —
+// the history row, the editor's banner, Kyle's confirmation task.
 const MAX_BYTES = 25 * 1024 * 1024;
 const DAILY_CAP = 25;
 const NAME_OK = /^[^\\/:?*"<>|]{1,180}$/;
@@ -37,6 +48,15 @@ export async function POST(req: NextRequest) {
 
   const file = form.get("file");
   if (!(file instanceof File)) return NextResponse.json({ ok: false, message: "Pick a file first." }, { status: 400 });
+  // An older page sends no kind: it is filed as OTHER, never guessed.
+  const kind = String(form.get("kind") ?? "") || "OTHER";
+  if (!isPortalUploadKind(kind)) return NextResponse.json({ ok: false, message: "Pick what this file is: logo, headshot, font or other." }, { status: 400 });
+  // A Replace must name one of THIS client's own files — checked before a
+  // single byte goes to Dropbox, so a forged id cannot even use the quota.
+  const replaceId = String(form.get("assetId") ?? "") || null;
+  if (replaceId && !(/^[a-z0-9]{10,40}$/i.test(replaceId) && (await replaceableAsset(enrollment.clientId, replaceId)))) {
+    return NextResponse.json({ ok: false, message: "That file isn't on your profile any more — upload it as a new one instead." }, { status: 400 });
+  }
   if (!NAME_OK.test(file.name) || !EXT_OK.test(file.name)) {
     return NextResponse.json({ ok: false, message: "That file type isn't supported — images, PDFs, fonts, zips and videos work." }, { status: 400 });
   }
@@ -69,12 +89,24 @@ export async function POST(req: NextRequest) {
   if (!folder.ok || !folder.path) {
     return NextResponse.json({ ok: false, message: "We couldn't reach the asset folder — text us the file instead." }, { status: 502 });
   }
+  let landedAt: string;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    await dropboxUpload(`${folder.path}/${file.name}`, bytes); // autorename on collision
+    landedAt = (await dropboxUpload(`${folder.path}/${file.name}`, bytes)).pathDisplay; // autorename on collision
   } catch {
     return NextResponse.json({ ok: false, message: "The upload didn't stick — try again, or text us the file." }, { status: 502 });
   }
+  const landedName = landedAt.slice(landedAt.lastIndexOf("/") + 1) || file.name;
+
+  // The file is safely in their folder whatever happens next. If recording it
+  // fails, say so honestly rather than claiming it reached the profile; the
+  // staff Brand tab lists it as "in the folder, not tracked", one click to file.
+  const recorded = await recordPortalAssetUpload(r.viewer, {
+    kind, fileName: landedName, path: landedAt, sizeBytes: file.size, mimeType: file.type || null, replaceAssetId: replaceId,
+  }).catch((e) => {
+    console.error("[portal upload] registry write failed", e);
+    return { ok: false, message: "", assetId: undefined, versionId: undefined };
+  });
 
   try {
     const { notifyInApp } = await import("@/lib/notify");
@@ -82,12 +114,15 @@ export async function POST(req: NextRequest) {
     await notifyInApp({
       kind: "portal_asset",
       title: `New brand asset — ${client?.name ?? "a client"}`,
-      body: file.name,
+      body: `${kind.toLowerCase()}: ${landedName}`,
       href: `/clients/${enrollment.clientId}`,
       targets: [{ roles: ["OWNER", "ADMIN"] }],
       dedupeKey: `portal-asset-${enrollment.id}-${day}`,
     });
   } catch { /* bell is best-effort */ }
 
-  return NextResponse.json({ ok: true, message: `${file.name} added to your brand kit.` });
+  if (!recorded.ok) {
+    return NextResponse.json({ ok: true, registered: false, message: `${landedName} is in your brand folder, where your editor can find it, but it didn't show up on your profile. Refresh, and text us if it's still missing.` });
+  }
+  return NextResponse.json({ ok: true, registered: true, message: recorded.message, assetId: recorded.assetId, versionId: recorded.versionId, kind, fileName: landedName });
 }

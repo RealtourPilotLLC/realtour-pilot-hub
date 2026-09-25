@@ -64,6 +64,11 @@ const MODELS = [
   "ContentImportBatch", "ContentImportItem",
   "ProgramReminder", "ProgramAutomation", "ProgramPublishingAccount", "ProgramPublishingJob",
   "ProgramAiRun", "ProgramAiQuota",
+  // Completion audit batches B–D (Sep 24 2026, schema e26cacd): brand-field
+  // history, the booking/address ledgers, library corrections, and the
+  // program conversation with its read markers.
+  "ClientBrandChange", "ProgramBookingAttempt", "ProgramSessionAddress", "ContentVideoCorrection",
+  "ProgramMessage", "ProgramMessageRead",
 ] as const;
 
 const delegateName = (model: string) => model.charAt(0).toLowerCase() + model.slice(1);

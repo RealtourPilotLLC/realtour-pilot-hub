@@ -2,12 +2,12 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { runAiJson, activePolicyVersion, setRunOutputRef, sha256, type AiRunKind } from "@/lib/aiRuns";
-import { approvedStrategy, createStrategyVersion, createStrategyProposal, setMonthPriorities, monthPriorities, structuredFromText } from "@/lib/contentStrategy";
+import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
 import { assembleInterviewInputs } from "@/lib/contentInterview";
 import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameOf, type VersionParts } from "@/lib/contentScripts";
-import { createFact, factsForPrompt, factLines, CONFIDENTIAL_RE, type FactCategory } from "@/lib/clientFacts";
+import { factsForPrompt, factLines, CONFIDENTIAL_RE, type FactCategory } from "@/lib/clientFacts";
 import { CONTENT_RULES } from "@/lib/contentPipeline";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy,
@@ -115,17 +115,23 @@ async function policyTopic(topicId: string): Promise<{ topic: Topic; row: NonNul
   };
 }
 
-/** Speaker-tagged excerpts recorded for a topic (from call analysis), newest selection first. */
+/**
+ * Speaker-tagged excerpts recorded for a topic (from call analysis), newest
+ * selection first. CP-08: read from ONE place (contentTopics.topicCallExcerpts,
+ * which the interview also uses) and scrubbed for confidentiality on the way —
+ * the old reader applied no confidential filter at all, so a line the client
+ * said in confidence on a call could reach a script prompt.
+ */
 async function excerptsForTopic(topicId: string, monthId: string | null): Promise<SourceExcerpt[]> {
-  const sel = monthId ? await prisma.contentTopicSelection.findFirst({ where: { topicId, monthId }, select: { evidenceJson: true } }) : null;
-  const ev = sel?.evidenceJson ?? (await prisma.contentTopicEvent.findFirst({ where: { topicId, evidenceJson: { not: null } }, orderBy: { createdAt: "desc" }, select: { evidenceJson: true } }))?.evidenceJson ?? null;
-  if (!ev) return [];
-  try {
-    const v = JSON.parse(ev) as { excerpts?: SourceExcerpt[] } | SourceExcerpt[];
-    const arr = Array.isArray(v) ? v : v.excerpts ?? [];
-    return arr.filter((x) => x && typeof x.text === "string").map((x): SourceExcerpt => ({ speaker: x.speaker === "client" || x.speaker === "jordan" ? x.speaker : "third-party", speakerName: x.speakerName ?? null, source: x.source ?? "call", text: x.text.slice(0, 1200) })).slice(0, 12);
-  } catch { return []; }
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { clientId: true } });
+  if (!t) return [];
+  const { safeTopicExcerpts } = await import("@/lib/contentTopics");
+  const { kept } = await safeTopicExcerpts(topicId, monthId, t.clientId);
+  return kept.map((e): SourceExcerpt => ({ speaker: e.speaker, speakerName: e.speakerName, source: e.source, text: e.text }));
 }
+
+/** CP-08: the script prompt with the per-part word budgets — every script draft names it, so a before/after on estimated length is attributable. */
+const SCRIPT_PROMPT_VERSION = "script.v2-budgets";
 
 export type GenerateScriptOpts = { topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean };
 
@@ -138,7 +144,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   const bundle = buildScriptPrompt(built.ctx, { path: "transcript", topic, excerpts: excerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: o.selectedOnCall ?? true });
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length },
-    promptKey: "script", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
+    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
     dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
   });
   const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId);
@@ -160,10 +166,12 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
 export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
-  const bundle = buildScriptPrompt(built.ctx, { path: "written-answers", input: a.input });
+  // The call's own words about this topic ride along beside the answers
+  // (CP-08) — already confidential- and other-client-scrubbed.
+  const bundle = buildScriptPrompt(built.ctx, { path: "written-answers", input: a.input, excerpts: a.excerpts });
   const run = await runAiJson<GeneratedScriptJson>({
-    kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds },
-    promptKey: "script", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`,
+    kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length },
+    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`,
     system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
   });
   const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId);
@@ -202,7 +210,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const user = `${bundle.user}\n\nCURRENT VERSION (v${base.versionNo}) — keep what already works, change only what the reviewer asks:\n${base.body}\n\nREVIEWER'S INSTRUCTION: ${instructions.trim().slice(0, 2000)}`;
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_revise", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId, basedOnVersionId: baseId }, inputRefs: { ...built.inputRefs, instruction: sha256(instructions) },
-    promptKey: "script", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `revise:${scriptId}`,
+    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `revise:${scriptId}`,
     system: bundle.system, prompt: user, schema: bundle.outputSchema, maxTokens: 3000,
   });
   const { parts, validation, gaps } = partsFromGenerated(run.output, base.pillarId, s.clientId);
@@ -240,9 +248,11 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // anything outside 10–15); a single-suggestion regeneration asks for the
   // policy count and KEEPS one (opts.keep) — never a forked prompt rule.
   const perPillar = opts.count ?? run.topicsPerPillar ?? GENERATION_POLICY.topicsPerPillar.default;
-  const existingRows = await prisma.contentTopic.findMany({ where: { enrollmentId: run.enrollmentId }, select: { title: true, status: true, pillarId: true, pillar: true, rejectionReason: true, archiveReason: true } });
+  const existingRows = await prisma.contentTopic.findMany({ where: { enrollmentId: run.enrollmentId }, select: { title: true, status: true, pillarId: true, pillar: true, rejectionReason: true, archiveReason: true, clientDeclinedAt: true, clientDeclineReason: true } });
   const nameOf = (id: string | null, label: string | null) => pillars.find((p) => p.id === id)?.name ?? label ?? "(no pillar)";
-  const existing = existingRows.map((t) => ({ title: t.title, pillarName: nameOf(t.pillarId, t.pillar), state: (t.status === "REJECTED" || t.status === "ARCHIVED" ? "ARCHIVED" : t.status === "SELECTED" || t.status === "SCRIPTED" ? "SELECTED" : ["FILMED", "DELIVERED", "EDITING"].includes(t.status) ? "FILMED" : "SUGGESTED") as Topic["state"], note: t.rejectionReason ?? t.archiveReason ?? null }));
+  // A topic the client said "not interested" to (CP-07) reads to the model as
+  // ARCHIVED with their reason, and blockedTopicHashes withholds it below too.
+  const existing = existingRows.map((t) => ({ title: t.title, pillarName: nameOf(t.pillarId, t.pillar), state: (t.clientDeclinedAt || t.status === "REJECTED" || t.status === "ARCHIVED" ? "ARCHIVED" : t.status === "SELECTED" || t.status === "SCRIPTED" ? "SELECTED" : ["FILMED", "DELIVERED", "EDITING"].includes(t.status) ? "FILMED" : "SUGGESTED") as Topic["state"], note: t.clientDeclinedAt ? `client not interested${t.clientDeclineReason ? `: ${t.clientDeclineReason}` : ""}` : t.rejectionReason ?? t.archiveReason ?? null }));
   const prevArchivedSugg = await prisma.contentTopicSuggestion.findMany({ where: { enrollmentId: run.enrollmentId, disposition: "ARCHIVED" }, select: { title: true, pillarId: true } });
   for (const s of prevArchivedSugg) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "ARCHIVED", note: "archived suggestion" });
   const ctx: ClientContext = opts.pillarId
@@ -312,8 +322,10 @@ type Analysis = {
   selectedTopics: { title: string; concept: string; pillar: string | null; excerpts: Excerpt[] }[];
   discussedTopics: { title: string; concept: string; pillar: string | null; excerpts: Excerpt[] }[];
   rejectedIdeas: { title: string; reason: string | null }[];
-  facts: { body: string; category: FactCategory; fieldKey: string | null; scope: "PERMANENT" | "MONTH" | "PROJECT"; speaker: string | null; confidential: boolean; confidence: number; excerpt: Excerpt | null }[];
-  strategyProposals: { kind: "STRATEGY" | "PILLAR" | "AUDIENCE" | "POSITIONING" | "PREFERENCE"; summary: string; impact: string | null }[];
+  // CP-11: proposedValue / section / proposedText / confidential — what exactly
+  // a preference or a strategy section would change to (profileFields.ts).
+  facts: { body: string; category: FactCategory; fieldKey: string | null; scope: "PERMANENT" | "MONTH" | "PROJECT"; speaker: string | null; confidential: boolean; confidence: number; excerpt: Excerpt | null; proposedValue?: string | null }[];
+  strategyProposals: { kind: "STRATEGY" | "PILLAR" | "AUDIENCE" | "POSITIONING" | "PREFERENCE"; summary: string; impact: string | null; section?: string | null; proposedText?: string | null; confidential?: boolean }[];
   priorities: string[];
   todos: string[];
 };
@@ -329,8 +341,8 @@ const ANALYSIS_SCHEMA = {
     selectedTopics: { type: "array", items: TOPIC_SCHEMA, description: "Topics the CLIENT explicitly agreed to film — each with a client-spoken excerpt proving it" },
     discussedTopics: { type: "array", items: TOPIC_SCHEMA, description: "Ideas raised but not agreed — saved for the bank" },
     rejectedIdeas: { type: "array", items: { type: "object", required: ["title"], properties: { title: { type: "string" }, reason: { type: ["string", "null"] } } } },
-    facts: { type: "array", items: { type: "object", required: ["body", "category", "scope", "confidential", "confidence"], properties: { body: { type: "string" }, category: { type: "string", enum: ["BRAND_PREFERENCE", "PRODUCTION_PREFERENCE", "PERFORMANCE_REPORTED", "DECISION", "COMMITMENT", "FEEDBACK", "PROPOSED_CHANGE"] }, fieldKey: { type: ["string", "null"], description: "e.g. production.location_preference, editing.pace, brand.voice — or null" }, scope: { type: "string", enum: ["PERMANENT", "MONTH", "PROJECT"] }, speaker: { type: ["string", "null"] }, confidential: { type: "boolean" }, confidence: { type: "number" }, excerpt: { anyOf: [EXCERPT_SCHEMA, { type: "null" }] } } } },
-    strategyProposals: { type: "array", items: { type: "object", required: ["kind", "summary"], properties: { kind: { type: "string", enum: ["STRATEGY", "PILLAR", "AUDIENCE", "POSITIONING", "PREFERENCE"] }, summary: { type: "string" }, impact: { type: ["string", "null"] } } } },
+    facts: { type: "array", items: { type: "object", required: ["body", "category", "scope", "confidential", "confidence"], properties: { body: { type: "string" }, category: { type: "string", enum: ["BRAND_PREFERENCE", "PRODUCTION_PREFERENCE", "PERFORMANCE_REPORTED", "DECISION", "COMMITMENT", "FEEDBACK", "PROPOSED_CHANGE"] }, fieldKey: { type: ["string", "null"], description: "e.g. editing.music, editing.pace, editing.captions, production.location_preference, production.preferred_days, production.wardrobe, production.teleprompter, brand.fonts, brand.website, brand.social, brand.voice — or null" }, scope: { type: "string", enum: ["PERMANENT", "MONTH", "PROJECT"] }, speaker: { type: ["string", "null"] }, confidential: { type: "boolean" }, confidence: { type: "number" }, excerpt: { anyOf: [EXCERPT_SCHEMA, { type: "null" }] }, proposedValue: { type: ["string", "null"], description: "When the client CHANGED a standing preference: the new standing value in a few words (e.g. 'Calm acoustic'). Otherwise null." } } } },
+    strategyProposals: { type: "array", items: { type: "object", required: ["kind", "summary"], properties: { kind: { type: "string", enum: ["STRATEGY", "PILLAR", "AUDIENCE", "POSITIONING", "PREFERENCE"] }, summary: { type: "string" }, impact: { type: ["string", "null"] }, section: { type: ["string", "null"], description: "The heading, EXACTLY as listed under APPROVED STRATEGY SECTION HEADINGS, of the ONE section this changes — or null" }, proposedText: { type: ["string", "null"], description: "Replacement text for that one section only, in the section's own style — or null" }, confidential: { type: "boolean", description: "true when this was said in confidence or is commercially sensitive" } } } },
     priorities: { type: "array", items: { type: "string" } },
     todos: { type: "array", items: { type: "string" } },
   },
@@ -341,7 +353,8 @@ const ANALYSIS_SYSTEM = (videosOwed: number, history: string) =>
   "If it is a planning session, set plannedMonthKey to the month the topics are FOR (a call in the last third of a month usually plans the NEXT month). Use the call date in the prompt.\n" +
   "Report what the CLIENT actually agreed to, not everything mentioned: selectedTopics need a client-spoken excerpt each; discussedTopics are ideas without agreement; rejectedIdeas were explicitly declined. " +
   "facts: NEW durable facts about the agent (preferences, decisions, commitments, reported results) — quote or closely paraphrase, with speaker and an excerpt; scope PROJECT for 'let's try X on this one', MONTH for this month only, PERMANENT otherwise; anything told in confidence or commercially sensitive is confidential=true. " +
-  "strategyProposals: only when the client changes positioning, audience, pillars or a standing preference — a proposal for staff, never a rewrite. priorities: this month's campaign priorities in the client's words. todos: action items either side committed to.\n" +
+  "strategyProposals: only when the client changes positioning, audience, pillars or a standing preference — a proposal for staff, never a rewrite. Name the ONE approved section it changes (its heading exactly) and give replacement text for that section only; leave both null if no single section fits. Anything said in confidence is confidential=true. " +
+  "When a fact CHANGES a standing preference (music, pace, captions, wardrobe, filming days or location, fonts, website, social), set proposedValue to the new value in a few words; a person decides whether to apply it. priorities: this month's campaign priorities in the client's words. todos: action items either side committed to.\n" +
   `The plan owes ${videosOwed} videos this month — do not force the count.\n` +
   CONTENT_RULES + "\n\n" + SPEAKER_ATTRIBUTION_RULE + "\n\n" + NO_INVENTION_RULE + "\n\n" +
   "Topics already in this agent's history (avoid lazy duplicates; a fresh angle on an old theme is fine):\n" + history;
@@ -360,12 +373,15 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
   const history = historyRows.length ? historyRows.map((t) => `- [${t.status}] ${t.title}`).join("\n") : "none yet";
   const context = built.ctx.strategy?.document ? `APPROVED STRATEGY (${built.strategyLabel}):\n${renderStrategy(built.ctx.strategy.document, { preserveSourceHeadings: true })}` : "APPROVED STRATEGY: none on file.";
   const facts = [...(built.ctx.preferences?.explicit ?? []), ...(built.ctx.knownFacts ?? [])];
+  // CP-11: the approved strategy's own section headings, so a proposal can
+  // name the ONE section it changes (resolved back to its id on the way in).
+  const headings = (await approvedStrategy(o.enrollmentId).catch(() => null))?.stored.sections.map((s) => s.heading).filter(Boolean) ?? [];
   const run = await runAiJson<Analysis>({
     kind: "call_analysis", enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { monthId: o.monthId, callRecordId: o.callRecordId ?? null, transcriptSourceId: o.transcriptSourceId ?? null }, inputRefs: { ...built.inputRefs, transcriptHash: sha256(o.transcript) },
-    promptKey: "call-analysis", promptVersion: `${GENERATION_POLICY_VERSION}/analysis.2`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
+    promptKey: "call-analysis", promptVersion: `${GENERATION_POLICY_VERSION}/analysis.3`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
     dedupeKey: o.callRecordId ? `analyze:${o.callRecordId}` : `analyze:month:${o.monthId}`,
     system: ANALYSIS_SYSTEM(o.videosOwed, history),
-    prompt: `CLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${o.callDate ? o.callDate.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${o.monthKey}`}\n\n${context}\n\n${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
+    prompt: `CLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${o.callDate ? o.callDate.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${o.monthKey}`}\n\n${context}\n\n${headings.length ? `APPROVED STRATEGY SECTION HEADINGS (use one exactly in strategyProposals[].section):\n${headings.map((h) => `- ${h}`).join("\n")}\n\n` : ""}${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
     schema: ANALYSIS_SCHEMA, maxTokens: 10_000,
   });
   const out = run.output;
@@ -419,22 +435,17 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
     else await prisma.contentTopic.update({ where: { id: r.id }, data: { rejectionReason: t.reason ?? null } });
     rejected++;
   }
-  let factsN = 0, confidentialN = 0;
-  for (const f of Array.isArray(out.facts) ? out.facts : []) {
-    if (!f.body?.trim()) continue;
-    const r = await createFact({
-      clientId: o.clientId, enrollmentId: o.enrollmentId, category: f.category, fieldKey: f.fieldKey ?? null, body: f.body, source: "call", sourceRef, callRecordId: o.callRecordId ?? null, transcriptSourceId: o.transcriptSourceId ?? null,
-      excerpt: f.excerpt ? [{ time: f.excerpt.time ?? null, speaker: f.excerpt.speaker, text: f.excerpt.text }] : null, speaker: f.speaker ?? f.excerpt?.speaker ?? null, factDate: o.callDate ?? new Date(),
-      scope: f.scope, monthId: f.scope === "MONTH" ? targetMonthId : null, confidential: f.confidential === true, confidence: typeof f.confidence === "number" ? f.confidence : null, aiRunId: run.runId, unattended: o.unattended,
-    });
-    if (!r.existed) { factsN++; if (f.confidential) confidentialN++; }
-  }
-  let proposals = 0;
-  for (const p of Array.isArray(out.strategyProposals) ? out.strategyProposals : []) {
-    if (!p.summary?.trim()) continue;
-    await createStrategyProposal({ enrollmentId: o.enrollmentId, kind: p.kind, summary: p.summary, impact: p.impact ?? null, sourceKind: "call", sourceRef, callRecordId: o.callRecordId ?? null });
-    proposals++;
-  }
+  // Facts and strategy proposals (CP-11): profileFields.applyCallKnowledge —
+  // the same createFact as before, plus a PROPOSED profile change when a
+  // preference changed, section-targeted strategy proposals, and confidential
+  // proposals routed to a locked fact. Separate so a drill can feed it a
+  // fixture model output; nothing it writes is applied without a person.
+  const { applyCallKnowledge } = await import("@/lib/profileFields");
+  const knowledge = await applyCallKnowledge(
+    { enrollmentId: o.enrollmentId, clientId: o.clientId, targetMonthId, callRecordId: o.callRecordId ?? null, transcriptSourceId: o.transcriptSourceId ?? null, callDate: o.callDate, unattended: o.unattended, sourceRef, runId: run.runId },
+    { facts: out.facts, strategyProposals: out.strategyProposals },
+  );
+  const factsN = knowledge.facts, confidentialN = knowledge.confidentialFacts, proposals = knowledge.proposals + knowledge.fieldProposals;
   const priorities = Array.isArray(out.priorities) ? out.priorities.filter((x) => typeof x === "string" && x.trim()) : [];
   if (priorities.length) {
     // Priorities a person typed (sourceRef "manual:…") are kept; the call's are

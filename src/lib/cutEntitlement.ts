@@ -120,8 +120,8 @@ export type AryeoFinal = {
   /** How the file is tied to this video's cut chain: "name" (the titles agree),
    *  "index" (only list position), null when the video has no chain. */
   matchBasis: "name" | "index" | null;
-  /** A person confirmed the pairing. No column records that yet — CP-12's
-   *  identity tool will; until then this is always false. */
+  /** A person confirmed the pairing: the source row carries confirmedAt, or
+   *  staff relinked it (matchBasis "staff") with CP-12's identity tool. */
   confirmed: boolean;
 };
 
@@ -298,8 +298,8 @@ function decideForDecisiveRound(f: EntitlementFacts, opts: { gateSince?: Date } 
   // Pairing by list position is only held back where it could matter: a chain
   // that is still going through the client's review. On a month or a project
   // delivered before the gate the file is this client's own finished delivery
-  // — at worst under the wrong title — and nothing (no CP-12 tool yet) would
-  // ever confirm it, so holding it locked a historical delivery for good.
+  // — at worst under the wrong title, which staff now see flagged and fix with
+  // CP-12's identity tool — so holding it would lock a historical delivery.
   const pairingSettled = !!a && (a.confirmed || a.matchBasis !== "index" || f.chain.length === 0 || f.monthHistorical
     || (f.projectDelivered && (!f.projectDeliveredAt || f.projectDeliveredAt.getTime() < gate)) || f.chain.every(preGate));
   if (a && pairingSettled) {
@@ -432,7 +432,7 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
     chainIds.length
       ? prisma.clientDecision.findMany({ where: { submissionId: { in: chainIds }, enrollmentId: { in: enrollmentIds } }, select: { id: true, submissionId: true, enrollmentId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
       : Promise.resolve([]),
-    prisma.contentVideoSource.findMany({ where: { videoId: { in: videos.map((v) => v.id) }, kind: "PORTAL_VIDEO", isFinal: true }, orderBy: { createdAt: "asc" }, select: { videoId: true, portalVideoId: true } }),
+    prisma.contentVideoSource.findMany({ where: { videoId: { in: videos.map((v) => v.id) }, kind: "PORTAL_VIDEO", isFinal: true }, orderBy: { createdAt: "asc" }, select: { videoId: true, portalVideoId: true, matchBasis: true, confirmedAt: true } }),
   ]);
   const pvIds = [...new Set(sources.map((s) => s.portalVideoId).filter((x): x is string => !!x))];
   const pvs = pvIds.length ? await prisma.portalVideo.findMany({ where: { id: { in: pvIds }, source: "aryeo" }, select: { id: true, enrollmentId: true, title: true, download: true, playback: true, deliveredAt: true } }) : [];
@@ -446,9 +446,13 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
     const priorApprovals = foldDecisions(mine).approvals;
     const p = projectOf.get(v.id);
     const month = (v.monthId ? monthById.get(v.monthId) : undefined) ?? (p?.contentMonthId ? monthById.get(p.contentMonthId) : undefined);
-    const pv = sources.filter((s) => s.videoId === v.id).map((s) => pvById.get(s.portalVideoId ?? "")).find((r) => !!r && r.enrollmentId === v.enrollmentId && !!(r.download || r.playback));
+    const src = sources.filter((s) => s.videoId === v.id).find((s) => { const r = pvById.get(s.portalVideoId ?? ""); return !!r && r.enrollmentId === v.enrollmentId && !!(r.download || r.playback); });
+    const pv = src ? pvById.get(src.portalVideoId!)! : null;
+    // CP-12: the only thing read from the pairing record is whether a PERSON
+    // stood behind it. How it was paired is still judged from the titles here,
+    // so a stale matchBasis can never make a weak pairing look strong.
     const aryeoFinal: AryeoFinal | null = pv
-      ? { portalVideoId: pv.id, url: (pv.download ?? pv.playback)!, title: pv.title, deliveredAt: pv.deliveredAt, matchBasis: aryeoMatchBasis(pv.title, chain), confirmed: false }
+      ? { portalVideoId: pv.id, url: (pv.download ?? pv.playback)!, title: pv.title, deliveredAt: pv.deliveredAt, matchBasis: aryeoMatchBasis(pv.title, chain), confirmed: !!src!.confirmedAt || src!.matchBasis === "staff" }
       : null;
     out.set(v.id, decideEntitlement({
       chain, approvals, changeRequests, priorApprovals,

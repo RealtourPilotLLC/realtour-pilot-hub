@@ -14,6 +14,9 @@ import {
   Loader2,
   Check,
   NotebookPen,
+  Plus,
+  X,
+  FolderOpen,
 } from "lucide-react";
 import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
 import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
@@ -248,6 +251,28 @@ function CheckRow({ checked, onChange, title, text }: { checked: boolean; onChan
   );
 }
 
+// CP-09: what the page says about a filmed-topics report that has not landed.
+// The submit's own words (finalizeUpload's topicsPending) for one still
+// retrying; a report that gave up is with the office, and says so — either
+// way there is nothing for the photographer to redo.
+function pendingTopicsMessage(state: string | null | undefined): string | null {
+  if (!state || state === "APPLIED") return null;
+  return state === "NEEDS_REVIEW"
+    ? "Your footage is in and the editors have it. The topics you reported did not save on their own, so the office has them and is recording them by hand — nothing more you need to do."
+    : "Your footage is in and the editors have it. The topics you ticked are saved, but the hub has not finished recording them yet — it retries on its own, so there is nothing more you need to do.";
+}
+
+// The page's own handle for a topic added on site — never part of the report's
+// identity (the server hashes extras by title), so it only has to be unique on
+// this page. randomUUID is missing outside a secure context; the fallback is
+// plenty for ten rows.
+function newExtraKey(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch { /* fall through */ }
+  return `x${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function UploadPortal({
   project,
   deliverables,
@@ -337,7 +362,15 @@ export function UploadPortal({
       filmedConfirmedAtISO: string | null; filmedConfirmedBy: string | null;
       /** CP-09: the session (project) the topic was confirmed at — null until somebody confirms it. */
       confirmedOnProjectId: string | null;
+      /** CP-09: selected beyond the month's allowance — counted as an extra, never as planned */
+      overflow: boolean;
+      /** CP-09: the photographer's latest note to the editor about this topic on THIS job */
+      note: string | null;
+      /** CP-09: the topic's own raw folder under 02-RAW-Video, once one exists */
+      folder: { label: string; url: string } | null;
     }[];
+    /** CP-09: this job's last report, when it has not landed yet — what it said, so a reopened page shows it */
+    pending: { state: string; topicIds: string[]; extras: { title: string; note: string }[] } | null;
   } | null;
   /** owner/admin — the reopen button reads "Edit this upload" for them */
   viewerIsOffice: boolean;
@@ -381,7 +414,7 @@ export function UploadPortal({
   const [err, setErr] = useState<string | null>(null);
   // CP-09: the footage went in but the filmed topics have not been recorded
   // yet (saved, and retried by the hub). Said plainly after the submit.
-  const [topicsPending, setTopicsPending] = useState<string | null>(null);
+  const [topicsPending, setTopicsPending] = useState<string | null>(() => pendingTopicsMessage(sessionTopics?.pending?.state));
   const [processNote, setProcessNote] = useState("");
   const [processNoteSent, setProcessNoteSent] = useState(false);
 
@@ -430,18 +463,48 @@ export function UploadPortal({
   // topic confirmed elsewhere is that session's video, shown but not tickable.
   const confirmedElsewhere = (t: { confirmedOnProjectId: string | null }) =>
     !!t.confirmedOnProjectId && t.confirmedOnProjectId !== project.id;
+  // A topic already RECORDED as filmed at this session stays ticked: a
+  // re-submit never walks a confirmation back (the server keeps it and keeps
+  // counting it), so an untick here would only make the page disagree with
+  // the job. A correction is the office's, on the record.
+  const recordedHere = (t: { confirmedOnProjectId: string | null }) => t.confirmedOnProjectId === project.id;
+  // A report that has not landed yet is still the photographer's word about
+  // this job: its ticks come back ticked, so re-sending the page unchanged is
+  // the same report rather than a different answer.
+  const pendingTicks = sessionTopics?.pending?.topicIds ?? [];
   const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(
-    () => (sessionTopics?.topics ?? []).filter((t) => t.confirmedOnProjectId === project.id).map((t) => t.topicId),
+    () => (sessionTopics?.topics ?? [])
+      .filter((t) => recordedHere(t) || (pendingTicks.includes(t.topicId) && !confirmedElsewhere(t)))
+      .map((t) => t.topicId),
   );
   const hasTopics = (sessionTopics?.topics.length ?? 0) > 0;
   const toggleTopic = (id: string) => {
-    if (sessionTopics?.topics.some((t) => t.topicId === id && confirmedElsewhere(t))) return;
+    if (sessionTopics?.topics.some((t) => t.topicId === id && (confirmedElsewhere(t) || recordedHere(t)))) return;
     setFilmedTopicIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
   };
-  // With a topic list, the count IS the number of ticks — asking for it twice
-  // invites two different answers about the same shoot.
-  const videosFilmedNum = hasTopics
-    ? filmedTopicIds.length || null
+  // CP-09: a note to the editor per topic (collapsed until asked for), and the
+  // topics filmed on site that were not on the list. Both ride the same report
+  // as the ticks, so they land — or wait and retry — together.
+  const [topicNotes, setTopicNotes] = useState<Record<string, string>>(
+    () => Object.fromEntries((sessionTopics?.topics ?? []).filter((t) => t.note?.trim()).map((t) => [t.topicId, t.note as string])),
+  );
+  const [notesOpen, setNotesOpen] = useState<string[]>(() => Object.keys(topicNotes));
+  const [extraRows, setExtraRows] = useState<{ key: string; title: string; note: string }[]>(
+    () => (sessionTopics?.pending?.extras ?? []).map((x, i) => ({ key: `pending-${i}`, title: x.title, note: x.note })),
+  );
+  const liveExtras = extraRows
+    .map((x) => ({ ...x, title: x.title.replace(/\s+/g, " ").trim() }))
+    .filter((x) => x.title);
+  // Answered by topic (ticks and/or extras) rather than by the bare count box.
+  const answersByTopic = hasTopics || liveExtras.length > 0;
+  const overflowOf = new Map((sessionTopics?.topics ?? []).map((t) => [t.topicId, t.overflow]));
+  const plannedTicked = filmedTopicIds.filter((id) => !overflowOf.get(id)).length;
+  const extraCount = filmedTopicIds.length - plannedTicked + liveExtras.length;
+  const topicCount = filmedTopicIds.length + liveExtras.length;
+  // With a topic list, the count IS the number of ticks plus the extras —
+  // asking for it twice invites two different answers about the same shoot.
+  const videosFilmedNum = answersByTopic
+    ? topicCount || null
     : /^\d{1,3}$/.test(videosFilmed.trim())
       ? Number(videosFilmed.trim())
       : null;
@@ -480,7 +543,7 @@ export function UploadPortal({
   // "vision and style" on a shape whose only required field is the intro.
   const requiredLabels = [
     spec.requireIntro ? "The intro script" : null,
-    spec.requireVideoCount ? (hasTopics ? "Which topics you filmed" : "The video count") : null,
+    spec.requireVideoCount ? (answersByTopic ? "Which topics you filmed" : "The video count") : null,
     fullFields ? (spec.fixedStyle ? "vision" : "vision and style") : null,
     notesRequired ? "Your editing instructions" : null,
   ].filter(Boolean) as string[];
@@ -636,7 +699,7 @@ export function UploadPortal({
       if (notesRequired && !vidSections.editNotes.trim()) missing.push("your editing instructions for the editor");
     }
     if (videoLive && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
-      missing.push("how many videos you filmed");
+      missing.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
     }
     if (videoLive && script && !scriptChoice) missing.push("confirm the script");
     if (videoLive && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
@@ -685,7 +748,18 @@ export function UploadPortal({
       // server treats absence as "old tab, ask for a refresh", null as
       // "unanswered, block with the real message").
       videosFilmed: spec.requireVideoCount ? videosFilmedNum : undefined,
-      filmedTopicIds: hasTopics ? filmedTopicIds : undefined,
+      filmedTopicIds: answersByTopic ? filmedTopicIds : undefined,
+      // CP-09: a note only for a topic that is ticked (the server drops the
+      // rest too), and the on-site extras by title — their key is only this
+      // page's handle for them.
+      ...(answersByTopic
+        ? {
+            topicNotes: Object.fromEntries(
+              filmedTopicIds.map((id) => [id, (topicNotes[id] ?? "").trim().slice(0, 1000)] as const).filter(([, n]) => !!n),
+            ),
+            extraTopics: liveExtras.map((x) => ({ key: x.key, title: x.title.slice(0, 200), ...(x.note.trim() ? { note: x.note.trim().slice(0, 1000) } : {}) })),
+          }
+        : {}),
       introScript: spec.requireIntro ? vidSections.intro.trim() || null : undefined,
       providedScript: spec.requireScript && !script ? scriptText.trim() || null : undefined,
       ...(force ? { force: true } : {}),
@@ -1341,53 +1415,160 @@ export function UploadPortal({
                 and it is what links video → topic → script → the client's
                 approval. Nothing is pre-ticked. An unticked topic was NOT
                 filmed, and a month that reads one short is the truth. */}
-            {spec.requireVideoCount && hasTopics && (
+            {/* CP-09 (batch C): each ticked topic can carry a note for the
+                editor, a topic filmed on site can be added, and the count the
+                editor cuts to is said as planned + extra. Everything here rides
+                ONE report with the ticks (upload/actions.ts → filmedTopics.ts),
+                so it all lands — or waits and retries — together. An extra is
+                never refused: it goes to the editor like the others, and the
+                office decides what it counts toward (capacity review). */}
+            {spec.requireVideoCount && !!sessionTopics && (
               <div className="mt-3">
-                <label className="text-[13px] font-medium text-muted">
-                  Which topics did you film? <span className="text-brand">*</span>
-                </label>
-                <ul className="mt-1.5 space-y-1.5">
-                  {sessionTopics!.topics.map((t) => {
-                    const on = filmedTopicIds.includes(t.topicId);
-                    const elsewhere = confirmedElsewhere(t);
-                    return (
-                      <li key={t.topicId}>
-                        <button
-                          type="button"
-                          onClick={() => toggleTopic(t.topicId)}
-                          disabled={elsewhere}
-                          aria-disabled={elsewhere}
-                          className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left ${on ? "border-brand bg-brand-soft" : "border-border bg-surface-2"} ${elsewhere ? "cursor-not-allowed opacity-60" : ""}`}
-                        >
-                          <span className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${on ? "border-brand bg-brand text-white" : "border-border"}`}>
-                            {on ? <Check className="size-3" /> : null}
-                          </span>
-                          <span className="min-w-0">
-                            <span className="block text-sm font-medium">{t.title}</span>
-                            <span className="block text-[11px] text-muted">
-                              {t.pillarName ? `${t.pillarName} · ` : ""}
-                              {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script written") : "no script yet"}
-                              {elsewhere
-                                ? " · filmed at another session this month"
-                                : t.filmedConfirmedAtISO
-                                  ? ` · already confirmed by ${t.filmedConfirmedBy ?? "the office"}`
-                                  : ""}
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                  <label className="text-[13px] font-medium text-muted">
+                    {/* With no list, the count box below is still the required
+                        answer — adding what was filmed is the better one. */}
+                    {hasTopics ? <>Which topics did you film? <span className="text-brand">*</span></> : "What did you film?"}
+                  </label>
+                  {topicCount > 0 && (
+                    <span className="text-xs font-medium text-foreground">
+                      {topicCount} video{topicCount === 1 ? "" : "s"}: {plannedTicked} planned + {extraCount} extra
+                    </span>
+                  )}
+                </div>
+                {hasTopics && (
+                  <ul className="mt-1.5 space-y-1.5">
+                    {sessionTopics.topics.map((t) => {
+                      const on = filmedTopicIds.includes(t.topicId);
+                      const elsewhere = confirmedElsewhere(t);
+                      const recorded = recordedHere(t);
+                      const noteOpen = notesOpen.includes(t.topicId);
+                      return (
+                        <li key={t.topicId}>
+                          <button
+                            type="button"
+                            onClick={() => toggleTopic(t.topicId)}
+                            disabled={elsewhere || recorded}
+                            aria-disabled={elsewhere || recorded}
+                            aria-pressed={on}
+                            className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left ${on ? "border-brand bg-brand-soft" : "border-border bg-surface-2"} ${elsewhere ? "cursor-not-allowed opacity-60" : recorded ? "cursor-default" : ""}`}
+                          >
+                            <span className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${on ? "border-brand bg-brand text-white" : "border-border"}`}>
+                              {on ? <Check className="size-3" /> : null}
                             </span>
-                          </span>
-                        </button>
+                            <span className="min-w-0">
+                              <span className="block text-sm font-medium">{t.title}</span>
+                              <span className="block text-[11px] text-muted">
+                                {t.pillarName ? `${t.pillarName} · ` : ""}
+                                {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script written") : "no script yet"}
+                                {t.overflow ? " · beyond this month's plan" : ""}
+                                {elsewhere
+                                  ? " · filmed at another session this month"
+                                  : recorded
+                                    ? ` · recorded for this session${t.filmedConfirmedBy ? ` by ${t.filmedConfirmedBy}` : ""}`
+                                    : t.filmedConfirmedAtISO
+                                      ? ` · already confirmed by ${t.filmedConfirmedBy ?? "the office"}`
+                                      : ""}
+                              </span>
+                            </span>
+                          </button>
+                          {!elsewhere && (on || t.folder) && (
+                            <div className="ml-7 mt-1 space-y-1">
+                              {on && (noteOpen ? (
+                                <AutoTextarea
+                                  value={topicNotes[t.topicId] ?? ""}
+                                  onChange={(e) => setTopicNotes((n) => ({ ...n, [t.topicId]: e.target.value }))}
+                                  maxLength={1000}
+                                  minRows={2}
+                                  aria-label={`Note for the editor about ${t.title}`}
+                                  placeholder="Note for the editor — the take to use, a line they flubbed, B-roll to lean on."
+                                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                                />
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setNotesOpen((o) => [...o, t.topicId])}
+                                  className="inline-flex items-center gap-1 py-1 text-xs font-medium text-brand hover:underline"
+                                >
+                                  <NotebookPen className="size-3.5" /> Note for the editor
+                                </button>
+                              ))}
+                              {t.folder && (
+                                <a
+                                  href={t.folder.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
+                                >
+                                  <FolderOpen className="size-3 shrink-0" />
+                                  <span className="truncate">Its clips go in 02-RAW-Video/{t.folder.label}</span>
+                                </a>
+                              )}
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+
+                {/* Filmed on site, not on the list. A title is all it needs;
+                    an empty row is simply not sent. */}
+                {extraRows.length > 0 && (
+                  <ul className="mt-2 space-y-2">
+                    {extraRows.map((x, i) => (
+                      <li key={x.key} className="rounded-lg border border-dashed border-brand/50 bg-brand-soft/40 p-2.5">
+                        <div className="flex items-start gap-2">
+                          <input
+                            value={x.title}
+                            onChange={(e) => setExtraRows((rows) => rows.map((r) => (r.key === x.key ? { ...r, title: e.target.value } : r)))}
+                            maxLength={200}
+                            aria-label={`Extra topic ${i + 1}`}
+                            placeholder="What was this video about?"
+                            className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setExtraRows((rows) => rows.filter((r) => r.key !== x.key))}
+                            aria-label="Remove this topic"
+                            className="rounded-lg p-2 text-muted hover:bg-surface-2 hover:text-foreground"
+                          >
+                            <X className="size-4" />
+                          </button>
+                        </div>
+                        <AutoTextarea
+                          value={x.note}
+                          onChange={(e) => setExtraRows((rows) => rows.map((r) => (r.key === x.key ? { ...r, note: e.target.value } : r)))}
+                          maxLength={1000}
+                          minRows={1}
+                          aria-label={`Note for the editor about extra topic ${i + 1}`}
+                          placeholder="Note for the editor (optional)"
+                          className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                        />
                       </li>
-                    );
-                  })}
-                </ul>
+                    ))}
+                  </ul>
+                )}
+                {extraRows.length < 10 && (
+                  <button
+                    type="button"
+                    onClick={() => setExtraRows((rows) => [...rows, { key: newExtraKey(), title: "", note: "" }])}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2 text-sm font-medium text-muted hover:border-brand hover:text-foreground"
+                  >
+                    <Plus className="size-4" /> Add a topic you filmed
+                  </button>
+                )}
                 <p className="mt-1.5 text-xs text-muted">
-                  Tick only what you actually filmed. Anything you leave unticked stays on their list for next time — it is better for us to know one is missing than to find out when they ask for it.
+                  {hasTopics
+                    ? "Tick only what you actually filmed. Anything you leave unticked stays on their list for next time — it is better for us to know one is missing than to find out when they ask for it. Filmed something that isn't listed? Add it: the editor gets it like the others, and the office sorts out what it counts toward."
+                    : "No topics were planned for this session yet. Add each video you filmed by what it's about — or, if you'd rather, just give the count below."}
                 </p>
               </div>
             )}
 
             {/* No topic list (a session booked before the month was planned):
                 the batch size the editor cuts to, as before. */}
-            {spec.requireVideoCount && !hasTopics && (
+            {spec.requireVideoCount && !hasTopics && liveExtras.length === 0 && (
               <div className="mt-3">
                 <label className="text-[13px] font-medium text-muted">
                   How many videos did you film? <span className="text-brand">*</span>

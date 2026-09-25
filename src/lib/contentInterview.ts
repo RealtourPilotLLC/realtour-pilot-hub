@@ -1,12 +1,14 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { activePolicyVersion } from "@/lib/aiRuns";
+import { activePolicyVersion, sha256 } from "@/lib/aiRuns";
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { listPillars } from "@/lib/contentPillars";
 import {
-  INTERVIEW_QUESTION_PLAN, nextQuestion, assembleScriptInputs,
+  INTERVIEW_QUESTION_PLAN, nextQuestion, assembleScriptInputs, evaluateSufficiency, isGapCondition,
   type InterviewAnswer, type InterviewQuestionId, type NextStep, type ScriptGeneratorInput, type Topic, type FollowUpCondition,
+  type SufficiencyContext, type SufficiencyResult, type SourceExcerpt,
 } from "@/lib/contentPolicy";
+import { safeTopicExcerpts, type TopicExcerpt } from "@/lib/contentTopics";
 
 // ---------------------------------------------------------------------------
 // The guided topic interview (spec §6) — the policy's question plan
@@ -19,6 +21,16 @@ import {
 // The interview is resumable by construction: nextQuestion() is pure over
 // the stored answers, so the same rows always give the same next step.
 // ---------------------------------------------------------------------------
+
+// CP-08 (Sep 24 2026): "done" is no longer "enough". An interview whose
+// answers cannot carry a script is NEEDS_FOLLOWUP (with up to two targeted gap
+// questions first), and sending it anyway is SUBMITTED_WITH_GAPS — a state no
+// reader mistakes for SUBMITTED: no submittedAt, no preparation clock, no
+// auto-draft, and a Kyle task to follow up. SUBMITTED now means what the rest
+// of the hub always assumed it meant: the answers are sufficient.
+
+/** Statuses interviewState never overwrites on a re-render. */
+const STICKY = new Set(["SUBMITTED", "SUBMITTED_WITH_GAPS", "ABANDONED"]);
 
 const ROLE_OF: Record<InterviewQuestionId, string> = {
   audienceProblem: "AUDIENCE_PROBLEM", pointOfView: "POINT_OF_VIEW", talkingPoints: "TALKING_POINT", evidence: "EVIDENCE", story: "STORY", nextAction: "NEXT_STEP",
@@ -60,14 +72,15 @@ export async function currentAnswers(interviewId: string) {
   return rows.filter((r) => (seen.has(r.questionKey) ? false : (seen.add(r.questionKey), true)));
 }
 
-async function topicForInterview(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; row: NonNullable<Awaited<ReturnType<typeof prisma.contentInterview.findUnique>>> }> {
+async function topicForInterview(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; row: NonNullable<Awaited<ReturnType<typeof prisma.contentInterview.findUnique>>>; sufficiency: SufficiencyContext; excerpts: TopicExcerpt[] }> {
   const row = await prisma.contentInterview.findUnique({ where: { id: interviewId } });
   if (!row) throw new Error("Interview not found.");
-  const [t, client, strategy, pillars] = await Promise.all([
+  const [t, client, strategy, pillars, safe] = await Promise.all([
     prisma.contentTopic.findUnique({ where: { id: row.topicId } }),
     prisma.client.findUnique({ where: { id: row.clientId }, select: { name: true } }),
     approvedStrategy(row.enrollmentId),
     listPillars(row.enrollmentId, { includeRetired: true }),
+    safeTopicExcerpts(row.topicId, row.monthId, row.clientId),
   ]);
   if (!t) throw new Error("Topic not found.");
   const pillarName = pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillar ?? "(no pillar)";
@@ -75,7 +88,19 @@ async function topicForInterview(interviewId: string): Promise<{ topic: Topic; a
     id: t.id, clientId: t.clientId, title: t.title, description: t.concept, pillarRef: { pillarId: t.pillarId, pillarName }, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage,
     source: "STAFF", sourceRef: null, state: "SELECTED", selectedForMonth: row.monthId, proposedState: null, importedMark: null, history: [], strategyVersion: strategy?.label ?? null, stamp: null,
   };
-  return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row };
+  return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row, sufficiency: sufficiencyContextFor(t, safe.kept), excerpts: safe.kept };
+}
+
+/**
+ * What counts beside the answers (CP-08). The topic's audience need counts only
+ * when a person stands behind it — Jordan approved the topic, or staff/an
+ * import wrote it — because an unreviewed AI or call topic's audience line is a
+ * guess, and "never ask for facts already in approved context" is about
+ * APPROVED context. Excerpts are the confidential-scrubbed ones only.
+ */
+function sufficiencyContextFor(t: { audienceNeed: string | null; approvalState: string | null; source: string }, excerpts: TopicExcerpt[]): SufficiencyContext {
+  const approved = t.approvalState === "APPROVED" || t.source === "staff" || t.source === "import";
+  return { topicAudienceNeed: approved ? t.audienceNeed : null, callExcerpts: excerpts.map((e) => ({ speaker: e.speaker, text: e.text })) };
 }
 
 /**
@@ -123,29 +148,58 @@ function toPolicyAnswers(rows: Awaited<ReturnType<typeof currentAnswers>>): Inte
 }
 
 export type InterviewState = {
-  interviewId: string; status: string; answeredCount: number; next: NextStep; sufficiency: { ready: boolean; substantiveAnswered: number; substantiveTotal: number; gaps: { kind: string; field: string | null; text: string; question: string | null }[] };
+  interviewId: string; status: string; answeredCount: number; next: NextStep;
+  sufficiency: {
+    ready: boolean; substantiveAnswered: number; substantiveTotal: number; gaps: { kind: string; field: string | null; text: string; question: string | null }[];
+    /** CP-08: where the premise / stance / points came from, what is missing, and how many seeds are the client's words on the call. */
+    satisfied: SufficiencyResult["satisfied"]; missing: SufficiencyResult["missing"]; seedsFromCall: number;
+  };
   answers: { questionKey: string; questionText: string; answerText: string | null; answerKind: string; version: number; answeredAt: string }[];
   /** The stored key the next step writes to (question id, or "<id>:fu:<condition>"). */
   nextKey: string | null;
+  /** The next step is a targeted gap question (CP-08), not one of the six. */
+  nextIsGap: boolean;
 };
 
+/** The sufficiencyJson every writer stores — one shape. */
+const sufficiencyJson = (suff: SufficiencyResult, gaps: { text: string }[]) =>
+  JSON.stringify({ sufficient: suff.ready, missing: gaps.map((g) => g.text), fields: suff.missing, satisfied: suff.satisfied, seedsFromCall: suff.seedsFromCall });
+
 /** Where the interview stands: the next question (or done), completeness, and the answers so far. Pure over the rows; safe to call on every render. */
-export async function interviewState(interviewId: string): Promise<InterviewState> {
-  const { topic, audience, clientName, row } = await topicForInterview(interviewId);
+export async function interviewState(interviewId: string, opts: { readOnly?: boolean } = {}): Promise<InterviewState> {
+  const { topic, audience, clientName, row, sufficiency } = await topicForInterview(interviewId);
   const rows = await currentAnswers(interviewId);
   const answers = toPolicyAnswers(rows);
-  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson) });
-  const inputs = assembleScriptInputs(answers, topic, row.strategyVersionId);
+  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson), sufficiency });
+  const inputs = assembleScriptInputs(answers, topic, row.strategyVersionId, sufficiency);
+  const suff = inputs.sufficiency!;
   const nextKey = next.kind === "question" ? next.question.id : next.kind === "follow-up" ? followUpKey(next.question.id, next.condition) : null;
-  const status = next.kind === "done" ? (inputs.completeness.ready ? "SUFFICIENT" : "NEEDS_FOLLOWUP") : rows.length ? "IN_PROGRESS" : "NOT_STARTED";
-  if (row.status !== status && row.status !== "SUBMITTED" && row.status !== "ABANDONED") {
-    await prisma.contentInterview.update({ where: { id: interviewId }, data: { status, currentQuestionKey: nextKey, answeredCount: rows.filter((r) => r.answerKind !== "SKIPPED").length, sufficiencyJson: JSON.stringify({ sufficient: inputs.completeness.ready, missing: inputs.gaps.map((g) => g.text) }), sufficientAt: inputs.completeness.ready ? new Date() : null } }).catch(() => {});
+  const nextIsGap = next.kind === "follow-up" && isGapCondition(next.condition);
+  const status = next.kind === "done" ? (suff.ready ? "SUFFICIENT" : "NEEDS_FOLLOWUP") : rows.length ? "IN_PROGRESS" : "NOT_STARTED";
+  const data: Record<string, unknown> = {};
+  if (row.status !== status && !STICKY.has(row.status)) {
+    Object.assign(data, { status, currentQuestionKey: nextKey, answeredCount: rows.filter((r) => r.answerKind !== "SKIPPED").length, sufficiencyJson: sufficiencyJson(suff, inputs.gaps), sufficientAt: suff.ready ? new Date() : null });
   }
+  // The first time a gap question is SERVED, stamp it: Kyle's follow-up clock
+  // (two business days) runs from here, not from the client's last keystroke.
+  if (nextIsGap && !row.gapQuestionsAskedAt) data.gapQuestionsAskedAt = new Date();
+  if (Object.keys(data).length && !opts.readOnly) await prisma.contentInterview.update({ where: { id: interviewId }, data }).catch(() => {});
   return {
-    interviewId, status: row.status === "SUBMITTED" || row.status === "ABANDONED" ? row.status : status, answeredCount: rows.length, next, nextKey,
-    sufficiency: { ready: inputs.completeness.ready, substantiveAnswered: inputs.completeness.substantiveAnswered, substantiveTotal: inputs.completeness.substantiveTotal, gaps: inputs.gaps },
+    interviewId, status: STICKY.has(row.status) ? row.status : status, answeredCount: rows.length, next, nextKey, nextIsGap,
+    sufficiency: { ready: suff.ready, substantiveAnswered: inputs.completeness.substantiveAnswered, substantiveTotal: inputs.completeness.substantiveTotal, gaps: inputs.gaps, satisfied: suff.satisfied, missing: suff.missing, seedsFromCall: suff.seedsFromCall },
     answers: rows.map((r) => ({ questionKey: r.questionKey, questionText: r.questionText, answerText: r.answerText, answerKind: r.answerKind, version: r.version, answeredAt: r.answeredAt.toISOString() })),
   };
+}
+
+/**
+ * Sufficiency as a pure READ — no status write, no stamp. The drafting sweep
+ * asks this of every interview it considers, on every render of the month, so
+ * it must not be the thing that moves an interview's status.
+ */
+export async function readInterviewSufficiency(interviewId: string): Promise<SufficiencyResult> {
+  const { row, sufficiency } = await topicForInterview(interviewId);
+  const answers = toPolicyAnswers(await currentAnswers(row.id));
+  return evaluateSufficiency(answers, sufficiency);
 }
 
 /**
@@ -153,13 +207,14 @@ export async function interviewState(interviewId: string): Promise<InterviewStat
  * with supersedesId → the previous row, so no edit can erase an answer and a
  * script that cited the old row still points at exactly what it read.
  */
-export async function answerQuestion(interviewId: string, questionKey: string, input: { text?: string | null; kind: "TYPED" | "SKIPPED" | "DONT_KNOW"; actor: { staffUserId?: string | null; clientUserId?: string | null }; questionText?: string | null }): Promise<{ answerId: string; version: number }> {
+export async function answerQuestion(interviewId: string, questionKey: string, input: { text?: string | null; kind: "TYPED" | "SKIPPED" | "DONT_KNOW"; actor: { staffUserId?: string | null; clientUserId?: string | null }; questionText?: string | null; /** CP-08: the suggested answer the person started from. Re-resolved here — the browser's copy of it is never trusted. */ suggestionId?: string | null }): Promise<{ answerId: string; version: number }> {
   const row = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { id: true, status: true } });
   if (!row) throw new Error("Interview not found.");
-  if (row.status === "SUBMITTED") {
+  if (row.status === "SUBMITTED" || row.status === "SUBMITTED_WITH_GAPS") {
     // Answers after submission are allowed (they produce a NEW draft), but the
-    // interview steps back to IN_PROGRESS so the state is honest.
-    await prisma.contentInterview.update({ where: { id: interviewId }, data: { status: "IN_PROGRESS", submittedAt: null } });
+    // interview steps back to IN_PROGRESS so the state is honest — and a
+    // "sent with gaps" note does not outlive the gap being answered.
+    await prisma.contentInterview.update({ where: { id: interviewId }, data: { status: "IN_PROGRESS", submittedAt: null, sentWithGapsAt: null, sentWithGapsByClientUserId: null } });
   }
   const m = /^([a-zA-Z]+)(?::fu:(.+))?$/.exec(questionKey);
   if (!m || !QUESTION_IDS.has(m[1])) throw new Error("Unknown question.");
@@ -183,11 +238,25 @@ export async function answerQuestion(interviewId: string, questionKey: string, i
   const prev = await prisma.contentInterviewAnswer.findFirst({ where: { interviewId, questionKey }, orderBy: { version: "desc" }, select: { id: true, version: true } });
   const text = input.kind === "TYPED" ? (input.text ?? "").trim().slice(0, 8000) : null;
   if (input.kind === "TYPED" && !text) throw new Error("Type an answer, or skip the question.");
+  // A suggested answer used AS IS is the client's own words from the call:
+  // EXTRACTED, with the call and the excerpt it came from. Edited, it is their
+  // typed answer, and the row says which suggestion it started from.
+  let provenance: { answerKind: string; callRecordId: string | null; excerptJson: string | null; flagsJson: string | null } | null = null;
+  if (input.kind === "TYPED" && input.suggestionId) {
+    const sug = (await suggestedAnswersFor(interviewId)).find((x) => x.id === input.suggestionId) ?? null;
+    if (sug) {
+      const verbatim = sug.text.replace(/\s+/g, " ").trim() === (text ?? "").replace(/\s+/g, " ").trim();
+      provenance = verbatim
+        ? { answerKind: "EXTRACTED", callRecordId: sug.provenance.callRecordId, excerptJson: JSON.stringify([{ time: sug.provenance.time, speaker: "client", text: sug.text }]), flagsJson: null }
+        : { answerKind: "TYPED", callRecordId: null, excerptJson: null, flagsJson: JSON.stringify({ basedOnSuggestion: { id: sug.id, callRecordId: sug.provenance.callRecordId, source: sug.provenance.source } }) };
+    }
+  }
   const created = await prisma.contentInterviewAnswer.create({
     data: {
-      interviewId, questionKey, questionRole: isFollowUp ? "FOLLOWUP" : ROLE_OF[q.id], questionText, answerText: text, answerKind: input.kind,
+      interviewId, questionKey, questionRole: isFollowUp ? "FOLLOWUP" : ROLE_OF[q.id], questionText, answerText: text, answerKind: provenance?.answerKind ?? input.kind,
       sourceKind: input.actor.clientUserId ? "CLIENT" : "STAFF", clientUserId: input.actor.clientUserId ?? null, staffUserId: input.actor.staffUserId ?? null,
       version: (prev?.version ?? 0) + 1, supersedesId: prev?.id ?? null,
+      ...(provenance ? { callRecordId: provenance.callRecordId, excerptJson: provenance.excerptJson, flagsJson: provenance.flagsJson, speaker: provenance.answerKind === "EXTRACTED" ? "client" : null } : {}),
     },
     select: { id: true, version: true },
   });
@@ -196,18 +265,77 @@ export async function answerQuestion(interviewId: string, questionKey: string, i
   return { answerId: created.id, version: created.version };
 }
 
-/** The generator input plus the ids of the exact answer rows it was built from. */
-export async function assembleInterviewInputs(interviewId: string): Promise<{ input: ScriptGeneratorInput; answerIds: string[]; topic: Topic; enrollmentId: string; clientId: string; monthId: string; strategyVersionId: string | null; policyVersionId: string | null }> {
-  const { topic, row } = await topicForInterview(interviewId);
+/**
+ * The generator input plus the ids of the exact answer rows it was built from,
+ * and (CP-08) the call's scrubbed excerpts for this topic — so a topic chosen
+ * on a call is scripted from what the client SAID there, beside whatever they
+ * typed, and nobody retypes the call as answers.
+ */
+export async function assembleInterviewInputs(interviewId: string): Promise<{ input: ScriptGeneratorInput; answerIds: string[]; topic: Topic; enrollmentId: string; clientId: string; monthId: string; strategyVersionId: string | null; policyVersionId: string | null; excerpts: SourceExcerpt[] }> {
+  const { topic, row, sufficiency, excerpts } = await topicForInterview(interviewId);
   const rows = await currentAnswers(interviewId);
-  const input = assembleScriptInputs(toPolicyAnswers(rows), topic, row.strategyVersionId);
-  return { input, answerIds: rows.map((r) => r.id), topic, enrollmentId: row.enrollmentId, clientId: row.clientId, monthId: row.monthId, strategyVersionId: row.strategyVersionId, policyVersionId: row.policyVersionId };
+  const input = assembleScriptInputs(toPolicyAnswers(rows), topic, row.strategyVersionId, sufficiency);
+  const plain: SourceExcerpt[] = excerpts.map((e) => ({ speaker: e.speaker, speakerName: e.speakerName, source: e.source, text: e.text }));
+  return { input, answerIds: rows.map((r) => r.id), topic, enrollmentId: row.enrollmentId, clientId: row.clientId, monthId: row.monthId, strategyVersionId: row.strategyVersionId, policyVersionId: row.policyVersionId, excerpts: plain };
 }
 
-export async function submitInterview(interviewId: string, actor: { staffUserId?: string | null; clientUserId?: string | null }): Promise<void> {
+export type SubmitOutcome = { status: "SUBMITTED" | "SUBMITTED_WITH_GAPS"; missing: string[] };
+
+/**
+ * Send the answers. SUBMITTED only when they are sufficient (CP-08) — before
+ * this, finishing the sequence was enough, so six skipped questions submitted,
+ * started the preparation clock and queued a draft from nothing.
+ *
+ * Not sufficient: refused, unless the client explicitly chooses to send what
+ * they have (`acknowledgeGaps`). That is SUBMITTED_WITH_GAPS — recorded with
+ * who and when, NO submittedAt (so nothing counts it as done), and Kyle gets a
+ * task to follow up. Their progress is kept either way.
+ */
+export async function submitInterview(interviewId: string, actor: { staffUserId?: string | null; clientUserId?: string | null }, opts: { acknowledgeGaps?: boolean } = {}): Promise<SubmitOutcome> {
   const st = await interviewState(interviewId);
   if (st.next.kind !== "done") throw new Error("There is still a question to answer (or skip) before submitting.");
-  await prisma.contentInterview.update({ where: { id: interviewId }, data: { status: "SUBMITTED", submittedAt: new Date(), submittedByClientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? undefined } });
+  const missing = st.sufficiency.gaps.map((g) => g.text);
+  const json = JSON.stringify({ sufficient: st.sufficiency.ready, missing, fields: st.sufficiency.missing, satisfied: st.sufficiency.satisfied, seedsFromCall: st.sufficiency.seedsFromCall });
+  if (st.sufficiency.ready) {
+    await prisma.contentInterview.update({ where: { id: interviewId }, data: { status: "SUBMITTED", submittedAt: new Date(), submittedByClientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? undefined, sufficiencyJson: json, sentWithGapsAt: null, sentWithGapsByClientUserId: null } });
+    const { closeAnswerGapTask } = await import("@/lib/programDeskTasks");
+    await closeAnswerGapTask(interviewId).catch(() => {});
+    return { status: "SUBMITTED", missing: [] };
+  }
+  const left = st.sufficiency.missing.length;
+  if (!opts.acknowledgeGaps) throw new Error(`Not enough to write this one yet — ${left} thing${left === 1 ? "" : "s"} still missing. Answer what you can, or send what you have and we'll follow up.`);
+  await prisma.contentInterview.update({ where: { id: interviewId }, data: { status: "SUBMITTED_WITH_GAPS", submittedAt: null, sentWithGapsAt: new Date(), sentWithGapsByClientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? undefined, sufficiencyJson: json } });
+  const { openAnswerGapTask } = await import("@/lib/programDeskTasks");
+  await openAnswerGapTask(interviewId, "SENT_WITH_GAPS").catch(() => {});
+  return { status: "SUBMITTED_WITH_GAPS", missing };
+}
+
+// ---------------------------------------------------------------------------
+// SUGGESTED ANSWERS FROM THE CALL (CP-08). What the client already said about
+// this topic on an approved planning call, offered beside a question as an
+// optional, editable starting point with its source shown. Client-spoken
+// lines only (a hypothetical Jordan floated is not the client's experience),
+// and only after the confidentiality scrub: a [CONFIDENTIAL] mark, an overlap
+// with a confidential fact, or another enrolled client's name drops the line.
+// ---------------------------------------------------------------------------
+
+export type SuggestedAnswer = { id: string; text: string; provenance: { callRecordId: string | null; callDateISO: string | null; time: string | null; source: string } };
+
+export async function suggestedAnswersFor(interviewId: string): Promise<SuggestedAnswer[]> {
+  const row = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { topicId: true, monthId: true, clientId: true } });
+  if (!row) return [];
+  const { kept } = await safeTopicExcerpts(row.topicId, row.monthId, row.clientId);
+  const seen = new Set<string>();
+  const out: SuggestedAnswer[] = [];
+  for (const e of kept) {
+    if (e.speaker !== "client") continue;
+    const text = e.text.trim();
+    if (text.split(/\s+/).length < 5 || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    const time = /\b(\d{1,2}:\d{2}(?::\d{2})?)\b/.exec(e.source)?.[1] ?? null;
+    out.push({ id: sha256(`${e.callRecordId ?? "call"}\n${text}`).slice(0, 24), text, provenance: { callRecordId: e.callRecordId, callDateISO: e.callDateISO, time, source: e.source } });
+  }
+  return out.slice(0, 6);
 }
 
 export async function interviewsForMonth(monthId: string) {

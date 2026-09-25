@@ -56,6 +56,13 @@ export type ScriptReadiness =
   | "THIN"
   /** Questions opened and not finished — the client still owes us words. */
   | "WAITING_ON_ANSWERS"
+  /**
+   * CP-08: the answers are in (or sent with gaps) and a script still cannot
+   * exist from them — no premise, no stance or fewer than three points, even
+   * counting the approved topic and the client's words on the call. Kyle
+   * follows up; a person may still draft it on purpose.
+   */
+  | "THIN_ANSWERS"
   /** The call proposed it; no one has reconciled the month's plan yet. */
   | "WAITING_ON_PLANNING";
 
@@ -107,11 +114,24 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
   // ContentMonth declares no relations, so the name is its own read.
   const client = await prisma.client.findUnique({ where: { id: month.clientId }, select: { name: true } });
 
-  const selections = await prisma.contentTopicSelection.findMany({
+  const planned = await prisma.contentTopicSelection.findMany({
     where: { monthId, status: { in: ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"] } },
     select: { topicId: true, status: true, callRecordId: true, evidenceJson: true, rank: true, createdAt: true },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
   });
+  if (!planned.length) return [];
+  // CP-07: a topic whose script was CARRIED OUT of this month (to a later one,
+  // or parked by a swap) is this month's history, not a script it still owes.
+  // Its selection here stays as it was — that WAS the plan — but counting it
+  // as owed would show a phantom gap and let "draft what's owed" write a
+  // second script for a topic that already has one.
+  const carriedAway = new Set(
+    (await prisma.contentScript.findMany({
+      where: { topicId: { in: planned.map((s) => s.topicId) }, historical: false, carriedFromMonthId: monthId, OR: [{ monthId: null }, { monthId: { not: monthId } }] },
+      select: { topicId: true },
+    })).map((s) => s.topicId as string),
+  );
+  const selections = planned.filter((s) => !carriedAway.has(s.topicId));
   if (!selections.length) return [];
 
   const topicIds = selections.map((s) => s.topicId);
@@ -120,11 +140,34 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
     // monthId is part of the identity: a bank-level script (monthId IS NULL) is
     // not this month's script, and a historical import is not a draft.
     prisma.contentScript.findMany({ where: { monthId, topicId: { in: topicIds }, historical: false }, select: { id: true, topicId: true } }),
-    prisma.contentInterview.findMany({ where: { monthId, topicId: { in: topicIds } }, select: { id: true, topicId: true, status: true } }),
+    prisma.contentInterview.findMany({ where: { monthId, topicId: { in: topicIds } }, select: { id: true, topicId: true, status: true, sufficiencyJson: true } }),
   ]);
   const titleOf = new Map(topics.map((t) => [t.id, t.title]));
   const scriptOf = new Map(scripts.filter((s) => s.topicId).map((s) => [s.topicId as string, s.id]));
   const interviewOf = new Map(interviews.map((i) => [i.topicId, i]));
+
+  // SUFFICIENCY, ASKED — NOT A STATUS READ (CP-08). "SUBMITTED" used to be
+  // drafted on sight, which is how an all-skipped interview was drafted from
+  // the topic line: the header's own "never drafts from nothing" rule, broken
+  // by the status it trusted. So a submitted interview drafts only when its
+  // stored reading says sufficient (a legacy row with no reading is read
+  // fresh), and an unfinished one drafts when the answers plus the client's
+  // own words on the call already carry a script — the call path, without
+  // anyone retyping the call as answers. The read is pure: nothing here moves
+  // an interview's status.
+  const { readInterviewSufficiency } = await import("@/lib/contentInterview");
+  const storedSufficient = (json: string | null): boolean | null => {
+    if (!json) return null;
+    try { const v = JSON.parse(json) as { sufficient?: unknown }; return typeof v.sufficient === "boolean" ? v.sufficient : null; } catch { return null; }
+  };
+  const fresh = new Map<string, { ready: boolean; seedsFromCall: number }>();
+  for (const iv of interviews) {
+    const scripted = scriptOf.has(iv.topicId);
+    const needsRead = !scripted && (iv.status === "IN_PROGRESS" || iv.status === "NEEDS_FOLLOWUP" || iv.status === "SUBMITTED_WITH_GAPS" || (iv.status === "SUBMITTED" && storedSufficient(iv.sufficiencyJson) === null));
+    if (!needsRead) continue;
+    const r = await readInterviewSufficiency(iv.id).catch(() => null);
+    if (r) fresh.set(iv.id, { ready: r.ready, seedsFromCall: r.seedsFromCall });
+  }
 
   return selections.map((sel): ScriptWorkItem => {
     const iv = interviewOf.get(sel.topicId) ?? null;
@@ -150,10 +193,22 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
       return { ...base, readiness: "WAITING_ON_PLANNING", why: "The call proposed this — it needs reconciling before we script it." };
     }
     // The client's own words beat every other input, so they are checked first.
-    if (iv && (iv.status === "SUBMITTED" || iv.status === "SUFFICIENT")) {
-      return { ...base, readiness: "FROM_ANSWERS", why: iv.status === "SUBMITTED" ? "Their answers are in." : "Their answers are sufficient." };
+    const read = iv ? fresh.get(iv.id) ?? null : null;
+    const fromCall = read && read.seedsFromCall > 0 ? ` (plus ${read.seedsFromCall} of their lines from the call)` : "";
+    if (iv && iv.status === "SUBMITTED") {
+      const ok = storedSufficient(iv.sufficiencyJson) ?? read?.ready ?? false;
+      return ok
+        ? { ...base, readiness: "FROM_ANSWERS", why: `Their answers are in${fromCall}.` }
+        : { ...base, readiness: "THIN_ANSWERS", why: "Their answers were sent, but they stop short of a script — Kyle follows up before we draft." };
+    }
+    if (iv && iv.status === "SUFFICIENT") return { ...base, readiness: "FROM_ANSWERS", why: "Their answers are sufficient." };
+    if (iv && iv.status === "SUBMITTED_WITH_GAPS") {
+      return read?.ready
+        ? { ...base, readiness: "FROM_ANSWERS", why: `Sent with gaps, and the call covers them${fromCall}.` }
+        : { ...base, readiness: "THIN_ANSWERS", why: "Sent with gaps — not enough for a script yet; Kyle is following up." };
     }
     if (iv && (iv.status === "IN_PROGRESS" || iv.status === "NEEDS_FOLLOWUP")) {
+      if (read?.ready) return { ...base, readiness: "FROM_ANSWERS", why: `Their answers so far and the call already carry a script${fromCall}.` };
       return {
         ...base,
         readiness: "WAITING_ON_ANSWERS",
@@ -197,14 +252,14 @@ export type DraftOpts = {
  */
 export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; paused: string | null; outcomes: DraftOutcome[] }> {
   const work = await scriptWorkForMonth(monthId);
-  const todo = work.filter((w) => (opts.includeThin ? w.readiness === "THIN" || isAutoDraftable(w.readiness) : isAutoDraftable(w.readiness)));
+  const todo = work.filter((w) => (opts.includeThin ? w.readiness === "THIN" || w.readiness === "THIN_ANSWERS" || isAutoDraftable(w.readiness) : isAutoDraftable(w.readiness)));
   const outcomes: DraftOutcome[] = [];
   const limit = opts.max ?? 8;
   let pausedBy: string | null = null;
 
   for (const w of todo.slice(0, limit)) {
     try {
-      if (w.readiness === "FROM_ANSWERS" && w.interviewId) {
+      if ((w.readiness === "FROM_ANSWERS" || w.readiness === "THIN_ANSWERS") && w.interviewId) {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
         const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "answers", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
@@ -290,7 +345,7 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
       lastError = e instanceof Error ? e.message : String(e);
       continue;
     }
-    waiting += work.filter((w) => w.readiness === "WAITING_ON_ANSWERS" || w.readiness === "WAITING_ON_PLANNING").length;
+    waiting += work.filter((w) => w.readiness === "WAITING_ON_ANSWERS" || w.readiness === "WAITING_ON_PLANNING" || w.readiness === "THIN_ANSWERS").length;
     thin += work.filter((w) => w.readiness === "THIN").length;
     const ready = work.filter((w) => isAutoDraftable(w.readiness));
     if (!ready.length) continue;
@@ -353,11 +408,13 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   });
   if (!selections.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
 
-  // Topics that already have this month's script need no questions.
-  const scripted = new Set(
-    (await prisma.contentScript.findMany({ where: { monthId: { in: months.map((m) => m.id) }, topicId: { in: selections.map((s) => s.topicId) }, historical: false }, select: { topicId: true, monthId: true } }))
-      .map((r) => `${r.topicId}:${r.monthId}`),
-  );
+  // Topics that already have this month's script need no questions — and
+  // neither does a month a topic's script was carried OUT of (CP-07).
+  const scriptRows = await prisma.contentScript.findMany({
+    where: { topicId: { in: selections.map((s) => s.topicId) }, historical: false, OR: [{ monthId: { in: months.map((m) => m.id) } }, { carriedFromMonthId: { in: months.map((m) => m.id) } }] },
+    select: { topicId: true, monthId: true, carriedFromMonthId: true },
+  });
+  const scripted = new Set(scriptRows.flatMap((r) => [`${r.topicId}:${r.monthId}`, ...(r.carriedFromMonthId ? [`${r.topicId}:${r.carriedFromMonthId}`] : [])]));
 
   const { getOrCreateInterview, interviewPlanningContext } = await import("@/lib/contentInterview");
   const { planInterviewQuestions } = await import("@/lib/contentGeneration");

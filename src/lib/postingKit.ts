@@ -15,9 +15,9 @@ import { clip } from "@/lib/text";
 // THE POSTING KIT (spec §10, Sep 17 2026). Per video: the final file (which
 // one, which version, and whether the bytes still match the approval), an
 // editable caption draft, the cover asset when one exists, the script and the
-// transcript it could be drafted from — and two CLIENT-RECORDED facts,
-// "Downloaded" and "Marked as posted by me", that are never a verified
-// publication (that is §12's job and it is disabled).
+// transcript it could be drafted from — and the CLIENT-RECORDED facts,
+// "Download started" / "Saved" and "Marked as posted by me", that are never a
+// verified publication (that is §12's job and it is disabled).
 //
 // Caption drafting: never unattended from the portal. A client's "Draft a
 // caption" runs only when `caption_assistant` is ON (a missing row is OFF,
@@ -62,7 +62,15 @@ export type PostingKit = {
   /** `historical` = an imported record we hold, shown as history — never re-labelled as this video’s script. */
   script: { title: string; body: string; versionLabel: string | null; strategyLabel: string | null; historical: boolean } | null;
   postedAtISO: string | null;
-  downloadedAtISO: string | null;
+  /** The client (never staff) last opened the download door — a download STARTED. */
+  downloadStartedAtISO: string | null;
+  /** The page received every byte AND handed the file on — the share sheet
+   *  finished or the browser's save was started — and said so
+   *  (portalDownloadCompleted). Only a proxied download can know this; a
+   *  redirect never claims it. Shown as "Download finished", never "Saved". */
+  downloadCompletedAtISO: string | null;
+  /** How the page should fetch the entitled file (CP-12), or null when there is none. */
+  download: DownloadPlan | null;
   assistant: { enabled: boolean; why: string | null };
   /** What the client may do with this video's file right now — the release
    *  rule's answer (cutEntitlement), so the page never offers a button the
@@ -71,6 +79,50 @@ export type PostingKit = {
 };
 
 const DOWNLOAD_PATH = (videoId: string) => `/portal/download/${videoId}`;
+/** Every visit row on this video's download door: the bare path or it with a query. */
+const downloadVisits = (videoId: string) => ({ OR: [{ path: DOWNLOAD_PATH(videoId) }, { path: { startsWith: `${DOWNLOAD_PATH(videoId)}?` } }] });
+const DONE_MARK = "done=1";
+
+// ---------------------------------------------------------------------------
+// HOW THE PAGE FETCHES THE FILE (CP-12, Sep 24 2026). The download used to be
+// a target=_blank link with no progress and no retry, and on a phone it told
+// the client to "open this page on a computer". Two honest modes:
+//
+//   proxy     the entitled file is a hub cut still in the hub's store: the
+//             stream route serves it same-origin with a Content-Length, so the
+//             page can read it with fetch(), show real progress, cancel, retry,
+//             and hand the finished file to the phone's share sheet.
+//   redirect  everything else — a cut the 90-day prune left only in Dropbox
+//             (a temporary link this app cannot force to download: it has no
+//             sharing scope) and Aryeo's CDN files. The browser is sent there;
+//             the page can say the download STARTED, never that it finished.
+//
+// A proxied file is held in memory until it is saved, so a big one would
+// strain a phone: above PROXY_MAX_BYTES (or with no known size) it redirects.
+// ---------------------------------------------------------------------------
+
+export const PROXY_MAX_BYTES = 400 * 1024 * 1024;
+
+export type DownloadPlan = {
+  mode: "proxy" | "redirect";
+  fileName: string | null;
+  sizeBytes: number | null;
+  /** What the completion beacon names — the entitlement's captionRef (the cut
+   *  id, or "portal-video:<id>"), so a stale page cannot record a different file. */
+  ref: string | null;
+};
+
+async function downloadPlanFor(e: Entitlement): Promise<DownloadPlan | null> {
+  const f = e.file;
+  if (!f) return null;
+  if (f.kind === "cut" && f.submissionId) {
+    const sub = await prisma.reviewSubmission.findUnique({ where: { id: f.submissionId }, select: { blobUrl: true, sizeBytes: true, fileName: true } });
+    const size = sub?.sizeBytes ?? null;
+    const mode = sub?.blobUrl && size != null && size > 0 && size <= PROXY_MAX_BYTES ? "proxy" : "redirect";
+    return { mode, fileName: sub?.fileName ?? f.fileName, sizeBytes: size, ref: e.captionRef };
+  }
+  return { mode: "redirect", fileName: f.fileName, sizeBytes: null, ref: e.captionRef };
+}
 
 /**
  * Which file is "the final" for this video, and whether the client may have
@@ -203,13 +255,18 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
   const why = e.blockedBy === "AWAITING_DECISION" && viewer.access !== "FULL"
     ? `Your program is ${viewer.enrollment.status === "ENDED" ? "ended" : "paused"}, so this version can't be approved here and its download isn't open. Call or text Kyle at ${URGENT_CONTACT} and he'll get you the file.`
     : e.blockedBy === "AWAITING_DECISION" && !can(viewer, "approveEdits") ? WHY.AWAITING_OWNER : note;
-  const [captions, transcript, script, lastDownload, cover, assistantOn] = await Promise.all([
+  // The client's own facts only: a staff member opening the door on their
+  // behalf is recorded (attributed) but is not the client downloading.
+  const clientVisit = { enrollmentId: viewer.enrollment.id, via: { not: "STAFF" }, staffUserId: null, ...downloadVisits(video.id) };
+  const [captions, transcript, script, lastStarted, lastCompleted, cover, assistantOn, download] = await Promise.all([
     prisma.contentCaptionDraft.findMany({ where: { videoId: video.id, enrollmentId: viewer.enrollment.id, status: { not: "ARCHIVED" } }, orderBy: [{ kind: "asc" }, { versionNo: "desc" }] }),
     kitSubmissionId ? transcriptForCut(kitSubmissionId).catch(() => ({ text: null, source: null, gap: "The transcript couldn't be read just now.", transcriptId: null, contentHash: null, language: null })) : Promise.resolve({ text: null, source: null, gap: e.current && !e.file ? "it comes with the approved version" : "No cut of this video is on file, so there is no transcript.", transcriptId: null, contentHash: null, language: null }),
     scriptForVideo(video).catch(() => null),
-    prisma.portalVisit.findFirst({ where: { enrollmentId: viewer.enrollment.id, path: { startsWith: DOWNLOAD_PATH(video.id) } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    prisma.portalVisit.findFirst({ where: { ...clientVisit, NOT: { path: { contains: DONE_MARK } } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    prisma.portalVisit.findFirst({ where: { ...clientVisit, path: { contains: DONE_MARK } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, select: { portalVideoId: true } }).then(async (s) => (s?.portalVideoId ? (await prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { thumb: true } }))?.thumb ?? null : null)),
     isAutomationEnabled("caption_assistant"),
+    downloadPlanFor(e).catch(() => (e.file ? { mode: "redirect" as const, fileName: e.file.fileName, sizeBytes: null, ref: e.captionRef } : null)),
   ]);
   // Any AI draft tied to a cut that is no longer the final is STALE (spec §10):
   // stamp it rather than serving it as if it described the current file.
@@ -241,7 +298,9 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     transcript: { text: transcript.text, gap: transcript.gap, source: transcript.source },
     script: script ? { title: script.title, body: script.body, versionLabel: script.versionLabel, strategyLabel: script.strategyLabel, historical: script.historical } : null,
     postedAtISO: video.postedByClientAt?.toISOString() ?? null,
-    downloadedAtISO: lastDownload?.createdAt.toISOString() ?? null,
+    downloadStartedAtISO: lastStarted?.createdAt.toISOString() ?? null,
+    downloadCompletedAtISO: lastCompleted?.createdAt.toISOString() ?? null,
+    download,
     assistant: { enabled: assistantOn, why: assistantOn ? null : "Caption drafting is switched off until the program launches — we'll write your caption with the script for now, or you can write one below." },
     access: { download: !!e.file, captions: !!e.captionRef, why, blockedBy: e.blockedBy, basis: e.basis },
   };
@@ -259,9 +318,45 @@ export async function setPostedByClient(viewer: PortalViewer, videoId: string, p
   return { ok: true, message: posted ? "Marked as posted by you. (We don't check the platform — this is your note to yourself and to us.)" : "Unmarked." };
 }
 
-/** Record a download as a client fact: a PortalVisit row on the download path, attributable to the person or staff. */
+/** Record a download STARTING as a client fact: a PortalVisit row on the
+ *  download path, attributable to the person or staff. The door writes it as
+ *  it hands the file over — which proves the door opened, not that the bytes
+ *  arrived (that is recordDownloadCompleted). */
 export async function recordDownload(scope: { enrollmentId: string; clientUserId: string | null; staffUserId: string | null; via: "TOKEN" | "LOGIN" | "STAFF" }, videoId: string, submissionId: string | null): Promise<void> {
   await prisma.portalVisit.create({ data: { enrollmentId: scope.enrollmentId, clientUserId: scope.clientUserId, staffUserId: scope.staffUserId, via: scope.via, path: `${DOWNLOAD_PATH(videoId)}${submissionId ? `?cut=${submissionId}` : ""}` } }).catch(() => {});
+}
+
+const COMPLETION_QUIET_MS = 10 * 60_000;
+
+/**
+ * "The whole file arrived" (CP-12) — sent by the page when a proxied download
+ * has read its last byte. Deliberately NOT gated by can(): a paused or ended
+ * client keeps their downloads, and recording one is theirs to do too. What IS
+ * checked is everything that makes the fact true: the video is this viewer's,
+ * the file they name is the one the release rule serves them right now (a
+ * stale page cannot record a different file), and one row per video per ten
+ * minutes — a page left retrying cannot flood the table.
+ */
+export async function recordDownloadCompleted(viewer: PortalViewer, videoId: string, ref: string): Promise<R> {
+  const v = await videoForEnrollment(viewer.enrollment, videoId);
+  if (!v) return { ok: false, message: "That video isn't on your page." };
+  if (typeof ref !== "string" || !ref || ref.length > 80) return { ok: false, message: "That isn't this video's file." };
+  const e = await videoEntitlement(v);
+  if (!e.file || e.captionRef !== ref) return { ok: false, message: "That isn't the file this video downloads right now." };
+  const recent = await prisma.portalVisit.findFirst({
+    where: { enrollmentId: viewer.enrollment.id, createdAt: { gte: new Date(Date.now() - COMPLETION_QUIET_MS) }, path: { startsWith: `${DOWNLOAD_PATH(v.id)}?`, contains: DONE_MARK } },
+    select: { id: true },
+  });
+  if (recent) return { ok: true, message: "Saved." };
+  const a = viewer.actor;
+  await prisma.portalVisit.create({
+    data: {
+      enrollmentId: viewer.enrollment.id, via: viewer.via,
+      clientUserId: a.kind === "CLIENT" ? a.clientUserId : null, staffUserId: a.kind === "STAFF" ? a.staffUserId : null,
+      path: `${DOWNLOAD_PATH(v.id)}?cut=${encodeURIComponent(ref)}&${DONE_MARK}`,
+    },
+  });
+  return { ok: true, message: "Saved." };
 }
 
 const CAPTION_KINDS = new Set(["CAPTION", "SHORT_CAPTION", "CTA", "COVER_TITLE"]);

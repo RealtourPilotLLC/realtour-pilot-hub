@@ -2,9 +2,9 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, CheckCheck, ChevronRight, Lightbulb, Loader2, MessageSquare, PencilLine, Plus, X } from "lucide-react";
+import { ArrowLeftRight, Ban, CheckCircle2, CheckCheck, ChevronRight, Lightbulb, Loader2, MessageSquare, PencilLine, Plus, Undo2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalApproveScript, portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalRequestScriptChanges, portalSelectTopic, portalSuggestTopic } from "@/app/portal/actions";
+import { portalApproveScript, portalDeclineTopic, portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalRequestScriptChanges, portalSelectTopic, portalSuggestTopic, portalSwapCarriedTopic, portalUndeclineTopic } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
@@ -18,6 +18,12 @@ import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/port
 // a NAMED month, remove an uncommitted selection, suggest an idea, discuss —
 // each a server action that re-reads the page. Capacity is explained, never
 // enforced by deleting: an extra becomes overflow that waits its turn.
+//
+// CP-07 (Sep 24 2026): "Scripted, not filmed" comes first — a carried-over
+// script can be swapped for another topic (the script is kept), a parked one
+// can be used for a month. "Not interested" (with an optional reason) sets a
+// suggestion aside, with undo in the strip below the bank. Your own idea can
+// go straight into a month and on to its questions.
 // ---------------------------------------------------------------------------
 
 const FILTERS: { key: PortalTopicState | "ALL"; label: string }[] = [
@@ -55,12 +61,28 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   /** Which script's "what should change?" box is open, and what is in it. */
   const [changing, setChanging] = useState<string | null>(null);
   const [changeNote, setChangeNote] = useState("");
+  /** Which suggestion's "not interested" box is open, and the optional reason. */
+  const [declining, setDeclining] = useState<string | null>(null);
+  const [declineReason, setDeclineReason] = useState("");
+  /** Which carried selection is being swapped, and for which topic. */
+  const [swapping, setSwapping] = useState<string | null>(null);
+  const [swapTo, setSwapTo] = useState("");
+  /** Their own idea goes straight into the month unless they untick it (on by default while the month has room). */
+  const [useForMonth, setUseForMonth] = useState<boolean>(() => { const m = months.find((x) => x.selected < x.owed); return !!m; });
+  const [justAdded, setJustAdded] = useState<{ topicId: string; monthId: string } | null>(null);
   const [busy, start] = useTransition();
   const month = months.find((m) => m.id === monthId) ?? null;
   const done = (r: { ok: boolean; message: string }) => { setMsg({ ok: r.ok, text: r.message }); if (r.ok) router.refresh(); };
 
-  const visible = useMemo(() => groups.map((g) => ({ ...g, topics: g.topics.filter((t) => filter === "ALL" || t.state === filter) })).filter((g) => g.topics.length > 0), [groups, filter]);
-  const counts = useMemo(() => { const c: Record<string, number> = { ALL: 0 }; for (const g of groups) for (const t of g.topics) { c.ALL++; c[t.state] = (c[t.state] ?? 0) + 1; } return c; }, [groups]);
+  // Topics they set aside live in their pillar's group flagged `declined`: the
+  // bank and its counts leave them out; the strip below the bank lists them.
+  const active = useMemo(() => groups.map((g) => ({ ...g, topics: g.topics.filter((t) => !t.declined) })), [groups]);
+  const setAside = useMemo(() => groups.flatMap((g) => g.topics.filter((t) => t.declined)), [groups]);
+  const scriptedNotFilmed = useMemo(() => active.flatMap((g) => g.topics.filter((t) => t.scriptedNotFilmed)), [active]);
+  /** What a carried script can be swapped for: unplanned topics still in the bank. */
+  const swapOptions = useMemo(() => active.flatMap((g) => g.topics.filter((t) => !t.selection && !t.scriptedNotFilmed && t.state !== "FILMED")), [active]);
+  const visible = useMemo(() => active.map((g) => ({ ...g, topics: g.topics.filter((t) => !t.scriptedNotFilmed && (filter === "ALL" || t.state === filter)) })).filter((g) => g.topics.length > 0), [active, filter]);
+  const counts = useMemo(() => { const c: Record<string, number> = { ALL: 0 }; for (const g of active) for (const t of g.topics) { c.ALL++; c[t.state] = (c[t.state] ?? 0) + 1; } return c; }, [active]);
 
   const select = (topicId: string) => { if (!month) return; start(async () => done(await portalSelectTopic(portalAuthFromLocation(), topicId, month.id).catch(() => ({ ok: false, message: "That didn't save — try again." })))); };
   const remove = (t: PortalTopic) => { if (!t.selection) return; start(async () => done(await portalRemoveSelection(portalAuthFromLocation(), t.id, t.selection!.monthId).catch(() => ({ ok: false, message: "That didn't save — try again." })))); };
@@ -92,8 +114,28 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
     done(r);
   });
   const suggest = () => start(async () => {
-    const r = await portalSuggestTopic(portalAuthFromLocation(), { title: idea.title, concept: idea.concept, pillarId: idea.pillarId || null, monthId: null }).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r: { ok: boolean; message: string; id?: string; monthId?: string | null; selected?: boolean } = await portalSuggestTopic(portalAuthFromLocation(), { title: idea.title, concept: idea.concept, pillarId: idea.pillarId || null, monthId: useForMonth && month ? month.id : null }).catch(() => ({ ok: false, message: "That didn't save — try again." }));
     if (r.ok) { setIdea({ title: "", concept: "", pillarId: "" }); setSuggesting(false); }
+    setJustAdded(r.ok && r.selected && r.id && r.monthId ? { topicId: r.id, monthId: r.monthId } : null);
+    done(r);
+  });
+  const answerJustAdded = () => {
+    if (!justAdded) return;
+    start(async () => {
+      const r = await portalOpenInterview(portalAuthFromLocation(), justAdded.topicId, justAdded.monthId).catch(() => ({ ok: false, message: "Couldn't open the questions — try again." }));
+      if (r.ok && "id" in r && r.id) router.push(`${tabHref}&iv=${encodeURIComponent(r.id)}`);
+      else setMsg({ ok: false, text: r.message });
+    });
+  };
+  const decline = (topicId: string) => start(async () => {
+    const r = await portalDeclineTopic(portalAuthFromLocation(), topicId, declineReason).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    if (r.ok) { setDeclining(null); setDeclineReason(""); }
+    done(r);
+  });
+  const undecline = (topicId: string) => start(async () => done(await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
+  const swap = (selectionId: string) => start(async () => {
+    const r = await portalSwapCarriedTopic(portalAuthFromLocation(), selectionId, swapTo).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    if (r.ok) { setSwapping(null); setSwapTo(""); }
     done(r);
   });
 
@@ -144,6 +186,51 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       </div>
 
       {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+      {justAdded && canAct && !readOnly && (
+        <button type="button" onClick={answerJustAdded} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Answer the questions for it now <ChevronRight className="size-3.5" /></button>
+      )}
+
+      {/* SCRIPTED, NOT FILMED — first, because each one is a decision: film it
+          (it is already on a month), swap it for another topic (the script is
+          kept), or use a parked one for a month. */}
+      {scriptedNotFilmed.length > 0 && (
+        <section className="panel-shadow rounded-2xl border border-warning/30 bg-surface/70 p-4 backdrop-blur" aria-label="Scripted, not filmed">
+          <h2 className="text-base font-semibold">Scripted, not filmed</h2>
+          <p className="text-xs text-muted">Scripts we wrote that weren&rsquo;t filmed yet. A carried-over one uses one of that month&rsquo;s videos; swap it for another topic and we keep the script for later.</p>
+          <ul className="mt-3 space-y-2">
+            {scriptedNotFilmed.map((t) => (
+              <li key={t.id} id={`topic-${t.id}`} className="scroll-mt-20 rounded-xl border border-border bg-surface px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-sm font-semibold">{t.title}</span>
+                  {t.carried && t.selection ? (
+                    <span className="rounded-md bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning">carried{t.carried.fromMonthKey ? ` from ${shortMonth(t.carried.fromMonthKey)}` : ""} into {shortMonth(t.selection.monthKey)}</span>
+                  ) : (
+                    <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">not on a month</span>
+                  )}
+                </div>
+                {t.concept && <p className="mt-0.5 text-xs text-muted">{t.concept}</p>}
+                {canAct && !readOnly && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {t.swappable && (swapping === t.swappable ? (
+                      <>
+                        <select value={swapTo} onChange={(e) => setSwapTo(e.target.value)} aria-label="Swap it for" className="min-w-0 max-w-full rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-brand">
+                          <option value="">Swap it for…</option>
+                          {swapOptions.map((o) => <option key={o.id} value={o.id}>{o.title}{o.mine ? " (your idea)" : ""}</option>)}
+                        </select>
+                        <button type="button" onClick={() => swap(t.swappable!)} disabled={busy || !swapTo} className="rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Swap</button>
+                        <button type="button" onClick={() => { setSwapping(null); setSwapTo(""); }} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
+                      </>
+                    ) : (
+                      <button type="button" onClick={() => { setSwapping(t.swappable); setSwapTo(""); }} disabled={busy || swapOptions.length === 0} className="inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><ArrowLeftRight className="size-3" /> Swap for another topic</button>
+                    ))}
+                    {!t.carried && month && <button type="button" onClick={() => select(t.id)} disabled={busy} className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Plus className="size-3" /> Use for {shortMonth(month.monthKey)}</button>}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* The bank, by pillar */}
       {total === 0 ? (
@@ -253,7 +340,14 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                             </button>
                           )}
                           {canAct && !readOnly && <button type="button" onClick={() => { setOpenTopic(openTopic === t.id ? null : t.id); setNote(""); }} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><MessageSquare className="size-3" /> Discuss</button>}
+                          {canAct && !readOnly && t.state === "SUGGESTED" && !t.selection && <button type="button" onClick={() => { setDeclining(declining === t.id ? null : t.id); setDeclineReason(""); }} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Ban className="size-3" /> Not interested</button>}
                         </div>
+                        {declining === t.id && (
+                          <div className="mt-1.5 flex items-start gap-2">
+                            <input value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="Why not? (optional — it helps us suggest better)" aria-label="Why this topic isn't for you (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
+                            <button type="button" onClick={() => decline(t.id)} disabled={busy} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Set aside</button>
+                          </div>
+                        )}
                         {openTopic === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
                             <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="A thought on this topic — an angle, a story, a doubt…" aria-label="Note on this topic" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
@@ -268,6 +362,24 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
             </ol>
           </section>
         ))
+      )}
+
+      {/* What they set aside — kept, with undo */}
+      {setAside.length > 0 && (
+        <details className="rounded-2xl border border-border bg-surface/70 p-4 text-sm">
+          <summary className="cursor-pointer text-xs font-semibold text-muted">You set aside {setAside.length} topic{setAside.length === 1 ? "" : "s"} — we won&rsquo;t suggest {setAside.length === 1 ? "it" : "them"} again</summary>
+          <ul className="mt-2 space-y-1.5">
+            {setAside.map((t) => (
+              <li key={t.id} className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm">{t.title}</div>
+                  {t.declined?.reason && <div className="text-[11px] text-muted-2">&ldquo;{t.declined.reason}&rdquo;</div>}
+                </div>
+                {canAct && !readOnly && <button type="button" onClick={() => undecline(t.id)} disabled={busy} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Undo2 className="size-3" /> Undo</button>}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {/* Suggest an idea */}
@@ -286,8 +398,14 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                   {groups.filter((g) => g.pillarId).map((g) => <option key={g.pillarId!} value={g.pillarId!}>{g.pillarName}</option>)}
                 </select>
               )}
+              {month && (
+                <label className="flex items-center gap-2 text-xs text-muted">
+                  <input type="checkbox" checked={useForMonth} onChange={(e) => setUseForMonth(e.target.checked)} className="size-3.5 accent-brand" />
+                  Use it for {monthLabel(month.monthKey)}{month.selected >= month.owed ? " (as an extra — that month is full)" : ""}
+                </label>
+              )}
               <div className="flex gap-2">
-                <button type="button" onClick={suggest} disabled={busy || idea.title.trim().length < 3} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Add to my bank</button>
+                <button type="button" onClick={suggest} disabled={busy || idea.title.trim().length < 3} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} {useForMonth && month ? `Add it for ${shortMonth(month.monthKey)}` : "Add to my bank"}</button>
                 <button type="button" onClick={() => setSuggesting(false)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
               </div>
             </div>

@@ -6,6 +6,7 @@ import { parseStoredSections, releaseStrategyVersion } from "@/lib/contentStrate
 import { draftStrategyFromTranscript } from "@/lib/contentGeneration";
 import { queueStrategyReadyNotice } from "@/lib/scriptShare";
 import { isTestClientName } from "@/lib/testClients";
+import { openProgramDeskTask } from "@/lib/programDeskTasks";
 
 // ---------------------------------------------------------------------------
 // ONBOARDING (spec §21) — W2-F, Sep 17 2026.
@@ -112,11 +113,12 @@ const IDENTITY_TASK_PREFIX = "program-identity-conflict:";
 // and a task a human genuinely COMPLETED was not in TASK_DONE either, so the
 // reopen path never fired on it.
 const TASK_DONE = ["COMPLETED", "CANCELLED"];
-/** TASK_DONE plus the two statuses that first cut wrote. Nothing carries them
- *  today (0 rows, measured above) and nothing writes them any more — they are
- *  READ so that a row minted by that version is recognised as closed instead of
- *  nagging for ever. Retire, never delete. */
-const TASK_DONE_INCLUDING_LEGACY = [...TASK_DONE, "DONE", "CLOSED"];
+// TASK_DONE plus the two statuses that first cut wrote (DONE, CLOSED). Nothing
+// carries them today (0 rows, measured above) and nothing writes them any more
+// — they are READ so that a row minted by that version is recognised as closed
+// instead of nagging for ever. Retire, never delete. That list,
+// TASK_DONE_INCLUDING_LEGACY, moved with the desk-task writer to
+// programDeskTasks.ts (CP-08), which is where it is read.
 
 export type ActivationResult =
   | { outcome: "booked"; detail: string }
@@ -247,56 +249,11 @@ export async function onProgramActivated(
   return { outcome: "task_open", detail: "no discovery booking on file — the scheduling task is open for Kyle" };
 }
 
-/**
- * Raise (or refresh) one desk task for the program, identified by its own
- * dedupeKey. Never for a TEST client. The caller owns the key, because the two
- * tasks this file raises answer different questions and must not share one.
- */
-async function openProgramDeskTask(input: {
-  dedupeKey: string;
-  clientId: string;
-  clientName: string;
-  title: string;
-  lines: string[];
-  assignedKey: string;
-  reasonCreated: string;
-  reopenIfClosed: boolean;
-}): Promise<void> {
-  if (isTestClientName(input.clientName)) return;
-  const description = input.lines.join("\n");
-  const title = input.title.slice(0, 140);
-  const existing = await prisma.smartTask
-    .findUnique({ where: { dedupeKey: input.dedupeKey }, select: { id: true, status: true, title: true, description: true } })
-    .catch(() => null);
-  if (existing) {
-    if (TASK_DONE_INCLUDING_LEGACY.includes(existing.status)) {
-      if (!input.reopenIfClosed) return;
-      await prisma.smartTask.update({ where: { id: existing.id }, data: { status: "OPEN", completedAt: null, title, description } }).catch(() => {});
-      return;
-    }
-    // STILL OPEN, AND THE FACTS HAVE MOVED. The first cut returned here without
-    // rewriting anything, so whichever version of a task was written first won
-    // and every later one was dropped on the floor — which is how the identity
-    // question stayed invisible in the payment-first order. Rewriting an open
-    // machine-raised row is not overwriting a person's work: the description IS
-    // the evidence, and stale evidence is worse than none.
-    if (existing.title !== title || existing.description !== description) {
-      await prisma.smartTask.update({ where: { id: existing.id }, data: { title, description } }).catch(() => {});
-    }
-    return;
-  }
-  await prisma.smartTask
-    .create({
-      data: {
-        title, description, summary: input.title.slice(0, 200),
-        taskType: "todo", status: "OPEN", source: "content_program", priority: "HIGH",
-        clientId: input.clientId, dedupeKey: input.dedupeKey, assignedKey: input.assignedKey,
-        dueAt: new Date(Date.now() + 2 * 864e5),
-        reasonCreated: input.reasonCreated,
-      },
-    })
-    .catch(() => {});
-}
+// The desk-task writer (openProgramDeskTask) lives in programDeskTasks.ts since
+// CP-08, Sep 24 2026: the answer-gap follow-up raises tasks the same way, and
+// two copies of "never for a TEST client, rewrite an open row whose facts
+// moved" would drift. Imported under the same name, so every caller here reads
+// exactly as before.
 
 /** §4.3: the scheduling task disappears when the booking exists. Closed, not
  *  deleted — the hub retires rows, it does not erase them. COMPLETED is the
@@ -427,17 +384,32 @@ export async function advanceOnboarding(enrollmentId: string, opts: { now?: Date
   if (approved) {
     if (approved.id !== ob.strategyApprovedVersionId) { data.strategyApprovedVersionId = approved.id; actions.push(`approved v${approved.versionNo} recorded`); }
     if (waived) status = status === "COMPLETE" ? status : "STRATEGY_APPROVED"; else raise("STRATEGY_APPROVED");
-    const bank = await prisma.contentTopicRefreshRun.findFirst({ where: { enrollmentId, status: "SUCCEEDED", createdAt: { gte: approved.approvedAt ?? approved.createdAt } }, select: { id: true } });
+    // CP-07: a BANK or REFRESH run — the pure-ranking RECOMMENDATION run is not
+    // a bank, and counting it raised BANK_GENERATED with no topic generated.
+    // COMPLETE also needs Jordan to have REVIEWED the initial bank (none of its
+    // suggestions still pending): the bank is not ready until he accepted what
+    // a client may see.
+    const bank = await prisma.contentTopicRefreshRun.findFirst({ where: { enrollmentId, kind: { in: ["BANK", "REFRESH"] }, status: "SUCCEEDED", createdAt: { gte: approved.approvedAt ?? approved.createdAt } }, orderBy: { createdAt: "asc" }, select: { id: true } });
     if (bank) {
       if (bank.id !== ob.initialBankRunId) data.initialBankRunId = bank.id;
       raise("BANK_GENERATED");
-      if (approved.releasedAt) raise("COMPLETE");
+      const unreviewed = await prisma.contentTopicSuggestion.count({ where: { refreshRunId: bank.id, disposition: "PENDING" } });
+      if (approved.releasedAt && unreviewed === 0) raise("COMPLETE");
     }
   } else if (waived && status !== "WAIVED" && rank(status) < rank("STRATEGY_APPROVED")) status = "WAIVED";
 
   // ---- assets (the checklist, honest: null = not on file)
-  const client = await prisma.client.findUnique({ where: { id: ob.clientId }, select: { brandAssetsPath: true, brandColors: true, avatarUrl: true } });
-  data.assetChecklistJson = JSON.stringify({ brandFolder: !!client?.brandAssetsPath, colors: !!client?.brandColors, headshot: !!client?.avatarUrl });
+  // CP-06: the same derivation the client's own setup checklist uses
+  // (portalSetup.setupFacts), so the office and the client never disagree
+  // about what is on file. The headshot used to be "the Aryeo avatar exists",
+  // which counted a profile photo nobody chose as the client's headshot.
+  const client = await prisma.client.findUnique({ where: { id: ob.clientId }, select: { brandAssetsPath: true } });
+  const { setupFacts } = await import("@/lib/portalSetup");
+  const facts = await setupFacts(enrollmentId, ob.clientId).catch(() => null);
+  data.assetChecklistJson = JSON.stringify({
+    brandFolder: !!client?.brandAssetsPath,
+    ...(facts ? { colors: facts.colors, logo: facts.logo, headshot: facts.headshot, fonts: facts.fonts, links: facts.links, music: facts.music, style: facts.style } : {}),
+  });
 
   if (status !== ob.status) { data.status = status; actions.push(`${ob.status} → ${status}`); }
   if (Object.keys(data).length) await prisma.programOnboarding.update({ where: { id }, data });

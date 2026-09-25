@@ -6,6 +6,7 @@ import {
 import { EXPORT_SPEC, VIDEO_TIER, VIDEO_TYPES, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
+import { BrandUpdatesBanner, BrandKitBlock } from "@/components/editing/BrandUpdatesBanner";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
@@ -425,6 +426,20 @@ export default async function EditBriefPage({
   // client-owned column and it was written to a screen nobody rendered.
   const showTheirPrefs = scrub(project.client.portalPreferences);
   const showJobNote = scrub(project.notes);
+  // CP-06: the client's brand as the REGISTRY holds it — the latest active
+  // version of every asset, the structured slots (fonts, links, music), the
+  // standing production defaults and accepted call preferences (both dead code
+  // until now), and the changes the editor has not yet said "Got it" to.
+  // Money-scrubbed exactly like the notes above.
+  const { brandBriefFor } = await import("@/lib/brandProfile");
+  const brandBrief = await brandBriefFor(project.client.id, { projectId: project.id, scrub: !canSeeRaw }).catch(() => null);
+  const canAckBrand = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
+  // CP-09: WHICH topic each owed video is — the note from the shoot, the
+  // script the client approved and the topic's raw folder. The same rows the
+  // printed brief and the project summary read (filmingBriefFor), so the three
+  // cannot describe one video differently. Money-scrubbed like the notes above.
+  const { filmingBriefFor } = await import("@/lib/deliverableOutputs");
+  const filming = await filmingBriefFor(project.id).catch(() => null);
   const rawAsks = videoRevisionTasks
     .flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /))
     .map((s) => s.trim())
@@ -561,7 +576,9 @@ export default async function EditBriefPage({
     return {
       deliverableId: sl.deliverableId,
       slot: sl.slot,
-      label: sl.label,
+      // CP-09: the topic it was filmed for, beside the slot's own name — the
+      // name itself stays as it is (the approved file is named by it).
+      label: sl.topicTitle ? `${sl.label} · ${sl.topicTitle}` : sl.label,
       latest: latest
         ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note, sourceWidth: latest.sourceWidth, sourceHeight: latest.sourceHeight }
         : null,
@@ -708,6 +725,17 @@ export default async function EditBriefPage({
           jump to #submit-cut — the whole Send-to-Review block — which on a
           16-slot job is "down to the cuts", not to the cut (Jordan, Sep 16).
           Now it lands on that cut's own panel. */}
+      {/* CP-06: the client's brand changed since the editor last looked. */}
+      {brandBrief && brandBrief.pending.length > 0 && (
+        <div className="px-4 pt-4 sm:px-6">
+          <BrandUpdatesBanner
+            projectId={project.id}
+            items={brandBrief.pending.map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }))}
+            canAck={canAckBrand}
+          />
+        </div>
+      )}
+
       {needsWork && (
         <div className="px-4 pt-4 sm:px-6">
           <a
@@ -781,7 +809,20 @@ export default async function EditBriefPage({
                   />
                 </div>
               )}
-              {brandColors.length > 0 && (
+              {/* CP-06: the brand kit from the registry — latest active logo /
+                  headshot / font files, font names, links, music, colours.
+                  The colours-only block below is the fallback if that read
+                  failed, so a registry hiccup never hides the colours. */}
+              {brandBrief && (
+                <BrandKitBlock
+                  kit={{
+                    colors: brandBrief.colors, colorWords: brandBrief.colorWords, fontNames: brandBrief.fontNames,
+                    files: brandBrief.files.map((f) => ({ assetId: f.assetId, typeWord: f.typeWord, name: f.name, fileName: f.fileName, url: f.url, versionNo: f.versionNo })),
+                    website: brandBrief.website, social: brandBrief.social, music: brandBrief.music,
+                  }}
+                />
+              )}
+              {!brandBrief && brandColors.length > 0 && (
                 <div className="border-t border-border pt-3">
                   <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Brand colors</div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -856,6 +897,70 @@ export default async function EditBriefPage({
                 );
               })}
             </div>
+            {/* CP-09 — ONE VIDEO PER TOPIC. A content session's videos used to
+                reach the editor as "Video 2 of 4" and nothing else. Each owed
+                video now says which of the client's topics it is (titled as
+                the topic reads now), what the photographer said about it on
+                site, the words the client approved, and where its clips are.
+                A report the photographer sent that has not landed yet is shown
+                from the report itself, so the editor is never told less than
+                the person who was there. */}
+            {filming && (filming.rows.length > 0 || (filming.pending?.topics.length ?? 0) > 0) && (
+              <div className="mt-4 space-y-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">Filmed — one video per topic</div>
+                {filming.rows.map((r) => (
+                  <div key={r.key} className="rounded-xl border border-border bg-surface-2/40 p-3">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-sm font-medium">{r.topicTitle}</span>
+                      <span className="text-[11px] text-muted">{r.slotLabel ?? "no video slot yet — the office has it"}</span>
+                      {r.extra && (
+                        <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                          {r.extra === "added_on_site" ? "filmed on site — edit it like the others" : "beyond the plan — edit it like the others"}
+                        </span>
+                      )}
+                    </div>
+                    {r.note && (
+                      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
+                        <span className="text-muted">From the shoot: </span>{scrub(r.note)}
+                      </p>
+                    )}
+                    {r.script ? (
+                      <details className="mt-1.5">
+                        <summary className="cursor-pointer text-xs text-foreground/85">
+                          Script: {r.script.title}{r.script.versionNo ? ` · v${r.script.versionNo}` : ""}{" "}
+                          <span className={r.script.clientApproved ? "text-success" : "text-muted"}>— {r.script.standing}</span>
+                        </summary>
+                        {r.script.text && <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">{scrub(r.script.text)}</p>}
+                      </details>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted">No script on file for this topic.</p>
+                    )}
+                    {r.folder && (
+                      <a href={r.folder.url} target="_blank" rel="noopener noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline">
+                        <FolderOpen className="size-3" /> 02-RAW-Video/{r.folder.label}
+                      </a>
+                    )}
+                  </div>
+                ))}
+                {filming.slotsWithoutTopic > 0 && filming.rows.length > 0 && (
+                  <p className="text-xs text-muted">
+                    {filming.slotsWithoutTopic} more owed video{filming.slotsWithoutTopic === 1 ? " has" : "s have"} no topic recorded — ask the office which.
+                  </p>
+                )}
+                {filming.pending && filming.pending.topics.length > 0 && (
+                  <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                    <p className="font-medium">
+                      Reported by the photographer, not recorded yet{filming.pending.state === "NEEDS_REVIEW" ? " — the office is recording these by hand" : " — the hub is still saving these"}:
+                    </p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                      {filming.pending.topics.map((t, i) => (
+                        <li key={i}>{t.title}{t.extra ? " (filmed on site)" : ""}{t.note ? ` — ${scrub(t.note) ?? ""}` : ""}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
             {/* HOW IT LEAVES FINAL CUT — one line for the whole job, not one
                 per video: the export is the same whatever the style. It sits
                 at the BOTTOM of "What to make" on purpose (Jordan, Sep 16:
@@ -1096,7 +1201,7 @@ export default async function EditBriefPage({
               instruction card — and ABOVE the profile: the client's own words
               outrank the AI's read of them (Jordan, Sep 2: "How they like it
               should be above the working profile"). */}
-          {(showPrefs || showTheirStyle || showTheirPrefs) && (
+          {(showPrefs || showTheirStyle || showTheirPrefs || !!brandBrief?.music || !!brandBrief?.productionDefaults.length || !!brandBrief?.acceptedPreferences.length) && (
             <Section icon={Quote} title="How they like it">
               <div className="space-y-3">
                 {showPrefs && (
@@ -1115,6 +1220,32 @@ export default async function EditBriefPage({
                   <div>
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">How they like to work — from their portal</div>
                     <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showTheirPrefs}</p>
+                  </div>
+                )}
+                {/* CP-06 / CP-11: the music preference (the client's own, or a
+                    call change a person applied), the standing production
+                    defaults on the Brand tab, and the call preferences a person
+                    ACCEPTED — never a proposed one. */}
+                {brandBrief?.music && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Music</div>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{brandBrief.music}</p>
+                  </div>
+                )}
+                {brandBrief && brandBrief.productionDefaults.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Standing instructions</div>
+                    <ul className="space-y-1 text-sm leading-relaxed text-foreground/85">
+                      {brandBrief.productionDefaults.map((d, i) => <li key={i}><span className="text-muted">{d.name}:</span> {d.text}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {brandBrief && brandBrief.acceptedPreferences.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">From their calls — accepted by the office</div>
+                    <ul className="list-disc space-y-1 pl-4 text-sm leading-relaxed text-foreground/85">
+                      {brandBrief.acceptedPreferences.map((t, i) => <li key={i}>{t}</li>)}
+                    </ul>
                   </div>
                 )}
               </div>

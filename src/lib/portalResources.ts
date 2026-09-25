@@ -10,11 +10,28 @@ import { prisma } from "@/lib/prisma";
 // an enrollment and nothing here writes.
 // ---------------------------------------------------------------------------
 
+// CP-13 (Sep 24 2026): YOUR_MONTH leads. The four spec groups had no home for
+// "how the month works", "choosing topics and answering questions" or
+// "approving scripts" — the three things a new client does first. The admin
+// UI validates against this list, so the group needs no other change.
 export const RESOURCE_GROUPS: { key: string; title: string; blurb: string }[] = [
+  { key: "YOUR_MONTH", title: "How your month works", blurb: "Topics, questions, scripts and what happens when." },
   { key: "PREPARING_SESSION", title: "Preparing for your session", blurb: "What to have ready before we film." },
   { key: "REVIEWING_VIDEOS", title: "Reviewing videos", blurb: "How to watch, note and approve a cut." },
   { key: "POSTING_CONTENT", title: "Posting your content", blurb: "Uploads, quality settings, captions and covers." },
   { key: "IMPROVING_RESULTS", title: "Improving results", blurb: "Getting more from every video." },
+];
+
+/**
+ * Guides that are promised, not written (CP-13; Jordan: Instagram and the
+ * advanced material say "Coming soon"). CODE, never PortalResource rows: a row
+ * can be published by accident, and a placeholder that can be published is a
+ * placeholder that eventually will be. The Resources tab lists these under
+ * their own heading with the words "Coming soon" and nothing to open.
+ */
+export const COMING_SOON: { key: string; title: string; blurb: string }[] = [
+  { key: "instagram_publishing", title: "Posting to Instagram from your portal", blurb: "Connect your account once and schedule finished videos to post without downloading them first." },
+  { key: "advanced_growth", title: "Advanced growth guides", blurb: "Deeper guides on hooks, reading your analytics, and getting more reach from every video." },
 ];
 
 export type ResourceView = {
@@ -33,7 +50,7 @@ export type ResourceView = {
 
 export type ResourceGroupView = { key: string; title: string; blurb: string; resources: ResourceView[] };
 
-/** Published guides, grouped in the spec's four groups (empty groups included so the page can say so). */
+/** Published guides, grouped (empty groups included so the page can say so). */
 export async function publishedResources(): Promise<ResourceGroupView[]> {
   const rows = await prisma.portalResource.findMany({ where: { published: true }, orderBy: [{ groupKey: "asc" }, { sortOrder: "asc" }, { title: "asc" }] });
   const ownerIds = [...new Set(rows.map((r) => r.ownerAppUserId).filter((x): x is string => !!x))];

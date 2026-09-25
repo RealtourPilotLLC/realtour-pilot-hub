@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { sha256 } from "@/lib/aiRuns";
 import { createPillar, listPillars } from "@/lib/contentPillars";
+import { CONFIDENTIAL_RE } from "@/lib/clientFacts";
 import {
   parseStrategyDocument, normalizeStrategyLines, validateStrategyStructure, detectStructureVersion,
   type ParsedStrategy, type StrategyDocument, type StrategyStructureVersion,
@@ -248,9 +249,13 @@ export async function repairStrategyIdentities(): Promise<{ repaired: number }> 
 
 /** Release to the portal — a separate act from approval; only an approved version can be released. */
 export async function releaseStrategyVersion(versionId: string, by: string): Promise<void> {
-  const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { id: true, status: true, strategyId: true } });
+  const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { id: true, status: true, strategyId: true, sectionsJson: true } });
   if (!v) throw new Error("Strategy version not found.");
   if (v.status !== "APPROVED") throw new Error("Approve the version before releasing it to the portal.");
+  // CP-11: the portal renders every released section verbatim, so a marker of
+  // confidential knowledge anywhere in the text stops the release outright.
+  const leaking = (parseStoredSections(v.sectionsJson)?.sections ?? []).find((s) => CONFIDENTIAL_RE.test(s.text) || CONFIDENTIAL_RE.test(s.heading));
+  if (leaking) throw new Error(`The "${leaking.heading}" section carries a [CONFIDENTIAL] marker — take it out (as a new version) before releasing this to the client.`);
   const now = new Date();
   await prisma.contentStrategyVersion.update({ where: { id: versionId }, data: { releasedAt: now, releasedBy: by } });
   await prisma.contentStrategy.update({ where: { id: v.strategyId }, data: { releasedAt: now, releasedBy: by } });
@@ -327,7 +332,14 @@ export async function createStrategyProposal(opts: {
   enrollmentId: string; kind: "STRATEGY" | "PROFILE" | "PILLAR" | "AUDIENCE" | "POSITIONING" | "PREFERENCE"; summary: string;
   diff?: { path: string; from: string | null; to: string }[]; impact?: string | null; sourceKind: "call" | "client" | "staff" | "ai" | "import";
   sourceRef?: string | null; callRecordId?: string | null; factId?: string | null; clientUserId?: string | null;
+  /** CP-11: `profile.<slot>` or `strategy.section:<sectionId>` — what exactly this would change. */
+  targetKey?: string | null;
 }): Promise<string> {
+  // Confidential knowledge never becomes a proposal: an accepted proposal
+  // becomes a version, and a version can be released to the portal.
+  if (CONFIDENTIAL_RE.test(opts.summary) || (opts.diff ?? []).some((d) => CONFIDENTIAL_RE.test(d.to ?? ""))) {
+    throw new Error("That carries a [CONFIDENTIAL] marker — record it as a confidential fact instead of a strategy proposal.");
+  }
   const e = await prisma.contentEnrollment.findUnique({ where: { id: opts.enrollmentId }, select: { clientId: true } });
   if (!e) throw new Error("Enrollment not found.");
   const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: opts.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true, strategyId: true } });
@@ -336,33 +348,168 @@ export async function createStrategyProposal(opts: {
       enrollmentId: opts.enrollmentId, clientId: e.clientId, strategyId: approved?.strategyId ?? null, baseVersionId: approved?.id ?? null, kind: opts.kind,
       summary: opts.summary.slice(0, 500), diffJson: opts.diff ? JSON.stringify(opts.diff) : null, impact: opts.impact ?? null,
       sourceKind: opts.sourceKind, sourceRef: opts.sourceRef ?? null, callRecordId: opts.callRecordId ?? null, factId: opts.factId ?? null, clientUserId: opts.clientUserId ?? null,
+      targetKey: opts.targetKey ?? null,
     },
     select: { id: true },
   });
   return row.id;
 }
 
-export async function acceptStrategyProposal(proposalId: string, by: string, note?: string): Promise<{ versionId: string | null }> {
-  const p = await prisma.contentStrategyProposal.findUnique({ where: { id: proposalId } });
+/**
+ * Accept a proposal into a new INTERNAL_REVIEW draft. Jordan still approves
+ * and releases it; the version in force is untouched until he does.
+ *
+ * CP-11 (Sep 24 2026) — SECTION-SPECIFIC. A proposal that names its section
+ * (`strategy.section:<id>`) replaces the text of THAT section only, in a copy
+ * of the version in force NOW: every other section keeps its id, order,
+ * heading and text byte for byte, and nothing is appended. If the section has
+ * changed since the proposal was made (a newer approved version edited it),
+ * the proposal is refused rather than written over the newer words. `text`
+ * lets the person edit the replacement before it goes in. A PROFILE proposal
+ * is not a strategy change at all and is refused here (it is applied from
+ * the Facts tab), as is anything confidential. A legacy proposal with no
+ * target keeps the old behaviour — the change appended as its own section for
+ * Jordan to fold in.
+ */
+export async function acceptStrategyProposal(proposalId: string, by: string, note?: string, opts: { text?: string | null; sectionId?: string | null } = {}): Promise<{ versionId: string | null; sectionHeading?: string | null }> {
+  let p = await prisma.contentStrategyProposal.findUnique({ where: { id: proposalId } });
   if (!p || p.status !== "PROPOSED") throw new Error("That proposal was already handled.");
+  if (p.targetKey?.startsWith("profile.")) throw new Error("That's a change to the client's profile, not the strategy — apply it (or ignore it) on the Facts tab.");
+  const fact = p.factId ? await prisma.clientFact.findUnique({ where: { id: p.factId }, select: { confidential: true } }) : null;
+  const edited = (opts.text ?? "").trim();
+  // What THIS proposal would put into the strategy: its summary, its proposed
+  // text and the person's edit — never its `from`, which is the version in
+  // force quoting itself (a marker there is the release guard's business).
+  let proposedTo = "";
+  try { proposedTo = (JSON.parse(p.diffJson ?? "[]") as { to?: string }[]).map((d) => d.to ?? "").join("\n"); } catch { proposedTo = p.diffJson ?? ""; }
+  if (fact?.confidential || CONFIDENTIAL_RE.test(p.summary) || CONFIDENTIAL_RE.test(proposedTo) || CONFIDENTIAL_RE.test(edited)) {
+    throw new Error("This carries confidential knowledge, so it can't go into the strategy. Reject it.");
+  }
+  // An UNPLACED proposal (a legacy row, or a heading the model got wrong) that
+  // the person places on a section now: it becomes a section proposal against
+  // the version in force, and is accepted as one.
+  if (!p.targetKey && opts.sectionId && edited) {
+    const inForce = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: p.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" } });
+    const sec = inForce ? parseStoredSections(inForce.sectionsJson)?.sections.find((s) => s.id === opts.sectionId) : null;
+    if (!inForce || !sec) throw new Error("That section isn't in the strategy in force — pick another.");
+    const targetKey = `strategy.section:${sec.id}`;
+    // Placed only while it is still open and unplaced: a second tab placing it
+    // at the same moment must not rewrite what the first one accepts.
+    const placed = await prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "PROPOSED", targetKey: null }, data: { targetKey, baseVersionId: inForce.id, diffJson: JSON.stringify([{ path: targetKey, from: sec.text, to: edited }]) } });
+    if (!placed.count) throw new Error("That proposal was already handled.");
+    p = await prisma.contentStrategyProposal.findUniqueOrThrow({ where: { id: p.id } });
+  }
+  if (p.targetKey?.startsWith("strategy.section:")) return acceptSectionProposal(p, by, note, edited);
+  await claimProposal(p.id, by, note);
   const base = p.baseVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: p.baseVersionId } }) : null;
   let versionId: string | null = null;
-  if (base) {
-    // A new draft = the approved sections plus one appended "Proposed change"
-    // section carrying the accepted wording — Jordan approves the draft (or
-    // edits it) before it is the strategy.
-    const stored = parseStoredSections(base.sectionsJson);
-    if (stored) {
-      const sections = [...stored.sections, { id: `proposal-${p.id}`, number: null, heading: `Accepted proposal (${p.kind.toLowerCase()})`, order: stored.sections.length + 1, text: p.summary + (p.diffJson ? `\n\n${(JSON.parse(p.diffJson) as { path: string; from: string | null; to: string }[]).map((d) => `${d.path}: ${d.from ?? "—"} → ${d.to}`).join("\n")}` : "") }];
-      const r = await createStrategyVersion({
-        enrollmentId: p.enrollmentId, stored: { ...stored, sections }, rawText: base.rawText, sourceKind: p.sourceKind === "call" ? "monthly_call" : "manual", sourceRef: p.sourceRef,
-        callRecordId: p.callRecordId, basedOnVersionId: base.id, createdBy: by, status: "INTERNAL_REVIEW", changeSummary: `Accepted proposal: ${p.summary}`,
-      });
-      versionId = r.versionId;
+  try {
+    if (base) {
+      // A new draft = the approved sections plus one appended "Proposed change"
+      // section carrying the accepted wording — Jordan approves the draft (or
+      // edits it) before it is the strategy.
+      const stored = parseStoredSections(base.sectionsJson);
+      if (stored) {
+        const sections = [...stored.sections, { id: `proposal-${p.id}`, number: null, heading: `Accepted proposal (${p.kind.toLowerCase()})`, order: stored.sections.length + 1, text: p.summary + (p.diffJson ? `\n\n${(JSON.parse(p.diffJson) as { path: string; from: string | null; to: string }[]).map((d) => `${d.path}: ${d.from ?? "—"} → ${d.to}`).join("\n")}` : "") }];
+        const r = await createStrategyVersion({
+          enrollmentId: p.enrollmentId, stored: { ...stored, sections }, rawText: base.rawText, sourceKind: p.sourceKind === "call" ? "monthly_call" : "manual", sourceRef: p.sourceRef,
+          callRecordId: p.callRecordId, basedOnVersionId: base.id, createdBy: by, status: "INTERNAL_REVIEW", changeSummary: `Accepted proposal: ${p.summary}`,
+        });
+        versionId = r.versionId;
+      }
     }
+  } catch (e) {
+    await releaseProposal(p.id, by);
+    throw e;
   }
-  await prisma.contentStrategyProposal.update({ where: { id: proposalId }, data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: note ?? null, resultVersionId: versionId } });
+  await prisma.contentStrategyProposal.update({ where: { id: proposalId }, data: { resultVersionId: versionId } });
   return { versionId };
+}
+
+type ProposalRow = NonNullable<Awaited<ReturnType<typeof prisma.contentStrategyProposal.findUnique>>>;
+
+/**
+ * ACCEPT IS COMPARE-AND-SET (review, Sep 24 2026). The accept read the status,
+ * built a version, then wrote ACCEPTED unconditionally — so two tabs accepting
+ * the same proposal with different edited text both passed the read and made
+ * TWO drafts, the second orphaning the first. The claim is now the first write
+ * and only one caller can make it (profileFields.applyFieldProposal's pattern);
+ * a version is built only by the caller that won, and a failure hands the
+ * proposal back.
+ */
+async function claimProposal(id: string, by: string, note: string | undefined): Promise<void> {
+  const won = await prisma.contentStrategyProposal.updateMany({ where: { id, status: "PROPOSED" }, data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: note ?? null } });
+  if (won.count !== 1) throw new Error("That proposal was already handled.");
+}
+
+/** The build after a claim failed: the proposal is open again, exactly as it was. */
+async function releaseProposal(id: string, by: string): Promise<void> {
+  await prisma.contentStrategyProposal.updateMany({ where: { id, status: "ACCEPTED", resolvedBy: by, resultVersionId: null }, data: { status: "PROPOSED", resolvedBy: null, resolvedAt: null, resolutionNote: null } }).catch(() => {});
+}
+
+async function acceptSectionProposal(p: ProposalRow, by: string, note: string | undefined, edited: string): Promise<{ versionId: string | null; sectionHeading: string | null }> {
+  const sectionId = (p.targetKey ?? "").slice("strategy.section:".length);
+  let diff: { path: string; from: string | null; to: string } | null = null;
+  try { diff = (JSON.parse(p.diffJson ?? "[]") as { path: string; from: string | null; to: string }[])[0] ?? null; } catch { diff = null; }
+  const replacement = edited || (diff?.to ?? "").trim();
+  if (!replacement) throw new Error("Write the new text for this section before accepting it.");
+  // The version in force NOW — not necessarily the one the proposal was made
+  // against. If they differ, the section itself must be unchanged since.
+  const base = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: p.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" } });
+  const stored = base ? parseStoredSections(base.sectionsJson) : null;
+  if (!base || !stored) throw new Error("There's no approved strategy to change yet — approve one first.");
+  const at = stored.sections.findIndex((s) => s.id === sectionId);
+  if (at === -1) throw new Error("That section isn't in the strategy in force any more — reject this, or place it by hand.");
+  const sameText = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").replace(/\s+/g, " ").trim() === (b ?? "").replace(/\s+/g, " ").trim();
+  if (base.id !== p.baseVersionId && diff && !sameText(stored.sections[at].text, diff.from)) {
+    throw new Error(`The "${stored.sections[at].heading}" section changed in v${base.versionNo} after this was proposed — reject this one and look again.`);
+  }
+  const sections = stored.sections.map((s, i) => (i === at ? { ...s, text: replacement } : s));
+  const next: StoredSections = { ...stored, sections, document: refreshedDocument(stored, sections) };
+  const heading = stored.sections[at].heading;
+  // Claim, THEN build: the loser of a double accept writes nothing.
+  await claimProposal(p.id, by, note);
+  let r: Awaited<ReturnType<typeof createStrategyVersion>>;
+  try {
+    r = await createStrategyVersion({
+      enrollmentId: p.enrollmentId, stored: next, rawText: base.rawText, sourceKind: p.sourceKind === "call" ? "monthly_call" : "manual", sourceRef: p.sourceRef,
+      callRecordId: p.callRecordId, basedOnVersionId: base.id, createdBy: by, status: "INTERNAL_REVIEW",
+      changeSummary: `Section "${heading}": ${p.summary}`.slice(0, 1000),
+    });
+  } catch (e) {
+    await releaseProposal(p.id, by);
+    throw e;
+  }
+  const changed = !sameText(replacement, diff?.to);
+  await prisma.contentStrategyProposal.update({
+    where: { id: p.id },
+    data: {
+      resultVersionId: r.versionId,
+      ...(changed && diff ? { diffJson: JSON.stringify([{ ...diff, appliedTo: replacement }]) } : {}),
+    },
+  });
+  return { versionId: r.versionId, sectionHeading: heading };
+}
+
+/**
+ * The structured read (pillars, goals, audience…) that generation and the
+ * portal summary use, refreshed after ONE section's text changed. The
+ * sections are re-parsed from their own headings and text; the new read is
+ * used only when it finds exactly the same headings in the same order (so the
+ * parse is known to be reading the same document). Otherwise the old read is
+ * kept — the verbatim sections are the truth, and Jordan approves the draft.
+ */
+function refreshedDocument(before: StoredSections, sections: StoredSection[]): StrategyDocument | null {
+  if (!before.document) return null;
+  try {
+    // Headings are stored verbatim, numbering included ("2. Content Goals").
+    const text = sections.map((s) => `${s.heading}\n${s.text}`).join("\n");
+    const parsed = parseStrategyDocument(text);
+    const same = parsed.sections.length === sections.length && parsed.sections.every((s, i) => s.heading === sections[i].heading);
+    return same ? parsed : before.document;
+  } catch {
+    return before.document;
+  }
 }
 
 export async function rejectStrategyProposal(proposalId: string, by: string, note?: string): Promise<void> {
@@ -370,7 +517,13 @@ export async function rejectStrategyProposal(proposalId: string, by: string, not
 }
 
 export async function openStrategyProposals(enrollmentId: string) {
-  return prisma.contentStrategyProposal.findMany({ where: { enrollmentId, status: "PROPOSED" }, orderBy: { createdAt: "desc" } });
+  // CP-11: profile-field proposals are applied from the Facts tab, never
+  // accepted as a strategy draft — they are not listed here. (OR on null: a
+  // NOT/LIKE alone would drop every legacy row whose targetKey is NULL.)
+  return prisma.contentStrategyProposal.findMany({
+    where: { enrollmentId, status: "PROPOSED", OR: [{ targetKey: null }, { NOT: { targetKey: { startsWith: "profile." } } }] },
+    orderBy: { createdAt: "desc" },
+  });
 }
 
 // Monthly priorities live on the MONTH (spec §3), apart from the brand foundation.

@@ -228,15 +228,51 @@ export default async function UploadProjectPage({
   // listing shoot, which has no month and no topic bank.
   const { topicsForSession } = await import("@/lib/filmedTopics");
   const session = await topicsForSession(project.id).catch(() => null);
+  // CP-09 (batch C): each topic's raw folder, where it is TODAY (the folder
+  // engine may have moved the listing since it was made), and — when the
+  // photographer's last report has not landed yet — what that report said, so
+  // the reopened page shows their answer instead of a blank one. Re-sending it
+  // unchanged is the same report (payloadHash), not a second one.
+  const { topicFolderLinksFor } = await import("@/lib/dropboxFolders");
+  const topicFolders = session
+    ? await topicFolderLinksFor(project.id).catch(() => new Map<string, { label: string; path: string; url: string }>())
+    : new Map<string, { label: string; path: string; url: string }>();
+  const pendingRow = session?.pendingReport
+    ? await prisma.contentFilmingReport
+        .findUnique({ where: { id: session.pendingReport.id }, select: { topicIdsJson: true, extrasJson: true } })
+        .catch(() => null)
+    : null;
+  const parsed = <T,>(s: string | null | undefined, fallback: T): T => {
+    try {
+      return s ? (JSON.parse(s) as T) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
   const sessionTopics = session
     ? {
         owed: session.owed,
-        topics: session.topics.map((t) => ({
-          topicId: t.topicId, title: t.title, pillarName: t.pillarName, scriptTitle: t.scriptTitle,
-          clientApproved: t.clientApproved, filmedConfirmedAtISO: t.filmedConfirmedAtISO, filmedConfirmedBy: t.filmedConfirmedBy,
-          // CP-09: which session confirmed it — the page pre-ticks only its own.
-          confirmedOnProjectId: t.confirmedOnProjectId,
-        })),
+        topics: session.topics.map((t) => {
+          const folder = topicFolders.get(t.topicId);
+          return {
+            topicId: t.topicId, title: t.title, pillarName: t.pillarName, scriptTitle: t.scriptTitle,
+            clientApproved: t.clientApproved, filmedConfirmedAtISO: t.filmedConfirmedAtISO, filmedConfirmedBy: t.filmedConfirmedBy,
+            // CP-09: which session confirmed it — the page pre-ticks only its own.
+            confirmedOnProjectId: t.confirmedOnProjectId,
+            overflow: t.overflow,
+            note: t.note,
+            folder: folder ? { label: folder.label, url: folder.url } : null,
+          };
+        }),
+        pending: session.pendingReport
+          ? {
+              state: session.pendingReport.state,
+              topicIds: parsed<unknown[]>(pendingRow?.topicIdsJson, []).filter((x): x is string => typeof x === "string"),
+              extras: parsed<{ title?: unknown; note?: unknown }[]>(pendingRow?.extrasJson, [])
+                .filter((x) => typeof x?.title === "string" && !!(x.title as string).trim())
+                .map((x) => ({ title: x.title as string, note: typeof x.note === "string" ? x.note : "" })),
+            }
+          : null,
       }
     : null;
   // Photo policy sections only render for jobs that ordered photos; the video

@@ -74,6 +74,8 @@ export type OutboxState = "pending" | "attempting" | "accepted" | "failed" | "un
 export type OutboxKind =
   | "confirmation" | "delivery" | "welcome" | "afterhours" | "staff" | "portal_login" | "portal_invite"
   | "program_reminder" | "script_share" | "strategy_ready"
+  /** CP-13: "the office replied" — lib/programMessages.ts, behind `program_message_notice`. */
+  | "program_message"
   /** R4: a text a PERSON typed and pressed send on, from the comms surface. */
   | "manual";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
@@ -89,7 +91,7 @@ const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcom
  *  the outbox row by src/lib/programReminders.ts). Nothing of these kinds is
  *  enqueued unless its ProgramAutomation switch (`reminders`,
  *  `script_share_email`) is on — a missing row is off. */
-const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready"];
+const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message"];
 const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
 export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
@@ -397,6 +399,7 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     case "program_reminder": return programReminderSubject(dedupeKey ?? null);
     case "script_share": return "Your scripts are ready in your RealTour Pilot portal";
     case "strategy_ready": return "Your content strategy is ready in your RealTour Pilot portal";
+    case "program_message": return "New reply in your RealTour Pilot portal";
     default: return "RealTour Pilot";
   }
 }
@@ -414,6 +417,8 @@ function programReminderSubject(dedupeKey: string | null): string {
     case "BOOK_SESSION": return `Let's book${forMonth} session`;
     case "REVIEW_WORK": return "Your videos are ready to review";
     case "SESSION_REQUEST_FOLLOWUP": return `About${forMonth} session request`;
+    // CP-05: the per-session address reminder.
+    case "CONFIRM_ADDRESS": return month ? `Where are we filming your ${month} session?` : "Where are we filming your session?";
     default: return `Let's plan${forMonth}`;
   }
 }

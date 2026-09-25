@@ -1,10 +1,10 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etMonthKey } from "@/lib/contentProgram";
 import { MONTHLY_PLAN_RE } from "@/lib/videoStyles";
-import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
-import { monthSessionCount, recalcProgramMonth, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
+import { isAutomationEnabled } from "@/lib/programAutomation";
+import { monthSessionCount, recalcProgramMonth, replacesPendingMove, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
+import { aryeoProductFor, etMonthKey } from "@/lib/contentProgram";
 
 // ---------------------------------------------------------------------------
 // SESSION REQUESTS (spec §4), Sep 16 2026.
@@ -20,10 +20,13 @@ import { isTestClientName } from "@/lib/testClients";
 // books in Aryeo by hand; the request is the persisted ask plus the reconcile.
 //
 // `session_booking` OFF (the default, and Jordan's rule for now) = request
-// only: bookingState stays NONE and nothing is written to Aryeo. ON would
-// queue a provider booking job — the Aryeo appointment-create endpoint is NOT
-// verified, so the driver below refuses honestly (RECONCILE with a reason)
-// rather than pretending. See the handover.
+// only, DESK-ASSISTED: bookingState stays NONE, nothing is written to Aryeo,
+// and Kyle's desk task carries the booking. ON — and only for a client the
+// switch's config authorises — the request is QUEUED for the provider adapter
+// (sessionBooking.ts, CP-04), which books, reads back and confirms on its own;
+// no desk task is raised for a queued request, because Kyle booking the same
+// slot by hand while the adapter books it is how a creative gets two orders.
+// A request the adapter cannot finish is handed to the desk with the reason.
 //
 // Capacity: package sessions per month + staff-approved extras, counted from
 // CONFIRMED requests and Projects already attached to the month.
@@ -52,6 +55,8 @@ export type CreateSessionRequestInput = {
   kind?: "CONTENT_SESSION" | "EXTRA_SESSION";
   /** A reschedule: the request this one replaces (kept, marked superseded via status). */
   supersedesId?: string | null;
+  /** CP-04: the creative the client picked for the slot (a COMPANY_TEAM_MEMBER id) — required for the adapter to book. */
+  creative?: { teamMemberId: string; name: string | null } | null;
 };
 
 export type CapacityCheck = {
@@ -97,7 +102,7 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
   const count = enrollment ? await monthSessionCount(monthId, enrollment.clientId, now, db) : { sessions: [], booked: 0, filmed: 0, accountedFor: 0, duplicatesFolded: 0 };
   const requests = await db.programSessionRequest.findMany({
     where: { enrollmentId, monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED"] } },
-    select: { id: true, projectId: true, aryeoAppointmentId: true, kind: true, extraApprovedBy: true, status: true },
+    select: { id: true, projectId: true, aryeoAppointmentId: true, kind: true, extraApprovedBy: true, status: true, bookingState: true, supersedesId: true },
   });
   // A CONFIRMED request is already inside `count` (it is one of the things
   // countDistinctSessions folds), so only the asks the office has not answered
@@ -106,6 +111,11 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
   const countedKeys = new Set(count.sessions.map((x) => x.key));
   const pending = requests.filter(
     (r) => (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") &&
+      // CP-04: the slot was taken before the hub could book it. The client is
+      // asked to pick again, so the dead ask must not hold the month's place.
+      r.bookingState !== "CONFLICT" &&
+      // A pending move holds the place of the session it moves, not a second one.
+      !replacesPendingMove(r, requests) &&
       !(r.aryeoAppointmentId && countedKeys.has(`appt:${r.aryeoAppointmentId}`)) &&
       !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
   );
@@ -146,8 +156,35 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
 
   const kind = input.kind ?? "CONTENT_SESSION";
   const dedupeKey = `${enrollment.id}:${month.id}:${start ? start.toISOString() : "flex"}`;
-  const bookingOn = await isAutomationEnabled("session_booking");
   const now = new Date();
+  // WHAT THIS REPLACES (review of CP-04, Sep 24 2026). A new time for a session
+  // already on the calendar — or for an ask Kyle may already have booked by
+  // hand — is a MOVE, and a move is a person's job: the adapter only creates,
+  // so queueing it put a second order on a creative's calendar while the first
+  // still stood. And a new time for a move that is itself still pending replaces
+  // the pending ask, not the booking: the new request supersedes the BOOKED
+  // row, so the chain never loses it (it used to stay RESCHEDULE_REQUESTED for
+  // ever, with no buttons and its appointment unclaimed).
+  const { replaced, booked, deskHeld } = await whatItReplaces(input.supersedesId);
+  const supersedesId = booked?.id ?? input.supersedesId ?? null;
+  // WHO BOOKS IT (CP-04). The adapter only for a picked slot with a chosen
+  // creative AND a client the guard would let it write for — asked here with
+  // the same read-only check the write itself makes, so a real client is never
+  // QUEUED while only a fixture is authorised. Everyone else: the desk, as today.
+  let hubBooks = false;
+  let deskReason: string | null = null;
+  if (start && (await isAutomationEnabled("session_booking"))) {
+    if (booked) deskReason = `this moves a session already on the calendar${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}, and the hub only books new sessions`;
+    else if (deskHeld) deskReason = "this replaces an ask Kyle may already have booked by hand";
+    else if (!input.creative?.teamMemberId) deskReason = "no creative was chosen for the slot";
+    else {
+      const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { id: true, name: true } });
+      const { hubWritePermit } = await import("@/lib/integrations/aryeo");
+      const gate = await hubWritePermit({ switchKey: "session_booking", client, operation: "orders.create" });
+      if (gate.ok) hubBooks = true; else deskReason = gate.reason;
+    }
+  }
+  const product = aryeoProductFor((await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }))?.package);
 
   // A24 — SIMULTANEOUS REQUESTS MUST NOT CREATE DUPLICATE PRO SESSIONS.
   //
@@ -185,7 +222,12 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     if (existing && !["CANCELLED", "DECLINED", "EXPIRED"].includes(existing.status)) {
       return { kind: "duplicate", id: existing.id, status: existing.status, capacity } satisfies Settled;
     }
-    if (kind === "CONTENT_SESSION" && capacity.remaining <= 0) return { kind: "full", capacity } satisfies Settled;
+    // A reschedule frees the place of the request it replaces, so it is not
+    // refused for the capacity that request itself is holding.
+    const freed = input.supersedesId
+      ? await tx.programSessionRequest.count({ where: { id: input.supersedesId, enrollmentId: enrollment.id, monthId: month.id, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"] } } })
+      : 0;
+    if (kind === "CONTENT_SESSION" && capacity.remaining + freed <= 0) return { kind: "full", capacity } satisfies Settled;
     const data = {
       enrollmentId: enrollment.id, clientId: enrollment.clientId, monthId: month.id, kind,
       slotStart: start, slotEnd: end, timezone: input.slot.timezone ?? enrollment.timezone ?? "America/New_York",
@@ -194,18 +236,41 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
       requestedByClientUserId: input.actor.kind === "CLIENT" ? input.actor.clientUserId : null,
       requestedByStaffUserId: input.actor.kind === "STAFF" ? input.actor.userId : null,
       status: "REQUESTED",
-      supersedesId: input.supersedesId ?? null,
+      supersedesId,
       capacityCheckJson: JSON.stringify(capacity),
-      // The switch decides whether a provider booking is even attempted.
-      bookingState: bookingOn && start ? "QUEUED" : "NONE",
+      // The switch AND the guard decide whether a provider booking is attempted.
+      bookingState: hubBooks ? "QUEUED" : "NONE",
+      lastError: deskReason ? `desk-assisted: ${deskReason}` : null,
+      productId: product?.productId ?? null,
+      variantId: product?.variantId ?? null,
+      creativeTeamMemberId: input.creative?.teamMemberId ?? null,
+      creativeName: input.creative?.name ?? null,
       dedupeKey,
     };
+    // A CANCELLED/EXPIRED row re-used for the same slot starts CLEAN (CP-04):
+    // an old order id or appointment id left on it would send the adapter to
+    // somebody else's booking. The history stays in ProgramBookingAttempt.
     const row = existing
-      ? await tx.programSessionRequest.update({ where: { id: existing.id }, data: { ...data, cancelledAt: null, cancelledBy: null, cancelReason: null, confirmedAt: null, confirmedBy: null }, select: { id: true } })
+      ? await tx.programSessionRequest.update({
+          where: { id: existing.id },
+          data: {
+            ...data, cancelledAt: null, cancelledBy: null, cancelReason: null, confirmedAt: null, confirmedBy: null,
+            projectId: null, aryeoAppointmentId: null, aryeoOrderId: null, aryeoAddressId: null, matchState: null, matchEvidenceJson: null,
+            currentAttemptId: null, leaseUntil: null, leaseBy: null, nextAttemptAt: null, lastErrorAt: null, attempts: 0,
+            providerConfirmedAt: null, pendingChangeJson: null, taskId: null,
+          },
+          select: { id: true },
+        })
       : await tx.programSessionRequest.create({ data, select: { id: true } });
     if (input.supersedesId) {
-      await tx.programSessionRequest.updateMany({ where: { id: input.supersedesId, status: { in: ["REQUESTED", "CONFIRMED"] } }, data: { status: "RESCHEDULE_REQUESTED" } });
+      // An ask that was never booked is simply replaced; a booked one waits as
+      // RESCHEDULE_REQUESTED until its replacement confirms (then it closes).
+      await tx.programSessionRequest.updateMany({ where: { id: input.supersedesId, status: "REQUESTED" }, data: { status: "CANCELLED", cancelledAt: now, cancelReason: "replaced by a new time" } });
+      await tx.programSessionRequest.updateMany({ where: { id: input.supersedesId, status: "CONFIRMED" }, data: { status: "RESCHEDULE_REQUESTED" } });
     }
+    // A request whose time was taken before the hub could book it is over
+    // once the client picks again.
+    await tx.programSessionRequest.updateMany({ where: { enrollmentId: enrollment.id, monthId: month.id, status: "REQUESTED", bookingState: "CONFLICT", id: { not: row.id } }, data: { status: "CANCELLED", cancelledAt: now, cancelReason: "the time was taken; the client picked another" } });
     return { kind: "created", id: row.id, capacity } satisfies Settled;
     // The lock is held only for these statements; the desk task and the month
     // recalculation below are deliberately outside it. 20s is far past anything
@@ -222,7 +287,15 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     // because on Pro those are different sentences.
     return { ok: false, reason: `This month's ${c.allowed} session${c.allowed === 1 ? " is" : "s are"} already booked or requested — ask us about an extra session.`, capacity: c };
   }
-  await ensureDeskTask(settled.id);
+  // A QUEUED request is the adapter's; Kyle hears about it only if the adapter
+  // hands it over (handToDesk). Everything else is desk-assisted, as before —
+  // and a replacement says MOVE, with the booking it replaces in plain words.
+  if (!hubBooks) {
+    if (booked) await ensureDeskTask(settled.id, "RESCHEDULE", `This replaces the confirmed session at ${slotWords(booked.slotStart, booked.timezone)}${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}. Move that appointment rather than booking a second one.`);
+    else if (deskHeld && replaced) await ensureDeskTask(settled.id, "RESCHEDULE", `The client first asked for ${slotWords(replaced.slotStart, replaced.timezone)} and changed it before that showed as booked. If you already booked ${replaced.slotStart ? "that time" : "it"} in Aryeo, move that booking to the new time; do not add a second one. If nothing was booked, book the new time.`);
+    else await ensureDeskTask(settled.id, "BOOK", deskReason);
+  }
+  if (input.supersedesId) await closeDeskTask(input.supersedesId, "CANCELLED").catch(() => {});
   await recalcProgramMonth(month.id);
   // The capacity quoted back is the one the decision was made on, re-read after
   // the write so the caller sees the session it just used up.
@@ -230,7 +303,12 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   const remainingNote = after.remaining > 0
     ? ` You still have ${after.remaining} session${after.remaining === 1 ? "" : "s"} to book this month.`
     : "";
-  return { ok: true, id: settled.id, status: "REQUESTED", duplicate: false, capacity: after, message: `Requested — it stays “awaiting confirmation” until it's booked in Aryeo, then the date shows here.${remainingNote}` };
+  return {
+    ok: true, id: settled.id, status: "REQUESTED", duplicate: false, capacity: after,
+    message: hubBooks
+      ? `Booking your session now. It shows as booked as soon as the calendar confirms it.${remainingNote}`
+      : `Requested. Kyle books it in our calendar by hand, so it shows as requested until he confirms it.${remainingNote}`,
+  };
 }
 
 /**
@@ -251,7 +329,42 @@ function monthLockKey(enrollmentId: string, monthId: string): [number, number] {
   return [fnv(0x811c9dc5), fnv(0x9e3779b9)];
 }
 
-/** Kyle's desk row for one request — the ask with the exact slot; closed when the request settles. */
+/** Booking states in which an ask is in the DESK's hands (Kyle books it), not the adapter's. */
+const DESK_BOOKING_STATES = ["NONE", "RECONCILE", "REJECTED", "MISMATCH", "FAILED"];
+
+type ReplacedRow = { id: string; status: string; bookingState: string; supersedesId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null; timezone: string | null };
+const REPLACED_SELECT = { id: true, status: true, bookingState: true, supersedesId: true, aryeoAppointmentId: true, slotStart: true, timezone: true } as const;
+
+/**
+ * What a new time replaces (review of CP-04, Sep 24 2026):
+ *   `booked`   the session on the calendar being MOVED — the row itself when it
+ *              is CONFIRMED, or, when the row is a pending move, the booked row
+ *              that move replaces (so a second "Change time" follows the chain);
+ *   `deskHeld` a pending ask in Kyle's hands with his task open — he may have
+ *              booked it in Aryeo in the hour before the reconcile sees it.
+ */
+async function whatItReplaces(requestId: string | null | undefined): Promise<{ replaced: ReplacedRow | null; booked: ReplacedRow | null; deskHeld: boolean }> {
+  if (!requestId) return { replaced: null, booked: null, deskHeld: false };
+  const replaced = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: REPLACED_SELECT });
+  if (!replaced) return { replaced: null, booked: null, deskHeld: false };
+  if (replaced.status === "CONFIRMED" || replaced.status === "RESCHEDULE_REQUESTED") return { replaced, booked: replaced, deskHeld: false };
+  if (replaced.status !== "REQUESTED") return { replaced, booked: null, deskHeld: false };
+  const booked = replaced.supersedesId ? await prisma.programSessionRequest.findFirst({ where: { id: replaced.supersedesId, status: "RESCHEDULE_REQUESTED" }, select: REPLACED_SELECT }) : null;
+  const deskHeld = DESK_BOOKING_STATES.includes(replaced.bookingState) &&
+    (await prisma.smartTask.count({ where: { dedupeKey: `${TASK_PREFIX}${replaced.id}`, status: { notIn: ["COMPLETED", "CANCELLED"] } } })) > 0;
+  return { replaced, booked, deskHeld };
+}
+
+/** A slot the way Kyle and the client read it: "Tuesday, October 20, 10:00 AM (America/New_York)". */
+function slotWords(at: Date | null, timezone: string | null): string {
+  if (!at) return "an unscheduled time";
+  const tz = timezone ?? "America/New_York";
+  return `${at.toLocaleString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} (${tz === "America/New_York" ? "ET" : tz})`;
+}
+
+const sameMinute = (a: Date | null | undefined, b: Date | null | undefined) =>
+  !!a && !!b && Math.floor(a.getTime() / 60_000) === Math.floor(b.getTime() / 60_000);
+
 /** The "two bookings both fit" sentence for Kyle's task, from the stored evidence. */
 function ambiguityLine(matchEvidenceJson: string | null): string {
   let names = "";
@@ -264,7 +377,25 @@ function ambiguityLine(matchEvidenceJson: string | null): string {
   return `⚠ TWO content appointments both fit this request${names ? `: ${names}` : ""}. The hub will not guess between them — open the request and confirm which one is this session.`;
 }
 
-async function ensureDeskTask(requestId: string): Promise<void> {
+/**
+ * WHAT KYLE IS BEING ASKED TO DO (CP-04). One desk row per request (dedupeKey
+ * `content-session-request-<id>`), but the job on it changes: a client's
+ * cancellation used to reopen that row still titled "Book content session" with
+ * "Book it in Aryeo" underneath, so a cancel read as a booking. The title and
+ * the instruction now follow the mode.
+ */
+export type DeskMode = "BOOK" | "CANCEL" | "RESCHEDULE" | "RECOVER" | "FIX" | "UNDO_MOVE";
+
+const DESK_TITLE: Record<DeskMode, string> = {
+  BOOK: "Book content session",
+  CANCEL: "Cancel content session",
+  RESCHEDULE: "Move content session",
+  RECOVER: "Check Aryeo for a hub booking",
+  FIX: "Fix a hub booking in Aryeo",
+  UNDO_MOVE: "Check a withdrawn move",
+};
+
+async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason?: string | null): Promise<void> {
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId } });
   if (!r) return;
   const [client, month] = await Promise.all([
@@ -272,11 +403,16 @@ async function ensureDeskTask(requestId: string): Promise<void> {
     prisma.contentMonth.findUnique({ where: { id: r.monthId }, select: { monthKey: true } }),
   ]);
   // TEST clients get no row on Kyle's real desk — except when a probe asks for
-  // one. Without the escape hatch this create/close path could only ever be
-  // read, never run: `ensureDeskTask` returned early for the only clients we
-  // are allowed to write to (review, Sep 17). The flag is set by a probe
-  // process, never in production.
-  if (isTestClientName(client?.name) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
+  // one, or when the hub really wrote to Aryeo for an authorised fixture (then
+  // a real booking exists and a person must be able to find it). Without the
+  // escape hatch this create/close path could only ever be read, never run:
+  // `ensureDeskTask` returned early for the only clients we are allowed to
+  // write to (review, Sep 17). The flag is set by a probe process, never in
+  // production.
+  // A desk MOVE of a booking the hub made counts as the hub having written:
+  // the booking it moves is real, so the move must be findable too.
+  const movesHubBooking = !!r.supersedesId && (await prisma.programSessionRequest.count({ where: { id: r.supersedesId, OR: [{ aryeoOrderId: { not: null } }, { currentAttemptId: { not: null } }] } })) > 0;
+  if (isTestClientName(client?.name) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1" && !(r.aryeoOrderId || r.currentAttemptId || movesHubBooking)) return;
   const dedupeKey = `${TASK_PREFIX}${r.id}`;
   const when = r.slotStart
     ? `${r.slotStart.toLocaleString("en-US", { timeZone: r.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} (${r.timezone ?? "ET"})`
@@ -286,36 +422,51 @@ async function ensureDeskTask(requestId: string): Promise<void> {
   // first or the second half of a Pro month, and the two are different bookings
   // of the same four-hour product.
   const capacity = await sessionCapacity(r.enrollmentId, r.monthId).catch(() => null);
-  const ordinalLine = capacity && capacity.sessionsPerMonth > 1
-    ? `Session ${Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth)} of ${capacity.sessionsPerMonth} — ${capacity.confirmedSessions} already confirmed for this month. Book the four-hour product again; it is a second booking, not a longer one.`
+  const ordinal = capacity && capacity.sessionsPerMonth > 1 ? Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth) : null;
+  const ordinalLine = mode === "BOOK" && ordinal && capacity
+    ? `Session ${ordinal} of ${capacity.sessionsPerMonth} — ${capacity.confirmedSessions} already confirmed for this month. Book the four-hour product again, as its own order; it is a second booking, not a longer one.`
     : null;
+  const instruction: Record<DeskMode, string> = {
+    BOOK: "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
+    CANCEL: `The client asked to cancel this session. Cancel ${r.aryeoAppointmentId ? `appointment ${r.aryeoAppointmentId}` : "the appointment"} in Aryeo — the request flips to CANCELLED on its own when Aryeo shows it cancelled.`,
+    RESCHEDULE: `The client asked to move this session. Move ${r.aryeoAppointmentId ? `appointment ${r.aryeoAppointmentId}` : "it"} in Aryeo to the new time — the request confirms on its own when the appointment shows the new time.`,
+    RECOVER: `The hub was booking this and could not tell whether Aryeo accepted it. Search Aryeo orders for the note "hub-session:${r.id}" before doing anything else.`,
+    FIX: "The hub's booking needs a person in Aryeo. Once it is right, confirm the request on the client file.",
+    UNDO_MOVE: "The client withdrew this move, so the session stays at its original time. If you had not moved it in Aryeo yet, just close this task. If you already moved it, move it back.",
+  };
   const description = [
     `Content session request for ${month?.monthKey ?? "their month"} (${r.kind === "EXTRA_SESSION" ? "EXTRA session" : "package session"}).`,
     ordinalLine,
     `Time: ${when}`,
+    r.creativeName ? `Creative the client picked: ${r.creativeName}` : null,
     r.locationText ? `Filming location: ${r.locationText}` : null,
+    r.aryeoOrderId ? `Aryeo order: ${r.aryeoOrderId}` : null,
     r.notes ? r.notes : null,
     "",
+    reason ? reason : null,
     // A07: when two real content bookings both fit, the reconcile refuses to
     // pick and says so HERE rather than leaving Kyle to wonder why an obviously
     // booked session never confirmed.
     r.matchState === "AMBIGUOUS" ? ambiguityLine(r.matchEvidenceJson) : null,
-    "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
-    r.taskId ? null : `Request ${r.id}`,
+    instruction[mode],
+    `Request ${r.id}`,
   ].filter((x): x is string => x != null).join("\n");
+  const title = mode === "BOOK" && ordinal && capacity
+    ? `${DESK_TITLE.BOOK} ${ordinal} of ${capacity.sessionsPerMonth} — ${client?.name ?? "client"}`
+    : `${DESK_TITLE[mode]} — ${client?.name ?? "client"}`;
+  const summary = clip(`${mode === "BOOK" ? "Requested" : mode === "CANCEL" ? "Cancel" : mode === "RESCHEDULE" ? "Move" : "Check"}: ${when}${r.locationText ? ` · ${r.locationText}` : ""}`, 200);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });
   if (existing) {
-    await prisma.smartTask.update({ where: { id: existing.id }, data: { description, status: "OPEN", completedAt: null } });
+    await prisma.smartTask.update({ where: { id: existing.id }, data: { title: title.slice(0, 140), summary, description, status: "OPEN", completedAt: null, priority: mode === "BOOK" ? "HIGH" : "URGENT" } });
+    if (!r.taskId) await prisma.programSessionRequest.update({ where: { id: r.id }, data: { taskId: existing.id } });
     return;
   }
   const task = await prisma.smartTask.create({
     data: {
       taskType: "todo",
-      title: capacity && capacity.sessionsPerMonth > 1
-        ? `Book content session ${Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth)} of ${capacity.sessionsPerMonth} — ${client?.name ?? "client"}`
-        : `Book content session — ${client?.name ?? "client"}`,
-      summary: clip(`Requested: ${when}${r.locationText ? ` · ${r.locationText}` : ""}`, 200),
-      description, reasonCreated: "Client requested a content session (persisted request)", source: "portal", priority: "HIGH",
+      title: title.slice(0, 140),
+      summary,
+      description, reasonCreated: mode === "BOOK" ? "Client requested a content session (persisted request)" : `Content session request needs a person (${mode.toLowerCase()})`, source: "portal", priority: mode === "BOOK" ? "HIGH" : "URGENT",
       dueAt: new Date(Date.now() + 24 * 3600_000), assignedKey: "kyle", clientId: client?.id ?? null, dedupeKey,
     },
     select: { id: true },
@@ -323,24 +474,129 @@ async function ensureDeskTask(requestId: string): Promise<void> {
   await prisma.programSessionRequest.update({ where: { id: r.id }, data: { taskId: task.id } });
   try {
     const { notifyInApp } = await import("@/lib/notify");
-    await notifyInApp({ kind: "portal_session", title: `Session request — ${client?.name ?? "a client"}`, body: clip(when, 140), href: "/tasks?tab=board", targets: [{ roles: ["OWNER", "ADMIN"] }], dedupeKey: `session-request-${r.id}` });
+    await notifyInApp({ kind: "portal_session", title: `${DESK_TITLE[mode]} — ${client?.name ?? "a client"}`, body: clip(when, 140), href: "/tasks?tab=board", targets: [{ roles: ["OWNER", "ADMIN"] }], dedupeKey: `session-request-${r.id}-${mode.toLowerCase()}` });
   } catch { /* bell is best-effort */ }
 }
 
-async function closeDeskTask(requestId: string, outcome: "COMPLETED" | "CANCELLED"): Promise<void> {
+/** The adapter's hand-over (sessionBooking.ts): the request's one desk row, in the given mode, carrying why. */
+export async function handToDesk(requestId: string, mode: DeskMode, reason: string): Promise<void> {
+  await ensureDeskTask(requestId, mode, reason);
+}
+
+export async function closeDeskTask(requestId: string, outcome: "COMPLETED" | "CANCELLED"): Promise<void> {
   await prisma.smartTask.updateMany({ where: { dedupeKey: `${TASK_PREFIX}${requestId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: outcome, completedAt: new Date() } });
 }
 
-export async function cancelSessionRequest(requestId: string, by: string | null, reason?: string): Promise<void> {
-  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { status: true, monthId: true } });
+export type CancelResult = { ok: boolean; status: string; message: string };
+
+/**
+ * Cancel a request (CP-04). Four shapes, each saying exactly what happened:
+ *   · a client inside 24 hours of the slot → refused, with Kyle's number
+ *     (Jordan: inside 24 hours it is a phone call, not a button);
+ *   · a session the HUB booked, with session_booking on → the adapter cancels
+ *     it in Aryeo and reads it back (sessionBooking.cancelHubBooking);
+ *   · a hand-booked CONFIRMED session, or one the adapter is mid-way through
+ *     booking → CANCEL_REQUESTED and Kyle's desk row, titled as a cancellation;
+ *   · an ask nothing was booked for → CANCELLED, desk row closed.
+ */
+export async function cancelSessionRequest(requestId: string, by: string | null, reason?: string, opts: { actor?: "CLIENT" | "STAFF"; now?: Date } = {}): Promise<CancelResult> {
+  const now = opts.now ?? new Date();
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { id: true, status: true, monthId: true, slotStart: true, timezone: true, bookingState: true, aryeoAppointmentId: true } });
   if (!r) throw new Error("Request not found.");
-  if (["CANCELLED", "EXPIRED", "DECLINED"].includes(r.status)) return;
-  // A CONFIRMED request has a real Aryeo appointment behind it: the request is
-  // marked, but the appointment itself is cancelled by a person in Aryeo —
-  // the hub never cancels provider bookings (spec §19: confirm the provider result separately).
-  await prisma.programSessionRequest.update({ where: { id: requestId }, data: { status: r.status === "CONFIRMED" ? "CANCEL_REQUESTED" : "CANCELLED", cancelledAt: new Date(), cancelledBy: by, cancelReason: reason?.trim() || null } });
-  if (r.status === "CONFIRMED") await ensureDeskTask(requestId); else await closeDeskTask(requestId, "CANCELLED");
+  if (["CANCELLED", "EXPIRED", "DECLINED"].includes(r.status)) return { ok: true, status: r.status, message: "That request is already closed." };
+  const { INSIDE_24H_MESSAGE, within24hElapsed, hubBookedAttempt, cancelHubBooking, IN_FLIGHT_STATES } = await import("@/lib/sessionBooking");
+  if (opts.actor === "CLIENT" && r.slotStart && (r.status === "CONFIRMED" || r.status === "RESCHEDULE_REQUESTED") && within24hElapsed(r.slotStart, now)) {
+    return { ok: false, status: r.status, message: INSIDE_24H_MESSAGE };
+  }
+  if (r.status === "CONFIRMED" && (await isAutomationEnabled("session_booking")) && (await hubBookedAttempt(r))) {
+    const c = await cancelHubBooking(r.id, { by, reason: reason ?? null, now });
+    if (c.state !== "REFUSED") {
+      await recalcProgramMonth(r.monthId);
+      return { ok: c.ok, status: c.state === "DONE" ? "CANCELLED" : "CANCEL_REQUESTED", message: c.message };
+    }
+    // The guard refused (switch off for this client since): the desk cancels.
+  }
+  const inFlight = r.status === "REQUESTED" && (IN_FLIGHT_STATES as readonly string[]).includes(r.bookingState);
+  // A CONFIRMED request has a real Aryeo appointment behind it, and one the
+  // adapter is mid-way through may have one: the request is marked, and a
+  // person cancels it in Aryeo (spec §19: confirm the provider result separately).
+  const needsPerson = r.status === "CONFIRMED" || r.status === "RESCHEDULE_REQUESTED" || inFlight;
+  await prisma.programSessionRequest.update({ where: { id: requestId }, data: { status: needsPerson ? "CANCEL_REQUESTED" : "CANCELLED", cancelledAt: now, cancelledBy: by, cancelReason: reason?.trim() || null } });
+  if (needsPerson) await ensureDeskTask(requestId, "CANCEL", inFlight ? "The hub was mid-way through booking this when the client cancelled. Check Aryeo for an order carrying the request's note, and cancel it if it exists." : null);
+  else {
+    // A PENDING MOVE WITHDRAWN (review, Sep 24 2026). Cancelling the new time
+    // used to leave the booked session RESCHEDULE_REQUESTED for ever — no
+    // buttons, no reconcile, its appointment unclaimed. The session it would
+    // have replaced is still on the calendar, so it goes back to CONFIRMED.
+    // Kyle's move task becomes a check: he may already have moved it.
+    const moveTaskOpen = (await prisma.smartTask.count({ where: { dedupeKey: `${TASK_PREFIX}${requestId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } } })) > 0;
+    const restored = await restoreMovedFrom(requestId);
+    if (restored) {
+      if (moveTaskOpen) await ensureDeskTask(requestId, "UNDO_MOVE", `The session stays at ${slotWords(restored.slotStart, restored.timezone)}${restored.aryeoAppointmentId ? ` (appointment ${restored.aryeoAppointmentId})` : ""}. The move to ${slotWords(r.slotStart, r.timezone)} was withdrawn.`);
+      await recalcProgramMonth(r.monthId);
+      return { ok: true, status: "CANCELLED", message: `Move withdrawn. Your session stays at ${slotWords(restored.slotStart, restored.timezone)}.` };
+    }
+    await closeDeskTask(requestId, "CANCELLED");
+  }
   await recalcProgramMonth(r.monthId);
+  return needsPerson
+    ? { ok: true, status: "CANCEL_REQUESTED", message: "Cancellation requested. The session is on the calendar, so Kyle will take it off and confirm." }
+    : { ok: true, status: "CANCELLED", message: "Cancelled." };
+}
+
+/**
+ * Move a session (CP-04 — until now `supersedesId` had no caller, so the portal
+ * had no reschedule at all). Refused inside 24 hours of the OLD time (Kyle's
+ * number). A session the hub booked is moved in Aryeo and read back; any other
+ * becomes a new request that replaces the old one, and Kyle's row says "move".
+ */
+export async function requestReschedule(
+  requestId: string,
+  newSlot: { startISO: string; endISO: string | null; locationText?: string | null },
+  creative: { teamMemberId: string; name: string | null } | null,
+  actor: SessionRequestActor,
+  opts: { now?: Date } = {},
+): Promise<{ ok: boolean; message: string; id?: string }> {
+  const now = opts.now ?? new Date();
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId } });
+  if (!r) return { ok: false, message: "That request isn't on your page." };
+  if (!["REQUESTED", "CONFIRMED"].includes(r.status)) return { ok: false, message: "That request is already closed." };
+  const { INSIDE_24H_MESSAGE, within24hElapsed, hubBookedAttempt, rescheduleHubBooking, IN_FLIGHT_STATES } = await import("@/lib/sessionBooking");
+  const start = new Date(newSlot.startISO);
+  if (!Number.isFinite(start.getTime())) return { ok: false, message: "Pick a time from the list." };
+  // The session actually on the calendar: this row, or — for a move still
+  // pending — the booked row it replaces. Inside 24 hours of THAT is a call.
+  const { booked } = await whatItReplaces(r.id);
+  if (actor.kind !== "STAFF" && r.slotStart && within24hElapsed(r.slotStart, now)) return { ok: false, message: INSIDE_24H_MESSAGE };
+  if (actor.kind !== "STAFF" && booked?.slotStart && within24hElapsed(booked.slotStart, now)) return { ok: false, message: INSIDE_24H_MESSAGE };
+  if (actor.kind !== "STAFF" && within24hElapsed(start, now)) return { ok: false, message: INSIDE_24H_MESSAGE };
+  const { sessionSlotRefusal } = await import("@/lib/portal");
+  const weekend = sessionSlotRefusal(start);
+  if (weekend) return { ok: false, message: weekend };
+  if (r.status === "REQUESTED" && (IN_FLIGHT_STATES as readonly string[]).includes(r.bookingState)) {
+    return { ok: false, message: "We are booking that time right now. Give it a minute, then move it if you still need to." };
+  }
+  if (r.status === "CONFIRMED" && (await isAutomationEnabled("session_booking")) && (await hubBookedAttempt(r))) {
+    const moved = await rescheduleHubBooking(r.id, start, { by: actor.kind === "STAFF" ? actor.userId : actor.kind === "CLIENT" ? actor.clientUserId : null, now });
+    if (moved.state !== "REFUSED") {
+      await recalcProgramMonth(r.monthId);
+      return { ok: moved.ok, message: moved.message, id: r.id };
+    }
+  }
+  const created = await createSessionRequest({
+    enrollmentId: r.enrollmentId,
+    monthId: r.monthId,
+    slot: { startISO: start.toISOString(), endISO: newSlot.endISO, timezone: r.timezone, locationText: newSlot.locationText ?? r.locationText, notes: `Moved from ${slotWords((booked ?? r).slotStart, (booked ?? r).timezone)}.` },
+    actor,
+    kind: r.kind === "EXTRA_SESSION" ? "EXTRA_SESSION" : "CONTENT_SESSION",
+    supersedesId: r.id,
+    creative: creative ?? (r.creativeTeamMemberId ? { teamMemberId: r.creativeTeamMemberId, name: r.creativeName } : null),
+  });
+  if (!created.ok) return { ok: false, message: created.reason };
+  // The old booking still stands in Aryeo until a person moves it: the new
+  // request's desk row says MOVE, not book (createSessionRequest writes it,
+  // naming the booking — including when this row was itself a pending move).
+  return { ok: true, message: booked ? "We have your new time. Kyle will move the session and confirm it." : created.message, id: created.id };
 }
 
 export async function declineSessionRequest(requestId: string, by: string | null, reason: string): Promise<void> {
@@ -348,6 +604,8 @@ export async function declineSessionRequest(requestId: string, by: string | null
   if (!r) throw new Error("Request not found.");
   await prisma.programSessionRequest.update({ where: { id: requestId }, data: { status: "DECLINED", cancelledAt: new Date(), cancelledBy: by, cancelReason: reason.trim() || "declined" } });
   await closeDeskTask(requestId, "CANCELLED");
+  // The office said no to a new time: the session it would have moved stands.
+  await restoreMovedFrom(requestId);
   await recalcProgramMonth(r.monthId);
 }
 
@@ -364,7 +622,49 @@ export async function confirmSessionRequest(requestId: string, link: { projectId
     data: { status: "CONFIRMED", projectId: link.projectId ?? undefined, aryeoAppointmentId: link.aryeoAppointmentId ?? undefined, confirmedAt: new Date(), confirmedBy: by, bookingState: "SUCCEEDED", matchState: "STAFF", matchEvidenceJson: JSON.stringify({ chose: link.aryeoAppointmentId ?? null, why: `confirmed by hand by ${by}` }) },
   });
   await closeDeskTask(requestId, "COMPLETED");
+  await closeSuperseded(requestId);
   await recalcProgramMonth(r.monthId);
+}
+
+/**
+ * A replacement confirmed: the booking it replaced is over (it was moved) —
+ * but only when its appointment IS the one the replacement confirmed on, or is
+ * gone. One left standing beside a NEW booking (Kyle booked the new time
+ * instead of moving the old one, or the hub booked it) is still on a creative's
+ * calendar, so the old row asks Kyle to cancel it rather than closing quietly
+ * over a live appointment. Exported for the adapter's confirm (sessionBooking).
+ */
+export async function closeSuperseded(requestId: string): Promise<void> {
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { supersedesId: true, aryeoAppointmentId: true, slotStart: true, timezone: true } });
+  if (!r?.supersedesId) return;
+  const old = await prisma.programSessionRequest.findFirst({ where: { id: r.supersedesId, status: { in: ["RESCHEDULE_REQUESTED", "REQUESTED"] } }, select: { id: true, aryeoAppointmentId: true } });
+  if (!old) return;
+  const leftBehind = old.aryeoAppointmentId && old.aryeoAppointmentId !== r.aryeoAppointmentId
+    ? await prisma.appointment.findUnique({ where: { aryeoId: old.aryeoAppointmentId }, select: { status: true, project: { select: { status: true } } } })
+    : null;
+  if (leftBehind && leftBehind.status !== "CANCELED" && leftBehind.project.status !== "CANCELLED") {
+    await prisma.programSessionRequest.updateMany({ where: { id: old.id, status: { in: ["RESCHEDULE_REQUESTED", "REQUESTED"] } }, data: { status: "CANCEL_REQUESTED", cancelledAt: new Date(), cancelledBy: "aryeo-reconcile", cancelReason: "moved to a new booking; the old appointment is still on the calendar" } });
+    await ensureDeskTask(old.id, "CANCEL", `This session moved to ${slotWords(r.slotStart, r.timezone)}${r.aryeoAppointmentId ? ` (appointment ${r.aryeoAppointmentId})` : ""}, which is now booked. The old appointment ${old.aryeoAppointmentId} is still on the calendar, so the creative could be sent to both.`);
+    return;
+  }
+  await prisma.programSessionRequest.updateMany({ where: { id: old.id, status: { in: ["RESCHEDULE_REQUESTED", "REQUESTED"] } }, data: { status: "CANCELLED", cancelledAt: new Date(), cancelReason: "moved to the new time" } });
+  await closeDeskTask(old.id, "COMPLETED");
+}
+
+/**
+ * A pending MOVE that will not happen (the client withdrew it, the office
+ * declined the new time, or it expired): the session it would have replaced is
+ * still on the calendar, so that row goes back to CONFIRMED — with its buttons
+ * — unless another replacement is still pursuing the move. Returns it, restored.
+ */
+async function restoreMovedFrom(requestId: string): Promise<{ id: string; slotStart: Date | null; timezone: string | null; aryeoAppointmentId: string | null } | null> {
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { supersedesId: true } });
+  if (!r?.supersedesId) return null;
+  const still = await prisma.programSessionRequest.count({ where: { supersedesId: r.supersedesId, id: { not: requestId }, status: { in: ["REQUESTED", "CONFIRMED"] } } });
+  if (still) return null;
+  const n = await prisma.programSessionRequest.updateMany({ where: { id: r.supersedesId, status: "RESCHEDULE_REQUESTED" }, data: { status: "CONFIRMED" } });
+  if (!n.count) return null;
+  return prisma.programSessionRequest.findUnique({ where: { id: r.supersedesId }, select: { id: true, slotStart: true, timezone: true, aryeoAppointmentId: true } });
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +682,11 @@ export async function confirmSessionRequest(requestId: string, link: { projectId
 //
 //   PROVIDER_ID        the hub booked it and holds the appointment id. Nothing
 //                      to infer.
+//   PROVIDER_ORDER     (CP-04) the appointment sits on the Aryeo ORDER the hub
+//                      created for this request. The order is this request's
+//                      alone, so whatever Kyle books on it by hand — after the
+//                      adapter made the order and Aryeo refused the appointment
+//                      — is this session, at whatever time he chose.
 //   MONTH_LINK         the appointment's project is attached to THIS content
 //                      month (Project.contentMonthId) — set by
 //                      attachMonthlyProjects from the deliverable labels.
@@ -404,10 +709,10 @@ export type ApptRow = {
   aryeoId: string;
   startAt: Date | null;
   projectId: string;
-  project: { contentMonthId: string | null; deliverables: { label: string | null }[] };
+  project: { contentMonthId: string | null; aryeoOrderId?: string | null; deliverables: { label: string | null }[] };
 };
 
-export type SessionMatchKind = "PROVIDER_ID" | "MONTH_LINK" | "CONTENT_DELIVERABLE";
+export type SessionMatchKind = "PROVIDER_ID" | "PROVIDER_ORDER" | "MONTH_LINK" | "CONTENT_DELIVERABLE";
 
 /** Is this appointment content-program work, and how do we know? Null = no evidence. */
 function contentEvidence(a: ApptRow, monthId: string, monthKey: string | null): { kind: SessionMatchKind; why: string } | null {
@@ -438,10 +743,21 @@ export type SessionMatchDecision = {
  * inside a loop that also writes rows.
  */
 export function chooseSessionAppointment(
-  req: { monthId: string; monthKey: string | null; slotStart: Date | null; createdAt: Date },
+  req: { monthId: string; monthKey: string | null; slotStart: Date | null; createdAt: Date; aryeoOrderId?: string | null },
   appts: ApptRow[],
   claimed: ReadonlySet<string>,
 ): SessionMatchDecision {
+  // The hub's own order decides it, before any timing or content reading.
+  if (req.aryeoOrderId) {
+    const onOurOrder = appts.filter((a) => !claimed.has(a.aryeoId) && !!a.startAt && a.project.aryeoOrderId === req.aryeoOrderId);
+    if (onOurOrder.length) {
+      return {
+        eligible: onOurOrder.map((a) => ({ a, kind: "PROVIDER_ORDER" as const, why: "it is on the Aryeo order the hub created for this request" })),
+        nearMisses: [],
+        verdict: onOurOrder.length === 1 ? "CONFIRM" : "AMBIGUOUS",
+      };
+    }
+  }
   const timingFits = (a: ApptRow): boolean => {
     if (!a.startAt) return false;
     if (req.slotStart) return Math.abs(a.startAt.getTime() - req.slotStart.getTime()) <= 2 * 3600_000;
@@ -467,14 +783,27 @@ export function chooseSessionAppointment(
  * Hourly reconcile against Aryeo (through the Appointment/Project rows the
  * appointments sync already maintains — no new Aryeo calls):
  *   REQUESTED + ONE appointment that is provably this content session → CONFIRMED;
+ *   REQUESTED move of a booked session + that booking now at the new time → CONFIRMED;
  *   REQUESTED + two that both fit → AMBIGUOUS, left for Kyle;
- *   CONFIRMED whose appointment was cancelled in Aryeo → CANCELLED;
+ *   CONFIRMED / RESCHEDULE_REQUESTED whose appointment was cancelled in Aryeo → CANCELLED;
+ *   RESCHEDULE_REQUESTED that no replacement is pursuing any more → CONFIRMED;
  *   REQUESTED whose slot passed 2 days ago with nothing booked → EXPIRED.
  */
+/** Stamped on lastError so a passed, unsettled booking is handed over once, not hourly. */
+const RECOVER_RAISED = "[recover raised]";
+
 export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promise<{ checked: number; confirmed: number; cancelled: number; expired: number; ambiguous: number }> {
   const now = opts.now ?? new Date();
-  const open = await prisma.programSessionRequest.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] } } });
+  const open = await prisma.programSessionRequest.findMany({ where: { status: { in: ["REQUESTED", "CONFIRMED", "CANCEL_REQUESTED", "RESCHEDULE_REQUESTED"] } } });
   let confirmed = 0, cancelled = 0, expired = 0, ambiguous = 0;
+  const { IN_FLIGHT_STATES } = await import("@/lib/sessionBooking");
+  // HALF-MADE PROVIDER BOOKINGS ARE NOT INFERRED OR EXPIRED (CP-04). A request
+  // the adapter is mid-way through — or whose Aryeo copy did not match — is the
+  // adapter's and Kyle's, not the matcher's: confirming it off a nearby
+  // appointment, or expiring it two days after its slot, would erase the only
+  // record that an order may exist. Once its slot has passed it goes to the
+  // desk as RECOVER instead, once.
+  const heldByAdapter = new Set<string>([...IN_FLIGHT_STATES, "MISMATCH"]);
   const touched = new Set<string>();
   // ONE APPOINTMENT IS ONE SESSION (A23 / A24, Jordan Sep 21 2026).
   //
@@ -488,12 +817,27 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
   //
   // So an appointment already claimed by another request is off the table. The
   // set starts from what the ledger already says and grows as this run confirms.
+  //
+  // A booking being MOVED or CANCELLED is still claimed (review, Sep 24 2026).
+  // Only CONFIRMED rows used to count, so the moment a hand-booked session went
+  // RESCHEDULE_REQUESTED its appointment was free again — and the replacement,
+  // asking for 11:30, confirmed onto the SAME appointment still at 10:00 (inside
+  // the two-hour window, and attached to the month). The portal said Booked at
+  // 11:30, Kyle's move task closed, and Aryeo still had 10:00. A move now
+  // confirms on its own appointment only when Aryeo shows the NEW time.
   const claimed = new Set(
-    (await prisma.programSessionRequest.findMany({ where: { status: "CONFIRMED", aryeoAppointmentId: { not: null } }, select: { aryeoAppointmentId: true } }))
+    (await prisma.programSessionRequest.findMany({ where: { status: { in: ["CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"] }, aryeoAppointmentId: { not: null } }, select: { aryeoAppointmentId: true } }))
       .map((x) => x.aryeoAppointmentId!)
       .filter(Boolean),
   );
   for (const r of open) {
+    if (r.status === "REQUESTED" && heldByAdapter.has(r.bookingState)) {
+      if (r.slotStart && now.getTime() - r.slotStart.getTime() > 2 * 864e5 && !(r.lastError ?? "").includes(RECOVER_RAISED)) {
+        await ensureDeskTask(r.id, "RECOVER", `The slot has passed and the hub's booking never settled (booking state ${r.bookingState}).`).catch(() => {});
+        await prisma.programSessionRequest.update({ where: { id: r.id }, data: { lastError: `${(r.lastError ?? "").slice(0, 900)} ${RECOVER_RAISED}`.trim() } });
+      }
+      continue;
+    }
     if (r.status === "REQUESTED") {
       // THE HUB'S OWN BOOKING, when it ever makes one: the appointment id is
       // the provider's answer and there is nothing to infer from timing.
@@ -506,6 +850,27 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
             data: { status: "CONFIRMED", projectId: mine.projectId, confirmedAt: now, confirmedBy: "aryeo-reconcile", bookingState: r.bookingState === "NONE" ? "NONE" : "SUCCEEDED", matchState: "PROVIDER_ID", matchEvidenceJson: JSON.stringify({ chose: r.aryeoAppointmentId, why: "the hub holds this appointment id from its own booking" }) },
           });
           await closeDeskTask(r.id, "COMPLETED");
+          await closeSuperseded(r.id);
+          confirmed++; touched.add(r.monthId);
+          continue;
+        }
+      }
+      // A MOVE OF A BOOKED SESSION: the appointment it replaces confirms it
+      // only once Aryeo shows that appointment at the new time, to the minute.
+      // Until then Kyle's move task stays open and the request says requested.
+      const movedFrom = r.supersedesId && r.slotStart
+        ? await prisma.programSessionRequest.findFirst({ where: { id: r.supersedesId, status: "RESCHEDULE_REQUESTED", aryeoAppointmentId: { not: null } }, select: { aryeoAppointmentId: true } })
+        : null;
+      if (movedFrom?.aryeoAppointmentId) {
+        const x = await prisma.appointment.findUnique({ where: { aryeoId: movedFrom.aryeoAppointmentId }, select: { projectId: true, status: true, startAt: true, project: { select: { status: true } } } });
+        if (x && x.status !== "CANCELED" && x.project.status !== "CANCELLED" && sameMinute(x.startAt, r.slotStart)) {
+          claimed.add(movedFrom.aryeoAppointmentId);
+          await prisma.programSessionRequest.update({
+            where: { id: r.id },
+            data: { status: "CONFIRMED", projectId: x.projectId, aryeoAppointmentId: movedFrom.aryeoAppointmentId, confirmedAt: now, confirmedBy: "aryeo-reconcile", matchState: "MOVED", matchEvidenceJson: JSON.stringify({ chose: movedFrom.aryeoAppointmentId, why: "the booked session this replaces now shows the new time in Aryeo" }) },
+          });
+          await closeDeskTask(r.id, "COMPLETED");
+          await closeSuperseded(r.id);
           confirmed++; touched.add(r.monthId);
           continue;
         }
@@ -513,12 +878,12 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
       const month = await prisma.contentMonth.findUnique({ where: { id: r.monthId }, select: { monthKey: true } });
       const appts: ApptRow[] = await prisma.appointment.findMany({
         where: { project: { clientId: r.clientId, status: { not: "CANCELLED" } }, status: { not: "CANCELED" }, startAt: { not: null } },
-        select: { id: true, aryeoId: true, startAt: true, projectId: true, project: { select: { contentMonthId: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } } } },
+        select: { id: true, aryeoId: true, startAt: true, projectId: true, project: { select: { contentMonthId: true, aryeoOrderId: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } } } },
         orderBy: { startAt: "asc" },
       });
 
       const decision = chooseSessionAppointment(
-        { monthId: r.monthId, monthKey: month?.monthKey ?? null, slotStart: r.slotStart, createdAt: r.createdAt },
+        { monthId: r.monthId, monthKey: month?.monthKey ?? null, slotStart: r.slotStart, createdAt: r.createdAt, aryeoOrderId: r.aryeoOrderId },
         appts,
         claimed,
       );
@@ -536,6 +901,7 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
           },
         });
         await closeDeskTask(r.id, "COMPLETED");
+        await closeSuperseded(r.id);
         confirmed++; touched.add(r.monthId);
         continue;
       }
@@ -564,7 +930,7 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
       }
       continue;
     }
-    // CONFIRMED / CANCEL_REQUESTED: follow the provider.
+    // CONFIRMED / CANCEL_REQUESTED / RESCHEDULE_REQUESTED: follow the provider.
     if (r.aryeoAppointmentId) {
       const appt = await prisma.appointment.findUnique({ where: { aryeoId: r.aryeoAppointmentId }, select: { status: true, project: { select: { status: true } } } });
       const gone = !appt || appt.status === "CANCELED" || appt.project.status === "CANCELLED";
@@ -576,8 +942,24 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
         claimed.delete(r.aryeoAppointmentId);
         await prisma.programSessionRequest.update({ where: { id: r.id }, data: { status: "CANCELLED", cancelledAt: r.cancelledAt ?? now, cancelledBy: r.cancelledBy ?? "aryeo-reconcile", cancelReason: r.cancelReason ?? "appointment cancelled in Aryeo" } });
         await closeDeskTask(r.id, "COMPLETED");
+        // A booking being MOVED was cancelled instead: there is nothing left
+        // to move, so the pending new time is a booking to make.
+        if (r.status === "RESCHEDULE_REQUESTED") {
+          const next = await prisma.programSessionRequest.findFirst({ where: { supersedesId: r.id, status: "REQUESTED" }, select: { id: true } });
+          if (next) await ensureDeskTask(next.id, "BOOK", `The old appointment ${r.aryeoAppointmentId} was cancelled in Aryeo, so there is nothing to move: book the new time.`).catch(() => {});
+        }
         cancelled++; touched.add(r.monthId);
+        continue;
       }
+    }
+    // A MOVE NOBODY IS PURSUING (review, Sep 24 2026): its replacement was
+    // withdrawn, declined or expired. The booked session still stands, so the
+    // row goes back to CONFIRMED instead of waiting for ever; a replacement
+    // that confirmed without closing it is closed now.
+    if (r.status === "RESCHEDULE_REQUESTED") {
+      const next = await prisma.programSessionRequest.findFirst({ where: { supersedesId: r.id, status: { in: ["REQUESTED", "CONFIRMED"] } }, orderBy: { createdAt: "desc" }, select: { id: true, status: true } });
+      if (next?.status === "CONFIRMED") { await closeSuperseded(next.id); touched.add(r.monthId); }
+      else if (!next) { await prisma.programSessionRequest.updateMany({ where: { id: r.id, status: "RESCHEDULE_REQUESTED" }, data: { status: "CONFIRMED" } }); touched.add(r.monthId); }
     }
   }
   for (const m of touched) await recalcProgramMonth(m, { now });
@@ -585,34 +967,40 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
 }
 
 /**
- * Provider booking driver — only when `session_booking` is ON. The Aryeo
- * appointment-create endpoint has never been verified against the live
- * account (the hub only reads /scheduling/available-timeslots), so this
- * driver does not invent a write: it moves QUEUED requests to RECONCILE with
- * an honest reason, and the desk task carries the booking. Wire the real call
- * here once the endpoint is verified; every state after it is already handled.
+ * Provider booking driver — only when `session_booking` is ON. The real one
+ * lives in sessionBooking.ts (CP-04); this name is kept for the cron and every
+ * caller that already imports it. With the switch off it returns `skipped`
+ * having made no call, and with nothing to do it records a clean run — not an
+ * error string, which is what the old RECONCILE-everything body wrote.
  */
-export async function driveSessionBookings(opts: { max?: number; now?: Date } = {}): Promise<{ skipped: string } | { handled: number }> {
-  if (!(await isAutomationEnabled("session_booking"))) return { skipped: "session_booking is off" };
-  const now = opts.now ?? new Date();
-  const rows = await prisma.programSessionRequest.findMany({ where: { bookingState: "QUEUED", status: "REQUESTED" }, take: opts.max ?? 10, select: { id: true } });
-  for (const r of rows) {
-    await prisma.programSessionRequest.update({
-      where: { id: r.id },
-      data: { bookingState: "RECONCILE", attempts: { increment: 1 }, lastError: "Aryeo appointment-create is not verified in this build — booked by the desk, confirmed by reconcile", lastErrorAt: now },
-    });
-  }
-  await recordAutomationRun("session_booking", rows.length ? "provider booking not available: requests handed to the desk" : null);
-  return { handled: rows.length };
+export async function driveSessionBookings(opts: { max?: number; now?: Date; budgetMs?: number } = {}) {
+  const { driveSessionBookings: drive } = await import("@/lib/sessionBooking");
+  return drive(opts);
 }
 
 export type SessionRequestView = {
   id: string; status: string; kind: string; slotStart: Date | null; slotEnd: Date | null; timezone: string | null; locationText: string | null;
   projectId: string | null; aryeoAppointmentId: string | null; confirmedAt: Date | null; cancelledAt: Date | null; cancelReason: string | null; createdAt: Date;
+  /** CP-04: where the provider booking stands, and who the client picked. */
+  bookingState: string; creativeName: string | null; changePending: boolean;
   /** What the portal shows: "Requested, awaiting confirmation" until Aryeo says otherwise. */
   label: string;
 };
-export function sessionRequestLabel(status: string): string {
+/**
+ * REQUESTED AND CONFIRMED ARE DIFFERENT SENTENCES, everywhere (CP-04). Only a
+ * CONFIRMED request — Aryeo's own appointment, read back — says Booked. While
+ * the adapter works the client sees that it is working, and a slot taken
+ * between the pick and the booking says so and asks for another time.
+ */
+export function sessionRequestLabel(status: string, bookingState?: string | null): string {
+  if (status === "REQUESTED") {
+    switch (bookingState) {
+      case "QUEUED": case "RUNNING": return "Booking your session";
+      case "ORDER_CREATED": case "APPT_PENDING": case "UNKNOWN": return "Confirming with the calendar";
+      case "CONFLICT": return "That time was just taken. Pick another time.";
+      default: break;
+    }
+  }
   switch (status) {
     case "REQUESTED": return "Requested, awaiting confirmation";
     case "CONFIRMED": return "Booked";
@@ -629,6 +1017,7 @@ export async function listSessionRequests(enrollmentId: string, monthId?: string
   return rows.map((r) => ({
     id: r.id, status: r.status, kind: r.kind, slotStart: r.slotStart, slotEnd: r.slotEnd, timezone: r.timezone, locationText: r.locationText,
     projectId: r.projectId, aryeoAppointmentId: r.aryeoAppointmentId, confirmedAt: r.confirmedAt, cancelledAt: r.cancelledAt, cancelReason: r.cancelReason, createdAt: r.createdAt,
-    label: sessionRequestLabel(r.status),
+    bookingState: r.bookingState, creativeName: r.creativeName, changePending: !!r.pendingChangeJson,
+    label: r.pendingChangeJson && r.status === "CONFIRMED" ? "Moving your session" : sessionRequestLabel(r.status, r.bookingState),
   }));
 }

@@ -35,6 +35,11 @@ export const PACKAGE_RULES: Record<string, { videosPerMonth: number; sessionsPer
 
 export type ProgramPackage = "Starter" | "Accelerator" | "Pro";
 
+/** Where a paused or ended client restarts the program (Jordan, CP-12). The
+ *  portal links it from the read-only notice; it is our public sign-up page,
+ *  and nothing here takes a payment. */
+export const RESUBSCRIBE_URL = "https://realtourpilot.com/content-program";
+
 // ---------------------------------------------------------------------------
 // THE PROVIDER CATALOGUE (finding F01, Sep 21 2026).
 //
@@ -59,6 +64,9 @@ export type AryeoContentProduct = {
   durationMinutes: number;
   /** how many of those appointments the package buys per month. */
   sessionsPerMonth: number;
+  /** CP-04: the product's one variant — what POST /orders' product_items takes.
+   *  Read from the live catalogue on Sep 21 2026 (docs/content-program-checklist.md). */
+  variantId: string;
 };
 
 /**
@@ -73,9 +81,9 @@ export type AryeoContentProduct = {
  * be the first exercise of this row.
  */
 export const ARYEO_CONTENT_PRODUCTS: Record<ProgramPackage, AryeoContentProduct> = {
-  Starter: { productId: "019c343b-ebd6-7139-8509-130eb1f339a5", title: "Video Starter", durationMinutes: 120, sessionsPerMonth: 1 },
-  Accelerator: { productId: "019c343d-27b9-72db-90a8-e941aaed31df", title: "Video Accelerator", durationMinutes: 240, sessionsPerMonth: 1 },
-  Pro: { productId: "019c343f-a23b-72b0-8dee-67514390b9b5", title: "VIDEO PRO - 8HR Session", durationMinutes: 240, sessionsPerMonth: 2 },
+  Starter: { productId: "019c343b-ebd6-7139-8509-130eb1f339a5", title: "Video Starter", durationMinutes: 120, sessionsPerMonth: 1, variantId: "019c343b-ebe2-711e-8b2a-58929768c1e2" },
+  Accelerator: { productId: "019c343d-27b9-72db-90a8-e941aaed31df", title: "Video Accelerator", durationMinutes: 240, sessionsPerMonth: 1, variantId: "019c343d-27d4-7346-9c5c-7ccb53241fd2" },
+  Pro: { productId: "019c343f-a23b-72b0-8dee-67514390b9b5", title: "VIDEO PRO - 8HR Session", durationMinutes: 240, sessionsPerMonth: 2, variantId: "019c343f-a25e-715f-93b4-2c54561c811b" },
 };
 
 const isProgramPackage = (p: string | null | undefined): p is ProgramPackage =>
@@ -492,28 +500,41 @@ export async function getProgramRoster(opts: { now?: Date } = {}): Promise<Progr
 // minted on first read (a settings row, not client data) so the workspace can
 // always show an owner; an override is a scope=ENROLLMENT/MONTH row.
 // ---------------------------------------------------------------------------
-export type OwnerDuty = "STRATEGY" | "SCRIPTS" | "SCHEDULING" | "DELIVERY" | "ESCALATION" | "REMINDERS";
-export const OWNER_DUTIES: OwnerDuty[] = ["STRATEGY", "SCRIPTS", "SCHEDULING", "DELIVERY", "ESCALATION", "REMINDERS"];
+// CP-13 (Sep 24 2026): MESSAGES — who answers the client's program
+// conversation (src/lib/programMessages.ts). Kyle by default.
+export type OwnerDuty = "STRATEGY" | "SCRIPTS" | "SCHEDULING" | "DELIVERY" | "ESCALATION" | "REMINDERS" | "MESSAGES";
+export const OWNER_DUTIES: OwnerDuty[] = ["STRATEGY", "SCRIPTS", "SCHEDULING", "DELIVERY", "ESCALATION", "REMINDERS", "MESSAGES"];
 export type DutyOwner = { duty: OwnerDuty; appUserId: string | null; email: string | null; label: string; scope: "DEFAULT" | "ENROLLMENT" | "MONTH" };
 
+/** Who holds each duty until someone says otherwise (Jordan D11, + CP-13). */
+const DEFAULT_HOLDER: Record<OwnerDuty, "jordan" | "kyle"> = {
+  STRATEGY: "jordan", SCRIPTS: "jordan", ESCALATION: "jordan",
+  SCHEDULING: "kyle", DELIVERY: "kyle", REMINDERS: "kyle", MESSAGES: "kyle",
+};
+
 async function ensureDefaultOwnerAssignments(): Promise<void> {
-  const existing = await prisma.programOwnerAssignment.count({ where: { scope: "DEFAULT" } });
-  if (existing > 0) return;
+  // Mint any duty that has NO default row yet. This used to return as soon as
+  // ANY default existed, which was fine while the duty list never changed —
+  // and meant a duty added later (MESSAGES, CP-13) would never get its default
+  // owner in production, where the first six were minted on Sep 17. A row a
+  // person ended (endedAt) still counts as "has a default": that was a
+  // decision, and minting over it would undo it.
+  const have = new Set((await prisma.programOwnerAssignment.findMany({ where: { scope: "DEFAULT" }, select: { duty: true } })).map((r) => r.duty));
+  const missing = OWNER_DUTIES.filter((d) => !have.has(d));
+  if (missing.length === 0) return;
   const users = await prisma.appUser.findMany({ where: { status: "ACTIVE" }, select: { id: true, email: true, name: true, role: true } });
   // Jordan = the OWNER on the company address; Kyle = the ADMIN named Kyle.
   const jordan = users.find((u) => u.email === "info@realtourpilot.com") ?? users.find((u) => u.role === "OWNER") ?? null;
   const kyle = users.find((u) => u.role === "ADMIN" && /kyle/i.test(u.name ?? "")) ?? null;
-  const rows: { duty: OwnerDuty; user: typeof jordan }[] = [
-    { duty: "STRATEGY", user: jordan }, { duty: "SCRIPTS", user: jordan }, { duty: "ESCALATION", user: jordan },
-    { duty: "SCHEDULING", user: kyle }, { duty: "DELIVERY", user: kyle }, { duty: "REMINDERS", user: kyle },
-  ];
-  for (const r of rows) {
-    await prisma.programOwnerAssignment.upsert({
-      where: { scope_scopeRef_duty: { scope: "DEFAULT", scopeRef: "", duty: r.duty } },
-      create: { scope: "DEFAULT", scopeRef: "", duty: r.duty, appUserId: r.user?.id ?? null, label: r.user?.name ?? (r.user?.email ?? "unassigned"), setBy: "defaults" },
-      update: {},
-    }).catch(() => {});
-  }
+  // createMany/skipDuplicates: two first reads racing both succeed (ON
+  // CONFLICT DO NOTHING) instead of one of them throwing a unique violation.
+  await prisma.programOwnerAssignment.createMany({
+    data: missing.map((duty) => {
+      const user = DEFAULT_HOLDER[duty] === "jordan" ? jordan : kyle;
+      return { scope: "DEFAULT", scopeRef: "", duty, appUserId: user?.id ?? null, label: user?.name ?? (user?.email ?? "unassigned"), setBy: "defaults" };
+    }),
+    skipDuplicates: true,
+  }).catch(() => {});
 }
 
 /** The owner of a duty for a month → enrollment → program default. */

@@ -80,6 +80,13 @@ export async function GET(req: NextRequest) {
     const { ensureVideoClientAssetFolders } = await import("@/lib/clientAssets");
     return ensureVideoClientAssetFolders();
   });
+  // CP-06: a brand change whose inline alert never ran gets its Kyle task and
+  // banner here, and — only once `brand_change_alerts` is on — changes held
+  // while it was off get their editor DM. Database + the switch-gated bridge.
+  await step("brandChangeAlerts", async () => {
+    const { sweepBrandChangeAlerts } = await import("@/lib/brandProfile");
+    return sweepBrandChangeAlerts();
+  });
   // Content Creator Program: enrollments follow the Aryeo social flag, every
   // active client gets the current month's workspace, and monthly-plan shoots
   // attach to their month.
@@ -119,6 +126,14 @@ export async function GET(req: NextRequest) {
     const { contentProgramSweep } = await import("@/lib/contentProgram");
     return contentProgramSweep();
   });
+  // CP-07: scripted-but-unfilmed topics from a past month carry into the month
+  // contentProgram has just minted (so this must run after it). Behind
+  // `topic_carryover` (a missing row is off → `skipped`); a pointer move with
+  // full history, never a draft, never a message.
+  await step("topicCarryover", async () => {
+    const { sweepCarryover } = await import("@/lib/contentTopics");
+    return sweepCarryover();
+  }, { maxMs: 20_000 });
   // Strategy calls: Calendly bookings stamp months, Drive transcripts ingest,
   // fresh transcripts auto-analyze into topics + draft scripts (all of which
   // wait in INTERNAL_REVIEW — the human-review rule holds), and on the 1st the
@@ -323,16 +338,42 @@ export async function GET(req: NextRequest) {
     const drafts = await sweepOwedScripts({ max: 6, budgetMs: 45_000 });
     return { plans, drafts };
   }, { maxMs: 90_000 });
+  // CP-07: the topic bank keeps itself stocked — the initial bank after a
+  // strategy is approved, per-pillar refills when usable stock falls below the
+  // target. Behind `topic_refresh` (and `ai_runs` under it); every result is a
+  // suggestion Jordan reviews. Two runs per tick at most.
+  await step("topicBanks", async () => {
+    const { sweepTopicBanks } = await import("@/lib/contentTopics");
+    return sweepTopicBanks({ max: 2, budgetMs: 60_000 });
+  }, { maxMs: 75_000 });
   // Session requests: REQUESTED → CONFIRMED when the Aryeo appointment (synced
   // above) appears at the slot; CONFIRMED → CANCELLED when Aryeo cancels it;
-  // stale ones expire. The provider-booking driver only runs behind
-  // `session_booking` (off) and never writes to Aryeo in this build.
+  // stale ones expire. Read-only against Aryeo — it reads the rows the
+  // appointments step just wrote.
   await step("sessionRequests", async () => {
-    const { reconcileSessionRequests, driveSessionBookings } = await import("@/lib/sessionRequests");
-    const reconciled = await reconcileSessionRequests();
-    const booking = await driveSessionBookings({ max: 10 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
-    return { ...reconciled, booking };
+    const { reconcileSessionRequests } = await import("@/lib/sessionRequests");
+    return reconcileSessionRequests();
   }, { maxMs: 20_000 });
+  // CP-04: the booking adapter, its own step with its own budget — a real
+  // booking is several provider calls and must not share the reconcile's 20 s.
+  // `session_booking` OFF (a missing row) = `skipped`, zero calls; ON, it books
+  // only for clients the switch's config authorises (TEST fixtures), at most 3
+  // a run, and starts no new write with under 30 s left.
+  await step("sessionBookings", async () => {
+    const { driveSessionBookings } = await import("@/lib/sessionBooking");
+    return driveSessionBookings({ budgetMs: 60_000 });
+  }, { maxMs: 70_000 });
+  // CP-05: exact filming addresses. The local readback always runs (a row
+  // whose project now shows the street is confirmed and Kyle's task closes);
+  // the Aryeo PATCH runs only with `address_sync` ON for an authorised
+  // fixture. Otherwise a new address goes to Kyle's desk.
+  await step("sessionAddresses", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    const open = await prisma.programSessionAddress.count({ where: { submittedAt: { not: null }, syncState: { not: "SYNCED" } } });
+    if (open === 0) return { skipped: "no exact addresses waiting" };
+    const { syncSessionAddresses } = await import("@/lib/sessionAddress");
+    return syncSessionAddresses({ budgetMs: 25_000 });
+  }, { maxMs: 30_000 });
   // Program months: strategyCallStatus / preparationStatus are DERIVED from
   // call records + the enrollment's call mode, hourly, for every live month —
   // the rule that turns Mike Ciunci's NOT_SCHEDULED into NOT_REQUIRED without
@@ -345,7 +386,12 @@ export async function GET(req: NextRequest) {
     const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
     const armed = await hasEnabledCallMapping();
     const r = await recalcOpenProgramMonths({ dryRun: !armed });
-    return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10) };
+    // CP-08: Kyle's follow-up on answers that stop short of a script. Desk
+    // truth, outside every switch (like the discovery task): it opens and
+    // closes SmartTasks and contacts nobody.
+    const { reconcileAnswerGapTasks } = await import("@/lib/programDeskTasks");
+    const answerGaps = await reconcileAnswerGapTasks().catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
+    return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10), answerGaps };
   }, { maxMs: 20_000 });
   // CONTENT PROGRAM REMINDERS + SHARE NOTICES (W2-F, Sep 17 2026, spec §24/§22).
   // Both are OFF at the database (missing ProgramAutomation row = off) and
@@ -406,6 +452,23 @@ export async function GET(req: NextRequest) {
       return r;
     } catch (e) {
       await recordAutomationRun("script_share_email", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, { maxMs: 15_000 });
+  // CP-13: "the office replied" emails for the program conversation. Behind
+  // `program_message_notice` (off); inside, client hours only, once per seat
+  // per unread run. A reply written after 4:30pm goes out on the next working
+  // morning's tick — this step is that floor.
+  await step("programMessageNotices", async () => {
+    const { isAutomationEnabled, recordAutomationRun } = await import("@/lib/programAutomation");
+    if (!(await isAutomationEnabled("program_message_notice"))) return { skipped: "program_message_notice is off" };
+    const { sweepProgramMessageNotices } = await import("@/lib/programMessages");
+    try {
+      const r = await sweepProgramMessageNotices();
+      await recordAutomationRun("program_message_notice", r.refused ? r.notes.join("; ").slice(0, 400) : null);
+      return r;
+    } catch (e) {
+      await recordAutomationRun("program_message_notice", e instanceof Error ? e.message : String(e));
       throw e;
     }
   }, { maxMs: 15_000 });

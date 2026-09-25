@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSetting, putSetting } from "@/lib/settings";
 import { DELIVERED_STAMP, NOT_A_CUT, cutKeyOf } from "@/lib/reviewCuts";
 import { isMonthlyContentJob } from "@/lib/pipeline";
+import type { Prisma } from "@prisma/client";
 // Types only: cutEntitlement imports this file, so its CODE is loaded lazily
 // inside syncEnrollmentVideos rather than forming an import cycle.
 import type { AryeoFinal, Entitlement } from "@/lib/cutEntitlement";
@@ -179,9 +180,14 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // query is scoped to them — unscoped it grew with the whole company's
   // library on every Home and My Videos render.
   const existingSources = existingVideos.length
-    ? await prisma.contentVideoSource.findMany({ where: { videoId: { in: existingVideos.map((v) => v.id) }, OR: [{ kind: "REVIEW_CUT" }, { kind: "PORTAL_VIDEO" }] }, select: { kind: true, ref: true, videoId: true } })
+    ? await prisma.contentVideoSource.findMany({ where: { videoId: { in: existingVideos.map((v) => v.id) }, OR: [{ kind: "REVIEW_CUT" }, { kind: "PORTAL_VIDEO" }] }, select: { kind: true, ref: true, videoId: true, matchBasis: true, confirmedAt: true } })
     : [];
   const sourceVideo = new Map(existingSources.map((s) => [`${s.kind}:${s.ref}`, s.videoId]));
+  // CP-12: how each delivered file came to be linked, and whether a person
+  // has since confirmed it. A staff link or confirmation is the pairing from
+  // then on — this run neither re-points it nor relabels it.
+  const sourceMeta = new Map(existingSources.map((s) => [`${s.kind}:${s.ref}`, { matchBasis: s.matchBasis, confirmedAt: s.confirmedAt }]));
+  const staffPinned = (key: string) => { const m = sourceMeta.get(key); return !!m && (m.matchBasis === "staff" || !!m.confirmedAt); };
   // A video this enrollment ALREADY has for the same deliverable × slot on the
   // same project, or one whose pointers already name one of these cuts, IS
   // that cut's video — even when nothing linked it through a source row yet
@@ -269,10 +275,11 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
         // Write the link when there isn't one, and re-point it when the one on
         // file names a video that has since been removed.
         if (liveOr(sourceVideo.get(ref)) !== videoId) {
+          // matchBasis "cut" (CP-12): the cut key put it here, nothing weaker.
           await prisma.contentVideoSource.upsert({
             where: { kind_ref: { kind: "REVIEW_CUT", ref: c.id } },
-            update: { videoId, round: c.round, isFinal: !!c.completedAt, label: c.fileName },
-            create: { videoId, kind: "REVIEW_CUT", ref: c.id, submissionId: c.id, round: c.round, isFinal: !!c.completedAt, label: c.fileName },
+            update: { videoId, round: c.round, isFinal: !!c.completedAt, label: c.fileName, matchBasis: "cut" },
+            create: { videoId, kind: "REVIEW_CUT", ref: c.id, submissionId: c.id, round: c.round, isFinal: !!c.completedAt, label: c.fileName, matchBasis: "cut" },
           }).catch(() => {});
           sourceVideo.set(ref, videoId);
         }
@@ -284,7 +291,7 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       }
       // Review-hook library rows for these cuts are sources of the same video.
       for (const r of projectLibrary.filter((r) => r.source === "review" && cuts.some((c) => r.externalKey === `sub:${c.id}`))) {
-        await linkPortalVideo(r, videoId, sourceVideo, false, live);
+        await linkPortalVideo(r, videoId, sourceVideo, false, live, "cut", sourceMeta);
       }
       const releasedCuts = cuts.filter((c) => cutReleasedAt(c));
       // What the client may HAVE — approved, final file, status, delivered —
@@ -321,9 +328,20 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
     //    source — it never merges two videos or deletes a row.
     const cutVideos = [...projectVideos].sort((a, b) => a.slotOrder - b.slotOrder);
     const claimed = new Set<string>();
+    // CP-12: a video a person pinned a file to is spoken for — no other file
+    // is paired onto it by title or by position behind their back.
+    for (const r of aryeoRows) {
+      const k = `PORTAL_VIDEO:${r.externalKey}`;
+      const pinnedTo = staffPinned(k) ? liveOr(sourceVideo.get(k)) : null;
+      if (pinnedTo) claimed.add(pinnedTo);
+    }
     for (let i = 0; i < aryeoRows.length; i++) {
       const r = aryeoRows[i];
-      const known = liveOr(r.videoId) ?? liveOr(sourceVideo.get(`PORTAL_VIDEO:${r.externalKey}`));
+      const srcKey = `PORTAL_VIDEO:${r.externalKey}`;
+      // A staff-pinned link (CP-12 relink/confirm) outranks the PortalVideo's
+      // own pointer: the two are written together, but if they ever disagree
+      // the person's decision is the one that stands.
+      const known = (staffPinned(srcKey) ? liveOr(sourceVideo.get(srcKey)) : null) ?? liveOr(r.videoId) ?? liveOr(sourceVideo.get(srcKey));
       const byName = known ? null : cutVideos.find((c) => !claimed.has(c.videoId) && sameVideo(normTitle(r.title), c.titleKey))?.videoId ?? null;
       const byIndex = known || byName || aryeoRows.length !== cutVideos.length ? null
         : cutVideos[i] && !claimed.has(cutVideos[i].videoId) ? cutVideos[i].videoId : null;
@@ -335,15 +353,23 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
         filmedAt, deliveredAt: r.deliveredAt, source: "aryeo", existingId: known,
       }));
       if (!pairable && !known) projectVideos.push({ videoId, slotOrder: 100 + i, titleKey: normTitle(r.title) });
-      await linkPortalVideo(r, videoId, sourceVideo, true, live);
+      const chain = pendingChains.find((c) => c.videoId === videoId);
+      // CP-12: record HOW this file came to sit under this video. Index
+      // pairing is the weak one — a reordered listing binds a delivered file
+      // to the wrong title — so it is written down and shown to staff as
+      // "check pairing". A link made before this was recorded is described by
+      // what it evidently is: the titles agree, or they do not.
+      const basis = byName ? "name" : byIndex ? "index" : !known ? "own" : chain ? aryeoMatchBasis(r.title, chain.cuts) ?? "own" : "own";
+      await linkPortalVideo(r, videoId, sourceVideo, true, live, basis, sourceMeta);
       // A video with a cut chain gets its delivery state from the release rule
       // (below), where this file is one fact among several: stamping DELIVERED
       // here let an Aryeo file paired only by list position deliver a chain
       // the client was still reviewing.
-      const chain = pendingChains.find((c) => c.videoId === videoId);
       if (chain) {
         if (!aryeoFor.has(videoId) && (r.download || r.playback)) {
-          aryeoFor.set(videoId, { portalVideoId: r.id, url: (r.download ?? r.playback)!, title: r.title, deliveredAt: r.deliveredAt, matchBasis: aryeoMatchBasis(r.title, chain.cuts), confirmed: false });
+          // `confirmed` is a person's word on this pairing (CP-12), read from
+          // the source row; the rule then serves an index-paired file.
+          aryeoFor.set(videoId, { portalVideoId: r.id, url: (r.download ?? r.playback)!, title: r.title, deliveredAt: r.deliveredAt, matchBasis: aryeoMatchBasis(r.title, chain.cuts), confirmed: staffPinned(srcKey) && sourceVideo.get(srcKey) === videoId });
         }
         if (filmedAt && !confirmedFilming.has(videoId)) await prisma.contentVideo.update({ where: { id: videoId }, data: { filmedAt } }).catch(() => {});
         continue;
@@ -439,16 +465,31 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   return { videos, created, archived };
 }
 
-async function linkPortalVideo(r: { id: string; externalKey: string; videoId: string | null; submissionId: string | null; title: string | null }, videoId: string, sourceVideo: Map<string, string>, isFinal: boolean, live: Set<string>): Promise<void> {
+async function linkPortalVideo(
+  r: { id: string; externalKey: string; videoId: string | null; submissionId: string | null; title: string | null },
+  videoId: string, sourceVideo: Map<string, string>, isFinal: boolean, live: Set<string>,
+  // CP-12: how this link was made (cut | own | name | index). Written with a
+  // new or re-pointed link, and onto a link that predates the column; an
+  // existing value is kept, and a staff link is never relabelled.
+  basis: string, meta: Map<string, { matchBasis: string | null; confirmedAt: Date | null }>,
+): Promise<void> {
   const ref = `PORTAL_VIDEO:${r.externalKey}`;
   const linked = sourceVideo.get(ref);
+  const was = meta.get(ref);
   if (!(linked && live.has(linked) && linked === videoId)) {
+    // A new or re-pointed link is a new pairing: whatever a person confirmed
+    // was about the video it pointed at before. (A staff link to a LIVE video
+    // never reaches here — the caller resolves it as `known`.)
     await prisma.contentVideoSource.upsert({
       where: { kind_ref: { kind: "PORTAL_VIDEO", ref: r.externalKey } },
-      update: { videoId, isFinal, label: r.title },
-      create: { videoId, kind: "PORTAL_VIDEO", ref: r.externalKey, portalVideoId: r.id, submissionId: r.submissionId, isFinal, label: r.title },
+      update: { videoId, isFinal, label: r.title, matchBasis: basis, confirmedAt: null, confirmedBy: null },
+      create: { videoId, kind: "PORTAL_VIDEO", ref: r.externalKey, portalVideoId: r.id, submissionId: r.submissionId, isFinal, label: r.title, matchBasis: basis },
     }).catch(() => {});
     sourceVideo.set(ref, videoId);
+    meta.set(ref, { matchBasis: basis, confirmedAt: null });
+  } else if (was && !was.matchBasis) {
+    await prisma.contentVideoSource.updateMany({ where: { kind: "PORTAL_VIDEO", ref: r.externalKey, matchBasis: null }, data: { matchBasis: basis } }).catch(() => {});
+    meta.set(ref, { ...was, matchBasis: basis });
   }
   if (!(r.videoId && live.has(r.videoId))) await prisma.portalVideo.update({ where: { id: r.id }, data: { videoId } }).catch(() => {});
 }
@@ -478,6 +519,9 @@ export type VideoListRow = {
   /** The release rule's answer as the sync cached it: the client may download
    *  this video's final file right now (cutEntitlement). */
   downloadable: boolean;
+  /** CP-12: RECENT rows are grouped under the month they fulfil; PREVIOUS
+   *  rows are older backfill whose month we cannot vouch for (librarySection). */
+  section: LibrarySection;
 };
 
 export type VideoListPage = {
@@ -486,9 +530,46 @@ export type VideoListPage = {
   page: number;
   pages: number;
   perPage: number;
+  /** Years of the RECENT rows only — a backfilled month is not a year we vouch for. */
   years: number[];
   year: number | null;
+  /** CP-12: how many rows sit in "Previous content", whatever page this is. */
+  previousTotal: number;
+  /** The Previous-content filter was applied. */
+  section: "previous" | null;
 };
+
+export type LibrarySection = "RECENT" | "PREVIOUS";
+
+/**
+ * WHERE A VIDEO BELONGS IN THE CLIENT'S LIBRARY (CP-12, Sep 24 2026).
+ *
+ * Backfilled months are keyed by the SHOOT month and flagged historical /
+ * IMPORTED — the program never ran them, and the month a row sits under there
+ * is a guess about which month's allowance it fulfilled. Grouping those rows
+ * by that month asserted production months we do not know. So they go in one
+ * flat "Previous content" section, dated by delivery, until a person confirms
+ * the row (identityConfirmedAt) — then it is shown under its month like any
+ * other. A row with no month at all can only ever be Previous: there is no
+ * month to put it under.
+ */
+export function librarySection(v: { monthKey: string | null; identityConfirmedAt: Date | null }, monthHistorical: boolean): LibrarySection {
+  if (!v.monthKey) return "PREVIOUS";
+  return monthHistorical && !v.identityConfirmedAt ? "PREVIOUS" : "RECENT";
+}
+
+/** Month ids and keys of this enrollment that are backfill (historical or IMPORTED). */
+async function historicalMonths(enrollmentId: string): Promise<{ ids: Set<string>; keys: Set<string> }> {
+  const months = await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true, historical: true, status: true } });
+  const old = months.filter((m) => m.historical || m.status === "IMPORTED");
+  return { ids: new Set(old.map((m) => m.id)), keys: new Set(old.map((m) => m.monthKey)) };
+}
+
+/** One video's section, for the detail page (the list computes it in bulk). */
+export async function videoLibrarySection(v: { enrollmentId: string; monthId: string | null; monthKey: string | null; identityConfirmedAt: Date | null }): Promise<LibrarySection> {
+  const h = await historicalMonths(v.enrollmentId);
+  return librarySection(v, v.monthId ? h.ids.has(v.monthId) : !!v.monthKey && h.keys.has(v.monthKey));
+}
 
 export const VIDEOS_PER_PAGE = 24;
 
@@ -541,22 +622,48 @@ function thumbFor(sources: { kind: string; portalThumb: string | null }[]): stri
  * The library, newest obligation month first, with year navigation and
  * pagination — no 18-month or 200-row ceiling: every video the client was
  * ever given is reachable.
+ *
+ * CP-12: the months are the RECENT rows; older backfill (librarySection)
+ * follows them as one flat "Previous content" run, newest delivery first. It
+ * used to be grouped by its shoot month, and Postgres sorts NULLS FIRST on a
+ * descending key, so the "Undated" group led page one. The order is computed
+ * here over ids that are already loaded, so pagination runs over the two
+ * sections as one list. `year` narrows to that year's RECENT rows; `section:
+ * "previous"` shows only the Previous rows.
  */
-export async function portalVideoList(enrollment: { id: string; clientId: string }, opts: { year?: number | null; page?: number; perPage?: number } = {}): Promise<VideoListPage> {
+export async function portalVideoList(enrollment: { id: string; clientId: string }, opts: { year?: number | null; page?: number; perPage?: number; section?: "previous" | null } = {}): Promise<VideoListPage> {
   const perPage = Math.min(Math.max(opts.perPage ?? VIDEOS_PER_PAGE, 6), 60);
-  const all = await prisma.contentVideo.findMany({
-    where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, status: { not: "ARCHIVED" } },
-    orderBy: [{ monthKey: "desc" }, { filmedAt: "desc" }, { createdAt: "desc" }],
-    select: { id: true, monthKey: true },
-  });
-  const years = [...new Set(all.map((v) => v.monthKey?.slice(0, 4)).filter((y): y is string => !!y))].map(Number).sort((a, b) => b - a);
-  const year = opts.year && years.includes(opts.year) ? opts.year : null;
-  const inScope = year ? all.filter((v) => v.monthKey?.startsWith(String(year))) : all;
+  const [all, hist] = await Promise.all([
+    prisma.contentVideo.findMany({
+      where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, status: { not: "ARCHIVED" } },
+      select: { id: true, monthId: true, monthKey: true, identityConfirmedAt: true, filmedAt: true, deliveredAt: true, createdAt: true },
+    }),
+    historicalMonths(enrollment.id),
+  ]);
+  const t = (d: Date | null) => d?.getTime() ?? null;
+  // Descending with nulls LAST — where the database put them first, which is
+  // how the month-less group led page one.
+  const desc = (a: number | string | null, b: number | string | null) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? 1 : -1);
+  // Within a month the order is the one the query always had (Postgres DESC is
+  // NULLS FIRST): a video not filmed yet sits above the filmed ones.
+  const descNullsFirst = (a: number | null, b: number | null) => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? 1 : -1);
+  const tagged = all.map((v) => ({ ...v, section: librarySection(v, v.monthId ? hist.ids.has(v.monthId) : !!v.monthKey && hist.keys.has(v.monthKey)) }));
+  const recent = tagged.filter((v) => v.section === "RECENT")
+    .sort((a, b) => desc(a.monthKey, b.monthKey) || descNullsFirst(t(a.filmedAt), t(b.filmedAt)) || desc(t(a.createdAt), t(b.createdAt)));
+  const previous = tagged.filter((v) => v.section === "PREVIOUS")
+    .sort((a, b) => desc(t(a.deliveredAt), t(b.deliveredAt)) || desc(t(a.createdAt), t(b.createdAt)));
+  const years = [...new Set(recent.map((v) => v.monthKey?.slice(0, 4)).filter((y): y is string => !!y))].map(Number).sort((a, b) => b - a);
+  const section = opts.section === "previous" ? "previous" : null;
+  const year = !section && opts.year && years.includes(opts.year) ? opts.year : null;
+  const inScope = section ? previous : year ? recent.filter((v) => v.monthKey?.startsWith(String(year))) : [...recent, ...previous];
   const total = inScope.length;
+  const previousTotal = previous.length;
   const pages = Math.max(1, Math.ceil(total / perPage));
   const page = Math.min(Math.max(opts.page ?? 1, 1), pages);
-  const ids = inScope.slice((page - 1) * perPage, page * perPage).map((v) => v.id);
-  if (ids.length === 0) return { rows: [], total, page, pages, perPage, years, year };
+  const pageRows = inScope.slice((page - 1) * perPage, page * perPage);
+  const ids = pageRows.map((v) => v.id);
+  const sectionOf = new Map(pageRows.map((v) => [v.id, v.section]));
+  if (ids.length === 0) return { rows: [], total, page, pages, perPage, years, year, previousTotal, section };
 
   const [videos, sources, pillars] = await Promise.all([
     prisma.contentVideo.findMany({ where: { id: { in: ids } } }),
@@ -580,10 +687,10 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
         thumb: thumbFor(vs.map((s) => ({ kind: s.kind, portalThumb: s.portalVideoId ? thumbOf.get(s.portalVideoId) ?? null : null }))),
         format: v.format, pillarName: pillars.find((p) => p.id === v.pillarId)?.name ?? null,
         currentSubmissionId: v.currentSubmissionId, needsDecision: state === "FOR_REVIEW", approved: !!v.approvedSubmissionId,
-        hasFinalFile: downloadable, downloadable,
+        hasFinalFile: downloadable, downloadable, section: sectionOf.get(v.id) ?? "RECENT",
       };
     });
-  return { rows, total, page, pages, perPage, years, year };
+  return { rows, total, page, pages, perPage, years, year, previousTotal, section };
 }
 
 /**
@@ -720,4 +827,233 @@ export async function videoForEnrollment(enrollment: { id: string; clientId: str
   const v = await prisma.contentVideo.findUnique({ where: { id: videoId } });
   if (!v || v.enrollmentId !== enrollment.id || v.clientId !== enrollment.clientId) return null;
   return v;
+}
+
+// ---------------------------------------------------------------------------
+// CP-12 — THE STAFF IDENTITY TOOL (Sep 24 2026). "Correct video under the
+// correct title after reorder/replacement" had no tool behind it: no action
+// anywhere edited a video's title, topic or file mapping, so a delivered file
+// paired to the wrong cut by list position, a legacy row on a positional
+// Aryeo key, or a photographer-confirmed topic row that never met its cut all
+// stayed wrong for good, invisibly.
+//
+// Every function below is fenced to ONE enrollment, never deletes anything,
+// and writes a ContentVideoCorrection row per changed field before (in the
+// same transaction as) the change itself — the field's history is that
+// ledger. The sync never writes title, topicId or scriptId, and it keeps a
+// staff-pinned file link (matchBasis "staff" / confirmedAt), so a correction
+// made here stays made. Each one re-runs the library sync afterwards so the
+// cached state (status, final file, delivered) follows at once.
+// ---------------------------------------------------------------------------
+
+export type IdentityResult = { ok: boolean; message: string; changed?: number };
+
+const IDENT_ID_RE = /^[a-z0-9]{10,40}$/i;
+/** The kinds staff may map a video to here; the allowance follows the kind. */
+const MAPPABLE_KINDS = new Set<VideoKind>(["PROGRAM", "LISTING", "EXTRA"]);
+
+type CorrectionData = { videoId: string; enrollmentId: string; field: string; fromValue: string | null; toValue: string | null; by: string; reason: string | null };
+const corr = (videoId: string, enrollmentId: string, field: string, from: unknown, to: unknown, by: string, reason: string | null): CorrectionData => ({
+  videoId, enrollmentId, field, by, reason,
+  fromValue: from == null ? null : String(from instanceof Date ? from.toISOString() : from).slice(0, 500),
+  toValue: to == null ? null : String(to instanceof Date ? to.toISOString() : to).slice(0, 500),
+});
+
+async function resyncAfterCorrection(enrollmentId: string): Promise<void> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, clientId: true } });
+  if (e) await syncEnrollmentVideos(e).catch(() => {});
+}
+
+/**
+ * Correct a video's title, topic, script or kind, and/or confirm its month.
+ * Topic and script must be this enrollment's own. On a backfilled month the
+ * row stays under "Previous content" until confirmMonth — a title fix is not
+ * a statement about which month's allowance it fulfilled; elsewhere any
+ * correction is a person having checked the row, and is stamped as such.
+ */
+export async function correctVideoIdentity(
+  enrollmentId: string,
+  videoId: string,
+  patch: { title?: string | null; topicId?: string | null; scriptId?: string | null; kind?: string | null; confirmMonth?: boolean },
+  by: string,
+  reason?: string | null,
+): Promise<IdentityResult> {
+  if (!IDENT_ID_RE.test(videoId)) return { ok: false, message: "No such video." };
+  const v = await prisma.contentVideo.findUnique({ where: { id: videoId } });
+  if (!v || v.enrollmentId !== enrollmentId) return { ok: false, message: "That video isn't on this client's program." };
+  const why = reason?.trim() ? reason.trim().slice(0, 500) : null;
+  const rows: CorrectionData[] = [];
+  const data: Record<string, unknown> = {};
+
+  if (patch.title !== undefined) {
+    const title = (patch.title ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!title) return { ok: false, message: "A title can't be blank." };
+    if (title !== (v.title ?? "")) { data.title = title; rows.push(corr(v.id, enrollmentId, "title", v.title, title, by, why)); }
+  }
+  if (patch.topicId !== undefined && (patch.topicId || null) !== v.topicId) {
+    const topicId = patch.topicId || null;
+    if (topicId) {
+      const t = IDENT_ID_RE.test(topicId) ? await prisma.contentTopic.findFirst({ where: { id: topicId, enrollmentId }, select: { id: true } }) : null;
+      if (!t) return { ok: false, message: "That topic isn't on this client's program." };
+    }
+    data.topicId = topicId;
+    rows.push(corr(v.id, enrollmentId, "topicId", v.topicId, topicId, by, why));
+  }
+  if (patch.scriptId !== undefined && (patch.scriptId || null) !== v.scriptId) {
+    const scriptId = patch.scriptId || null;
+    if (scriptId) {
+      const s = IDENT_ID_RE.test(scriptId) ? await prisma.contentScript.findFirst({ where: { id: scriptId, enrollmentId }, select: { id: true } }) : null;
+      if (!s) return { ok: false, message: "That script isn't on this client's program." };
+    }
+    data.scriptId = scriptId;
+    rows.push(corr(v.id, enrollmentId, "scriptId", v.scriptId, scriptId, by, why));
+    // The filmed version named a version of the OLD script; which version of
+    // the new one was filmed is not known, and the portal reads the released
+    // version when this is empty.
+    if (v.scriptVersionId) { data.scriptVersionId = null; rows.push(corr(v.id, enrollmentId, "scriptVersionId", v.scriptVersionId, null, by, why)); }
+  }
+  if (patch.kind != null && patch.kind !== v.kind) {
+    if (!MAPPABLE_KINDS.has(patch.kind as VideoKind)) return { ok: false, message: "A video can be mapped as a program video, a listing video or an extra." };
+    const counts = patch.kind === "PROGRAM";
+    data.kind = patch.kind;
+    data.mappedBy = by;
+    rows.push(corr(v.id, enrollmentId, "kind", v.kind, patch.kind, by, why));
+    if (counts !== v.countsTowardAllowance) { data.countsTowardAllowance = counts; rows.push(corr(v.id, enrollmentId, "countsTowardAllowance", v.countsTowardAllowance, counts, by, why)); }
+  }
+  const month = v.monthId ? await prisma.contentMonth.findUnique({ where: { id: v.monthId }, select: { historical: true, status: true } }) : null;
+  const backfilled = !!month && (month.historical || month.status === "IMPORTED");
+  const confirm = patch.confirmMonth === true || (!backfilled && rows.length > 0);
+  if (patch.confirmMonth === false && v.identityConfirmedAt) {
+    data.identityConfirmedAt = null;
+    data.identityConfirmedBy = null;
+    rows.push(corr(v.id, enrollmentId, "identityConfirmed", v.identityConfirmedAt, null, by, why));
+  } else if (confirm && !v.identityConfirmedAt) {
+    const at = new Date();
+    data.identityConfirmedAt = at;
+    data.identityConfirmedBy = by;
+    rows.push(corr(v.id, enrollmentId, patch.confirmMonth ? "monthConfirmed" : "identityConfirmed", null, v.monthKey ?? at, by, why));
+  }
+  if (rows.length === 0) return { ok: true, message: "Nothing changed — that is already what's on file.", changed: 0 };
+  await prisma.$transaction([
+    prisma.contentVideoCorrection.createMany({ data: rows }),
+    prisma.contentVideo.update({ where: { id: v.id }, data: data as Prisma.ContentVideoUncheckedUpdateInput }),
+  ]);
+  await resyncAfterCorrection(enrollmentId);
+  return { ok: true, message: `Saved — ${rows.length} change${rows.length === 1 ? "" : "s"} recorded in this video's history.`, changed: rows.length };
+}
+
+/** A PORTAL_VIDEO source of this enrollment, with the file row behind it. */
+async function deliveredSourceOf(enrollmentId: string, sourceId: string) {
+  if (!IDENT_ID_RE.test(sourceId)) return null;
+  const s = await prisma.contentVideoSource.findUnique({ where: { id: sourceId } });
+  if (!s || s.kind !== "PORTAL_VIDEO" || !s.portalVideoId) return null;
+  const [owner, pv] = await Promise.all([
+    prisma.contentVideo.findUnique({ where: { id: s.videoId }, select: { id: true, enrollmentId: true, title: true, projectId: true } }),
+    prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { id: true, enrollmentId: true, projectId: true, externalKey: true, title: true } }),
+  ]);
+  if (!pv || pv.enrollmentId !== enrollmentId || (owner && owner.enrollmentId !== enrollmentId)) return null;
+  return { s, owner, pv };
+}
+
+/**
+ * Move a delivered file to the video it really belongs to. This changes which
+ * file a client downloads, so it is staff-only and fully ledgered; the link is
+ * stamped matchBasis "staff" and confirmed, which the sync keeps from then on.
+ */
+export async function relinkDeliveredFile(enrollmentId: string, sourceId: string, targetVideoId: string, by: string, reason?: string | null): Promise<IdentityResult> {
+  const found = await deliveredSourceOf(enrollmentId, sourceId);
+  if (!found) return { ok: false, message: "That delivered file isn't on this client's program." };
+  const { s, owner, pv } = found;
+  const target = IDENT_ID_RE.test(targetVideoId) ? await prisma.contentVideo.findUnique({ where: { id: targetVideoId }, select: { id: true, enrollmentId: true, status: true, title: true, projectId: true } }) : null;
+  if (!target || target.enrollmentId !== enrollmentId) return { ok: false, message: "That video isn't on this client's program." };
+  if (target.status === "ARCHIVED") return { ok: false, message: "That video is archived — pick a live one." };
+  // Across shoots the sync would weigh this file against a chain it has not
+  // built yet on that pass; a file belongs to the shoot it was delivered on.
+  if (pv.projectId && target.projectId && pv.projectId !== target.projectId) return { ok: false, message: "That file was delivered on a different shoot than this video — it can only move to a video of the same shoot." };
+  const why = reason?.trim() ? reason.trim().slice(0, 500) : null;
+  const at = new Date();
+  const moved = s.videoId !== target.id;
+  await prisma.$transaction([
+    prisma.contentVideoCorrection.createMany({
+      data: moved
+        ? [
+            corr(target.id, enrollmentId, "file", owner?.title ?? s.videoId, pv.externalKey, by, why),
+            ...(owner ? [corr(owner.id, enrollmentId, "file", pv.externalKey, `moved to ${target.title ?? target.id}`, by, why)] : []),
+          ]
+        : [corr(target.id, enrollmentId, "pairing", s.matchBasis, "staff", by, why)],
+    }),
+    prisma.contentVideoSource.update({ where: { id: s.id }, data: { videoId: target.id, matchBasis: "staff", confirmedAt: at, confirmedBy: by } }),
+    prisma.portalVideo.update({ where: { id: pv.id }, data: { videoId: target.id } }),
+    prisma.contentVideo.update({ where: { id: target.id }, data: { identityConfirmedAt: at, identityConfirmedBy: by } }),
+  ]);
+  await resyncAfterCorrection(enrollmentId);
+  return { ok: true, message: moved ? `Moved — "${pv.title ?? "that file"}" is now delivered as "${target.title ?? "this video"}", and the change is in both videos' history.` : "Confirmed where it is." };
+}
+
+/** "This pairing is right": the file stays where it is and is no longer flagged. */
+export async function confirmPairing(enrollmentId: string, sourceId: string, by: string): Promise<IdentityResult> {
+  const found = await deliveredSourceOf(enrollmentId, sourceId);
+  if (!found) return { ok: false, message: "That delivered file isn't on this client's program." };
+  const { s } = found;
+  if (s.confirmedAt) return { ok: true, message: "Already confirmed.", changed: 0 };
+  const at = new Date();
+  await prisma.$transaction([
+    prisma.contentVideoCorrection.create({ data: corr(s.videoId, enrollmentId, "pairing", s.matchBasis, `confirmed (${s.matchBasis ?? "unrecorded"})`, by, null) }),
+    prisma.contentVideoSource.update({ where: { id: s.id }, data: { confirmedAt: at, confirmedBy: by } }),
+  ]);
+  await resyncAfterCorrection(enrollmentId);
+  return { ok: true, message: "Confirmed — this file is this video's delivery.", changed: 1 };
+}
+
+/**
+ * A photographer-confirmed topic row and the cut chain of the same video are
+ * two rows today (CP-09 owns why): the chain was minted under the editor's
+ * file name and never got the topic. Adopting copies the topic, script,
+ * selection, the topic's title and the filming confirmation onto the chain's
+ * video, then ARCHIVES the topic row with a note — never deletes it. The topic
+ * row must hold no file of its own; one that does is a real video, not a stub.
+ */
+export async function adoptTopicVideo(enrollmentId: string, chainVideoId: string, topicVideoId: string, by: string): Promise<IdentityResult> {
+  if (!IDENT_ID_RE.test(chainVideoId) || !IDENT_ID_RE.test(topicVideoId) || chainVideoId === topicVideoId) return { ok: false, message: "Pick two different videos." };
+  const [chain, topic] = await Promise.all([
+    prisma.contentVideo.findUnique({ where: { id: chainVideoId } }),
+    prisma.contentVideo.findUnique({ where: { id: topicVideoId } }),
+  ]);
+  if (!chain || !topic || chain.enrollmentId !== enrollmentId || topic.enrollmentId !== enrollmentId) return { ok: false, message: "Those videos aren't both on this client's program." };
+  if (!chain.projectId || chain.projectId !== topic.projectId) return { ok: false, message: "Only two rows of the same shoot can be joined." };
+  if (chain.status === "ARCHIVED") return { ok: false, message: "The video with the cuts is archived — restore it first." };
+  if (!topic.topicId && !topic.filmedConfirmedAt) return { ok: false, message: "The second row carries no topic or filming confirmation to bring across." };
+  if (chain.topicId && topic.topicId && chain.topicId !== topic.topicId) return { ok: false, message: "The video with the cuts is already tied to a different topic — correct its topic first." };
+  const [srcCount, cutCount] = await Promise.all([
+    prisma.contentVideoSource.count({ where: { videoId: topic.id } }),
+    prisma.reviewSubmission.count({ where: { videoId: topic.id } }),
+  ]);
+  if (srcCount + cutCount > 0) return { ok: false, message: "The topic row holds a file of its own — move that file with Relink instead." };
+
+  const rows: CorrectionData[] = [];
+  const data: Record<string, unknown> = {};
+  const take = (field: "topicId" | "selectionId" | "scriptId" | "scriptVersionId" | "pillarId" | "filmedAt" | "filmedConfirmedAt" | "filmedConfirmedBy" | "filmedSource") => {
+    const to = topic[field];
+    if (to == null) return;
+    const from = chain[field];
+    if (from instanceof Date && to instanceof Date ? from.getTime() === to.getTime() : from === to) return;
+    data[field] = to;
+    rows.push(corr(chain.id, enrollmentId, field, from, to, by, `adopted from ${topic.id}`));
+  };
+  for (const f of ["topicId", "selectionId", "scriptId", "scriptVersionId", "pillarId"] as const) take(f);
+  // A person's filming statement wins over a derived date — the same rule the sync keeps (F12).
+  if (topic.filmedConfirmedAt) for (const f of ["filmedAt", "filmedConfirmedAt", "filmedConfirmedBy", "filmedSource"] as const) take(f);
+  const topicTitle = topic.topicId ? (await prisma.contentTopic.findUnique({ where: { id: topic.topicId }, select: { title: true } }))?.title ?? topic.title : topic.title;
+  if (topicTitle && topicTitle !== chain.title) { data.title = topicTitle; rows.push(corr(chain.id, enrollmentId, "title", chain.title, topicTitle, by, `adopted from ${topic.id}`)); }
+  const at = new Date();
+  data.identityConfirmedAt = chain.identityConfirmedAt ?? at;
+  data.identityConfirmedBy = chain.identityConfirmedBy ?? by;
+  rows.push(corr(topic.id, enrollmentId, "status", topic.status, "ARCHIVED", by, `merged into ${chain.id}`));
+  await prisma.$transaction([
+    prisma.contentVideoCorrection.createMany({ data: rows }),
+    prisma.contentVideo.update({ where: { id: chain.id }, data: data as Prisma.ContentVideoUncheckedUpdateInput }),
+    prisma.contentVideo.update({ where: { id: topic.id }, data: { status: "ARCHIVED", notes: `${topic.notes ? `${topic.notes}\n` : ""}merged into ${chain.id} by ${by} ${at.toISOString().slice(0, 10)}`.slice(0, 2000) } }),
+  ]);
+  await resyncAfterCorrection(enrollmentId);
+  return { ok: true, message: `Joined — "${topicTitle ?? "the topic"}" is now this video's title and topic, and the separate topic row is archived (kept, with a note).`, changed: rows.length };
 }

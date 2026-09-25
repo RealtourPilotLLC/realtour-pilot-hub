@@ -373,8 +373,10 @@ export function resetProductProviderCache(): void {
   providerCache = null;
 }
 
-/** One bookable day and the real starts on it, in ISO instants. */
-export type AryeoSlotDay = { date: string; slots: string[] };
+/** One bookable day and the real starts on it, in ISO instants. `slotUsers`
+ *  (CP-04) keeps Aryeo's own answer to "who is free at this start" — USER ids,
+ *  as the timeslot endpoint returns them — so a slot can be tied to a creative. */
+export type AryeoSlotDay = { date: string; slots: string[]; slotUsers?: Record<string, string[]> };
 
 /**
  * REAL availability for ONE product: the package's own duration, scoped to the
@@ -464,7 +466,7 @@ export async function productAvailability(opts: {
     await Promise.all(
       wanted.slice(i, i + 4).map(async (d) => {
         try {
-          const r = await aryeoRequest<{ data?: { start_at?: string }[] }>("/scheduling/available-timeslots", {
+          const r = await aryeoRequest<{ data?: { start_at?: string; users?: { id?: string }[] }[] }>("/scheduling/available-timeslots", {
             query: {
               timezone: tz,
               interval,
@@ -474,13 +476,275 @@ export async function productAvailability(opts: {
             },
           });
           const slots = (r?.data ?? []).map((s) => s.start_at).filter((s): s is string => !!s);
-          if (slots.length) days.push({ date: d.date, slots });
+          const slotUsers: Record<string, string[]> = {};
+          for (const s of r?.data ?? []) if (s.start_at) slotUsers[s.start_at] = (s.users ?? []).map((u) => u.id).filter((x): x is string => !!x);
+          if (slots.length) days.push({ date: d.date, slots, slotUsers });
         } catch { /* a missing day is fine */ }
       }),
     );
   }
   days.sort((a, b) => a.date.localeCompare(b.date));
   return { days, providers };
+}
+
+// ===========================================================================
+// THE HUB'S OWN BOOKING WRITES (CP-04 / CP-05, Sep 24 2026).
+//
+// Until now the only Aryeo writes in the tree were the staff reschedule/cancel
+// buttons and the customer-notes mirror. The content program needs four more —
+// create an Address, create an Order, store an Appointment on it, and PATCH an
+// Address — and every one of them books or moves a REAL creative's day. So
+// they live behind two locks that cannot be forgotten:
+//
+//   1. Every write method below takes a HubWritePermit as its first argument,
+//      and a permit exists only if hubWritePermit() issued it in this process
+//      a moment ago. There is no other way to construct one (the WeakSet is
+//      private), so a caller cannot reach POST /orders without passing THE
+//      guard — not by a missed `if`, not by a refactor.
+//   2. hubWritePermit() says yes only when ALL of these hold: the switch that
+//      owns the write (`session_booking` / `address_sync`) is ON — a missing
+//      ProgramAutomation row is OFF — AND the client is listed in that switch's
+//      config `authorizedFixtureClientIds`, AND the client is a TEST client
+//      (assertTestClient: a real row renamed to contain TEST is still refused),
+//      AND providerWriteDecision agrees. Today both switches are off and no
+//      client is listed, so every write refuses before a socket opens. The
+//      first real write is Jordan's supervised test on a disposable fixture.
+//
+// WRITES ARE NEVER RETRIED IN HERE. aryeoRequest already makes one attempt for
+// a non-GET, and a timeout after Aryeo committed is the one failure a retry
+// turns into a double booking. classifyAryeoWriteError says what a failure
+// MEANS; the state machine in sessionBooking.ts decides what to do about it.
+//
+// CUSTOMER NOTIFICATIONS ARE OFF BY CONSTRUCTION (Jordan, Sep 24 2026: "Aryeo
+// notifies OUR TEAM only; the client hears from the hub"). POST /orders'
+// `notify` sends to the customer AND the creator, so it is always false; the
+// appointment store sends notifyCustomer false and notifyCompany as configured.
+// Cancel/reschedule carry the documented `notify` key, always false here.
+// ===========================================================================
+
+export type HubWriteSwitch = "session_booking" | "address_sync";
+
+/** Proof that THE guard said yes, a moment ago, for this client and operation. */
+export type HubWritePermit = {
+  readonly switchKey: HubWriteSwitch;
+  readonly clientId: string;
+  readonly clientName: string;
+  readonly operation: string;
+  readonly issuedAt: number;
+};
+
+const issuedPermits = new WeakSet<HubWritePermit>();
+/** A permit is for the write about to happen, not for later: two minutes covers
+ *  one booking's calls and nothing else. */
+const PERMIT_TTL_MS = 120_000;
+
+export type HubWriteDecision = { ok: true; permit: HubWritePermit } | { ok: false; reason: string };
+
+/**
+ * THE ONE GUARD for every hub-initiated Aryeo write. Pure reads (the switch row,
+ * the client row) — nothing is written, and a refusal is a sentence a desk task
+ * can carry.
+ */
+export async function hubWritePermit(a: {
+  switchKey: HubWriteSwitch;
+  client: { id: string; name: string | null } | null;
+  operation: string;
+}): Promise<HubWriteDecision> {
+  const { automationConfig } = await import("@/lib/programAutomation");
+  const { assertTestClient, providerWriteDecision } = await import("@/lib/testClients");
+  const cfg = await automationConfig<{ authorizedFixtureClientIds: unknown }>(a.switchKey, { authorizedFixtureClientIds: [] });
+  if (!cfg) return { ok: false, reason: `the ${a.switchKey} switch is off, so the hub does not write to Aryeo` };
+  const allowed = Array.isArray(cfg.authorizedFixtureClientIds) ? cfg.authorizedFixtureClientIds.filter((x): x is string => typeof x === "string") : [];
+  if (!a.client?.id || !allowed.includes(a.client.id)) {
+    return { ok: false, reason: `this client is not in ${a.switchKey}'s authorizedFixtureClientIds, so the hub does not write to Aryeo for it` };
+  }
+  try {
+    assertTestClient({ id: a.client.id, name: a.client.name });
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : "not a TEST client" };
+  }
+  const d = providerWriteDecision({ provider: "aryeo", operation: a.operation, client: { id: a.client.id, name: a.client.name }, sandbox: true });
+  if (!d.allowed) return { ok: false, reason: d.reason };
+  const permit: HubWritePermit = Object.freeze({ switchKey: a.switchKey, clientId: a.client.id, clientName: a.client.name ?? "", operation: a.operation, issuedAt: Date.now() });
+  issuedPermits.add(permit);
+  return { ok: true, permit };
+}
+
+function checkPermit(p: HubWritePermit, operation: string): void {
+  if (!p || !issuedPermits.has(p)) throw new AryeoError(`Refusing ${operation}: no write permit from hubWritePermit().`, 403);
+  if (Date.now() - p.issuedAt > PERMIT_TTL_MS) throw new AryeoError(`Refusing ${operation}: the write permit expired; ask the guard again.`, 403);
+}
+
+/**
+ * What a failed write MEANS.
+ *   REJECTED   Aryeo answered and said no (4xx), or we never sent it (no key,
+ *              no permit). Nothing happened at the provider.
+ *   RETRYABLE  429: Aryeo refused for load. Nothing happened; try later.
+ *   UNKNOWN    a timeout, a 5xx, a dropped socket — it MAY have happened.
+ *              aryeoRequest turns an AbortError into AryeoError(504), so a real
+ *              504 and our own timeout are the same answer, which is correct:
+ *              both are "maybe". Only a readback can settle it.
+ */
+export function classifyAryeoWriteError(e: unknown): "REJECTED" | "RETRYABLE" | "UNKNOWN" {
+  if (e instanceof AryeoError && typeof e.status === "number") {
+    if (e.status === 429) return "RETRYABLE";
+    if (e.status === 408) return "UNKNOWN";
+    if (e.status >= 400 && e.status < 500) return "REJECTED";
+    return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+export type AryeoAddressWrite = {
+  street_number?: string | null;
+  street_name?: string | null;
+  unit_number?: string | null;
+  city?: string | null;
+  state_or_province?: string | null;
+  postal_code?: string | null;
+  country?: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
+export type AryeoAddressRead = AryeoAddressWrite & { id: string; unparsed_address?: string | null };
+export type AryeoTimeslot = { startAt: string; endAt: string | null; userIds: string[] | null };
+export type AryeoBookedAppointment = {
+  id: string;
+  status: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  orderId: string | null;
+  userIds: string[];
+  teamMemberIds: string[];
+  raw: unknown;
+};
+
+const WRITE_TIMEOUT_MS = 20_000;
+const isoZ = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
+
+function asAppointment(raw: unknown): AryeoBookedAppointment {
+  const a = (raw ?? {}) as AryeoAppointment & { company_team_members?: { id?: string }[] };
+  return {
+    id: a.id ?? "",
+    status: a.status ?? null,
+    start_at: a.start_at ?? null,
+    end_at: a.end_at ?? null,
+    orderId: a.order?.id ?? null,
+    userIds: (a.users ?? []).map((u) => u.id).filter((x): x is string => !!x),
+    teamMemberIds: (a.company_team_members ?? []).map((t) => t.id).filter((x): x is string => !!x),
+    raw,
+  };
+}
+
+export const AryeoBooking = {
+  // ---- reads (no permit; GETs retry inside aryeoRequest) ----
+  getAddress: (id: string) =>
+    aryeoRequest<{ data: AryeoAddressRead }>(`/addresses/${id}`).then((r) => r.data),
+  getOrder: (id: string) =>
+    aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`, { query: { include: "items,appointments,customer,address" } }).then((r) => r.data),
+  /** Newest-first, customer included — the marker scan's input. */
+  recentOrders: async (pages = 2): Promise<AryeoOrder[]> => {
+    const out: AryeoOrder[] = [];
+    for (let page = 1; page <= pages; page++) {
+      const r = await aryeoRequest<{ data?: AryeoOrder[]; meta?: { last_page?: number } }>("/orders", { query: { include: "customer", page, per_page: 50 } });
+      out.push(...(r?.data ?? []));
+      if (!r?.meta?.last_page || page >= r.meta.last_page) break;
+    }
+    return out;
+  },
+  getAppointment: (id: string) =>
+    aryeoRequest<{ data: unknown }>(`/appointments/${id}`, { query: { include: "users,order" } }).then((r) => asAppointment(r.data)),
+  appointmentHasConflicts: (id: string, teamMemberId: string, minutes: number) =>
+    aryeoRequest<{ has_conflicts?: boolean; data?: { has_conflicts?: boolean } }>(`/appointments/${id}/availability`, { query: { assignee_id: teamMemberId, duration: minutes } })
+      .then((r) => (r?.has_conflicts ?? r?.data?.has_conflicts) === true),
+  /** One ET day's starts for the given creatives, with who is free at each. */
+  timeslotsFor: async (q: { date: string; durationMin: number; teamMemberIds: string[]; interval?: number }): Promise<AryeoTimeslot[]> => {
+    const userFilter: Record<string, string> = {};
+    q.teamMemberIds.forEach((id, i) => { userFilter[`filter[user_ids][${i}]`] = id; });
+    const r = await aryeoRequest<{ data?: { start_at?: string; end_at?: string; users?: { id?: string }[] }[] }>("/scheduling/available-timeslots", {
+      query: { timezone: "America/New_York", interval: q.interval ?? 30, duration: q.durationMin, date: q.date, ...userFilter },
+    });
+    return (r?.data ?? [])
+      .filter((s): s is typeof s & { start_at: string } => !!s.start_at)
+      .map((s) => ({ startAt: s.start_at, endAt: s.end_at ?? null, userIds: Array.isArray(s.users) ? s.users.map((u) => u.id).filter((x): x is string => !!x) : null }));
+  },
+
+  // ---- writes (a permit each; one attempt each; never retried here) ----
+  createAddress: async (permit: HubWritePermit, body: AryeoAddressWrite): Promise<{ id: string }> => {
+    checkPermit(permit, "addresses.create");
+    const r = await aryeoRequest<{ data?: { id?: string } }>("/addresses", { method: "POST", body, timeoutMs: WRITE_TIMEOUT_MS });
+    if (!r?.data?.id) throw new AryeoError("Aryeo created no address id.", 502, r);
+    return { id: r.data.id };
+  },
+  patchAddress: async (permit: HubWritePermit, id: string, body: AryeoAddressWrite): Promise<AryeoAddressRead | null> => {
+    checkPermit(permit, "addresses.patch");
+    const r = await aryeoRequest<{ data?: AryeoAddressRead }>(`/addresses/${id}`, { method: "PATCH", body, timeoutMs: WRITE_TIMEOUT_MS });
+    return r?.data ?? null;
+  },
+  createOrder: async (permit: HubWritePermit, body: { customer_id: string; address_id: string; variantId: string; internal_notes: string }): Promise<{ id: string; number: number | null; itemIds: string[] }> => {
+    checkPermit(permit, "orders.create");
+    const r = await aryeoRequest<{ data?: AryeoOrder }>("/orders", {
+      method: "POST",
+      timeoutMs: WRITE_TIMEOUT_MS,
+      body: {
+        customer_id: body.customer_id,
+        address_id: body.address_id,
+        product_items: [{ variant_id: body.variantId, quantity: 1 }],
+        internal_notes: body.internal_notes,
+        // Customer AND creator notifications — always off; see the header.
+        notify: false,
+      },
+    });
+    if (!r?.data?.id) throw new AryeoError("Aryeo created no order id.", 502, r);
+    return { id: r.data.id, number: r.data.number ?? null, itemIds: (r.data.items ?? []).map((i) => i.id).filter((x): x is string => !!x) };
+  },
+  storeAppointment: async (permit: HubWritePermit, body: { order_id: string; start: Date; end: Date; teamMemberId: string; itemIds: string[]; notifyCompany: boolean }): Promise<AryeoBookedAppointment> => {
+    checkPermit(permit, "appointments.store");
+    const r = await aryeoRequest<{ data?: unknown }>("/appointments/store", {
+      method: "POST",
+      timeoutMs: WRITE_TIMEOUT_MS,
+      body: {
+        order_id: body.order_id,
+        start_at: isoZ(body.start),
+        end_at: isoZ(body.end),
+        company_team_member_ids: [body.teamMemberId],
+        ...(body.itemIds.length ? { item_ids: body.itemIds } : {}),
+        notify: false,
+        notifyCompany: body.notifyCompany,
+        notifyCustomer: false,
+      },
+    });
+    const appt = asAppointment(r?.data);
+    if (!appt.id) throw new AryeoError("Aryeo stored no appointment id.", 502, r);
+    return appt;
+  },
+  cancelAppointment: async (permit: HubWritePermit, id: string): Promise<AryeoBookedAppointment> => {
+    checkPermit(permit, "appointments.cancel");
+    const r = await aryeoRequest<{ data?: unknown }>(`/appointments/${id}/cancel`, { method: "PUT", body: { notify: false }, timeoutMs: WRITE_TIMEOUT_MS });
+    return asAppointment(r?.data);
+  },
+  rescheduleAppointment: async (permit: HubWritePermit, id: string, start: Date, end: Date): Promise<AryeoBookedAppointment> => {
+    checkPermit(permit, "appointments.reschedule");
+    const r = await aryeoRequest<{ data?: unknown }>(`/appointments/${id}/reschedule`, { method: "PUT", body: { start_at: isoZ(start), end_at: isoZ(end), notify: false }, timeoutMs: WRITE_TIMEOUT_MS });
+    return asAppointment(r?.data);
+  },
+};
+
+// USER id → COMPANY_TEAM_MEMBER id. The timeslot and appointment endpoints
+// answer in USER ids; product assignment and the appointment store speak
+// team-member ids (Phase 0). Cached a minute, like the provider roster.
+let tmByUserCache: { at: number; map: Map<string, string> } | null = null;
+export async function teamMemberIdByUserId(): Promise<Map<string, string>> {
+  if (tmByUserCache && Date.now() - tmByUserCache.at < PROVIDER_TTL_MS) return tmByUserCache.map;
+  const team = await Aryeo.companyTeamMembers();
+  const map = new Map<string, string>();
+  for (const t of team) if (t.id && t.company_user?.id) map.set(t.company_user.id, t.id);
+  tmByUserCache = { at: Date.now(), map };
+  return map;
+}
+/** Drop the user→team-member cache — for a drill that changes the roster. */
+export function resetTeamMemberCache(): void {
+  tmByUserCache = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +765,10 @@ export interface AryeoCustomer {
   avatar_url?: string | null; // the agent's headshot (Zillow-synced on ~64 customers)
 }
 interface AryeoAddress {
+  /** CP-04/CP-05: the Address record's own id — what PATCH /addresses/{id}
+   *  and POST /orders' address_id take. Aryeo has always sent it; nothing
+   *  here read it until the hub started writing addresses. */
+  id?: string;
   street_number?: string;
   street_name?: string;
   unit_number?: string | null;
@@ -721,6 +989,8 @@ interface AryeoOrderItem {
 interface AryeoOrder {
   id?: string;
   number?: number;
+  /** Team-only notes. CP-04 writes its booking marker here (hub-session:<id>:<n>). */
+  internal_notes?: string | null;
   title?: string;
   fulfillment_status?: string; // FULFILLED | UNFULFILLED
   payment_status?: string; // PAID | UNPAID | PARTIALLY_PAID

@@ -103,8 +103,9 @@ predate this batch.
 4. **Four library rows could not be re-keyed** (their URL is no longer on the
    listing). They keep their old key and are reported; nobody has decided what
    they should point at.
-5. **Script length.** The call-path drafts came out at 39s and 51s against a
-   20–30s target. Still a warning, not a block, and still Jordan's open
+5. **Script length.** The call-path drafts were ESTIMATED at ≈39 s and ≈51 s
+   from their word count (2.2 words/s) against a 20–30 s target — an estimate,
+   not a timed read. Still a warning, not a block, and still Jordan's open
    question.
 6. **Aryeo provider writes** remain unexercised and gated on Jordan's word.
 7. **Reopened jobs still have no production clock** — 3 live jobs carry no date

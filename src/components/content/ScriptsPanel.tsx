@@ -259,6 +259,7 @@ const TONE: Record<string, string> = {
   FROM_CALL: "border-emerald-500/30 bg-emerald-500/5",
   WAITING_ON_ANSWERS: "border-amber-500/30 bg-amber-500/5",
   WAITING_ON_PLANNING: "border-amber-500/30 bg-amber-500/5",
+  THIN_ANSWERS: "border-amber-500/30 bg-amber-500/5",
   THIN: "border-border bg-surface-2",
 };
 const LABEL: Record<string, string> = {
@@ -266,6 +267,8 @@ const LABEL: Record<string, string> = {
   FROM_CALL: "Ready — call excerpts",
   WAITING_ON_ANSWERS: "Waiting on them",
   WAITING_ON_PLANNING: "Needs reconciling",
+  // CP-08: answers were sent but stop short of a script — Kyle follows up first.
+  THIN_ANSWERS: "Answers too thin",
   THIN: "No evidence yet",
 };
 

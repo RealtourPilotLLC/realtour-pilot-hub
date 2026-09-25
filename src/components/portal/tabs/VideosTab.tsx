@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Clapperboard, FileText, Film, PlayCircle, Tag } from "lucide-react";
+import { ArrowLeft, Archive, Camera, ChevronLeft, ChevronRight, Clapperboard, FileText, Film, PlayCircle, Tag } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
-import type { VideoListPage, VideoListRow, ClientVideoState } from "@/lib/contentVideos";
+import type { VideoListPage, VideoListRow, ClientVideoState, LibrarySection } from "@/lib/contentVideos";
 import type { CutVersion } from "@/lib/clientDecisions";
 import type { PostingKit } from "@/lib/postingKit";
 import { Card, CardTitle, Empty, LoadFailed, fmtShort } from "@/components/portal/ui";
@@ -18,6 +18,11 @@ import { cn } from "@/lib/utils";
 // state and one action; filmed and delivered dates are shown separately; a
 // listing video says so and never counts as program allowance. The player
 // only mounts on the detail view.
+//
+// PREVIOUS CONTENT (CP-12): older backfill whose month we cannot vouch for is
+// one flat section after the months, dated by delivery — it used to lead page
+// one as "Undated" and sit under shoot months the program never ran. A staff
+// member who confirms a row moves it under its month.
 // ---------------------------------------------------------------------------
 
 const STATE: Record<ClientVideoState, { label: string; cls: string; action: string }> = {
@@ -30,75 +35,100 @@ const STATE: Record<ClientVideoState, { label: string; cls: string; action: stri
   IN_PRODUCTION: { label: "In production", cls: "bg-surface-2 text-muted", action: "Details" },
 };
 
+const chip = (on: boolean) => cn("rounded-full border px-2.5 py-1 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", on ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted");
+
+function VideoRow({ v, to, previous }: { v: VideoListRow; to: string; previous: boolean }) {
+  const st = STATE[v.state];
+  return (
+    <li>
+      <Link href={to} className="flex items-center gap-3 py-2.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+        <div className="relative h-14 w-10 shrink-0 overflow-hidden rounded-md bg-surface-2">
+          {v.thumb ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={v.thumb} alt="" className="h-full w-full object-cover" loading="lazy" />
+          ) : (
+            <Film className="absolute inset-0 m-auto size-4 text-muted-2" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-sm font-semibold leading-snug">{v.title}</span>
+            <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", st.cls)}>{st.label}</span>
+            {v.kind !== "PROGRAM" && <span className="inline-flex items-center gap-0.5 rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted"><Tag className="size-2.5" /> {v.kind === "LISTING" ? "Listing video" : v.kind === "EXTRA" ? "Extra" : v.kind.toLowerCase()}</span>}
+          </div>
+          <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
+            {/* A Previous row is dated by delivery only: its filming date is as uncertain as its month. */}
+            {!previous && v.filmedAtISO && <span>Filmed {fmtShort(v.filmedAtISO)}</span>}
+            {v.deliveredAtISO && <span>Delivered {fmtShort(v.deliveredAtISO)}</span>}
+            {!previous && v.pillarName && <span>{v.pillarName}</span>}
+            {!previous && v.format && <span>{v.format.replace(/_/g, " ")}</span>}
+          </div>
+        </div>
+        <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold", v.needsDecision ? "bg-brand text-white" : "border border-border text-muted")}>{st.action} <ChevronRight className="size-3.5" /></span>
+      </Link>
+    </li>
+  );
+}
+
 export function VideosList({ page, failed, href }: { page: VideoListPage | null; failed: boolean; href: (tab: string, extra?: string) => string }) {
   if (failed) return <div className="mt-6"><LoadFailed what="your video library" /></div>;
   if (!page) return null;
+  const recent = page.rows.filter((r) => r.section !== "PREVIOUS");
+  const previous = page.rows.filter((r) => r.section === "PREVIOUS");
   const groups = new Map<string, VideoListRow[]>();
-  for (const r of page.rows) { const k = r.monthKey ?? "unknown"; groups.set(k, [...(groups.get(k) ?? []), r]); }
+  for (const r of recent) { const k = r.monthKey ?? ""; groups.set(k, [...(groups.get(k) ?? []), r]); }
   const q = (extra: string) => href("videos", extra);
+  // Page links keep whichever filter produced this page.
+  const scope = page.section ? "filter=previous&" : page.year ? `year=${page.year}&` : "";
+  const showNav = page.years.length > 1 || page.pages > 1 || (page.previousTotal > 0 && page.years.length > 0);
   return (
     <div className="mt-6 space-y-4">
-      {/* Year navigation + count */}
-      {(page.years.length > 1 || page.pages > 1) && (
+      {/* Year navigation + Previous content + count */}
+      {showNav && (
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
           <span className="text-muted-2">{page.total} video{page.total === 1 ? "" : "s"}</span>
           <span className="mx-1 text-muted-2">·</span>
-          <Link href={q("")} className={cn("rounded-full border px-2.5 py-1 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", !page.year ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted")}>All years</Link>
+          <Link href={q("")} className={chip(!page.year && !page.section)}>All</Link>
           {page.years.map((y) => (
-            <Link key={y} href={q(`year=${y}`)} className={cn("rounded-full border px-2.5 py-1 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", page.year === y ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted")}>{y}</Link>
+            <Link key={y} href={q(`year=${y}`)} className={chip(page.year === y)}>{y}</Link>
           ))}
+          {page.previousTotal > 0 && <Link href={q("filter=previous")} className={chip(!!page.section)}>Previous content</Link>}
         </div>
       )}
       {page.rows.length === 0 ? (
         <Empty icon={Clapperboard}>No videos yet. They land here as each session is delivered — <Link href={href("schedule")} className="font-medium text-brand hover:underline">book your session</Link> to get the first one moving.</Empty>
       ) : (
-        [...groups.entries()].map(([monthKey, rows]) => (
-          <Card key={monthKey}>
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="text-base font-semibold">{monthKey === "unknown" ? "Undated" : monthLabel(monthKey)}</span>
-              <span className="text-xs text-muted-2">{rows.filter((r) => r.countsTowardAllowance).length} program video{rows.filter((r) => r.countsTowardAllowance).length === 1 ? "" : "s"}{rows.some((r) => !r.countsTowardAllowance) ? ` · ${rows.filter((r) => !r.countsTowardAllowance).length} other` : ""}</span>
-            </div>
-            <ul className="mt-3 divide-y divide-border">
-              {rows.map((v) => {
-                const st = STATE[v.state];
-                return (
-                  <li key={v.id}>
-                    <Link href={q(`v=${v.id}`)} className="flex items-center gap-3 py-2.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-                      <div className="relative h-14 w-10 shrink-0 overflow-hidden rounded-md bg-surface-2">
-                        {v.thumb ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={v.thumb} alt="" className="h-full w-full object-cover" loading="lazy" />
-                        ) : (
-                          <Film className="absolute inset-0 m-auto size-4 text-muted-2" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-sm font-semibold leading-snug">{v.title}</span>
-                          <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", st.cls)}>{st.label}</span>
-                          {v.kind !== "PROGRAM" && <span className="inline-flex items-center gap-0.5 rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted"><Tag className="size-2.5" /> {v.kind === "LISTING" ? "Listing video" : v.kind === "EXTRA" ? "Extra" : v.kind.toLowerCase()}</span>}
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
-                          {v.filmedAtISO && <span>Filmed {fmtShort(v.filmedAtISO)}</span>}
-                          {v.deliveredAtISO && <span>Delivered {fmtShort(v.deliveredAtISO)}</span>}
-                          {v.pillarName && <span>{v.pillarName}</span>}
-                          {v.format && <span>{v.format.replace(/_/g, " ")}</span>}
-                        </div>
-                      </div>
-                      <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold", v.needsDecision ? "bg-brand text-white" : "border border-border text-muted")}>{st.action} <ChevronRight className="size-3.5" /></span>
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </Card>
-        ))
+        <>
+          {[...groups.entries()].map(([monthKey, rows]) => (
+            <Card key={monthKey}>
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-base font-semibold">{monthLabel(monthKey)}</span>
+                <span className="text-xs text-muted-2">{rows.filter((r) => r.countsTowardAllowance).length} program video{rows.filter((r) => r.countsTowardAllowance).length === 1 ? "" : "s"}{rows.some((r) => !r.countsTowardAllowance) ? ` · ${rows.filter((r) => !r.countsTowardAllowance).length} other` : ""}</span>
+              </div>
+              <ul className="mt-3 divide-y divide-border">
+                {rows.map((v) => <VideoRow key={v.id} v={v} to={q(`v=${v.id}`)} previous={false} />)}
+              </ul>
+            </Card>
+          ))}
+          {previous.length > 0 && (
+            <Card>
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="inline-flex items-center gap-1.5 text-base font-semibold"><Archive className="size-4 text-muted-2" /> Previous content</span>
+                <span className="text-xs text-muted-2">{page.previousTotal} video{page.previousTotal === 1 ? "" : "s"}</span>
+              </div>
+              <p className="mt-1 text-xs text-muted">Videos we made for you before your program moved onto this page. They&rsquo;re yours to watch and download as always; the dates shown are when each one was delivered.</p>
+              <ul className="mt-3 divide-y divide-border">
+                {previous.map((v) => <VideoRow key={v.id} v={v} to={q(`v=${v.id}`)} previous />)}
+              </ul>
+            </Card>
+          )}
+        </>
       )}
       {page.pages > 1 && (
         <nav aria-label="Pages" className="flex items-center justify-between text-xs">
-          {page.page > 1 ? <Link href={q(`${page.year ? `year=${page.year}&` : ""}page=${page.page - 1}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><ChevronLeft className="size-3.5" /> Newer</Link> : <span />}
+          {page.page > 1 ? <Link href={q(`${scope}page=${page.page - 1}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><ChevronLeft className="size-3.5" /> Newer</Link> : <span />}
           <span className="text-muted-2">Page {page.page} of {page.pages}</span>
-          {page.page < page.pages ? <Link href={q(`${page.year ? `year=${page.year}&` : ""}page=${page.page + 1}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Older <ChevronRight className="size-3.5" /></Link> : <span />}
+          {page.page < page.pages ? <Link href={q(`${scope}page=${page.page + 1}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Older <ChevronRight className="size-3.5" /></Link> : <span />}
         </nav>
       )}
     </div>
@@ -106,7 +136,11 @@ export function VideosList({ page, failed, href }: { page: VideoListPage | null;
 }
 
 export type VideoDetailData = {
-  video: { id: string; title: string; monthKey: string | null; kind: string; state: ClientVideoState; filmedAtISO: string | null; deliveredAtISO: string | null; pillarName: string | null; format: string | null };
+  video: {
+    id: string; title: string; monthKey: string | null; kind: string; state: ClientVideoState; filmedAtISO: string | null; deliveredAtISO: string | null; pillarName: string | null; format: string | null;
+    /** CP-12: a PREVIOUS video is never labelled with its (uncertain) month. */
+    section?: LibrarySection;
+  };
   versions: CutVersion[];
   versionsFailed: boolean;
   kit: PostingKit | null;
@@ -133,8 +167,8 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
           {d.video.kind !== "PROGRAM" && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">{d.video.kind === "LISTING" ? "Listing video — not part of your monthly program" : d.video.kind === "EXTRA" ? "Extra" : d.video.kind.toLowerCase()}</span>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
-          {d.video.monthKey && <span>{monthLabel(d.video.monthKey)}</span>}
-          {d.video.filmedAtISO && <span className="inline-flex items-center gap-1"><Camera className="size-3" /> Filmed {fmtShort(d.video.filmedAtISO)}</span>}
+          {d.video.section === "PREVIOUS" ? <span>Previous content</span> : d.video.monthKey && <span>{monthLabel(d.video.monthKey)}</span>}
+          {d.video.section !== "PREVIOUS" && d.video.filmedAtISO && <span className="inline-flex items-center gap-1"><Camera className="size-3" /> Filmed {fmtShort(d.video.filmedAtISO)}</span>}
           {d.video.deliveredAtISO && <span>Delivered {fmtShort(d.video.deliveredAtISO)}</span>}
           {d.video.pillarName && <span>{d.video.pillarName}</span>}
         </div>
@@ -165,8 +199,8 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
         ) : d.kit ? (
           <div className="mt-2">
             <PostingKitPanel
-              videoId={d.video.id} downloadHref={d.kit.access.download ? d.downloadHref : null} access={d.kit.access} finalLabel={d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
-              captions={d.kit.captions} assistant={d.kit.assistant} postedAtISO={d.kit.postedAtISO} downloadedAtISO={d.kit.downloadedAtISO}
+              videoId={d.video.id} title={d.video.title} downloadHref={d.kit.access.download ? d.downloadHref : null} download={d.kit.download} access={d.kit.access} finalLabel={d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
+              captions={d.kit.captions} assistant={d.kit.assistant} postedAtISO={d.kit.postedAtISO} downloadStartedAtISO={d.kit.downloadStartedAtISO} downloadCompletedAtISO={d.kit.downloadCompletedAtISO}
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />
             {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">Version {d.kit.final.label} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}

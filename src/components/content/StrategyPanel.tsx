@@ -15,6 +15,12 @@ import {
 // rejected with its source in view; pillars are stable identities and the
 // free-text pillar labels on old topics are mapped ONLY when Jordan confirms
 // each one. The month's priorities live apart from the brand foundation.
+//
+// CP-11 (Sep 24 2026): a proposal that names ONE section shows that section's
+// heading, its text now, and the proposed replacement — editable — and
+// accepting drafts a new version with only that section changed. One with no
+// section is "Unplaced": place it on a section (and write the text), or accept
+// it as before and fold it in by hand.
 // ---------------------------------------------------------------------------
 
 export type VersionRow = { id: string; versionNo: number; status: string; structureTemplate: string; sourceKind: string; sourceRef: string | null; createdBy: string | null; createdAt: string; approvedBy: string | null; approvedAt: string | null; releasedAt: string | null; changeSummary: string | null; sections: { heading: string; text: string }[]; pillarNames: string[] };
@@ -22,14 +28,17 @@ export type ProposalRow = { id: string; kind: string; summary: string; impact: s
 export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string };
 export type MappingRowUi = { label: string; topicCount: number; sample: string[]; proposedPillarId: string | null; proposedPillarName: string | null; confidence: number; isQualityDimension: boolean };
 export type OwnerUi = { duty: string; label: string; scope: string; appUserId: string | null };
+/** CP-11: the section a proposal changes, as the strategy in force has it. */
+export type ProposalTargetUi = { heading: string | null; current: string | null; proposed: string; stale: boolean };
 
 const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "");
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2";
 
-export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month }: {
+export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [] }: {
   enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; mapping: MappingRowUi[]; owners: OwnerUi[];
   staff: { id: string; name: string }[]; isOwner: boolean; month: { id: string; label: string; priorities: string[]; sourceRef: string | null } | null;
+  targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[];
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -60,7 +69,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
       {proposals.length > 0 && (
         <Section icon={Send} title="Proposed changes to the strategy" count={proposals.length} tone="warning" flush>
           <div className="divide-y divide-border">
-            {proposals.map((p) => <ProposalItem key={p.id} p={p} busy={busy} onResolve={(accept, n) => run(() => resolveStrategyProposal(p.id, accept, n))} />)}
+            {proposals.map((p) => <ProposalItem key={p.id} p={p} target={targets[p.id] ?? null} sections={sections} busy={busy} onResolve={(accept, n, text, sectionId) => run(() => resolveStrategyProposal(p.id, accept, n, text, sectionId))} />)}
           </div>
         </Section>
       )}
@@ -166,16 +175,48 @@ function StatusChip({ status, released }: { status: string; released: boolean })
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
 }
 
-function ProposalItem({ p, busy, onResolve }: { p: ProposalRow; busy: boolean; onResolve: (accept: boolean, note: string) => void }) {
+function ProposalItem({ p, target, sections, busy, onResolve }: {
+  p: ProposalRow; target: ProposalTargetUi | null; sections: { id: string; heading: string }[]; busy: boolean;
+  onResolve: (accept: boolean, note: string, text?: string | null, sectionId?: string | null) => void;
+}) {
   const [n, setN] = useState("");
+  const [text, setText] = useState(target?.proposed ?? "");
+  const [place, setPlace] = useState("");
   return (
     <div className="px-5 py-3">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-warning">{p.kind.toLowerCase()} · from {p.sourceKind}{p.sourceRef ? ` · ${p.sourceRef}` : ""} · {fmt(p.createdAt)}</div>
       <p className="mt-1 text-sm">{p.summary}</p>
       {p.impact && <p className="mt-0.5 text-[12px] text-muted">Impact: {p.impact}</p>}
+      {target ? (
+        <div className="mt-2 space-y-1.5 rounded-lg border border-border bg-surface-2/40 p-2.5">
+          <p className="text-[12px] font-semibold">Changes only the “{target.heading ?? "?"}” section</p>
+          {target.stale && <p className="rounded bg-warning-soft/60 px-2 py-1 text-[11px] text-warning">That section changed (or is gone) since this was proposed — accepting will be refused. Reject it and look again.</p>}
+          {target.current != null && <details><summary className="cursor-pointer text-[11px] text-muted">What it says now</summary><p className="mt-1 whitespace-pre-wrap text-[12px] text-foreground/80">{target.current}</p></details>}
+          <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={2} aria-label="Proposed text for this section" className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs" />
+        </div>
+      ) : (
+        <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-border p-2.5">
+          <p className="text-[11px] text-muted"><span className="font-semibold text-foreground">Unplaced</span> — no single section named. Place it on one and write the new text, or accept it as-is and it is added as its own section for you to fold in.</p>
+          {sections.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <select value={place} onChange={(e) => setPlace(e.target.value)} className="rounded border border-border bg-surface-2 px-2 py-1 text-xs">
+                <option value="">— place on a section —</option>
+                {sections.map((s) => <option key={s.id} value={s.id}>{s.heading}</option>)}
+              </select>
+            </div>
+          )}
+          {place && <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={2} placeholder="The new text for that section" className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs" />}
+        </div>
+      )}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <input value={n} onChange={(e) => setN(e.target.value)} placeholder="note (optional)" className="w-56 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
-        <button disabled={busy} onClick={() => onResolve(true, n)} className={`${btn} bg-success/15 text-success`}>Accept → new draft</button>
+        <button
+          disabled={busy || (!!target && !text.trim()) || (!target && !!place && !text.trim())}
+          onClick={() => onResolve(true, n, target || place ? text : null, !target && place ? place : null)}
+          className={`${btn} bg-success/15 text-success`}
+        >
+          Accept → new draft
+        </button>
         <button disabled={busy} onClick={() => onResolve(false, n)} className={quiet}>Reject</button>
       </div>
     </div>

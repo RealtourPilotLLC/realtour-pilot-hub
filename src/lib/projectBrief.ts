@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { outputsForProject, type OutputRowView } from "@/lib/deliverableOutputs";
+import { outputsForProject, filmingBriefFor, type OutputRowView, type FilmingBrief } from "@/lib/deliverableOutputs";
 import { handoffReadiness, meaningfulBrief } from "@/lib/handoff";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, evidenceTone, type EvidenceTone } from "@/lib/statusEvidence";
@@ -52,6 +52,13 @@ export type ProjectBrief = {
   nextAction: string;
   /** the status engine's own verdict, so the summary cannot contradict it */
   tone: EvidenceTone;
+  /**
+   * CP-09: on a content session, which topic each owed video is, with the
+   * photographer's note, the script and the raw folder — the same rows the
+   * printed brief and /edit read (deliverableOutputs.filmingBriefFor). Null on
+   * a listing shoot.
+   */
+  filming: FilmingBrief | null;
 };
 
 const clip = (s: string, n = 180) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
@@ -98,7 +105,13 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   });
   if (!p) return null;
 
-  const outputs = (await outputsForProject(projectId).catch(() => [])).filter((o) => o.state !== "removed");
+  const [allOutputs, filming] = await Promise.all([
+    outputsForProject(projectId).catch(() => [] as OutputRowView[]),
+    // A summary that cannot read the filming brief still answers everything
+    // else it is asked; the brief is one more line, not a precondition.
+    filmingBriefFor(projectId).catch(() => null),
+  ]);
+  const outputs = allOutputs.filter((o) => o.state !== "removed");
   const live = outputs.filter((o) => o.state !== "waived");
   const done = live.filter((o) => o.state === "sent").length;
   const furthest = live.find((o) => o.round != null) ?? null;
@@ -406,6 +419,13 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   let owner: BriefOwner;
   let nextAction: string;
   let blocker: string | null = handoff?.blockedReason ?? null;
+  // CP-09: the photographer's filmed-topics report gave up after six tries and
+  // is on Kyle's desk (NEEDS_REVIEW) — until a person records them, the editor
+  // is cutting videos the hub cannot name. A report still retrying on its own
+  // is not a blocker: nobody has anything to do yet.
+  if (!blocker && filming?.pending?.state === "NEEDS_REVIEW") {
+    blocker = `The filmed topics did not save — ${filming.pending.topics.length} to record by hand from the photographer's report.`;
+  }
 
   const awaitingSend = live.filter((o) => o.awaitingSend);
   const inReview = live.filter((o) => o.state === "in_review");
@@ -571,5 +591,6 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     owner,
     nextAction,
     tone,
+    filming,
   };
 }

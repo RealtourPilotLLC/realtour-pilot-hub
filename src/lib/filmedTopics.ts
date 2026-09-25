@@ -465,13 +465,18 @@ export async function confirmFilmedTopics(
   // The history lines, after the commit: recordTopicEvent writes through the
   // shared client, so inside the transaction it would queue behind the lock.
   // Best-effort, as it always was — the video row is the record.
-  const { recordTopicEvent } = await import("@/lib/contentTopics");
+  const { recordTopicEvent, releaseCarryAfterLateFilming } = await import("@/lib/contentTopics");
   for (const id of outcome.newly) {
     await recordTopicEvent(id, session.enrollmentId, "FILMED", { kind: "STAFF", staffUserId: who }, {
       monthId: session.monthId,
       sourceRef: `Project:${projectId}`,
       note: dateUnverified ? "Confirmed filmed on the upload portal — the session's end time is missing, so the production date needs verification." : null,
     }).catch(() => {});
+    // CP-07: a topic carried OUT of this month because it looked unfilmed, and
+    // confirmed filmed here after all (a late confirmation). The carry is
+    // undone — its later slot is freed (FILMED_LATE) and the script returns to
+    // this month. A no-op for every topic that was never carried.
+    await releaseCarryAfterLateFilming(id, session.monthId).catch(() => false);
   }
 
   return {
@@ -657,6 +662,7 @@ const REASON = {
   addedBeyond: "filmed on site, beyond this month's allowance",
   beyond: "ticked, but selected beyond this month's allowance",
   ruledOut: "filmed on site, but the office had rejected or archived a topic with this title — kept as an extra video with no topic",
+  declined: "filmed on site, but the client had marked a topic with this title \"Not interested\" — kept as an extra video with no topic",
   noSlot: "confirmed filmed, but the job has no free video slot for it — raise videos owed or place it by hand",
 } as const;
 
@@ -791,14 +797,17 @@ async function runFilmingReport(report: ReportRow, now: Date, fence: Prisma.Cont
       // REJECTED or ARCHIVED cannot be selected (selectTopicForMonth refuses,
       // on purpose), and reintroducing it is the office's call — so the footage
       // is kept as an extra video with no topic, and a person is told.
-      const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { status: true, approvalState: true } });
+      const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { status: true, approvalState: true, clientDeclinedAt: true } });
       const ruledOut = !t || ["REJECTED", "ARCHIVED"].includes(t.status) || ["REJECTED", "ARCHIVED"].includes(t.approvalState ?? "");
-      if (ruledOut) {
+      // The same for a topic the CLIENT set aside: selecting it now refuses
+      // until a person undoes the "not interested", so the footage is kept
+      // without a topic and the office decides.
+      if (ruledOut || t?.clientDeclinedAt) {
         extraVideoIds[x.key] = await topiclessExtra(report, month, x, who, now);
         delete extraTopicIds[x.key];
         await saveProgress();
-        capacity.push({ title: x.title, reason: REASON.ruledOut });
-        flags.push(`"${x.title}" matches a topic the office rejected or archived — kept as an extra video with no topic.`);
+        capacity.push({ title: x.title, reason: ruledOut ? REASON.ruledOut : REASON.declined });
+        flags.push(ruledOut ? `"${x.title}" matches a topic the office rejected or archived — kept as an extra video with no topic.` : `"${x.title}" matches a topic the client marked "Not interested" — kept as an extra video with no topic; undo that on Video Topics if they changed their mind.`);
         continue;
       }
       extraTopicIds[x.key] = topicId;
@@ -859,8 +868,18 @@ async function runFilmingReport(report: ReportRow, now: Date, fence: Prisma.Cont
     flags.push(`${bind.unbound.length} filmed video(s) have no free slot on this job (${bind.unbound.join(", ")}) — not guessed; the office has a task.`);
   }
 
-  // 4. (batch C) ensureTopicFolders — per-topic raw folders under 02-RAW-Video,
-  //    behind the topic_folders switch. Not in this build.
+  // 4. TOPIC FOLDERS (batch C) — one raw folder per topic under 02-RAW-Video,
+  //    so an extra filmed on site gets its folder now rather than at the next
+  //    hourly pass. Behind topic_folders (off: returns before any Dropbox
+  //    call). BEST-EFFORT on purpose: a Dropbox blip must not fail — and
+  //    re-run — the photographer's report, whose topics and slots above have
+  //    already landed; the folder engine's hourly pass makes up the difference.
+  try {
+    const { ensureTopicFolders } = await import("@/lib/dropboxFolders");
+    await ensureTopicFolders(report.projectId);
+  } catch (e) {
+    console.warn(`[filming-report] ${report.id}: topic folders not made this time: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // 5. THE OFFICE decides what anything beyond the plan counts toward.
   if (capacity.length) {

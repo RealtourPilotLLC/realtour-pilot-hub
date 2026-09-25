@@ -11,6 +11,7 @@ import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorK
 import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
+import { advisoryKeyPair } from "@/lib/dbLocks";
 // The 1080p export spec, from the one file that owns it (lib/videoStyles).
 import { exportRefusalMessage, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
 // Type-only (erased at build): the shape the withdraw/move controls render.
@@ -1397,18 +1398,12 @@ export async function canReplaceApprovedCut(input: {
  * uploading different videos never wait on each other. A collision across slots
  * would only ever cost a moment's waiting, never correctness. (Two int4s rather
  * than one int8 because the build targets below ES2020 — no BigInt literals.)
+ * The hashing itself now lives in src/lib/dbLocks.ts (CP-06 lifted it for the
+ * brand profile's slot lock); the key string is unchanged, so every worker
+ * still computes the same pair for the same slot.
  */
 function slotLockKey(projectId: string, deliverableId: string | null, slot: number): [number, number] {
-  const str = `${projectId}|${deliverableId ?? "-"}|${slot}`;
-  const fnv = (seed: number): number => {
-    let h = seed;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return h | 0; // int4, which is what the two-key lock takes
-  };
-  return [fnv(0x811c9dc5), fnv(0x9e3779b9)];
+  return advisoryKeyPair(`${projectId}|${deliverableId ?? "-"}|${slot}`);
 }
 
 export async function startCutUpload(input: {

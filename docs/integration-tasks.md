@@ -1,4 +1,4 @@
-# Three integration tasks for Jordan
+# Integration tasks for Jordan
 
 Tracked separately from the content-program build because each one needs Jordan or an external
 party, and none of them blocks the rest of the implementation. Verified read-only in Phase 0 on
@@ -63,32 +63,58 @@ So there is **no Aryeo work here and no hub work here**. The early catch for a v
 delivered listing remains `LISTING_CONTENT_DOWNLOADED` (100 events in 45 days), and the hourly
 sweep is the backstop, exactly as before.
 
-## 2. Stripe webhook registration — Jordan, five minutes
+## 2. Stripe signups — polling is the activation path. Nothing to register.
 
-**State:** `GET /v1/webhook_endpoints` returns 200 with **count = 0**. There are no endpoints
-registered at all, so signup activation is polling-only: `sweepStripeSignups()` pages the last 30
-days of Checkout Sessions on a schedule and claims each paid one atomically.
+**Corrected Sep 24 2026 (completion audit CP-14).** This section used to tell Jordan to register a
+Stripe webhook at `/api/webhooks/stripe` (and `content-program-checklist.md` said the same thing with
+a different list of events). There was no receiver at that address, so Stripe would have posted to a
+404, retried for days, emailed about the failures and eventually disabled the endpoint. No data would
+have been lost, because polling was already doing the work, but it was an instruction to break
+something. The "authorize me and I will create it" offer that followed is withdrawn too.
 
-**What it costs while it stays unregistered:** a paying client's account is created on the next
-sweep rather than at the moment they pay, so the welcome and portal access lag the payment. The
-spec is explicit that a browser checkout-success redirect is not payment evidence, so the sweep is
-the correct floor — this is about latency, not trust.
+**How a paid signup becomes a client today (unchanged, and deliberate):** the hub reads Stripe.
+`sweepStripeSignups()` pages the last 30 days of Checkout Sessions and activates each one that is
+`complete` and `paid`, exactly once (the claim is the unique checkout id).
 
-**The exact action:** in the Stripe dashboard, Developers → Webhooks → Add endpoint,
-`https://hub.realtourpilot.com/api/webhooks/stripe`, subscribed to `checkout.session.completed`
-and `checkout.session.async_payment_succeeded`. Copy the signing secret it gives you into the hub
-as `STRIPE_WEBHOOK_SECRET`.
+- **When:** every hour at :00 (the `stripeSignups` step of `/api/cron/sync`), and immediately when
+  someone presses **Sync now** on `/content`.
+- **The honest delay:** a paid signup is activated within the hour. Occasionally two, if an hourly
+  run ran out of time before that step; the run's summary on `/connections` shows it as `skipped`.
+- **Asynchronous payments** (a bank debit that settles days later) activate on the first pass after
+  Stripe marks them paid. An unpaid checkout never activates.
+- **A $0 checkout** (a 100% coupon, or a trial Stripe reports as "no payment required") does NOT
+  activate. That is Jordan's decision, and it is a named constant in the code
+  (`ACTIVATING_PAYMENT_STATUS` in `src/lib/stripeSignups.ts`).
+- **Billing dates are Stripe's.** Nothing in the hub writes to Stripe. The enrollment starts on the
+  paid date; production months are Eastern calendar months; the subscription's billing anchor is
+  recorded (owner-only) when the hub checks the subscription.
 
-**Alternatively, authorize me** and I will create it — the stored key is a full-access `sk_live_`
-so it is technically possible, but registering an endpoint is a write to your live Stripe account
-and I will not do it without you saying so.
+**The receiver now exists, and is optional.** `src/app/api/webhooks/stripe/route.ts` verifies
+Stripe's signature (refusing everything while no signing secret is saved), then activates through the
+SAME claim and activation the poll uses, reading Stripe's own copy of the session. The drill
+(`scripts/_drill/cp14-stripe-activation.ts`) proves a webhook and the poll racing on one payment make
+one enrollment, one account seat and one welcome, that invalid signatures are refused, that async
+payments activate only when paid, and that a $0 checkout does not.
+
+**Only if Jordan wants activation within seconds instead of within the hour** (it is his call, and a
+write to his live Stripe account, so it is never done from here):
+
+1. Stripe dashboard → Developers → Webhooks → Add endpoint:
+   `https://hub.realtourpilot.com/api/webhooks/stripe`, subscribed to exactly these events:
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+   `checkout.session.async_payment_failed`, `customer.subscription.updated`,
+   `customer.subscription.deleted`.
+2. Give the hub the endpoint's `whsec_…` signing secret. Today that means the Vercel environment
+   variable `STRIPE_WEBHOOK_SECRET` (there is no field for it on `/connections` yet; the receiver also
+   reads a `stripe_webhook` connection first, so a field can be added without touching it).
+3. Nothing else changes: the hourly poll stays on as the backstop.
 
 **A related decision, not urgent.** The hub stores a full-access `sk_live_` key while
-`src/lib/integrations/stripe.ts` documents a restricted read key. Either keep full access (needed
-if the hub is ever to self-manage the endpoint) or rotate to an `rk_live_` restricted key, which
-would need read on Checkout Sessions, Products, Prices, Subscriptions, Customers, Balance and
-Balance Transactions. Full access is the larger blast radius; the restricted key is the tidier
-posture. Your call.
+`src/lib/integrations/stripe.ts` documents a restricted read key. Either keep full access or rotate to
+an `rk_live_` restricted key, which would need read on Checkout Sessions, Products, Prices,
+Subscriptions, Customers, Balance and Balance Transactions. Neither polling nor the receiver needs
+write access. Full access is the larger blast radius; the restricted key is the tidier posture. Your
+call.
 
 ---
 

@@ -57,24 +57,27 @@ export function PlanWithCall({ monthId }: { monthId: string }) {
   );
 }
 
-/** Cancel one of the client's own session requests — the real cancellation, offered separately from any planning choice. */
-export function CancelRequestButton({ requestId, confirmed }: { requestId: string; confirmed: boolean }) {
+/** Cancel one of the client's own session requests — the real cancellation, offered separately from any planning choice.
+ *  `selfBooked` (CP-04): the hub booked it itself, so it cancels it itself — "Cancel session", not "Ask to cancel".
+ *  Inside 24 hours the server refuses with Kyle's number, and that message is what shows. */
+export function CancelRequestButton({ requestId, confirmed, selfBooked = false }: { requestId: string; confirmed: boolean; selfBooked?: boolean }) {
   const router = useRouter();
   const [confirm, setConfirm] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const go = () => start(async () => {
-    const r = await portalCancelSessionRequest(portalAuthFromLocation(), requestId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalCancelSessionRequest(portalAuthFromLocation(), requestId).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     setMsg(r.message);
-    if (r.ok) { setConfirm(false); router.refresh(); }
+    setConfirm(false);
+    if (r.ok) router.refresh();
   });
   return (
     <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]">
       {!confirm ? (
-        <button type="button" onClick={() => setConfirm(true)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-2 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><XCircle className="size-3" /> {confirmed ? "Ask to cancel" : "Cancel"}</button>
+        <button type="button" onClick={() => setConfirm(true)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-2 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><XCircle className="size-3" /> {selfBooked ? "Cancel session" : confirmed ? "Ask to cancel" : "Cancel"}</button>
       ) : (
         <>
-          <span className="text-muted">{confirmed ? "Ask us to cancel this session?" : "Cancel this request?"}</span>
+          <span className="text-muted">{selfBooked ? "Cancel this session?" : confirmed ? "Ask us to cancel this session?" : "Cancel this request?"}</span>
           <button type="button" onClick={go} disabled={busy} className="rounded-md bg-danger px-2 py-0.5 font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Yes</button>
           <button type="button" onClick={() => setConfirm(false)} className="rounded-md border border-border px-2 py-0.5 text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">No</button>
         </>

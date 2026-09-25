@@ -32,9 +32,17 @@ export const AUTOMATION_KEYS = [
   "script_share_email", // §22 "Approve & share" → email to the client
   "portal_invites", // §2 stage B — invite a real client
   "portal_login_email", // §2 magic-link sign-in email (transactional; D14)
-  "topic_refresh", // §18 one-click topic refresh
+  "topic_refresh", // §18 the unattended topic bank: the initial bank after strategy approval + per-pillar refills (suggestions only; Jordan accepts)
+  // CP-07 (Sep 24 2026). Carrying is a pointer move with full history, but it
+  // rewrites which month every past unfilmed script belongs to at once — so it
+  // is its own switch, dry-run first (carryUnfilmedTopics({ dryRun: true })).
+  "topic_carryover", // §3 on the 1st, scripted-but-unfilmed topics carry into the new month's allowance (swappable by the client)
   "strategy_generation", // §21 discovery → strategy draft
-  "session_booking", // §4 true self-booking against Aryeo
+  "session_booking", // §4 true self-booking against Aryeo — also needs the client in config.authorizedFixtureClientIds (CP-04)
+  // CP-05 (Sep 24 2026). An exact address a client gives for a session is
+  // ALWAYS saved and verified by readback; this only decides whether the hub
+  // PATCHes the Aryeo address itself (authorised fixtures only) or Kyle does.
+  "address_sync", // §8 exact filming address → PATCH the session's Aryeo address, read it back
   "cut_transcripts", // §9 (no speech-to-text provider exists today)
   "caption_assistant", // §10
   "fact_extraction", // §23 auto-accept rules for extracted facts
@@ -42,6 +50,17 @@ export const AUTOMATION_KEYS = [
   // off; these only decide what the client is shown and what expiry may do.
   "revision_policy", // §8 portal deadline, rounds used, extra-round fee acknowledgement, late refusal, expiry → staff task
   "review_auto_approve", // §8 an expired review window may write the automatic approval (needs revision_policy too)
+  // CP-06 (Sep 24 2026). A client's brand/asset change is ALWAYS recorded, put
+  // on the editor's brief banner and on Kyle's confirmation task; this only
+  // decides whether the assigned editor is also messaged (Slack DM / text).
+  "brand_change_alerts", // §17 brand or asset change → the assigned editor's bell + Slack DM (a team message)
+  // CP-09 (Sep 24 2026). The first automated write INSIDE a job's Dropbox
+  // folder beyond the five numbered subfolders, so it is its own switch.
+  "topic_folders", // §9 one raw folder per topic under 02-RAW-Video, named "NN <title> [<id8>]"; adopted, never renamed, moved or deleted
+  // CP-13 (Sep 24 2026). The program conversation, the owner's bell and Kyle's
+  // task are internal and always on; this only decides whether a CLIENT is
+  // emailed that the office replied (lib/programMessages.ts).
+  "program_message_notice", // §13 "Kyle replied to your message" email to the client's seats, once per unread run, client hours only
 ] as const;
 export type AutomationKey = (typeof AUTOMATION_KEYS)[number];
 

@@ -290,10 +290,17 @@ export function rejectionSentence(error: string | null | undefined): string {
 }
 
 /** Record a refused post and alert if they start piling up. Best-effort by
- *  design: the 401 goes out whatever happens here. */
+ *  design: the 401 goes out whatever happens here.
+ *
+ *  `alert: false` (CP-14, the Stripe receiver) keeps the REJECTED row and skips
+ *  the burst page to Slack and the bell: a receiver nobody has registered is
+ *  not a lane anyone depends on, so twenty refusals an hour there is somebody
+ *  probing a URL, not an outage — and "stripe webhooks bouncing" in the ops
+ *  channel would send Jordan looking for an endpoint that does not exist. The
+ *  rows still count on /connections. */
 export async function refuseWebhook(
   provider: string,
-  args: { code: RefusalCode; rawBody?: string; header?: string | null; sig?: string | null },
+  args: { code: RefusalCode; rawBody?: string; header?: string | null; sig?: string | null; alert?: boolean },
 ): Promise<void> {
   const raw = args.rawBody ?? "";
   let stored = raw.slice(0, REJECTED_BODY_CAP);
@@ -326,6 +333,7 @@ export async function refuseWebhook(
         payload: stored || "{}",
       },
     });
+    if (args.alert === false) return;
     const { alertWebhookRejections } = await import("@/lib/notify");
     await alertWebhookRejections(provider);
   } catch {
@@ -678,6 +686,17 @@ async function dispatch(provider: string, eventType: string | null, payload: Rec
   } else if (provider === "slack") {
     const { processSlackEvent } = await import("@/app/api/webhooks/slack/route");
     await processSlackEvent((payload.event as Record<string, unknown>) || {});
+  } else if (provider === "stripe") {
+    // CP-14. Stripe rows store only the event's identity ({id, type, objectId,
+    // livemode, created} — never amounts or addresses), because the handler
+    // re-reads Stripe's own record for everything else. So the replay is the
+    // receiver's own call on the same summary. Stripe is deliberately NOT in
+    // WEBHOOK_RECEIVERS / WEBHOOK_LANES: a week without a signup is normal, and
+    // the quiet-lane alarm would page for it.
+    const { handleStripeEvent, summarizeStripeEvent } = await import("@/lib/stripeWebhook");
+    const ev = summarizeStripeEvent(payload);
+    if (!ev) throw new Error("stored Stripe event summary is unreadable");
+    await handleStripeEvent(ev);
   } else if (provider === "scripting") {
     // Scripting rows store the raw {event, data} body.
     const { processScriptingEvent } = await import("@/app/api/webhooks/scripting/route");

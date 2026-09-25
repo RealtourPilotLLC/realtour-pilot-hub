@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers } from "lucide-react";
+import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers, TriangleAlert } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { cn } from "@/lib/utils";
 import { decideRevisionFeeForm, holdReviewWindowForm, restartReviewClockForm } from "@/app/content/actions";
+import { LibraryIdentityEditor } from "@/components/content/LibraryIdentityEditor";
 
 // ---------------------------------------------------------------------------
 // CONTENT — the shared video library, seen with STAFF permissions (spec §17).
@@ -15,6 +16,12 @@ import { decideRevisionFeeForm, holdReviewWindowForm, restartReviewClockForm } f
 //
 // The counts here are library counts. When the library has no rows but the
 // pipeline does, the panel says so instead of rendering an empty page.
+//
+// IDENTITY (CP-12): each row also says whether its title, topic and delivered
+// file are trustworthy — a file paired to its cut only by list position, a
+// legacy row on a positional Aryeo key, a filmed topic that never met its
+// cut, a backfilled month nobody confirmed — and the correction tool beside
+// it fixes each one, on the record.
 // ---------------------------------------------------------------------------
 
 export type LibraryCutUi = {
@@ -36,6 +43,35 @@ export type LibraryRoundUi = {
   feeAckBy: string | null; feeAckAtISO: string | null; feeDecision: string | null; feeDecidedBy: string | null; feeCents: number | null;
   lateOverrideBy: string | null; answeredAtISO: string | null;
 };
+/** One delivered file of a video, as the identity tool shows it. */
+export type LibraryFileUi = {
+  sourceId: string; externalKey: string; title: string | null; isFinal: boolean;
+  /** cut | own | known | name | index | staff; null = linked before this was recorded. */
+  matchBasis: string | null; confirmedAtISO: string | null; confirmedBy: string | null;
+  /** Still on a positional aryeo:<listing>:<n> key — its identity was never proven. */
+  legacyKey: boolean;
+};
+export type LibraryCorrectionUi = { id: string; field: string; fromValue: string | null; toValue: string | null; by: string; reason: string | null; createdAtISO: string };
+export type IdentityFlag = "check pairing" | "unverified legacy row" | "filmed topic not linked to a cut" | "month unconfirmed";
+export type LibraryIdentityUi = {
+  section: "RECENT" | "PREVIOUS";
+  monthHistorical: boolean;
+  confirmedAtISO: string | null; confirmedBy: string | null;
+  flags: IdentityFlag[];
+  files: LibraryFileUi[];
+  /** Live videos of the same shoot a file may be moved to. */
+  relinkTargets: { id: string; title: string }[];
+  /** Same-shoot videos holding the cut chain this topic row never joined. */
+  adoptInto: { id: string; title: string }[];
+  corrections: LibraryCorrectionUi[];
+};
+/** The pickers the tool needs once for the whole tab. */
+export type LibraryIdentityOptions = {
+  enrollmentId: string;
+  topics: { id: string; title: string; status: string }[];
+  scripts: { id: string; title: string }[];
+};
+
 export type LibraryVideoUi = {
   id: string; title: string; monthKey: string | null; kind: string; countsTowardAllowance: boolean; status: string;
   format: string | null; pillarName: string | null; filmedAtISO: string | null; deliveredAtISO: string | null;
@@ -48,6 +84,8 @@ export type LibraryVideoUi = {
   /** OWNER/ADMIN: may see the fee, charge or waive it, and restart or hold a
    *  client's review clock (the actions behind these refuse anyone else). */
   moneyEyes?: boolean;
+  /** CP-12: identity flags and the correction tool's per-video data. */
+  identity?: LibraryIdentityUi;
 };
 
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null);
@@ -59,14 +97,17 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export function ContentLibraryPanel({
-  rows, pipelineOnly, monthLabelText,
+  rows, pipelineOnly, monthLabelText, identity,
 }: {
   rows: LibraryVideoUi[];
   pipelineOnly: { id: string; title: string; status: string; monthKey: string | null; shootDateISO: string | null }[];
   monthLabelText: string | null;
+  /** CP-12: present = the identity tool is offered (the actions re-check the role). */
+  identity?: LibraryIdentityOptions | null;
 }) {
   const released = rows.filter((v) => v.cuts.some((c) => c.releasedToClientAtISO)).length;
   const internalOnly = rows.filter((v) => v.cuts.length > 0 && !v.cuts.some((c) => c.releasedToClientAtISO)).length;
+  const flagged = rows.filter((v) => v.status !== "ARCHIVED" && (v.identity?.flags.length ?? 0) > 0).length;
 
   if (rows.length === 0) {
     return (
@@ -101,6 +142,12 @@ export function ContentLibraryPanel({
         <Stat label="Seen by the client" value={released} tone="success" />
         <Stat label="Internal only" value={internalOnly} tone={internalOnly > 0 ? "warning" : undefined} />
       </div>
+      {flagged > 0 && (
+        <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          {flagged} video{flagged === 1 ? " needs" : "s need"} an identity check — open {flagged === 1 ? "it" : "each one"} to confirm or correct its title, topic or delivered file.
+        </p>
+      )}
 
       <Section
         icon={Clapperboard}
@@ -119,7 +166,10 @@ export function ContentLibraryPanel({
                   <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold", STATUS_TONE[v.status] ?? "bg-surface-2 text-muted-2")}>{v.status.toLowerCase().replace(/_/g, " ")}</span>
                   {v.kind !== "PROGRAM" && <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted-2">{v.kind.toLowerCase()}</span>}
                   {!v.countsTowardAllowance && <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted-2">extra — not against the allowance</span>}
-                  <span className="shrink-0 text-[11px] text-muted-2">{v.monthKey ?? "no month"}</span>
+                  <span className="shrink-0 text-[11px] text-muted-2">{v.monthKey ?? "no month"}{v.identity?.section === "PREVIOUS" ? " · previous content" : ""}</span>
+                  {v.status !== "ARCHIVED" && v.identity?.flags.map((f) => (
+                    <span key={f} className="shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{f}</span>
+                  ))}
                   <span className="shrink-0 text-[11px]">
                     <Layers className="mr-0.5 inline size-3 text-muted-2" />{v.cuts.length} cut{v.cuts.length === 1 ? "" : "s"}
                   </span>
@@ -158,6 +208,7 @@ export function ContentLibraryPanel({
                     </table>
                   )}
                   <ClientReview v={v} />
+                  {identity && v.identity && <LibraryIdentityEditor options={identity} video={{ id: v.id, title: v.title, topicId: v.topicId, scriptId: v.scriptId, kind: v.kind, monthKey: v.monthKey, status: v.status }} identity={v.identity} />}
                 </div>
               </details>
             );

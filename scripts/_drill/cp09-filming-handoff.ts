@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // DRILL: CP-09 — the photographer's filmed topics survive, land once, and bind
-// to the editor's owed-video slots (completion audit, Sep 24 2026; batch A).
+// to the editor's owed-video slots (completion audit, Sep 24 2026; batch A),
+// get one raw folder each, and reach the editor by name (batch C).
 //
 //   NODE_OPTIONS=--conditions=react-server npx tsx \
 //     --require ./scripts/_drill/_drill-preload.cjs \
@@ -32,24 +33,143 @@
 //  10. Six failures stop the retries and put it in front of Kyle.
 //  11. The real GET /api/cron/sync applies a due report, before contentLibrary.
 //
-// ISOLATION. PGlite on 127.0.0.1:5502 (DRILL_PORT overrides) through the shared
-// harness; production is never opened. Every non-loopback call is fenced. Faults
-// are a plpgsql RAISE (P0001), never a unique collision.
+// Batch C (the rest of CP-09):
+//  12. OLD vs NEW — topic folders. The e26cacd folder engine makes 01..05 and
+//      nothing per topic; the new one makes nothing either while topic_folders
+//      has no row (not one Dropbox call), then, switched on, one folder per
+//      topic "NN <title> [<id8>]" — once; a topic renamed in the hub keeps its
+//      folder and clips; folders renamed by hand are adopted (by bracket, and by
+//      Dropbox id when the bracket is gone); nothing is ever moved or deleted;
+//      an extra filmed on site gets its folder when the report lands; the links
+//      follow the job's folder when the engine moves it; Kim still has the edit.
+//  13. OLD vs NEW — the printed brief said "3 videos were filmed"; now every
+//      owed video carries its topic (live title), note, script and its
+//      standing, in filmingBriefFor, the PDF, cutSlots and the project summary.
+//  14. A session with no planned topics: the videos added on the page are the
+//      answer, and the editor cuts one per added topic.
+//  15. A report that has not landed is still in the editor's brief; one that
+//      gave up is what the project summary says is in the way.
+//
+// ISOLATION. PGlite on 127.0.0.1:5518 (DRILL_PORT overrides) through the shared
+// harness; production is never opened. Every non-loopback call is fenced, and
+// Dropbox is a stateful fake AT the fence (so the real integration code runs);
+// its secret is only saved from section 12 on, so sections 1–11 see Dropbox
+// "not connected", exactly as before. Faults are a plpgsql RAISE (P0001), never
+// a unique collision.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
 import { buildContentMonth, type ContentMonthFixture } from "./_fixtures/contentMonth";
 
-const PORT = Number(process.env.DRILL_PORT ?? 5502);
+const PORT = Number(process.env.DRILL_PORT ?? 5518);
 const REPO = path.resolve(__dirname, "../..");
 /** The commit before CP-09: what the audit measured. */
 const BASE = "9defa7a";
+/** The commit before CP-09 batch C (topic folders, the editor's brief): batch A had landed, these had not. */
+const PRE_C = "e26cacd";
 
 installNextStubs();
-const fence = fenceFetch();
+
+// ---- Dropbox, faked AT the fence ------------------------------------------
+// A stateful tree keyed by lower-cased path (Dropbox paths are
+// case-insensitive), with permanent ids that survive a rename — the one fact
+// the adoption rule leans on. Every call is logged so a section can say
+// exactly what the hub asked Dropbox to do.
+type DbxNode = { path: string; id: string; tag: "folder" | "file" };
+const dbxTree = new Map<string, DbxNode>();
+const dbxCalls: { ep: string; path: string }[] = [];
+let dbxSeq = 0;
+function dbxEnsureFolder(p: string): DbxNode {
+  let cur = "";
+  for (const part of p.split("/").filter(Boolean)) {
+    cur += `/${part}`;
+    if (!dbxTree.has(cur.toLowerCase())) dbxTree.set(cur.toLowerCase(), { path: cur, id: `id:drill${++dbxSeq}`, tag: "folder" });
+  }
+  return dbxTree.get(p.toLowerCase())!;
+}
+function dbxPutFile(p: string) {
+  dbxEnsureFolder(p.slice(0, p.lastIndexOf("/")));
+  dbxTree.set(p.toLowerCase(), { path: p, id: `id:drill${++dbxSeq}`, tag: "file" });
+}
+/** A PERSON renaming or moving a folder in Dropbox: everything under it goes too, ids unchanged. */
+function dbxRename(from: string, to: string) {
+  const f = from.toLowerCase();
+  for (const [k, n] of [...dbxTree]) {
+    if (k !== f && !k.startsWith(`${f}/`)) continue;
+    dbxTree.delete(k);
+    const np = to + n.path.slice(from.length);
+    dbxTree.set(np.toLowerCase(), { ...n, path: np });
+  }
+}
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const fence = fenceFetch(async (url, init) => {
+  if (url === "https://api.dropbox.com/oauth2/token") return json({ access_token: "drill-dbx-token", expires_in: 14_400 });
+  if (!url.startsWith("https://api.dropboxapi.com/2/")) return null;
+  const ep = url.slice("https://api.dropboxapi.com/2/".length);
+  const arg = typeof init?.body === "string" ? (JSON.parse(init.body) as { path?: string; recursive?: boolean; from_path?: string; to_path?: string }) : {};
+  dbxCalls.push({ ep, path: arg.path ?? arg.from_path ?? "" });
+  if (ep === "users/get_current_account") return json({});
+  if (ep === "files/create_folder_v2") {
+    if (dbxTree.has((arg.path ?? "").toLowerCase())) return json({ error_summary: "path/conflict/folder/..", error: { ".tag": "path" } }, 409);
+    const n = dbxEnsureFolder(arg.path!);
+    return json({ metadata: { name: n.path.split("/").pop(), path_display: n.path, id: n.id } });
+  }
+  if (ep === "files/list_folder") {
+    const dir = (arg.path ?? "").toLowerCase();
+    if (dbxTree.get(dir)?.tag !== "folder") return json({ error_summary: "path/not_found/..", error: { ".tag": "path" } }, 409);
+    const entries = [...dbxTree.values()]
+      .filter((n) => n.path.toLowerCase().startsWith(`${dir}/`) && (arg.recursive || !n.path.slice(dir.length + 1).includes("/")))
+      .map((n) => ({ ".tag": n.tag, name: n.path.split("/").pop(), path_display: n.path, id: n.id }));
+    return json({ entries, has_more: false });
+  }
+  if (ep === "files/move_v2") {
+    if (dbxTree.has((arg.to_path ?? "").toLowerCase())) return json({ error_summary: "to/conflict/folder/..", error: { ".tag": "to" } }, 409);
+    dbxRename(arg.from_path!, arg.to_path!);
+    return json({ metadata: {} });
+  }
+  return json({ error_summary: `drill: unstubbed dropbox ${ep}` }, 400);
+});
+
+/**
+ * The words on a pdf-lib page, in drawing order: every content stream
+ * inflated, every hex (<…> Tj) and literal ((…) Tj) string decoded. The brief
+ * is asserted on what it PRINTS, not on the data handed to it.
+ */
+function pdfText(bytes: Uint8Array): string {
+  const buf = Buffer.from(bytes);
+  const s = buf.toString("latin1");
+  const out: string[] = [];
+  const re = /(?<!end)stream\r?\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    const start = m.index + m[0].length;
+    const end = s.indexOf("endstream", start);
+    if (end < 0) break;
+    const body = buf.subarray(start, end);
+    let raw = body;
+    while (raw.length && (raw[raw.length - 1] === 0x0a || raw[raw.length - 1] === 0x0d)) raw = raw.subarray(0, raw.length - 1);
+    // Only ONE end-of-line precedes "endstream"; a compressed stream whose own
+    // last byte is 0x0A/0x0D lost it to the trim above and failed to inflate,
+    // now and then (review, Sep 24 2026: an intermittent section-15 FAIL). So
+    // when the trimmed bytes do not inflate, try the body minus one EOL.
+    const inflate = (b: Buffer): string | null => { try { return zlib.inflateSync(b).toString("latin1"); } catch { return null; } };
+    const text: string = inflate(raw)
+      ?? inflate(body.subarray(0, Math.max(0, body.length - 1)))
+      ?? inflate(body.subarray(0, Math.max(0, body.length - 2)))
+      ?? inflate(body)
+      ?? raw.toString("latin1");
+    for (const t of text.matchAll(/<([0-9A-Fa-f]+)>\s*Tj/g)) out.push(Buffer.from(t[1], "hex").toString("latin1"));
+    for (const t of text.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj/g)) out.push(t[1]);
+    re.lastIndex = end + "endstream".length;
+  }
+  return norm(out.join(" "));
+}
+/** The PDF's own character folding (editor-pdf.ts clean()), so a title compares to what was printed. */
+const norm = (s: string) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, "-").replace(/\s+/g, " ");
 
 /**
  * The OLD code, loaded for real: filmedTopics.ts and upload/actions.ts as they
@@ -58,7 +178,7 @@ const fence = fenceFetch();
  * Prisma client, one database), and the old actions pointed at the OLD
  * filmedTopics. node_modules is symlinked in so bare imports resolve.
  */
-function writeBaseCopies(): { dir: string; filmedTopics: string; actions: string } {
+function writeBaseCopies(): { dir: string; filmedTopics: string; actions: string; dropboxFolders: string; editorPdf: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cp09-base-"));
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
   const show = (f: string) => execFileSync("git", ["show", `${BASE}:${f}`], { cwd: REPO, encoding: "utf8" });
@@ -68,7 +188,13 @@ function writeBaseCopies(): { dir: string; filmedTopics: string; actions: string
   fs.writeFileSync(filmedTopics, point(show("src/lib/filmedTopics.ts"), {}));
   const actions = path.join(dir, "uploadActions.base.ts");
   fs.writeFileSync(actions, point(show("src/app/upload/actions.ts"), { "lib/filmedTopics": filmedTopics.replace(/\.ts$/, "") }));
-  return { dir, filmedTopics, actions };
+  // Batch C's two "before" files, as batch A left them.
+  const showC = (f: string) => execFileSync("git", ["show", `${PRE_C}:${f}`], { cwd: REPO, encoding: "utf8" });
+  const dropboxFolders = path.join(dir, "dropboxFolders.preC.ts");
+  fs.writeFileSync(dropboxFolders, point(showC("src/lib/dropboxFolders.ts"), {}));
+  const editorPdf = path.join(dir, "editorPdf.preC.ts");
+  fs.writeFileSync(editorPdf, point(showC("src/lib/editor-pdf.ts"), {}));
+  return { dir, filmedTopics, actions, dropboxFolders, editorPdf };
 }
 
 /** The temp copies go when the drill does — the symlink first, so nothing can follow it. */
@@ -80,7 +206,10 @@ function removeBaseCopies(dir: string) {
 }
 
 async function main() {
-  const { server, stop } = await bootDrillDb({ port: PORT });
+  // The Dropbox app key/secret are stand-ins so the integration counts as
+  // configured; with no refresh token saved (until section 12) it still reads
+  // as not connected, which is what sections 1–11 have always seen.
+  const { server, stop } = await bootDrillDb({ port: PORT, env: { DROPBOX_APP_KEY: "drill-app-key", DROPBOX_APP_SECRET: "drill-app-secret" } });
   const quiet = quietPrismaErrors();
   const c = makeChecker();
   const { prisma } = await import("@/lib/prisma");
@@ -436,6 +565,180 @@ async function main() {
   c.ok("the route answered 200 and ran the step without error", res11.status === 200 && !!step11 && !("filmingReportsError" in body11), String(body11.filmingReportsError ?? res11.status));
   c.ok("…and landed the report", (step11?.applied ?? 0) >= 1 && (await prisma.contentFilmingReport.findUniqueOrThrow({ where: { id: r8 } })).state === "APPLIED", JSON.stringify(step11));
   c.ok("…whose topics are bound to the job's slots", (await prisma.contentVideo.count({ where: { enrollmentId: f8.enrollmentId, outputId: { not: null } } })) === 2);
+
+  // =========================================================================
+  c.head("12 · OLD vs NEW: one raw folder per topic, behind topic_folders");
+  // =========================================================================
+  const { saveSecret } = await import("@/lib/integrations/connections");
+  const df = await import("@/lib/dropboxFolders");
+  const oldDF = (await import(base.dropboxFolders)) as { ensureFoldersForUpcomingShoots: () => Promise<{ created: number; topicFolders?: unknown }> };
+  const { filmingBriefFor } = await import("@/lib/deliverableOutputs");
+  const TOMORROW = new Date(Math.floor((Date.now() + 26 * HOUR) / 60_000) * 60_000);
+  const f9 = await month("Folders", { appointments: [{ startAt: TOMORROW }] });
+  const [g1, g2, g3] = f9.topicIds;
+  const sectionStart = dbxCalls.length;
+  const callsSince = (n: number) => dbxCalls.slice(n);
+  const childrenOf = (dir: string) =>
+    [...dbxTree.values()].filter((x) => x.path.toLowerCase().startsWith(`${dir.toLowerCase()}/`) && !x.path.slice(dir.length + 1).includes("/"));
+  await saveSecret("dropbox", "drill-dropbox-refresh-token");
+
+  const oldSweep = await oldDF.ensureFoldersForUpcomingShoots();
+  const listing = (await prisma.project.findUniqueOrThrow({ where: { id: f9.projectId! }, select: { dropboxFolder: true } })).dropboxFolder ?? "";
+  const rawVideo = `${listing}/02-RAW-Video`;
+  c.ok("OLD (e26cacd): the engine makes the job's folder and its five numbered subfolders", oldSweep.created === 1 && childrenOf(listing).length === 5, `${oldSweep.created} · ${childrenOf(listing).map((x) => x.path.split("/").pop()).join(", ")}`);
+  c.ok("OLD: …and nothing inside 02-RAW-Video — every topic's clips go in one pile", !!listing && childrenOf(rawVideo).length === 0);
+
+  let mark = dbxCalls.length;
+  const offSweep = await df.ensureFoldersForUpcomingShoots();
+  c.ok("NEW, no topic_folders row: the sweep reports topic folders as not looked at", offSweep.topicFolders === null, JSON.stringify(offSweep.topicFolders));
+  c.ok("…and never lists or writes inside 02-RAW-Video", !callsSince(mark).some((x) => x.path.toLowerCase().startsWith(rawVideo.toLowerCase())) && childrenOf(rawVideo).length === 0, callsSince(mark).map((x) => `${x.ep} ${x.path}`).join("; "));
+  mark = dbxCalls.length;
+  const offDirect = await df.ensureTopicFolders(f9.projectId!);
+  c.ok("…and ensureTopicFolders says 'off' having made ZERO Dropbox calls", offDirect.state === "off" && dbxCalls.length === mark, JSON.stringify(offDirect));
+  c.ok("no switch row was created by any of it (a missing row stays OFF)", (await prisma.programAutomation.count({ where: { key: "topic_folders" } })) === 0);
+
+  await prisma.programAutomation.create({ data: { key: "topic_folders", enabled: true, enabledBy: "drill", enabledAt: new Date() } });
+  const onSweep = await df.ensureFoldersForUpcomingShoots();
+  const titles9 = new Map((await prisma.contentTopic.findMany({ where: { id: { in: f9.topicIds } }, select: { id: true, title: true } })).map((t) => [t.id, t.title]));
+  const made9 = childrenOf(rawVideo).map((x) => x.path.split("/").pop()!).sort();
+  const expected9 = f9.topicIds.map((id, i) => df.topicFolderName(i + 1, titles9.get(id)!, id)).sort();
+  c.ok("switched on: the sweep makes one folder per topic, three", onSweep.topicFolders?.created === 3 && JSON.stringify(made9) === JSON.stringify(expected9), `${JSON.stringify(onSweep.topicFolders)} · ${made9.join(" | ")}`);
+  c.ok("…named 'NN <title> [<id8>]', with the colon Dropbox refuses taken out", made9[0] === `01 Folders pricing in week one [${g1.slice(-8)}]`, made9[0]);
+  const folderRow = (topicId: string) => prisma.contentTopicFolder.findUniqueOrThrow({ where: { projectId_topicId: { projectId: f9.projectId!, topicId } } });
+  const rows9 = await prisma.contentTopicFolder.findMany({ where: { projectId: f9.projectId! } });
+  c.ok("…each recorded once: CREATED, its path, and its Dropbox id", rows9.length === 3 && rows9.every((r) => r.state === "CREATED" && !!r.dropboxId && r.dropboxPath.startsWith(`${rawVideo}/`)));
+  mark = dbxCalls.length;
+  const again12 = await df.ensureFoldersForUpcomingShoots();
+  c.ok("a second pass makes nothing: kept, not re-made", again12.topicFolders?.created === 0 && !callsSince(mark).some((x) => x.ep === "files/create_folder_v2"), JSON.stringify(again12.topicFolders));
+
+  const g2Folder = (await folderRow(g2)).dropboxPath;
+  dbxPutFile(`${g2Folder}/C0001.MP4`);
+  await prisma.contentTopic.update({ where: { id: g2 }, data: { title: "Folders: the inspection talk, retitled" } });
+  mark = dbxCalls.length;
+  const r12a = await df.ensureTopicFolders(f9.projectId!);
+  c.ok("a topic RENAMED in the hub: nothing made, renamed or moved", r12a.created === 0 && r12a.adopted === 0 && r12a.kept === 3 && callsSince(mark).every((x) => x.ep === "files/list_folder"), `${JSON.stringify(r12a)} · ${callsSince(mark).map((x) => x.ep).join(",")}`);
+  c.ok("…its folder, and the clip in it, are exactly where they were", dbxTree.has(`${g2Folder}/C0001.MP4`.toLowerCase()) && (await folderRow(g2)).dropboxPath === g2Folder);
+  const vids12 = await df.videoFilesUnder(listing);
+  c.ok("raws-in still counts a clip inside a topic folder, as 02-RAW-Video footage", vids12?.count === 1 && vids12.where.includes("02-raw-video"), JSON.stringify(vids12));
+
+  const g1Before = await folderRow(g1);
+  const g3Before = await folderRow(g3);
+  const g1Hand = `Pricing talk FINAL ${df.topicFolderTag(g1)}`;
+  dbxRename(g1Before.dropboxPath, `${rawVideo}/${g1Hand}`); // bracket kept
+  dbxRename(g3Before.dropboxPath, `${rawVideo}/Staging b-roll`); // bracket gone; the Dropbox id is not
+  mark = dbxCalls.length;
+  const r12b = await df.ensureTopicFolders(f9.projectId!);
+  const [g1After, g3After] = [await folderRow(g1), await folderRow(g3)];
+  c.ok("folders renamed BY HAND are adopted, never re-made", r12b.created === 0 && r12b.adopted === 2 && !callsSince(mark).some((x) => x.ep === "files/create_folder_v2"), JSON.stringify(r12b));
+  c.ok("…one by its bracket, one by its Dropbox id when the bracket is gone", g1After.label === g1Hand && g3After.label === "Staging b-roll" && g3After.dropboxId === g3Before.dropboxId);
+  c.ok("…and the record still says the hub made them", g1After.state === "CREATED" && g3After.state === "CREATED");
+
+  const r9 = await reportFor(f9, { filmedTopicIds: [g1, g2], topicNotes: { [g1]: "wide first" }, extraTopics: [{ key: "e1", title: "Behind the scenes", note: "keep it loose" }] });
+  mark = dbxCalls.length;
+  const a9 = await ft.applyFilmingReport(r9);
+  const extra9 = await prisma.contentTopic.findFirstOrThrow({ where: { enrollmentId: f9.enrollmentId, title: "Behind the scenes" }, select: { id: true } });
+  const creates9 = callsSince(mark).filter((x) => x.ep === "files/create_folder_v2");
+  c.ok("the report lands, and the extra filmed on site gets its own folder at once", a9.state === "APPLIED" && creates9.length === 1 && creates9[0].path === `${rawVideo}/04 Behind the scenes ${df.topicFolderTag(extra9.id)}`, `${a9.state} · ${creates9.map((x) => x.path.split("/").pop()).join(", ")}`);
+  c.ok("in the whole section the hub never moved, renamed or deleted anything in Dropbox", !callsSince(sectionStart).some((x) => /move|delete|copy/.test(x.ep)), [...new Set(callsSince(sectionStart).map((x) => x.ep))].join(", "));
+
+  const fb9 = await filmingBriefFor(f9.projectId!);
+  const byTopic9 = new Map((fb9?.rows ?? []).map((r) => [r.topicId, r]));
+  c.ok("the editor's rows carry each topic's folder, under the name it has NOW", byTopic9.get(g1)?.folder?.label === g1Hand && byTopic9.get(extra9.id)?.folder?.label.startsWith("04 Behind the scenes [") === true, (fb9?.rows ?? []).map((r) => r.folder?.label).join(" | "));
+  const g2Row = byTopic9.get(g2);
+  c.ok("a renamed topic keeps its clips: its new title, beside its original folder", g2Row?.topicTitle === "Folders: the inspection talk, retitled" && g2Row.folder?.label === g2Folder.split("/").pop(), `${g2Row?.topicTitle} → ${g2Row?.folder?.label}`);
+  c.ok("…and the notes ride with them ('wide first', 'keep it loose')", byTopic9.get(g1)?.note === "wide first" && byTopic9.get(extra9.id)?.note === "keep it loose");
+
+  const movedListing = `${listing} (moved)`;
+  dbxRename(listing, movedListing);
+  await prisma.project.update({ where: { id: f9.projectId! }, data: { dropboxFolder: movedListing } });
+  const links9 = await df.topicFolderLinksFor(f9.projectId!);
+  c.ok("the engine moves the job's folder (a reschedule): every topic link follows by name", links9.size === 4 && [...links9.values()].every((l) => l.path.startsWith(`${movedListing}/02-RAW-Video/`) && dbxTree.get(l.path.toLowerCase())?.tag === "folder"));
+  mark = dbxCalls.length;
+  const r12c = await df.ensureTopicFolders(f9.projectId!);
+  c.ok("…and the next pass re-records the paths without making or moving a thing", r12c.created === 0 && r12c.kept === 4 && !callsSince(mark).some((x) => x.ep !== "files/list_folder") && (await folderRow(g1)).dropboxPath.startsWith(movedListing), JSON.stringify(r12c));
+  await mintEditTask(f9.projectId!);
+  const edit9 = await prisma.smartTask.findFirst({ where: { projectId: f9.projectId!, taskType: "edit_video" }, select: { assignedKey: true } });
+  c.ok("Kim keeps personal branding: the monthly row's edit is hers, and no Deliverable was added for the extra", edit9?.assignedKey === "kim" && (await prisma.deliverable.count({ where: { projectId: f9.projectId! } })) === 1, String(edit9?.assignedKey));
+
+  // =========================================================================
+  c.head("13 · OLD vs NEW: the editor's brief says which topic each video is");
+  // =========================================================================
+  const { getProject } = await import("@/lib/queries");
+  const { cutSlots } = await import("@/lib/reviewCuts");
+  const { projectBrief } = await import("@/lib/projectBrief");
+  const { buildEditorBriefPdf } = await import("@/lib/editor-pdf");
+  const oldPdf = (await import(base.editorPdf)) as { buildEditorBriefPdf: (p: NonNullable<Awaited<ReturnType<typeof getProject>>>) => Promise<Uint8Array> };
+  const full1 = (await getProject(f1.projectId!))!;
+  const t1Title = titles.get(t1)!;
+  const oldText = pdfText(await oldPdf.buildEditorBriefPdf(full1));
+  c.ok("OLD: the printed brief says how many were filmed…", oldText.includes("3 videos were filmed on this session - cut this many."), oldText.slice(0, 80));
+  c.ok("OLD: …and not one topic, note or script decision", ![t1Title, EXTRA_TITLE, "drone opener", "kitchen", "approved by the client"].some((x) => oldText.includes(norm(x))));
+  const fb1 = await filmingBriefFor(f1.projectId!);
+  const want1 = [t1Title, "The inspection talk, renamed", EXTRA_TITLE];
+  c.ok("NEW filmingBriefFor: one row per owed video, in slot order, titled as the topics read NOW", JSON.stringify(fb1?.rows.map((r) => r.topicTitle)) === JSON.stringify(want1), JSON.stringify(fb1?.rows.map((r) => r.topicTitle)));
+  c.ok("…the slot each one is", JSON.stringify(fb1?.rows.map((r) => r.slot)) === "[1,2,3]" && /Video 1 of 3$/.test(fb1?.rows[0].slotLabel ?? ""), fb1?.rows[0].slotLabel ?? "");
+  c.ok("…with the photographer's note on each", JSON.stringify(fb1?.rows.map((r) => r.note)) === JSON.stringify(["drone opener", "shoot it by the window", "kitchen"]));
+  const sc1 = fb1?.rows[0].script;
+  c.ok("…t1: the exact version the client approved, with its words", !!sc1 && sc1.clientApproved && sc1.versionNo === 1 && sc1.text === "b" && /approved by the client before filming/.test(sc1.standing), JSON.stringify(sc1));
+  const sc2 = fb1?.rows[1].script;
+  c.ok("…t2: the script, plainly NOT approved by the client", !!sc2 && !sc2.clientApproved && /not approved by them yet/.test(sc2.standing), JSON.stringify(sc2));
+  c.ok("…the extra says it was filmed on site, and has no script", fb1?.rows[2].extra === "added_on_site" && fb1.rows[2].script === null && fb1.rows[0].extra === null);
+  c.ok("…no owed video without a topic, nothing pending", fb1?.slotsWithoutTopic === 0 && fb1.pending === null);
+  const newText = pdfText(await buildEditorBriefPdf(full1));
+  c.ok("NEW: the printed brief names every topic, as it reads now", want1.every((t) => newText.includes(norm(t))), newText.slice(newText.indexOf("one per topic") - 20, newText.indexOf("one per topic") + 200));
+  c.ok("…with every note from the shoot", ["drone opener", "shoot it by the window", "kitchen"].every((n) => newText.includes(n)));
+  c.ok("…and which words the client approved, and which they have not", newText.includes("approved by the client before filming") && newText.includes("not approved by them yet"));
+  const slots1 = await cutSlots(f1.projectId!);
+  c.ok("cutSlots carries each slot's live topic title…", JSON.stringify(slots1.map((s) => s.topicTitle)) === JSON.stringify(want1), JSON.stringify(slots1.map((s) => s.topicTitle)));
+  c.ok("…and leaves the label, which names the approved file, alone", slots1.every((s, i) => s.label.endsWith(`Video ${i + 1} of 3`)), slots1.map((s) => s.label).join(" | "));
+  const pb1 = await projectBrief(f1.projectId!);
+  c.ok("the project summary carries the same rows", JSON.stringify(pb1?.filming?.rows.map((r) => r.topicTitle)) === JSON.stringify(want1));
+  const listingBrief = await filmingBriefFor((await prisma.project.create({ data: { clientId: f1.clientId, title: "12 Plain Listing TEST", status: "SHOT" }, select: { id: true } })).id);
+  c.ok("a listing shoot has no filming brief (the PDF keeps its plain count there)", listingBrief === null);
+
+  // =========================================================================
+  c.head("14 · a session with no planned topics: what was filmed is added on the page");
+  // =========================================================================
+  const f10 = await month("Unplanned", { topics: [] });
+  const res14 = await finalizeUpload(f10.projectId!, {
+    editorBrief: "x",
+    force: true,
+    cullingConfirmed: true,
+    videoInstructions: "VISION FOR THE EDIT\nfast cuts",
+    filmedTopicIds: [],
+    extraTopics: [{ key: "u1", title: "Kitchen reveal", note: "the island shot" }, { key: "u2", title: "Neighborhood coffee" }],
+  });
+  c.ok("the submit lands with nothing pending", !res14.blocked && !res14.needsConfirm && !res14.topicsPending, JSON.stringify(res14).slice(0, 160));
+  c.ok("the editor cuts two — the server's count from the added topics", (await prisma.project.findUniqueOrThrow({ where: { id: f10.projectId! } })).videosFilmed === 2);
+  const tp10 = await prisma.contentTopic.findMany({ where: { enrollmentId: f10.enrollmentId }, select: { title: true, sourceRef: true, status: true } });
+  c.ok("both became topics on the month, filmed, traceable to the report", tp10.length === 2 && tp10.every((t) => t.sourceRef?.startsWith("FilmingReport:") && t.status === "FILMED"), JSON.stringify(tp10));
+  const fb10 = await filmingBriefFor(f10.projectId!);
+  c.ok("…each on its own owed video, marked filmed on site, with its note", fb10?.rows.length === 2 && fb10.rows.every((r) => r.extra === "added_on_site" && r.slot != null) && fb10.rows.find((r) => r.topicTitle === "Kitchen reveal")?.note === "the island shot", JSON.stringify(fb10?.rows.map((r) => [r.topicTitle, r.slot, r.extra, r.note])));
+  c.ok("…and the third owed video says it has no topic yet", fb10?.slotsWithoutTopic === 1);
+
+  // =========================================================================
+  c.head("15 · a report that has not landed is still in the editor's brief");
+  // =========================================================================
+  const f11 = await month("Still Saving");
+  await block();
+  const res15 = await finalizeUpload(f11.projectId!, submitFor(f11));
+  c.ok("the insert is refused: the footage submit lands, the topics are pending", !res15.blocked && !!res15.topicsPending, JSON.stringify(res15).slice(0, 120));
+  const fb11 = await filmingBriefFor(f11.projectId!);
+  const pendingTitles = (fb11?.pending?.topics ?? []).map((t) => t.title);
+  c.ok("no bound rows yet — but the brief lists what the photographer reported", fb11?.rows.length === 0 && fb11.pending?.state === "FAILED" && pendingTitles.includes(`Still Saving: pricing in week one`) && pendingTitles.includes(EXTRA_TITLE), JSON.stringify(fb11?.pending));
+  c.ok("…with the note and the on-site extra marked", fb11?.pending?.topics.find((t) => t.title === `Still Saving: pricing in week one`)?.note === "drone opener" && fb11.pending.topics.find((t) => t.title === EXTRA_TITLE)?.extra === true);
+  const text15 = pdfText(await buildEditorBriefPdf((await getProject(f11.projectId!))!));
+  c.ok("…and so does the printed brief", text15.includes("Reported by the photographer, not recorded yet") && text15.includes("drone opener") && text15.includes(EXTRA_TITLE), text15.slice(text15.indexOf("Reported"), text15.indexOf("Reported") + 160));
+  const r11 = await prisma.contentFilmingReport.findFirstOrThrow({ where: { projectId: f11.projectId! }, select: { id: true } });
+  await prisma.contentFilmingReport.update({ where: { id: r11.id }, data: { attempts: ft.FILMING_REPORT_MAX_ATTEMPTS, nextAttemptAt: null } });
+  const gaveUp = await ft.applyFilmingReport(r11.id);
+  const pb11 = await projectBrief(f11.projectId!);
+  c.ok("when it gives up, the project summary's filming rows say so…", gaveUp.state === "NEEDS_REVIEW" && pb11?.filming?.pending?.state === "NEEDS_REVIEW", `${gaveUp.state} / ${pb11?.filming?.pending?.state}`);
+  // The job's debrief is complete, so nothing earlier claims the blocker line.
+  c.ok("…and it is what the summary says is in the way", /^The filmed topics did not save — 3 to record by hand/.test(pb11?.blocker ?? ""), String(pb11?.blocker));
+  const text15b = pdfText(await buildEditorBriefPdf((await getProject(f11.projectId!))!));
+  c.ok("…and the printed brief stops saying the hub is still saving them", text15b.includes("not recorded yet (the office is recording these by hand)") && !text15b.includes("the hub is still saving these"));
+  await unblock();
 
   console.log(`\n    fence: ${fence.blocked.length} outbound call(s) blocked in total${fence.blocked.length ? ` (${[...new Set(fence.blocked.map((u) => { try { return new URL(u).host; } catch { return u.slice(0, 40); } }))].join(", ")})` : ""}; ${quiet.count} Prisma error line(s) quietened; socket patch ${JSON.stringify(server.patchStats)}`);
   c.summary();
