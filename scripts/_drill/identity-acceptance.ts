@@ -232,16 +232,17 @@ async function main() {
   console.log("\n=== A22: preparation timing, as the gate computes it ===");
   const { addWeekdayHoursET, DEFAULT_PREPARATION_WINDOW_HOURS } = await import("../../src/lib/programMonths");
   const et = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  ok("the window is 48 hours of weekday time", DEFAULT_PREPARATION_WINDOW_HOURS === 48, String(DEFAULT_PREPARATION_WINDOW_HOURS));
+  // W01 (Sep 25 2026): 72 weekday hours, not 48 — §3's own examples.
+  ok("the window is 72 hours of weekday time", DEFAULT_PREPARATION_WINDOW_HOURS === 72, String(DEFAULT_PREPARATION_WINDOW_HOURS));
   const mon = new Date("2026-09-14T18:00:00Z"); // Mon 2:00 PM ET
   const fri = new Date("2026-09-18T14:00:00Z"); // Fri 10:00 AM ET
-  const monOut = addWeekdayHoursET(mon, 48);
-  const friOut = addWeekdayHoursET(fri, 48);
-  ok("Monday 2 PM -> Wednesday 2 PM", et(monOut) === "Wed, Sep 16, 2:00 PM", et(monOut));
-  ok("Friday 10 AM -> Tuesday 10 AM (the weekend does not count)", et(friOut) === "Tue, Sep 22, 10:00 AM", et(friOut));
-  const springForward = addWeekdayHoursET(new Date("2026-03-05T19:00:00Z"), 48); // Thu Mar 5, 2:00 PM ET
+  const monOut = addWeekdayHoursET(mon, DEFAULT_PREPARATION_WINDOW_HOURS);
+  const friOut = addWeekdayHoursET(fri, DEFAULT_PREPARATION_WINDOW_HOURS);
+  ok("Monday 2 PM -> Thursday 2 PM", et(monOut) === "Thu, Sep 17, 2:00 PM", et(monOut));
+  ok("Friday 10 AM -> Wednesday 10 AM (the weekend does not count)", et(friOut) === "Wed, Sep 23, 10:00 AM", et(friOut));
+  const springForward = addWeekdayHoursET(new Date("2026-03-05T19:00:00Z"), DEFAULT_PREPARATION_WINDOW_HOURS); // Thu Mar 5, 2:00 PM ET
   ok("the March transition keeps the time of day", /2:00 PM/.test(et(springForward)), et(springForward));
-  const fallBack = addWeekdayHoursET(new Date("2026-10-29T18:00:00Z"), 48); // Thu Oct 29, 2:00 PM EDT
+  const fallBack = addWeekdayHoursET(new Date("2026-10-29T18:00:00Z"), DEFAULT_PREPARATION_WINDOW_HOURS); // Thu Oct 29, 2:00 PM EDT
   ok("the November transition keeps the time of day", /2:00 PM/.test(et(fallBack)), et(fallBack));
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);

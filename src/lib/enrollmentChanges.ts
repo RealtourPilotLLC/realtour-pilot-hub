@@ -293,13 +293,32 @@ export async function setWorkflowFlags(enrollmentId: string, flags: { clientSupp
   if (Object.keys(data).length) await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data });
 }
 
-/** Permitted overrides (spec §17): a small JSON bag on the enrollment, ledgered per key. */
-export const OVERRIDE_KEYS = ["preparationWindowDays", "extraSessionsAllowed", "requireCallForMonths"] as const;
+/**
+ * Permitted overrides (spec §17): a small JSON bag on the enrollment, ledgered per key.
+ *
+ * `preparationWindowHours` (W01, Sep 25 2026) is the preparation window in
+ * weekday hours — the rule's own unit; the program default is 72. The old
+ * `preparationWindowDays` key was a dead control (nothing read it); it is now
+ * READ as days × 24 (programMonths.enrollmentWindowOverrideHours) and kept
+ * editable only so an owner can clear a legacy value. Hours win when both exist.
+ */
+export const OVERRIDE_KEYS = ["preparationWindowHours", "preparationWindowDays", "extraSessionsAllowed", "requireCallForMonths"] as const;
 export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
 export function readOverrides(json: string | null | undefined): Record<string, unknown> {
   try { const v = json ? JSON.parse(json) : {}; return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; } catch { return {}; }
 }
 export async function setOverride(enrollmentId: string, key: OverrideKey, value: unknown, by: string | null): Promise<void> {
+  // The window is read by every filming gate the moment it is saved, so a
+  // nonsense value is refused here rather than turned into a calendar: whole
+  // weekday hours, up to four weeks of weekdays.
+  if (key === "preparationWindowHours" && value !== null && value !== undefined && value !== "") {
+    const h = Number(value);
+    if (!Number.isInteger(h) || h < 1 || h > 480) throw new Error("The preparation window is whole weekday hours, from 1 to 480 (the program default is 72).");
+  }
+  if (key === "preparationWindowDays" && value !== null && value !== undefined && value !== "") {
+    const d = Number(value);
+    if (!Number.isFinite(d) || d <= 0 || d > 20) throw new Error("Set the window in weekday hours instead (the program default is 72).");
+  }
   const e = await enrollment(enrollmentId);
   const cur = readOverrides(e.overridesJson);
   if (JSON.stringify(cur[key] ?? null) === JSON.stringify(value ?? null)) return;

@@ -22,7 +22,9 @@
 //      reaches the order sync, the local readback confirms and closes it.
 //   6. address_sync ON (authorised fixture): one PATCH with the fields, read
 //      back equal → SYNCED; a second run patches nothing; another client's
-//      address is never touched.
+//      address is never touched. Since batch 3 (R02) "authorised" means on
+//      the list AND provable: its own and its Aryeo customer's email are the
+//      test inbox.
 //   7. Address before Friday: no email. A queued email is cancelled
 //      (address_received) when the address arrives.
 //   8. PATCH timeout after commit → readback settles it, one PATCH; timeout
@@ -50,6 +52,7 @@ import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErro
 // it through a dynamic import, which Node's ESM loader serves without passing
 // the CommonJS loader the interceptor hooks.)
 import { buildContentMonth, type ContentMonthFixture } from "./_fixtures/contentMonth";
+import { createFixtureCustomers } from "./_fixtures/fixtureIdentity";
 import { createFakeAryeo, DRILL_TEAM } from "./_fake-aryeo";
 
 const PORT = Number(process.env.DRILL_PORT ?? 5517);
@@ -58,6 +61,9 @@ const REPO = path.resolve(__dirname, "../..");
 installNextStubs();
 
 let fake: ReturnType<typeof createFakeAryeo>;
+// R02 (batch 3, §3): the Aryeo guard reads a fixture's linked customer
+// (GET /customers/<id>) and writes only when its email is the test inbox too.
+const ids = createFixtureCustomers();
 // Gmail, answered at the network edge: the hub's real send code runs (token,
 // MIME, POST), and the message it would have sent lands here instead.
 const emails: { to: string; subject: string; body: string }[] = [];
@@ -76,7 +82,7 @@ const fence = fenceFetch(async (url, init) => {
     return new Response(JSON.stringify({ result: { addressMatches: [{ coordinates: { x: -75.6055, y: 39.9607 }, matchedAddress: "117 KYLE LN, WEST CHESTER, PA, 19382" }] } }), { status: 200 });
   }
   if (url.startsWith("https://nominatim.openstreetmap.org/")) return new Response("[]", { status: 200 });
-  return fake ? fake.handle(url, init) : null;
+  return ids.route(url, init) ?? (fake ? fake.handle(url, init) : null);
 });
 
 
@@ -147,6 +153,15 @@ async function main() {
     await prisma.client.update({ where: { id: f.clientId }, data: { aryeoCustomerId: `0197cccc-0000-4000-8000-${String(++seq).padStart(12, "0")}` } });
     return f;
   };
+  /**
+   * Since batch 3 (R02, §3) the switch's authorizedFixtureClientIds is not
+   * enough: a TEST fixture gets a hub write only when its own email AND its
+   * linked Aryeo customer's email are Jordan's verified test inbox
+   * (testClients.assertFixtureIdentity). Exactly what a real supervised test
+   * has to set up — done for every fixture this drill authorises, before it
+   * is put on the list.
+   */
+  const provableFixture = (f: ContentMonthFixture) => ids.makeFixture(prisma as unknown as PrismaClient, f.clientId, { clientEmail: "info@realtourpilot.com", customerEmail: "info@realtourpilot.com" });
   const EXACT = { street: "117 Kyle Lane", unit: "2", city: "West Chester", state: "PA", zip: "19382" };
   const rowOf = (key: string) => prisma.programSessionAddress.findUnique({ where: { sessionKey: key } });
   const tasksFor = (key: string) => prisma.smartTask.findMany({ where: { dedupeKey: { startsWith: `program-session-address:${key}:` } } });
@@ -298,6 +313,7 @@ async function main() {
   const S1 = await addSession(syncer, et("2026-10-06", 10));
   const O1 = await addSession(other, et("2026-10-06", 13), { assign: false });
   {
+    await provableFixture(syncer); // R02: both inboxes the test inbox, then on the list
     await setSwitch("address_sync", true, { authorizedFixtureClientIds: [syncer.clientId] });
     await sa.submitSessionAddress({ kind: "STAFF", enrollmentId: syncer.enrollmentId, sessionKey: S1.key, by: "kyle@drill" }, EXACT);
     const p0 = fake.writes.filter((w) => w.method === "PATCH").length;
@@ -348,6 +364,7 @@ async function main() {
   c.head("8 · PATCH outcomes: timeout after commit, timeout before, a refusal");
   {
     const t = await client("Address Timeout TEST", "timeout-drill@realtourpilot.com");
+    await provableFixture(t); // R02
     await setSwitch("address_sync", true, { authorizedFixtureClientIds: [syncer.clientId, t.clientId] });
     const T1 = await addSession(t, et("2026-10-14", 10));
     const T2 = await addSession(t, et("2026-10-15", 10));
@@ -381,6 +398,7 @@ async function main() {
   c.head("9 · a shared Aryeo address is never changed by the hub");
   {
     const p = await client("Address Shared TEST", "shared-drill@realtourpilot.com");
+    await provableFixture(p); // R02: so the CONFLICT, not the identity guard, is what stops the PATCH
     await setSwitch("address_sync", true, { authorizedFixtureClientIds: [syncer.clientId, p.clientId] });
     const P1 = await addSession(p, et("2026-10-19", 10), { siblings: [et("2026-10-20", 10)] });
     await sa.submitSessionAddress({ kind: "STAFF", enrollmentId: p.enrollmentId, sessionKey: P1.key, by: "kyle@drill" }, EXACT);
@@ -442,6 +460,7 @@ async function main() {
     // availability and allow travel time between one address to another."
     const w = await client("Address Clash TEST", "clash-drill@realtourpilot.com");
     const W1 = await addSession(w, et("2026-10-27", 10));
+    await provableFixture(w); // R02
     await setSwitch("address_sync", true, { authorizedFixtureClientIds: [w.clientId] });
     // In ARYEO (not in our DB), James has another job overlapping this session.
     fake.appts.set("0198ffff-0000-4000-8000-00000000c1a5", { id: "0198ffff-0000-4000-8000-00000000c1a5", status: "SCHEDULED", start_at: et("2026-10-27", 12).toISOString().replace(".000Z", "Z"), end_at: et("2026-10-27", 13).toISOString().replace(".000Z", "Z"), orderId: "elsewhere", tmIds: [DRILL_TEAM.james.tm], updated_at: new Date().toISOString() });

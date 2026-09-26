@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { AlertTriangle, CircleSlash, Clock, Power, ShieldAlert } from "lucide-react";
 import { setAutomationAction } from "@/app/settings/programActions";
+import { HubWriteScopePanel } from "@/components/settings/HubWriteScopePanel";
 import { AUTOMATION_EFFECTS } from "@/lib/programAutomationCopy";
 import { cn } from "@/lib/utils";
 
@@ -183,10 +184,19 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
                   The reminder policy, a dry run of what would go out, and the send ledger are in <a href="#program-reminders" className="font-medium text-brand hover:underline">Program reminders</a> below.
                 </p>
               )}
+              {(r.key === "session_booking" || r.key === "address_sync" || r.key === "call_booking") && (
+                <p className="mt-0.5 text-[12px] text-muted-2">
+                  Who it may write for (TEST fixtures and any approved pilot) is in <a href="#hub-write-scopes" className="font-medium text-brand hover:underline">Who the hub may write for</a> below.
+                </p>
+              )}
             </div>
           );
         })}
       </div>
+
+      {/* R02/A26: the scope of the three provider-write switches, and the
+          owner's pilot editor. Separate from the switches on purpose. */}
+      <HubWriteScopePanel isOwner={isOwner} />
     </div>
   );
 }

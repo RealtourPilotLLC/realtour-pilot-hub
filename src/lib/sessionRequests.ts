@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { MONTHLY_PLAN_RE } from "@/lib/videoStyles";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { monthSessionCount, recalcProgramMonth, replacesPendingMove, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
+import { monthSessionCount, monthSessionIndexes, recalcProgramMonth, replacesPendingMove, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
 import { aryeoProductFor, etMonthKey } from "@/lib/contentProgram";
 import { TEXT_KYLE } from "@/lib/portalWords";
@@ -58,6 +58,18 @@ export type CreateSessionRequestInput = {
   supersedesId?: string | null;
   /** CP-04: the creative the client picked for the slot (a COMPANY_TEAM_MEMBER id) — required for the adapter to book. */
   creative?: { teamMemberId: string; name: string | null } | null;
+  /** §6.6 W02: the exact-address plan the slot was offered for, at the version
+   *  it was offered under. Required for the adapter to book (the portal sends
+   *  it on every slot booking); a staff or legacy ask without one is the desk's. */
+  plan?: { planId: string; addressVersion: number } | null;
+  /** §6.6 A24: which session of the month (Pro: 1 or 2). Legacy rows resolve by slot order. */
+  sessionIndex?: number | null;
+  /** §6.6 W02: how the slot's travel was checked for the picked creative.
+   *  UNCHECKED is desk-confirmed: never queued for the adapter. */
+  travel?: { check: "HUB_DRIVE" | "ARYEO_APPOINTMENT" | "UNCHECKED"; evidenceJson?: string | null } | null;
+  /** A18/A25: the gate the slot was offered under, SNAPSHOT at request time
+   *  (anchor + window), so a later rule change never reassesses it. */
+  gate?: { route?: string | null; anchorRef?: string | null; anchorAt?: Date | null; windowHours?: number | null; earliestAt?: Date | null } | null;
 };
 
 export type CapacityCheck = {
@@ -168,16 +180,39 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   // ever, with no buttons and its appointment unclaimed).
   const { replaced, booked, deskHeld } = await whatItReplaces(input.supersedesId);
   const supersedesId = booked?.id ?? input.supersedesId ?? null;
+  // A MOVE nobody read a gate for (the adapter handing a half-made move to the
+  // desk) is the same session under the same anchor (A24/A25): it keeps the
+  // booking's own index and gate snapshot, so every new row carries one.
+  const movedFrom = supersedesId && (input.sessionIndex == null || input.gate == null)
+    ? await prisma.programSessionRequest.findUnique({ where: { id: supersedesId }, select: { sessionIndex: true, gateRoute: true, gateAnchorRef: true, gateAnchorAt: true, gateWindowHours: true, gateEarliestAt: true } })
+    : null;
+  const gateSnap: CreateSessionRequestInput["gate"] = input.gate
+    ?? (movedFrom && (movedFrom.gateRoute != null || movedFrom.gateWindowHours != null)
+      ? { route: movedFrom.gateRoute, anchorRef: movedFrom.gateAnchorRef, anchorAt: movedFrom.gateAnchorAt, windowHours: movedFrom.gateWindowHours, earliestAt: movedFrom.gateEarliestAt }
+      : null);
   // WHO BOOKS IT (CP-04). The adapter only for a picked slot with a chosen
   // creative AND a client the guard would let it write for — asked here with
   // the same read-only check the write itself makes, so a real client is never
   // QUEUED while only a fixture is authorised. Everyone else: the desk, as today.
   let hubBooks = false;
   let deskReason: string | null = null;
+  // §6.6 W02: the plan the slot was offered for, read now (the version must
+  // still be the one the client saw).
+  const plan = input.plan?.planId
+    ? await prisma.programSessionPlan.findUnique({ where: { id: input.plan.planId } })
+    : null;
+  if (input.plan?.planId && (!plan || plan.monthId !== month.id || plan.enrollmentId !== enrollment.id)) return { ok: false, reason: "Add the exact filming address for this session first." };
   if (start && (await isAutomationEnabled("session_booking"))) {
+    const { planBookable } = await import("@/lib/sessionAddress");
     if (booked) deskReason = `this moves a session already on the calendar${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}, and the hub only books new sessions`;
     else if (deskHeld) deskReason = "this replaces an ask Kyle may already have booked by hand";
     else if (!input.creative?.teamMemberId) deskReason = "no creative was chosen for the slot";
+    // EXACT ADDRESS FIRST (§3): the adapter books only an exact, geocoded plan
+    // at the version the client was offered the slot for.
+    else if (!plan || !planBookable(plan)) deskReason = "there is no exact, mapped filming address for this session";
+    else if (plan.addressVersion !== input.plan!.addressVersion) deskReason = "the filming address changed after the time was offered";
+    // UNCHECKED TRAVEL IS DESK-CONFIRMED, never auto-booked (Jordan, Sep 25).
+    else if (!input.travel || input.travel.check === "UNCHECKED") deskReason = "the drive from the creative's other appointments that day could not be checked, so a person confirms this time";
     else {
       const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { id: true, name: true } });
       const { hubWritePermit } = await import("@/lib/integrations/aryeo");
@@ -186,6 +221,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     }
   }
   const product = aryeoProductFor((await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }))?.package);
+  const planLine = plan ? clip((await import("@/lib/sessionAddress")).planAddressLine(plan), 300) : null;
 
   // A24 — SIMULTANEOUS REQUESTS MUST NOT CREATE DUPLICATE PRO SESSIONS.
   //
@@ -211,6 +247,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   type Settled =
     | { kind: "duplicate"; id: string; status: string; capacity: CapacityCheck }
     | { kind: "full"; capacity: CapacityCheck }
+    | { kind: "taken"; capacity: CapacityCheck }
     | { kind: "created"; id: string; capacity: CapacityCheck };
   const settled = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}::int4, ${lockB}::int4)`;
@@ -229,10 +266,38 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
       ? await tx.programSessionRequest.count({ where: { id: input.supersedesId, enrollmentId: enrollment.id, monthId: month.id, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"] } } })
       : 0;
     if (kind === "CONTENT_SESSION" && capacity.remaining + freed <= 0) return { kind: "full", capacity } satisfies Settled;
+    // A24: ONE live ask per session. Two different times picked for the same
+    // Pro session (two tabs) both fit a two-session capacity, and the second
+    // would then stand in for session 2 without ever passing session 2's
+    // gate. Read inside the lock, so it sees the first one's row. The request
+    // being replaced (a move) does not count against its own replacement.
+    if (kind === "CONTENT_SESSION" && input.sessionIndex != null) {
+      const replacing = [supersedesId, input.supersedesId, existing?.id].filter((x): x is string => !!x);
+      const holders = await tx.programSessionRequest.count({
+        where: {
+          monthId: month.id, sessionIndex: input.sessionIndex, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"] }, bookingState: { not: "CONFLICT" },
+          id: { notIn: replacing },
+        },
+      });
+      if (holders > 0) return { kind: "taken", capacity } satisfies Settled;
+      // …and a session held WITHOUT the column (batch-3 review, Sep 25 2026):
+      // one Kyle booked by hand in Aryeo has no request row, and an ask made
+      // before sessionIndex existed has none set, yet each holds a session by
+      // slot order — the month's own occupancy (monthSessionIndexes, the
+      // reader every screen uses). A tab that still offered "Session 1 of 2"
+      // over one of those admitted the month's SECOND session as "1" without
+      // ever reading session 2's gate, and renumbered the booked one as 2.
+      const idx = input.sessionIndex;
+      if (idx >= 1 && idx <= capacity.sessionsPerMonth) {
+        const occ = await monthSessionIndexes(month.id, enrollment.clientId, capacity.sessionsPerMonth, now, tx);
+        const own = replacing.some((id) => occ.requestIndex.get(id) === idx);
+        if (!occ.free.includes(idx) && !own) return { kind: "taken", capacity } satisfies Settled;
+      }
+    }
     const data = {
       enrollmentId: enrollment.id, clientId: enrollment.clientId, monthId: month.id, kind,
       slotStart: start, slotEnd: end, timezone: input.slot.timezone ?? enrollment.timezone ?? "America/New_York",
-      locationText: location || null,
+      locationText: location || planLine || null,
       notes: [when && `Preferred: ${when}`, input.slot.notes?.trim()].filter(Boolean).join("\n") || null,
       requestedByClientUserId: input.actor.kind === "CLIENT" ? input.actor.clientUserId : null,
       requestedByStaffUserId: input.actor.kind === "STAFF" ? input.actor.userId : null,
@@ -247,6 +312,18 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
       creativeTeamMemberId: input.creative?.teamMemberId ?? null,
       creativeName: input.creative?.name ?? null,
       dedupeKey,
+      // §6.6: which session, the plan and its version, the travel evidence, and
+      // the gate the slot was offered under — all as they were at this moment.
+      sessionIndex: input.sessionIndex ?? plan?.sessionIndex ?? movedFrom?.sessionIndex ?? null,
+      planId: plan?.id ?? null,
+      planAddressVersion: plan ? input.plan!.addressVersion : null,
+      travelCheck: input.travel?.check ?? null,
+      travelEvidenceJson: input.travel?.evidenceJson ?? null,
+      gateRoute: gateSnap?.route ?? null,
+      gateAnchorRef: gateSnap?.anchorRef ?? null,
+      gateAnchorAt: gateSnap?.anchorAt ?? null,
+      gateWindowHours: gateSnap?.windowHours ?? null,
+      gateEarliestAt: gateSnap?.earliestAt ?? null,
     };
     // A CANCELLED/EXPIRED row re-used for the same slot starts CLEAN (CP-04):
     // an old order id or appointment id left on it would send the adapter to
@@ -281,6 +358,9 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   if (settled.kind === "duplicate") {
     return { ok: true, id: settled.id, status: settled.status, duplicate: true, capacity: settled.capacity, message: "We already have this request — it shows as requested until we confirm it." };
   }
+  if (settled.kind === "taken") {
+    return { ok: false, reason: "That session is already requested or booked. It shows on your page, and you can change its time there.", capacity: settled.capacity };
+  }
   if (settled.kind === "full") {
     const c = settled.capacity;
     // Jordan, Sep 21: "One booking should still show one session remaining."
@@ -288,6 +368,9 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     // because on Pro those are different sentences.
     return { ok: false, reason: `This month's ${c.allowed} session${c.allowed === 1 ? " is" : "s are"} already booked or requested — ask us about an extra session.`, capacity: c };
   }
+  // The plan remembers the request it became (its address now changes on the
+  // booked session, not on the plan).
+  if (plan) await prisma.programSessionPlan.update({ where: { id: plan.id }, data: { requestId: settled.id, lastStep: "REQUESTED" } }).catch(() => null);
   // A QUEUED request is the adapter's; Kyle hears about it only if the adapter
   // hands it over (handToDesk). Everything else is desk-assisted, as before —
   // and a replacement says MOVE, with the booking it replaces in plain words.
@@ -328,6 +411,28 @@ function monthLockKey(enrollmentId: string, monthId: string): [number, number] {
     return h | 0;
   };
   return [fnv(0x811c9dc5), fnv(0x9e3779b9)];
+}
+
+/**
+ * A23: the month's capacity, read INSIDE the month's advisory lock — the same
+ * lock createSessionRequest decides under, so the booking adapter's last check
+ * before it writes cannot interleave with a new ask for the same month.
+ */
+export async function capacityUnderMonthLock(enrollmentId: string, monthId: string, now: Date): Promise<CapacityCheck> {
+  const [lockA, lockB] = monthLockKey(enrollmentId, monthId);
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}::int4, ${lockB}::int4)`;
+    return sessionCapacity(enrollmentId, monthId, { now, db: tx });
+  }, { timeout: 20_000 });
+}
+
+/**
+ * A23: a request that is over gives back its creative-day hold
+ * (sessionBooking.takeCreativeHold). Best effort: a hold whose request is no
+ * longer being booked never blocks anyone anyway (the hold check joins on it).
+ */
+export async function releaseCreativeHold(requestId: string, state: string, now: Date = new Date()): Promise<void> {
+  await prisma.programCreativeHold.updateMany({ where: { requestId, releasedAt: null }, data: { releasedAt: now, state } }).catch(() => {});
 }
 
 /** Booking states in which an ask is in the DESK's hands (Kyle books it), not the adapter's. */
@@ -423,10 +528,17 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   // first or the second half of a Pro month, and the two are different bookings
   // of the same four-hour product.
   const capacity = await sessionCapacity(r.enrollmentId, r.monthId).catch(() => null);
-  const ordinal = capacity && capacity.sessionsPerMonth > 1 ? Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth) : null;
+  // A24: the request's OWN session when it names one; a legacy row falls back
+  // to "the next one" as before.
+  const ordinal = capacity && capacity.sessionsPerMonth > 1 ? (r.sessionIndex ?? Math.min(capacity.confirmedSessions + 1, capacity.sessionsPerMonth)) : null;
   const ordinalLine = mode === "BOOK" && ordinal && capacity
     ? `Session ${ordinal} of ${capacity.sessionsPerMonth} — ${capacity.confirmedSessions} already confirmed for this month. Book the four-hour product again, as its own order; it is a second booking, not a longer one.`
     : null;
+  // A18/A20: the earliest start the client was held to, from the request's own
+  // snapshot of the gate (programMonths.preparationGate) — so a free-text ask
+  // ("Tuesday afternoon") still tells Kyle the first time he may book.
+  const { earliestStartLine } = await import("@/lib/programMonths");
+  const earliestLine = mode === "BOOK" || mode === "RESCHEDULE" ? earliestStartLine(r) : null;
   const instruction: Record<DeskMode, string> = {
     BOOK: "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
     CANCEL: `The client asked to cancel this session. Cancel ${r.aryeoAppointmentId ? `appointment ${r.aryeoAppointmentId}` : "the appointment"} in Aryeo — the request flips to CANCELLED on its own when Aryeo shows it cancelled.`,
@@ -439,6 +551,7 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
     `Content session request for ${month?.monthKey ?? "their month"} (${r.kind === "EXTRA_SESSION" ? "EXTRA session" : "package session"}).`,
     ordinalLine,
     `Time: ${when}`,
+    earliestLine,
     r.creativeName ? `Creative the client picked: ${r.creativeName}` : null,
     r.locationText ? `Filming location: ${r.locationText}` : null,
     r.aryeoOrderId ? `Aryeo order: ${r.aryeoOrderId}` : null,
@@ -523,6 +636,7 @@ export async function cancelSessionRequest(requestId: string, by: string | null,
   // person cancels it in Aryeo (spec §19: confirm the provider result separately).
   const needsPerson = r.status === "CONFIRMED" || r.status === "RESCHEDULE_REQUESTED" || inFlight;
   await prisma.programSessionRequest.update({ where: { id: requestId }, data: { status: needsPerson ? "CANCEL_REQUESTED" : "CANCELLED", cancelledAt: now, cancelledBy: by, cancelReason: reason?.trim() || null } });
+  await releaseCreativeHold(requestId, "CANCELLED", now);
   if (needsPerson) await ensureDeskTask(requestId, "CANCEL", inFlight ? "The hub was mid-way through booking this when the client cancelled. Check Aryeo for an order carrying the request's note, and cancel it if it exists." : null);
   else {
     // A PENDING MOVE WITHDRAWN (review, Sep 24 2026). Cancelling the new time
@@ -556,7 +670,9 @@ export async function requestReschedule(
   newSlot: { startISO: string; endISO: string | null; locationText?: string | null },
   creative: { teamMemberId: string; name: string | null } | null,
   actor: SessionRequestActor,
-  opts: { now?: Date } = {},
+  // A24/A18: the session the move is for and the gate the new time was offered
+  // under (the portal reads both with sessionGate), snapshotted on the new row.
+  opts: { now?: Date; sessionIndex?: number | null; gate?: CreateSessionRequestInput["gate"] } = {},
 ): Promise<{ ok: boolean; message: string; id?: string }> {
   const now = opts.now ?? new Date();
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId } });
@@ -592,6 +708,8 @@ export async function requestReschedule(
     kind: r.kind === "EXTRA_SESSION" ? "EXTRA_SESSION" : "CONTENT_SESSION",
     supersedesId: r.id,
     creative: creative ?? (r.creativeTeamMemberId ? { teamMemberId: r.creativeTeamMemberId, name: r.creativeName } : null),
+    sessionIndex: opts.sessionIndex ?? r.sessionIndex ?? null,
+    gate: opts.gate ?? null,
   });
   if (!created.ok) return { ok: false, message: created.reason };
   // The old booking still stands in Aryeo until a person moves it: the new
@@ -604,6 +722,7 @@ export async function declineSessionRequest(requestId: string, by: string | null
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { monthId: true } });
   if (!r) throw new Error("Request not found.");
   await prisma.programSessionRequest.update({ where: { id: requestId }, data: { status: "DECLINED", cancelledAt: new Date(), cancelledBy: by, cancelReason: reason.trim() || "declined" } });
+  await releaseCreativeHold(requestId, "DECLINED");
   await closeDeskTask(requestId, "CANCELLED");
   // The office said no to a new time: the session it would have moved stands.
   await restoreMovedFrom(requestId);
@@ -926,6 +1045,7 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
 
       if (r.slotStart && now.getTime() - r.slotStart.getTime() > 2 * 864e5) {
         await prisma.programSessionRequest.update({ where: { id: r.id }, data: { status: "EXPIRED", cancelReason: "slot passed with nothing booked in Aryeo" } });
+        await releaseCreativeHold(r.id, "EXPIRED", now);
         await closeDeskTask(r.id, "CANCELLED");
         expired++; touched.add(r.monthId);
       }

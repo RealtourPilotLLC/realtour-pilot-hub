@@ -264,12 +264,12 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
           // dead end; the same state on the Schedule tab keeps the link.
           <div className="mt-2 text-sm">
             <p className="text-muted">No call this month.</p>
-            {!d.readOnly && <a href={d.bookingUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">Book one anyway <ChevronRight className="size-3" /></a>}
+            {!d.readOnly && <a href={d.bookingUrl} target={/^https?:/.test(d.bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">Book one anyway <ChevronRight className="size-3" /></a>}
           </div>
         ) : (
           <div className="mt-2 text-sm">
             <div className="text-muted">Not booked yet</div>
-            {!d.readOnly && <a href={d.bookingUrl} target="_blank" rel="noopener noreferrer" className={bookCls}>Book the call <ChevronRight className="size-3.5" /></a>}
+            {!d.readOnly && <a href={d.bookingUrl} target={/^https?:/.test(d.bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className={bookCls}>Book the call <ChevronRight className="size-3.5" /></a>}
             {/* v2: the route is chosen in Your Month (§6.4); v1 keeps its Schedule link. */}
             {p.noCallEligible && !d.readOnly && <Link href={plan ? `${plan.href}#step-route` : href("schedule")} className="mt-1 block text-xs text-muted hover:underline">{plan ? "or choose your topics here →" : "or plan without a call →"}</Link>}
           </div>

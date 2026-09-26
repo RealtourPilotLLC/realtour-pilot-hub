@@ -114,16 +114,27 @@ function firstDiff(a: any, b: any, at = "root"): string | null {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+/** The terms' "## Scheduling" paragraph in a PortalPage.tsx source. */
+const schedulingOf = (s: string) => /\n## Scheduling\n([^\n]+)\n/.exec(s)?.[1] ?? null;
+
 /** HEAD's PortalPage.tsx, runnable: its `@/` imports pointed at this tree. */
-function writeBasePage(): { dir: string; file: string; src: string } {
+function writeBasePage(): { dir: string; file: string; src: string; oldScheduling: string | null; newScheduling: string | null } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ui01-base-"));
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
   const src = execFileSync("git", ["show", `${BASE}:src/components/portal/PortalPage.tsx`], { cwd: REPO, encoding: "utf8" });
   const file = path.join(dir, "PortalPage.base.tsx");
+  // Batch 3 (§3) reworded the Scheduling terms for the 72-weekday-hour window,
+  // on v1 too — the ONE intended v1 difference from HEAD's page. The runnable
+  // copy carries today's paragraph so the tree comparison stays exact for
+  // everything else; section 3 asserts that old → new swap explicitly. `src`
+  // stays HEAD's own text for the OLD source checks.
+  const oldScheduling = schedulingOf(src);
+  const newScheduling = schedulingOf(fs.readFileSync(path.join(REPO, "src/components/portal/PortalPage.tsx"), "utf8"));
+  const runnable = oldScheduling && newScheduling ? src.replace(oldScheduling, () => newScheduling) : src;
   // Outside the repo tsconfig's "jsx": "react-jsx" does not reach the copy; the
   // pragma gives it the same automatic runtime, so the two trees are comparable.
-  fs.writeFileSync(file, `/** @jsxRuntime automatic */\n/** @jsxImportSource react */\n${src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)}`);
-  return { dir, file, src };
+  fs.writeFileSync(file, `/** @jsxRuntime automatic */\n/** @jsxImportSource react */\n${runnable.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)}`);
+  return { dir, file, src, oldScheduling, newScheduling };
 }
 const show = (f: string) => execFileSync("git", ["show", `${BASE}:${f}`], { cwd: REPO, encoding: "utf8" });
 const read = (f: string) => fs.readFileSync(path.join(REPO, f), "utf8");
@@ -235,6 +246,9 @@ async function main() {
     }
     c.ok(`the element tree is identical to HEAD on all ${tabs.length} tabs and aliases`, drift.length === 0, drift[0] ?? "");
     for (const extra of drift.slice(1, 4)) console.log(`     also: ${extra}`);
+    // The one v1 change that is meant (batch 3, §3): HEAD's Scheduling terms
+    // promised "a few business days"; they now state the 72-weekday-hour window.
+    c.ok("…but for the Scheduling terms, reworded on purpose in batch 3 (§3): 'a few business days' → '72 weekday hours'", !!base.oldScheduling && /a few business days/.test(base.oldScheduling) && !!base.newScheduling && /72 weekday hours/.test(base.newScheduling) && !/a few business days/.test(base.newScheduling), base.newScheduling?.slice(0, 140) ?? "no Scheduling paragraph found");
     const v1Home = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "home" } });
     c.ok("…and it is the v1 frame, not PortalShell", isEl(v1Home) && v1Home.type === "div" && find(v1Home, "PortalShell").length === 0 && find(v1Home, "HomeTab").length === 1);
     // v2 keys on v1 open the nearest old tab.

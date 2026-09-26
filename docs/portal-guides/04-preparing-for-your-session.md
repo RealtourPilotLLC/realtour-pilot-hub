@@ -9,11 +9,11 @@ actions: prepare_session
 order: 1
 owner: Kyle
 ---
-**Book it early.** Sessions are on weekdays. Pick a time at least two full weekdays away so we have time to prepare your scripts and plan the shoot. Starter sessions are two hours. Accelerator sessions are four hours. Pro months have two separate four-hour sessions.
+**Book it early.** Sessions are on weekdays. You can book as soon as your answers are in, or as soon as your strategy call is booked. The first time you can pick is three weekdays (72 weekday hours) after your answers were sent or your call ends, so we have time to write your scripts and plan the shoot. Starter sessions are two hours. Accelerator sessions are four hours. Pro months have two separate four-hour sessions.
 
 **Anything inside 24 hours needs a person.** To change or cancel a session that close, call or text Kyle at (215) 645-4889.
 
-**Where we are filming.** You can book with a general area. We will ask for the exact address before the session, so please send it as soon as you know it.
+**Where we are filming.** Add the exact filming address first. We check the drive from your videographer's other shoots that day before we offer you times. If you do not have the address yet, choose Schedule later and come back to it. Your progress is saved.
 
 **Scripts approved.** Approve your scripts under **Video Topics** before the day. That is what we film from.
 

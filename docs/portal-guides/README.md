@@ -18,7 +18,8 @@ The nine basic client guides the completion audit asked for (CP-13, Sep 24 2026)
   one can never be published by accident.
 
 Facts these drafts rely on, all Jordan's settled decisions: Starter 2 videos, Accelerator 4, Pro 8
-(two separate four-hour sessions); weekday sessions only; 48 weekday hours of preparation; inside
+(two separate four-hour sessions); weekday sessions only; 72 weekday hours of preparation, counted
+from the submitted answers or the booked strategy call's scheduled end (Sep 25 2026, was 48); inside
 24 hours the client calls or texts Kyle at (215) 645-4889; production 7 to 10 business days from
 each session's end; revisions targeted within 24 to 48 weekday hours; a four-business-day review
 window; two included revision rounds; billing on the Stripe anniversary, production by calendar

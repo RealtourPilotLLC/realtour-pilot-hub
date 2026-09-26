@@ -505,14 +505,24 @@ export async function productAvailability(opts: {
 //      a moment ago. There is no other way to construct one (the WeakSet is
 //      private), so a caller cannot reach POST /orders without passing THE
 //      guard — not by a missed `if`, not by a refactor.
-//   2. hubWritePermit() says yes only when ALL of these hold: the switch that
-//      owns the write (`session_booking` / `address_sync`) is ON — a missing
-//      ProgramAutomation row is OFF — AND the client is listed in that switch's
-//      config `authorizedFixtureClientIds`, AND the client is a TEST client
-//      (assertTestClient: a real row renamed to contain TEST is still refused),
-//      AND providerWriteDecision agrees. Today both switches are off and no
-//      client is listed, so every write refuses before a socket opens. The
-//      first real write is Jordan's supervised test on a disposable fixture.
+//   2. hubWritePermit() says yes only when the switch that owns the write
+//      (`session_booking` / `address_sync`) is ON — a missing ProgramAutomation
+//      row is OFF — AND the client falls in one of that switch's two SCOPES
+//      (R02, Sep 25 2026; the rules are lib/hubWritePermit.ts):
+//        FIXTURE  a TEST client listed in `authorizedFixtureClientIds` whose own
+//                 email AND linked Aryeo customer's email are the verified test
+//                 inbox (a real row renamed TEST keeps its real inbox, so it is
+//                 refused), decided with providerWriteDecision({ sandbox: true });
+//        PILOT    a REAL client named in the switch's approved, unexpired
+//                 `pilot` for this exact operation, decided with sandbox:false —
+//                 a pilot write is never dressed up as a test.
+//      Today both switches are off and both lists are empty, so every write
+//      refuses before a socket opens. The first real write is Jordan's
+//      supervised test on a disposable fixture; a real client only ever through
+//      a pilot Jordan approves on Settings → Automations.
+//      The permit carries its scope and the client's own Aryeo customer id, and
+//      createOrder refuses any other customer — a fixture's order can never land
+//      on a real customer, and a pilot's never on somebody else's.
 //
 // WRITES ARE NEVER RETRIED IN HERE. aryeoRequest already makes one attempt for
 // a non-GET, and a timeout after Aryeo committed is the one failure a retry
@@ -535,6 +545,18 @@ export type HubWritePermit = {
   readonly clientName: string;
   readonly operation: string;
   readonly issuedAt: number;
+  // R02 (Sep 25 2026). Every permit hubWritePermit issues carries all four;
+  // they are optional in the TYPE only so a drill's hand-made permit (the
+  // "refused before any socket opens" proof) still compiles. The WeakSet, not
+  // the shape, is what makes a permit real, and a missing customer id refuses.
+  /** Which scope said yes. Recorded on every ProgramBookingAttempt it drives. */
+  readonly scope?: import("@/lib/hubWritePermit").PermitScope;
+  /** What providerWriteDecision was told: true only for a FIXTURE, never for a PILOT. */
+  readonly sandbox?: boolean;
+  /** The permitted client's OWN Aryeo customer — the only customer an order may be for. */
+  readonly aryeoCustomerId?: string | null;
+  /** PILOT: the operations the approval covers (checked at the write); FIXTURE: null (the fixture list is the approval). */
+  readonly allowedOperations?: readonly string[] | null;
 };
 
 const issuedPermits = new WeakSet<HubWritePermit>();
@@ -542,12 +564,34 @@ const issuedPermits = new WeakSet<HubWritePermit>();
  *  one booking's calls and nothing else. */
 const PERMIT_TTL_MS = 120_000;
 
-export type HubWriteDecision = { ok: true; permit: HubWritePermit } | { ok: false; reason: string };
+export type HubWriteDecision =
+  | { ok: true; permit: HubWritePermit; scope: import("@/lib/hubWritePermit").PermitScope }
+  | { ok: false; reason: string };
+
+// The fixture's Aryeo customer email, read once per few minutes: a booking asks
+// the guard three or four times, and the portal asks it on every render.
+const FIXTURE_CUSTOMER_TTL_MS = 5 * 60_000;
+const fixtureCustomerCache = new Map<string, { at: number; email: string | null }>();
+/** Drop the fixture-customer cache — for a drill that relinks a customer. */
+export function resetFixtureIdentityCache(): void {
+  fixtureCustomerCache.clear();
+}
+async function aryeoCustomerEmail(customerId: string): Promise<string | null> {
+  const hit = fixtureCustomerCache.get(customerId);
+  if (hit && Date.now() - hit.at < FIXTURE_CUSTOMER_TTL_MS) return hit.email;
+  // A read. "Could not read it" is null, which refuses — never a pass.
+  // Short: the portal asks this on render for a fixture (a GET is tried three times).
+  const r = await aryeoRequest<{ data?: { email?: string | null } }>(`/customers/${customerId}`, { timeoutMs: 4000 }).catch(() => null);
+  const email = typeof r?.data?.email === "string" && r.data.email.trim() ? r.data.email.trim() : null;
+  if (r) fixtureCustomerCache.set(customerId, { at: Date.now(), email });
+  return email;
+}
 
 /**
- * THE ONE GUARD for every hub-initiated Aryeo write. Pure reads (the switch row,
- * the client row) — nothing is written, and a refusal is a sentence a desk task
- * can carry.
+ * THE ONE GUARD for every hub-initiated Aryeo write. Reads only (the switch
+ * row, the client row, and — for a fixture — its Aryeo customer); nothing is
+ * written, and a refusal is a sentence a desk task can carry. The client is
+ * RE-READ here: the name a caller passes is a label, the row is the fact.
  */
 export async function hubWritePermit(a: {
   switchKey: HubWriteSwitch;
@@ -555,28 +599,45 @@ export async function hubWritePermit(a: {
   operation: string;
 }): Promise<HubWriteDecision> {
   const { automationConfig } = await import("@/lib/programAutomation");
-  const { assertTestClient, providerWriteDecision } = await import("@/lib/testClients");
-  const cfg = await automationConfig<{ authorizedFixtureClientIds: unknown }>(a.switchKey, { authorizedFixtureClientIds: [] });
+  const { providerWriteDecision, isTestClientName, isNeverSyntheticClientId, isVerifiedTestDestinationEmail, fixtureIdentityProblem } = await import("@/lib/testClients");
+  const { parseHubWriteConfig, routeHubWrite } = await import("@/lib/hubWritePermit");
+  const cfg = await automationConfig<Record<string, unknown>>(a.switchKey, {});
   if (!cfg) return { ok: false, reason: `the ${a.switchKey} switch is off, so the hub does not write to Aryeo` };
-  const allowed = Array.isArray(cfg.authorizedFixtureClientIds) ? cfg.authorizedFixtureClientIds.filter((x): x is string => typeof x === "string") : [];
-  if (!a.client?.id || !allowed.includes(a.client.id)) {
-    return { ok: false, reason: `this client is not in ${a.switchKey}'s authorizedFixtureClientIds, so the hub does not write to Aryeo for it` };
+  if (!a.client?.id) return { ok: false, reason: `this client is not in ${a.switchKey}'s authorizedFixtureClientIds or an approved pilot, so the hub does not write to Aryeo for it` };
+  const row = await prisma.client.findUnique({ where: { id: a.client.id }, select: { id: true, name: true, email: true, aryeoCustomerId: true } });
+  if (!row) return { ok: false, reason: `client ${a.client.id} does not exist, so the hub does not write to Aryeo for it` };
+  const config = parseHubWriteConfig(cfg);
+  const route = routeHubWrite({
+    switchKey: a.switchKey, config, client: { id: row.id, name: row.name }, operation: a.operation, now: new Date(),
+    isTestName: isTestClientName, isNeverSynthetic: isNeverSyntheticClientId,
+  });
+  if (route.kind === "REFUSE") return { ok: false, reason: route.reason };
+  if (route.kind === "FIXTURE") {
+    // The free checks first (the row's own inbox, a linked customer), then the
+    // one Aryeo read — only for a row that has already passed those.
+    const worthAsking = isVerifiedTestDestinationEmail(row.email) && !!row.aryeoCustomerId;
+    const customerEmail = worthAsking ? await aryeoCustomerEmail(row.aryeoCustomerId!) : null;
+    const problem = fixtureIdentityProblem({ clientEmail: row.email, aryeoCustomerId: row.aryeoCustomerId, aryeoCustomerEmail: customerEmail });
+    if (problem) return { ok: false, reason: problem };
   }
-  try {
-    assertTestClient({ id: a.client.id, name: a.client.name });
-  } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : "not a TEST client" };
-  }
-  const d = providerWriteDecision({ provider: "aryeo", operation: a.operation, client: { id: a.client.id, name: a.client.name }, sandbox: true });
+  const allowedOperations = route.kind === "PILOT" ? config.pilot?.operations ?? [] : null;
+  const sandbox = route.kind === "FIXTURE";
+  const d = providerWriteDecision({ provider: "aryeo", operation: a.operation, client: { id: row.id, name: row.name }, sandbox });
   if (!d.allowed) return { ok: false, reason: d.reason };
-  const permit: HubWritePermit = Object.freeze({ switchKey: a.switchKey, clientId: a.client.id, clientName: a.client.name ?? "", operation: a.operation, issuedAt: Date.now() });
+  const permit: HubWritePermit = Object.freeze({
+    switchKey: a.switchKey, clientId: row.id, clientName: row.name ?? "", operation: a.operation, issuedAt: Date.now(),
+    scope: route.kind, sandbox, aryeoCustomerId: row.aryeoCustomerId ?? null,
+    allowedOperations: allowedOperations ? Object.freeze([...allowedOperations]) : null,
+  });
   issuedPermits.add(permit);
-  return { ok: true, permit };
+  return { ok: true, permit, scope: route.kind };
 }
 
 function checkPermit(p: HubWritePermit, operation: string): void {
   if (!p || !issuedPermits.has(p)) throw new AryeoError(`Refusing ${operation}: no write permit from hubWritePermit().`, 403);
   if (Date.now() - p.issuedAt > PERMIT_TTL_MS) throw new AryeoError(`Refusing ${operation}: the write permit expired; ask the guard again.`, 403);
+  // A pilot approves named writes, not "anything once the door is open".
+  if (p.scope === "PILOT" && !(p.allowedOperations ?? []).includes(operation)) throw new AryeoError(`Refusing ${operation}: the pilot approval does not cover it.`, 403);
 }
 
 /**
@@ -623,8 +684,40 @@ export type AryeoBookedAppointment = {
   raw: unknown;
 };
 
+/** §6.6 W02: one appointment on a creative's day, with where it is (the order's
+ *  address), from a FRESH provider read — the booking adapter's travel input. */
+export type AryeoDayAppointment = {
+  id: string;
+  status: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  orderId: string | null;
+  userIds: string[];
+  teamMemberIds: string[];
+  lat: number | null;
+  lng: number | null;
+};
+
+/** §6.6 W02: what an appointment-scoped availability read proved about itself. */
+export type AryeoScopedSlots = {
+  slots: AryeoTimeslot[];
+  /** Aryeo echoed the appointment's own duration and narrowed to its creative — the
+   *  filter was HONOURED. False = the answer cannot be trusted as appointment-scoped. */
+  honoured: boolean;
+  why: string;
+};
+
 const WRITE_TIMEOUT_MS = 20_000;
 const isoZ = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
+
+// R03: the catalogue's variant prices, read from the documented LIST route and
+// kept a minute (one booking run). GET /products/{id} is a dead route — Phase 0
+// measured a 404 for every id — so a single product is found in the list.
+let variantPriceCache: { at: number; prices: Map<string, number | null> } | null = null;
+/** Drop the variant-price cache — for a drill that changes a price. */
+export function resetVariantPriceCache(): void {
+  variantPriceCache = null;
+}
 
 function asAppointment(raw: unknown): AryeoBookedAppointment {
   const a = (raw ?? {}) as AryeoAppointment & { company_team_members?: { id?: string }[] };
@@ -673,6 +766,94 @@ export const AryeoBooking = {
       .map((s) => ({ startAt: s.start_at, endAt: s.end_at ?? null, userIds: Array.isArray(s.users) ? s.users.map((u) => u.id).filter((x): x is string => !!x) : null }));
   },
 
+  /**
+   * R03 — THE PRE-WRITE PRICE GUARD'S INPUT. The variant's list price in cents
+   * (`price_amount`, else `price`), or null when the product or the variant is
+   * not in the catalogue. Throws when Aryeo cannot be read: "could not ask" is
+   * never "free". Phase 0 read all three program variants at 0; the hub
+   * re-reads it before every order because a price someone sets in the Aryeo UI
+   * would otherwise bill a client who already paid through Stripe.
+   */
+  productVariantPrice: async (productId: string, variantId: string): Promise<number | null> => {
+    const key = `${productId}:${variantId}`;
+    if (!variantPriceCache || Date.now() - variantPriceCache.at > PROVIDER_TTL_MS) {
+      const products = await fetchAll<AryeoProduct>("/products", { include: "variants", "filter[include_inactive]": true });
+      const prices = new Map<string, number | null>();
+      for (const p of products) {
+        for (const v of p.variants ?? []) {
+          const raw = v as AryeoProductVariant & { price?: number };
+          const cents = typeof raw.price_amount === "number" ? raw.price_amount : typeof raw.price === "number" ? raw.price : null;
+          if (p.id && v.id) prices.set(`${p.id}:${v.id}`, cents);
+        }
+      }
+      variantPriceCache = { at: Date.now(), prices };
+    }
+    return variantPriceCache.prices.has(key) ? variantPriceCache.prices.get(key)! : null;
+  },
+
+  /**
+   * §6.6 W02/A23 — A CREATIVE'S DAY, READ FRESH. Local Appointment rows are only
+   * as new as the hourly sync, so the adapter re-reads the day from Aryeo just
+   * before it books. Deliberately NOT filtered by person on the server: Phase 0
+   * found filter[user_ids][] takes team-member ids on the scheduling routes
+   * while this route documents user ids, and a filter misread as "nobody" would
+   * return an empty day that looks like a free one. So the whole ET day is read
+   * (a few dozen rows) and narrowed here, by the creative's user id or
+   * team-member id. Where each one is comes from its order's address.
+   */
+  creativeDayAppointments: async (q: { teamMemberId: string; userId: string | null; dayStart: Date; dayEnd: Date }): Promise<AryeoDayAppointment[]> => {
+    const out: AryeoDayAppointment[] = [];
+    for (let page = 1; page <= 4; page++) {
+      const r = await aryeoRequest<{ data?: unknown[]; meta?: { last_page?: number } }>("/appointments", {
+        query: { include: "users,order,order.address", "filter[start_at_gte]": isoZ(q.dayStart), "filter[start_at_lte]": isoZ(q.dayEnd), per_page: 100, page },
+      });
+      for (const raw of r?.data ?? []) {
+        const a = asAppointment(raw);
+        const order = (raw as { order?: { address?: { latitude?: number | null; longitude?: number | null } | null } }).order;
+        const mine = a.teamMemberIds.includes(q.teamMemberId) || (!!q.userId && a.userIds.includes(q.userId));
+        if (!mine || (a.status ?? "").toUpperCase() === "CANCELED") continue;
+        const lat = order?.address?.latitude;
+        const lng = order?.address?.longitude;
+        out.push({ id: a.id, status: a.status, start_at: a.start_at, end_at: a.end_at, orderId: a.orderId, userIds: a.userIds, teamMemberIds: a.teamMemberIds, lat: typeof lat === "number" ? lat : null, lng: typeof lng === "number" ? lng : null });
+      }
+      if (!r?.meta?.last_page || page >= r.meta.last_page) break;
+    }
+    return out;
+  },
+
+  /**
+   * §6.6 W02 — THE ARYEO-DECIDES ADAPTER (built; used only when session_booking's
+   * travelSource says ARYEO_APPOINTMENT, which waits on the supervised test).
+   * filter[appointment_id] is "availability for an existing order": the only
+   * way Aryeo's scheduling can see a destination. It is asked WITHOUT duration
+   * and interval on purpose. The spec makes duration "required if appointment_id
+   * isn't specified", and Phase 0 saw meta echo the duration and narrow
+   * company_team_member_ids to the assigned creative. So an answer counts as
+   * appointment-scoped only when meta carries the appointment's own duration
+   * (and, when it lists people, exactly that appointment's). A provider that
+   * ignored the filter either refuses (no duration) or answers a different
+   * question, and either way nothing is labelled as Aryeo's travel decision.
+   */
+  timeslotsForAppointment: async (q: { appointmentId: string; date: string; expectDurationMin: number; expectTeamMemberIds: string[] }): Promise<AryeoScopedSlots> => {
+    let r: { data?: { start_at?: string; end_at?: string; users?: { id?: string }[] }[]; meta?: { duration?: number | string; company_team_member_ids?: string[] } } | undefined;
+    try {
+      r = await aryeoRequest("/scheduling/available-timeslots", { query: { timezone: "America/New_York", date: q.date, "filter[appointment_id]": q.appointmentId } });
+    } catch (e) {
+      if (e instanceof AryeoError && e.status === 422) return { slots: [], honoured: false, why: `Aryeo refused an appointment-scoped read (${e.message}), so it did not apply the appointment` };
+      throw e;
+    }
+    const slots = (r?.data ?? [])
+      .filter((s): s is typeof s & { start_at: string } => !!s.start_at)
+      .map((s) => ({ startAt: s.start_at, endAt: s.end_at ?? null, userIds: Array.isArray(s.users) ? s.users.map((u) => u.id).filter((x): x is string => !!x) : null }));
+    const duration = Number(r?.meta?.duration ?? NaN);
+    const people = Array.isArray(r?.meta?.company_team_member_ids) ? r!.meta!.company_team_member_ids! : null;
+    if (duration !== q.expectDurationMin) return { slots, honoured: false, why: `Aryeo answered for ${Number.isFinite(duration) ? `${duration} minutes` : "no stated duration"}, not the appointment's ${q.expectDurationMin}` };
+    if (people && q.expectTeamMemberIds.length && (people.length !== q.expectTeamMemberIds.length || !q.expectTeamMemberIds.every((t) => people.includes(t)))) {
+      return { slots, honoured: false, why: "Aryeo answered for other people than the appointment's creative" };
+    }
+    return { slots, honoured: true, why: "Aryeo echoed the appointment's duration and creative" };
+  },
+
   // ---- writes (a permit each; one attempt each; never retried here) ----
   createAddress: async (permit: HubWritePermit, body: AryeoAddressWrite): Promise<{ id: string }> => {
     checkPermit(permit, "addresses.create");
@@ -687,6 +868,12 @@ export const AryeoBooking = {
   },
   createOrder: async (permit: HubWritePermit, body: { customer_id: string; address_id: string; variantId: string; internal_notes: string }): Promise<{ id: string; number: number | null; itemIds: string[] }> => {
     checkPermit(permit, "orders.create");
+    // R02/A26: the order is for the permitted client's OWN Aryeo customer or
+    // nobody — a fixture can never reach a real customer id, a pilot never
+    // somebody else's.
+    if (!permit.aryeoCustomerId || body.customer_id !== permit.aryeoCustomerId) {
+      throw new AryeoError(`Refusing orders.create: customer ${body.customer_id || "(none)"} is not the permitted client's own Aryeo customer.`, 403);
+    }
     const r = await aryeoRequest<{ data?: AryeoOrder }>("/orders", {
       method: "POST",
       timeoutMs: WRITE_TIMEOUT_MS,
@@ -730,6 +917,23 @@ export const AryeoBooking = {
   rescheduleAppointment: async (permit: HubWritePermit, id: string, start: Date, end: Date): Promise<AryeoBookedAppointment> => {
     checkPermit(permit, "appointments.reschedule");
     const r = await aryeoRequest<{ data?: unknown }>(`/appointments/${id}/reschedule`, { method: "PUT", body: { start_at: isoZ(start), end_at: isoZ(end), notify: false }, timeoutMs: WRITE_TIMEOUT_MS });
+    return asAppointment(r?.data);
+  },
+  /**
+   * §6.6 W02 — the Aryeo-decides adapter's write: put an UNSCHEDULED appointment
+   * (made on the order at the address step) at the time Aryeo's appointment-
+   * scoped availability offered. auto_confirm true (normal bookings confirm
+   * without a routine approval step, §3) and notify false (the customer hears
+   * from the hub, never from Aryeo — Jordan, Sep 24–25). Unused while
+   * travelSource is HUB_DRIVE.
+   */
+  scheduleAppointment: async (permit: HubWritePermit, id: string, body: { start: Date; end: Date; teamMemberIds: string[] }): Promise<AryeoBookedAppointment> => {
+    checkPermit(permit, "appointments.schedule");
+    const r = await aryeoRequest<{ data?: unknown }>(`/appointments/${id}/schedule`, {
+      method: "PUT",
+      timeoutMs: WRITE_TIMEOUT_MS,
+      body: { start_at: isoZ(body.start), end_at: isoZ(body.end), company_team_member_ids: body.teamMemberIds, auto_confirm: true, notify: false },
+    });
     return asAppointment(r?.data);
   },
 };

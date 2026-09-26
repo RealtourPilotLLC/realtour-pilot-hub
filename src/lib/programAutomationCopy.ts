@@ -92,12 +92,17 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, { title: string; onEffect
   },
   session_booking: {
     title: "Self-booking against Aryeo",
-    onEffect: "A client's session request CREATES A REAL ARYEO ORDER AND APPOINTMENT (one order per session, on the creative they picked), reads it back and shows it as booked, instead of a request Kyle books by hand. It also lets the hub cancel or move a session it booked itself. ONLY for clients listed in this switch's authorizedFixtureClientIds (TEST fixtures only); everyone else stays desk-assisted. Aryeo's customer notifications stay off; our team gets Aryeo's own notice.",
+    onEffect: "A client's session request CREATES A REAL ARYEO ORDER AND APPOINTMENT (one order per session, on the creative they picked), reads it back and shows it as booked, instead of a request Kyle books by hand. It also lets the hub cancel or move a session it booked itself. ONLY for TEST fixtures listed in this switch's authorizedFixtureClientIds (on Jordan's test inbox) and real clients in an approved pilot for the named actions (Who the hub may write for, below); everyone else stays desk-assisted. Aryeo's customer notifications stay off; our team gets Aryeo's own notice.",
     reaches: "clients",
   },
   address_sync: {
     title: "Exact-address sync to Aryeo",
-    onEffect: "When a client adds the exact filming address for a session, the hub UPDATES THAT SESSION'S ADDRESS IN ARYEO itself and reads it back, instead of leaving it on Kyle's desk. ONLY for clients listed in authorizedFixtureClientIds (TEST fixtures only). Two sessions sharing one Aryeo address are never changed by the hub; Kyle gets them.",
+    onEffect: "When a client adds the exact filming address for a session, the hub UPDATES THAT SESSION'S ADDRESS IN ARYEO itself and reads it back, instead of leaving it on Kyle's desk. ONLY for TEST fixtures listed in authorizedFixtureClientIds and real clients in an approved address pilot. Two sessions sharing one Aryeo address are never changed by the hub; Kyle gets them.",
+    reaches: "clients",
+  },
+  call_booking: {
+    title: "Strategy-call booking through Calendly's API",
+    onEffect: "With config mode \"API\" and a passed read-only Calendly probe, the hub BOOKS THE CLIENT'S STRATEGY CALL ON JORDAN'S CALENDLY itself (one invitee on the mapped monthly type; Calendly sends its own confirmation per the event type's settings) from a list of open times in the portal. ONLY for TEST fixtures in authorizedFixtureClientIds or an approved pilot. Everyone else keeps the embedded Calendly page, where the client books and the hub only reads.",
     reaches: "clients",
   },
   cut_transcripts: {

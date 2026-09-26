@@ -52,6 +52,11 @@ export const AUTOMATION_KEYS = [
   // ALWAYS saved and verified by readback; this only decides whether the hub
   // PATCHes the Aryeo address itself (authorised fixtures only) or Kyle does.
   "address_sync", // §8 exact filming address → PATCH the session's Aryeo address, read it back
+  // W03 (Sep 25 2026). The portal EMBEDS the mapped monthly-strategy booking
+  // page for everyone (no hub write); this switch only decides whether the hub
+  // itself books the invitee through Calendly's Scheduling API (config.mode
+  // "API" + a passed read-only probe) for clients in its fixture/pilot scope.
+  "call_booking", // §6.6 in-portal strategy-call booking: API mode (POST /invitees) for scoped clients — lib/callBooking.ts
   "cut_transcripts", // §9 (no speech-to-text provider exists today)
   "caption_assistant", // §10
   "fact_extraction", // §23 auto-accept rules for extracted facts
@@ -180,4 +185,61 @@ export async function setAutomation(key: AutomationKey, enabled: boolean, by: st
     },
   });
   return getAutomation(key);
+}
+
+/**
+ * The STORED config of a switch whether or not it is on — for a settings screen
+ * or a probe to SHOW who is in scope (R02: "shows the scope per switch"). Never
+ * for a driver: a driver reads automationConfig(), which is null while the
+ * switch is off, so nothing can act on a list that is merely on file.
+ */
+export async function storedAutomationConfigForDisplay(key: AutomationKey): Promise<Record<string, unknown> | null> {
+  const row = await prisma.programAutomation.findUnique({ where: { key }, select: { configJson: true } });
+  if (!row?.configJson) return null;
+  try {
+    const v: unknown = JSON.parse(row.configJson);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Change ONE top-level field of a switch's config and nothing else — never its
+ * on/off state (R02's pilot editor: approving a pilot must not also switch the
+ * writes on). A missing row is created OFF, which is still "off" to every
+ * driver. Read-modify-write under an advisory lock on the key, so two owners
+ * saving at once cannot drop each other's change, and the before → after goes
+ * into AuditLog (the hub's existing change history) in the same transaction:
+ * a pilot that exists without a record of who approved it cannot happen.
+ * Callers gate this behind requireOwner().
+ */
+export async function setAutomationConfigField(key: AutomationKey, field: string, value: unknown, by: string, auditAction: string): Promise<{ from: unknown; to: unknown }> {
+  const { lockAdvisory } = await import("@/lib/dbLocks");
+  return prisma.$transaction(async (tx) => {
+    await lockAdvisory(tx, `program-automation-config:${key}`);
+    const row = await tx.programAutomation.findUnique({ where: { key }, select: { configJson: true } });
+    let cfg: Record<string, unknown> = {};
+    if (row?.configJson) {
+      try {
+        const v: unknown = JSON.parse(row.configJson);
+        if (v && typeof v === "object" && !Array.isArray(v)) cfg = v as Record<string, unknown>;
+      } catch {
+        // An unreadable config is not silently replaced: the owner sees why.
+        throw new Error(`The stored ${key} config is not valid JSON, so it was not changed. Fix it before editing it here.`);
+      }
+    }
+    const from = cfg[field] ?? null;
+    const next = { ...cfg, [field]: value };
+    const configJson = JSON.stringify(next);
+    await tx.programAutomation.upsert({
+      where: { key },
+      create: { key, enabled: false, configJson },
+      update: { configJson },
+    });
+    await tx.auditLog.create({
+      data: { actor: by, action: auditAction, target: `automation:${key}`, detail: `${field}: ${JSON.stringify(from)} -> ${JSON.stringify(value ?? null)}`.slice(0, 4000) },
+    });
+    return { from, to: value ?? null };
+  });
 }

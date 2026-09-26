@@ -334,7 +334,8 @@ async function main() {
     const expectEarliest = pm.earliestFilmingStart(lastSubmit, { windowHours: newGate!.after.windowHours, windowWaived: false });
     c.ok("NEW: open, earliest = the last submission + the window (not the extra's)", newGate?.after.earliestSessionAt?.getTime() === expectEarliest.getTime() && newGate.after.preparationStatus === "PREPARING_SCRIPTS", newGate?.after.earliestSessionAt?.toISOString());
     const gateT = await portal.sessionGate(T.enrollmentId, T.monthId, { now: NOW });
-    c.ok("…and the portal's gate says the same (Fri Oct 9, 08:00 ET)", !gateT.locked && gateT.earliest.getTime() === expectEarliest.getTime() && expectEarliest.getTime() === et(10, 9, 8).getTime(), gateT.earliest.toISOString());
+    // 72 weekday hours since batch 3, §3: Wed 08:00 → Mon Oct 12 08:00 (was Fri Oct 9 under 48).
+    c.ok("…and the portal's gate says the same (Mon Oct 12, 08:00 ET)", !gateT.locked && gateT.earliest.getTime() === expectEarliest.getTime() && expectEarliest.getTime() === et(10, 12, 8).getTime(), gateT.earliest.toISOString());
     const prevT = await reminders.previewReminders(T.monthId, { now: NOW });
     const primaryT = prevT.lanes.find((l) => l.lane === "PRIMARY")?.candidate.action ?? null;
     c.ok("the reminder evaluator produces no COMPLETE_ANSWERS for the extra (it moves on to booking)", primaryT !== "COMPLETE_ANSWERS" && primaryT === "BOOK_SESSION", String(primaryT));
@@ -489,15 +490,20 @@ async function main() {
     const V = await buildContentMonth(prisma as never, { name: "Fay Midcall TEST", package: "Accelerator", project: false, topics: [{ title: "Topic one", selection: "SELECTED" }] });
     await prisma.programCallRecord.create({ data: { enrollmentId: V.enrollmentId, clientId: V.clientId, callType: "MONTHLY_STRATEGY", monthId: V.monthId, status: "SCHEDULED", matchState: "MATCHED", scheduledStart: et(10, 7, 9, 50), scheduledEnd: et(10, 7, 10, 20), transcriptState: "NONE" } });
     const midDerived = await pm.recalcProgramMonth(V.monthId, { dryRun: true, now: NOW });
-    const oldWouldLock = !(midDerived!.after.strategyCallAt! > NOW) && midDerived!.after.earliestSessionAt === null;
-    c.ok("OLD (the same derived month through the old condition): 10 minutes into the call the gate had nothing to open on", oldWouldLock);
+    // Since batch 3 (§3, A19) the NEW derivation anchors a booked call itself,
+    // so the old condition must be fed the OLD derivation (f2555f7's, which
+    // opened the call route only once the call was HELD) to stay an OLD reading.
+    const oldMid = await oldPM.recalcProgramMonth(V.monthId, { dryRun: true, now: NOW });
+    const oldWouldLock = !(oldMid!.after.strategyCallAt! > NOW) && oldMid!.after.earliestSessionAt === null;
+    c.ok("OLD (the same month through the old derivation and the old condition): 10 minutes into the call the gate had nothing to open on", oldWouldLock);
     const gateMid = await portal.sessionGate(V.enrollmentId, V.monthId, { now: NOW });
     const expectMid = pm.earliestFilmingStart(et(10, 7, 10, 20), { windowHours: midDerived!.after.windowHours, windowWaived: false });
     c.ok("NEW: 10 minutes into the call the gate is open, earliest = the call's END + the window", !gateMid.locked && gateMid.earliest.getTime() === expectMid.getTime(), `${gateMid.reason} ${gateMid.earliest.toISOString()}`);
     const X = await buildContentMonth(prisma as never, { name: "Gil Future TEST", package: "Accelerator", project: false, topics: [{ title: "Topic one", selection: "SELECTED" }] });
     await prisma.programCallRecord.create({ data: { enrollmentId: X.enrollmentId, clientId: X.clientId, callType: "MONTHLY_STRATEGY", monthId: X.monthId, status: "SCHEDULED", matchState: "MATCHED", scheduledStart: et(10, 12, 13), scheduledEnd: et(10, 12, 13, 30), transcriptState: "NONE" } });
     const gateX = await portal.sessionGate(X.enrollmentId, X.monthId, { now: NOW });
-    c.ok("booked today for a call on Mon Oct 12: open now, measured from the call's end (Wed Oct 14 13:30), not the booking", !gateX.locked && gateX.earliest.getTime() === et(10, 14, 13, 30).getTime() && gateX.earliest.getTime() !== pm.addWeekdayHoursET(NOW, 48).getTime(), gateX.earliest.toISOString());
+    // 72 weekday hours since batch 3, §3: Mon 13:30 end → Thu Oct 15 13:30 (was Wed Oct 14 under 48).
+    c.ok("booked today for a call on Mon Oct 12: open now, measured from the call's end (Thu Oct 15 13:30), not the booking", !gateX.locked && gateX.earliest.getTime() === et(10, 15, 13, 30).getTime() && gateX.earliest.getTime() !== pm.addWeekdayHoursET(NOW, 72).getTime(), gateX.earliest.toISOString());
 
     // =======================================================================
     c.head("9 · written route + a call to discuss scripts: the buffer (OLD first)");
@@ -518,7 +524,8 @@ async function main() {
     c.ok("OLD: answers Mon, shoot Thu, call booked Wed ending 3pm — no exception, nothing for Kyle", oldBuf.exceptions.length === 0 && oldBuf.followUps.every((f) => f.kind !== ("CALL_INSIDE_BUFFER" as never)));
     c.ok("NEW: exactly one exception and one Kyle follow-up naming the Thu session", newBuf.exceptions.length === 1 && /buffer/.test(newBuf.exceptions[0]) && newBuf.followUps.filter((f) => f.kind === "CALL_INSIDE_BUFFER" && f.owner === "KYLE").length === 1, newBuf.exceptions[0]);
     const bufEnd = pm.earliestFilmingStart(et(10, 7, 15), { windowHours: newBuf.windowHours, windowWaived: false });
-    c.ok("new offers start no earlier than the call's end + the window (Wed 3pm → Fri 3pm today; W01 moves the window)", newBuf.earliestSessionAt?.getTime() === bufEnd.getTime() && noCall.earliestSessionAt!.getTime() < bufEnd.getTime(), newBuf.earliestSessionAt?.toISOString());
+    // Label only: 72 weekday hours since batch 3, §3 (Wed 3pm → Mon 3pm; was Fri 3pm under 48).
+    c.ok("new offers start no earlier than the call's end + the window (Wed 3pm → Mon 3pm at 72 weekday hours)", newBuf.earliestSessionAt?.getTime() === bufEnd.getTime() && noCall.earliestSessionAt!.getTime() < bufEnd.getTime(), newBuf.earliestSessionAt?.toISOString());
     c.ok("the booked session itself is untouched (still Thu 2pm)", newBuf.sessionsAccountedFor === 1 && bufInput(true).booking.sessions[0].startsAt?.getTime() === et(10, 8, 14).getTime());
     // Through recalcProgramMonth: a real-named client (made by hand, PGlite
     // only) gets the desk task; a TEST client never does.
@@ -613,7 +620,10 @@ async function main() {
     // =======================================================================
     {
       // (a) WRITTEN route + a booked call to talk things through, and NO answers.
-      const WB = await buildContentMonth(prisma as never, { name: "Ivy Written Call TEST", package: "Accelerator", project: false, topics: [{ title: "Written A", selection: "SELECTED" }, { title: "Written B", selection: "SELECTED" }] });
+      // All four of the Accelerator's topics chosen: since batch 3 (§3, A18) a
+      // written session opens only once EVERY topic is chosen and answered, so
+      // a 2-of-4 fixture would stay UNDER_PLANNED and never reach the buffer.
+      const WB = await buildContentMonth(prisma as never, { name: "Ivy Written Call TEST", package: "Accelerator", project: false, topics: ["A", "B", "C", "D"].map((x) => ({ title: `Written ${x}`, selection: "SELECTED" as const })) });
       await prisma.contentEnrollment.update({ where: { id: WB.enrollmentId }, data: { callMode: "OPTIONAL_WRITTEN" } });
       await prisma.contentMonth.update({ where: { id: WB.monthId }, data: { planningMode: "WRITTEN" } });
       const baseSrc = show("src/lib/portal.ts");
@@ -628,11 +638,10 @@ async function main() {
       c.ok("…the answers reminder still runs (COMPLETE_ANSWERS, not suppressed 'booked')", remWB?.action === "COMPLETE_ANSWERS" && remWB.suppressionReason !== "booked", `${remWB?.action} ${remWB?.decision} ${remWB?.suppressionReason}`);
       c.ok("…and Your Month's schedule reads the same lock", (await portal.portalScheduleMonths(vWB.enrollment)).find((m) => m.monthId === WB.monthId)?.locked === true);
       // Answers in: open, but never inside the call's buffer (§6.4).
-      await interview(WB, WB.topicIds[0], "SUBMITTED", et(10, 5, 9));
-      await interview(WB, WB.topicIds[1], "SUBMITTED", et(10, 5, 10));
+      for (const [i, id] of WB.topicIds.entries()) await interview(WB, id, "SUBMITTED", et(10, 5, 9 + i));
       const gWB2 = await portal.sessionGate(WB.enrollmentId, WB.monthId, { now: NOW });
       const bufWB = pm.earliestFilmingStart(et(10, 9, 13, 30), { windowHours: (await pm.recalcProgramMonth(WB.monthId, { dryRun: true, now: NOW }))!.after.windowHours, windowWaived: false });
-      c.ok("answers in → open, earliest = the call's end + the window (the buffer), not the submission's", !gWB2.locked && gWB2.earliest.getTime() === bufWB.getTime(), gWB2.earliest.toISOString());
+      c.ok("answers in → open, earliest = the call's end + the window (the buffer), not the submission's", !gWB2.locked && gWB2.earliest.getTime() === bufWB.getTime(), `${gWB2.locked} ${gWB2.preparation?.lock ?? ""} ${gWB2.earliest.toISOString()}`);
 
       // (b) CALL route, call held but its transcript not read yet.
       const CH = await buildContentMonth(prisma as never, { name: "Dana Callroute TEST", package: "Starter", project: false, topics: [{ title: "Held one", selection: "SELECTED" }, { title: "Held two", selection: "SELECTED" }] });

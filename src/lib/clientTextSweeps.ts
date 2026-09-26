@@ -537,6 +537,26 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       }
       notes.push(`${p.title}: client has an open question, but the shoot is in ${Math.round(hoursOut)}h — confirming anyway`);
     }
+    // ADDRESS CHANGE PENDING (A25, §6.6: "Do not send a confirmed itinerary with
+    // an unacknowledged different address"). A content client gave a new exact
+    // address for this job's session and it is not on the Aryeo booking yet
+    // (PENDING / DESK / FAILED / UNKNOWN — anything short of SYNCED), so the
+    // job's own address is the OLD one and a confirmation would repeat it. No
+    // time floor here, unlike the open-question hold: a confirmation naming the
+    // wrong place is worse than none, and Kyle's address task already has it.
+    const addressPending = await prisma.programSessionAddress.findFirst({
+      where: { projectId: p.id, submittedAt: { not: null }, syncState: { not: "SYNCED" } },
+      select: { id: true },
+    }).catch(() => null);
+    if (addressPending) {
+      if (taskIdsForHold.length > 0) {
+        await prisma.smartTask.updateMany({
+          where: { id: { in: taskIdsForHold } },
+          data: { summary: `On hold: address change pending. ${p.client.name} gave a new filming address that is not on the Aryeo booking yet, so the hub is not confirming the old one. It sends once the new address is on the booking.` },
+        }).catch(() => {});
+      }
+      skipped++; notes.push(`${p.title}: address change pending — confirmation held`); continue;
+    }
     // Someone already sent it by hand (the old send button / a hand-typed text
     // the webhook recognized) → nothing owed.
     const already = await prisma.smartTask.findFirst({

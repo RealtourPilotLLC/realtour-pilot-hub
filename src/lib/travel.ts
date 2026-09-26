@@ -57,6 +57,42 @@ export async function driveBetween(
   }
 }
 
+/**
+ * DRIVE TIME FOR A SCHEDULING DECISION (§6.6 W02, Sep 25 2026) — strict.
+ *
+ * driveBetween above answers a PAY question, so when OSRM stalls it falls back
+ * to a straight-line guess: a mileage line is better roughly right than
+ * missing. A slot offered to a client is the opposite case. A guessed drive
+ * that says "fits" is a creative sent across the county with no time to get
+ * there, so this one never guesses: OSRM answers within 5 seconds, or the
+ * answer is null and the caller labels the slot "travel not checked" (a
+ * person confirms it; it is never auto-booked).
+ *
+ * The FASTEST route's duration, not the shortest distance — the question is
+ * "can they be there by then", not "what do we owe per mile". No live traffic
+ * (the public router has none); the 15-minute buffer the caller adds is what
+ * absorbs that.
+ */
+export async function driveMinutesStrict(
+  aLat: number,
+  aLng: number,
+  bLat: number,
+  bLng: number,
+): Promise<{ minutes: number; miles: number } | null> {
+  if (![aLat, aLng, bLat, bLng].every((x) => typeof x === "number" && isFinite(x))) return null;
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${aLng},${aLat};${bLng},${bLat}?overview=false&alternatives=false`;
+    const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const j = (await res.json()) as { code?: string; routes?: { distance: number; duration: number }[] };
+    const r = j.routes?.[0];
+    if (!r || !isFinite(r.duration)) return null;
+    return { minutes: r.duration / 60, miles: r.distance / M_PER_MILE };
+  } catch {
+    return null;
+  }
+}
+
 // The full driving-route geometry through an ordered list of waypoints (home →
 // shoots → home), as [lat, lng] pairs for a Leaflet polyline. One OSRM call for
 // the whole day. Returns null on failure so the caller can fall back to straight

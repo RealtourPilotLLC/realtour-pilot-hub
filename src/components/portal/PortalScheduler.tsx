@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, Info, Loader2, Lock, MapPin, MoveRight, Phone, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalRequestSession, portalRescheduleSession, portalSubmitSessionAddress } from "@/app/portal/actions";
+import { portalRequestSession, portalRescheduleSession, portalSaveSessionPlanAddress, portalSessionSlots, portalSubmitSessionAddress } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
+import type { SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
 import { CancelRequestButton } from "@/components/portal/PlanningChoice";
 
 // The scheduling card, clean (Jordan, Aug 28): finished states collapse to
@@ -34,6 +35,16 @@ import { CancelRequestButton } from "@/components/portal/PlanningChoice";
 //   · How the booking happens is said plainly: desk-assisted (Kyle books it by
 //     hand) unless the hub books this client itself.
 //   · A session booked with only an area asks for the exact address, per session.
+//
+// §6.6 W02 (Sep 25 2026) — EXACT ADDRESS FIRST. Booking a session is now three
+// steps, per session (Pro picks "Session 1" or "Session 2" first): where
+// (portalSaveSessionPlanAddress — a structured street address, saved on the
+// session's plan, so "Schedule later" keeps it), then the times FROM that
+// address (portalSessionSlots — live availability with the drive from and to
+// the videographer's other shoots already checked), then who and Book. A time
+// whose drive could not be checked says "Kyle confirms" and is requested, never
+// booked by the hub on its own. The `days` prop is no longer the list offered:
+// it is the package's base availability, kept for callers that still pass it.
 
 /** Kyle's line. A literal because this is a client component; the server's is
  *  reviewWindows.URGENT_CONTACT, and the two must say the same thing. */
@@ -133,6 +144,41 @@ function AddressForm({ sessionKey, onDone }: { sessionKey: string; onDone: () =>
   );
 }
 
+/** §6.6 W02: step one of booking a session — its exact address, saved on the session's plan. */
+function PlanAddressStep({ monthId, sessionIndex, lead, onSaved, onCancel }: { monthId: string; sessionIndex: number; lead: string | null; onSaved: () => void; onCancel: (() => void) | null }) {
+  const [f, setF] = useState({ street: "", unit: "", city: "", state: "", zip: "" });
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, start] = useTransition();
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const go = () => start(async () => {
+    const r = await portalSaveSessionPlanAddress(portalAuthFromLocation(), monthId, sessionIndex, f).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+    if (r.ok) onSaved();
+  });
+  const input = "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand";
+  return (
+    <div className="mt-3">
+      <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Where are we filming?</div>
+      {lead && <p className="mt-1 text-xs text-muted">{lead}</p>}
+      <div className="mt-1.5 grid gap-2 rounded-xl border border-border bg-surface-2/40 p-3 sm:grid-cols-6">
+        <input aria-label="Street address" placeholder="Street address (117 Kyle Lane)" autoComplete="address-line1" value={f.street} onChange={set("street")} className={cn(input, "sm:col-span-4")} />
+        <input aria-label="Unit" placeholder="Unit (optional)" autoComplete="address-line2" value={f.unit} onChange={set("unit")} className={cn(input, "sm:col-span-2")} />
+        <input aria-label="City" placeholder="City" autoComplete="address-level2" value={f.city} onChange={set("city")} className={cn(input, "sm:col-span-3")} />
+        <input aria-label="State" placeholder="State" maxLength={2} autoComplete="address-level1" value={f.state} onChange={set("state")} className={cn(input, "sm:col-span-1")} />
+        <input aria-label="ZIP" placeholder="ZIP" inputMode="numeric" maxLength={10} autoComplete="postal-code" value={f.zip} onChange={set("zip")} className={cn(input, "sm:col-span-2")} />
+        <div className="flex flex-wrap items-center gap-2 sm:col-span-6">
+          <button type="button" onClick={go} disabled={busy || !f.street.trim() || !f.city.trim() || !f.zip.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+            {busy && <Loader2 className="size-3 animate-spin" />} Save and see times
+          </button>
+          {onCancel && <button type="button" onClick={onCancel} className="text-xs text-muted hover:text-foreground">Keep the saved address</button>}
+          {msg && <span role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</span>}
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-muted">We need the exact address to check the drive from your videographer&rsquo;s other shoots before we offer a time.</p>
+    </div>
+  );
+}
+
 export function PortalScheduler({
   months, bookingUrl, days = [], readOnly = false, timezone = "America/New_York", embedded = false,
 }: {
@@ -164,25 +210,36 @@ export function PortalScheduler({
   const [slot, setSlot] = useState<string | null>(null);
   const [creative, setCreative] = useState<string | null>(null);
   const [when, setWhen] = useState("");
-  const [location, setLocation] = useState("");
   const [moving, setMoving] = useState<string | null>(null);
   const [addressFor, setAddressFor] = useState<string | null>(null);
+  // §6.6 W02: which session is being booked, and its times from its address.
+  const [sessionPick, setSessionPick] = useState<number | null>(null);
+  const [slotsRes, setSlotsRes] = useState<{ key: string; res: SessionSlotsResult } | null>(null);
+  const [editAddress, setEditAddress] = useState(false);
+  const [reload, setReload] = useState(0);
   const [done, setDone] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, start] = useTransition();
 
   const month = months.find((m) => m.monthId === monthId) ?? months[0] ?? null;
-  // Slots this month may actually take: on or after its earliest moment (which
-  // already carries the 24-hour floor — those are a phone call, see KyleLine).
-  const earliest = month?.earliestISO ? new Date(month.earliestISO).getTime() : Infinity;
-  const monthDays = month && !month.locked
-    ? days.map((d) => ({ ...d, slots: d.slots.filter((s) => new Date(s).getTime() >= earliest) })).filter((d) => d.slots.length > 0).slice(0, 6)
-    : [];
+  void days; // the package's base availability; the offer is per session, from its address (below)
+  // The session this picker books: the one picked, else the next still to book.
+  // Booked sessions AND every session already held (a pending ask, a hand
+  // booking): the server refuses a second live ask for any of them.
+  const bookedIndexes = new Set([...(month?.sessions ?? []).map((x) => x.sessionIndex), ...(month?.takenIndexes ?? [])]);
+  const pickIdx = sessionPick ?? month?.sessionIndex ?? 1;
+  const slotsKey = month ? `${month.monthId}:${pickIdx}:${moving ?? ""}:${reload}` : "";
+  const res = slotsRes && slotsRes.key === slotsKey ? slotsRes.res : null;
+  // Slots this session may actually take: the server already applied its gate
+  // (which carries the 24-hour floor — those are a phone call, see KyleLine).
+  const monthDays: TravelSlotDay[] = month && !month.locked && res?.ok ? res.days.slice(0, 6) : [];
   const activeDay = monthDays.find((d) => d.date === day) ?? monthDays[0] ?? null;
   const slotCreatives = slot && activeDay?.slotCreatives?.[slot] ? activeDay.slotCreatives[slot] : [];
   const chosenCreative = slotCreatives.length === 1 ? slotCreatives[0].teamMemberId : creative;
+  const chosenTravel: TravelLabel | null = slot && activeDay ? (chosenCreative ? activeDay.slotCreativeTravel[slot]?.[chosenCreative] ?? null : activeDay.slotTravel[slot] ?? null) : null;
+  const needsAddress = !moving && !!res && (res.needsAddress || editAddress);
 
-  const pickMonth = (id: string) => { setMonthId(id); setDay(null); setSlot(null); setCreative(null); setMoving(null); setDone(null); setErr(null); };
+  const pickMonth = (id: string) => { setMonthId(id); setSessionPick(null); setEditAddress(false); setDay(null); setSlot(null); setCreative(null); setMoving(null); setDone(null); setErr(null); };
   const pickSlot = (s: string) => { setSlot(s); setCreative(null); };
 
   const send = () =>
@@ -190,11 +247,15 @@ export function PortalScheduler({
       if (!month) return;
       setErr(null);
       const auth = portalAuthFromLocation();
+      // §6.6 W02: the WHERE is the session's plan, at the version these times came from.
+      const plan = { planId: res?.planId ?? null, addressVersion: res?.addressVersion ?? null };
       const r = moving && slot
-        ? await portalRescheduleSession(auth, moving, { slotISO: slot, creativeTeamMemberId: chosenCreative, location: location || null }).catch(() => ({ ok: false, message: "That didn't send. Try again." }))
+        // A move keeps the booked session's own address (its times were measured from it).
+        ? await portalRescheduleSession(auth, moving, { slotISO: slot, creativeTeamMemberId: chosenCreative, location: null }).catch(() => ({ ok: false, message: "That didn't send. Try again." }))
         : await portalRequestSession(
             auth,
-            slot ? { monthId: month.monthId, slotISO: slot, location, creativeTeamMemberId: chosenCreative } : { monthId: month.monthId, when, location },
+            // A24: the session this picker books (its gate is the one shown).
+            slot ? { monthId: month.monthId, slotISO: slot, creativeTeamMemberId: chosenCreative, sessionIndex: pickIdx, ...plan } : { monthId: month.monthId, when, sessionIndex: pickIdx, ...plan },
           ).catch(() => ({ ok: false, message: "That didn't send. Try again." }));
       if (r.ok) {
         setDone(r.message);
@@ -216,6 +277,19 @@ export function PortalScheduler({
   const writtenPath = !!month && month.planningMode === "WRITTEN";
   const monthFull = !!month && month.capacity.remaining <= 0;
   const showPicker = !!month && !readOnly && !month.locked && (!monthFull || !!moving) && !done;
+
+  // §6.6 W02: the session's times, read from its address whenever the picker
+  // opens on a session (or the address changes). A move reads the times from
+  // the booked session's own address.
+  useEffect(() => {
+    if (!showPicker || !month) return;
+    let live = true;
+    const key = slotsKey;
+    portalSessionSlots(portalAuthFromLocation(), month.monthId, pickIdx, { moveRequestId: moving })
+      .catch((): SessionSlotsResult => ({ ok: false, message: "We could not load the times. Try again.", days: [] }))
+      .then((r) => { if (live) setSlotsRes({ key, res: r }); });
+    return () => { live = false; };
+  }, [showPicker, slotsKey, month, pickIdx, moving]);
   const needsCreativePick = !!slot && slotCreatives.length > 1 && !creative;
   const requestRows = month ? month.requests.filter((r) => r.status !== "CONFIRMED" || (r.canChange && !readOnly)) : [];
 
@@ -261,7 +335,7 @@ export function PortalScheduler({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <StatusRow icon={Info} tone="muted">No strategy call this month.</StatusRow>
                 {!readOnly && (
-                  <a href={bookingUrl} target="_blank" rel="noopener noreferrer"
+                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                     Book one anyway <ChevronRight className="size-3.5" />
                   </a>
@@ -274,7 +348,7 @@ export function PortalScheduler({
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <CalendarClock className="size-4 shrink-0 text-brand" /> We plan your month on a strategy call. Book it first.
                 </div>
-                <a href={bookingUrl} target="_blank" rel="noopener noreferrer"
+                <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
                   Book the call <ChevronRight className="size-4" />
                 </a>
@@ -289,12 +363,14 @@ export function PortalScheduler({
                 {sessions.map((s, i) => (
                   <li key={s.key}>
                     <StatusRow icon={CheckCircle2} tone={s.state === "CONFIRMING" ? "pending" : "ok"}>
-                      <span className="font-semibold">{required > 1 ? `Session ${i + 1} of ${required}: ` : "Filming session: "}{s.label}</span>
+                      <span className="font-semibold">{required > 1 ? `Session ${s.sessionIndex ?? i + 1} of ${required}: ` : "Filming session: "}{s.label}</span>
                       <span className="block text-xs text-muted">
                         {s.startISO ? `${whenLabel(s.startISO, tz)} ${tzName(tz)}` : "Date being confirmed"}
                         {s.area ? ` · ${s.area}` : ""}
                         {s.addressNote ? ` · ${s.addressNote}` : ""}
                       </span>
+                      {/* A25: the office is reassessing it. Nothing has moved. */}
+                      {s.kyleConfirming && <span className="block text-xs font-medium text-foreground">Kyle will confirm your filming time with you.</span>}
                     </StatusRow>
                     {s.addressNeeded && !readOnly && (
                       addressFor === s.key
@@ -331,89 +407,128 @@ export function PortalScheduler({
               <div className="mt-2">
                 <div className="flex items-center gap-2 text-sm font-semibold"><Camera className="size-4 text-brand" /> {moving ? "Pick the new time" : openRequests.length || sessions.length ? "Book another session" : "Book your filming session"}</div>
 
-                {monthDays.length > 0 ? (
+                {/* Pro: which session (each has its own address, times and state). */}
+                {!moving && required > 1 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label="Which session">
+                    {Array.from({ length: required }, (_, i) => i + 1).filter((i) => !bookedIndexes.has(i)).map((i) => (
+                      <button key={i} type="button" role="tab" aria-selected={pickIdx === i}
+                        onClick={() => { setSessionPick(i); setEditAddress(false); setDay(null); setSlot(null); setCreative(null); setErr(null); }}
+                        className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", pickIdx === i ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+                        Session {i} of {required}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {!res ? (
+                  <p className="mt-3 flex items-center gap-2 text-xs text-muted"><Loader2 className="size-3.5 animate-spin" /> Checking the times{moving ? "" : " from your filming address"}…</p>
+                ) : !res.ok && !res.needsAddress ? (
+                  <p className="mt-3 text-sm text-muted">{res.message}</p>
+                ) : (
                   <>
-                    <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a day</div>
-                    <div className="mt-1.5 flex flex-wrap gap-2">
-                      {monthDays.map((d) => (
-                        <button key={d.date} type="button" onClick={() => { setDay(d.date); setSlot(null); setCreative(null); }}
-                          className={cn(
-                            "rounded-xl border px-3.5 py-2 text-sm font-semibold transition-colors",
-                            activeDay?.date === d.date ? "border-brand bg-brand text-white shadow" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
-                          )}>
-                          {dayLabel(d.date)}
-                        </button>
-                      ))}
-                    </div>
-                    {activeDay && (
+                    {/* Step 1: where. An exact address, before any time is offered. */}
+                    {!moving && (
+                      needsAddress ? (
+                        <PlanAddressStep monthId={month.monthId} sessionIndex={pickIdx} lead={res.needsAddress ? res.message : null}
+                          onSaved={() => { setEditAddress(false); setSlot(null); setDay(null); setReload((n) => n + 1); }}
+                          onCancel={res.needsAddress ? null : () => setEditAddress(false)} />
+                      ) : (
+                        <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                          <MapPin className="size-4 shrink-0 text-muted-2" />
+                          <span className="font-medium">{res.addressLine}</span>
+                          <button type="button" onClick={() => setEditAddress(true)} className="text-xs font-semibold text-brand hover:underline">Change</button>
+                        </div>
+                      )
+                    )}
+
+                    {/* Step 2: when, from that address. */}
+                    {!needsAddress && (monthDays.length > 0 ? (
                       <>
-                        <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a time</div>
-                        <div className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-4">
-                          {activeDay.slots.map((s) => (
-                            <button key={s} type="button" onClick={() => pickSlot(s)}
+                        <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a day</div>
+                        <div className="mt-1.5 flex flex-wrap gap-2">
+                          {monthDays.map((d) => (
+                            <button key={d.date} type="button" onClick={() => { setDay(d.date); setSlot(null); setCreative(null); }}
                               className={cn(
-                                "rounded-xl border px-2 py-2 text-sm font-medium tabular-nums transition-colors",
-                                slot === s ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
+                                "rounded-xl border px-3.5 py-2 text-sm font-semibold transition-colors",
+                                activeDay?.date === d.date ? "border-brand bg-brand text-white shadow" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
                               )}>
-                              {timeLabel(s, tz)}
-                              {activeDay.slotCreatives?.[s]?.length === 1 && <span className="block text-[10px] font-normal text-muted-2">{activeDay.slotCreatives[s][0].name.split(" ")[0]}</span>}
+                              {dayLabel(d.date)}
                             </button>
                           ))}
                         </div>
-                        {slot && slotCreatives.length > 1 && (
-                          <div className="mt-3">
-                            <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Who would you like?</div>
-                            <div className="mt-1.5 flex flex-wrap gap-2" role="radiogroup" aria-label="Videographer">
-                              {slotCreatives.map((c) => (
-                                <button key={c.teamMemberId} type="button" role="radio" aria-checked={creative === c.teamMemberId} onClick={() => setCreative(c.teamMemberId)}
-                                  className={cn("rounded-xl border px-3 py-1.5 text-sm", creative === c.teamMemberId ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:text-foreground")}>
-                                  {c.name}
+                        {activeDay && (
+                          <>
+                            <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a time</div>
+                            <div className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-4">
+                              {activeDay.slots.map((s) => (
+                                <button key={s} type="button" onClick={() => pickSlot(s)}
+                                  className={cn(
+                                    "rounded-xl border px-2 py-2 text-sm font-medium tabular-nums transition-colors",
+                                    slot === s ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
+                                  )}>
+                                  {timeLabel(s, tz)}
+                                  {activeDay.slotCreatives?.[s]?.length === 1 && <span className="block text-[10px] font-normal text-muted-2">{activeDay.slotCreatives[s][0].name.split(" ")[0]}</span>}
+                                  {activeDay.slotTravel[s] === "UNCHECKED" && <span className="block text-[10px] font-normal text-muted-2">Kyle confirms</span>}
                                 </button>
                               ))}
                             </div>
-                          </div>
+                            {slot && slotCreatives.length > 1 && (
+                              <div className="mt-3">
+                                <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Who would you like?</div>
+                                <div className="mt-1.5 flex flex-wrap gap-2" role="radiogroup" aria-label="Videographer">
+                                  {slotCreatives.map((c) => (
+                                    <button key={c.teamMemberId} type="button" role="radio" aria-checked={creative === c.teamMemberId} onClick={() => setCreative(c.teamMemberId)}
+                                      className={cn("rounded-xl border px-3 py-1.5 text-sm", creative === c.teamMemberId ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:text-foreground")}>
+                                      {c.name}
+                                      {activeDay.slotCreativeTravel[slot]?.[c.teamMemberId] === "UNCHECKED" && <span className="ml-1 text-[10px] font-normal text-muted-2">(Kyle confirms)</span>}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {Object.values(activeDay.slotTravel).includes("UNCHECKED") && (
+                              <p className="mt-2 text-xs text-muted">&ldquo;Kyle confirms&rdquo;: we could not check the drive from your videographer&rsquo;s other shoot that day, so Kyle confirms that time by hand.</p>
+                            )}
+                          </>
                         )}
+                      </>
+                    ) : moving ? (
+                      <p className="mt-3 text-xs text-muted">No open times to move to right now. Call or text Kyle and he will find one.</p>
+                    ) : (
+                      <label className="mt-3 block">
+                        <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">When works?</span>
+                        {res.message && <span className="mt-1 block text-xs text-muted">{res.message}</span>}
+                        <input value={when} onChange={(e) => setWhen(e.target.value)} placeholder="e.g. Tuesday or Thursday afternoon"
+                          className="mt-1.5 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand" />
+                        {(res.earliestISO ?? month.earliestISO) && (
+                          <span className="mt-1 block text-xs text-muted">Sessions start on or after {new Date((res.earliestISO ?? month.earliestISO)!).toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" })}.</span>
+                        )}
+                      </label>
+                    ))}
+
+                    {/* Step 3: book (or request). */}
+                    {!needsAddress && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busy || (monthDays.length > 0 ? !slot || needsCreativePick : !when.trim() || !!moving)}
+                          onClick={send}
+                          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40"
+                        >
+                          {busy && <Loader2 className="size-4 animate-spin" />}
+                          {slot && activeDay ? `${moving ? "Move to" : selfBooking && chosenTravel !== "UNCHECKED" ? "Book" : "Request"} ${dayLabel(activeDay.date)} at ${timeLabel(slot, tz)}` : "Send my request"}
+                        </button>
+                        <p className="mt-1.5 text-xs text-muted">
+                          {chosenTravel === "UNCHECKED"
+                            ? "Kyle confirms this time by hand, so it shows as requested until he does."
+                            : selfBooking
+                            ? "This books straight into our calendar. It shows as booked once the calendar confirms it."
+                            : "Desk-assisted booking: Kyle books your pick in our calendar by hand, so it shows as requested until he confirms it."}
+                        </p>
                       </>
                     )}
                   </>
-                ) : moving ? (
-                  <p className="mt-3 text-xs text-muted">No open times to move to right now. Call or text Kyle and he will find one.</p>
-                ) : (
-                  <label className="mt-3 block">
-                    <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">When works?</span>
-                    <input value={when} onChange={(e) => setWhen(e.target.value)} placeholder="e.g. Tuesday or Thursday afternoon"
-                      className="mt-1.5 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand" />
-                    {month.earliestISO && (
-                      <span className="mt-1 block text-xs text-muted">Sessions start on or after {new Date(month.earliestISO).toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" })}.</span>
-                    )}
-                  </label>
                 )}
-
-                {!moving && (
-                  <>
-                    <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Where are we filming?</div>
-                    <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-border bg-surface px-3.5 py-2.5 focus-within:border-brand">
-                      <MapPin className="size-4 shrink-0 text-muted-2" />
-                      <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Address, or just the area for now (we'll ask for the exact spot before the day)"
-                        className="w-full bg-transparent text-sm outline-none" />
-                    </div>
-                  </>
-                )}
-
-                <button
-                  type="button"
-                  disabled={busy || (!moving && !location.trim()) || (monthDays.length > 0 ? !slot || needsCreativePick : !when.trim() || !!moving)}
-                  onClick={send}
-                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40"
-                >
-                  {busy && <Loader2 className="size-4 animate-spin" />}
-                  {slot && activeDay ? `${moving ? "Move to" : selfBooking ? "Book" : "Request"} ${dayLabel(activeDay.date)} at ${timeLabel(slot, tz)}` : "Send my request"}
-                </button>
-                <p className="mt-1.5 text-xs text-muted">
-                  {selfBooking
-                    ? "This books straight into our calendar. It shows as booked once the calendar confirms it."
-                    : "Desk-assisted booking: Kyle books your pick in our calendar by hand, so it shows as requested until he confirms it."}
-                </p>
                 <KyleLine />
                 {err && <p className="mt-2 text-xs text-danger">{err}</p>}
               </div>

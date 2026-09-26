@@ -17,10 +17,11 @@ import { etMonthKey } from "@/lib/contentProgram";
 //   preparationStatus   ← CALL_PLANNED | WRITTEN_SELECTED | AWAITING_ANSWERS |
 //                         PREPARING_SCRIPTS | AWAITING_SCRIPT_APPROVAL |
 //                         READY_FOR_FILMING
-//   earliestSessionAt   ← the 48-weekday-hour window (ET), honouring
-//                         preparationWindowDays and a staff exception+reason
-//                         (Sep 21 2026: was 3 business days — see THE
-//                         PREPARATION CLOCK below for why that was wrong)
+//   earliestSessionAt   ← the 72-weekday-hour window (ET; §3, Sep 25 2026),
+//                         honouring the month's legacy day override, the
+//                         enrollment's hour override and a staff
+//                         exception+reason. preparationGate() is the ONE
+//                         reader of it per session (A20).
 //   sessions            ← per-session material readiness, because sufficiency
 //                         is a SESSION question, not a month one
 //
@@ -65,26 +66,57 @@ export type StrategyCallStatus = "NOT_REQUIRED" | "NOT_SCHEDULED" | "SCHEDULED" 
 // walk below asks etAt() for each ET day's own end, so a 23- or 25-hour Sunday
 // is consumed whole and contributes no hour either way. There is not a single
 // hard-coded UTC offset in here.
+//
+// 72, NOT 48 (W01, Jordan's settled rule, Sep 25 2026): "72 elapsed weekday
+// hours in America/New_York, excluding Saturdays and Sundays. Monday 2:30 p.m.
+// becomes Thursday 2:30 p.m.; Friday 2 p.m. becomes Wednesday 2 p.m." Only the
+// constant moved — the clock above was already that clock. The rule is
+// evaluated when a request is made and snapshotted on it (gateWindowHours), so
+// a session booked under 48 is never re-judged by 72: moving the rule moves
+// the door, never anything already through it.
 // ---------------------------------------------------------------------------
 
-/** The program's preparation window: 48 hours of weekday time (spec §8). */
-export const DEFAULT_PREPARATION_WINDOW_HOURS = 48;
+/** The program's preparation window: 72 hours of weekday time (§3). */
+export const DEFAULT_PREPARATION_WINDOW_HOURS = 72;
 
 /**
  * RETIRED Sep 21 2026 — the window is hours of weekday time now, not business
  * days. Kept (not deleted) because the per-month override column is still
- * `preparationWindowDays` and the staff settings panel still writes days into
- * it: a staff member who types "3" means three 24-hour days of weekday time, so
- * an override is read as `days * 24` hours. Schema work belongs to a later
- * batch; this constant is what the translation is anchored to.
+ * `preparationWindowDays`, and the enrollment override used to be typed in
+ * days: a legacy "3" means three 24-hour days of weekday time (`days * 24`).
  */
 export const DEFAULT_PREPARATION_WINDOW_DAYS = 3;
 
-/** Hours of weekday time for a month, honouring the legacy day-shaped override. */
-export function preparationWindowHours(preparationWindowDays: number | null | undefined): number {
-  return preparationWindowDays != null && preparationWindowDays > 0
-    ? preparationWindowDays * 24
-    : DEFAULT_PREPARATION_WINDOW_HOURS;
+/**
+ * The enrollment's own window, in hours of weekday time, from its overrides
+ * JSON (Settings → Permitted overrides). `preparationWindowHours` is the key
+ * the panel writes now; a legacy `preparationWindowDays` is still read (×24).
+ *
+ * THE OVERRIDE USED TO BE A DEAD CONTROL (W01, batch 0): the panel wrote
+ * `preparationWindowDays` into the enrollment's JSON and nothing in the tree
+ * read it — the derivation read the MONTH column, which has no writer. So an
+ * owner could set a client's window and the gate ignored it. Parsed here, not
+ * via enrollmentChanges.readOverrides, so this module keeps no import on the
+ * settings layer. Null = no override.
+ */
+export function enrollmentWindowOverrideHours(overridesJson: string | null | undefined): number | null {
+  let o: Record<string, unknown> = {};
+  try { const v = overridesJson ? JSON.parse(overridesJson) : {}; if (v && typeof v === "object" && !Array.isArray(v)) o = v as Record<string, unknown>; } catch { return null; }
+  const hours = Number(o.preparationWindowHours);
+  if (o.preparationWindowHours != null && Number.isFinite(hours) && hours > 0) return Math.round(hours);
+  const days = Number(o.preparationWindowDays);
+  if (o.preparationWindowDays != null && Number.isFinite(days) && days > 0) return Math.round(days * 24);
+  return null;
+}
+
+/**
+ * Hours of weekday time for a month. Precedence (W01): the month's own legacy
+ * day column (×24) → the enrollment's hour override → 72.
+ */
+export function preparationWindowHours(preparationWindowDays: number | null | undefined, enrollmentHours?: number | null): number {
+  if (preparationWindowDays != null && preparationWindowDays > 0) return preparationWindowDays * 24;
+  if (enrollmentHours != null && enrollmentHours > 0) return enrollmentHours;
+  return DEFAULT_PREPARATION_WINDOW_HOURS;
 }
 
 const nextDayKeyET = (key: string): string => {
@@ -121,13 +153,13 @@ export function addWeekdayHoursET(from: Date, hours: number): Date {
 }
 
 /**
- * THE EARLIEST FILMING START — the one function every gate asks (unified
+ * THE EARLIEST FILMING START — the one arithmetic every gate uses (unified
  * handoff §6.4, Sep 25 2026). The written route's material, the call route's
- * scheduled end and the written route's call buffer all go through here, as
- * do the portal's booked-call estimate and the reminder calendar through
- * deriveMonthState. W01 (72 weekday hours, batch 3) changes the window in ONE
- * place — DEFAULT_PREPARATION_WINDOW_HOURS / this function — and every reader
- * moves with it; nothing else restates the arithmetic.
+ * scheduled end and the written route's call buffer all go through here
+ * inside deriveMonthState, and every reader asks preparationGate() for the
+ * result (A20): the portal gate, the reminder's quoted date, the staff
+ * overview, the desk task and the booking adapter's recheck. Nothing else
+ * calls addWeekdayHoursET for scheduling.
  */
 export function earliestFilmingStart(base: Date, w: { windowHours: number; windowWaived: boolean }): Date {
   return w.windowWaived ? base : addWeekdayHoursET(base, w.windowHours);
@@ -178,13 +210,55 @@ import { addBusinessDaysET as addBusinessDaysET, etAt, etDayKey, isWeekdayET } f
 export { addBusinessDaysET };
 
 export type MonthCallRecordInput = {
+  /** ProgramCallRecord.id — names the gate's anchor (A20). Optional: a caller building its own input may not have it. */
+  id?: string | null;
   callType: string;
   status: string; // SCHEDULED | COMPLETED | CANCELLED | RESCHEDULED | NO_SHOW
   matchState: string;
   scheduledStart: Date | null;
   scheduledEnd: Date | null;
   transcriptState: string;
+  /** When the record landed — the moment a booked call opened filming (A19). */
+  createdAt?: Date | null;
 };
+
+// ---------------------------------------------------------------------------
+// THE PREPARATION GATE — one reading per session (A18/A19/A20, Sep 25 2026).
+//
+// §3 has two routes and one clock:
+//   · WRITTEN — filming opens when the session's topics are chosen and their
+//     answers are SUBMITTED (an autosave never counts); sessions start from
+//     that submission + 72 weekday hours;
+//   · CALL — filming opens the moment the strategy call is BOOKED, before it
+//     happens; sessions start from the call's scheduled END + 72 weekday
+//     hours. Never the time somebody clicked Book.
+// Before this, the call route opened in the derivation only once the call was
+// HELD, while the portal ran its own "booked, not held" branch: two readings
+// of one rule (F04's shape), so the reminder's quoted date, the staff overview
+// and the portal disagreed on every booked-but-future call. deriveMonthState
+// now anchors every session itself, and preparationGate() is the one reader.
+//
+// The ANCHOR is the fact the window is counted from, with an identity (`ref`)
+// that changes when the fact moves — a call rebooked later, answers submitted
+// again. A request snapshots it (gateAnchorRef/gateWindowHours/gateEarliestAt),
+// so reassessment compares ANCHORS, never windows: a rule change (48 → 72)
+// never flags a session booked under the old rule.
+// ---------------------------------------------------------------------------
+
+export type GateAnchor = {
+  kind: "SUBMISSION" | "CALL_END";
+  /** The instant the window is counted from. */
+  at: Date;
+  /** `CALL_END:<recordId|legacy>:<epoch ms>` or `SUBMISSION:<topicId|month>:<epoch ms>` — equal only while the fact is unchanged. */
+  ref: string;
+  /** Staff words for it ("the strategy call's scheduled end"). */
+  label: string;
+  /** Counted from an estimate (a call with no end on record → its start). */
+  estimated: boolean;
+};
+
+/** Why a session's filming calendar is shut. */
+export type GateLock = "BOOK_CALL" | "CHOOSE_ROUTE" | "ANSWERS" | "UNDER_PLANNED" | "PREPARING";
 
 // ---------------------------------------------------------------------------
 // SESSIONS AND THEIR MATERIAL (spec §3 / §8 / A15 / A23, Sep 21 2026).
@@ -212,6 +286,14 @@ export type MonthCallRecordInput = {
 
 /** ContentTopic.status values that mean "planned to be filmed in this month". */
 const REQUIRED_TOPIC_STATUSES = new Set(["SELECTED", "SCRIPTED"]);
+/**
+ * Footage exists (A24, Sep 25 2026). These stay IN the session split: with the
+ * filmed topics dropped, a Pro month whose first session was filmed slid its
+ * remaining four topics into "session 1" and left session 2 empty — so the
+ * gate for the session the client actually had left to book (index 2) read
+ * "no topics" and locked. A filmed topic's material obviously existed.
+ */
+const FILMED_TOPIC_STATUSES = new Set(["FILMED", "EDITING", "DELIVERED"]);
 
 export type TopicMaterialInput = {
   topicId: string;
@@ -247,11 +329,15 @@ export type SessionReadiness = {
   materialReadyAt: Date | null;
   /** The earliest this session may be filmed, or null while the gate is shut. */
   earliestSessionAt: Date | null;
+  /** What `earliestSessionAt` is counted from (null while shut). */
+  anchor: GateAnchor | null;
+  /** Why it is shut (null while open). */
+  lock: GateLock | null;
   notes: string[];
 };
 
 export type PreparationFollowUp = {
-  kind: "MISSING_POST_CALL_INFO" | "UNFINISHED_ANSWERS" | "ANSWERS_REOPENED" | "UNDER_PLANNED_SESSION" | "CALL_INSIDE_BUFFER";
+  kind: "MISSING_POST_CALL_INFO" | "UNFINISHED_ANSWERS" | "ANSWERS_REOPENED" | "UNDER_PLANNED_SESSION" | "CALL_INSIDE_BUFFER" | "CONFIRM_CALL_END";
   /** Who owns chasing it (spec §3: scheduling and client follow-up are Kyle's). */
   owner: "KYLE" | "JORDAN";
   reason: string;
@@ -266,7 +352,7 @@ export type PreparationFollowUp = {
  *  held the gate open forever, which is the same defect as the stored month
  *  stamp this batch removed. The live status wins whenever there is one. */
 export function topicMaterialReady(t: TopicMaterialInput): boolean {
-  if (t.scriptApproved) return true;
+  if (t.scriptApproved || FILMED_TOPIC_STATUSES.has(t.status)) return true;
   // SUBMITTED_WITH_GAPS is not SUBMITTED, so it never opens the gate; a
   // SUBMITTED row that stored "not sufficient" (sent before CP-08) does not either.
   return t.interviewStatus ? t.interviewStatus === "SUBMITTED" && t.interviewSufficient !== false : !!t.interviewSubmittedAt;
@@ -305,11 +391,16 @@ export function planSessions(
   const sessions = Math.max(1, Math.floor(plan.sessionsPerMonth) || 1);
   const perSession = Math.max(1, Math.ceil((Math.max(0, plan.videosPerMonth) || sessions) / sessions));
   const required = topics
-    .filter((t) => REQUIRED_TOPIC_STATUSES.has(t.status))
+    .filter((t) => REQUIRED_TOPIC_STATUSES.has(t.status) || FILMED_TOPIC_STATUSES.has(t.status))
     .sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0) || a.topicId.localeCompare(b.topicId));
+  // The LAST session plans the remainder (A18): a month whose allowance is not
+  // a multiple of its sessions (a staff override of 5 on Pro) is 3 + 2, not
+  // 3 + 3 — the written gate shuts an under-planned session, so a second
+  // session planned for a topic that can never exist would never open.
+  const total = Math.max(0, Math.floor(plan.videosPerMonth) || 0);
   return Array.from({ length: sessions }, (_, i) => ({
     index: i + 1,
-    plannedVideos: perSession,
+    plannedVideos: i === sessions - 1 && total > 0 ? Math.max(1, total - perSession * (sessions - 1)) : perSession,
     topics: i === sessions - 1 ? required.slice(i * perSession) : required.slice(i * perSession, (i + 1) * perSession),
   }));
 }
@@ -553,7 +644,11 @@ export type DeriveInput = {
   /** `priorCallHeld`: a monthly strategy call was held in another month of this
    *  enrollment (effectiveCallMode). Optional — a caller that does not know
    *  (the read-only overview) gets the legacy reading, never a guess. */
-  enrollment: { callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null; priorCallHeld?: boolean };
+  enrollment: {
+    callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null; priorCallHeld?: boolean;
+    /** The enrollment's window override in weekday hours (enrollmentWindowOverrideHours), when an owner set one. */
+    preparationWindowHours?: number | null;
+  };
   records: MonthCallRecordInput[];
   /**
    * Scripts on the month, INCLUDING historical imports. An import from Jordan's archive is
@@ -628,6 +723,9 @@ export type DerivedMonthState = {
    *  estimate from the same base the real gate will use once the call is held,
    *  or its estimate reads EARLIER than the answer the client will actually get. */
   strategyCallEndsAt: Date | null;
+  /** A19: when the month's anchoring call (held, else booked) arrived as a record —
+   *  the moment a booked call opened filming. Null for a legacy stamp. */
+  callBookedAt: Date | null;
   /** The preparation window in hours of weekday time. */
   windowHours: number;
   windowWaived: boolean;
@@ -708,6 +806,8 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     }),
   );
   const held = live.filter((r) => !conflicted.has(r) && HELD(r, now)).sort((a, b) => (b.scheduledStart?.getTime() ?? 0) - (a.scheduledStart?.getTime() ?? 0));
+  /** Monthly call RECORDS own this month (live or not): its stored call status is theirs, not a legacy stamp's. */
+  const recordsOwnMonth = input.records.some((r) => r.callType === "MONTHLY_STRATEGY");
   const upcoming = live.filter((r) => !HELD(r, now) && r.status === "SCHEDULED").sort((a, b) => (a.scheduledStart?.getTime() ?? 0) - (b.scheduledStart?.getTime() ?? 0));
 
   const stored = month.strategyCallStatus as StrategyCallStatus;
@@ -730,10 +830,26 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       strategyCallEndsAt = upcoming[0].scheduledEnd ?? upcoming[0].scheduledStart ?? null;
     }
     reasons.push("a monthly call is booked");
-  } else if (stored === "COMPLETED" || stored === "SKIPPED" || stored === "SCHEDULED") {
+  } else if (
+    stored === "SKIPPED" ||
+    (stored === "COMPLETED" && (!!month.transcriptText || !recordsOwnMonth || conflicted.size > 0)) ||
+    (stored === "SCHEDULED" && !recordsOwnMonth)
+  ) {
     // Legacy truth (pasted transcript, old sweep's stamp, hand-set skip):
     // preserved. The legacy sweep still owns SCHEDULED→NOT_SCHEDULED on a
     // cancellation until a mapping hands over to call records.
+    // W03 (Sep 25 2026): a stored SCHEDULED is legacy truth only while the
+    // month has no monthly call RECORD. Once records own the month, SCHEDULED
+    // with none of them live means the booking was cancelled or moved — kept,
+    // it held filming open (measured from the dead call) after a client
+    // cancelled on Calendly's page.
+    // …and the same for a stored COMPLETED (batch-3 review, Sep 25 2026): a
+    // record held → COMPLETED was persisted, then the record died (cancelled
+    // after the fact, a no-show). With no transcript pasted on the month, the
+    // stamp was that record's, not legacy truth — kept, it opened filming 72
+    // weekday hours after a call this client never had. (Evidence that
+    // contradicts itself keeps what is stored: a person settles it, and the
+    // gate stays shut meanwhile — no legacy anchor below.)
     strategyCallStatus = stored;
     reasons.push(`kept ${stored} (set before call records existed)`);
   } else if (month.planningMode === "WRITTEN") {
@@ -761,24 +877,61 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   const scriptsDone = scripts.length > 0 && approved.length === scripts.length;
   const callHeld = strategyCallStatus === "COMPLETED";
 
-  const windowHours = preparationWindowHours(month.preparationWindowDays);
+  const windowHours = preparationWindowHours(month.preparationWindowDays, enrollment.preparationWindowHours ?? null);
+  if ((month.preparationWindowDays == null || month.preparationWindowDays <= 0) && (enrollment.preparationWindowHours ?? 0) > 0) {
+    reasons.push(`this client's preparation window is ${windowHours} weekday hours (owner override)`);
+  }
   const windowWaived = !!month.preparationExceptionAt && !!month.preparationExceptionReason;
   if (windowWaived) reasons.push(`window waived: ${month.preparationExceptionReason}`);
   const afterWindow = (base: Date): Date => earliestFilmingStart(base, { windowHours, windowWaived });
 
-  // THE CALL CLOCK starts when the call ENDS (spec §8). scheduledEnd is what
-  // every monthly record in production actually carries; scheduledStart is the
-  // fallback only because the overview screen builds its input without the end
-  // column, and starting half an hour early is better than refusing to answer.
-  const heldCall = held[0] ?? null;
-  // The SAME value the portal's pre-call estimate reads off `strategyCallEndsAt`
-  // — deliberately one expression, not two. F04 (Sep 21 2026) was two readings
-  // of one rule drifting apart, so the estimate and the gate share a base here
-  // rather than each recomputing it.
-  const callEndedAt = heldCall ? strategyCallEndsAt : null;
-  if (heldCall && !heldCall.scheduledEnd && heldCall.scheduledStart) {
+  // THE CALL ANCHOR (A19, Sep 25 2026): the held call, else the BOOKED one.
+  // The clock starts when that call is due to END (spec §8). scheduledEnd is
+  // what every monthly record in production carries; scheduledStart is the
+  // fallback only for a record without one, with the reason said.
+  //
+  // This used to be `heldCall ? strategyCallEndsAt : null` — the derivation
+  // opened the call route only once the call was HELD, and the portal ran a
+  // second "booked, not yet held" branch of its own. §3: filming opens "as
+  // soon as the strategy call is booked, even before the call happens". The
+  // reminder's quoted date and the staff overview read the derivation, so on
+  // every booked-but-future call they said "not yet" while the portal said
+  // "from Thursday". One anchor now, read by everyone.
+  const callAnchorOf = (r: MonthCallRecordInput): GateAnchor | null => {
+    const at = r.scheduledEnd ?? r.scheduledStart;
+    if (!at) return null;
+    return {
+      kind: "CALL_END", at, ref: `CALL_END:${r.id ?? "record"}:${at.getTime()}`,
+      label: r.scheduledEnd ? "the strategy call's scheduled end" : "the strategy call's start (no end time on record)",
+      estimated: !r.scheduledEnd,
+    };
+  };
+  const anchorCall = held[0] ?? upcoming[0] ?? null;
+  let callAnchor: GateAnchor | null = anchorCall ? callAnchorOf(anchorCall) : null;
+  if (anchorCall && !anchorCall.scheduledEnd && anchorCall.scheduledStart) {
     reasons.push("this call has no end time on record — the window is measured from when it was due to start");
   }
+  // THE LEGACY STAMP (6.6, Sep 25 2026). A month the old Drive sweep (or a
+  // button) stamped SCHEDULED/COMPLETED has a start time and no call record —
+  // so no end — and with the held-only reading above it could NEVER open
+  // filming: a COMPLETED legacy month read "we're still preparing this month"
+  // for good. It is measured from the stamped start instead, says so, and asks
+  // Kyle to confirm the call's end (CONFIRM_CALL_END below). Retires once
+  // every portal booking arrives as a call record (W03).
+  let legacyCallStamp = false;
+  // Only a stamp that IS legacy truth (batch-3 review): a month no call
+  // record owns, or a held call whose transcript was pasted on the month. A
+  // record's own time, once that record is dead, is not a stamp to measure
+  // from — and evidence that contradicts itself keeps the gate shut.
+  const legacyTruth = !recordsOwnMonth || (strategyCallStatus === "COMPLETED" && !!month.transcriptText && conflicted.size === 0);
+  if (!callAnchor && !anchorCall && legacyTruth && (strategyCallStatus === "SCHEDULED" || strategyCallStatus === "COMPLETED") && month.strategyCallAt) {
+    const at = month.strategyCallAt;
+    callAnchor = { kind: "CALL_END", at, ref: `CALL_END:legacy:${at.getTime()}`, label: "the call's start (no call record, so no end time)", estimated: true };
+    legacyCallStamp = true;
+    if (planningMode === "CALL") reasons.push("no call record for this month — the preparation window is measured from the call's start");
+  }
+  /** Why a session on the call route is shut, when no call anchors it. */
+  const callLock: GateLock = strategyCallStatus === "NOT_SCHEDULED" ? "BOOK_CALL" : "PREPARING";
 
   // ---- per-session material -------------------------------------------------
   const topics = input.topics ?? null;
@@ -821,18 +974,48 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       }
       // The CALL path is gated by the call, not by the answers: §8 says missing
       // post-call information triggers follow-up and an internal warning and
-      // does NOT restart (or withhold) the clock. The WRITTEN path is gated by
-      // the material, per session, every pass — which is what closes a month
-      // again when its answers go unfinished.
-      const base = planningMode === "CALL" ? callEndedAt : materialReadyAt;
-      const open = planningMode === "CALL" ? !!callEndedAt : sufficient && !!base;
+      // does NOT restart (or withhold) the clock — and §6.4 says do not wait
+      // for the call, the transcript or the topics either: the booked call is
+      // the anchor for every session of the month.
+      //
+      // The WRITTEN path is gated per session, every pass (which is what closes
+      // a month again when its answers go unfinished), and since A18 (Sep 25
+      // 2026) on the WHOLE session: "Filming scheduling opens after topics are
+      // selected and completed answers are submitted" (§3), and §6.4's written
+      // route begins by selecting the allowance. Two of four topics answered
+      // used to open an Accelerator session with only a Kyle follow-up; it now
+      // stays shut until all four are chosen and their answers are in.
+      let anchor: GateAnchor | null = null;
+      let lock: GateLock | null = null;
+      if (planningMode === "CALL") {
+        anchor = callAnchor;
+        if (!anchor) lock = callLock;
+      } else if (s.topics.length === 0 || s.topics.length < s.plannedVideos) {
+        lock = planningMode === "UNDECIDED" ? "CHOOSE_ROUTE" : "UNDER_PLANNED";
+      } else if (!sufficient || !materialReadyAt) {
+        lock = planningMode === "UNDECIDED" ? "CHOOSE_ROUTE" : sufficient ? "PREPARING" : "ANSWERS";
+      } else {
+        // The last piece of material to land names the anchor, so answers sent
+        // again (a reopen and resubmit) are a different anchor.
+        const last = s.topics.reduce<TopicMaterialInput | null>((a, t) => {
+          const at = topicMaterialReadyAt(t);
+          return at && (!a || at > (topicMaterialReadyAt(a) ?? new Date(0))) ? t : a;
+        }, null);
+        anchor = {
+          kind: "SUBMISSION", at: materialReadyAt,
+          ref: `SUBMISSION:${last?.topicId ?? "month"}:${materialReadyAt.getTime()}`,
+          label: "when the session's answers were submitted",
+          estimated: times.length < s.topics.length,
+        };
+      }
       sessions.push({
         index: s.index, plannedVideos: s.plannedVideos,
         topicIds: s.topics.map((t) => t.topicId),
         readyTopicIds: ready.map((t) => t.topicId),
         missingTopicIds: missing.map((t) => t.topicId),
         sufficient, materialReadyAt,
-        earliestSessionAt: open && base ? afterWindow(base) : null,
+        earliestSessionAt: anchor ? afterWindow(anchor.at) : null,
+        anchor, lock,
         notes,
       });
     }
@@ -849,12 +1032,17 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       ? (times.length > 0 ? times.reduce((a, b) => (a >= b ? a : b)) : month.preparationCompletedAt)
       : (ivs.length === 0 ? month.preparationCompletedAt : null);
     const sufficient = allSubmitted || (ivs.length === 0 && !!month.preparationCompletedAt);
-    const base = planningMode === "CALL" ? callEndedAt : materialReadyAt;
-    const open = planningMode === "CALL" ? !!callEndedAt : sufficient && !!base;
+    const anchor: GateAnchor | null = planningMode === "CALL"
+      ? callAnchor
+      : sufficient && materialReadyAt
+        ? { kind: "SUBMISSION", at: materialReadyAt, ref: `SUBMISSION:month:${materialReadyAt.getTime()}`, label: "when the month's answers were submitted", estimated: times.length === 0 }
+        : null;
+    const lock: GateLock | null = anchor ? null : planningMode === "CALL" ? callLock : planningMode === "UNDECIDED" ? "CHOOSE_ROUTE" : "ANSWERS";
     sessions.push({
       index: 1, plannedVideos: 0, topicIds: [], readyTopicIds: [], missingTopicIds: [],
       sufficient, materialReadyAt,
-      earliestSessionAt: open && base ? afterWindow(base) : null,
+      earliestSessionAt: anchor ? afterWindow(anchor.at) : null,
+      anchor, lock,
       notes: ["session split unknown — the caller supplied no topics or package"],
     });
   }
@@ -877,7 +1065,9 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       const callEnd = (latest.scheduledEnd ?? latest.scheduledStart)!;
       const callStart = latest.scheduledStart ?? callEnd;
       const buffer = afterWindow(callEnd);
-      for (const s of sessions) if (s.earliestSessionAt && s.earliestSessionAt < buffer) s.earliestSessionAt = buffer;
+      // earliest = max(submission, call end) + the window (A18) — and the
+      // anchor says which one it was, so a reassessment follows the call.
+      for (const s of sessions) if (s.earliestSessionAt && s.earliestSessionAt < buffer) { s.earliestSessionAt = buffer; s.anchor = callAnchorOf(latest); }
       for (const b of booking?.sessions ?? []) {
         if (b.filmed || !b.startsAt || b.startsAt < callStart || b.startsAt >= buffer) continue;
         const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -906,6 +1096,17 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   }
   if (booking && shortfall && shortfall.accountedFor > sessionsRequired) {
     exceptions.push(`${shortfall.accountedFor} distinct filming sessions are linked to this month but the package owes ${sessionsRequired} — a person should say whether that is an approved extra`);
+  }
+  // A legacy-stamped call opens the calendar from its START (see the legacy
+  // stamp above). Kyle confirms the real end only while it can still matter:
+  // the call route, a session still to book, and the start-based earliest not
+  // yet passed. A past August month raises nothing.
+  if (legacyCallStamp && planningMode === "CALL" && callAnchor && !(shortfall?.fullyScheduled) && afterWindow(callAnchor.at) > now) {
+    const when = callAnchor.at.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    followUps.push({
+      kind: "CONFIRM_CALL_END", owner: "KYLE", sessionIndex: null, ref: String(callAnchor.at.getTime()),
+      reason: `This month's strategy call (${when} ET) has no call record, so filming is measured from its start. Confirm when the call ends (add it as a call record) so the ${windowHours} weekday hours run from the end.`,
+    });
   }
 
   // The month's completion stamp is HISTORY — the moment material first became
@@ -963,7 +1164,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   const lastApproval = approved.reduce<Date | null>((m, s) => (s.approvedAt && (!m || s.approvedAt > m) ? s.approvedAt : m), null);
   const filmingReadyAt = month.filmingReadyAt ?? (preparationStatus === "READY_FOR_FILMING" ? lastApproval : null);
   return {
-    callMode, strategyCallStatus, strategyCallAt, strategyCallEndsAt, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt,
+    callMode, strategyCallStatus, strategyCallAt, strategyCallEndsAt, callBookedAt: anchorCall?.createdAt ?? null, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt,
     earliestSessionAt, sessions, sessionsKnown, preparationSufficient,
     sessionsRequired,
     sessionsAccountedFor: shortfall?.accountedFor ?? 0,
@@ -983,6 +1184,169 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     // rule has to fail to compile, not round.
     windowHours, windowWaived, reasons, exceptions, followUps,
   };
+}
+
+export type PreparationGate = {
+  /** The session this reading is for; null = the month-wide reading (the earliest open session). */
+  sessionIndex: number | null;
+  route: PlanningMode;
+  /** The first moment filming may start, by the preparation rule alone (no 24-hour floor); null while shut. */
+  earliest: Date | null;
+  anchor: GateAnchor | null;
+  windowHours: number;
+  windowWaived: boolean;
+  locked: boolean;
+  lock: GateLock | null;
+  /** Staff words: what it is counted from, or why it is shut. */
+  reason: string;
+};
+
+const etWhen = (d: Date) => `${d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET`;
+
+const LOCK_WORDS: Record<GateLock, string> = {
+  BOOK_CALL: "no strategy call is booked for the month yet",
+  CHOOSE_ROUTE: "the client has not chosen how to plan the month",
+  ANSWERS: "the session's answers are not all submitted",
+  UNDER_PLANNED: "the session's topics are not all chosen",
+  PREPARING: "preparation is not complete",
+};
+
+/**
+ * THE ONE READER of the preparation rule (A20, Sep 25 2026) — the portal gate
+ * (portal.sessionGate), the reminder's "earliest session" line, the staff
+ * overview, the desk task, a request's snapshot and the booking adapter's
+ * anchor recheck all ask this, per session, and nothing else calls
+ * addWeekdayHoursET for scheduling.
+ *
+ * `sessionIndex` picks the session (1-based; Pro has 1 and 2). Omitted, or
+ * outside the package's sessions (an approved extra), it is the month-wide
+ * reading: the earliest OPEN session, else the first session's lock. Pure.
+ */
+export function preparationGate(d: DerivedMonthState, sessionIndex?: number | null): PreparationGate {
+  const exact = sessionIndex != null && Number.isInteger(sessionIndex) ? d.sessions.find((s) => s.index === sessionIndex) ?? null : null;
+  const open = d.sessions.filter((s) => s.earliestSessionAt).sort((a, b) => a.earliestSessionAt!.getTime() - b.earliestSessionAt!.getTime());
+  const s = exact ?? open[0] ?? d.sessions[0] ?? null;
+  const base = { sessionIndex: exact ? exact.index : null, route: d.planningMode, windowHours: d.windowHours, windowWaived: d.windowWaived };
+  if (!s || !s.earliestSessionAt || !s.anchor) {
+    const lock: GateLock = s?.lock ?? "PREPARING";
+    return { ...base, earliest: null, anchor: null, locked: true, lock, reason: LOCK_WORDS[lock] };
+  }
+  const reason = d.windowWaived
+    ? `from ${s.anchor.label} (${etWhen(s.anchor.at)}), window waived by staff`
+    : `${d.windowHours} weekday hours after ${s.anchor.label} (${etWhen(s.anchor.at)})`;
+  return { ...base, earliest: s.earliestSessionAt, anchor: s.anchor, locked: false, lock: null, reason };
+}
+
+/** What a request stores about the gate it was offered under (ProgramSessionRequest.gate*). */
+export type GateSnapshot = {
+  sessionIndex: number | null;
+  route: string;
+  anchorRef: string | null;
+  anchorAt: Date | null;
+  windowHours: number;
+  earliestAt: Date | null;
+};
+
+export function gateSnapshot(g: PreparationGate): GateSnapshot {
+  return { sessionIndex: g.sessionIndex, route: g.route, anchorRef: g.anchor?.ref ?? null, anchorAt: g.anchor?.at ?? null, windowHours: g.windowHours, earliestAt: g.earliest };
+}
+
+/** "Earliest start allowed: Thu, Oct 1, 2:30 PM ET (72 weekday hours after the strategy call's scheduled end, Mon, Sep 28, 2:30 PM ET)" — the desk's line, from a snapshot. */
+export function earliestStartLine(s: { gateEarliestAt: Date | null; gateWindowHours: number | null; gateAnchorRef: string | null; gateAnchorAt: Date | null }): string | null {
+  if (!s.gateEarliestAt) return null;
+  const from = s.gateAnchorRef?.startsWith("CALL_END:") ? "the strategy call ends" : s.gateAnchorRef?.startsWith("SUBMISSION:") ? "the answers were submitted" : null;
+  const tail = s.gateWindowHours != null && from
+    ? ` (${s.gateWindowHours} weekday hours after ${from}${s.gateAnchorAt ? `, ${etWhen(s.gateAnchorAt)}` : ""})`
+    : "";
+  return `Earliest start allowed: ${etWhen(s.gateEarliestAt)}${tail}.`;
+}
+
+// ---------------------------------------------------------------------------
+// WHICH SESSION IS WHICH (A24, Sep 25 2026). Pro is two four-hour sessions
+// with their own appointment, topics, address and readiness, so every request
+// names its session (ProgramSessionRequest.sessionIndex) and the gate is read
+// for THAT session. Rows written before the column existed have none: they
+// take the lowest free index in slot order, which is what "Session 1 of 2"
+// already meant on every screen.
+// ---------------------------------------------------------------------------
+
+export type SessionOccupant = { key: string; sessionIndex: number | null; at: Date | null };
+
+/**
+ * Which session index each booked session or live ask holds. Explicit indexes
+ * first (the first to claim one keeps it), then the rest in slot order onto
+ * the lowest free index; past the package's count they are extras
+ * (required + 1, …). `free` is what is left to book, in order. Pure.
+ */
+export function assignSessionIndexes(occupants: readonly SessionOccupant[], required: number): { byKey: Map<string, number>; free: number[] } {
+  const n = Math.max(1, Math.floor(required) || 1);
+  const byKey = new Map<string, number>();
+  const taken = new Set<number>();
+  for (const o of occupants) {
+    const i = o.sessionIndex;
+    if (i != null && Number.isInteger(i) && i >= 1 && i <= n && !taken.has(i) && !byKey.has(o.key)) { byKey.set(o.key, i); taken.add(i); }
+  }
+  const rest = occupants.filter((o) => !byKey.has(o.key))
+    .sort((a, b) => (a.at?.getTime() ?? Number.MAX_SAFE_INTEGER) - (b.at?.getTime() ?? Number.MAX_SAFE_INTEGER) || a.key.localeCompare(b.key));
+  let extra = n;
+  for (const o of rest) {
+    if (byKey.has(o.key)) continue;
+    let i = 1;
+    while (i <= n && taken.has(i)) i++;
+    const idx = i <= n ? i : ++extra;
+    byKey.set(o.key, idx);
+    taken.add(idx);
+  }
+  const free: number[] = [];
+  for (let i = 1; i <= n; i++) if (!taken.has(i)) free.push(i);
+  return { byKey, free };
+}
+
+/**
+ * The month's session occupancy from the rows the counter already reads: every
+ * DISTINCT session (a confirmed request lends it its index) and every ask
+ * still waiting on the office (sessionCapacity's own filter). `next` is the
+ * session a new booking is for; null when every session is taken.
+ */
+export async function monthSessionIndexes(monthId: string, clientId: string, sessionsRequired: number, now: Date, db: ProgramDb = prisma): Promise<{ byKey: Map<string, number>; free: number[]; next: number | null; requestIndex: Map<string, number> }> {
+  const [count, requests] = await Promise.all([
+    monthSessionCount(monthId, clientId, now, db),
+    db.programSessionRequest.findMany({
+      where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] } },
+      select: { id: true, status: true, bookingState: true, supersedesId: true, projectId: true, aryeoAppointmentId: true, slotStart: true, sessionIndex: true },
+    }),
+  ]);
+  return sessionIndexesFrom(count, requests, sessionsRequired);
+}
+
+/** monthSessionIndexes over rows already in hand (monthProgress reads them batched). Pure. */
+export function sessionIndexesFrom(
+  count: BookedSessionCount,
+  requests: readonly { id: string; status: string; bookingState?: string | null; supersedesId?: string | null; projectId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null; sessionIndex?: number | null }[],
+  sessionsRequired: number,
+): { byKey: Map<string, number>; free: number[]; next: number | null; requestIndex: Map<string, number> } {
+  const indexOf = new Map(requests.map((r) => [r.id, r.sessionIndex ?? null]));
+  const occupants: SessionOccupant[] = count.sessions.map((s) => {
+    const reqIds = s.evidence.map((e) => /^confirmed request (\S+)$/.exec(e)?.[1]).filter((x): x is string => !!x);
+    const explicit = reqIds.map((id) => indexOf.get(id)).find((i) => i != null) ?? null;
+    return { key: s.key, sessionIndex: explicit, at: s.startsAt ?? s.at };
+  });
+  const counted = new Set(count.sessions.map((s) => s.key));
+  const pending = requests.filter((r) =>
+    (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") && r.bookingState !== "CONFLICT" &&
+    !replacesPendingMove({ status: r.status, supersedesId: r.supersedesId ?? null }, requests.map((x) => ({ id: x.id, status: x.status }))) &&
+    !(r.aryeoAppointmentId && counted.has(`appt:${r.aryeoAppointmentId}`)) &&
+    !(r.projectId && counted.has(`project:${r.projectId}`)));
+  for (const r of pending) occupants.push({ key: `request:${r.id}`, sessionIndex: r.sessionIndex ?? null, at: r.slotStart });
+  const { byKey, free } = assignSessionIndexes(occupants, sessionsRequired);
+  // Every live request's index — its own column, else the session it resolved to.
+  const requestIndex = new Map<string, number>();
+  for (const s of count.sessions) for (const e of s.evidence) { const id = /^confirmed request (\S+)$/.exec(e)?.[1]; if (id && byKey.has(s.key)) requestIndex.set(id, byKey.get(s.key)!); }
+  for (const r of pending) if (byKey.has(`request:${r.id}`)) requestIndex.set(r.id, byKey.get(`request:${r.id}`)!);
+  // A pending MOVE holds the index of the session it moves.
+  for (const r of requests) if (!requestIndex.has(r.id) && r.supersedesId && requestIndex.has(r.supersedesId)) requestIndex.set(r.id, requestIndex.get(r.supersedesId)!);
+  for (const r of requests) if (!requestIndex.has(r.id) && r.sessionIndex != null) requestIndex.set(r.id, r.sessionIndex);
+  return { byKey, free, next: free[0] ?? null, requestIndex };
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,7 +1403,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     select: {
       id: true, enrollmentId: true, monthKey: true, historical: true, strategyCallStatus: true, strategyCallAt: true, transcriptText: true,
       planningMode: true, preparationStatus: true, preparationCompletedAt: true, preparationWindowDays: true,
-      preparationExceptionAt: true, preparationExceptionReason: true, filmingReadyAt: true,
+      preparationExceptionAt: true, preparationExceptionReason: true, filmingReadyAt: true, videosOwed: true,
     },
   });
   if (!month) return null;
@@ -1047,11 +1411,11 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   const [enrollment, records, scriptsAll, interviews, allowances, priorRecords, completedMonths] = await Promise.all([
     prisma.contentEnrollment.findUnique({
       where: { id: month.enrollmentId },
-      select: { clientId: true, callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true },
+      select: { clientId: true, callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true, overridesJson: true },
     }),
     prisma.programCallRecord.findMany({
       where: { monthId: month.id },
-      select: { callType: true, status: true, matchState: true, scheduledStart: true, scheduledEnd: true, transcriptState: true },
+      select: { id: true, callType: true, status: true, matchState: true, scheduledStart: true, scheduledEnd: true, transcriptState: true, createdAt: true },
     }),
     prisma.contentScript.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, approvedVersionId: true, approvedAt: true, historical: true } }),
     prisma.contentInterview.findMany({ where: { monthId: month.id }, select: { topicId: true, status: true, submittedAt: true, sufficiencyJson: true } }),
@@ -1100,8 +1464,14 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     };
   });
   const after = deriveMonthState({
-    now, month, enrollment: { ...enrollment, priorCallHeld }, records, scripts, interviews, topics,
-    plan: { videosPerMonth: enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth },
+    now, month,
+    enrollment: { ...enrollment, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(enrollment.overridesJson) },
+    records, scripts, interviews, topics,
+    // The MONTH's allowance, not the package's (A18): the planning reader's IN
+    // topics are counted against videosOwed, so a staff allowance change must
+    // move the session plan with it — or a written session planned for a
+    // topic the allowance cannot hold would never open.
+    plan: { videosPerMonth: month.videosOwed > 0 ? month.videosOwed : enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth },
     booking: await monthSessionCount(month.id, enrollment.clientId, now),
   });
   const before = { strategyCallStatus: month.strategyCallStatus, strategyCallAt: month.strategyCallAt, planningMode: month.planningMode, preparationStatus: month.preparationStatus };
@@ -1136,7 +1506,53 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   // not automation (programDeskTasks): never for a TEST client, never a send,
   // and the booking itself is never touched.
   if (!opts.dryRun) await syncCallBufferTask(month.id, month.monthKey, enrollment.clientId, after).catch(() => {});
+  // 6.6: a legacy-stamped call with no end on record — Kyle confirms it.
+  if (!opts.dryRun) await syncCallEndTask(month.id, month.monthKey, enrollment.clientId, after).catch(() => {});
+  // A25: a booked session whose anchor moved or vanished is a person's call —
+  // a reassessment and a desk task, never a moved booking. Every persisted
+  // recalculation passes through here (a call record synced, a route chosen,
+  // answers sent), so it is checked the moment the fact changes. It is handed
+  // `after` and never recalculates persistently itself.
+  if (!opts.dryRun) {
+    const { reassessMonthSessions } = await import("@/lib/sessionReassess");
+    await reassessMonthSessions(month.id, { now, derived: after }).catch(() => {});
+  }
   return { monthId: month.id, changed, before, after };
+}
+
+const CALL_END_TASK_PREFIX = "program-call-end:";
+
+/**
+ * "Confirm this call's end time" (6.6-legacy-call-stamp). One task per month
+ * and call start (`program-call-end:<month>:<startMs>`), raised while the
+ * derivation asks for it and closed once it no longer does — a call record
+ * arrived, the sessions are booked, or the start-based earliest has passed. A
+ * person's close stands (reopenIfClosed false). Never for a TEST client.
+ */
+async function syncCallEndTask(monthId: string, monthKey: string, clientId: string, d: DerivedMonthState): Promise<void> {
+  const { openProgramDeskTask, closeProgramDeskTask, TASK_DONE_INCLUDING_LEGACY } = await import("@/lib/programDeskTasks");
+  const prefix = `${CALL_END_TASK_PREFIX}${monthId}`;
+  const want = d.followUps.filter((f) => f.kind === "CONFIRM_CALL_END").map((f) => ({ key: `${prefix}:${f.ref ?? "start"}`, f }));
+  const open = await prisma.smartTask.findMany({ where: { dedupeKey: { startsWith: `${prefix}:` }, status: { notIn: TASK_DONE_INCLUDING_LEGACY } }, select: { dedupeKey: true } });
+  for (const t of open) if (t.dedupeKey && !want.some((w) => w.key === t.dedupeKey)) await closeProgramDeskTask(t.dedupeKey);
+  if (!want.length) return;
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { name: true } });
+  for (const { key, f } of want) {
+    await openProgramDeskTask({
+      dedupeKey: key, clientId, clientName: client?.name ?? "",
+      title: `Confirm the strategy call's end time — ${client?.name ?? "program client"} · ${monthKey}`,
+      lines: [
+        f.reason,
+        "",
+        "Find this call in Calendly. If it is a booking of the monthly strategy event, the hourly sync files it as a call record with its end time and this task closes on its own.",
+        "If it is not on Calendly, note the real end time on this task. Until a call record exists, filming offers stay measured from the call's start.",
+        "Nothing has been moved or cancelled.",
+      ],
+      assignedKey: "kyle",
+      reasonCreated: "Legacy strategy call stamp with no end time",
+      reopenIfClosed: false,
+    });
+  }
 }
 
 const CALL_BUFFER_TASK_PREFIX = "program-call-buffer:";

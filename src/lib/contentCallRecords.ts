@@ -71,6 +71,8 @@ type Raw = {
   identity?: { note: string; candidates: { clientId: string; name: string; reason: string }[] };
   /** Why no ANALYZE job was queued for a confirmed transcript (the legacy sweep already analysed that month). */
   analysis?: { skipped: string; at: string };
+  /** W03: the booking came from the portal and its token verified — whose, for which month, and how it was read. */
+  portal?: { monthId: string; monthKey: string; via: string; at: string };
 };
 const readRaw = (s: string | null | undefined): Raw => {
   if (!s) return {};
@@ -280,18 +282,24 @@ async function applyTarget(recordId: string, rules: CallRecordRules): Promise<{ 
     //     decision and quietly move a late-September call back to October;
     //   · staff confirmed the client and saw the target that was computed
     //     then (CONFIRMED_BY_STAFF with a targetMonthKey on file);
-    //   · a transcript is confirmed/analysed on the month.
+    //   · a transcript is confirmed/analysed on the month;
+    //   · W03: the client booked it FOR a month in the portal and the booking
+    //     token verified (raw.target.rule "portal") — the month they were
+    //     planning, even when the call falls on or after nextMonthFromDay.
     // Only a fresh MATCHED record with nothing on file follows the rule on
     // every pass (so a rule change before the call applies to it).
     const staffDecided = raw.target?.rule === "staff" || (r.matchState === "CONFIRMED_BY_STAFF" && !!r.targetMonthKey);
-    const locked = staffDecided || r.transcriptState === "CONFIRMED" || r.transcriptState === "ANALYZED";
+    const portalDecided = raw.target?.rule === "portal";
+    const locked = staffDecided || portalDecided || r.transcriptState === "CONFIRMED" || r.transcriptState === "ANALYZED";
     const target = r.targetMonthKey && locked
       ? { monthKey: r.targetMonthKey, rule: raw.target?.rule ?? "kept", reason: raw.target?.reason ?? (staffDecided ? "kept (decided by staff)" : "kept (transcript on file)") }
       : targetMonthFor(r.scheduledStart, r.calendlyEventTypeUri, rules);
     const month = await ensureMonth(r.enrollmentId, r.clientId, target.monthKey);
     if (r.monthId && r.monthId !== month.id) {
-      // Moved: the old month lets go of this record as "the call that planned it".
+      // Moved: the old month lets go of this record as "the call that planned it"
+      // (and of any stamp it took from it — releaseMonthStamp).
       await prisma.contentMonth.updateMany({ where: { id: r.monthId, callRecordId: r.id }, data: { callRecordId: null } });
+      await releaseMonthStamp(r.monthId, r.scheduledStart);
       touched.push(r.monthId);
     }
     touched.push(month.id);
@@ -344,6 +352,8 @@ export type SyncCallRecordsResult = {
   aliasProposals: number; monthsTouched: number; dryRun: boolean; window: { from: string; to: string };
   /** Bookings that threw (a P2002 from an overlapping "Sync now", a Prisma hiccup) — logged and skipped, never the whole sweep. */
   errors: number; lastError: string | null;
+  /** W03: portal booking attempts settled this pass (lib/callBooking.reconcileCallBookings). */
+  portalBookings?: { created: number; failed: number; pending: number; cancelled: number };
 };
 
 export async function syncCallRecordsFromCalendly(opts: { now?: Date; dryRun?: boolean; lookBackDays?: number; lookAheadDays?: number } = {}): Promise<SyncCallRecordsResult | { skipped: string }> {
@@ -381,15 +391,81 @@ export async function syncCallRecordsFromCalendly(opts: { now?: Date; dryRun?: b
   if (!dryRun) {
     await prisma.programCalendlyEventMapping.updateMany({ where: { id: { in: [...program.values()].map((m) => m.id) } }, data: { lastSyncedAt: now, lastError: out.lastError } });
     await markSynced("calendly").catch(() => {});
+    // W03: portal booking attempts a timeout left open are settled by a READ
+    // here, hourly, whatever the portal did or did not see.
+    try {
+      const { reconcileCallBookings } = await import("@/lib/callBooking");
+      out.portalBookings = await reconcileCallBookings({ now });
+    } catch (e) {
+      out.lastError = out.lastError ?? `portal bookings: ${e instanceof Error ? e.message : String(e)}`.slice(0, 500);
+    }
   }
   return out;
+}
+
+/**
+ * W03 — ONE booking, now, through the same path the hourly sweep takes
+ * (syncOneBooking), for the portal: the embed's "scheduled" (after the server
+ * re-read it), an API booking's read-back, a refresh after a change. `token`
+ * is a portal booking token the CALLER already matched to its viewer; it is
+ * verified again here all the same. Refused — no row — when the event's type
+ * is not an enabled program mapping.
+ */
+export async function ingestCalendlyBooking(
+  item: { event: ScheduledEvent; invitees: Invitee[] },
+  opts: { token?: string | null; source?: "PORTAL_EMBED" | "PORTAL_API"; now?: Date } = {},
+): Promise<{ ok: true; recordId: string; monthId: string | null; matchState: string } | { ok: false; reason: string }> {
+  const mappings = await enabledCallMappings();
+  const mapping = item.event.event_type ? mappings.get(item.event.event_type) : undefined;
+  if (!mapping || mapping.purpose === "IGNORED") return { ok: false, reason: "not an enabled program event type" };
+  const now = opts.now ?? new Date();
+  const rules = await callRecordRules();
+  const out: SyncCallRecordsResult = { scanned: 1, unrelated: 0, created: 0, updated: 0, matched: 0, review: 0, cancelled: 0, rescheduled: 0, aliasProposals: 0, monthsTouched: 0, dryRun: false, window: { from: now.toISOString(), to: now.toISOString() }, errors: 0, lastError: null };
+  const touchedMonths = new Set<string>();
+  const recordId = await syncOneBooking(item, mapping, { rules, now, dryRun: false, out, touchedMonths, portal: { token: opts.token ?? null, source: opts.source ?? null } });
+  for (const m of touchedMonths) await recalcProgramMonth(m, { now });
+  if (!recordId) return { ok: false, reason: "not recorded" };
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, monthId: true, matchState: true } });
+  return r ? { ok: true, recordId: r.id, monthId: r.monthId, matchState: r.matchState } : { ok: false, reason: "not recorded" };
+}
+
+/**
+ * W03 — a portal booking token on this booking that VERIFIES: the one the
+ * caller vouches for, the invitee's own tracking.utm_content, the token already
+ * on the record, or — for a replacement made through the reschedule page — the
+ * token of the invitee it replaced (Calendly's old_invitee link). HMAC over the
+ * month's own enrollment (lib/callBooking.verifyPortalCallToken), so this is
+ * never a name or a date: A04 holds.
+ */
+async function portalTokenIdentity(a: { event: ScheduledEvent; invitee: Invitee | null; existingToken: string | null; explicit: string | null }): Promise<(import("@/lib/callBooking").VerifiedCallToken & { via: string }) | null> {
+  const { verifyPortalCallToken, tokenOfInvitee, bookedAtOfInvitee } = await import("@/lib/callBooking");
+  const callStart = a.event.start_time ? new Date(a.event.start_time) : null;
+  // Stale page = a token for a month before the one the booking was MADE in
+  // (the invitee's created_at), never the call's own month: a late-October
+  // booking of a Nov 2 call for October's plan is October's.
+  const bookedAt = bookedAtOfInvitee(a.invitee);
+  const tries: [string | null, string][] = [[a.explicit, "portal"], [tokenOfInvitee(a.invitee), "invitee tracking"], [a.existingToken, "record"]];
+  if (a.invitee?.old_invitee) {
+    const prev = await prisma.programCallRecord.findFirst({ where: { calendlyInviteeUri: a.invitee.old_invitee }, select: { portalToken: true } });
+    tries.push([prev?.portalToken ?? null, "rescheduled from a portal booking"]);
+  }
+  for (const [tok, via] of tries) {
+    if (!tok) continue;
+    const v = await verifyPortalCallToken(tok, { bookedAt, callStart });
+    if (v) return { ...v, via };
+  }
+  return null;
 }
 
 async function syncOneBooking(
   { event, invitees }: { event: ScheduledEvent; invitees: Invitee[] },
   mapping: CallMapping,
-  ctx: { rules: CallRecordRules; now: Date; dryRun: boolean; out: SyncCallRecordsResult; touchedMonths: Set<string> },
-): Promise<void> {
+  ctx: {
+    rules: CallRecordRules; now: Date; dryRun: boolean; out: SyncCallRecordsResult; touchedMonths: Set<string>;
+    /** W03: a portal ingest — the token its caller matched, and where it came from. */
+    portal?: { token: string | null; source: "PORTAL_EMBED" | "PORTAL_API" | null };
+  },
+): Promise<string | null> {
   const { rules, now, dryRun, out, touchedMonths } = ctx;
   {
     const invitee = invitees.find((i) => i.status === "active") ?? invitees[0] ?? null;
@@ -401,10 +477,17 @@ async function syncOneBooking(
 
     const existing = await prisma.programCallRecord.findUnique({
       where: { calendlyEventUri: event.uri },
-      select: { id: true, matchState: true, clientId: true, enrollmentId: true, inviteeEmail: true, status: true, monthId: true, rawJson: true, transcriptState: true, callType: true },
+      select: { id: true, matchState: true, clientId: true, enrollmentId: true, inviteeEmail: true, status: true, monthId: true, rawJson: true, transcriptState: true, callType: true, portalToken: true, bookingSource: true },
     });
     const staffOwned = existing?.matchState === "CONFIRMED_BY_STAFF" || existing?.matchState === "IGNORED";
     const raw: Raw = { ...readRaw(existing?.rawJson), calendly: { event, invitee } };
+    // W03: a verified portal booking token IS the identity and the month — for
+    // a monthly call a person has not already settled. It is re-read from the
+    // invitee on every pass, so the hourly sweep keeps (never un-matches) what
+    // the portal filed, and a booking the sweep sees first is filed the same way.
+    const portal = !staffOwned && mapping.purpose === "MONTHLY_STRATEGY"
+      ? await portalTokenIdentity({ event, invitee, existingToken: existing?.portalToken ?? null, explicit: ctx.portal?.token ?? null })
+      : null;
 
     // The replacement booking of a reschedule points back at the original.
     let rescheduledFromId: string | null = null;
@@ -433,9 +516,9 @@ async function syncOneBooking(
       if (!existing) out.created++; else out.updated++;
       if (status === "CANCELLED") out.cancelled++;
       if (status === "RESCHEDULED") out.rescheduled++;
-      const idn = staffOwned ? null : await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
-      if (idn?.state === "MATCHED") out.matched++; else if (idn) out.review++;
-      return;
+      const idn = staffOwned || portal ? null : await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
+      if (portal || idn?.state === "MATCHED") out.matched++; else if (idn) out.review++;
+      return null;
     }
 
     // Identity: re-resolved every pass for records a human has not settled,
@@ -444,7 +527,14 @@ async function syncOneBooking(
     // keep the identity that was verified and become AMBIGUOUS_CLIENT for a
     // person to look at — the month it planned keeps its call on file.
     let identity: { matchState: string; clientId: string | null; enrollmentId: string | null; note: string | null; candidates: { clientId: string; name: string; reason: string }[] } | null = null;
-    if (!staffOwned) {
+    if (portal) {
+      identity = { matchState: "MATCHED", clientId: portal.clientId, enrollmentId: portal.enrollmentId, note: `matched by portal booking token (${portal.via})`, candidates: [] };
+      raw.identity = { note: identity.note ?? "", candidates: [] };
+      raw.portal = { monthId: portal.monthId, monthKey: portal.monthKey, via: portal.via, at: now.toISOString() };
+      // The month they booked FOR, locked like a staff decision (applyTarget)
+      // — unless staff has since retargeted it: a person still wins.
+      if (raw.target?.rule !== "staff") raw.target = { rule: "portal", reason: `booked in the portal for ${portal.monthKey}`, monthKey: portal.monthKey };
+    } else if (!staffOwned) {
       const idn = await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
       const wasVerified = existing?.matchState === "MATCHED" && !!existing.clientId;
       if (idn.state === "MATCHED") {
@@ -474,6 +564,13 @@ async function syncOneBooking(
     const data = {
       ...provider,
       ...(identity ? { matchState: identity.matchState, clientId: identity.clientId, enrollmentId: identity.enrollmentId, matchNote: identity.note } : {}),
+      ...(portal ? {
+        portalToken: portal.token,
+        // The portal's own ingest names how it was booked; the sweep seeing a
+        // token first only says it came from the portal. Never downgraded.
+        bookingSource: ctx.portal?.source ?? (existing?.bookingSource?.startsWith("PORTAL") ? existing.bookingSource : "PORTAL_TOKEN"),
+        ...(raw.target?.rule === "portal" ? { targetMonthKey: portal.monthKey } : {}),
+      } : {}),
       rawJson: JSON.stringify(raw),
       lastError: null, lastErrorAt: null,
     };
@@ -513,6 +610,7 @@ async function syncOneBooking(
         );
       }
     }
+    return recordId;
   }
 }
 
@@ -1051,9 +1149,26 @@ export async function candidateDiscoveryBookingsFor(clientId: string): Promise<C
   return out;
 }
 
+/**
+ * A record leaving a month takes its own stamp with it (batch-3 review, Sep 25
+ * 2026). A recalculation persisted the month's strategyCallStatus/At FROM this
+ * record; once the record is ignored or moved to another month, the month has
+ * no record left and the derivation reads that stamp as legacy truth — it
+ * opened filming 72 weekday hours after a call this client never had. A stamp
+ * at this record's start, on a month with no transcript pasted, is cleared
+ * before the recalculation re-derives the month from what is left.
+ */
+async function releaseMonthStamp(monthId: string, scheduledStart: Date | null): Promise<void> {
+  if (!scheduledStart) return;
+  await prisma.contentMonth.updateMany({
+    where: { id: monthId, strategyCallAt: scheduledStart, strategyCallStatus: { in: ["SCHEDULED", "COMPLETED"] }, OR: [{ transcriptText: null }, { transcriptText: "" }] },
+    data: { strategyCallStatus: "NOT_SCHEDULED", strategyCallAt: null },
+  });
+}
+
 export async function setCallRecordTargetMonth(recordId: string, monthKey: string, by: string | null): Promise<void> {
   if (!/^\d{4}-\d{2}$/.test(monthKey)) throw new Error("Month must look like 2026-10.");
-  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, clientId: true, enrollmentId: true, callType: true, monthId: true, rawJson: true, status: true } });
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, clientId: true, enrollmentId: true, callType: true, monthId: true, rawJson: true, status: true, scheduledStart: true } });
   if (!r?.clientId || !r.enrollmentId) throw new Error("Confirm the client first.");
   if (r.callType !== "MONTHLY_STRATEGY") throw new Error("Only a monthly strategy call plans a month.");
   const month = await ensureMonth(r.enrollmentId, r.clientId, monthKey);
@@ -1061,6 +1176,7 @@ export async function setCallRecordTargetMonth(recordId: string, monthKey: strin
   await prisma.programCallRecord.update({ where: { id: r.id }, data: { monthId: month.id, targetMonthKey: monthKey, rawJson: JSON.stringify({ ...raw, target: { rule: "staff", reason: `retargeted to ${monthKey} by ${by ?? "staff"}`, monthKey } }) } });
   if (r.monthId && r.monthId !== month.id) {
     await prisma.contentMonth.updateMany({ where: { id: r.monthId, callRecordId: r.id }, data: { callRecordId: null } });
+    await releaseMonthStamp(r.monthId, r.scheduledStart);
     await recalcProgramMonth(r.monthId);
   }
   if (r.status !== "CANCELLED" && r.status !== "RESCHEDULED") await prisma.contentMonth.updateMany({ where: { id: month.id, callRecordId: null }, data: { callRecordId: r.id } });
@@ -1068,11 +1184,12 @@ export async function setCallRecordTargetMonth(recordId: string, monthKey: strin
 }
 
 export async function ignoreCallRecord(recordId: string, by: string | null, note?: string): Promise<void> {
-  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { monthId: true } });
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { monthId: true, scheduledStart: true } });
   await prisma.programCallRecord.update({ where: { id: recordId }, data: { matchState: "IGNORED", callType: "UNRELATED", monthId: null, onboardingId: null, confirmedBy: by, confirmedAt: new Date(), matchNote: note?.trim() || `ignored by ${by ?? "staff"}` } });
   await cancelTranscriptJobs(recordId, "call ignored by staff");
   if (r?.monthId) {
     await prisma.contentMonth.updateMany({ where: { id: r.monthId, callRecordId: recordId }, data: { callRecordId: null } });
+    await releaseMonthStamp(r.monthId, r.scheduledStart);
     await recalcProgramMonth(r.monthId);
   }
   await reconcileCallReviewTasks();

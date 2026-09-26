@@ -143,6 +143,14 @@ export type ShootView = {
     reelShotList: string | null;
     reelScriptUrl: string | null;
     reelRecipeUpdatedAt: string | null;
+    /**
+     * A25 (Sep 25 2026): "Address change pending: <NEW> (not yet on the
+     * booking)" while a content client's new exact address for this job's
+     * session is saved but not yet on the Aryeo booking. addressFull above is
+     * still the booking's (old) address; the photographer sees both, and
+     * neither is guessed at. Null when nothing is pending.
+     */
+    addressChangePending: string | null;
   };
   appointment: {
     id: string;
@@ -230,6 +238,16 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
   const primary = liveAppts[0] ?? p.appointments[0] ?? null;
 
   const addressFull = [p.addressLine, p.city, p.state, p.zip].filter(Boolean).join(", ") || p.title;
+  // The newest exact address a client gave for a session on this job that is
+  // not on the booking yet (anything short of SYNCED).
+  const pendingAddress = await prisma.programSessionAddress
+    .findFirst({ where: { projectId: p.id, submittedAt: { not: null }, syncState: { not: "SYNCED" } }, orderBy: { submittedAt: "desc" } })
+    .catch(() => null);
+  let addressChangePending: string | null = null;
+  if (pendingAddress) {
+    const { formatAddressLine } = await import("@/lib/sessionAddress");
+    addressChangePending = `Address change pending: ${formatAddressLine({ streetNumber: pendingAddress.streetNumber, streetName: pendingAddress.streetName, unit: pendingAddress.unitNumber, city: pendingAddress.city, stateCode: pendingAddress.stateCode, postalCode: pendingAddress.postalCode })} (not yet on the booking)`;
+  }
   const phone = p.client.phone ?? null;
   const k = phoneKey(phone);
 
@@ -265,6 +283,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       reelShotList: p.reelShotList,
       reelScriptUrl: p.reelScriptUrl,
       reelRecipeUpdatedAt: p.reelRecipeUpdatedAt?.toISOString() ?? null,
+      addressChangePending,
     },
     appointment: primary
       ? (() => {

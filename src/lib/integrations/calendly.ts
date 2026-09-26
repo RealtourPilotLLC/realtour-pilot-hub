@@ -3,8 +3,13 @@ import { getSecret } from "@/lib/integrations/connections";
 import { prisma } from "@/lib/prisma";
 
 // ---------------------------------------------------------------------------
-// Calendly (v2 API, personal access token). Read-only: the hub never books or
-// cancels — clients book through Jordan's public links, we read what happened.
+// Calendly (v2 API, personal access token). Mostly reads: clients book through
+// the mapped public link (now embedded in the portal) and we read what
+// happened. The two WRITES — book one invitee (POST /invitees, the Scheduling
+// API) and cancel one event — exist for W03's in-portal booking (Sep 25 2026)
+// and sit behind THE guard at the bottom of this file (calendlyWritePermit):
+// the `call_booking` switch, its fixture/pilot scope, and a permit that only
+// that guard can mint. Nothing else in the tree writes to Calendly.
 //
 // TWO ways of naming a call live side by side here, on purpose (Sep 16 2026):
 //
@@ -41,13 +46,20 @@ export class CalendlyConfigError extends CalendlyError {
   }
 }
 
-async function calendlyRequest<T = unknown>(path: string, opts: { query?: Record<string, string>; key?: string } = {}): Promise<T> {
+async function calendlyRequest<T = unknown>(
+  path: string,
+  opts: { query?: Record<string, string>; key?: string; method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<T> {
   const key = opts.key ?? (await getSecret("calendly"));
   if (!key) throw new CalendlyError("Calendly is not connected.", 401);
   const url = new URL(path.startsWith("http") ? path : `${BASE}${path}`);
   for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
+  // One attempt, always — for a POST that is the point: a timeout after
+  // Calendly committed is the one failure a retry turns into a second booking.
   const res = await fetch(url, {
+    method: opts.method ?? "GET",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
     cache: "no-store",
     signal: AbortSignal.timeout(10_000),
   });
@@ -83,18 +95,33 @@ export type ScheduledEvent = {
   calendar_event?: { external_id?: string | null; kind?: string | null } | null;
   event_memberships?: { user?: string }[];
 };
+/** The UTM fields Calendly keeps from the booking page's address (or a POST /invitees body). */
+export type InviteeTracking = {
+  utm_campaign?: string | null;
+  utm_source?: string | null;
+  utm_medium?: string | null;
+  utm_content?: string | null;
+  utm_term?: string | null;
+  salesforce_uuid?: string | null;
+};
 export type Invitee = {
   email?: string;
   name?: string;
   status?: string; // active | canceled
   uri?: string;
+  /** The scheduled event this invitee belongs to (the POST /invitees response carries it). */
+  event?: string;
   timezone?: string;
+  /** W03: the portal's booking token rides here as utm_content. */
+  tracking?: InviteeTracking | null;
   rescheduled?: boolean;
   old_invitee?: string | null;
   new_invitee?: string | null;
   cancel_url?: string;
   reschedule_url?: string;
   cancellation?: { canceled_by?: string; reason?: string | null; canceler_type?: string } | null;
+  /** When the booking was made — a portal token's stale-page rule reads it (callBooking.verifyPortalCallToken). */
+  created_at?: string;
 };
 
 export async function testCalendlyKey(key: string): Promise<{ ok: true; label: string } | { ok: false; error: string }> {
@@ -355,4 +382,162 @@ export async function recapTranscriptText(recapUri: string): Promise<string | nu
   };
   const text = flatten(json);
   return text?.trim() || null;
+}
+
+// ---------------------------------------------------------------------------
+// W03 (unified handoff, Sep 25 2026) — THE SCHEDULING API: an event type's
+// detail, its open times, and the two writes. The documented contract
+// (developer.calendly.com, "Scheduling API" / "Schedule events with AI agents"):
+//
+//   GET  /event_type_available_times?event_type&start_time&end_time
+//        start in the future, a window of at most 7 days per call. 403 when
+//        the account's plan lacks the Scheduling API — the read-only probe
+//        (lib/callBooking.runSchedulingProbe) is how the hub learns which.
+//   POST /invitees {event_type, start_time (UTC), invitee{name,email,timezone},
+//        location{kind,…}, tracking{utm_*}} → 201 {resource: invitee}. Who is
+//        emailed is the EVENT TYPE's own notification setting, not this call.
+//   POST /scheduled_events/{uuid}/cancellation {reason} → 201.
+//   There is no reschedule endpoint: a move is the invitee's reschedule_url.
+//
+// Nothing here is ever retried (see calendlyRequest).
+// ---------------------------------------------------------------------------
+
+export type EventTypeDetail = {
+  uri: string;
+  name: string;
+  durationMinutes: number | null;
+  schedulingUrl: string | null;
+  active: boolean;
+  /** The meeting locations the type offers; POST /invitees must name one of them. */
+  locations: { kind: string; location?: string | null }[];
+};
+
+export async function getEventType(eventTypeUri: string): Promise<EventTypeDetail | null> {
+  const uuid = eventTypeUri.split("/").pop();
+  if (!uuid) return null;
+  try {
+    const r = await calendlyRequest<{ resource?: { uri?: string; name?: string; duration?: number; scheduling_url?: string; active?: boolean; locations?: { kind?: string; location?: string | null }[] | null } }>(`/event_types/${uuid}`);
+    const t = r.resource;
+    if (!t?.uri) return null;
+    return {
+      uri: t.uri, name: t.name ?? "(unnamed)",
+      durationMinutes: typeof t.duration === "number" && t.duration > 0 ? t.duration : null,
+      schedulingUrl: t.scheduling_url ?? null, active: t.active !== false,
+      locations: (t.locations ?? []).filter((l): l is { kind: string; location?: string | null } => typeof l?.kind === "string"),
+    };
+  } catch (e) {
+    if (e instanceof CalendlyError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+/** Calendly refuses a longer window per call. */
+export const AVAILABLE_TIMES_MAX_WINDOW_MS = 7 * 864e5;
+
+export type AvailableTime = { startTime: string; status: string; inviteesRemaining: number | null; schedulingUrl: string | null };
+
+/** Open start times on ONE event type in [start, end] (≤ 7 days, start in the future). Throws CalendlyError (403 = plan). */
+export async function eventTypeAvailableTimes(eventTypeUri: string, startISO: string, endISO: string): Promise<AvailableTime[]> {
+  const r = await calendlyRequest<{ collection?: { status?: string; start_time?: string; invitees_remaining?: number; scheduling_url?: string }[] }>(
+    "/event_type_available_times",
+    { query: { event_type: eventTypeUri, start_time: startISO, end_time: endISO } },
+  );
+  return (r.collection ?? [])
+    .filter((s): s is { status?: string; start_time: string; invitees_remaining?: number; scheduling_url?: string } => typeof s?.start_time === "string")
+    .map((s) => ({ startTime: s.start_time, status: s.status ?? "available", inviteesRemaining: typeof s.invitees_remaining === "number" ? s.invitees_remaining : null, schedulingUrl: s.scheduling_url ?? null }));
+}
+
+// ---------------------------------------------------------------------------
+// THE WRITE GUARD. Same shape as Aryeo's hubWritePermit (integrations/aryeo.ts):
+// every write takes a permit, and a permit exists only if calendlyWritePermit()
+// issued it in this process a moment ago — there is no other way to construct
+// one (the WeakSet is private). The decision itself is callBookingScope
+// (lib/callBooking.ts): `call_booking` ON (a missing row is OFF), then R02's
+// scope rules — a TEST fixture listed in authorizedFixtureClientIds whose
+// invitee address is a verified test inbox, or a real client inside an
+// approved, unexpired pilot that names this operation. Today the switch is off
+// and both lists are empty, so every write refuses before a socket opens.
+// ---------------------------------------------------------------------------
+
+export type CalendlyWriteOperation = "invitees.create" | "scheduled_events.cancel";
+
+/** Proof that THE guard said yes, a moment ago, for this client and operation. */
+export type CalendlyWritePermit = {
+  readonly clientId: string;
+  readonly operation: CalendlyWriteOperation;
+  readonly scope: "FIXTURE" | "PILOT";
+  readonly issuedAt: number;
+};
+
+const issuedCalendlyPermits = new WeakSet<CalendlyWritePermit>();
+const CALENDLY_PERMIT_TTL_MS = 120_000;
+
+export async function calendlyWritePermit(a: {
+  client: { id: string; name: string | null } | null;
+  operation: CalendlyWriteOperation;
+  /** The address Calendly will email — a fixture's must be a verified test inbox. */
+  inviteeEmail?: string | null;
+}): Promise<{ ok: true; permit: CalendlyWritePermit } | { ok: false; reason: string }> {
+  if (!a.client?.id) return { ok: false, reason: "no client — the hub does not write to Calendly for nobody" };
+  const { callBookingScope } = await import("@/lib/callBooking");
+  const d = await callBookingScope({ client: a.client, operation: a.operation, inviteeEmail: a.inviteeEmail ?? null });
+  if (!d.ok) return { ok: false, reason: d.reason };
+  const permit: CalendlyWritePermit = Object.freeze({ clientId: a.client.id, operation: a.operation, scope: d.scope, issuedAt: Date.now() });
+  issuedCalendlyPermits.add(permit);
+  return { ok: true, permit };
+}
+
+function checkCalendlyPermit(p: CalendlyWritePermit, operation: CalendlyWriteOperation): void {
+  if (!p || !issuedCalendlyPermits.has(p)) throw new CalendlyError(`Refusing ${operation}: no write permit from calendlyWritePermit().`, 403);
+  if (p.operation !== operation) throw new CalendlyError(`Refusing ${operation}: the permit is for ${p.operation}.`, 403);
+  if (Date.now() - p.issuedAt > CALENDLY_PERMIT_TTL_MS) throw new CalendlyError(`Refusing ${operation}: the write permit expired; ask the guard again.`, 403);
+}
+
+/**
+ * What a failed write MEANS (same three words as Aryeo's).
+ *   REJECTED   Calendly answered no (4xx), or we never sent it. Nothing happened.
+ *   RETRYABLE  429 — refused for load. Nothing happened.
+ *   UNKNOWN    a timeout, a 5xx, a dropped socket — it MAY have happened. Only a
+ *              read can settle it; never a second POST.
+ */
+export function classifyCalendlyWriteError(e: unknown): "REJECTED" | "RETRYABLE" | "UNKNOWN" {
+  if (e instanceof CalendlyError && typeof e.status === "number") {
+    if (e.status === 429) return "RETRYABLE";
+    if (e.status === 408) return "UNKNOWN";
+    if (e.status >= 400 && e.status < 500) return "REJECTED";
+    if (e.status === 0) return "REJECTED"; // a configuration refusal raised before any request
+    return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+export type CreateInviteeInput = {
+  eventTypeUri: string;
+  startISO: string;
+  invitee: { name: string; email: string; timezone: string };
+  location?: { kind: string; location?: string | null } | null;
+  tracking?: InviteeTracking;
+};
+
+/** POST /invitees — books ONE invitee on the mapped type. One attempt; the caller owns recovery. */
+export async function createInvitee(permit: CalendlyWritePermit, input: CreateInviteeInput): Promise<Invitee & { cancel_url?: string; reschedule_url?: string }> {
+  checkCalendlyPermit(permit, "invitees.create");
+  const body: Record<string, unknown> = {
+    event_type: input.eventTypeUri,
+    start_time: new Date(input.startISO).toISOString(),
+    invitee: { name: input.invitee.name, email: input.invitee.email, timezone: input.invitee.timezone },
+    ...(input.location ? { location: input.location.location ? { kind: input.location.kind, location: input.location.location } : { kind: input.location.kind } } : {}),
+    ...(input.tracking ? { tracking: input.tracking } : {}),
+  };
+  const r = await calendlyRequest<{ resource?: Invitee }>("/invitees", { method: "POST", body });
+  if (!r.resource?.uri) throw new CalendlyError("Calendly accepted the booking but returned no invitee.", 502);
+  return r.resource;
+}
+
+/** POST /scheduled_events/{uuid}/cancellation. */
+export async function cancelScheduledEvent(permit: CalendlyWritePermit, eventUri: string, reason: string): Promise<void> {
+  checkCalendlyPermit(permit, "scheduled_events.cancel");
+  const uuid = eventUri.split("/").pop();
+  if (!uuid) throw new CalendlyError("No event to cancel.", 400);
+  await calendlyRequest(`/scheduled_events/${uuid}/cancellation`, { method: "POST", body: { reason: reason.slice(0, 200) } });
 }

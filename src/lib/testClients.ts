@@ -264,3 +264,50 @@ export function assertProviderWriteAllowed(a: ProviderWriteAttempt): void {
   const d = providerWriteDecision(a);
   if (!d.allowed) throw new ProviderWriteRefusedError(d.reason);
 }
+
+// ---------------------------------------------------------------------------
+// FIXTURE IDENTITY (R02 / A26, unified handoff Sep 25 2026).
+//
+// A name is a label anybody can type. The fixture list and the TEST word were
+// the only two things between a hub write and a real client, and the
+// never-synthetic list covers exactly two rows. What a rename CANNOT change is
+// where the row's mail goes: a real client renamed "… TEST" still has the real
+// person's inbox, and so does the Aryeo customer it is linked to. So a TEST
+// fixture may be written for only when BOTH inboxes are Jordan's verified test
+// inbox (plus-addressing folded, so info+jordantest@ counts). Pure: the caller
+// reads the Aryeo customer's email (integrations/aryeo.ts hubWritePermit) and
+// hands it in; "could not read it" is passed as null and refuses.
+// ---------------------------------------------------------------------------
+
+export class FixtureIdentityError extends Error {
+  constructor(reason: string) {
+    super(`Refusing: ${reason}`);
+    this.name = "FixtureIdentityError";
+  }
+}
+
+export type FixtureIdentityInput = {
+  clientEmail: string | null | undefined;
+  /** The client's linked Aryeo customer id; a fixture without one has nothing to verify against. */
+  aryeoCustomerId: string | null | undefined;
+  /** That Aryeo customer's own email as Aryeo reports it; null = not read / not found. */
+  aryeoCustomerEmail: string | null | undefined;
+};
+
+/** Why this TEST row is not provably a fixture, or null when both inboxes are the test inbox. */
+export function fixtureIdentityProblem(i: FixtureIdentityInput): string | null {
+  if (!isVerifiedTestDestinationEmail(i.clientEmail)) {
+    return `the fixture's own email (${i.clientEmail || "none"}) is not the verified test inbox ${JORDAN_TEST_EMAIL}, so it may be a real client carrying a TEST name`;
+  }
+  if (!i.aryeoCustomerId) return "the fixture has no linked Aryeo customer, so there is no customer the hub could prove is a test one";
+  if (!isVerifiedTestDestinationEmail(i.aryeoCustomerEmail)) {
+    return `the fixture's Aryeo customer ${i.aryeoCustomerId} reads ${i.aryeoCustomerEmail ? `as ${i.aryeoCustomerEmail}` : "back with no email (or could not be read)"}, not the verified test inbox ${JORDAN_TEST_EMAIL}`;
+  }
+  return null;
+}
+
+/** Throws unless the TEST row and its Aryeo customer both belong to the verified test inbox. */
+export function assertFixtureIdentity(i: FixtureIdentityInput): void {
+  const p = fixtureIdentityProblem(i);
+  if (p) throw new FixtureIdentityError(p);
+}

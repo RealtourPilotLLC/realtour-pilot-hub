@@ -144,7 +144,14 @@ export function SettingsPanel({
         {isOwner && (
           <div className="mt-3 space-y-2 border-t border-border pt-3">
             <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-2">Permitted overrides</p>
-            <Override label="Preparation window (business days before filming)" k="preparationWindowDays" v={s.overrides.preparationWindowDays} s={s} busy={busy} start={start} say={say} />
+            {/* W01: the rule's own unit. Every filming gate reads it (it used
+                to write a days value nothing read). */}
+            <Override label="Preparation window (weekday hours, default 72)" k="preparationWindowHours" v={s.overrides.preparationWindowHours} s={s} busy={busy} start={start} say={say} />
+            {s.overrides.preparationWindowDays != null && s.overrides.preparationWindowDays !== "" && (
+              <div className="pl-2 text-[12px] text-muted-2">
+                <Override label={`Legacy window in days (read as ${Number(s.overrides.preparationWindowDays) * 24 || "?"} weekday hours${s.overrides.preparationWindowHours != null ? "; the hours above win" : ""}), clear it to retire`} k="preparationWindowDays" v={s.overrides.preparationWindowDays} s={s} busy={busy} start={start} say={say} />
+              </div>
+            )}
             <Override label="Extra sessions allowed without approval" k="extraSessionsAllowed" v={s.overrides.extraSessionsAllowed} s={s} busy={busy} start={start} say={say} boolean />
             <Override label="Require a call for the next N months" k="requireCallForMonths" v={s.overrides.requireCallForMonths} s={s} busy={busy} start={start} say={say} />
           </div>

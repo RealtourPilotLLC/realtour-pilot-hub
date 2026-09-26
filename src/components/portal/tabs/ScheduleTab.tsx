@@ -10,7 +10,8 @@ import { cn } from "@/lib/utils";
 // SCHEDULE (spec §4): two separate appointments. "Schedule strategy call" —
 // its status, local date/time, timezone, link and what the client may do —
 // and "Schedule content session" (PortalScheduler: per program month, gated
-// by the derived preparation window, requests durable). "Plan without a
+// by the derived preparation window — 72 weekday hours after the answers are
+// sent or the booked call ends — requests durable). "Plan without a
 // call" appears ONLY when the enrollment is eligible, and it never cancels a
 // booked call; the real cancellation lives on Calendly / the request row.
 //
@@ -61,7 +62,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             {p.planningMode === "WRITTEN" ? (
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>
-                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions — session booking opens a few business days after.</>}</p>
+                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</>}</p>
                 {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {tzName} — cancel it on Calendly if you no longer need it.</p>}
                 {/* Not a one-way door: the same eligibility that offered the
                     written path offers the call back (review, Sep 17). */}
@@ -76,6 +77,8 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
                 <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {tzName}</div>
                 {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <div className="text-xs text-muted-2">Video call — the link is in your calendar invite.</div>}
                 <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email — the change shows here within the hour.</p>
+                {/* §3: filming opens the moment the call is booked, measured from the call's end. */}
+                <p className="text-xs text-muted">You can book filming now, before the call. Sessions start at least three weekdays (72 weekday hours) after the call ends.</p>
                 {routeHref ? switchLink("Change how you plan this month") : p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked />}
               </>
             ) : p.callStatus === "NOT_REQUIRED" ? (
@@ -89,14 +92,14 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
               <>
                 <p className="text-muted">No strategy call this month.</p>
                 {!readOnly && (
-                  <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book one anyway <ChevronRight className="size-3.5" /></a>
+                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book one anyway <ChevronRight className="size-3.5" /></a>
                 )}
               </>
             ) : (
               <>
                 <div className="text-muted">Not booked yet — we plan {monthLabel(p.monthKey)} on this call, then film it.</div>
                 {!readOnly && (
-                  <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
+                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
                 )}
                 <p className="text-xs text-muted-2">Times show in your timezone on Calendly; it lands here as Booked once it&rsquo;s on the calendar.</p>
                 {routeHref ? switchLink("Or choose your topics here instead") : p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked={false} />}

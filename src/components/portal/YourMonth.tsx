@@ -8,6 +8,8 @@ import { LoadFailed } from "@/components/portal/ui";
 import { TopicBank } from "@/components/portal/TopicBank";
 import { PortalScheduler } from "@/components/portal/PortalScheduler";
 import { RouteChoice, ScheduleLaterButton } from "@/components/portal/PlanningChoice";
+import { PortalCallPicker } from "@/components/portal/PortalCallPicker";
+import type { PortalCallBookingView } from "@/lib/callBooking";
 
 // ---------------------------------------------------------------------------
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
@@ -31,6 +33,8 @@ export type YourMonthData = {
   scheduleFailed: boolean;
   slotDays: PortalSlotDay[];
   bookingUrl: string;
+  /** W03: the month's strategy call, booked here (embed or API); null = not loaded → bookingUrl. */
+  callBooking?: PortalCallBookingView | null;
   can: { suggest: boolean; session: boolean };
   readOnly: boolean;
   filter?: string;
@@ -103,7 +107,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                 <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-2">{STATE_WORD[step.state]}</div>
                 <h3 className="break-words text-sm font-semibold leading-snug">{step.title}</h3>
                 {step.detail && <p className="mt-0.5 text-xs text-muted">{step.detail}</p>}
-                {step.cta && step.state !== "current" && step.key !== "filming" && (
+                {step.cta && step.state !== "current" && step.key !== "filming" && !(step.key === "call" && d.callBooking) && (
                   step.cta.external
                     ? <a href={step.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-brand hover:underline sm:min-h-0", focusRing)}>{step.cta.label} <ExternalLink className="size-3" aria-hidden /></a>
                     : <Link href={step.cta.href} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-brand hover:underline sm:min-h-0", focusRing)}>{step.cta.label} <ChevronRight className="size-3" aria-hidden /></Link>
@@ -119,6 +123,12 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                     <div className="mt-2"><RouteChoice monthId={p.monthId} current={route} /></div>
                   </details>
                 ))}
+
+                {/* W03: book (or change) the strategy call right here — never
+                    once the call has been held. */}
+                {step.key === "call" && d.callBooking && planning.call !== "HELD" && step.state !== "done" && (
+                  <PortalCallPicker view={d.callBooking} />
+                )}
 
                 {/* Book filming — the Schedule page's own picker, embedded. */}
                 {step.key === "filming" && (d.scheduleFailed ? (

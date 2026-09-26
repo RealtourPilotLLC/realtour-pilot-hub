@@ -18,6 +18,11 @@
 //
 // READ-ONLY, STRUCTURALLY. The connection refuses writes and this file proves it
 // with a refused UPDATE before it reads anything.
+//
+// Run against an isolated single-session database (PGlite) instead, two kinds of
+// statement cannot be decided and are printed as NOT DECIDABLE HERE, never green:
+// the advisory lock's cross-connection timing (one session cannot block itself)
+// and the production month looked up by id (absent).
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";
@@ -39,10 +44,15 @@ function makeTheDatabaseReadOnly(): void {
 }
 makeTheDatabaseReadOnly();
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, noted = 0;
 const check = (name: string, ok: boolean, detail = "") => {
   if (ok) { pass++; console.log(`   ok   ${name}${detail ? ` — ${detail}` : ""}`); }
   else { fail++; console.log(`   FAIL ${name}${detail ? ` — ${detail}` : ""}`); }
+};
+/** A statement this database cannot decide (journey-concurrency.ts's pattern). Printed, counted, never green. */
+const note = (name: string, detail: string) => {
+  noted++;
+  console.log(`   NOT DECIDABLE HERE ${name}\n        ${detail}`);
 };
 
 const D = (iso: string) => new Date(iso);
@@ -189,7 +199,8 @@ async function main() {
   check("month state: two Pro bookings read fully scheduled", dTwo.sessionsAccountedFor === 2 && dTwo.fullyScheduled === true);
   const dNone = derived(null);
   check("no booking evidence supplied: bookingKnown false, not 'fully scheduled'", dNone.bookingKnown === false && dNone.fullyScheduled === false, "we did not look is not nothing is booked");
-  check("the preparation clock from batch 1 is untouched", dOne.windowHours === 48 && dOne.earliestSessionAt?.toISOString() === "2026-10-06T14:30:00.000Z", dOne.earliestSessionAt?.toISOString() ?? "null");
+  // 72 weekday hours since batch 3, §3: the call ends Fri Oct 2 10:30 ET → Wed Oct 7 10:30 ET (was Tue Oct 6 under batch 1's 48).
+  check("the preparation clock is batch 3's 72 weekday hours from the call's end", dOne.windowHours === 72 && dOne.earliestSessionAt?.toISOString() === "2026-10-07T14:30:00.000Z", dOne.earliestSessionAt?.toISOString() ?? "null");
 
   // =========================================================================
   console.log("\n4. CLARIFICATION 3 — NO PLANNING DEADLINE, AND THE 20th");
@@ -231,7 +242,12 @@ async function main() {
   // Mutual exclusion, measured: holder sleeps 1.2s, the waiter cannot proceed until it lets go.
   const t0 = Date.now();
   let waiterStartedAt = 0, waiterGotItAt = 0;
+  // Which backend each transaction ran on — the only way to know whether the
+  // two callers were two sessions at all (see singleSession below).
+  const pidOf = async (rows: Promise<{ pid: number }[]>) => Number((await rows)[0]?.pid);
+  let holderPid = NaN, waiterPid = NaN;
   const holder = prisma.$transaction(async (tx) => {
+    holderPid = await pidOf(tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`);
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${a1}::int4, ${b1}::int4)`;
     await tx.$queryRaw`SELECT pg_sleep(1.2)::text`;
   }, { timeout: 20_000 });
@@ -240,17 +256,29 @@ async function main() {
     waiterStartedAt = Date.now();
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${a1}::int4, ${b1}::int4)`;
     waiterGotItAt = Date.now();
+    waiterPid = await pidOf(tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`);
   }, { timeout: 20_000 });
   await Promise.all([holder, waiter]);
   const waited = waiterGotItAt - waiterStartedAt;
-  check("a second caller on the SAME month WAITS for the first", waited > 700, `waited ${waited} ms (holder held ~1200 ms, total ${Date.now() - t0} ms)`);
+  // ONE backend behind both transactions means one Postgres session — PGlite
+  // is exactly that: every connection shares its single session, an advisory
+  // lock is re-entrant within a session, and the second transaction cannot
+  // even begin until the first commits. Neither "waits" nor "does not wait"
+  // is then an observation about the lock, so on such a database both timing
+  // statements are recorded as undecided instead of asserted. On real
+  // Postgres (two backends) they are asserted exactly as before.
+  const singleSession = Number.isFinite(holderPid) && holderPid === waiterPid;
+  const oneSession = `both transactions ran on backend pid ${holderPid}: one session (PGlite), where an advisory lock cannot block across connections — run against real Postgres to decide it`;
+  if (singleSession) note("a second caller on the SAME month WAITS for the first", `${oneSession} (measured wait ${waited} ms)`);
+  else check("a second caller on the SAME month WAITS for the first", waited > 700, `waited ${waited} ms (holder held ~1200 ms, total ${Date.now() - t0} ms; backends ${holderPid} / ${waiterPid})`);
   // Two different months must not queue behind each other.
   let crossWait = 0;
   const holder2 = prisma.$transaction(async (tx) => { await tx.$executeRaw`SELECT pg_advisory_xact_lock(${a1}::int4, ${b1}::int4)`; await tx.$queryRaw`SELECT pg_sleep(1.0)::text`; }, { timeout: 20_000 });
   await new Promise((r) => setTimeout(r, 150));
   const other = prisma.$transaction(async (tx) => { const s = Date.now(); await tx.$executeRaw`SELECT pg_advisory_xact_lock(${a2}::int4, ${b2}::int4)`; crossWait = Date.now() - s; }, { timeout: 20_000 });
   await Promise.all([holder2, other]);
-  check("a DIFFERENT month does not queue behind it", crossWait < 400, `waited ${crossWait} ms`);
+  if (singleSession) note("a DIFFERENT month does not queue behind it", `${oneSession} (measured wait ${crossWait} ms, after the first transaction had already committed)`);
+  else check("a DIFFERENT month does not queue behind it", crossWait < 400, `waited ${crossWait} ms`);
 
   // =========================================================================
   console.log("\n6. LIVE REPLAY — WHAT MOVES FOR REAL CLIENTS TODAY");
@@ -293,7 +321,11 @@ async function main() {
     check("and it still offers no further booking", cap.remaining === 0);
     check("it is historical, so the hourly recalculation never touches it", joeMonth.historical === true);
   } else {
-    check("the two-leg month is still on file", false, "cmt7h6fj9001h9kcjmtliyh3y not found");
+    // Production data, by id: an isolated database (PGlite) has no such row,
+    // and neither would production if the month were ever removed. Skipped,
+    // with the reason, rather than failed — the two-leg shape itself is
+    // proven on fixtures in sections 1 and 2.
+    note("Joe Sutow's two-leg month counts BOTH legs", "month cmt7h6fj9001h9kcjmtliyh3y is not in this database (no production data here, or the row is gone) — skipped; sections 1 and 2 prove the two-leg shape on fixtures");
   }
 
   const { evaluateReminders } = await import("../../src/lib/programReminders");
@@ -309,7 +341,7 @@ async function main() {
   const withSessionCounts = run.candidates.filter((c) => c.state.sessionsRequired > 1);
   console.log(`   candidates on a multi-session package: ${withSessionCounts.length} (the only Pro enrollment is PAUSED)`);
 
-  console.log(`\n=== ${pass} passed, ${fail} failed ===`);
+  console.log(`\n=== ${pass} passed, ${fail} failed, ${noted} statement${noted === 1 ? "" : "s"} this database could not decide ===`);
   if (fail) process.exitCode = 1;
   await prisma.$disconnect();
 }

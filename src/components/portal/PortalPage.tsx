@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
-import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
+import { portalBookingLinks, type PortalCallBookingView } from "@/lib/callBooking";
 import {
   recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress, readOnlyNotice, homeSessionView,
   type PortalViewer, type PortalScheduleMonth, type PortalSlotDay, type PortalTopicsData, type PortalInterviewView, type PortalStrategyView, type PortalPlanning,
@@ -92,7 +92,7 @@ const DEFAULT_TERMS = `## The program
 Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. We plan each month together on your strategy call, film it at your session, and deliver finished videos to this portal.
 
 ## Scheduling
-Strategy calls come first — we plan the month on that call, then film it. Sessions are booked after your call, and we ask for at least a few business days between the call and the shoot so scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss.
+Each month you choose how to plan it: pick your topics and answer a few questions here, or talk them through on a strategy call. Filming can be booked as soon as your answers are sent or your call is booked, for a time at least 72 weekday hours (three weekdays, Monday to Friday) after your answers were sent or after your call ends, so your scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss. Inside 24 hours, call or text Kyle at (215) 645-4889.
 
 ## Revisions
 Every video comes with revision rounds to get it right. Ask right here in the portal — pause the video, tell us what to change, and it goes straight to your editor.
@@ -152,6 +152,17 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   const v2Base = [baseQuery, why === "STAFF_PREVIEW" ? "layout=v2" : ""].filter(Boolean).join("&");
   const v2Href = v2HrefFor(v2Base);
   const tabHref = v2 ? v2Href : href;
+  // W03: "Book the call" goes to the enabled MONTHLY_STRATEGY mapping's page
+  // (v1, unchanged otherwise) or to the booking inside Your Month (v2) —
+  // lib/callBooking.portalBookingLinks. Loaded once, only by the tabs that
+  // show it; in v2 with no mapping the link is the office conversation.
+  const noCallLinks: { bookingUrl: string | null; view: PortalCallBookingView | null } = { bookingUrl: null, view: null };
+  const callLinksP = dataTab === "home" || dataTab === "schedule" || (v2 && route.dest === "plan")
+    ? portalBookingLinks(viewer, { layout: v2 ? "v2" : "v1", planHref: v2 ? portalHref(v2Base, "plan") : null })
+      .catch((e) => { console.error("[portal] call booking links failed", e); return noCallLinks; })
+    : Promise.resolve(noCallLinks);
+  const loadCallLinks = () => callLinksP;
+  const callBookingUrl = async () => (await callLinksP).bookingUrl ?? tabHref("messages");
   const who = actor.kind === "CLIENT" ? (actor.name || actor.email) : actor.kind === "STAFF" ? (actor.staffName || "Staff") : null;
   // "Set up your sign-in" — a link visit on a program that already has a person
   // with a seat (transition Stage B). Offered ONLY while the magic-link email
@@ -175,6 +186,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   let slotDays: PortalSlotDay[] = [];
   let sessions: { id: string; shootDate: Date | null; title: string | null; addressLine: string | null; status: string }[] = [];
   let resourcesRes: { ok: true; data: ResourceGroupView[] } | { ok: false } | null = null;
+  let scheduleBookingUrl = "";
 
   if (dataTab === "home" || dataTab === "videos") {
     // The library's logical videos are built from the cuts and delivery rows
@@ -201,7 +213,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       progress: progress.ok ? progress.data : null,
       planning: planning.ok ? planning.data : null, planningFailed: !planning.ok,
       schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === monthKey) ?? schedule.data[0] ?? null : null, scheduleFailed: !schedule.ok,
-      bookingUrl: STRATEGY_CALL_BOOKING_URL,
+      bookingUrl: await callBookingUrl(),
       videos: videos.ok ? { rows: videos.data.rows, total: videos.data.total } : null, videosFailed: !videos.ok,
       attention: attention.ok ? attention.data : null,
       topics: topics.ok ? topics.data : null, topicsFailed: !topics.ok,
@@ -290,6 +302,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       }).catch(() => []),
     ]);
     planningRes = p; scheduleRes = s;
+    scheduleBookingUrl = await callBookingUrl();
     // Only this enrollment's months (a project on another program's month is not a session here).
     const monthIds = new Set((await prisma.contentMonth.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true } })).map((m) => m.id));
     sessions = sess.filter((x) => x.contentMonthId && monthIds.has(x.contentMonthId));
@@ -413,7 +426,12 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
         month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
         toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
-        session: { offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing },
+        session: {
+          offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing,
+          // A21/A20: the next session's "Schedule later" and its gate's earliest start.
+          deferred: !!home.schedule?.deferredAtISO,
+          earliestLabel: home.schedule?.earliestISO ? new Date(home.schedule.earliestISO).toLocaleDateString("en-US", { timeZone: home.planning?.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null,
+        },
         addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
         setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
         ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
@@ -454,7 +472,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       yourMonth = {
         planning: p.ok ? p.data : null, planningFailed: !p.ok,
         schedule: thisMonth, scheduleFailed: !sm.ok,
-        slotDays: days, bookingUrl: STRATEGY_CALL_BOOKING_URL,
+        slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
         can: { suggest: perms.suggest, session: perms.session },
         scheduleHref: portalHref(v2Base, "schedule"),
       };
@@ -489,7 +507,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           <ScheduleTab
             planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
             months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
-            slotDays={slotDays} bookingUrl={STRATEGY_CALL_BOOKING_URL} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
+            slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
             topicsHref={planHrefs.month} topicsLabel="Your Month" routeHref={`${planHrefs.month}#step-route`}
           />
         )}
@@ -601,7 +619,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           <ScheduleTab
             planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
             months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
-            slotDays={slotDays} bookingUrl={STRATEGY_CALL_BOOKING_URL} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
+            slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
             topicsHref={href("topics")}
           />
         )}

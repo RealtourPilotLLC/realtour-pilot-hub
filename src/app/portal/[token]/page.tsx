@@ -5,6 +5,10 @@ import { PortalPage, type PortalQuery } from "@/components/portal/PortalPage";
 import { PortalSignIn } from "@/components/portal/PortalSignIn";
 
 export const dynamic = "force-dynamic";
+// The page's server actions include the inline self-booking (portalRequestSession →
+// bookSessionRequest, lib/sessionBooking INLINE_BOOKING_BUDGET_MS = 75 s): three
+// provider writes of up to 20 s each. The platform must not cut it off first.
+export const maxDuration = 90;
 
 // The root layout titles every page "RealTour Pilot — Operations Hub"; on a
 // client's own portal that browser tab was advertising our internal software.

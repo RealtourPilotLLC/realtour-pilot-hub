@@ -42,6 +42,25 @@
 //      fixture's hand-booked move is a desk move, and a new booking beside a
 //      live old one asks Kyle to cancel it; "Change time" on a desk ask says
 //      MOVE; switching session_booking off hands every stranded row to the desk.
+//  24-32 (batch 3, Sep 25 2026 — §6.6 A23 and R03; OLD from 810b29f where it
+//      is observable): a priced product creates NOTHING (desk, REJECTED); an
+//      order that reads back owing money stores no appointment, parks in
+//      RECONCILE with one PAYMENT_MISMATCH task and a Retry reuses the order;
+//      the $0 path records total/balance/scope and the Stripe provenance (no
+//      dollar amount) and writes the session address SYNCED; an order address
+//      that reads back different is a MISMATCH; capacity, the plan's address
+//      version and a moved gate anchor are re-checked before any write (OLD:
+//      over capacity it booked anyway); a hub-booked session moved into an
+//      occupied slot or a too-short drive is refused with zero PUT; two
+//      bookings for one creative at overlapping times: one hold wins.
+//      Every slot booking now starts from an exact-address plan (§3), so §3's
+//      address assertion is FLIPPED: the exact street is sent, never an area.
+//  33-34 (batch-3 review, Sep 25 2026): a Retry after PAYMENT_MISMATCH (or any
+//      order resumed from the desk, or carried forward after a missed marker
+//      scan) re-runs the 24 hours, the hub's clashes, the Aryeo slot, the drive
+//      and the hold before the appointment is stored — the desk, naming the
+//      order, when any says no; and a fee Aryeo adds WITH the appointment keeps
+//      the booking and raises the one PAYMENT_MISMATCH task.
 //  18. Fence: nothing reached anything but the fake Aryeo and the stub geocoder.
 //
 // NOT DRILLED, said plainly: the race between the immediate syncAryeoOrders
@@ -50,7 +69,7 @@
 // And none of this is Aryeo: the fake is the DOCUMENTED contract. The eight
 // provider unknowns are Jordan's supervised test.
 //
-// ISOLATION: PGlite on 127.0.0.1:5516 via the shared harness.
+// ISOLATION: PGlite on 127.0.0.1:${DRILL_PORT ?? 5516} via the shared harness.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import os from "node:os";
@@ -64,6 +83,7 @@ import { createFakeAryeo, DRILL_TEAM } from "./_fake-aryeo";
 const PORT = Number(process.env.DRILL_PORT ?? 5516);
 const REPO = path.resolve(__dirname, "../..");
 const BASE = "e26cacd"; // pinned: the commit batches B–D start from (HEAD moved on once they were committed)
+const BASE_B3 = "810b29f"; // pinned: batch 3's baseline (the adapter before its A23/R03 guards)
 
 installNextStubs();
 
@@ -77,19 +97,25 @@ const fence = fenceFetch(async (url, init) => {
     return new Response(JSON.stringify({ result: { addressMatches: [{ coordinates: { x: -75.6055, y: 39.9607 }, matchedAddress: q.toUpperCase() }] } }), { status: 200 });
   }
   if (url.startsWith("https://nominatim.openstreetmap.org/")) return new Response("[]", { status: 200 });
+  // §6.6 W02: the drive-time estimate (OSRM), stubbed at 20 minutes for any pair.
+  if (url.startsWith("https://router.project-osrm.org/")) { osrmCalls++; return new Response(JSON.stringify({ code: "Ok", routes: [{ distance: 16_000, duration: 20 * 60 }] }), { status: 200 }); }
   return fake ? fake.handle(url, init) : null;
 });
+let osrmCalls = 0;
 
 // The bell: counted, never sent anywhere.
 
-function writeBaseCopy(): { dir: string; sessionRequests: string } {
+function writeBaseCopy(): { dir: string; sessionRequests: string; sessionBooking: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cp04-base-"));
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
-  const src = execFileSync("git", ["show", `${BASE}:src/lib/sessionRequests.ts`], { cwd: REPO, encoding: "utf8" });
-  const pointed = src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`);
-  const file = path.join(dir, "sessionRequests.base.ts");
-  fs.writeFileSync(file, pointed);
-  return { dir, sessionRequests: file };
+  const copy = (rev: string, rel: string, name: string) => {
+    const src = execFileSync("git", ["show", `${rev}:${rel}`], { cwd: REPO, encoding: "utf8" });
+    const pointed = src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`);
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, pointed);
+    return file;
+  };
+  return { dir, sessionRequests: copy(BASE, "src/lib/sessionRequests.ts", "sessionRequests.base.ts"), sessionBooking: copy(BASE_B3, "src/lib/sessionBooking.ts", "sessionBooking.b3base.ts") };
 }
 
 async function main() {
@@ -98,12 +124,18 @@ async function main() {
   const c = makeChecker();
   const { prisma } = await import("@/lib/prisma");
   const { ARYEO_CONTENT_PRODUCTS } = await import("@/lib/contentProgram");
+  const variantPrices: Record<string, number> = Object.fromEntries(Object.values(ARYEO_CONTENT_PRODUCTS).map((p) => [p.variantId, 0]));
   fake = createFakeAryeo({
     products: {
       [ARYEO_CONTENT_PRODUCTS.Starter.productId]: [DRILL_TEAM.james.tm, DRILL_TEAM.jordan.tm],
       [ARYEO_CONTENT_PRODUCTS.Accelerator.productId]: [DRILL_TEAM.james.tm, DRILL_TEAM.jordan.tm],
       [ARYEO_CONTENT_PRODUCTS.Pro.productId]: [DRILL_TEAM.james.tm, DRILL_TEAM.jordan.tm],
     },
+    // R03: the catalogue as Phase 0 read it — each program product's one variant at $0.
+    variants: Object.fromEntries(Object.values(ARYEO_CONTENT_PRODUCTS).map((p) => [p.productId, p.variantId])),
+    variantPrices,
+    // R02: every drill customer reads back as the verified test inbox.
+    defaultCustomerEmail: "info@realtourpilot.com",
   });
   const { saveSecret } = await import("@/lib/integrations/connections");
   await saveSecret("aryeo", "drill-key-not-a-real-one");
@@ -129,15 +161,26 @@ async function main() {
 
   const world = async (pkg: "Accelerator" | "Pro" | "Starter" = "Accelerator", opts: { authorise?: boolean } = {}): Promise<ContentMonthFixture> => {
     const f = await buildContentMonth(prisma as unknown as PrismaClient, { name: `Booking Drill ${++n} TEST`, package: pkg, monthKey: "2026-10", project: false, owner: { email: `booking${n}@realtourpilot.com` } });
-    await prisma.client.update({ where: { id: f.clientId }, data: { aryeoCustomerId: `0197cccc-0000-4000-8000-${String(n).padStart(12, "0")}` } });
+    // R02 (batch 3): a fixture's own inbox and its Aryeo customer's are the verified test inbox.
+    await prisma.client.update({ where: { id: f.clientId }, data: { email: "info@realtourpilot.com", aryeoCustomerId: `0197cccc-0000-4000-8000-${String(n).padStart(12, "0")}` } });
     if (opts.authorise !== false) await authorise(f.clientId);
     return f;
   };
-  const request = async (f: ContentMonthFixture, start: Date, over: Partial<Parameters<typeof sr.createSessionRequest>[0]> = {}) =>
+  // §6.6 W02 (batch 3): a slot booking starts from the session's exact-address
+  // plan and carries the travel check it passed; this is what the portal sends.
+  const sa = await import("@/lib/sessionAddress");
+  const planFor = async (f: ContentMonthFixture, sessionIndex = 1) => {
+    const saved = await sa.saveSessionPlanAddress({ enrollmentId: f.enrollmentId, monthId: f.monthId, sessionIndex, input: { street: "117 Kyle Lane", unit: "Unit 2", city: "West Chester", state: "PA", zip: "19382" }, by: "drill" });
+    if (!saved.ok || !saved.planId) throw new Error(`plan: ${saved.message}`);
+    return { planId: saved.planId, addressVersion: saved.addressVersion! };
+  };
+  const request = async (f: ContentMonthFixture, start: Date, over: Partial<Parameters<typeof sr.createSessionRequest>[0]> = {}, sessionIndex = 1) =>
     sr.createSessionRequest({
       enrollmentId: f.enrollmentId, monthId: f.monthId,
-      slot: { startISO: start.toISOString(), endISO: new Date(start.getTime() + 4 * HOUR).toISOString(), locationText: "West Chester, PA 19382" },
-      actor: { kind: "STAFF", userId: null }, creative: JAMES, ...over,
+      slot: { startISO: start.toISOString(), endISO: new Date(start.getTime() + 4 * HOUR).toISOString() },
+      actor: { kind: "STAFF", userId: null }, creative: JAMES,
+      plan: await planFor(f, sessionIndex), travel: { check: "HUB_DRIVE", evidenceJson: null }, sessionIndex,
+      ...over,
     });
   const reqRow = (id: string) => prisma.programSessionRequest.findUniqueOrThrow({ where: { id } });
   const deskTask = (id: string) => prisma.smartTask.findUnique({ where: { dedupeKey: `content-session-request-${id}` } });
@@ -223,7 +266,10 @@ async function main() {
     const addr = fake.writes.filter((w) => w.method === "POST" && w.path === "/addresses").slice(before.a);
     const ab = addr[0]?.body as Record<string, unknown> | undefined;
     c.ok("exactly 1 POST /addresses", addr.length === 1, `${addr.length}`);
-    c.ok("the area only: city/state/zip + lat/lng, and NO street", ab?.city === "West Chester" && ab?.state_or_province === "PA" && ab?.postal_code === "19382" && typeof ab?.latitude === "number" && !("street_number" in (ab ?? {})), JSON.stringify(ab));
+    // FLIPPED in batch 3 (§3 "an exact address is required … this supersedes
+    // earlier area-only booking"): this line used to assert "the area only …
+    // and NO street" as a PASS.
+    c.ok("the plan's EXACT street (number, name, unit) + city/state/zip + lat/lng", ab?.street_number === "117" && ab?.street_name === "Kyle Lane" && ab?.unit_number === "Unit 2" && ab?.city === "West Chester" && ab?.state_or_province === "PA" && ab?.postal_code === "19382" && typeof ab?.latitude === "number", JSON.stringify(ab));
     const ord = fake.writes.filter((w) => w.method === "POST" && w.path === "/orders").slice(before.o);
     const ob = ord[0]?.body as { product_items?: { variant_id: string }[]; internal_notes?: string; notify?: boolean; customer_id?: string } | undefined;
     c.ok("exactly 1 POST /orders", ord.length === 1, `${ord.length}`);
@@ -413,7 +459,7 @@ async function main() {
     await sb.bookSessionRequest(a.id, {});
     const mid = await sr.sessionCapacity(f.enrollmentId, f.monthId);
     c.ok("after one booking: NOT fully scheduled, one remaining", !mid.fullyScheduled && mid.remaining === 1 && mid.confirmedSessions === 1, JSON.stringify({ full: mid.fullyScheduled, rem: mid.remaining }));
-    const b = await request(f, at("2026-10-16", 10));
+    const b = await request(f, at("2026-10-16", 10), {}, 2);
     if (!b.ok) throw new Error(b.reason);
     await sb.bookSessionRequest(b.id, {});
     const full = await sr.sessionCapacity(f.enrollmentId, f.monthId);
@@ -727,13 +773,331 @@ async function main() {
   }
 
   // ======================================================================
+  // BATCH 3 (§6.6 A23 + R03, Sep 25 2026). The adapter's own guards at the
+  // moment of the write, and the prepaid money rule. These run on JORDAN's
+  // calendar (James's is busy with the sections above).
+  const JORDAN = { teamMemberId: DRILL_TEAM.jordan.tm, name: DRILL_TEAM.jordan.name };
+  const jordanReq = (f: ContentMonthFixture, start: Date, sessionIndex = 1) => request(f, start, { creative: JORDAN }, sessionIndex);
+  const ACC_VARIANT = ARYEO_CONTENT_PRODUCTS.Accelerator.variantId;
+  const setPrice = (cents: number) => { variantPrices[ACC_VARIANT] = cents; aryeo.resetVariantPriceCache(); };
+  const tasksFor = (clientId: string) => prisma.smartTask.findMany({ where: { clientId, status: { notIn: ["COMPLETED", "CANCELLED"] } } });
+
+  c.head("24 · R03: Aryeo now prices the product → NOTHING is created, the desk books it");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-30", 10));
+    if (!r.ok) throw new Error(r.reason);
+    setPrice(150000);
+    const w0 = { a: writes("POST", "/addresses"), o: writes("POST", "/orders") };
+    const o = await sb.bookSessionRequest(r.id, {});
+    const row = await reqRow(r.id);
+    c.ok("the request lands on the desk as REJECTED", o.outcome === "rejected" && row.bookingState === "REJECTED" && row.status === "REQUESTED", `${o.outcome} ${row.bookingState}`);
+    c.ok("zero POST /orders", writes("POST", "/orders") === w0.o, `${writes("POST", "/orders") - w0.o}`);
+    c.ok("and zero POST /addresses (nothing at all was created)", writes("POST", "/addresses") === w0.a);
+    const t = await deskTask(r.id);
+    c.ok("Kyle's BOOK task names the price and says nothing was created", !!t && t.title.startsWith("Book content session") && /\$1500\.00/.test(t.description ?? "") && /Nothing was created/.test(t.description ?? ""), (t?.description ?? "").slice(0, 200));
+    c.ok("exactly one open task for the client", (await tasksFor(f.clientId)).length === 1, `${(await tasksFor(f.clientId)).length}`);
+    const hold = await prisma.programCreativeHold.findUnique({ where: { requestId: r.id } });
+    c.ok("the creative-day hold was released (REJECTED)", !!hold?.releasedAt && hold.state === "REJECTED", JSON.stringify(hold && { s: hold.state, r: !!hold.releasedAt }));
+    setPrice(0);
+  }
+
+  c.head("25 · R03: the ORDER reads back with money owed → no appointment, RECONCILE, one PAYMENT_MISMATCH task");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-29", 9));
+    if (!r.ok) throw new Error(r.reason);
+    fake.setOrderMoney({ total: 150000, balance: 150000 });
+    const o0 = committed("POST", "/orders"), s0 = writes("POST", "/appointments/store");
+    const o = await sb.bookSessionRequest(r.id, {});
+    fake.setOrderMoney(null);
+    const row = await reqRow(r.id);
+    c.ok("one order was made (the price guard read $0)", committed("POST", "/orders") - o0 === 1);
+    c.ok("NO appointment was stored", writes("POST", "/appointments/store") === s0, `${writes("POST", "/appointments/store") - s0}`);
+    c.ok("the request waits in RECONCILE, not booked", row.status === "REQUESTED" && row.bookingState === "RECONCILE" && /PAYMENT_MISMATCH/.test(row.lastError ?? ""), `${o.outcome} ${row.bookingState}: ${row.lastError}`);
+    const pm = await prisma.smartTask.findMany({ where: { clientId: f.clientId, title: { startsWith: "PAYMENT_MISMATCH" } } });
+    c.ok("exactly one PAYMENT_MISMATCH task for Kyle, naming the amount", pm.length === 1 && pm[0].assignedKey === "kyle" && /\$1500\.00 owed/.test(pm[0].title), pm.map((x) => x.title).join(" | "));
+    c.ok("and it says the order was NOT voided, refunded or changed", /did NOT void, refund or change it/.test(pm[0]?.description ?? ""));
+    c.ok("no generic desk row besides it", !(await deskTask(r.id)));
+    const att = await prisma.programBookingAttempt.findFirst({ where: { requestId: r.id }, orderBy: { attemptNo: "desc" } });
+    c.ok("the attempt carries Aryeo's figures as evidence", att?.orderTotalCents === 150000 && att.orderBalanceCents === 150000 && att.orderPaymentStatus === "UNPAID", JSON.stringify({ t: att?.orderTotalCents, b: att?.orderBalanceCents, p: att?.orderPaymentStatus }));
+    const order = fake.orders.get(row.aryeoOrderId!);
+    c.ok("the hub did not touch the order (no void/refund/edit call)", !!order && fake.writes.filter((w) => w.path.includes(row.aryeoOrderId!) && w.method !== "GET").length === 0);
+    const retry = await sb.retrySessionBooking(r.id, { confirmedNoOrder: true, by: "drill" });
+    const again = await sb.bookSessionRequest(r.id, {});
+    c.ok("Retry adopts the SAME order by its marker — no second order", retry.ok && committed("POST", "/orders") - o0 === 1, `${retry.message} → ${again.outcome}`);
+    c.ok("and, still owing, it parks again with the one task", (await reqRow(r.id)).bookingState === "RECONCILE" && (await prisma.smartTask.count({ where: { clientId: f.clientId, title: { startsWith: "PAYMENT_MISMATCH" } } })) === 1);
+  }
+
+  c.head("26 · R03: the $0 path — evidence on the attempt, provenance in the team notes, the address row SYNCED");
+  {
+    const f = await world("Accelerator");
+    await prisma.programSignup.create({ data: { checkoutId: `cs_drill_${n}`, subscriptionId: `sub_drill_${n}`, email: "info@realtourpilot.com", productId: "prod_drill", productName: "Video Accelerator", amount: 1500, recurring: true, paidAt: new Date(), clientId: f.clientId, enrollmentId: f.enrollmentId } });
+    const r = await jordanReq(f, at("2026-10-28", 13));
+    if (!r.ok) throw new Error(r.reason);
+    const o = await sb.bookSessionRequest(r.id, {});
+    const row = await reqRow(r.id);
+    const att = await prisma.programBookingAttempt.findFirst({ where: { requestId: r.id, state: "CONFIRMED" } });
+    c.ok("CONFIRMED", o.outcome === "confirmed" && row.status === "CONFIRMED", `${o.outcome}: ${o.detail}`);
+    c.ok("attempt: orderTotalCents 0, orderBalanceCents 0, permitScope FIXTURE", att?.orderTotalCents === 0 && att.orderBalanceCents === 0 && att.permitScope === "FIXTURE", JSON.stringify({ t: att?.orderTotalCents, b: att?.orderBalanceCents, s: att?.permitScope }));
+    const notes = (fake.writes.filter((w) => w.method === "POST" && w.path === "/orders").slice(-1)[0]?.body as { internal_notes?: string } | undefined)?.internal_notes ?? "";
+    c.ok("the team-only note carries the marker and the Stripe provenance", notes.includes(`hub-session:${r.id}:1`) && notes.includes(`Prepaid: Content Program Accelerator via Stripe sub_drill_${n} (no charge on this order)`), notes);
+    c.ok("and no dollar amount", !/\$/.test(notes), notes);
+    const addr = await prisma.programSessionAddress.findUnique({ where: { sessionKey: `appt:${row.aryeoAppointmentId}` } });
+    c.ok("the session's address row is written SYNCED from the plan (the missing-address lane never asks)", addr?.syncState === "SYNCED" && addr.streetNumber === "117" && addr.submittedBy === "hub-booking" && !!addr.submittedAt, JSON.stringify(addr && { s: addr.syncState, n: addr.streetNumber }));
+    const hold = await prisma.programCreativeHold.findUnique({ where: { requestId: r.id } });
+    c.ok("the hold is released as CONFIRMED", hold?.state === "CONFIRMED" && !!hold.releasedAt, hold?.state);
+    const plan = await prisma.programSessionPlan.findUnique({ where: { id: row.planId! } });
+    c.ok("the plan remembers the request and reads BOOKED", plan?.requestId === r.id && plan.lastStep === "BOOKED", `${plan?.requestId === r.id} ${plan?.lastStep}`);
+  }
+
+  c.head("27 · A23: the order's ADDRESS reads back different → MISMATCH, never Booked");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-27", 9));
+    if (!r.ok) throw new Error(r.reason);
+    fake.script("POST /appointments/store", "move-order-address");
+    const o = await sb.bookSessionRequest(r.id, {});
+    const row = await reqRow(r.id);
+    c.ok("MISMATCH", o.outcome === "mismatch" && row.bookingState === "MISMATCH" && row.status === "REQUESTED", `${o.outcome} ${row.bookingState}`);
+    const t = await deskTask(r.id);
+    c.ok("Kyle's FIX task says the order's address reads back as another street", !!t && t.title.startsWith("Fix a hub booking") && /address reads back as 999 Kyle Lane/.test(t.description ?? ""), (t?.description ?? "").slice(0, 260));
+  }
+
+  c.head("28 · A23: capacity changed between the request and the booking → the desk, zero writes");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-26", 13));
+    if (!r.ok) throw new Error(r.reason);
+    // Kyle books a session for this month by hand meanwhile (the hourly sync brings it in).
+    const p = await prisma.project.create({ data: { clientId: f.clientId, title: "Hand-booked meanwhile", status: "SCHEDULED", contentMonthId: f.monthId, shootDate: at("2026-10-21", 9) }, select: { id: true } });
+    await prisma.appointment.create({ data: { projectId: p.id, aryeoId: `meanwhile-${n}`, startAt: at("2026-10-21", 9), endAt: at("2026-10-21", 13), status: "SCHEDULED" } });
+    // OLD (810b29f): the adapter never re-read capacity, so it booked a second session.
+    const oldSb = (await import(base.sessionBooking)) as typeof sb;
+    const clone = await prisma.programSessionRequest.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthId: f.monthId, slotStart: at("2026-10-22", 9), slotEnd: at("2026-10-22", 13), locationText: "117 Kyle Lane, Unit 2, West Chester, PA 19382", status: "REQUESTED", bookingState: "QUEUED", creativeTeamMemberId: JORDAN.teamMemberId, creativeName: JORDAN.name, dedupeKey: `${f.enrollmentId}:${f.monthId}:old-capacity` } });
+    const oc0 = committed("POST", "/orders");
+    const old = await oldSb.bookSessionRequest(clone.id, {});
+    c.ok("OLD (810b29f): with the month already full, the adapter booked ANOTHER session anyway", old.outcome === "confirmed" && committed("POST", "/orders") - oc0 === 1, `${old.outcome}: ${old.detail}`);
+    const w0 = fake.writes.length;
+    const o = await sb.bookSessionRequest(r.id, {});
+    const row = await reqRow(r.id);
+    c.ok("NEW: over capacity → desk (RECONCILE), with the count", o.outcome === "desk" && row.bookingState === "RECONCILE" && /already booked or requested/.test(row.lastError ?? ""), row.lastError ?? "");
+    c.ok("NEW: zero writes", fake.writes.length === w0, `${fake.writes.length - w0}`);
+  }
+
+  c.head("29 · A23: the plan's address changed after the pick → the desk, zero writes");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-23", 13));
+    if (!r.ok) throw new Error(r.reason);
+    const row0 = await reqRow(r.id);
+    await prisma.programSessionPlan.update({ where: { id: row0.planId! }, data: { addressVersion: { increment: 1 }, streetNumber: "200" } });
+    const w0 = fake.writes.length;
+    const o = await sb.bookSessionRequest(r.id, {});
+    c.ok("desk, naming the changed address", o.outcome === "desk" && /filming address changed/.test((await reqRow(r.id)).lastError ?? ""), (await reqRow(r.id)).lastError ?? "");
+    c.ok("zero writes", fake.writes.length === w0);
+  }
+
+  c.head("30 · A23: the gate's ANCHOR moved (the call it was measured from is gone) → the desk; no snapshot → not rechecked");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-22", 13));
+    if (!r.ok) throw new Error(r.reason);
+    await prisma.programSessionRequest.update({ where: { id: r.id }, data: { gateRoute: "CALL", gateAnchorRef: "CALL_END:gone-call:1759000000000", gateAnchorAt: new Date("2026-09-28T18:30:00Z"), gateWindowHours: 72, gateEarliestAt: new Date("2026-10-01T18:30:00Z") } });
+    const w0 = fake.writes.length;
+    const o = await sb.bookSessionRequest(r.id, {});
+    c.ok("desk: what the session was measured from has changed", o.outcome === "desk" && /measured from has changed/.test((await reqRow(r.id)).lastError ?? ""), (await reqRow(r.id)).lastError ?? "");
+    c.ok("zero writes", fake.writes.length === w0);
+    // (Every earlier section's request carries no snapshot and booked normally:
+    // a request with nothing to compare is never refused by a rule change.)
+  }
+
+  c.head("31 · A23: a hub-booked session moved into an occupied slot, or one with no room for the drive → refused, zero PUT");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-20", 9));
+    if (!r.ok) throw new Error(r.reason);
+    const b = await sb.bookSessionRequest(r.id, {});
+    c.ok("(booked)", b.outcome === "confirmed", b.detail);
+    fake.seedNeighbour({ tm: JORDAN.teamMemberId, start: at("2026-10-19", 13), end: at("2026-10-19", 17), lat: 40.3, lng: -75.1 });
+    const p0 = fake.count("PUT", "/appointments/");
+    const occ = await sr.requestReschedule(r.id, { startISO: at("2026-10-19", 13).toISOString(), endISO: null }, null, { kind: "CLIENT", clientUserId: f.clientUserId });
+    c.ok("into an occupied slot: refused with the re-pick words", !occ.ok && /no longer free/.test(occ.message), occ.message);
+    c.ok("  zero PUT, the booking unchanged", fake.count("PUT", "/appointments/") === p0 && (await reqRow(r.id)).slotStart?.getTime() === at("2026-10-20", 9).getTime());
+    c.ok("  and no desk MOVE request was created instead", (await prisma.programSessionRequest.count({ where: { supersedesId: r.id } })) === 0);
+    // A neighbour 9:00-12:00 somewhere else: 20 minutes' drive + 15 buffer.
+    fake.seedNeighbour({ tm: JORDAN.teamMemberId, start: at("2026-10-16", 9), end: at("2026-10-16", 12), lat: 40.3, lng: -75.1 });
+    const tight = await sr.requestReschedule(r.id, { startISO: at("2026-10-16", 12, 30).toISOString(), endISO: null }, null, { kind: "CLIENT", clientUserId: f.clientUserId });
+    c.ok("12:30 after a 12:00 finish (20 min drive + 15): Aryeo offers it, the hub refuses it", !tight.ok && /no longer free/.test(tight.message) && /travel: no room for the drive/.test((await reqRow(r.id)).lastError ?? ""), `${tight.message} | ${(await reqRow(r.id)).lastError}`);
+    c.ok("  zero PUT", fake.count("PUT", "/appointments/") === p0);
+    const ok = await sr.requestReschedule(r.id, { startISO: at("2026-10-16", 13).toISOString(), endISO: null }, null, { kind: "CLIENT", clientUserId: f.clientUserId });
+    const moved = await reqRow(r.id);
+    c.ok("13:00 fits: moved with one PUT, read back (start, end and creative)", ok.ok && moved.slotStart?.getTime() === at("2026-10-16", 13).getTime() && fake.count("PUT", "/appointments/") - p0 === 1, ok.message);
+    const ev = JSON.parse(moved.travelEvidenceJson ?? "{}") as { at?: string; fits?: boolean; prev?: { driveMinutes?: number } };
+    c.ok("  with the travel evidence on the request (reschedule, fits, 20-minute drive)", ev.at === "reschedule" && ev.fits === true && ev.prev?.driveMinutes === 20, moved.travelEvidenceJson ?? "");
+  }
+
+  c.head("32 · A23: the creative-day hold — two bookings for one creative at overlapping times, one wins");
+  {
+    const f1 = await world("Accelerator");
+    const f2 = await world("Accelerator");
+    const r1 = await jordanReq(f1, at("2026-10-15", 9));
+    const r2 = await jordanReq(f2, at("2026-10-15", 10));
+    if (!r1.ok || !r2.ok) throw new Error("setup");
+    const o0 = committed("POST", "/orders");
+    const both = await Promise.all([sb.bookSessionRequest(r1.id, {}), sb.bookSessionRequest(r2.id, {})]);
+    const rows = [await reqRow(r1.id), await reqRow(r2.id)];
+    c.ok("exactly one CONFIRMED", rows.filter((x) => x.status === "CONFIRMED").length === 1, both.map((x) => `${x.outcome}: ${x.detail.slice(0, 70)}`).join(" | "));
+    c.ok("exactly one order between them", committed("POST", "/orders") - o0 === 1, `${committed("POST", "/orders") - o0}`);
+    // The hold on its own: a live hold blocks an overlap; a dead request's does not.
+    const x = await prisma.programSessionRequest.create({ data: { enrollmentId: f1.enrollmentId, clientId: f1.clientId, monthId: f1.monthId, slotStart: at("2026-10-14", 9), slotEnd: at("2026-10-14", 13), status: "REQUESTED", bookingState: "RUNNING", creativeTeamMemberId: JORDAN.teamMemberId, dedupeKey: `hold-x-${n}` } });
+    const y = await prisma.programSessionRequest.create({ data: { enrollmentId: f2.enrollmentId, clientId: f2.clientId, monthId: f2.monthId, slotStart: at("2026-10-14", 11), slotEnd: at("2026-10-14", 15), status: "REQUESTED", bookingState: "RUNNING", creativeTeamMemberId: JORDAN.teamMemberId, dedupeKey: `hold-y-${n}` } });
+    const hx = await sb.takeCreativeHold({ requestId: x.id, creativeTeamMemberId: JORDAN.teamMemberId, start: at("2026-10-14", 9), end: at("2026-10-14", 13) });
+    const hy = await sb.takeCreativeHold({ requestId: y.id, creativeTeamMemberId: JORDAN.teamMemberId, start: at("2026-10-14", 11), end: at("2026-10-14", 15) });
+    c.ok("a live hold refuses an overlapping one", hx.ok && !hy.ok, JSON.stringify(hy));
+    await prisma.programSessionRequest.update({ where: { id: x.id }, data: { status: "CANCELLED" } });
+    const hy2 = await sb.takeCreativeHold({ requestId: y.id, creativeTeamMemberId: JORDAN.teamMemberId, start: at("2026-10-14", 11), end: at("2026-10-14", 15) });
+    c.ok("a hold whose request is over (a missed release) never blocks", hy2.ok, JSON.stringify(hy2));
+  }
+
+  // ======================================================================
+  // BATCH 3 REVIEW FIXES (Sep 25 2026). Both defects were in this batch's own
+  // uncommitted code (810b29f has no PAYMENT_MISMATCH and no post-store money
+  // read), so there is no OLD tree to load: the new rule is asserted directly,
+  // on Jordan's calendar, with the adapter's clock pinned to a Monday.
+  const MON = at("2026-09-28", 10);
+  const iso = (d: Date) => d.toISOString().replace(".000Z", "Z");
+  const storesOn = (orderId: string) => fake.writes.filter((w) => w.method === "POST" && w.path === "/appointments/store" && (w.body as { order_id?: string } | undefined)?.order_id === orderId).length;
+  const slotReads = () => fake.reads.filter((x) => x.startsWith("/scheduling/available-timeslots")).length;
+  const parkOnMoney = async (f: ContentMonthFixture, start: Date) => {
+    const r = await jordanReq(f, start);
+    if (!r.ok) throw new Error(r.reason);
+    fake.setOrderMoney({ total: 150000, balance: 150000 });
+    const o = await sb.bookSessionRequest(r.id, { now: MON });
+    fake.setOrderMoney(null);
+    const row = await reqRow(r.id);
+    if (o.outcome !== "desk" || row.bookingState !== "RECONCILE" || !row.aryeoOrderId) throw new Error(`setup: ${o.outcome} ${row.bookingState}`);
+    return { id: r.id, orderId: row.aryeoOrderId };
+  };
+  const payUp = (orderId: string) => { const o = fake.orders.get(orderId)!; o.total = 0; o.balance = 0; o.payment_status = "PAID"; };
+
+  c.head("33 · A23 on Retry: an order that waited with the desk is rechecked before its appointment is stored");
+  {
+    // A: Mon Oct 12 9:00 with Jordan; the order reads back owing money.
+    const fA = await world("Accelerator");
+    const A = await parkOnMoney(fA, at("2026-10-12", 9));
+    const holdA = await prisma.programCreativeHold.findUnique({ where: { requestId: A.id } });
+    c.ok("(A parks on PAYMENT_MISMATCH: the order exists, the hold is let go)", holdA?.state === "PAYMENT_MISMATCH" && !!holdA.releasedAt, holdA?.state);
+    // Meanwhile B, another client, gets the same creative at 10:00.
+    const fB = await world("Accelerator");
+    const B = await jordanReq(fB, at("2026-10-12", 10));
+    if (!B.ok) throw new Error(B.reason);
+    const bOut = await sb.bookSessionRequest(B.id, { now: MON });
+    c.ok("meanwhile B is booked for Jordan at 10:00 (A's time was free to the hub)", bOut.outcome === "confirmed", `${bOut.outcome}: ${bOut.detail}`);
+    // Kyle fixes the balance and presses Retry the evening before: Sun Oct 11, 6 PM ET.
+    payUp(A.orderId);
+    const sunday = at("2026-10-11", 18);
+    const s0 = storesOn(A.orderId);
+    const retry = await sb.retrySessionBooking(A.id, { confirmedNoOrder: true, by: "drill", now: sunday });
+    c.ok("Retry adopts the SAME order by its marker", retry.ok && /already exists/.test(retry.message), retry.message);
+    const again = await sb.bookSessionRequest(A.id, { now: sunday });
+    const a2 = await reqRow(A.id);
+    c.ok("15 hours out: the resumed drive refuses (inside 24 hours) and hands it to the desk", again.outcome === "desk" && a2.bookingState === "RECONCILE" && /inside 24 hours/.test(a2.lastError ?? ""), `${again.outcome}: ${a2.lastError}`);
+    c.ok("  naming the order it already made", (a2.lastError ?? "").includes(A.orderId) && /do not make a new one/.test(a2.lastError ?? ""));
+    c.ok("  and NO appointment was stored on it (it used to be, overlapping B)", storesOn(A.orderId) === s0 && a2.status === "REQUESTED", `${storesOn(A.orderId) - s0} store(s), ${a2.status}`);
+    const t = await deskTask(A.id);
+    c.ok("  Kyle's FIX task says to book on THAT order", !!t && t.title.startsWith("Fix a hub booking") && /THAT order/.test(t.description ?? ""), t?.title ?? "(none)");
+    // The same Retry days before (outside 24 hours): B's booking is what stops it.
+    await sb.retrySessionBooking(A.id, { confirmedNoOrder: true, by: "drill", now: MON });
+    const again2 = await sb.bookSessionRequest(A.id, { now: MON });
+    const a3 = await reqRow(A.id);
+    c.ok("outside 24 hours, the hub's own booking of B stops it (overlapping)", again2.outcome === "desk" && /overlapping/.test(a3.lastError ?? ""), `${again2.outcome}: ${a3.lastError}`);
+    c.ok("  still no appointment on A's order; ONE order in total for A", storesOn(A.orderId) === s0 && [...fake.orders.values()].filter((o) => (o.internal_notes ?? "").includes(`hub-session:${A.id}:`)).length === 1);
+  }
+
+  c.head("33b · the slot taken in Aryeo alone (no hub booking): the resumed drive re-reads it and refuses");
+  {
+    const f = await world("Accelerator");
+    const C = await parkOnMoney(f, at("2026-10-13", 9));
+    fake.seedNeighbour({ tm: JORDAN.teamMemberId, start: at("2026-10-13", 11), end: at("2026-10-13", 15), lat: 39.96, lng: -75.6 });
+    payUp(C.orderId);
+    await sb.retrySessionBooking(C.id, { confirmedNoOrder: true, by: "drill", now: MON });
+    const r0 = slotReads();
+    const s0 = storesOn(C.orderId);
+    const o = await sb.bookSessionRequest(C.id, { now: MON });
+    const row = await reqRow(C.id);
+    c.ok("Aryeo's timeslots were read again on the resumed drive", slotReads() > r0, `${slotReads() - r0} read(s)`);
+    c.ok("the slot is no longer free → the desk with the order named, zero stores", o.outcome === "desk" && /no longer free/.test(row.lastError ?? "") && (row.lastError ?? "").includes(C.orderId) && storesOn(C.orderId) === s0, `${o.outcome}: ${row.lastError}`);
+  }
+
+  c.head("33c · the order carried forward after a missed marker scan is rechecked too; once the slot is free it books on THAT order");
+  {
+    const f = await world("Accelerator");
+    const E = await parkOnMoney(f, at("2026-10-01", 9));
+    payUp(E.orderId);
+    // The scan misses it (older than two pages): modelled by the note being gone.
+    const kept = fake.orders.get(E.orderId)!.internal_notes;
+    fake.orders.get(E.orderId)!.internal_notes = null;
+    const q = await sb.retrySessionBooking(E.id, { confirmedNoOrder: true, by: "drill", now: MON });
+    c.ok("(Retry finds no order by marker → re-queued; the old attempt is ABANDONED)", q.ok && /Queued/.test(q.message), q.message);
+    fake.taken.add(iso(at("2026-10-01", 9)));
+    const o0 = fake.count("POST", "/orders", true);
+    const s0 = storesOn(E.orderId);
+    const blocked = await sb.bookSessionRequest(E.id, { now: MON });
+    const row = await reqRow(E.id);
+    c.ok("the carried order's slot is rechecked: taken → the desk, zero stores, no new order", blocked.outcome === "desk" && /no longer free/.test(row.lastError ?? "") && storesOn(E.orderId) === s0 && fake.count("POST", "/orders", true) === o0, `${blocked.outcome}: ${row.lastError}`);
+    fake.taken.delete(iso(at("2026-10-01", 9)));
+    fake.orders.get(E.orderId)!.internal_notes = kept;
+    const retry = await sb.retrySessionBooking(E.id, { confirmedNoOrder: true, by: "drill", now: MON });
+    const booked = await sb.bookSessionRequest(E.id, { now: MON });
+    const done = await reqRow(E.id);
+    const hold = await prisma.programCreativeHold.findUnique({ where: { requestId: E.id } });
+    c.ok("free again: Retry → CONFIRMED on THAT order", retry.ok && booked.outcome === "confirmed" && done.aryeoOrderId === E.orderId && storesOn(E.orderId) - s0 === 1, `${booked.outcome}: ${booked.detail}`);
+    c.ok("  with a fresh hold taken for it (released as CONFIRMED) and no second order", hold?.state === "CONFIRMED" && fake.count("POST", "/orders", true) === o0, JSON.stringify({ h: hold?.state, o: fake.count("POST", "/orders", true) - o0 }));
+  }
+
+  c.head("33d · …but an appointment Kyle already put on THAT order at our time is adopted, even inside 24 hours (adopting writes nothing)");
+  {
+    const f = await world("Accelerator");
+    const start = at("2026-10-02", 9);
+    const K = await parkOnMoney(f, start);
+    payUp(K.orderId);
+    // Kyle books it by hand on the hub's order (Aryeo's own UI).
+    const handId = `0199ffff-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    fake.appts.set(handId, { id: handId, status: "SCHEDULED", start_at: iso(start), end_at: iso(new Date(start.getTime() + 4 * HOUR)), orderId: K.orderId, tmIds: [JORDAN.teamMemberId], updated_at: new Date().toISOString() });
+    fake.orders.get(K.orderId)!.appointmentIds.push(handId);
+    const evening = at("2026-10-01", 18);
+    await sb.retrySessionBooking(K.id, { confirmedNoOrder: true, by: "drill", now: evening });
+    const s0 = storesOn(K.orderId);
+    const o = await sb.bookSessionRequest(K.id, { now: evening });
+    const row = await reqRow(K.id);
+    c.ok("adopted and CONFIRMED on Kyle's appointment, no store by the hub", o.outcome === "confirmed" && row.aryeoAppointmentId === handId && storesOn(K.orderId) === s0, `${o.outcome}: ${o.detail}`);
+  }
+
+  c.head("34 · R03 after the store: a fee Aryeo adds with the appointment → still booked, ONE PAYMENT_MISMATCH task, the figures updated");
+  {
+    const f = await world("Accelerator");
+    const r = await jordanReq(f, at("2026-10-06", 9));
+    if (!r.ok) throw new Error(r.reason);
+    fake.script("POST /appointments/store", "add-fee-on-store");
+    const o = await sb.bookSessionRequest(r.id, { now: MON });
+    const row = await reqRow(r.id);
+    const att = await prisma.programBookingAttempt.findFirst({ where: { requestId: r.id, state: "CONFIRMED" } });
+    c.ok("the booking is real and stays: CONFIRMED", o.outcome === "confirmed" && row.status === "CONFIRMED", `${o.outcome}: ${o.detail}`);
+    c.ok("the attempt's figures are Aryeo's AFTER the store ($75.00 owed), not the $0 read before it", att?.orderTotalCents === 7500 && att.orderBalanceCents === 7500 && att.orderPaymentStatus === "UNPAID", JSON.stringify({ t: att?.orderTotalCents, b: att?.orderBalanceCents, p: att?.orderPaymentStatus }));
+    const pm = await prisma.smartTask.findMany({ where: { clientId: f.clientId, title: { startsWith: "PAYMENT_MISMATCH" } } });
+    c.ok("exactly one PAYMENT_MISMATCH task for Kyle, saying the session IS booked", pm.length === 1 && /\$75\.00 owed/.test(pm[0].title) && /IS booked/.test(pm[0].description ?? "") && /Nothing needs retrying/.test(pm[0].description ?? ""), pm.map((x) => x.title).join(" | "));
+    c.ok("and the hub made no void, refund or edit call", !fake.writes.some((w) => w.path.includes(row.aryeoOrderId!) && w.method !== "GET"));
+  }
+
+  // ======================================================================
   c.head("18 · nothing left the machine but the fake Aryeo and the stub geocoder");
   {
-    const other = fence.faked.filter((u) => !u.startsWith("https://api.aryeo.com/") && !u.startsWith("https://geocoding.geo.census.gov/") && !u.startsWith("https://nominatim.openstreetmap.org/"));
+    const other = fence.faked.filter((u) => !u.startsWith("https://api.aryeo.com/") && !u.startsWith("https://geocoding.geo.census.gov/") && !u.startsWith("https://nominatim.openstreetmap.org/") && !u.startsWith("https://router.project-osrm.org/"));
     c.ok("no other destination was answered", other.length === 0, other.join(", "));
     c.ok("and nothing was blocked (no real provider was even tried)", fence.blocked.length === 0, fence.blocked.slice(0, 5).join(", "));
     const w = fake.writes.filter((x) => x.committed);
-    console.log(`    fake Aryeo committed writes: ${w.length} (${[...new Set(w.map((x) => `${x.method} ${x.path.replace(/\/[0-9a-f-]{20,}|\/fixture[^/]*/g, "/:id")}`))].join(", ")}); geocodes: ${geocodes.length}`);
+    console.log(`    fake Aryeo committed writes: ${w.length} (${[...new Set(w.map((x) => `${x.method} ${x.path.replace(/\/[0-9a-f-]{20,}|\/fixture[^/]*/g, "/:id")}`))].join(", ")}); geocodes: ${geocodes.length}; OSRM (stub) calls: ${osrmCalls}`);
     c.ok("the database was never production", (process.env.DATABASE_URL ?? "").startsWith(`postgresql://postgres:postgres@127.0.0.1:${PORT}/`));
   }
 

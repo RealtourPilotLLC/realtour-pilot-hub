@@ -96,6 +96,29 @@ async function main() {
       s ? `${s.enabled ? "ON" : "off"} · by ${s.enabledBy ?? "-"} · last run ${ago(s.lastRunAt)}${s.lastError ? ` · last error: ${s.lastError.slice(0, 80)}` : ""}` : "no row → OFF");
   }
 
+  // F4b — R02/A26: WHO each provider-write switch may write for. A switch that
+  // is off writes for nobody whatever its lists say, so the scope is reported
+  // next to the switch state, never instead of it. A real client on a fixture
+  // list is a WARN (the guard refuses it, but somebody put it there).
+  const { HUB_WRITE_SWITCHES, parseHubWriteConfig, describeHubWriteScope } = await import("../../src/lib/hubWritePermit");
+  const { isTestClientName } = await import("../../src/lib/testClients");
+  const scopes = HUB_WRITE_SWITCHES.map((key) => {
+    const s = byKey.get(key);
+    let raw: unknown = null;
+    try { raw = s?.configJson ? JSON.parse(s.configJson) : null; } catch { raw = null; }
+    return { key, s, cfg: parseHubWriteConfig(raw) };
+  });
+  const scopeIds = [...new Set(scopes.flatMap((x) => [...x.cfg.authorizedFixtureClientIds, ...(x.cfg.pilot?.clientIds ?? [])]))];
+  const scopeClients = scopeIds.length ? await prisma.client.findMany({ where: { id: { in: scopeIds } }, select: { id: true, name: true } }) : [];
+  const scopeNames = new Map(scopeClients.map((c) => [c.id, c.name]));
+  for (const { key, s, cfg } of scopes) {
+    const d = describeHubWriteScope(key, { enabled: s?.enabled === true, missing: !s, config: cfg }, scopeNames, new Date());
+    const realOnFixtures = cfg.authorizedFixtureClientIds.filter((id) => !isTestClientName(scopeNames.get(id)));
+    const labels: Label[] = realOnFixtures.length ? ["WARN"] : s?.enabled && d.pilotState === "ACTIVE" ? ["ENABLED"] : cfg.authorizedFixtureClientIds.length || cfg.pilot ? ["CONFIGURED"] : ["OK"];
+    say("scope", `${key}: who the hub may write for`, labels,
+      `${d.headline} · fixtures: ${d.fixtures} · pilot: ${d.pilot}${realOnFixtures.length ? ` · REAL client(s) on the fixture list (refused): ${realOnFixtures.join(",")}` : ""}`);
+  }
+
   // F5 — Calendly mappings: the legacy name-matched Drive sweep stands down
   // once an enabled mapping exists (contentCalls.hasEnabledCallMapping).
   const maps = await prisma.programCalendlyEventMapping.findMany();

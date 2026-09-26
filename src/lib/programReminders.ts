@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
-import { recalcProgramMonth, addBusinessDaysET, replacesPendingMove, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
+import { recalcProgramMonth, addBusinessDaysET, preparationGate, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef } from "@/lib/outbox";
@@ -250,7 +250,7 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
     "booked", "no_call_chosen", "preparation_submitted", "paused", "ended", "snoozed",
     "pending_session_request", "stale_scheduler_sync", "access_revoked", "launch_not_authorised",
     "no_recipient", "test_client_real_address", "quiet_hours", "first_cycle_exempt",
-    "catch_up_owed", "another_reminder_today", "no_template_yet", "scripts_approved",
+    "catch_up_owed", "another_reminder_today", "no_template_yet", "scripts_approved", "session_not_open",
   ],
   templates: { ...DEFAULT_TEMPLATE_IDS },
   testClientsOnly: true,
@@ -435,6 +435,9 @@ export { businessDaysBetween };
 // outside this file ever read them.
 const currentMonthKey = (now: Date) => etDayKey(now).slice(0, 7);
 const fmtDay = (d: Date | null) => (d ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null);
+/** "Thursday, October 1 at 2:30 PM ET" — a day alone would read as the whole
+ *  day, and 72 weekday hours from 2:30 PM starts at 2:30 PM (A20). */
+const fmtWhenET = (d: Date) => `${fmtDay(d)} at ${d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })} ET`;
 
 // ---- ET day-key arithmetic for the §12 calendar ------------------------------
 // Day keys, never millisecond addition: "the 15th" is a date on the ET calendar
@@ -565,7 +568,12 @@ export type EvaluatedState = {
   planningMode: string;
   preparationStatus: string | null;
   callMode: string;
+  /** The earliest the session being chased may start (A20: programMonths.preparationGate for THAT session — Pro's second session is read on its own); month-wide when nothing is chased. */
   earliestSessionAt: string | null;
+  /** A19: the month's strategy call is booked and not held yet — its start, for the reminder's words. */
+  callUpcomingAt?: string | null;
+  /** A24: the session a BOOK_SESSION reminder is about (the next index still to book). */
+  nextSessionIndex?: number | null;
   /** Kept as they were so an old ledger row and a new one read the same way;
    *  every DECISION below now uses the counts underneath them. */
   sessionBooked: boolean;
@@ -791,7 +799,7 @@ function aryeoLastChangedAt(rawJson: string | null): Date | null {
 async function monthFacts(monthId: string, clientId: string, now: Date, sessionsRequired: number) {
   const [projects, requests, carryover, count, lostRequests] = await Promise.all([
     prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true, shootDate: true, status: true, addressLine: true } }),
-    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { id: true, status: true, projectId: true, aryeoAppointmentId: true, supersedesId: true } }),
+    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { id: true, status: true, bookingState: true, projectId: true, aryeoAppointmentId: true, supersedesId: true, slotStart: true, sessionIndex: true } }),
     // Work that arrived in this month from an earlier one. Whether the client
     // did not film it or WE were late is not recorded anywhere, and §3 says to
     // hand an unclear shortfall to Kyle rather than invent the answer — so the
@@ -888,7 +896,12 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
   const sessionLostAt = [...lostRequests.map((r) => r.cancelledAt ?? r.updatedAt), ...cancelledAppts.map((a) => aryeoLastChangedAt(a.rawJson))]
     .filter((d): d is Date => d instanceof Date && !isNaN(d.getTime()))
     .reduce<Date | null>((m, d) => (!m || d > m ? d : m), null);
+  // A24: which session is still to book — by index, the way the portal's
+  // picker and the gate read it (a Pro month whose session 2 was booked first
+  // is missing session 1, not "the second").
+  const nextSessionIndex = sessionIndexesFrom(count, requests, sessionsRequired).next;
   return {
+    nextSessionIndex,
     sessionBooked: sessionsBooked > 0,
     sessionFilmed: sessionsFilmed > 0,
     pendingSessionRequest: pendingSessionRequests + cancelRequested > 0,
@@ -994,6 +1007,13 @@ export const secondSessionParagraph = (ordinal: number, required: number, videos
   const perSession = Math.max(1, Math.ceil(Math.max(0, videosPerMonth) / Math.max(1, required)) || 1);
   const done = ordinal - 1;
   return `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, which is another ${perSession} video${perSession === 1 ? "" : "s"}. Pick a time in your portal and we'll confirm it.`;
+};
+
+/** COMPLETE_ANSWERS for a later session whose own gate is shut (batch-3 review): what that session still needs. No em dashes (client words). */
+export const sessionAnswersParagraph = (ordinal: number, required: number, videosPerMonth: number) => {
+  const perSession = Math.max(1, Math.ceil(Math.max(0, videosPerMonth) / Math.max(1, required)) || 1);
+  const done = ordinal - 1;
+  return `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, another ${perSession} video${perSession === 1 ? "" : "s"}: choose its topics and answer their questions, and its filming calendar opens as soon as they're in.`;
 };
 
 /** Which sub-lane of the ledger a row belongs to. The dedupeKey carries it:
@@ -1109,8 +1129,17 @@ async function evaluateMonth(
       else if (d.callMode === "REQUIRED") action = "BOOK_CALL";
       else action = "CHOOSE_PATH";
     }
-    if (!action && !planningSuppression) {
-      const plannedEnough = prepComplete || callHeld || facts.sessionsAccountedFor > 0;
+    // A BOOKED CALL OPENS FILMING (§3, A19, Sep 25 2026): "Filming scheduling
+    // opens as soon as the strategy call is booked, even before the call
+    // happens." The 'booked' suppression used to end the evaluation here, so a
+    // client who had booked their call was never asked to book filming until
+    // the call was held — the reminder contradicting the portal, whose
+    // calendar was already open. 'booked' now silences only the PLANNING ask
+    // (there is no call to chase); the booking lane runs as it does for a held
+    // call. Choosing "Schedule later" changes nothing here: the same lane, the
+    // same cadence, no second stream (§6.7).
+    if (!action && (!planningSuppression || planningSuppression === "booked")) {
+      const plannedEnough = prepComplete || callHeld || callBooked || facts.sessionsAccountedFor > 0;
       const gap = sessionGap(facts);
       if (plannedEnough) {
         if (gap.suppression) sessionSuppression = gap.suppression;
@@ -1118,6 +1147,32 @@ async function evaluateMonth(
       }
     }
   }
+  // A20: the date a BOOK_SESSION reminder quotes is THAT session's gate — the
+  // next one still to book — from the one reader the portal's picker uses.
+  //
+  // …and a session whose own gate is SHUT is not asked to be booked (batch-3
+  // review, Sep 25 2026). "Planned enough" is month-level, so a Pro month on
+  // the written route with session 1 answered and booked chased "book your
+  // second filming session" while the portal said session 2 needs its topics
+  // and answers first. The reminder follows the gate (§6.7: the actual
+  // outstanding work): topics or answers owed → COMPLETE_ANSWERS for that
+  // session; anything else shut (the office preparing, a call to book) →
+  // no booking ask until it opens.
+  let sessionShut: string | null = null;
+  if (action === "BOOK_SESSION" && facts.nextSessionIndex != null) {
+    const g = preparationGate(d, facts.nextSessionIndex);
+    if (g.locked && (g.lock === "UNDER_PLANNED" || g.lock === "ANSWERS")) {
+      action = "COMPLETE_ANSWERS";
+      answersStarted = g.lock === "ANSWERS" && d.sessions.some((s) => s.index === facts.nextSessionIndex && s.readyTopicIds.length > 0);
+    } else if (g.locked) {
+      sessionShut = `session ${facts.nextSessionIndex}'s filming calendar is not open yet (${g.reason}) — no booking ask until it opens`;
+    }
+  }
+  if (action === "BOOK_SESSION") {
+    state.nextSessionIndex = facts.nextSessionIndex;
+    state.earliestSessionAt = preparationGate(d, facts.nextSessionIndex).earliest?.toISOString() ?? null;
+  }
+  if (callBooked && d.strategyCallAt && d.strategyCallAt > now) state.callUpcomingAt = d.strategyCallAt.toISOString();
   const digestSession = !!action && ["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS"].includes(action) && p.digestBothAppointments && facts.sessionsMissing > 0 && facts.pendingSessionRequests === 0;
 
   // ---- suppression (spec §24), in the order a person would ask ----------------
@@ -1133,9 +1188,10 @@ async function evaluateMonth(
   // this; the evaluator must agree with it.
   if (e.accessRevokedAt) return sup("access_revoked", "portal access for this enrollment has been revoked");
   if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return sup("snoozed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`);
-  if (planningSuppression === "booked") return sup("booked", "a strategy call is booked — nothing to remind", null);
+  if (planningSuppression === "booked" && !action) return sup("booked", "a strategy call is booked — nothing to remind", null);
   if (planningSuppression === "no_call_chosen") return sup("no_call_chosen", "this month's strategy call was skipped on purpose — we do not chase it", null);
   if (sessionSuppression) return sup(sessionSuppression, "a session request is waiting on the office, not the client", null);
+  if (sessionShut) return sup("session_not_open", sessionShut, null);
   if (!action) {
     if (lane === "REVIEW") return out({ action: null, decision: "none", reason: "no released cut is waiting on this client" });
     // "already been filmed — nothing left to book" was read off sessionFilmed
@@ -1269,7 +1325,10 @@ async function evaluateMonth(
     // portal shows and enforcement uses — never a recompute from the release.
     deadlineAt = reviewTarget?.window.deadlineAt ?? facts.reviewDeadlineAt ?? (releasedAt ? endOfBusinessDaysET(releasedAt, 4) : addBusinessDaysET(now, 4));
   } else if (action === "BOOK_SESSION") {
-    const prepAt = d.planningMode === "CALL" ? d.strategyCallAt : d.preparationCompletedAt;
+    // A booked, not-yet-held call opened filming when it was BOOKED (A19) —
+    // the record's arrival — not at the call's start, which is when this used
+    // to wake up (a call three weeks out held the booking ask for three weeks).
+    const prepAt = d.planningMode === "CALL" ? (callBooked ? d.callBookedAt : d.strategyCallAt) : d.preparationCompletedAt;
     // Never before the 1st, and never before the month was actually planned.
     laneReadyAt = prepAt && prepAt > cal.monthOpenAt ? prepAt : cal.monthOpenAt;
     deadlineAt = etAt(`${month.monthKey}-${String(Math.min(p.sessionBookingDeadlineDayOfMonth, 28)).padStart(2, "0")}`, 17);
@@ -1292,7 +1351,9 @@ async function evaluateMonth(
     ? MID_MONTH_PARAGRAPH
     : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
       ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, e.videosPerMonth)
-      : answerGap?.paragraph ?? null;
+      : action === "COMPLETE_ANSWERS" && sessionOrdinal && sessionOrdinal > 1
+        ? [sessionAnswersParagraph(sessionOrdinal, facts.sessionsRequired, e.videosPerMonth), answerGap?.paragraph].filter(Boolean).join("\n\n")
+        : answerGap?.paragraph ?? null;
   const linkPath = answerGap?.path ?? null;
 
   // §12/A28: the roll-over note is the one message that must never reach a
@@ -1583,9 +1644,24 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
     bookCallLink: monthly?.publicUrl ?? STRATEGY_CALL_BOOKING_URL,
     noCallEligible: c.noCallEligible,
     answersStarted: c.answersStarted,
-    // No em dashes in anything a client reads (Jordan's rule).
-    sessionNote: c.digestSession ? `Once ${month} is planned we'll also need to book your filming session. You can pick a time in the same portal and we'll confirm it.` : null,
-    earliestSession: fmtDay(fresh?.state.earliestSessionAt ? new Date(fresh.state.earliestSessionAt) : null),
+    // No em dashes in anything a client reads (Jordan's rule). §3 (A19): the
+    // call route opens filming when the call is BOOKED, the written route when
+    // the answers are in — "once planned" was right for neither.
+    sessionNote: c.digestSession
+      ? c.action === "COMPLETE_ANSWERS"
+        ? `Once your answers are in you can book your ${month} filming session in the same portal, and we'll confirm it.`
+        : `Once your strategy call is booked you can pick your ${month} filming time in the same portal right away, before the call.`
+      : null,
+    // Quoted only while the preparation rule is what holds the client back —
+    // later than the portal's own 24-hour floor. A window that closed days ago
+    // is not "the earliest we can film"; the picker simply offers tomorrow on.
+    earliestSession: fresh?.state.earliestSessionAt && new Date(fresh.state.earliestSessionAt).getTime() > Date.now() + 24 * 3600_000
+      ? fmtWhenET(new Date(fresh.state.earliestSessionAt))
+      : null,
+    callUpcoming: fresh?.state.callUpcomingAt ? fmtWhenET(new Date(fresh.state.callUpcomingAt)) : null,
+    sessionOrdinalWord: (fresh?.state.sessionsRequired ?? c.state.sessionsRequired) > 1 && fresh?.state.nextSessionIndex
+      ? (["first", "second", "third", "fourth"][fresh.state.nextSessionIndex - 1] ?? null)
+      : null,
     itemCount: fresh?.state.releasedCutsAwaiting ?? c.state.releasedCutsAwaiting,
     titles: [],
     updatedTitles: [],

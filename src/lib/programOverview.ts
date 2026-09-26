@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
-import { callModeOf, deriveMonthState, type CallMode, type PreparationStatus } from "@/lib/programMonths";
+import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparationGate, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
 import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } from "@/lib/monthProgress";
@@ -223,7 +223,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     where: { status: { in: statuses }, ...(opts.enrollmentIds ? { id: { in: opts.enrollmentIds } } : {}) },
     select: {
       id: true, clientId: true, package: true, status: true, videosPerMonth: true, sessionsPerMonth: true,
-      strategyCallRequired: true, callMode: true, noCallEligible: true, clientSuppliesTopics: true, billingType: true, notes: true,
+      strategyCallRequired: true, callMode: true, noCallEligible: true, clientSuppliesTopics: true, billingType: true, notes: true, overridesJson: true,
     },
   });
   if (enrollments.length === 0) {
@@ -302,7 +302,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId: { in: enrollmentIds }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { enrollmentId: true, status: true } }),
     prisma.programCallRecord.findMany({
       where: { enrollmentId: { in: enrollmentIds }, callType: { in: ["MONTHLY_STRATEGY", "BRAND_DISCOVERY"] }, OR: [{ monthId: { in: monthIds.length ? monthIds : ["-"] } }, { targetMonthKey: { in: keysInScope } }] },
-      select: { id: true, enrollmentId: true, monthId: true, targetMonthKey: true, callType: true, status: true, scheduledStart: true, transcriptState: true, matchState: true, lastError: true, analysisJson: true },
+      select: { id: true, enrollmentId: true, monthId: true, targetMonthKey: true, callType: true, status: true, scheduledStart: true, scheduledEnd: true, createdAt: true, transcriptState: true, matchState: true, lastError: true, analysisJson: true },
       orderBy: { scheduledStart: "desc" },
     }),
     monthIds.length ? prisma.programSessionRequest.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, status: true, slotStart: true, bookingState: true, lastError: true } }) : [],
@@ -447,8 +447,10 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
             preparationWindowDays: m.preparationWindowDays, preparationExceptionAt: m.preparationExceptionAt,
             preparationExceptionReason: m.preparationExceptionReason, filmingReadyAt: m.filmingReadyAt, historical: m.historical,
           },
-          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld },
-          records: monthly.map((c) => ({ callType: c.callType, status: c.status, matchState: c.matchState, scheduledStart: c.scheduledStart, scheduledEnd: null, transcriptState: c.transcriptState })),
+          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(e.overridesJson) },
+          // The call's END (A19): the clock runs from it. This passed
+          // `scheduledEnd: null`, so the overview measured every call from its start.
+          records: monthly.map((c) => ({ id: c.id, callType: c.callType, status: c.status, matchState: c.matchState, scheduledStart: c.scheduledStart, scheduledEnd: c.scheduledEnd, transcriptState: c.transcriptState, createdAt: c.createdAt })),
           scripts: myScriptsAll.map((s) => ({ status: s.status, approvedVersionId: s.approvedVersionId, approvedAt: null, historical: s.historical })),
           interviews: myInterviews.map((i) => ({ status: i.status, submittedAt: i.submittedAt })),
         })
@@ -489,10 +491,20 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       if (ps.heldUnconfirmed > 0) detailParts.push(`${ps.heldUnconfirmed} held, filming not confirmed`);
       if (ps.missing > 0) detailParts.push(`${ps.missing} still to book`);
     }
+    // A20: when filming may start, from the one reader the portal gate uses.
+    // The call route only: its anchor (the booked or held call's end) is the
+    // same for every session, so this screen's month-wide derivation reads it
+    // exactly. The written route's gate is per session over the allowance's
+    // topics, which this screen does not load — it says nothing rather than a
+    // month-wide guess that could contradict the client's own page.
+    const gate = derived && derived.planningMode === "CALL" ? preparationGate(derived) : null;
+    const gateWords = gate && !gate.locked && gate.earliest && gate.earliest > now
+      ? `filming can start from ${gate.earliest.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET (${gate.reason})`
+      : null;
     const sessionDetail =
       sessionState === "REQUESTED" ? "the client asked — Kyle has not confirmed a slot"
       : sessionState === "CANCELLED" ? "every request on this month was cancelled or declined"
-      : sessionState === "NOT_SCHEDULED" ? "nothing on the calendar"
+      : sessionState === "NOT_SCHEDULED" ? ["nothing on the calendar", gateWords].filter(Boolean).join(" · ")
       : detailParts.length ? detailParts.join(" · ")
       : null;
 

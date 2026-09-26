@@ -385,6 +385,30 @@ export async function loadSessionsView(month: { id: string } | null) {
   }
   return { projects: out };
 }
+/**
+ * A20: each session's preparation gate for the staff Sessions view — the same
+ * reader (programMonths.preparationGate) the portal's picker, the reminder and
+ * the desk task use, in staff words: when filming may start and what it is
+ * counted from, or why it is still shut. A dry run: nothing is written.
+ */
+export async function loadSessionGates(month: { id: string } | null, opts: { now?: Date } = {}): Promise<SessionGateUi[]> {
+  if (!month) return [];
+  const { recalcProgramMonth, preparationGate } = await import("@/lib/programMonths");
+  const r = await recalcProgramMonth(month.id, { dryRun: true, now: opts.now }).catch(() => null);
+  if (!r) return [];
+  const fmt = (d: Date) => `${d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET`;
+  return r.after.sessions.map((s) => {
+    const g = preparationGate(r.after, s.index);
+    return {
+      index: s.index,
+      locked: g.locked,
+      earliestISO: iso(g.earliest),
+      text: g.locked || !g.earliest ? `not open yet: ${g.reason}` : `filming can start from ${fmt(g.earliest)} (${g.reason})`,
+    };
+  });
+}
+export type SessionGateUi = { index: number; locked: boolean; earliestISO: string | null; text: string };
+
 export type SessionProjectUi = {
   id: string; title: string; status: string; shootDateISO: string | null; pendingReview: number;
   topicsPlanned: number; topicsConfirmedHere: number; reportPending: { state: string; lastError: string | null } | null;

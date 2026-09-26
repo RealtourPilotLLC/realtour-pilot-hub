@@ -305,6 +305,21 @@ export async function portalUseFolderFile(auth: PortalAuth, name: string, kind: 
 
 export type SessionRequestResult = R & { requestId?: string; label?: string; duplicate?: boolean };
 
+/** A slot before the gate (either route), in the client's words: the first
+ *  time they CAN pick, not "the prep window after your strategy call" — which
+ *  was wrong on the written route. No em dashes (a client reads it). */
+function tooSoon(earliest: Date): string {
+  const when = earliest.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return `That time is too soon. Filming for this session can start from ${when} ET, which gives us time to write your scripts. Pick a later slot.`;
+}
+
+/** What the new request snapshots of the gate it was offered under (A18/A25). */
+function gateSnapshotOf(gate: import("@/lib/portal").SessionGate) {
+  const g = gate.preparation;
+  if (!g) return null;
+  return { route: g.route, anchorRef: g.anchor?.ref ?? null, anchorAt: g.anchor?.at ?? null, windowHours: g.windowHours, earliestAt: g.earliest };
+}
+
 /**
  * Client asks for their content session, FOR AN EXPLICIT PROGRAM MONTH
  * (a request made in late September may be October's): preferred slot or
@@ -316,20 +331,22 @@ export type SessionRequestResult = R & { requestId?: string; label?: string; dup
  * duplicate clicks on its dedupeKey, checks the month's capacity and never
  * writes to Aryeo.
  *
- * THE PREPARATION WINDOW (§8; corrected in batch 1, Sep 21 2026). The rule is
- * 48 hours of WEEKDAY time after the strategy call ENDS, or after enough
- * online preparation — not the three business days this comment used to claim
- * and not measured from the call's start. `sessionGate` derives it
- * (deriveMonthState → addWeekdayHoursET) and returns `earliest`; the line
- * below is what actually enforces it. The picker only greys out the slots.
+ * THE PREPARATION WINDOW (§3; W01, Sep 25 2026). The rule is 72 hours of
+ * WEEKDAY time after the booked strategy call's scheduled END (call route), or
+ * after the session's answers were SUBMITTED (written route) — per session,
+ * so a Pro month's second session is held to its own material. `sessionGate`
+ * reads it through programMonths.preparationGate (the one reader) and returns
+ * `earliest`; the line below is what actually enforces it, and the request
+ * snapshots the gate it was offered under (gateAnchorRef / gateWindowHours /
+ * gateEarliestAt). The picker only greys out the slots.
  *
  * HOW EXISTING BOOKINGS STAY STABLE (Jordan asked for this in writing). The
  * window is evaluated at REQUEST TIME and nowhere else. It is a derived value:
  * no ProgramSessionRequest stores it, no confirmed Aryeo appointment is
  * re-checked against it, and nothing in the tree revisits a request once it is
- * written — `sessionGate` has exactly two other callers and both are display
- * (src/lib/portal.ts scheduleMonths, and the reminder text's "earliest
- * session" line). So moving the rule moves the DOOR, never anything already
+ * written — the other readers are display (portal.ts scheduleMonths, the
+ * reminder's "earliest session" line, the staff overview, the desk task's
+ * earliest-start line). So moving the rule moves the DOOR, never anything already
  * through it: every session already requested, confirmed or filmed keeps its
  * date, its desk task and its deadlines, and only a NEW request is measured
  * against the corrected clock. The one visible change for an existing client
@@ -337,13 +354,20 @@ export type SessionRequestResult = R & { requestId?: string; label?: string; dup
  */
 export async function portalRequestSession(
   auth: PortalAuth,
-  input: { monthId: string; when?: string; slotISO?: string; location: string; creativeTeamMemberId?: string | null },
+  input: {
+    monthId: string; when?: string; slotISO?: string; location?: string; creativeTeamMemberId?: string | null; sessionIndex?: number | null;
+    /** §6.6 W02: the session's exact-address plan and the version the times were offered for. */
+    planId?: string | null; addressVersion?: number | null;
+  },
 ): Promise<SessionRequestResult> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
   const { enrollment } = v;
   const location = clip((input.location ?? "").trim(), 300);
-  if (!location) return fail("Tell us where we're filming.");
+  // §6.6 W02: the WHERE is the session's plan (exact address first); free text
+  // is no longer a filming location on its own.
+  const planId = String(input.planId ?? "").trim();
+  if (!location && !planId) return fail("Add the exact filming address for this session first.");
   const monthId = String(input.monthId ?? "");
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return fail("Pick one of your program months.");
 
@@ -362,8 +386,14 @@ export async function portalRequestSession(
     if (within24hElapsed(picked, new Date())) return fail(INSIDE_24H_MESSAGE);
   }
 
+  // A24: the gate is read for ONE session — the one the picker named, else the
+  // next still to book — so a Pro month's session 2 is held to its own
+  // material, not session 1's.
+  // §6.6 W02: the plan names its own session when the picker did not.
+  const plan = /^[a-z0-9]{10,40}$/i.test(planId) ? await prisma.programSessionPlan.findUnique({ where: { id: planId } }) : null;
+  const askedIndex = input.sessionIndex == null ? (plan && plan.enrollmentId === enrollment.id ? plan.sessionIndex : undefined) : Number(input.sessionIndex);
   const { sessionGate } = await import("@/lib/portal");
-  const gate = await sessionGate(enrollment.id, monthId); // refuses a month that is not this enrollment's
+  const gate = await sessionGate(enrollment.id, monthId, { sessionIndex: askedIndex }); // refuses a month that is not this enrollment's
   if (gate.locked) return fail(gate.reason);
 
   const when = clip((input.when ?? "").trim(), 500);
@@ -375,13 +405,24 @@ export async function portalRequestSession(
     // THE GATE, for real. `gate.earliest` is the later of the §8 preparation
     // window and a 24-hour floor (a same-day ask is not a request the desk can
     // honour), so this one comparison enforces both.
-    if (slot < gate.earliest) return fail("That time is inside the prep window after your strategy call — pick a later slot.");
+    if (slot < gate.earliest) return fail(tooSoon(gate.earliest));
     startISO = slot.toISOString();
     // The package's session length, so the desk sees the whole block.
     const hours = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { sessionHours: true } }))?.sessionHours ?? 2;
     endISO = new Date(slot.getTime() + hours * 3600_000).toISOString();
   }
   if (!startISO && !when) return fail("Pick a time from the list (or tell us what works).");
+
+  // §6.6 W02 — EXACT ADDRESS FIRST (§3: "an exact address is required before
+  // confirmable filming slots are offered; this supersedes area-only booking").
+  // Every portal ask names its session's plan: a picked time needs the plan
+  // exact AND on the map, at the version the times were offered for; a "what
+  // works" ask to the desk needs it exact (a geocode miss is Kyle's to confirm).
+  const { planBookable, planExact } = await import("@/lib/sessionAddress");
+  if (!plan || plan.enrollmentId !== enrollment.id || plan.monthId !== monthId || !planExact(plan)) return fail("Add the exact filming address for this session first.");
+  if (askedIndex != null && plan.sessionIndex !== askedIndex) return fail("Add the exact filming address for this session first.");
+  if (input.addressVersion != null && Number(input.addressVersion) !== plan.addressVersion) return fail("Your filming address changed. Pick the time again so we can check the drive from the new address.");
+  if (startISO && !planBookable(plan)) return fail("We could not find that address on a map, so Kyle will confirm your time with you. Tell us what works instead.");
 
   const a = v.actor;
   const actor =
@@ -405,6 +446,18 @@ export async function portalRequestSession(
     if (roster && !hit) return fail("That videographer isn't available for your package. Pick another time or person.");
     creative = { teamMemberId: creativeId, name: hit?.name ?? null };
   }
+  // §6.6 W02 — TRAVEL, checked again on the server for the creative picked
+  // (the list the client saw may be minutes old). No room for the drive is a
+  // refusal; a drive that cannot be measured is desk-confirmed, never booked
+  // by the hub on its own (createSessionRequest reads `travel`).
+  let travel: { check: "HUB_DRIVE" | "UNCHECKED"; evidenceJson: string } | null = null;
+  if (startISO && creative && planBookable(plan)) {
+    const { travelFit, travelEvidence } = await import("@/lib/sessionTravel");
+    const start = new Date(startISO);
+    const fit = await travelFit({ creativeTeamMemberId: creative.teamMemberId, start, end: new Date(endISO ?? start.getTime() + 2 * 3600_000), dest: { lat: plan.latitude!, lng: plan.longitude! } });
+    if (fit.fits === false) return fail("That time no longer leaves room for the drive from your videographer's other shoot that day. Pick another time.");
+    travel = { check: fit.fits ? "HUB_DRIVE" : "UNCHECKED", evidenceJson: travelEvidence(fit, { at: "request", checkedAt: new Date().toISOString() }) };
+  }
   const { createSessionRequest, sessionRequestLabel } = await import("@/lib/sessionRequests");
   const r = await createSessionRequest({
     enrollmentId: enrollment.id,
@@ -412,6 +465,12 @@ export async function portalRequestSession(
     slot: { startISO, endISO, timezone: null, when: when || null, locationText: location, notes: `Requested on the portal by ${actorLabel(v)}.` },
     actor,
     creative,
+    // A18/A24: which session, and the gate it was offered under (snapshot).
+    sessionIndex: gate.sessionIndex,
+    gate: gateSnapshotOf(gate),
+    // §6.6 W02: the plan at the version the time was offered for, and its travel check.
+    plan: { planId: plan.id, addressVersion: plan.addressVersion },
+    travel,
   });
   if (!r.ok) return fail(r.reason);
   // Self-booking (only for a client the guard authorises): book it now, inside
@@ -421,8 +480,8 @@ export async function portalRequestSession(
   if (!r.duplicate) {
     const row = await prisma.programSessionRequest.findUnique({ where: { id: r.id }, select: { status: true, bookingState: true } });
     if (row?.bookingState === "QUEUED") {
-      const { bookSessionRequest } = await import("@/lib/sessionBooking");
-      await bookSessionRequest(r.id, { worker: "portal", budgetMs: 25_000 }).catch(() => null);
+      const { bookSessionRequest, INLINE_BOOKING_BUDGET_MS } = await import("@/lib/sessionBooking");
+      await bookSessionRequest(r.id, { worker: "portal", budgetMs: INLINE_BOOKING_BUDGET_MS }).catch(() => null);
     }
     const after = await prisma.programSessionRequest.findUnique({ where: { id: r.id }, select: { status: true, bookingState: true } });
     if (after) state = after;
@@ -455,16 +514,21 @@ export async function portalRescheduleSession(
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
   if (!/^[a-z0-9]{10,40}$/i.test(requestId)) return fail("That request isn't on your page.");
-  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { id: true, enrollmentId: true, monthId: true } });
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { id: true, enrollmentId: true, clientId: true, monthId: true, sessionIndex: true } });
   if (!r || r.enrollmentId !== v.enrollment.id) return fail("That request isn't on your page.");
   const slot = new Date(input.slotISO ?? "");
   if (!Number.isFinite(slot.getTime())) return fail("Pick a time from the list.");
+  // A24: a move is held to the gate of the session it moves — the row's own
+  // index, else the one it resolves to in slot order (a legacy row).
+  const { monthSessionIndexes } = await import("@/lib/programMonths");
+  const required = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionsPerMonth: true } }))?.sessionsPerMonth ?? 1;
+  const sessionIndex = r.sessionIndex ?? (await monthSessionIndexes(r.monthId, r.clientId, required, new Date()).catch(() => null))?.requestIndex.get(r.id) ?? null;
   const { sessionGate } = await import("@/lib/portal");
-  const gate = await sessionGate(v.enrollment.id, r.monthId);
+  const gate = await sessionGate(v.enrollment.id, r.monthId, { sessionIndex: sessionIndex != null && sessionIndex <= Math.max(1, required) ? sessionIndex : null });
   const { within24hElapsed, INSIDE_24H_MESSAGE } = await import("@/lib/sessionBooking");
   if (within24hElapsed(slot, new Date())) return fail(INSIDE_24H_MESSAGE);
   if (gate.locked) return fail(gate.reason);
-  if (slot < gate.earliest) return fail("That time is inside the prep window after your strategy call. Pick a later slot.");
+  if (slot < gate.earliest) return fail(tooSoon(gate.earliest));
   const creativeId = String(input.creativeTeamMemberId ?? "").trim();
   const creative = creativeId && /^[0-9a-f-]{20,40}$/i.test(creativeId) ? { teamMemberId: creativeId, name: null } : null;
   const hours = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionHours: true } }))?.sessionHours ?? 2;
@@ -474,9 +538,55 @@ export async function portalRescheduleSession(
     : a.kind === "STAFF" ? { kind: "STAFF" as const, userId: a.staffUserId }
     : { kind: "TOKEN" as const };
   const { requestReschedule } = await import("@/lib/sessionRequests");
-  const out = await requestReschedule(r.id, { startISO: slot.toISOString(), endISO: new Date(slot.getTime() + hours * 3600_000).toISOString(), locationText: input.location ? clip(input.location.trim(), 300) : null }, creative, actor);
+  const out = await requestReschedule(r.id, { startISO: slot.toISOString(), endISO: new Date(slot.getTime() + hours * 3600_000).toISOString(), locationText: input.location ? clip(input.location.trim(), 300) : null }, creative, actor, { sessionIndex, gate: gateSnapshotOf(gate) });
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
   return out;
+}
+
+/**
+ * §6.6 W02 — STEP ONE OF BOOKING A SESSION: its exact address. Saved on the
+ * session's plan (durable: "Schedule later" keeps it), validated (an area is
+ * refused) and placed on the map. The times come after, from it.
+ */
+export async function portalSaveSessionPlanAddress(
+  auth: PortalAuth,
+  monthId: string,
+  sessionIndex: number,
+  input: { street: string; unit?: string | null; city: string; state: string; zip: string },
+): Promise<R & { planId?: string; addressVersion?: number; bookable?: boolean }> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const month = await openMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
+  if (!month) return fail("Pick one of your open program months.");
+  const { saveSessionPlanAddress } = await import("@/lib/sessionAddress");
+  const r = await saveSessionPlanAddress({ enrollmentId: v.enrollment.id, monthId: month.id, sessionIndex: Number(sessionIndex), input, by: choiceBy(v) });
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: r.ok, message: r.message, planId: r.planId, addressVersion: r.addressVersion, bookable: r.bookable };
+}
+
+/**
+ * §6.6 W02/A22 — STEP TWO: the times for ONE session, from its exact address.
+ * Live Aryeo availability for the package, this session's preparation gate,
+ * and the drive from and to each videographer's other shoots that day; each
+ * time says whether its travel was checked. `moveRequestId` = the times for
+ * moving that booked session (measured from its own address).
+ */
+export async function portalSessionSlots(
+  auth: PortalAuth,
+  monthId: string,
+  sessionIndex: number,
+  opts: { moveRequestId?: string | null } = {},
+): Promise<import("@/lib/sessionTravel").SessionSlotsResult> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return { ok: false, message: v, days: [] };
+  const month = await openMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
+  if (!month) return { ok: false, message: "Pick one of your open program months.", days: [] };
+  const idx = Number(sessionIndex);
+  if (!Number.isInteger(idx) || idx < 1 || idx > 10) return { ok: false, message: "Pick one of this month's sessions.", days: [] };
+  const moveId = opts.moveRequestId && /^[a-z0-9]{10,40}$/i.test(opts.moveRequestId) ? opts.moveRequestId : null;
+  const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { package: true } }))?.package ?? null;
+  const { sessionSlotsFor } = await import("@/lib/sessionTravel");
+  return sessionSlotsFor({ enrollmentId: v.enrollment.id, monthId: month.id, sessionIndex: idx, package: pkg, moveRequestId: moveId });
 }
 
 /** The exact filming address for one session, from the signed-in portal (CP-05). */
@@ -871,15 +981,79 @@ export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Pro
  * booking reminder (programReminders' BOOK_SESSION lane) keeps its own cadence
  * and no second stream is started — the step simply stays outstanding.
  */
-export async function portalScheduleLater(auth: PortalAuth, monthId: string): Promise<R> {
+export async function portalScheduleLater(auth: PortalAuth, monthId: string, sessionIndex?: number | null): Promise<R> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
   const month = await openMonthForEnrollment(v.enrollment.id, monthId);
   if (!month) return fail("Pick one of your open program months.");
+  const now = new Date();
+  const by = choiceBy(v);
   // Idempotent: a second tap (or a second tab) keeps the first stamp.
-  await prisma.contentMonth.updateMany({ where: { id: month.id, enrollmentId: v.enrollment.id, schedulingDeferredAt: null }, data: { schedulingDeferredAt: new Date(), schedulingDeferredBy: choiceBy(v) } });
+  await prisma.contentMonth.updateMany({ where: { id: month.id, enrollmentId: v.enrollment.id, schedulingDeferredAt: null }, data: { schedulingDeferredAt: now, schedulingDeferredBy: by } });
+  // A21 (Sep 25 2026): the choice is PER SESSION — Pro's second session is
+  // deferred on its own row (ProgramSessionPlan, shared with the address step,
+  // which keeps the address and step a client resumes from). The session is
+  // the one named, else the next still to book; with every session taken
+  // there is nothing to defer beyond the month's stamp above.
+  const required = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionsPerMonth: true } }))?.sessionsPerMonth ?? 1;
+  const { monthSessionIndexes } = await import("@/lib/programMonths");
+  const idx = sessionIndex != null && Number.isInteger(sessionIndex) && sessionIndex >= 1 && sessionIndex <= Math.max(1, required)
+    ? sessionIndex
+    : (await monthSessionIndexes(month.id, v.enrollment.clientId, required, now).catch(() => null))?.next ?? null;
+  if (idx != null) {
+    const key = { monthId_sessionIndex: { monthId: month.id, sessionIndex: idx } };
+    await prisma.programSessionPlan
+      .upsert({ where: key, create: { enrollmentId: v.enrollment.id, clientId: v.enrollment.clientId, monthId: month.id, sessionIndex: idx, schedulingDeferredAt: now, schedulingDeferredBy: by, lastStep: "DEFERRED" }, update: {} })
+      .catch(() => null); // a simultaneous create (the address step) is fine: the stamp below lands on it
+    await prisma.programSessionPlan.updateMany({ where: { monthId: month.id, sessionIndex: idx, schedulingDeferredAt: null }, data: { schedulingDeferredAt: now, schedulingDeferredBy: by } });
+  }
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: "Saved — book filming any time from this step. We'll remind you as usual." };
+  return { ok: true, message: "Saved. Book filming any time from this step. We'll remind you as usual." };
+}
+
+// ---------------------------------------------------------------------------
+// W03 — THE STRATEGY CALL, BOOKED IN THE PORTAL (lib/callBooking.ts). Same
+// door as filming (requestSession: a VIEWER seat and a paused program cannot).
+// The embed's "scheduled" carries only an event URI: the server re-reads it
+// from Calendly and checks type and token before anything is filed.
+// ---------------------------------------------------------------------------
+
+/** API mode: open call times, 7 days a page, each with the filming start it would give. */
+export async function portalCallSlots(auth: PortalAuth, monthId: string, fromISO?: string | null): Promise<import("@/lib/callBooking").CallSlotsResult> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return { ok: false, message: v };
+  const { callSlots } = await import("@/lib/callBooking");
+  return callSlots(v, String(monthId ?? ""), typeof fromISO === "string" ? fromISO : null);
+}
+
+/** API mode: book one of those times. */
+export async function portalBookCall(auth: PortalAuth, monthId: string, startISO: string): Promise<import("@/lib/callBooking").BookCallResult> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return { ok: false, state: "REFUSED", message: v };
+  const { bookStrategyCall } = await import("@/lib/callBooking");
+  const r = await bookStrategyCall(v, String(monthId ?? ""), String(startISO ?? ""));
+  if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+  return r;
+}
+
+/** EMBED mode: the widget said "scheduled" — confirm it against Calendly and file it now. */
+export async function portalCallScheduled(auth: PortalAuth, input: { eventUri: string }): Promise<import("@/lib/callBooking").BookCallResult> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return { ok: false, state: "REFUSED", message: v };
+  const { confirmEmbeddedBooking } = await import("@/lib/callBooking");
+  const r = await confirmEmbeddedBooking(v, { eventUri: String(input?.eventUri ?? "") });
+  if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+  return r;
+}
+
+/** After a change or cancel on Calendly's own page: read the month's call again. */
+export async function portalRefreshCall(auth: PortalAuth, monthId: string): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const { refreshPortalCall } = await import("@/lib/callBooking");
+  const r = await refreshPortalCall(v, String(monthId ?? ""));
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return r;
 }
 
 /** Cancel one of the client's own session requests (a confirmed one becomes a cancellation request the desk actions). */

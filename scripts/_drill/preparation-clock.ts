@@ -75,25 +75,26 @@ async function main() {
   const { etAt } = await import("../../src/lib/datetime");
 
   // =========================================================================
-  console.log("\n=== 1. THE CLOCK — 48 hours of weekday time (spec §8, A22) ===");
+  // 72 weekday hours since batch 3, §3 (W01) — every expectation below moved with it.
+  console.log("\n=== 1. THE CLOCK — 72 hours of weekday time (§3 W01; the clock of spec §8, A22) ===");
   // =========================================================================
   const W = DEFAULT_PREPARATION_WINDOW_HOURS;
   // 2026-09-14 is a Monday, 2026-09-18 a Friday. Built with etAt(), so the
   // instant is derived from the ET calendar rather than an offset literal.
-  check("A22  Monday 2 PM + 48 weekday hours", etWall(addWeekdayHoursET(etAt("2026-09-14", 14), W)), etWall(etAt("2026-09-16", 14)));
-  check("A22  Friday 10 AM + 48 weekday hours", etWall(addWeekdayHoursET(etAt("2026-09-18", 10), W)), etWall(etAt("2026-09-22", 10)));
-  check("     Thursday 4 PM  (spans one weekend)", etWall(addWeekdayHoursET(etAt("2026-09-17", 16), W)), etWall(etAt("2026-09-21", 16)));
-  check("     Saturday 9 AM  (weekend start → Monday 00:00 + 48)", etWall(addWeekdayHoursET(etAt("2026-09-19", 9), W)), etWall(etAt("2026-09-23", 0)));
-  check("     Sunday 11 PM   (same)", etWall(addWeekdayHoursET(etAt("2026-09-20", 23), W)), etWall(etAt("2026-09-23", 0)));
+  check("A22  Monday 2 PM + 72 weekday hours → Thursday 2 PM", etWall(addWeekdayHoursET(etAt("2026-09-14", 14), W)), etWall(etAt("2026-09-17", 14)));
+  check("A22  Friday 10 AM + 72 weekday hours → Wednesday 10 AM", etWall(addWeekdayHoursET(etAt("2026-09-18", 10), W)), etWall(etAt("2026-09-23", 10)));
+  check("     Thursday 4 PM  (spans one weekend)", etWall(addWeekdayHoursET(etAt("2026-09-17", 16), W)), etWall(etAt("2026-09-22", 16)));
+  check("     Saturday 9 AM  (weekend start → Monday 00:00 + 72)", etWall(addWeekdayHoursET(etAt("2026-09-19", 9), W)), etWall(etAt("2026-09-24", 0)));
+  check("     Sunday 11 PM   (same)", etWall(addWeekdayHoursET(etAt("2026-09-20", 23), W)), etWall(etAt("2026-09-24", 0)));
   check("     Friday 00:00 + 24h lands on the next weekday, not Saturday", etWall(addWeekdayHoursET(etAt("2026-09-18", 0), 24)), etWall(etAt("2026-09-21", 0)));
   check("     a 3-day staff override (72 weekday hours)", etWall(addWeekdayHoursET(etAt("2026-09-14", 14), 72)), etWall(etAt("2026-09-17", 14)));
 
   console.log("\n  DST — the US changes clocks at 2 AM on a SUNDAY, inside the frozen weekend:");
-  // Spring forward: Sun 2026-03-08. Fri Mar 6 10 AM EST -> Tue Mar 10 10 AM EDT.
-  check("     spring forward: Fri 2026-03-06 10:00 EST + 48", etWall(addWeekdayHoursET(etAt("2026-03-06", 10), W)), etWall(etAt("2026-03-10", 10)));
-  // Fall back: Sun 2026-11-01. Fri Oct 30 10 AM EDT -> Tue Nov 3 10 AM EST.
-  check("     fall back:      Fri 2026-10-30 10:00 EDT + 48", etWall(addWeekdayHoursET(etAt("2026-10-30", 10), W)), etWall(etAt("2026-11-03", 10)));
-  check("     wall clock survives spring forward (Mon before → Wed after)", etWall(addWeekdayHoursET(etAt("2026-03-05", 14), W)), etWall(etAt("2026-03-09", 14)));
+  // Spring forward: Sun 2026-03-08. Fri Mar 6 10 AM EST -> Wed Mar 11 10 AM EDT (72; was Tue under 48).
+  check("     spring forward: Fri 2026-03-06 10:00 EST + 72", etWall(addWeekdayHoursET(etAt("2026-03-06", 10), W)), etWall(etAt("2026-03-11", 10)));
+  // Fall back: Sun 2026-11-01. Fri Oct 30 10 AM EDT -> Wed Nov 4 10 AM EST (72; was Tue under 48).
+  check("     fall back:      Fri 2026-10-30 10:00 EDT + 72", etWall(addWeekdayHoursET(etAt("2026-10-30", 10), W)), etWall(etAt("2026-11-04", 10)));
+  check("     wall clock survives spring forward (Thu before → Tue after)", etWall(addWeekdayHoursET(etAt("2026-03-05", 14), W)), etWall(etAt("2026-03-10", 14)));
   console.log(`     (proof the offsets really differ: ${etWall(etAt("2026-03-06", 10))} vs ${etWall(etAt("2026-03-10", 10))})`);
 
   // A sweep rather than a handful of dates: every hour of a year, including
@@ -148,13 +149,13 @@ async function main() {
   check("A15  and says which topics are missing", a15.sessions[0].missingTopicIds.join(","), "t2,t3,t4");
   check("A15  preparation reads AWAITING_ANSWERS", String(a15.preparationStatus), "AWAITING_ANSWERS");
 
-  // All four in → opens 48 weekday hours after the LAST one.
+  // All four in → opens 72 weekday hours after the LAST one (72 since batch 3, §3).
   const wed10 = etAt("2026-09-16", 10);
   const a15b = deriveMonthState(base({
     topics: [submitted(1, mon2pm), submitted(2, mon2pm), submitted(3, mon2pm), submitted(4, wed10)],
     interviews: [1, 2, 3, 4].map((n) => ({ topicId: `t${n}`, status: "SUBMITTED", submittedAt: n === 4 ? wed10 : mon2pm })),
   }));
-  check("A15  4 of 4 ready → opens 48 weekday hours after the LAST one", etWall(a15b.earliestSessionAt), etWall(etAt("2026-09-18", 10)));
+  check("A15  4 of 4 ready → opens 72 weekday hours after the LAST one", etWall(a15b.earliestSessionAt), etWall(etAt("2026-09-21", 10)));
 
   // A carried-over approved script is material in its own right (§8).
   const fri3pm = etAt("2026-09-11", 15);
@@ -162,7 +163,7 @@ async function main() {
     topics: [submitted(1, mon2pm), submitted(2, mon2pm), submitted(3, mon2pm), topic(4, { status: "SCRIPTED", scriptApproved: true, scriptApprovedAt: fri3pm })],
     interviews: [1, 2, 3].map((n) => ({ topicId: `t${n}`, status: "SUBMITTED", submittedAt: mon2pm })),
   }));
-  check("§8   a carried-over APPROVED script counts as material", etWall(a15c.earliestSessionAt), etWall(etAt("2026-09-16", 14)));
+  check("§8   a carried-over APPROVED script counts as material", etWall(a15c.earliestSessionAt), etWall(etAt("2026-09-17", 14))); // Mon 2 PM + 72 (§3)
 
   // Revalidation: answers reopened after submission must close the gate again.
   const reopened = deriveMonthState(base({
@@ -188,9 +189,9 @@ async function main() {
     interviews: [1, 2, 3, 4].map((n) => ({ topicId: `t${n}`, status: "SUBMITTED", submittedAt: mon2pm })),
   }));
   check("A23  Pro splits into 2 sessions of 4", pro.sessions.map((s) => `${s.index}:${s.topicIds.length}/${s.plannedVideos}`).join(" "), "1:4/4 2:4/4");
-  check("A23  session 1 opens without session 2's material", etWall(pro.sessions[0].earliestSessionAt), etWall(etAt("2026-09-16", 14)));
+  check("A23  session 1 opens without session 2's material", etWall(pro.sessions[0].earliestSessionAt), etWall(etAt("2026-09-17", 14))); // Mon 2 PM + 72 (§3)
   check("A23  session 2 stays shut", String(pro.sessions[1].earliestSessionAt), "null");
-  check("A23  the month reports the EARLIEST open session", etWall(pro.earliestSessionAt), etWall(etAt("2026-09-16", 14)));
+  check("A23  the month reports the EARLIEST open session", etWall(pro.earliestSessionAt), etWall(etAt("2026-09-17", 14)));
   check("A23  Starter is one session of two", planSessions([topic(1), topic(2)], { videosPerMonth: 2, sessionsPerMonth: 1 }).map((s) => `${s.index}:${s.topics.length}/${s.plannedVideos}`).join(" "), "1:2/2");
 
   // =========================================================================
@@ -209,14 +210,14 @@ async function main() {
     scheduledStart: callStart, scheduledEnd: callEnd, transcriptState: "CONFIRMED", ...over,
   });
   const heldCall = callBase([rec()]);
-  check("§8   window runs from the call END (15:00), not its start", etWall(heldCall.earliestSessionAt), etWall(etAt("2026-09-16", 15)));
+  check("§8   window runs from the call END (15:00), not its start", etWall(heldCall.earliestSessionAt), etWall(etAt("2026-09-17", 15))); // Mon 3 PM + 72 (§3)
   const futureCompleted = callBase([rec({ scheduledStart: etAt("2026-09-28", 14), scheduledEnd: etAt("2026-09-28", 15) })]);
   check("§8   a FUTURE call marked completed does not open the window", String(futureCompleted.earliestSessionAt), "null");
   check("§8   and it is raised as an exception, not guessed", String(futureCompleted.exceptions.length > 0), "true");
   const noShow = callBase([rec({ status: "NO_SHOW" })]);
   check("§8   NO_SHOW vs a confirmed transcript → exception, window shut", `${noShow.exceptions.length > 0}/${noShow.earliestSessionAt === null}`, "true/true");
   const missingInfo = callBase([rec()], { topics: [topic(1), topic(2), topic(3), topic(4)] });
-  check("§8   missing post-call info does NOT move the clock", etWall(missingInfo.earliestSessionAt), etWall(etAt("2026-09-16", 15)));
+  check("§8   missing post-call info does NOT move the clock", etWall(missingInfo.earliestSessionAt), etWall(etAt("2026-09-17", 15)));
   check("§8   …it raises a follow-up instead", missingInfo.followUps.filter((f) => f.kind === "MISSING_POST_CALL_INFO").map((f) => f.owner).join(","), "KYLE");
   const waived = callBase([rec()], { month: { ...base().month, planningMode: "CALL", preparationExceptionAt: NOW, preparationExceptionReason: "Jordan approved a same-week shoot" } });
   check("§8   a staff exception still waives the window to the call end", etWall(waived.earliestSessionAt), etWall(callEnd));
@@ -260,7 +261,7 @@ async function main() {
       const old = a.strategyCallAt ? addBusinessDaysET(a.strategyCallAt, 3) : null;
       console.log(`  WINDOW     ${note}`);
       console.log(`             was (3 business days from the call START, midnight ET): ${etWall(old)}`);
-      console.log(`             now (48 weekday hours from the call END):               ${etWall(a.earliestSessionAt)}`);
+      console.log(`             now (${a.windowHours} weekday hours from its anchor):                ${etWall(a.earliestSessionAt)}`);
       console.log(`             sessions ${a.sessions.map((s) => `${s.index}: ${s.readyTopicIds.length}/${s.topicIds.length} topics ready of ${s.plannedVideos} planned`).join(" | ")}`);
       for (const f of a.followUps) console.log(`             follow-up (${f.owner}): ${f.reason}`);
     } else closed++;
@@ -287,7 +288,10 @@ async function main() {
   // and `windowDays` was `windowHours / 24` — 2 once the window became 48
   // weekday hours, where the retired rule meant 3. Three answers are printed
   // for every month that reaches that branch, so the move is a pair of ET wall
-  // clocks rather than a claim.
+  // clocks rather than a claim. (Since batch 3, A19/A20, the derivation
+  // anchors a booked call itself, so a live month now reaches this branch
+  // only if its call has no anchor at all; the fixture below carries the
+  // arithmetic either way.)
   const { sessionGate } = await import("../../src/lib/portal");
   const { addWeekdayHoursET: addWH } = await import("../../src/lib/programMonths");
   const hours = (a: Date | null, b: Date | null) =>
@@ -332,17 +336,20 @@ async function main() {
   const fxStart = etAt("2026-09-28", 14), fxEnd = etAt("2026-09-28", 14, 30);
   check("F04  fixture: the defect opened 2 business days from the START", etWall(addBusinessDaysET(fxStart, 2)), etWall(etAt("2026-09-30", 0)));
   check("F04  fixture: the retired rule opened 3", etWall(addBusinessDaysET(fxStart, 3)), etWall(etAt("2026-10-01", 0)));
-  check("F04  fixture: now, 48 weekday hours from the call END", etWall(addWH(fxEnd, DEFAULT_PREPARATION_WINDOW_HOURS)), etWall(etAt("2026-09-30", 14, 30)));
+  // 72 weekday hours since batch 3, §3: Mon 2:30 PM → Thu 2:30 PM (was Wed under 48).
+  check("F04  fixture: now, 72 weekday hours from the call END", etWall(addWH(fxEnd, DEFAULT_PREPARATION_WINDOW_HOURS)), etWall(etAt("2026-10-01", 14, 30)));
   check("F04  fixture: the new answer is NOT looser than the defect's", String(addWH(fxEnd, DEFAULT_PREPARATION_WINDOW_HOURS) >= addBusinessDaysET(fxStart, 2)), "true");
   check("F04  fixture: the estimate equals the gate once the call is held", etWall(addWH(fxEnd, DEFAULT_PREPARATION_WINDOW_HOURS)), etWall(callBase([rec({ scheduledStart: fxStart, scheduledEnd: fxEnd, status: "COMPLETED" })], { now: etAt("2026-09-29", 9) }).earliestSessionAt));
-  // Said out loud rather than buried: against the RETIRED rule the gate is
-  // still looser, and deliberately so — §8 is 48 weekday hours now, and the
-  // held-call branch has already been answering that way since this batch
-  // landed. What F04 removed was the extra, unintended day on top of it.
+  // Said out loud rather than buried: under 48 weekday hours the gate was
+  // still looser than the RETIRED rule, deliberately (§8's own change, not
+  // F04's). Since batch 3 (§3) the window is 72 weekday hours, which keeps the
+  // time of day and so lands AFTER the retired rule's midnight — tighter. The
+  // last line prints whichever it is rather than asserting a direction.
   const fxNow = addWH(fxEnd, DEFAULT_PREPARATION_WINDOW_HOURS);
-  console.log(`  the defect vs the retired rule: ${hours(addBusinessDaysET(fxStart, 2), addBusinessDaysET(fxStart, 3))} looser (the bug)`);
+  const retiredFx = addBusinessDaysET(fxStart, 3);
+  console.log(`  the defect vs the retired rule: ${hours(addBusinessDaysET(fxStart, 2), retiredFx)} looser (the bug)`);
   console.log(`  now        vs the defect:       ${hours(addBusinessDaysET(fxStart, 2), fxNow)} tighter`);
-  console.log(`  now        vs the retired rule: ${hours(fxNow, addBusinessDaysET(fxStart, 3))} still looser — §8's own change, not F04's`);
+  console.log(`  now        vs the retired rule: ${fxNow > retiredFx ? `${hours(retiredFx, fxNow)} tighter — §3's 72 weekday hours` : `${hours(fxNow, retiredFx)} looser — §8's own change, not F04's`}`);
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exitCode = 1;

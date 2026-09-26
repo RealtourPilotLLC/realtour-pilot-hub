@@ -83,6 +83,14 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       ) : d.view === "month" && d.yourMonth ? (
         <YourMonth d={{
           ...d.yourMonth, topics: d.topics, readOnly: d.readOnly, filter: d.filter,
+          // A21: "Schedule later" is per session. The filming step books the
+          // schedule month's NEXT session, so it reads that session's choice —
+          // not the month's first stamp, which on Pro would still say
+          // "you chose to schedule later" about session 2 after session 1 was
+          // deferred and then booked.
+          planning: d.yourMonth.planning && d.yourMonth.schedule
+            ? { ...d.yourMonth.planning, deferredAtISO: d.yourMonth.schedule.deferredAtISO }
+            : d.yourMonth.planning,
           hrefs: { month: d.hrefs.month, bank: d.hrefs.bank, scripts: d.hrefs.scripts, schedule: d.yourMonth.scheduleHref },
         }} />
       ) : (

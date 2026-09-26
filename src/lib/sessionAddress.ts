@@ -8,10 +8,13 @@ import { looksLikeGeneralArea } from "@/lib/programReminders";
 // ---------------------------------------------------------------------------
 // SESSION ADDRESSES (CP-05, Sep 24 2026) — pure helpers.
 //
-// A content session may be booked with a general AREA ("West Chester, PA"):
-// that is the house pattern on live orders and not an error. What the filming
-// day needs is an exact street address, and this file is everything that turns
-// the one into the other without guessing:
+// §6.6 W02 (Sep 25 2026): a session booked FROM THE PORTAL starts from an exact,
+// geocoded address — the session plan below (ProgramSessionPlan) — before any
+// confirmable time is offered; the portal no longer takes "just the area".
+// A GENERAL AREA ("West Chester, PA") remains the house pattern on sessions
+// booked by hand in Aryeo and on legacy requests, and for those it is not an
+// error. What the filming day needs is an exact street address, and this file
+// is everything that turns the one into the other without guessing:
 //
 //   · parse what a client typed, but never invent a street for an area;
 //   · validate the structured form the address link shows;
@@ -361,10 +364,12 @@ export async function submitSessionAddress(actor: AddressActor, input: ExactAddr
       body: `The client gave ${formatAddressLine(value)} for the session starting ${session.startsAt.toISOString()}. Make sure the creative knows today.`,
     });
   }
-  // Aryeo is the authority on travel once the address reaches the booking
-  // (aryeoConflictCheck, after the sync). Our own same-day heads-up is only for
-  // the addresses Kyle carries to Aryeo by hand — the hub cannot ask for those.
-  if (!(await aryeoWillBeAsked(updated.clientId))) await travelCheck(updated, session, now).catch(() => null);
+  // §6.6 (Sep 25 2026): "Address edits revalidate travel." The booked slot is
+  // measured again from the new address against the creative's day
+  // (sessionTravel.travelFit). A slot that no longer fits is Kyle's task; the
+  // booking is never moved. Aryeo is still asked too once the address reaches
+  // the booking (aryeoConflictCheck, after the sync).
+  await travelRecheck(updated, session, geo ? { lat: geo.lat, lng: geo.lng } : null, now).catch(() => null);
   return { ok: true, message: "Saved. We are updating your booking.", state: "PENDING" };
 }
 
@@ -450,14 +455,14 @@ async function closeAddressTasks(row: ProgramSessionAddress): Promise<void> {
 }
 
 /**
- * TRAVEL, the fallback. Jordan, Sep 24 2026: "Aryeo's scheduling API should
- * show the live availability and allow travel time between one address to
- * another." So when the hub syncs the address itself, Aryeo decides
- * (aryeoConflictCheck). This same-day heads-up — same creative, another
- * appointment within `adjacentMinutes` (90) — runs only for an address Kyle
- * will carry to Aryeo by hand. The time is never moved. There is no mileage
- * rule: Jordan chose Aryeo's availability over a distance threshold
- * (travelAlertMiles stays null).
+ * TRAVEL, the last fallback. Jordan, Sep 24 2026: "Aryeo's scheduling API
+ * should show the live availability and allow travel time between one address
+ * to another"; Sep 25: "Yes, estimate drive time." The measured check is
+ * travelRecheck above (drive time + buffer). This same-day heads-up — same
+ * creative, another appointment within `adjacentMinutes` (90) — runs only when
+ * the drive could NOT be measured (no creative on record, no map point, OSRM
+ * down) and Kyle carries the address to Aryeo by hand. The time is never
+ * moved. There is no mileage rule (travelAlertMiles stays null).
  */
 async function travelCheck(row: ProgramSessionAddress, s: ProgramSession, now: Date): Promise<void> {
   if (!s.appointmentId) return;
@@ -478,6 +483,36 @@ async function travelCheck(row: ProgramSessionAddress, s: ProgramSession, now: D
     body: `${appt.assignedTo?.name ?? "The creative"} has another appointment ${others.map((o) => `${when(o.startAt)}–${when(o.endAt)}`).join(", ")} within ${cfg.adjacentMinutes} minutes of this session, and the client just gave ${formatAddressLine({ streetNumber: row.streetNumber, streetName: row.streetName, unit: row.unitNumber, city: row.city, stateCode: row.stateCode, postalCode: row.postalCode })}. Check the drive. The session time was not changed.`,
   });
   void now;
+}
+
+/**
+ * §6.6 — THE BOOKED SLOT, MEASURED AGAIN FROM A NEW ADDRESS (W02). The same
+ * rule the portal offered the slot under (sessionTravel.travelFit: drive from
+ * the creative's previous appointment and to the next, plus the buffer).
+ *   · no longer fits  → Kyle's task, the reason in minutes; nothing is moved;
+ *   · cannot be checked (no creative on record, no map location, OSRM down) →
+ *     the old same-day heads-up, for an address Kyle carries by hand;
+ *   · fits            → nothing to do.
+ */
+async function travelRecheck(row: ProgramSessionAddress, s: ProgramSession, dest: { lat: number; lng: number } | null, now: Date): Promise<void> {
+  const req = s.requestId ? await prisma.programSessionRequest.findUnique({ where: { id: s.requestId }, select: { creativeTeamMemberId: true } }) : null;
+  const appt = s.appointmentId ? await prisma.appointment.findUnique({ where: { aryeoId: s.appointmentId }, select: { endAt: true, assignedTo: { select: { aryeoTeamMemberId: true, name: true } } } }) : null;
+  const creative = req?.creativeTeamMemberId ?? appt?.assignedTo?.aryeoTeamMemberId ?? null;
+  if (!dest || !creative) {
+    if (!(await aryeoWillBeAsked(row.clientId))) await travelCheck(row, s, now);
+    return;
+  }
+  const { travelFit } = await import("@/lib/sessionTravel");
+  const end = s.endsAt ?? appt?.endAt ?? new Date(s.startsAt.getTime() + 2 * 3_600_000);
+  const fit = await travelFit({ creativeTeamMemberId: creative, start: s.startsAt, end, dest, now, excludeRequestId: s.requestId, excludeAppointmentIds: s.appointmentId ? [s.appointmentId] : [] });
+  if (fit.fits === false) {
+    await kyleTask(row, `${TASK_PREFIX}${row.sessionKey}:travel:v${row.version}`, {
+      title: "New filming address leaves no room for the drive",
+      body: `The client gave ${formatAddressLine({ streetNumber: row.streetNumber, streetName: row.streetName, unit: row.unitNumber, city: row.city, stateCode: row.stateCode, postalCode: row.postalCode })} for the session starting ${s.startsAt.toISOString()}. ${appt?.assignedTo?.name ?? "The creative"}'s day: ${fit.reason}. Talk to the client or move one of the appointments. The session time was not changed.`,
+    });
+    return;
+  }
+  if (fit.fits === null && !(await aryeoWillBeAsked(row.clientId))) await travelCheck(row, s, now);
 }
 
 /** Will the hub itself put this client's address on the Aryeo booking? Only
@@ -632,8 +667,11 @@ async function syncOne(row: ProgramSessionAddress, now: Date): Promise<"SYNCED" 
       return "CONFLICT";
     }
     // A booking that already carries a DIFFERENT exact address is a person's
-    // call the first time — unless our own earlier PATCH is what put it there.
-    if (target.exactDiffers && row.syncAttempts === 0) {
+    // call the first time — unless our own earlier PATCH is what put it there,
+    // or (§6.6 W02) the hub itself created that Address record when it booked
+    // the session from the client's plan: the street on it is the client's own
+    // earlier answer, not somebody else's.
+    if (target.exactDiffers && row.syncAttempts === 0 && row.aryeoAddressId !== target.addressId) {
       await toDesk(row, now, "The Aryeo booking already has a different exact address. Check which one is right.", "CONFLICT");
       return "CONFLICT";
     }
@@ -705,4 +743,124 @@ export async function recheckSessionAddress(rowId: string, now: Date = new Date(
   return (await localReadback(row, now))
     ? { ok: true, message: "Confirmed: the booking now shows this address." }
     : { ok: false, message: "The booking does not show this address yet (as of the last order sync)." };
+}
+
+// ===========================================================================
+// THE SESSION PLAN — EXACT ADDRESS FIRST (§6.6 W02 / A22, Sep 25 2026).
+//
+// "An exact address is required before confirmable filming slots are offered.
+// This supersedes earlier area-only booking" (§3). One ProgramSessionPlan per
+// session of a month (Pro has two: sessionIndex 1 and 2), created when the
+// client saves the address and kept, so "Schedule later" loses nothing.
+//
+//   · validated (validateExactAddress: a street number and name, city, state,
+//     ZIP — an area is refused) and GEOCODED. A geocode miss is still saved,
+//     but it offers no confirmable time: Kyle confirms the address and the time
+//     by hand (portalSessionSlots says so).
+//   · addressVersion counts real changes. A request carries the version it was
+//     offered under (planAddressVersion); the booking adapter refuses to book
+//     it if the plan moved since, rather than send a creative to a stale address.
+//   · Once a session is requested or booked, its address changes through the
+//     booked session (CP-05 above, with its travel recheck), never here.
+// ===========================================================================
+
+export type PlanRow = {
+  id: string; sessionIndex: number; streetNumber: string | null; streetName: string | null; unitNumber: string | null;
+  city: string | null; stateCode: string | null; postalCode: string | null; latitude: number | null; longitude: number | null; addressVersion: number;
+};
+
+/** Exact (street number + name + ZIP) AND on the map: the only plan a confirmable slot is offered for. */
+export function planBookable(p: Pick<PlanRow, "streetNumber" | "streetName" | "postalCode" | "latitude" | "longitude"> | null | undefined): boolean {
+  return !!p && !!p.streetNumber && !!p.streetName && !!p.postalCode && typeof p.latitude === "number" && typeof p.longitude === "number";
+}
+
+/** Exact, whether or not it was placed on the map (a desk "when works" ask needs this much). */
+export function planExact(p: Pick<PlanRow, "streetNumber" | "streetName" | "postalCode"> | null | undefined): boolean {
+  return !!p && !!p.streetNumber && !!p.streetName && !!p.postalCode;
+}
+
+export const planAddressLine = (p: Pick<PlanRow, "streetNumber" | "streetName" | "unitNumber" | "city" | "stateCode" | "postalCode">): string =>
+  formatAddressLine({ streetNumber: p.streetNumber, streetName: p.streetName, unit: p.unitNumber, city: p.city, stateCode: p.stateCode, postalCode: p.postalCode });
+
+/** What the portal card shows for one session's plan. */
+export type SessionPlanView = {
+  planId: string;
+  sessionIndex: number;
+  addressLine: string | null;
+  exact: boolean;
+  /** placed on the map — confirmable times can be offered */
+  bookable: boolean;
+  addressVersion: number;
+  /** a live request already made from this plan (its address then changes on the booked session) */
+  requestId: string | null;
+  deferred: boolean;
+};
+
+const PLAN_LOCKED = ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"];
+
+/** The month's plans, one per session index that has one. */
+export async function sessionPlanViews(monthId: string): Promise<SessionPlanView[]> {
+  const plans = await prisma.programSessionPlan.findMany({ where: { monthId }, orderBy: { sessionIndex: "asc" } });
+  if (!plans.length) return [];
+  const live = await prisma.programSessionRequest.findMany({ where: { planId: { in: plans.map((p) => p.id) }, status: { in: PLAN_LOCKED } }, select: { id: true, planId: true } });
+  return plans.map((p) => ({
+    planId: p.id, sessionIndex: p.sessionIndex,
+    addressLine: planExact(p) ? planAddressLine(p) : null,
+    exact: planExact(p), bookable: planBookable(p), addressVersion: p.addressVersion,
+    requestId: live.find((r) => r.planId === p.id)?.id ?? null,
+    deferred: !!p.schedulingDeferredAt,
+  }));
+}
+
+export type SavePlanResult = { ok: boolean; message: string; planId?: string; addressVersion?: number; bookable?: boolean; changed?: boolean };
+
+/**
+ * Save the exact address for session `sessionIndex` of a month (the portal's
+ * first scheduling step). Idempotent on the address: the same address again
+ * changes nothing and keeps the version, so an open slot list stays valid.
+ */
+export async function saveSessionPlanAddress(a: {
+  enrollmentId: string; monthId: string; sessionIndex: number; input: ExactAddressInput; by: string; now?: Date;
+}): Promise<SavePlanResult> {
+  const now = a.now ?? new Date();
+  const v = validateExactAddress(a.input);
+  if (!v.ok) return { ok: false, message: v.message };
+  const month = await prisma.contentMonth.findUnique({ where: { id: a.monthId }, select: { id: true, enrollmentId: true, clientId: true, historical: true } });
+  if (!month || month.enrollmentId !== a.enrollmentId || month.historical) return { ok: false, message: "Pick one of your open program months." };
+  const { sessionCapacity } = await import("@/lib/sessionRequests");
+  const cap = await sessionCapacity(a.enrollmentId, a.monthId, { now });
+  if (!Number.isInteger(a.sessionIndex) || a.sessionIndex < 1 || a.sessionIndex > Math.max(1, cap.allowed)) return { ok: false, message: "Pick one of this month's sessions." };
+
+  const existing = await prisma.programSessionPlan.findUnique({ where: { monthId_sessionIndex: { monthId: a.monthId, sessionIndex: a.sessionIndex } } });
+  if (existing) {
+    const live = await prisma.programSessionRequest.count({ where: { planId: existing.id, status: { in: PLAN_LOCKED } } });
+    const value = v.value;
+    const same = sameAddress({ streetNumber: existing.streetNumber, streetName: existing.streetName, unit: existing.unitNumber, postalCode: existing.postalCode }, { ...value, unit: value.unit });
+    if (same && (existing.latitude != null || live)) {
+      return { ok: true, message: "That address is already saved for this session.", planId: existing.id, addressVersion: existing.addressVersion, bookable: planBookable(existing), changed: false };
+    }
+    if (live) return { ok: false, message: `This session already has a time requested or booked. Change its address on that session, or call or text Kyle at ${URGENT_CONTACT}.` };
+  }
+
+  const { geocodeAddress } = await import("@/lib/travel");
+  const geo = await geocodeAddress(formatAddressLine(v.value)).catch(() => null);
+  const data = {
+    streetNumber: v.value.streetNumber, streetName: v.value.streetName, unitNumber: v.value.unit, city: v.value.city, stateCode: v.value.stateCode, postalCode: v.value.postalCode,
+    latitude: geo?.lat ?? null, longitude: geo?.lng ?? null, geocodeSource: geo ? "GEOCODED" : "MISS",
+    addressValidatedAt: geo ? now : null, lastStep: "ADDRESS",
+  };
+  const row = existing
+    ? await prisma.programSessionPlan.update({ where: { id: existing.id }, data: { ...data, addressVersion: { increment: 1 } } })
+    : await prisma.programSessionPlan.create({ data: { ...data, enrollmentId: a.enrollmentId, clientId: month.clientId, monthId: a.monthId, sessionIndex: a.sessionIndex, addressVersion: 1 } })
+        .catch(async () => {
+          // Two tabs saving the first address at once: the unique (month, index)
+          // lets one create; the other becomes an update of that row.
+          const again = await prisma.programSessionPlan.findUniqueOrThrow({ where: { monthId_sessionIndex: { monthId: a.monthId, sessionIndex: a.sessionIndex } } });
+          return prisma.programSessionPlan.update({ where: { id: again.id }, data: { ...data, addressVersion: { increment: 1 } } });
+        });
+  return {
+    ok: true,
+    message: geo ? "Saved. Here are the times that work from this address." : `Saved. We could not find that address on a map, so Kyle will confirm it and your time with you. You can still tell us what works.`,
+    planId: row.id, addressVersion: row.addressVersion, bookable: planBookable(row), changed: true,
+  };
 }

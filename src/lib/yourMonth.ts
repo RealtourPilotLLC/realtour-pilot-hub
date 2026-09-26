@@ -125,7 +125,9 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     } else if (m.call === "BOOKED") {
       steps.push({ key: "call", status: "waiting", title: i.planning.callAtISO ? `Your call is booked for ${day(i.planning.callAtISO)}` : "Your call is booked", detail: "Filming can be booked now — you don't need to wait for the call.", cta: null });
     } else {
-      steps.push({ key: "call", status: actSession ? "action" : "waiting", title: "Book your strategy call", detail: "We plan the month on it, and filming opens as soon as it's booked.", cta: actSession ? { label: "Book the call", href: i.hrefs.bookingUrl, external: true } : null });
+      // W03: "#step-call" when the booking sits inside this page; a Calendly
+      // address opens in a new tab only when that is all there is.
+      steps.push({ key: "call", status: actSession ? "action" : "waiting", title: "Book your strategy call", detail: "We plan the month on it, and filming opens as soon as it's booked.", cta: actSession ? { label: "Book the call", href: i.hrefs.bookingUrl, external: /^https?:/i.test(i.hrefs.bookingUrl) } : null });
     }
   } else {
     const inputsReady = m.chosen >= Math.max(1, owed);

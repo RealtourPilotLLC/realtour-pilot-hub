@@ -8,6 +8,10 @@ import { firstQueryValues } from "@/lib/portalNav";
 import { signOutPortal } from "@/app/portal/login/actions";
 
 export const dynamic = "force-dynamic";
+// The page's server actions include the inline self-booking (portalRequestSession →
+// bookSessionRequest, lib/sessionBooking INLINE_BOOKING_BUDGET_MS = 75 s): three
+// provider writes of up to 20 s each. The platform must not cut it off first.
+export const maxDuration = 90;
 export const metadata = {
   title: "Your Content Program — RealTour Pilot",
   robots: { index: false, follow: false },

@@ -414,6 +414,17 @@ export async function GET(req: NextRequest) {
     const answerGaps = await reconcileAnswerGapTasks().catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
     return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10), answerGaps };
   }, { maxMs: 20_000 });
+  // A25 (Sep 25 2026): a booked session whose call moved, was cancelled or was
+  // a no-show — or whose answers were sent again — is Kyle's to reassess with
+  // the client. Every persisted recalculation already checks its own month;
+  // this catches the rest hourly (a session booked in Aryeo by hand, the time
+  // passing). Desk truth, outside every switch: it records, opens and closes
+  // desk tasks, never moves or cancels a booking and contacts nobody. It reads
+  // each month as a DRY derivation, so it persists nothing of the month itself.
+  await step("sessionReassess", async () => {
+    const { reassessOpenMonths } = await import("@/lib/sessionReassess");
+    return reassessOpenMonths();
+  }, { maxMs: 20_000 });
   // 6.5 (Jordan, Sep 25 2026): scripts not approved before filming. Desk truth,
   // outside every switch (the address task's rule): Kyle's follow-up 24 hours
   // before a session with scripts still unapproved, the scripts owner's bell

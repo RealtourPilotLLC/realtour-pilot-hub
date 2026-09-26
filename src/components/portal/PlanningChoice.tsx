@@ -25,7 +25,7 @@ export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; call
         <button type="button" onClick={() => setConfirm(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><PenLine className="size-3.5" /> Choose my topics here instead</button>
       ) : (
         <div className="rounded-xl border border-border bg-surface p-3 text-sm">
-          <p>Choose your topics here? You&rsquo;ll pick topics and answer a few short questions per topic; filming opens a few business days after your answers are in.</p>
+          <p>Choose your topics here? You&rsquo;ll pick topics and answer a few short questions per topic. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</p>
           {callBooked && <p className="mt-1 text-xs text-muted">Your booked call stays on the calendar — cancel it on Calendly separately if you no longer need it.</p>}
           <div className="mt-2 flex gap-2">
             <button type="button" onClick={go} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3 animate-spin" />} Yes, choose them here</button>
@@ -96,8 +96,8 @@ export function RouteChoice({ monthId, current, large = true }: { monthId: strin
   return (
     <div>
       <div className="grid gap-2 sm:grid-cols-2">
-        {card("WRITTEN", PenLine, "Choose my topics here", "Pick your topics and answer a few short questions for each. Your progress saves as you go.")}
-        {card("CALL", Phone, "Talk through topics on a call", "Book a strategy call and we choose the topics together. Browsing them first is optional.")}
+        {card("WRITTEN", PenLine, "Choose my topics here", "Pick your topics and answer a few short questions for each. Your progress saves as you go. Filming can be booked once your answers are in.")}
+        {card("CALL", Phone, "Talk through topics on a call", "Book a strategy call and we choose the topics together. Filming can be booked as soon as the call is. Browsing topics first is optional.")}
       </div>
       {msg && <p role="status" className={cn("mt-2 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>
@@ -109,7 +109,7 @@ export function RouteChoice({ monthId, current, large = true }: { monthId: strin
  * server so it survives a refresh; the step stays outstanding and the booking
  * picker stays right there. Never starts a new reminder stream.
  */
-export function ScheduleLaterButton({ monthId, deferred }: { monthId: string; deferred: boolean }) {
+export function ScheduleLaterButton({ monthId, deferred, sessionIndex = null }: { monthId: string; deferred: boolean; /** A21: the session being deferred (Pro: 1 or 2); omitted = the next one still to book, which is what the picker beside it books. */ sessionIndex?: number | null }) {
   const router = useRouter();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
@@ -117,7 +117,7 @@ export function ScheduleLaterButton({ monthId, deferred }: { monthId: string; de
     return <p className="mt-2 flex items-center gap-1.5 text-xs text-muted"><CalendarClock className="size-3.5" aria-hidden /> You chose to schedule later — book any time above.</p>;
   }
   const go = () => start(async () => {
-    const r = await portalScheduleLater(portalAuthFromLocation(), monthId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalScheduleLater(portalAuthFromLocation(), monthId, sessionIndex).catch(() => ({ ok: false, message: "That didn't save — try again." }));
     setMsg({ ok: r.ok, text: r.message });
     if (r.ok) router.refresh();
   });

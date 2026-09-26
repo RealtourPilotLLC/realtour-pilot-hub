@@ -18,13 +18,36 @@
 //   fake.script("POST /orders", "abort-after-commit")     Aryeo commits, the caller times out
 //   fake.script("POST /orders", "abort-before-commit")    the caller times out, nothing committed
 //   fake.script("POST /appointments/store", "shift-start-30")  commits 30 min later than asked
+//   fake.script("POST /appointments/store", "move-order-address")  commits, and the order's address now reads a different street
+//   fake.script("POST /appointments/store", "add-fee-on-store")  commits, and the order now owes $75.00 (a fee Aryeo
+//     attaches once a creative is on it — the spec's CompanyTeamMember.travel_fee_amount / ORDER_FEE_CREATED)
 //   keys fold ids: "PATCH /addresses/:id", "PUT /appointments/:id/cancel"
 // and it records every write (method, path, body) so a drill counts exactly
 // what reached the provider.
+//
+// §6.6 batch 3 (Sep 25 2026) adds, each from the saved OpenAPI spec
+// (~/Downloads/aryeo.txt) and the Phase 0 measurements:
+//   · variant prices (R03): `variants` (product → its one variant) and
+//     `variantPrices` (variant → cents) put a price on GET /products and on
+//     every order made from it — total_amount AND balance_amount, unpaid — so a
+//     drill can see a priced order; setOrderMoney() forces the next orders'
+//     money (a customer-group price the catalogue does not show).
+//   · GET /products/:id — served here for completeness, though the real route
+//     404s for every id (Phase 0); the hub reads prices from the LIST.
+//   · GET /customers/:id with an email (R02's fixture-identity read).
+//   · GET /appointments with filter[start_at_gte|lte] and include order.address
+//     (the adapter's fresh read of a creative's day, with where each one is).
+//   · filter[appointment_id] on /scheduling/available-timeslots, with meta
+//     echoing duration and company_team_member_ids as Phase 0 saw: "honour"
+//     scopes to the appointment (optionally keeping `aryeoDriveMinutes` clear
+//     around the creative's other appointments); "ignore" behaves as if the
+//     filter were not there (no duration → 422, as the spec says).
+//   · PUT /appointments/:id/schedule (the Aryeo-decides adapter's write).
+//   · seedNeighbour(): another client's appointment at a map point.
 // ---------------------------------------------------------------------------
 
 export type FakeWrite = { method: string; path: string; body: unknown; committed: boolean };
-type Behaviour = { status: number; message?: string } | "abort-after-commit" | "abort-before-commit" | "shift-start-30";
+type Behaviour = { status: number; message?: string } | "abort-after-commit" | "abort-before-commit" | "shift-start-30" | "move-order-address" | "add-fee-on-store";
 
 type Address = {
   id: string; street_number: string | null; street_name: string | null; unit_number: string | null; city: string | null;
@@ -33,8 +56,9 @@ type Address = {
 };
 type Order = {
   id: string; number: number; title: string; internal_notes: string | null; customer: { id: string; name: string }; addressId: string | null;
-  items: { id: string; title: string; variant_id: string; is_canceled: boolean }[]; appointmentIds: string[]; created_at: string;
+  items: { id: string; title: string; variant_id: string; is_canceled: boolean; amount: number }[]; appointmentIds: string[]; created_at: string;
   order_status: string; fulfillment_status: string; payment_status: string; listingId: string | null;
+  total: number; balance: number;
 };
 type Appt = { id: string; status: string; start_at: string | null; end_at: string | null; orderId: string; tmIds: string[]; updated_at: string };
 
@@ -55,6 +79,17 @@ export function createFakeAryeo(opts: {
   products: Record<string, string[]>;
   /** starts offered on a weekday (ET wall-clock hours); default 9:00–14:00 every 30 min */
   hours?: number[];
+  /** R03: product id → its one variant id (what GET /products lists and orders are made from). */
+  variants?: Record<string, string>;
+  /** R03: variant id → price in cents (default 0). */
+  variantPrices?: Record<string, number>;
+  /** R02: Aryeo customer id → that customer's email. Unknown ids get `defaultCustomerEmail` (404 when null). */
+  customers?: Record<string, string | null>;
+  defaultCustomerEmail?: string | null;
+  /** W02: how filter[appointment_id] is treated (default "honour"). */
+  appointmentScope?: "honour" | "ignore";
+  /** W02: with "honour", minutes Aryeo keeps clear around the creative's other appointments (models "Aryeo counts drive time"). */
+  aryeoDriveMinutes?: number;
 } ) {
   const team = Object.values(DRILL_TEAM);
   const addresses = new Map<string, Address>();
@@ -66,6 +101,9 @@ export function createFakeAryeo(opts: {
   /** ISO starts nobody may book (taken since the client looked). */
   const taken = new Set<string>();
   let orderNo = 5000;
+  /** R03: money forced onto the next orders created (null = from the catalogue). */
+  let forcedMoney: { total: number; balance: number } | null = null;
+  const priceOf = (variantId: string) => opts.variantPrices?.[variantId] ?? 0;
 
   const next = (key: string): Behaviour | null => {
     const q = scripts.get(key);
@@ -84,16 +122,16 @@ export function createFakeAryeo(opts: {
   const orderOut = (o: Order) => ({
     object: "ORDER", id: o.id, number: o.number, identifier: `Order #${o.number}`, title: o.title, internal_notes: o.internal_notes,
     order_status: o.order_status, fulfillment_status: o.fulfillment_status, payment_status: o.payment_status, currency: "USD",
-    total_amount: 0, balance_amount: 0, created_at: o.created_at,
+    total_amount: o.total, balance_amount: o.balance, created_at: o.created_at,
     customer: { id: o.customer.id, name: o.customer.name, email: null },
     address: o.addressId ? addressOut(addresses.get(o.addressId)!) : null,
-    items: o.items.map((i) => ({ id: i.id, title: i.title, quantity: 1, is_canceled: i.is_canceled, amount: 0 })),
+    items: o.items.map((i) => ({ id: i.id, title: i.title, quantity: 1, is_canceled: i.is_canceled, amount: i.amount })),
     appointments: o.appointmentIds.map((id) => apptOut(appts.get(id)!)),
     listing: o.listingId ? { id: o.listingId } : null,
   });
 
   /** A weekday's offered starts for a set of team members, minus anything booked or taken. */
-  function slotsFor(date: string, durationMin: number, tmIds: string[]) {
+  function slotsFor(date: string, durationMin: number, tmIds: string[], scope: { excludeApptId?: string; clearMin?: number } = {}) {
     const out: { start_at: string; end_at: string; users: { id: string }[] }[] = [];
     const hours = opts.hours ?? [9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14];
     for (const h of hours) {
@@ -104,7 +142,8 @@ export function createFakeAryeo(opts: {
       const end = new Date(start.getTime() + durationMin * 60000);
       const iso = start.toISOString().replace(".000Z", "Z");
       if (taken.has(iso)) continue;
-      const free = tmIds.filter((tm) => ![...appts.values()].some((a) => a.status !== "CANCELED" && a.tmIds.includes(tm) && a.start_at && a.end_at && Date.parse(a.start_at) < end.getTime() && Date.parse(a.end_at) > start.getTime()));
+      const pad = (scope.clearMin ?? 0) * 60000;
+      const free = tmIds.filter((tm) => ![...appts.values()].some((a) => a.id !== scope.excludeApptId && a.status !== "CANCELED" && a.tmIds.includes(tm) && a.start_at && a.end_at && Date.parse(a.start_at) - pad < end.getTime() && Date.parse(a.end_at) + pad > start.getTime()));
       if (!free.length) continue;
       out.push({ start_at: iso, end_at: end.toISOString().replace(".000Z", "Z"), users: free.map((tm) => ({ id: team.find((t) => t.tm === tm)!.user })) });
     }
@@ -120,7 +159,7 @@ export function createFakeAryeo(opts: {
     const q = u.searchParams;
     const seg = path.split("/").filter(Boolean);
     // "POST /orders", "PATCH /addresses/:id", "PUT /appointments/:id/cancel" — ids folded.
-    const WORDS = new Set(["addresses", "orders", "appointments", "store", "cancel", "reschedule", "availability", "scheduling", "available-timeslots", "available-dates", "products", "company-team-members"]);
+    const WORDS = new Set(["addresses", "orders", "appointments", "store", "cancel", "reschedule", "schedule", "availability", "scheduling", "available-timeslots", "available-dates", "products", "company-team-members", "customers"]);
     const key = `${method} /${seg.map((x) => (WORDS.has(x) ? x : ":id")).join("/")}`;
     if (method === "GET") reads.push(`${path}?${q.toString()}`);
 
@@ -135,15 +174,38 @@ export function createFakeAryeo(opts: {
     };
 
     // ---- catalogue + team + scheduling ----
+    const productOut = (id: string, tms: string[]) => ({
+      id, title: id, providers: tms.map((tm) => ({ id: tm })),
+      variants: opts.variants?.[id] ? [{ object: "PRODUCT_VARIANT", id: opts.variants[id], title: id, price_amount: priceOf(opts.variants[id]), price: priceOf(opts.variants[id]) }] : [],
+    });
     if (method === "GET" && path === "/products") {
-      return json(200, { data: Object.entries(opts.products).map(([id, tms]) => ({ id, title: id, providers: tms.map((tm) => ({ id: tm })) })), meta: { current_page: 1, last_page: 1 } });
+      return json(200, { data: Object.entries(opts.products).map(([id, tms]) => productOut(id, tms)), meta: { current_page: 1, last_page: 1 } });
+    }
+    if (method === "GET" && seg[0] === "products" && seg[1] && !seg[2]) {
+      const tms = opts.products[seg[1]];
+      return tms ? json(200, { status: "success", data: productOut(seg[1], tms) }) : json(404, { status: "error", message: "Product not found." });
+    }
+    if (method === "GET" && seg[0] === "customers" && seg[1]) {
+      const email = seg[1] in (opts.customers ?? {}) ? opts.customers![seg[1]] : opts.defaultCustomerEmail;
+      return email === undefined || email === null ? json(404, { status: "error", message: "Customer not found." }) : json(200, { status: "success", data: { object: "CUSTOMER", id: seg[1], email } });
     }
     if (method === "GET" && path === "/company-team-members") {
       return json(200, { data: team.map((t) => ({ id: t.tm, is_service_provider: true, company_user: { id: t.user, full_name: t.name, status: "active" } })), meta: { current_page: 1, last_page: 1 } });
     }
     const userFilter = [...q.entries()].filter(([k]) => k.startsWith("filter[user_ids]")).map(([, v]) => v);
     if (method === "GET" && path === "/scheduling/available-timeslots") {
-      return json(200, { status: "success", data: slotsFor(q.get("date") ?? "", Number(q.get("duration") ?? 60), userFilter) });
+      const apptId = q.get("filter[appointment_id]");
+      if (apptId && (opts.appointmentScope ?? "honour") === "honour") {
+        const a = appts.get(apptId);
+        if (!a) return json(404, { status: "error", message: "Appointment not found." });
+        const dur = a.start_at && a.end_at ? Math.round((Date.parse(a.end_at) - Date.parse(a.start_at)) / 60000) : 60;
+        return json(200, { status: "success", data: slotsFor(q.get("date") ?? "", dur, a.tmIds, { excludeApptId: a.id, clearMin: opts.aryeoDriveMinutes ?? 0 }), meta: { duration: dur, company_team_member_ids: a.tmIds } });
+      }
+      // No appointment filter (or one this fake is told to ignore): the spec
+      // makes duration required, and a missing one is refused.
+      if (!q.get("duration")) return json(422, { status: "fail", message: "The duration field is required when filter.appointment id is not present." });
+      const people = userFilter.length ? userFilter : team.map((t) => t.tm);
+      return json(200, { status: "success", data: slotsFor(q.get("date") ?? "", Number(q.get("duration")), people), meta: { duration: Number(q.get("duration")), company_team_member_ids: people } });
     }
     if (method === "GET" && path === "/scheduling/available-dates") {
       const from = new Date(q.get("filter[start_at]") ?? Date.now());
@@ -178,11 +240,14 @@ export function createFakeAryeo(opts: {
     if (method === "POST" && path === "/orders") {
       const variant = body?.product_items?.[0]?.variant_id;
       if (!body?.customer_id || !variant) { writes.push({ method, path, body, committed: false }); return json(422, { status: "fail", message: "customer_id and product_items are required" }); }
+      const price = priceOf(variant);
+      const money = forcedMoney ?? { total: price, balance: price };
       const o: Order = {
         id: uuid(), number: ++orderNo, title: `Order #${orderNo + 0}`, internal_notes: body.internal_notes ?? null,
         customer: { id: body.customer_id, name: "Drill customer" }, addressId: body.address_id ?? null,
-        items: [{ id: uuid(), title: "Video Accelerator", variant_id: variant, is_canceled: false }], appointmentIds: [], created_at: new Date().toISOString(),
-        order_status: "OPEN", fulfillment_status: "UNFULFILLED", payment_status: "UNPAID", listingId: null,
+        items: [{ id: uuid(), title: "Video Accelerator", variant_id: variant, is_canceled: false, amount: price }], appointmentIds: [], created_at: new Date().toISOString(),
+        order_status: "OPEN", fulfillment_status: "UNFULFILLED", payment_status: money.balance > 0 ? "UNPAID" : "PAID", listingId: null,
+        total: money.total, balance: money.balance,
       };
       orders.set(o.id, o);
       return commitThen(json(201, { status: "success", data: orderOut(o) }));
@@ -209,6 +274,8 @@ export function createFakeAryeo(opts: {
       const a: Appt = { id: uuid(), status: "SCHEDULED", start_at: start, end_at: end, orderId: o.id, tmIds: body.company_team_member_ids ?? [], updated_at: new Date().toISOString() };
       appts.set(a.id, a);
       o.appointmentIds.push(a.id);
+      if (scripted === "move-order-address" && o.addressId) { const ad = addresses.get(o.addressId); if (ad) ad.street_number = "999"; }
+      if (scripted === "add-fee-on-store") { o.total += 7500; o.balance += 7500; o.payment_status = "UNPAID"; }
       return commitThen(json(200, { status: "success", data: apptOut(a) }));
     }
     if (seg[0] === "appointments" && seg[1]) {
@@ -228,8 +295,25 @@ export function createFakeAryeo(opts: {
         a.start_at = body.start_at; a.end_at = body.end_at; a.updated_at = new Date().toISOString();
         return commitThen(json(200, { status: "success", data: apptOut(a) }));
       }
+      if (method === "PUT" && seg[2] === "schedule") {
+        a.start_at = body.start_at; a.end_at = body.end_at; a.status = "SCHEDULED"; a.updated_at = new Date().toISOString();
+        if (Array.isArray(body.company_team_member_ids)) a.tmIds = body.company_team_member_ids;
+        return commitThen(json(200, { status: "success", data: apptOut(a) }));
+      }
     }
-    if (method === "GET" && path === "/appointments") return json(200, { data: [...appts.values()].map(apptOut), meta: { current_page: 1, last_page: 1 } });
+    if (method === "GET" && path === "/appointments") {
+      const gte = q.get("filter[start_at_gte]");
+      const lte = q.get("filter[start_at_lte]");
+      const withAddress = (q.get("include") ?? "").includes("order.address");
+      const list = [...appts.values()]
+        .filter((a) => a.status !== "CANCELED" && (!gte || (a.start_at && a.start_at >= gte)) && (!lte || (a.start_at && a.start_at <= lte)))
+        .map((a) => {
+          const out = apptOut(a);
+          const o = orders.get(a.orderId);
+          return withAddress && o ? { ...out, order: { id: o.id, address: o.addressId ? addressOut(addresses.get(o.addressId)!) : null } } : out;
+        });
+      return json(200, { data: list, meta: { current_page: 1, last_page: 1 } });
+    }
     // Anything else this fake does not model: an honest 404, never a guess.
     if (method !== "GET") writes.push({ method, path, body, committed: false });
     return json(404, { status: "error", message: `fake Aryeo does not model ${method} ${path}` });
@@ -244,6 +328,22 @@ export function createFakeAryeo(opts: {
     appts,
     taken,
     script: (key: string, b: Behaviour) => { scripts.set(key, [...(scripts.get(key) ?? []), b]); },
+    /** R03: the next orders carry this money (a price the catalogue does not show); null = the catalogue's. */
+    setOrderMoney: (m: { total: number; balance: number } | null) => { forcedMoney = m; },
+    /** W02: another client's appointment for a creative, at a map point (its own order and address). */
+    seedNeighbour: (n: { tm: string; start: Date; end: Date; lat: number | null; lng: number | null; status?: string }) => {
+      const addr: Address = { id: uuid(), street_number: "1", street_name: "Neighbour Rd", unit_number: null, city: "Elsewhere", state_or_province: "PA", postal_code: "19000", country: "US", latitude: n.lat, longitude: n.lng, unparsed_address: "1 Neighbour Rd" };
+      addresses.set(addr.id, addr);
+      const o: Order = {
+        id: uuid(), number: ++orderNo, title: `Order #${orderNo}`, internal_notes: null, customer: { id: "neighbour-customer", name: "Another client" }, addressId: addr.id,
+        items: [], appointmentIds: [], created_at: new Date().toISOString(), order_status: "OPEN", fulfillment_status: "UNFULFILLED", payment_status: "PAID", listingId: null, total: 0, balance: 0,
+      };
+      orders.set(o.id, o);
+      const a: Appt = { id: uuid(), status: n.status ?? "SCHEDULED", start_at: n.start.toISOString().replace(".000Z", "Z"), end_at: n.end.toISOString().replace(".000Z", "Z"), orderId: o.id, tmIds: [n.tm], updated_at: new Date().toISOString() };
+      appts.set(a.id, a);
+      o.appointmentIds.push(a.id);
+      return { appointmentId: a.id, orderId: o.id, addressId: addr.id };
+    },
     /** Committed writes to one endpoint key ("POST /orders", "PATCH /addresses/<id>"…). */
     count: (method: string, pathPrefix: string, committedOnly = false) =>
       writes.filter((w) => w.method === method && w.path.startsWith(pathPrefix) && (!committedOnly || w.committed)).length,
@@ -252,8 +352,9 @@ export function createFakeAryeo(opts: {
       addresses.set(o.address.id, { ...o.address });
       orders.set(o.id, {
         id: o.id, number: o.number, title: `Order #${o.number}`, internal_notes: null, customer: { id: o.customerId, name: "Drill customer" }, addressId: o.address.id,
-        items: [{ id: uuid(), title: "Video Accelerator", variant_id: "seeded", is_canceled: false }], appointmentIds: o.appointments.map((a) => a.id),
+        items: [{ id: uuid(), title: "Video Accelerator", variant_id: "seeded", is_canceled: false, amount: 0 }], appointmentIds: o.appointments.map((a) => a.id),
         created_at: new Date(Date.now() - 864e5).toISOString(), order_status: "OPEN", fulfillment_status: "UNFULFILLED", payment_status: "PAID", listingId: o.listingId ?? null,
+        total: 0, balance: 0,
       });
       for (const a of o.appointments) appts.set(a.id, { id: a.id, status: a.status ?? "SCHEDULED", start_at: a.start_at, end_at: a.end_at, orderId: o.id, tmIds: a.tmIds, updated_at: new Date().toISOString() });
     },

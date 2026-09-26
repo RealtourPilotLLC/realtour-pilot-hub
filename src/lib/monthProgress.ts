@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { countDistinctSessions, replacesPendingMove, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
+import { countDistinctSessions, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { cutReleasedAt, isDeliveredProgramVideo } from "@/lib/contentVideos";
 import { DELIVERED_STAMP, NOT_A_CUT } from "@/lib/reviewCuts";
@@ -61,6 +61,8 @@ export type SessionFactState = "BOOKED" | "HELD_UNCONFIRMED" | "FILMED_CONFIRMED
 
 export type SessionFact = {
   key: string;
+  /** A24: which session of the month (Pro: 1 or 2) — the request's own sessionIndex, else slot order (legacy rows). */
+  sessionIndex: number;
   source: CountedSession["source"];
   state: SessionFactState;
   projectId: string | null;
@@ -204,7 +206,7 @@ type SessionProjectRow = {
   deliverables: { type: string; quantity: number | null }[];
 };
 type SessionApptRow = { aryeoId: string; projectId: string; startAt: Date | null; endAt: Date | null; status: string | null; completedAt: Date | null; assignedTo: { name: string } | null };
-type SessionRequestRow = { id: string; monthId: string; status: string; projectId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null; supersedesId: string | null };
+type SessionRequestRow = { id: string; monthId: string; status: string; bookingState: string; projectId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null; supersedesId: string | null; sessionIndex: number | null };
 
 type SessionRows = { projects: SessionProjectRow[]; appointments: SessionApptRow[]; requests: SessionRequestRow[] };
 
@@ -223,7 +225,7 @@ async function loadSessionRows(db: ProgramDb, months: { id: string; clientId: st
     }),
     db.programSessionRequest.findMany({
       where: { monthId: { in: months.map((m) => m.id) } },
-      select: { id: true, monthId: true, status: true, projectId: true, aryeoAppointmentId: true, slotStart: true, supersedesId: true },
+      select: { id: true, monthId: true, status: true, bookingState: true, projectId: true, aryeoAppointmentId: true, slotStart: true, supersedesId: true, sessionIndex: true },
     }),
   ]);
   // A job mis-attached to another client's month is hidden by the portal and
@@ -265,8 +267,8 @@ type EvidenceRows = {
   confirmedVideos: { projectId: string | null; filmedAt: Date | null }[];
 };
 
-/** Classify each counted session. Pure over the rows handed to it. */
-function classifySessions(count: BookedSessionCount, rows: SessionRows, ev: EvidenceRows): SessionFact[] {
+/** Classify each counted session. Pure over the rows handed to it. `indexOf`: each session's index (sessionIndexesFrom). */
+function classifySessions(count: BookedSessionCount, rows: SessionRows, ev: EvidenceRows, indexOf: Map<string, number> = new Map()): SessionFact[] {
   const perProject = new Map<string, number>();
   for (const s of count.sessions) if (s.projectId) perProject.set(s.projectId, (perProject.get(s.projectId) ?? 0) + 1);
   const apptOf = new Map(rows.appointments.map((a) => [a.aryeoId, a]));
@@ -288,7 +290,7 @@ function classifySessions(count: BookedSessionCount, rows: SessionRows, ev: Evid
       : null;
     const state: SessionFactState = evidence ? "FILMED_CONFIRMED" : s.source === "PROJECT_SHOOT_DATE" ? "UNVERIFIED" : s.filmed ? "HELD_UNCONFIRMED" : "BOOKED";
     return {
-      key: s.key, source: s.source, state,
+      key: s.key, sessionIndex: indexOf.get(s.key) ?? count.sessions.indexOf(s) + 1, source: s.source, state,
       projectId: s.projectId, projectTitle: project?.title ?? null, appointmentId: s.appointmentId,
       startsAtISO: s.startsAt?.toISOString() ?? null, atISO: s.at?.toISOString() ?? null, past: s.filmed,
       photographer: appt?.assignedTo?.name ?? project?.photographer?.name ?? null,
@@ -466,11 +468,14 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     const myProjects = sessionRows.projects.filter((p) => mid && p.contentMonthId === mid);
     const myProjectIds = new Set(myProjects.map((p) => p.id));
     const myVideos = videos.filter((v) => v.enrollmentId === e.id && v.monthKey === pair.monthKey);
+    // A24: each session's index — its request's own, else slot order — so a
+    // Pro card says "Session 2" for the session booked AS session 2.
+    const indexes = sessionIndexesFrom(count, sessionRows.requests.filter((r) => r.monthId === mid), required);
     const facts = classifySessions(count, sessionRows, {
       reports: reports.filter((r) => myProjectIds.has(r.projectId)),
       cuts: subs.filter((s) => myProjectIds.has(s.projectId)),
       confirmedVideos: myVideos.filter((v) => !!v.filmedConfirmedAt),
-    });
+    }, indexes.byKey);
     const shortfall = sessionShortfall(required, count);
     const countedKeys = new Set(count.sessions.map((x) => x.key));
     const myRequests = sessionRows.requests.filter((r) => r.monthId === mid);
@@ -828,7 +833,7 @@ export function staffMonthView(p: MonthProgress): StaffMonthView {
 // THE CLIENT'S VIEW — no owner names, no internal states, no job titles.
 // ---------------------------------------------------------------------------
 
-export type ClientSessionCard = { state: "BOOKED" | "HELD" | "FILMED" | "CONFIRMING"; startsAtISO: string | null; label: string; note: string | null };
+export type ClientSessionCard = { state: "BOOKED" | "HELD" | "FILMED" | "CONFIRMING"; startsAtISO: string | null; label: string; note: string | null; /** A24: which session of the month */ sessionIndex?: number };
 
 export type ClientMonthProgress = {
   monthKey: string;
@@ -841,10 +846,11 @@ export function clientMonthProgress(p: MonthProgress): ClientMonthProgress {
   const cards = p.sessions.list.map((f): ClientSessionCard => {
     // "Filmed" only when somebody confirmed it; a passed date is a session
     // HELD, and a dated job we cannot tie to an appointment is being confirmed.
-    if (f.state === "FILMED_CONFIRMED") return { state: "FILMED", startsAtISO: f.startsAtISO, label: "Filmed", note: null };
-    if (f.state === "HELD_UNCONFIRMED") return { state: "HELD", startsAtISO: f.startsAtISO, label: "Session held", note: "We are preparing your videos." };
-    if (f.state === "UNVERIFIED") return { state: "CONFIRMING", startsAtISO: f.startsAtISO, label: "Being confirmed", note: "We're confirming this session's details." };
-    return { state: "BOOKED", startsAtISO: f.startsAtISO, label: "Booked", note: null };
+    const sessionIndex = f.sessionIndex;
+    if (f.state === "FILMED_CONFIRMED") return { state: "FILMED", startsAtISO: f.startsAtISO, label: "Filmed", note: null, sessionIndex };
+    if (f.state === "HELD_UNCONFIRMED") return { state: "HELD", startsAtISO: f.startsAtISO, label: "Session held", note: "We are preparing your videos.", sessionIndex };
+    if (f.state === "UNVERIFIED") return { state: "CONFIRMING", startsAtISO: f.startsAtISO, label: "Being confirmed", note: "We're confirming this session's details.", sessionIndex };
+    return { state: "BOOKED", startsAtISO: f.startsAtISO, label: "Booked", note: null, sessionIndex };
   });
   return {
     monthKey: p.monthKey,

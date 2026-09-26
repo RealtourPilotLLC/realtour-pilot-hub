@@ -604,74 +604,113 @@ export type SessionGate = {
   callStatus: string; // the DERIVED strategyCallStatus for the month
   callAt: Date | null;
   planningMode: string; // CALL | WRITTEN | UNDECIDED (derived)
+  /** A24: the session this gate was read for (Pro: 1 or 2); null = month-wide (every session is taken). */
+  sessionIndex: number | null;
+  /** A20: the preparation rule's own reading (programMonths.preparationGate) — what a request snapshots. Null when refused before reading. */
+  preparation: import("@/lib/programMonths").PreparationGate | null;
 };
 
 // Client-safe sentences for a locked month. The written path never mentions
-// a call; the call path never mentions answers.
-const LOCK_BOOK_CALL = "Book your strategy call first — we plan the month on that call, then film it.";
-const LOCK_ANSWERS = "Send us your planning answers first — we plan the month from them, then film it.";
-const LOCK_PREPARING = "We're still preparing this month — session booking opens as soon as planning is done.";
+// a call; the call path never mentions answers. No em dashes: a client reads
+// every one of them as the reason a booking was refused (Sep 25 2026).
+const LOCK_BOOK_CALL = "Book your strategy call first. We plan the month on that call, then film it.";
+const LOCK_ANSWERS = "Send us your planning answers first. We plan the month from them, then film it.";
+const LOCK_PREPARING = "We're still preparing this month. Session booking opens as soon as planning is done.";
 // §6.4: a month that may be planned either way and has not been — neither
 // sentence above is true of it yet.
-const LOCK_CHOOSE = "Choose how to plan this month first — pick your topics here, or book your strategy call.";
+const LOCK_CHOOSE = "Choose how to plan this month first: pick your topics here, or book your strategy call.";
+// A18 (Sep 25 2026): the written route opens a session only once ALL its
+// topics are chosen and answered. No em dashes (a client reads it).
+const lockTopics = (sessionIndex: number | null, sessions: number) =>
+  sessions > 1 && sessionIndex
+    ? `Choose all the topics for your ${sessionIndex === 1 ? "first" : sessionIndex === 2 ? "second" : `number ${sessionIndex}`} session and send us your planning answers first. Filming for it opens as soon as they're in.`
+    : "Choose all of this month's topics and send us your planning answers first. Filming opens as soon as they're in.";
 
 /**
- * The gate + earliest bookable moment for ONE program month of this
- * enrollment. Refuses (locked) a month that is not this enrollment's or is
- * historical. Never persists anything: recalcProgramMonth runs as a dry run,
- * and the request itself (createSessionRequest) is what recalculates.
+ * The gate + earliest bookable moment for ONE session of ONE program month of
+ * this enrollment. Refuses (locked) a month that is not this enrollment's or
+ * is historical. Never persists anything: recalcProgramMonth runs as a dry
+ * run, and the request itself (createSessionRequest) is what recalculates.
+ *
+ * ONE READING (A19/A20, Sep 25 2026). This used to open a booked-but-not-held
+ * call with its own branch — `earliestFilmingStart(strategyCallEndsAt ??
+ * strategyCallAt, …)` — because the derivation only opened the call route
+ * once the call was held. Two readings of one rule is F04's shape: the
+ * reminder's quoted date and the staff overview said "not yet" on every
+ * booked call while this said "from Thursday". deriveMonthState now anchors
+ * the call route on the booked call's scheduled END itself, so the branch is
+ * gone and this is programMonths.preparationGate plus the 24-hour floor.
+ *
+ * `sessionIndex` (A24): omitted = the next session still to book (a Pro
+ * month's session 2 once session 1 is on the calendar), from the same
+ * occupancy the capacity check counts; null = month-wide; a number = that
+ * session, refused when it is not one of the package's.
  */
-export async function sessionGate(enrollmentId: string, monthId: string, opts: { now?: Date } = {}): Promise<SessionGate> {
+export async function sessionGate(enrollmentId: string, monthId: string, opts: { now?: Date; sessionIndex?: number | null } = {}): Promise<SessionGate> {
   const now = opts.now ?? new Date();
-  const closed = (reason: string, extra: Partial<SessionGate> = {}): SessionGate =>
-    ({ locked: true, reason, earliest: now, callStatus: "NOT_SCHEDULED", callAt: null, planningMode: "UNDECIDED", ...extra });
-  if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return closed("Pick one of your program months.");
-  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, historical: true } });
-  if (!month || month.enrollmentId !== enrollmentId) return closed("Pick one of your program months.");
-  if (month.historical) return closed("That month is closed.");
-  const { recalcProgramMonth, earliestFilmingStart } = await import("@/lib/programMonths");
-  const r = await recalcProgramMonth(monthId, { dryRun: true, now });
-  if (!r) return closed("Pick one of your program months.");
-  const d = r.after;
-  const base = { callStatus: d.strategyCallStatus, callAt: d.strategyCallAt, planningMode: d.planningMode };
-  // Nothing today: a same-day slot is not a request the desk can honour.
-  const floor = new Date(now.getTime() + 24 * 3600_000);
-  const open = (from: Date): SessionGate => ({ locked: false, reason: "", earliest: from > floor ? from : floor, ...base });
-  if (d.earliestSessionAt) return open(d.earliestSessionAt);
-  // Booked but not yet held: the SAME clock, measured from when that booking is
-  // due to END — because that is the base deriveMonthState will use the moment
-  // the call is held, so what the client is told today is what the gate will
-  // say tomorrow. A booking with no end on record falls back to its start.
-  //
-  // Sep 21 2026, F04. This line used to read
-  //   addBusinessDaysET(d.strategyCallAt, d.windowDays)
-  // and it is a real gate, not a hint: portalRequestSession rejects any slot
-  // before `earliest`. When §8's window became 48 weekday HOURS, the derived
-  // `windowDays` fell from 3 to 2 without the name changing, so every client
-  // with a booked call could suddenly request filming a full business day
-  // earlier than the day before. Two separate readings of one rule — days
-  // here, hours there — is what allowed that, so `windowDays` no longer
-  // exists and this branch runs the hour clock itself.
-  //
-  // §6.4 (Sep 25 2026): booked means booked from the moment it is booked until
-  // it has ENDED. This read `strategyCallAt > now` — the call's START — so
-  // while the call was actually in progress it was neither booked here nor
-  // held in deriveMonthState (held needs its end to have passed), and the
-  // filming calendar locked for the length of the call.
-  //
-  // CALL route only. On the WRITTEN route a booked call is the §6.4 "call to
-  // discuss scripts" — it plans nothing, so it must not open filming before a
-  // single answer is in (§3: written-route scheduling opens after the answers).
-  // That route's gate is the material (earliestSessionAt above, already pushed
-  // past the call's buffer by deriveMonthState); with none, it is LOCK_ANSWERS.
-  const callEndsAt = d.strategyCallEndsAt ?? d.strategyCallAt;
-  if (d.planningMode !== "WRITTEN" && d.strategyCallStatus === "SCHEDULED" && callEndsAt && callEndsAt > now) {
-    return open(earliestFilmingStart(callEndsAt, { windowHours: d.windowHours, windowWaived: d.windowWaived }));
+  const ctx = await gateContext(enrollmentId, monthId, now);
+  if ("locked" in ctx) return ctx;
+  let sessionIndex: number | null;
+  if (opts.sessionIndex === undefined) {
+    const { monthSessionIndexes } = await import("@/lib/programMonths");
+    sessionIndex = (await monthSessionIndexes(monthId, ctx.clientId, ctx.d.sessionsRequired, now).catch(() => null))?.next ?? null;
+  } else {
+    sessionIndex = opts.sessionIndex;
+    if (sessionIndex != null && (!Number.isInteger(sessionIndex) || sessionIndex < 1 || sessionIndex > ctx.d.sessionsRequired)) {
+      return closedGate(now, "That session isn't part of this month.", { callStatus: ctx.d.strategyCallStatus, callAt: ctx.d.strategyCallAt, planningMode: ctx.d.planningMode });
+    }
   }
-  if (d.planningMode === "WRITTEN") return closed(LOCK_ANSWERS, base);
-  if (d.planningMode === "UNDECIDED" && d.callMode === "OPTIONAL_WRITTEN") return closed(LOCK_CHOOSE, base);
-  if (d.strategyCallStatus === "NOT_SCHEDULED") return closed(LOCK_BOOK_CALL, base);
-  return closed(LOCK_PREPARING, base);
+  return gateFromDerived(ctx.d, sessionIndex, now, ctx.preparationGate);
+}
+
+/**
+ * Every session's gate for one month, read from ONE derivation (a Pro month's
+ * two session cards), plus the one the next booking is for.
+ */
+export async function sessionGatesFor(enrollmentId: string, monthId: string, opts: { now?: Date } = {}): Promise<{ next: SessionGate; sessions: SessionGate[] }> {
+  const now = opts.now ?? new Date();
+  const ctx = await gateContext(enrollmentId, monthId, now);
+  if ("locked" in ctx) return { next: ctx, sessions: [] };
+  const { monthSessionIndexes } = await import("@/lib/programMonths");
+  const next = (await monthSessionIndexes(monthId, ctx.clientId, ctx.d.sessionsRequired, now).catch(() => null))?.next ?? null;
+  return {
+    next: gateFromDerived(ctx.d, next, now, ctx.preparationGate),
+    sessions: Array.from({ length: ctx.d.sessionsRequired }, (_, i) => gateFromDerived(ctx.d, i + 1, now, ctx.preparationGate)),
+  };
+}
+
+const closedGate = (now: Date, reason: string, extra: Partial<SessionGate> = {}): SessionGate =>
+  ({ locked: true, reason, earliest: now, callStatus: "NOT_SCHEDULED", callAt: null, planningMode: "UNDECIDED", sessionIndex: null, preparation: null, ...extra });
+
+type GateContext = { d: import("@/lib/programMonths").DerivedMonthState; clientId: string; preparationGate: typeof import("@/lib/programMonths").preparationGate };
+
+async function gateContext(enrollmentId: string, monthId: string, now: Date): Promise<GateContext | SessionGate> {
+  if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return closedGate(now, "Pick one of your program months.");
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, clientId: true, historical: true } });
+  if (!month || month.enrollmentId !== enrollmentId) return closedGate(now, "Pick one of your program months.");
+  if (month.historical) return closedGate(now, "That month is closed.");
+  const { recalcProgramMonth, preparationGate } = await import("@/lib/programMonths");
+  const r = await recalcProgramMonth(monthId, { dryRun: true, now });
+  if (!r) return closedGate(now, "Pick one of your program months.");
+  return { d: r.after, clientId: month.clientId, preparationGate };
+}
+
+/** preparationGate for one session, the 24-hour floor, and the client's words for a lock. */
+function gateFromDerived(d: import("@/lib/programMonths").DerivedMonthState, sessionIndex: number | null, now: Date, read: GateContext["preparationGate"]): SessionGate {
+  const g = read(d, sessionIndex);
+  const base = { callStatus: d.strategyCallStatus, callAt: d.strategyCallAt, planningMode: d.planningMode, sessionIndex, preparation: g };
+  if (!g.locked && g.earliest) {
+    // Nothing today: a same-day slot is not a request the desk can honour.
+    const floor = new Date(now.getTime() + 24 * 3600_000);
+    return { locked: false, reason: "", earliest: g.earliest > floor ? g.earliest : floor, ...base };
+  }
+  switch (g.lock) {
+    case "BOOK_CALL": return closedGate(now, LOCK_BOOK_CALL, base);
+    case "ANSWERS": return closedGate(now, LOCK_ANSWERS, base);
+    case "UNDER_PLANNED": return closedGate(now, lockTopics(sessionIndex, d.sessionsRequired), base);
+    case "CHOOSE_ROUTE": return closedGate(now, d.callMode === "OPTIONAL_WRITTEN" ? LOCK_CHOOSE : LOCK_ANSWERS, base);
+    default: return closedGate(now, LOCK_PREPARING, base);
+  }
 }
 
 export type PortalSessionRequest = {
@@ -711,10 +750,20 @@ export type PortalScheduleMonth = {
   sessionsMissing: number;
   /** CP-04: SELF = the hub books it in Aryeo itself; DESK = Kyle books it by hand. */
   bookingMode: "SELF" | "DESK";
+  /** A24: the session the picker books next (Pro: 1 or 2); null when every session is taken. `locked`/`earliestISO` above are THIS session's gate. */
+  sessionIndex: number | null;
+  /** A24: every session's own gate (one entry per session the package owes), in the client's words. */
+  sessionGates: { index: number; locked: boolean; reason: string; earliestISO: string | null }[];
+  /** Session indexes already held — booked, hand-booked in Aryeo, or asked for and waiting (any row, with or without its own index). The picker never offers these as a new booking. */
+  takenIndexes: number[];
+  /** A21: the next session's "Schedule later", when the client chose it (its plan row, else the month's first stamp). */
+  deferredAtISO: string | null;
 };
 
 export type PortalScheduleSession = {
   key: string;
+  /** A24: which session of the month this is — the request's own index, else slot order. */
+  sessionIndex: number;
   startISO: string | null;
   state: ClientSessionCard["state"];
   label: string;
@@ -722,6 +771,8 @@ export type PortalScheduleSession = {
   area: string | null;
   addressNeeded: boolean;
   addressNote: string | null;
+  /** A25: the office is reassessing this session (its call moved or was cancelled) — "Kyle will confirm your filming time". Nothing about it has changed yet. */
+  kyleConfirming?: boolean;
 };
 
 // The statuses a request still "is" — a cancelled or expired one is history
@@ -740,9 +791,12 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
     where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
     orderBy: { monthKey: "asc" },
     take: 3,
-    select: { id: true, monthKey: true },
+    select: { id: true, monthKey: true, schedulingDeferredAt: true },
   });
   if (months.length === 0) return [];
+  // A21: "Schedule later" is per session (ProgramSessionPlan); the month's own
+  // stamp (batch 2) stands for session 1 when no plan row says otherwise.
+  const plans = await prisma.programSessionPlan.findMany({ where: { monthId: { in: months.map((m) => m.id) } }, select: { monthId: true, sessionIndex: true, schedulingDeferredAt: true } }).catch(() => []);
   const { sessionCapacity, listSessionRequests } = await import("@/lib/sessionRequests");
   const { within24hElapsed, IN_FLIGHT_STATES } = await import("@/lib/sessionBooking");
   const { monthProgressMany, progressKey, clientMonthProgress } = await import("@/lib/monthProgress");
@@ -763,14 +817,25 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
   const filmedJobs = new Set(shoots.filter((s) => s.shootDate && s.shootDate < now).map((s) => s.id));
   const out: PortalScheduleMonth[] = [];
   for (const m of months) {
-    const [gate, capacity, rows] = await Promise.all([
-      sessionGate(enrollment.id, m.id),
+    const [gates, capacity, rows] = await Promise.all([
+      sessionGatesFor(enrollment.id, m.id),
       sessionCapacity(enrollment.id, m.id),
       listSessionRequests(enrollment.id, m.id),
     ]);
+    // The picker books the NEXT session (A24), so its gate is that session's.
+    const gate = gates.next;
+    const plan = plans.find((x) => x.monthId === m.id && x.sessionIndex === gate.sessionIndex) ?? null;
+    const deferredAt = plan ? plan.schedulingDeferredAt : gate.sessionIndex === 1 || gate.sessionIndex === null ? m.schedulingDeferredAt : null;
     // The view W1-B exports carries no notes; the client's own "what works"
     // text lives there ("Preferred: …"), so read it for the rows shown.
     const shown = rows.slice(0, 6);
+    const sessionsPart = await scheduleSessionsFor(progress?.get(progressKey(enrollment.id, m.id, m.monthKey)) ?? null, enrollment, m.id, clientMonthProgress, sessionAddressViews);
+    // A24 (batch-3 review): which sessions are already held — the same
+    // occupancy createSessionRequest refuses on, so a tab is never offered for
+    // a session a pending ask or a hand booking already holds.
+    const occupied = await import("@/lib/programMonths")
+      .then(({ monthSessionIndexes }) => monthSessionIndexes(m.id, enrollment.clientId, sessionsPart.sessionsRequired, now))
+      .catch(() => null);
     const notes = shown.length
       ? new Map((await prisma.programSessionRequest.findMany({ where: { id: { in: shown.map((r) => r.id) } }, select: { id: true, notes: true } })).map((r) => [r.id, r.notes]))
       : new Map<string, string | null>();
@@ -797,8 +862,12 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
         locationText: r.locationText, notes: notes.get(r.id) ?? null, createdAtISO: r.createdAt.toISOString(),
       })),
       bookedShootISO: shoots.find((s) => s.contentMonthId === m.id)?.shootDate?.toISOString() ?? null,
-      ...(await scheduleSessionsFor(progress?.get(progressKey(enrollment.id, m.id, m.monthKey)) ?? null, enrollment, m.id, clientMonthProgress, sessionAddressViews)),
+      ...sessionsPart,
+      takenIndexes: occupied ? [...new Set(occupied.byKey.values())].filter((i) => i <= sessionsPart.sessionsRequired).sort((a, b) => a - b) : [],
       bookingMode,
+      sessionIndex: gate.sessionIndex,
+      sessionGates: gates.sessions.map((g, i) => ({ index: g.sessionIndex ?? i + 1, locked: g.locked, reason: g.reason, earliestISO: g.locked ? null : g.earliest.toISOString() })),
+      deferredAtISO: deferredAt ? deferredAt.toISOString() : null,
     });
   }
   return out;
@@ -828,14 +897,21 @@ async function scheduleSessionsFor(
   if (!p || p.clientId !== enrollment.clientId) return { sessions: [], sessionsRequired: 1, sessionsMissing: 0 };
   const cards = toClient(p).sessions.cards;
   const views = await addressViews(enrollment.id, monthId, p.sessions.list).catch(() => new Map());
+  // A25: sessions the office is reassessing. A failed read shows nothing extra
+  // rather than a promise nobody made.
+  const reassessing = await import("@/lib/sessionReassess")
+    .then(({ openReassessments }) => openReassessments([monthId]))
+    .then((m) => new Set((m.get(monthId) ?? []).map((r) => r.sessionKey)))
+    .catch(() => new Set<string>());
   return {
     sessionsRequired: p.sessions.required,
     sessionsMissing: p.sessions.missing,
     sessions: p.sessions.list.map((f, i) => {
       const v = views.get(f.key) ?? null;
       return {
-        key: f.key, startISO: f.startsAtISO, state: cards[i]?.state ?? "BOOKED", label: cards[i]?.label ?? "Booked",
+        key: f.key, sessionIndex: f.sessionIndex, startISO: f.startsAtISO, state: cards[i]?.state ?? "BOOKED", label: cards[i]?.label ?? "Booked",
         area: v?.area ?? null, addressNeeded: v?.needed ?? false, addressNote: v?.note ?? null,
+        kyleConfirming: reassessing.has(f.key),
       };
     }),
   };

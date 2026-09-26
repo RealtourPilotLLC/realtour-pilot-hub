@@ -158,6 +158,14 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           {submitted && iv.ready && iv.script.stage === "released" && <p className="mt-2 text-xs text-muted">Sent. Your script is written from these answers. Changing an answer here won&rsquo;t change it: to change the script, choose Request changes on it.</p>}
           {submitted && !iv.ready && <p className="mt-2 text-xs text-muted">Sent. We&rsquo;ll be in touch with a question or two before we write it. Add to any answer here and it counts right away.</p>}
           {sentWithGaps && <p className="mt-2 text-xs text-muted">Sent with gaps — we&rsquo;ll be in touch with a question or two. Add to any answer here and it counts right away.</p>}
+          {/* A18: sending the answers is what opens filming on this route, so
+              the next step is right here — the month's "Book filming" step
+              (it opens once every topic in the session has its answers in). */}
+          {submitted && iv.ready && canAct && (
+            <Link href={`${backHref}#step-filming`} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+              Next: book your filming <ArrowRight className="size-3" />
+            </Link>
+          )}
         </div>
       )}
 

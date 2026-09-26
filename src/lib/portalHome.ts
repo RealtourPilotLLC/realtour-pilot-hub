@@ -124,7 +124,9 @@ export type HomeActionsInput = {
   month: { monthKey: string; label: string; owed: number; selected: number } | null;
   /** The planning reader's owed answers (planModel.toAnswer): never an extra, never a topic the call covered. `missing` = its known gaps. */
   toAnswer: { title: string; missing?: number }[];
-  session: { offerBooking: boolean; required: number; missing: number };
+  /** `deferred` (A21): the client chose "Schedule later" for the session still to book — the action stays, and says so.
+   *  `earliestLabel` (A20): when that session may start ("Thursday, October 1"), from the gate. */
+  session: { offerBooking: boolean; required: number; missing: number; deferred?: boolean; earliestLabel?: string | null };
   /** Booked sessions still missing an exact filming address (CP-05). */
   addressNeeded: number;
   setup: { complete: boolean; remaining: number } | null;
@@ -187,7 +189,10 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     }
     if (i.session.offerBooking && i.perms.session) {
       const booked = i.session.required - i.session.missing;
-      add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail: null, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
+      // "Schedule later" keeps the booking visibly outstanding (§6.7) — the
+      // same action, saying the client chose it, never a second one.
+      const detail = i.session.deferred ? "You chose to schedule later. Book any time." : i.session.earliestLabel ? `Sessions can start from ${i.session.earliestLabel}.` : null;
+      add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
     }
     if (i.addressNeeded > 0 && i.perms.session) {
       add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So your photographer arrives at the right door.", cta: "Add the address", dest: "schedule" });

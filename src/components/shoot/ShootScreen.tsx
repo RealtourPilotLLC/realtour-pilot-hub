@@ -226,6 +226,10 @@ function HeaderCard({
               <MapPin className="size-3.5 shrink-0" />
               <span className="truncate">{project.addressFull}</span>
             </div>
+            {/* A25: a new exact address the client gave that is not on the booking yet. */}
+            {project.addressChangePending && (
+              <p className="mt-1 text-[13px] font-medium text-warning">{project.addressChangePending}</p>
+            )}
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             {completed ? (

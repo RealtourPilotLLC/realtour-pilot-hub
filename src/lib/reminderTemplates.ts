@@ -46,6 +46,10 @@ export type TemplateVars = {
   sessionNote: string | null;
   /** BOOK_SESSION: the earliest the session may start ("Thursday, October 2"), when known. */
   earliestSession: string | null;
+  /** BOOK_SESSION v2 (A19): the month's strategy call is booked and not held yet ("Tuesday, October 6 at 2:00 PM ET"). */
+  callUpcoming?: string | null;
+  /** BOOK_SESSION v2 (A24): which session this is about on a two-session package ("second"), else null. */
+  sessionOrdinalWord?: string | null;
   /** REVIEW_WORK: how many cuts are waiting. */
   itemCount: number;
   /** SCRIPTS_READY / STRATEGY_READY: the titles released in this batch (already deduplicated). */
@@ -332,12 +336,42 @@ REMINDER_TEMPLATES["reminder.approve_scripts.v1"] = {
     ].join("\n"),
 };
 
+// v2 (A19/A20, Sep 25 2026). v1 opened with "Your {month} content is planned"
+// — false on the call route the moment the call is BOOKED, which is when §3
+// opens filming now (the call is still ahead). v2 says what is true on each
+// route: the call is booked and filming can be picked now, or the answers are
+// in; the earliest date is the one the portal's picker holds the client to
+// (the chased session's own gate). No em dashes (a client reads it).
+REMINDER_TEMPLATES["reminder.book_session.v2"] = {
+  id: "reminder.book_session.v2",
+  action: "BOOK_SESSION",
+  version: "2",
+  purpose: "Filming is open (answers in, or the strategy call booked) and a content session is not booked or requested.",
+  render: (v) => {
+    const which = v.sessionOrdinalWord ? `your ${v.sessionOrdinalWord} filming session` : "your filming session";
+    const lead = v.callUpcoming
+      ? `Your ${v.month} strategy call is booked for ${v.callUpcoming}, and you don't need to wait for it: you can book ${which} now.`
+      : `Your ${v.month} content is planned, so the next step is booking ${which}.`;
+    const earliest = v.earliestSession
+      ? ` The earliest we can film is ${v.earliestSession}${v.callUpcoming ? ", which gives us time after the call to write your scripts." : ", which gives us time to finish your scripts."}`
+      : "";
+    return [
+      `Hi ${v.firstName},`,
+      "",
+      `${lead}${earliest} Pick a time in your portal and we'll confirm it: ${v.portalLink}`,
+      "",
+      "Jordan and the RealTour Pilot team",
+      "(Reply to this email and it comes straight to us.)",
+    ].join("\n");
+  },
+};
+
 /** The default template id per action — the policy JSON (`templates`) may point an action at a newer version. */
 export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ESCALATION" | "SESSION_REQUEST_FOLLOWUP">, string> = {
   CHOOSE_PATH: "reminder.choose_path.v1",
   BOOK_CALL: "reminder.book_call.v1",
   COMPLETE_ANSWERS: "reminder.complete_answers.v1",
-  BOOK_SESSION: "reminder.book_session.v1",
+  BOOK_SESSION: "reminder.book_session.v2",
   REVIEW_WORK: "reminder.review_work.v2",
   SCRIPTS_READY: "scripts_ready.v1",
   STRATEGY_READY: "strategy_ready.v2",
@@ -363,7 +397,9 @@ export function reminderTemplate(id: string): ReminderTemplate {
  * yet, so nothing that already went out changes. The row stays for history.
  * (Batch-2 review, Sep 25 2026.)
  */
-export const RETIRED_TEMPLATE_IDS: Readonly<Record<string, string>> = { "strategy_ready.v1": "strategy_ready.v2" };
+// book_session.v1 (A19, Sep 25 2026): its "your content is planned" is false
+// the moment a call is booked, which now opens filming.
+export const RETIRED_TEMPLATE_IDS: Readonly<Record<string, string>> = { "strategy_ready.v1": "strategy_ready.v2", "reminder.book_session.v1": "reminder.book_session.v2" };
 /** The id a send renders: a retired id resolves to its replacement. */
 export const sendableTemplateId = (id: string): string => RETIRED_TEMPLATE_IDS[id] ?? id;
 

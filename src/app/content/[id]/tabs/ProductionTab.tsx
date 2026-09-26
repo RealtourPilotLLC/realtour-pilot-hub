@@ -8,8 +8,9 @@ import { staffMonthView } from "@/lib/monthProgress";
 import { stageMeta } from "@/lib/pipeline";
 import { SessionMonthMover } from "@/components/content/MonthControls";
 import { SessionsPanel } from "@/components/content/SessionsPanel";
+import { ReassessmentBanner } from "@/components/content/ReassessmentBanner";
 import { ContentLibraryPanel } from "@/components/content/ContentLibraryPanel";
-import { loadContentTab, loadRevisionsView, loadSessionsView } from "../workspaceData";
+import { loadContentTab, loadRevisionsView, loadSessionGates, loadSessionsView } from "../workspaceData";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
 
 // ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
   // the month that are not a session at all (listed so Kyle can see them;
   // never counted), then the requests and exact addresses behind them.
   const view = progress ? staffMonthView(progress) : null;
-  const { projects } = await loadSessionsView(month ? { id: month.id } : null);
+  const [{ projects }, gates] = await Promise.all([loadSessionsView(month ? { id: month.id } : null), loadSessionGates(month ? { id: month.id } : null)]);
   const byId = new Map(projects.map((p) => [p.id, p]));
   const sessionIds = new Set(view?.sessionRows.map((r) => r.projectId).filter((x): x is string => !!x) ?? []);
   const shells = projects.filter((p) => !sessionIds.has(p.id));
@@ -109,6 +110,8 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
         <p className="text-sm text-muted">No month workspace yet — the hourly sweep creates the current month automatically.</p>
       ) : (
         <>
+          {/* A25: a session whose call moved or vanished — Kyle's to confirm. */}
+          <ReassessmentBanner monthId={month.id} />
           <Section icon={Camera} title="Filming sessions" count={view?.sessionsCount ?? `0/${ctx.enrollment.sessionsPerMonth}`} flush>
             <div className="divide-y divide-border">
               {view?.sessionRows.map((r) => {
@@ -152,6 +155,10 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
               {view && view.missing > 0 && (
                 <p className="px-5 py-3 text-[13px] text-warning">
                   {view.missing} of {ctx.enrollment.sessionsPerMonth} session{ctx.enrollment.sessionsPerMonth === 1 ? "" : "s"} still to book
+                  {/* A20: the preparation gate per session — the portal picker's own reading. */}
+                  {gates.map((g) => (
+                    <span key={g.index} className="block text-[12px] text-muted">{gates.length > 1 ? `Session ${g.index}: ` : ""}{g.text}</span>
+                  ))}
                 </p>
               )}
               {projects.length === 0 && (view?.sessionRows.length ?? 0) === 0 && (
