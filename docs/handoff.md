@@ -73,6 +73,9 @@ change the design:
 | Sep 25 | `review_room` seats saved: James primary, Kyle backup, Jordan fallback (row was absent; every other value = its default) | one `putSetting` after `validateReviewSeats(…, "OWNER")`; chain read back: all three canRule | delete the `review_room` AppSetting row (→ unconfigured, the old OWNER+ADMIN broadcast) |
 | Sep 25 | **Stripe webhook registered** (authorised): endpoint `we_1UJhFVRrlUAkQjeVojLRmkXt` → `https://hub.realtourpilot.com/api/webhooks/stripe`, 5 events, status enabled; signing secret saved encrypted (Connection `stripe_webhook`, never printed) and read back. Proven: a post signed with the saved secret → 200 (test-mode, ignored); a wrong signature → 400. | `scripts/_ops/register-stripe-webhook.ts --apply` (dry run first) | `… --rollback we_1UJhFVRrlUAkQjeVojLRmkXt` (deletes the endpoint, removes only its own secret); polling keeps activating signups |
 | Sep 25 | **Review cuts switched to the private store.** Code `3a301ad` (the private token's presence decides the upload token and the browser's access word together). Store connected for production + development with prefix `REVIEW_CUTS_PRIVATE_`; deployed from a detached worktree at `3a301ad` (Vercel `eclgh0s6v`). Row backup first: `~/rtp-backup-2026-09-25-cut-rows-pre-private-store.json` (32 rows, 4.8 GB, all public, none uploading). Then `migrate-cut-store.ts --apply` (ledger in the session scratchpad, copied beside the backup). | see the cutover section below | disconnect the store (the public token is primary again) and `migrate-cut-store.ts --rollback --ledger <ledger> --apply`; originals were never deleted |
+| Sep 25 | **Vercel CLI signed out mid-deploy** (auth.json emptied); Jordan approved a device login; deploys resumed. Batch 3 deployed from a detached worktree at `fa9a2c9` (Vercel `73ep3ma1b`). | `vercel login` (device code) | — |
+| Sep 25 | Calendly capability probe stored: **Scheduling API available** (HTTP 200, 22 open times in 7 days). | `calendly-capability-probe.ts --apply` (one AppSetting row, `calendly_scheduling_probe`) | delete that row |
+| Sep 25 | **Supervised Calendly test (authorised) — PASSED on the real API** after one fix. First attempt refused ("The supplied parameters are invalid"); with Calendly's `details` surfaced: every tracking key must be present. Fixed in `22f572f` (deployed, Vercel `qqbsh0kl3`). Re-run: booked "Jordan Spackman TEST" for Tue Sep 29 1:30pm ET (event `e3c44be6…`), 7/7 read-back checks (mapped type, active, time, test inbox, portal token, hub match to that client + month), cancelled and read back canceled. `call_booking` armed for the fixture only and disarmed after each run (AuditLog). | `hub-write-fixture.ts` arm → `calendly-supervised-test.ts --apply` → disarm | nothing to undo: the event is cancelled; the hourly sweep will file the cancelled booking on the TEST client |
 | Sep 25 | **Private review-cut store created**: `review-cuts-private` (`store_Ivpn6ZpIy2r0feKR`, iad1, access private). Connected to the project for **development only**, env prefix `REVIEW_CUTS_PRIVATE_` → `REVIEW_CUTS_PRIVATE_READ_WRITE_TOKEN`. Production untouched. | `vercel blob create-store --access private` from an unlinked folder; `vercel integration-resource connect … --environment development --prefix REVIEW_CUTS_PRIVATE_` | `vercel blob delete-store store_Ivpn6ZpIy2r0feKR` |
 
 ### Private store — first real proof (Sep 25)
@@ -119,6 +122,34 @@ server — so one connection decides both halves and they cannot disagree.
 Then: connect the store to production with the same prefix, deploy, run
 `migrate-cut-store.ts` (dry run, then `--apply`), check hosts, and have one
 real upload watched.
+
+## The supervised Aryeo test — ready, waiting for a watched sitting
+
+Authorised by Jordan (Sep 25). Batch 3 is live, so the hourly jobs run the new
+fixture rules while the switches are on. The dry run stops at one missing
+piece: **"Jordan Spackman TEST" has no Aryeo customer.** Aryeo's API can create
+one (`POST /customers`, operationId customers-post). Kept for a sitting where
+Jordan or Kyle is present because the test (a) books James (Aryeo notifies our
+team, so James gets a test booking notice), (b) leaves an order balance and
+possibly a QuickBooks invoice that must be voided by hand — a money action that
+stays Jordan's — and (c) must link the new Aryeo customer to the existing TEST
+client rather than let the hourly sync create a duplicate.
+
+The sitting, in order (about 20 minutes):
+1. Create the Aryeo customer "Jordan Spackman TEST", email
+   `info+jordantest@realtourpilot.com`, and set its id on the TEST client
+   (`cmucrtvy100009kpoprlsryjd`) before the next hourly sync.
+2. Dry run: `aryeo-supervised-test.ts --fixture cmucrtvy100009kpoprlsryjd
+   --address "117 Kyle Lane|West Chester|PA|19382" --new-address "42 Oak
+   Street|West Chester|PA|19380"` — it refuses unless the Accelerator is $0 in
+   Aryeo and the fixture's identity is proven.
+3. Arm `session_booking` and `address_sync` for the fixture only
+   (`hub-write-fixture.ts … --on --apply`), run `--apply`, disarm.
+4. Jordan/Kyle in Aryeo: the order's balance and payment status, whether the
+   customer was emailed, whether the address change moved the order title and
+   pin; void the balance / QuickBooks invoice by hand; tell James it was a test.
+5. The script's measurement decides `travelSource` (does Aryeo's
+   appointment-scoped availability see drive time?).
 
 ## Tests and environment
 
