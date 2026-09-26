@@ -9,13 +9,12 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 ## Resume here
 
-- **Current batch:** 3 — scheduling and integrations.
-- **Batch 1:** `e954b23`, live (deployed with `f2555f7`). **Batch 2:** `2c74adc`, deployed with the docs commit after it.
+- **Current batch:** 4 — capture through delivery.
+- **Deployed:** batch 1 (`e954b23`), batch 2 (`7fa4398`), the private-store switch (`3a301ad`); batch 3 `417fe90` deploys with the docs commit after it.
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
-- **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF).
-  Review seats saved (James → Kyle → Jordan).
-- **Next action:** register the Stripe webhook (authorised); switch review
-  cuts to the private store (authorised); batch 3.
+- **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
+  Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
+- **Next action:** batch 4 build; the supervised Aryeo + Calendly test (authorised) — dry runs first.
 
 ## Batch 0 — facts measured Sep 25 (read-only probe, `scripts/_recon/cp15-config-probe.ts`)
 
@@ -41,7 +40,7 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 | 0 Verify and prepare | done | `75d56f1` checklist, `2528374` schema | schema pushed |
 | 1 Operational correctness | done (4 partial remainders → batch 2's remainder builder) | `e954b23` | see below |
 | 2 Guided content preparation | done | `2c74adc` | see below |
-| 3 Scheduling and integrations | — | | |
+| 3 Scheduling and integrations | done | `417fe90` | see below |
 | 4 Capture through delivery | — | | |
 | 5 Operational visibility | — | | |
 | 6 UI and release proof | — | | |
@@ -122,6 +121,31 @@ Then: connect the store to production with the same prefix, deploy, run
 real upload watched.
 
 ## Tests and environment
+
+### Batch 3 (`417fe90`)
+
+- Four builders (gates; travel + booking; pilot + reassessment; Calendly),
+  two review lenses (correctness/concurrency; provider writes, money, client
+  safety). **12 of 12 findings confirmed and fixed** — among them: a retry
+  after a payment mismatch skipped every check; a late-month Calendly booking
+  was refused and left the month stuck; adding a client to a pilot erased its
+  end date; the supervised test's cleanup list was wrong on failure paths.
+- New drills: b3-gates 118, b3-travel-booking 99, session-booking-adapter 211,
+  hub-write-scopes 81, b3-reassess 53, b3-calendly 143. Five older drills moved
+  to the 72-hour law and R02 fixture identity (b2-planning, ui01-portal-ia,
+  session-address, preparation-clock, pro-two-sessions) — no product bug among
+  their failures. **63 isolated drills green, 5,233 checks.** The read-only
+  production drills pass with the 25006 guard proven first.
+- **Measured read-only before deploy:** 0 months demoted by the dead-record
+  rule; 0 live requests without a session index; 13 past legacy-stamped months
+  raise **no** "confirm the call's end" task (the rule only asks while it can
+  still move a date); John Mark has no Aryeo mapping (editor, not a creative);
+  the saved portal terms carry no 48-hour wording, so nothing contradicts 72.
+- **Found:** "Bobby TEST Michael TEST" is a real person's inbox (Gmail) with a
+  real Aryeo customer and TEST in the name. R02 refuses it as a fixture. It
+  should be renamed back or confirmed — Jordan/Kyle.
+- **Not proven:** every Aryeo and Calendly write is against faithful fakes.
+  The supervised test settles it.
 
 ### Batch 2
 
