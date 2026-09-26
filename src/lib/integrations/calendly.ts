@@ -66,7 +66,18 @@ async function calendlyRequest<T = unknown>(
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const msg = (json as { message?: string; title?: string }).message || (json as { title?: string }).title || `Calendly API ${res.status}`;
-    throw new CalendlyError(msg, res.status);
+    // Calendly names the offending fields in `details` ({parameter, message}).
+    // Without them a refused booking reads only "The supplied parameters are
+    // invalid" — the supervised test on Sep 25 learned nothing more from it.
+    // Field names and Calendly's own sentences only; no values are echoed.
+    const details = Array.isArray((json as { details?: unknown }).details)
+      ? ((json as { details: { parameter?: string; message?: string }[] }).details)
+          .map((d) => [d?.parameter, d?.message].filter(Boolean).join(": "))
+          .filter(Boolean)
+          .slice(0, 6)
+          .join("; ")
+      : "";
+    throw new CalendlyError(details ? `${msg} (${details})`.slice(0, 500) : msg, res.status);
   }
   return json as T;
 }
@@ -527,7 +538,11 @@ export async function createInvitee(permit: CalendlyWritePermit, input: CreateIn
     start_time: new Date(input.startISO).toISOString(),
     invitee: { name: input.invitee.name, email: input.invitee.email, timezone: input.invitee.timezone },
     ...(input.location ? { location: input.location.location ? { kind: input.location.kind, location: input.location.location } : { kind: input.location.kind } } : {}),
-    ...(input.tracking ? { tracking: input.tracking } : {}),
+    // EVERY tracking key, present even when empty. The real API refuses a
+    // tracking object that leaves any out ("tracking.utm_campaign: is
+    // missing", … salesforce_uuid) — found by the supervised test on Sep 25;
+    // the fake accepted a partial object. Null is "not used".
+    ...(input.tracking ? { tracking: { utm_campaign: null, utm_source: null, utm_medium: null, utm_content: null, utm_term: null, salesforce_uuid: null, ...input.tracking } } : {}),
   };
   const r = await calendlyRequest<{ resource?: Invitee }>("/invitees", { method: "POST", body });
   if (!r.resource?.uri) throw new CalendlyError("Calendly accepted the booking but returned no invitee.", 502);

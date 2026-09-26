@@ -167,6 +167,15 @@ export function makeFakeCalendly(opts: { now?: () => number } = {}) {
         return err(400, "Invalid Argument", "The selected time is no longer available");
       }
       if (t.locations.length && !t.locations.some((l) => l.kind === b.location?.kind)) return err(400, "Invalid Argument", "location.kind must be one of the event type's locations");
+      // AS STRICT AS THE REAL ONE (supervised test, Sep 25 2026): a tracking
+      // object must carry all six keys, null when unused. The real API
+      // answered "The supplied parameters are invalid" with details
+      // "tracking.utm_campaign: is missing; …"; this fake used to accept a
+      // partial object, so the drills could not see it.
+      if (b.tracking) {
+        const missing = ["utm_campaign", "utm_source", "utm_medium", "utm_content", "utm_term", "salesforce_uuid"].filter((k) => !(k in (b.tracking as Record<string, unknown>)));
+        if (missing.length) return new Response(JSON.stringify({ title: "Invalid Argument", message: "The supplied parameters are invalid.", details: missing.map((k) => ({ parameter: `tracking.${k}`, message: "is missing" })) }), { status: 400, headers: { "content-type": "application/json" } });
+      }
       const made = book(t.uri, b.start_time, { name: b.invitee.name, email: b.invitee.email, timezone: b.invitee.timezone, tracking: b.tracking ?? {} });
       state.postsCommitted++;
       if (state.commitThenTimeout > 0) {
