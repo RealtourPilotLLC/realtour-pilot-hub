@@ -9,12 +9,13 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 ## Resume here
 
-- **Current batch:** 4 — capture through delivery.
-- **Deployed:** batch 1 (`e954b23`), batch 2 (`7fa4398`), the private-store switch (`3a301ad`); batch 3 `417fe90` deploys with the docs commit after it.
+- **Current batch:** 5 — operational visibility (building); schema pushed `17df024`.
+- **Deployed:** batches 1–4 (`b4403ea`, Vercel `41mfzx706`), the private-store switch, the Calendly fix.
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
-- **Next action:** batch 4 build; the supervised Aryeo + Calendly test (authorised) — dry runs first.
+- **Next action:** batch 5 review/commit/deploy; batch 6 (real-Postgres race tests, restore rehearsal,
+  settings grouping, walkthroughs, final report); the supervised Aryeo test in a watched sitting.
 
 ## Batch 0 — facts measured Sep 25 (read-only probe, `scripts/_recon/cp15-config-probe.ts`)
 
@@ -41,7 +42,7 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 | 1 Operational correctness | done (4 partial remainders → batch 2's remainder builder) | `e954b23` | see below |
 | 2 Guided content preparation | done | `2c74adc` | see below |
 | 3 Scheduling and integrations | done | `417fe90` | see below |
-| 4 Capture through delivery | — | | |
+| 4 Capture through delivery | done | `b4403ea` | `41mfzx706` |
 | 5 Operational visibility | — | | |
 | 6 UI and release proof | — | | |
 
@@ -64,6 +65,7 @@ change the design:
 | AutoHDR | Kyle checks Mondays, Jordan tops up; "Id like to connect AUTOHDR API to our system here at some point and we can set up notifications when its getting low." | Manual Monday balance reading now; the API alert is future work (batch 5). |
 | Outside editor | "Im building for all in house, but we do work with Luma visuals and I have certain video projects that I reassign to them right now as external agency." | Luma Visuals is an active external agency: dispatch + acknowledgement record (batch 4, EditorDispatch). |
 | Permissions | Register the Stripe webhook; run the Aryeo + Calendly supervised test; create the private video store. | Authorised external actions, done in the batch that needs them, each recorded here. |
+| Notifications (Sep 26) | "no matter what is going on, James, Kyle, and myself should get a notification. I just don't want notifications on Saturdays, until 7:30pm. Implement in settings a setting for controlling notification timing by day and time." Follow-up: the Saturday rule is **Jordan only**; held notifications are **delivered at 7:30 PM**. | A per-person notification schedule in Settings (quiet windows by day and time, ET); Jordan preset Saturday 00:00–19:30; bell rows written at once, texts/DMs held to the window's end, never dropped; the three review seats hear about every cut even when away (batch 5). |
 
 
 ## Production changes made in this handoff
@@ -152,6 +154,31 @@ The sitting, in order (about 20 minutes):
    appointment-scoped availability see drive time?).
 
 ## Tests and environment
+
+### Batch 4 (`b4403ea`)
+
+- Four builders (uploads; briefs + Luma dispatch; delivery + Topaz-before-release;
+  reopened same-day due), two review lenses. **17 of 17 findings confirmed and
+  fixed** — highs: a video excused after the photos half left the wrap-up
+  never stamped (hidden from My Pay, a false late upload); a Topaz "Try again"
+  took an approved video off the client's page. **70 isolated drills green,
+  5,789 checks.** Deployed and smoke-checked live (Review Room, Editing Room,
+  Upload, Content, Settings: 200; cut stream: 206).
+- **Measured before deploy:** 0 half-submitted jobs; 2 reopened jobs whose
+  due display is re-read; 0 drafts; 0 gaps.
+- Removed `src/lib/captionAssistant.ts` — unreachable since before this batch
+  (nothing imported it) and it drafted with the switch off; its guard moved
+  into the live drafter.
+- **My slip, recorded:** `drone-footage` and `ready-card-live` read production
+  without the read-only connection guard; I ran them before noticing. Both are
+  SELECT-only by code inspection (`readyToSend` and its helpers write nothing).
+  They should get the 25006 guard in batch 6.
+- **GitGuardian alert (Sep 26, 22:57 UTC push): false alarm.** It matched
+  fake `vercel_blob_rw_…` strings in three drills (the stores' public ids with
+  made-up secrets). Neither real token nor its secret half appears anywhere in
+  the repository's history (checked with `git log --all -S`). The drills now
+  build those strings at run time. Nothing to rotate; Jordan can mark the
+  GitGuardian incident as a false positive / test credential.
 
 ### Batch 3 (`417fe90`)
 
