@@ -41,6 +41,7 @@ export function WhatYouSubmitted({
   addOns,
   files,
   flags,
+  halves,
 }: {
   submittedAtISO: string | null;
   uploadedAtISO: string | null;
@@ -61,6 +62,12 @@ export function WhatYouSubmitted({
   addOns: { item: string; note: string | null; addedBy: string | null; handled: boolean }[];
   files: { name: string; size: number }[];
   flags: string[];
+  /**
+   * O05 (Sep 25 2026): when the photos and the video were handed off
+   * separately, each half's own time (and whether the video half came in after
+   * its 8:00 AM deadline). Absent or empty on a page submitted in one go.
+   */
+  halves?: { label: string; atISO: string; by: string | null; late?: boolean }[];
 }) {
   const [showScript, setShowScript] = useState(false);
   const brief = parseEditorBriefSections(videoInstructions);
@@ -90,6 +97,18 @@ export function WhatYouSubmitted({
               <> · last edited by <span className="font-medium text-foreground/85">{lastEdited.by}</span> {etDateTime(lastEdited.atISO)}</>
             )}
           </p>
+          {halves && halves.length > 0 && (
+            <p className="mt-0.5 text-[13px] text-muted">
+              {halves.map((h, i) => (
+                <span key={h.label}>
+                  {i > 0 && " · "}
+                  {h.label} handed off {etDateTime(h.atISO)}
+                  {h.by ? ` by ${h.by}` : ""}
+                  {h.late && <span className="font-semibold text-warning"> (after the 8:00 AM deadline)</span>}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
       </div>
 

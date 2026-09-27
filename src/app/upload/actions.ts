@@ -102,7 +102,7 @@ export async function markDeliverableUploaded(
   uploaded: boolean,
 ): Promise<{ ok: boolean }> {
   await requireDeliverableAccess(deliverableId);
-  const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true, status: true } });
+  const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true, status: true, notCompletedReason: true } });
   if (!d) return { ok: false };
   await prisma.deliverable.update({
     where: { id: deliverableId },
@@ -115,6 +115,16 @@ export async function markDeliverableUploaded(
       ...(uploaded && d.status === DeliverableStatus.PENDING ? { status: DeliverableStatus.UPLOADED } : {}),
     },
   });
+  // …and so does everything that answer raised (review, Sep 25): the office's
+  // "not required?" card and the job's missing-work record (§7.6) close with
+  // "Marked uploaded after all.", the same road the withdraw takes — or Kyle
+  // plans a reshoot for footage that is in Dropbox. Best-effort.
+  if (uploaded && d.notCompletedReason) {
+    try {
+      const { confirmNotRequiredTask } = await import("@/lib/tasks");
+      await confirmNotRequiredTask(deliverableId);
+    } catch { /* the tick above is saved either way */ }
+  }
   revalidatePath(`/upload/${d.projectId}`);
   revalidatePath(`/projects/${d.projectId}`);
   return { ok: true };
@@ -173,14 +183,24 @@ export async function markDeliverableNotCompleted(
   });
   // The Admin-visible trail — only when the reason actually changed, so a
   // re-opened portal doesn't stack duplicate timeline rows.
+  const { DELIVERABLE_META } = await import("@/lib/pipeline");
+  const itemLabel = d.label ?? DELIVERABLE_META[d.type]?.label ?? d.type;
   if (d.notCompletedReason !== trimmed) {
-    const { DELIVERABLE_META } = await import("@/lib/pipeline");
     const { NOT_COMPLETED_FLAG_PREFIX } = await import("@/lib/debrief");
-    const label = d.label ?? DELIVERABLE_META[d.type]?.label ?? d.type;
     await prisma.activity.create({
-      data: { projectId: d.projectId, type: ActivityType.FLAG, body: `${NOT_COMPLETED_FLAG_PREFIX}${label}: ${trimmed}` },
+      data: { projectId: d.projectId, type: ActivityType.FLAG, body: `${NOT_COMPLETED_FLAG_PREFIX}${itemLabel}: ${trimmed}` },
     }).catch(() => {});
   }
+  // §7.6: the missing output becomes ONE production-gap record — what, why,
+  // who said so — that the office plans a recovery on (reshoot, the client
+  // supplies it, use what we have) or closes with "Not required". Never a
+  // waiver by itself. Best-effort: the photographer's answer is saved above.
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    const { recordOutputGap } = await import("@/lib/productionGaps");
+    await recordOutputGap({ projectId: d.projectId, deliverableId, what: itemLabel, reason: trimmed, raisedBy: me?.name?.trim() || me?.email || "the photographer" });
+  } catch { /* the office card below still carries the reason */ }
   // ONE QUESTION FOR THE OFFICE (Sep 16, Kyle call). Until now this answer was
   // a note on a card: the hub kept the item owed, kept saying "still missing",
   // and chased CubiCasa for a floor plan James had already told us nobody
@@ -365,12 +385,49 @@ export async function finalizeUpload(
     extraTopics?: { key: string; title: string; note?: string }[];
     /** premium packages with no Studio script: the script typed on site */
     providedScript?: string | null;
+    /**
+     * O05 (Sep 25 2026): which half of the wrap-up this submit hands off.
+     * ABSENT = the whole page, exactly as before the split (a pre-update tab,
+     * and every job with only one of the two). "photos" writes and gates the
+     * photo answers only; "video" the video answers only. Each half stamps its
+     * own handoff; the whole-page stamp (pay visibility, the wrap-up KPI) lands
+     * only when every half this job owes is in or excused.
+     */
+    scope?: "photos" | "video";
+    /**
+     * O04: the submitted-fields fingerprint (lib/uploadDraft submittedFieldsHash)
+     * the page loaded with. On a RE-submit, a different fingerprint now means
+     * somebody changed the submitted answers in between — the Editing Room's
+     * brief editor, or another tab — and the re-submit is refused with a
+     * conflict instead of writing over them. Absent = no check (older tabs).
+     */
+    baseHash?: string | null;
+    /** O04: when the answers `baseHash` describes were read (the page's render,
+     *  or a restored draft's save) — a change is pinned on a person only when
+     *  their timeline line is newer than this. */
+    baseAtISO?: string | null;
   },
 ): Promise<{
   pdfPath?: string;
   needsConfirm?: boolean;
   warning?: string;
   blocked?: string;
+  /** O04: the re-submit was refused — the submitted answers changed since this page loaded. */
+  conflict?: { current: import("@/lib/uploadDraft").SubmittedFields; currentHash: string; by: string | null; atISO: string | null };
+  /** O04: the fingerprint after this submit, for the page's next re-submit. */
+  baseHash?: string;
+  /** O05: what this submit handed off, and what is still owed. */
+  handoff?: {
+    scope: "photos" | "video" | "all";
+    photosAtISO: string | null;
+    videoAtISO: string | null;
+    /** the whole wrap-up is in (Project.debriefSubmittedAt) */
+    wholeDone: boolean;
+    /** photos in, video still owed: when the video half is due (8:00 AM ET the next day) */
+    videoDueISO: string | null;
+    /** this submit was the video half, and it came in after that deadline */
+    videoLate: boolean;
+  };
   /**
    * CP-09: the footage is in, but the filmed topics have not been recorded
    * yet. They are saved (ContentFilmingReport) and the hub retries on its own;
@@ -393,6 +450,10 @@ export async function finalizeUpload(
       dropboxFolder: true,
       cullingConfirmedAt: true,
       debriefSubmittedAt: true,
+      // O05: each half's own handoff (null on every job submitted the old way).
+      photosHandoffAt: true,
+      videoHandoffAt: true,
+      editorBrief: true,
       shotOrderNotes: true,
       removalNotes: true,
       videoInstructions: true,
@@ -404,9 +465,13 @@ export async function finalizeUpload(
       packageName: true,
       // Canceled lines must not drive the gates (review HIGH).
       orderItems: { where: { isCanceled: false }, select: { title: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true } },
+      // videoStyle: §7.4 — the gate reads the stamp the page resolved from,
+      // not the product names alone. waivedAt: an office "not required" owes
+      // no handoff (O05's whole-wrap-up test).
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, videoStyle: true, waivedAt: true } },
     },
   });
+  const scope: "photos" | "video" | null = data.scope === "photos" || data.scope === "video" ? data.scope : null;
   // WHO is submitting (Jordan, Sep 15: the office can now re-open a submitted
   // page from /upload history "and also make adjustments"). A submitted page
   // is the photographer's word that the footage is in, and everything that
@@ -445,7 +510,13 @@ export async function finalizeUpload(
     !everSubmitted &&
     !!prior?.uploadedAt &&
     (shootMs == null || shootMs < DEBRIEF_PAY_GATE_FROM);
-  const firstFinalize = !everSubmitted && !legacyDone;
+  // O05: a half that was already handed off is a RE-submit of that half —
+  // its gates, its stamp and its side effects ran the first time. The other
+  // half is still a first submit, so a photos-in job's video half gets every
+  // video gate it always had.
+  const halfSubmittedBefore =
+    scope === "photos" ? !!prior?.photosHandoffAt : scope === "video" ? !!prior?.videoHandoffAt : false;
+  const firstFinalize = !everSubmitted && !legacyDone && !halfSubmittedBefore;
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   let submitterIsPhotographer = false;
@@ -455,10 +526,58 @@ export async function finalizeUpload(
     submitterIsPhotographer = !!mid && (await photographerOwnsShoot(projectId, mid));
   }
   const submitterName = (me?.name?.trim() || me?.email || "the office").slice(0, 80);
+  const resubmit = everSubmitted || halfSubmittedBefore;
   /** a re-submit by someone other than the shoot's photographer — notes only */
-  const officeEdit = everSubmitted && !submitterIsPhotographer;
+  const officeEdit = resubmit && !submitterIsPhotographer;
   /** may this submit move the job on (hold release, Waiting → Ready for editing)? */
-  const mayAdvance = !everSubmitted || submitterIsPhotographer;
+  const mayAdvance = !resubmit || submitterIsPhotographer;
+
+  // O04 — A RE-SUBMIT NEVER WRITES OVER AN EDIT IT DID NOT SEE. The Editing
+  // Room's brief editor (saveShootBriefFields) and a second tab both write
+  // these answers with no conflict check, so the page's stale copy used to
+  // win silently. It carries the fingerprint it loaded with; if the answers
+  // changed since, say who changed them and let the person choose.
+  //
+  // Asked on EVERY submit that carries a fingerprint (review, Sep 25), not only
+  // a re-submit of the same half: the video half after the photos half is a
+  // first submit of that half, yet it writes the same editor note, so Kyle's
+  // 7 AM Editing Room edit between the halves was overwritten unseen; and a
+  // draft restored from an earlier visit submits with the fingerprint IT was
+  // typed against, so a job that moved underneath it is caught here too. The
+  // page's own writes return the next fingerprint (baseHash below), so its
+  // own earlier half never reads as somebody else's change.
+  if (prior && typeof data.baseHash === "string" && data.baseHash) {
+    const { submittedFieldsHash } = await import("@/lib/uploadDraft");
+    const current = {
+      editorBrief: prior.editorBrief, videoInstructions: prior.videoInstructions, removalNotes: prior.removalNotes,
+      shotOrderNotes: prior.shotOrderNotes, reelScript: prior.reelScript, scriptConfirmNote: prior.scriptConfirmNote,
+      videosFilmed: prior.videosFilmed,
+    };
+    const currentHash = submittedFieldsHash(current);
+    if (currentHash !== data.baseHash) {
+      const last = await prisma.activity.findFirst({
+        where: {
+          projectId,
+          OR: [
+            { body: { startsWith: "Shoot brief for the editor updated by " } },
+            { body: { startsWith: "Video instructions from the shoot updated by " } },
+            { body: { startsWith: UPLOAD_EDITED_BY_PREFIX } },
+            { body: { startsWith: UPLOAD_SUBMITTED_BY_PREFIX } },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+        select: { body: true, createdAt: true },
+      }).catch(() => null);
+      // Name somebody only when their line is newer than what the page was
+      // based on (review, Sep 25): a change nobody's line accounts for — Script
+      // Studio rewriting the script — used to be pinned on whoever last edited
+      // the page, often the person now submitting. Unknown is "someone".
+      const baseAt = typeof data.baseAtISO === "string" ? Date.parse(data.baseAtISO) : NaN;
+      const named = last && (!Number.isFinite(baseAt) || last.createdAt.getTime() > baseAt) ? last : null;
+      const by = named ? (named.body.match(/(?:updated by|edited by|submitted by) (.+?)\.?$/)?.[1] ?? null) : null;
+      return { conflict: { current, currentHash, by, atISO: named?.createdAt.toISOString() ?? null } };
+    }
+  }
   // A deliverable marked "couldn't complete + why" is EXCUSED from the gates —
   // demanding video instructions for a reel the agent canceled on site forces
   // the photographer to fabricate answers (review HIGH). The reason itself is
@@ -474,7 +593,9 @@ export async function finalizeUpload(
   // The number the editor cuts to is the SERVER's count from the same answer —
   // the videos already confirmed on this project, the ticks, and the extras —
   // never a second number the browser sends that could disagree with it.
-  const filming = Array.isArray(data.filmedTopicIds)
+  // O05: the photos half carries no filmed topics — only the video half (or
+  // the whole page) writes a filming report.
+  const filming = Array.isArray(data.filmedTopicIds) && scope !== "photos"
     ? await (await import("@/lib/filmedTopics")).prepareFilmingReport(
         projectId,
         { filmedTopicIds: data.filmedTopicIds, topicNotes: data.topicNotes, extraTopics: data.extraTopics },
@@ -493,8 +614,11 @@ export async function finalizeUpload(
   // a pre-pay-gate shoot that never had a submit step is left alone entirely
   // (see `legacyDone` above).
   if (prior && firstFinalize) {
-    const wantsPhotosGate = liveDeliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
-    const wantsVideoGate = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    // O05: a scoped submit is gated on its own half only — the photos go in
+    // tonight without a video brief, and the video half later gets every video
+    // gate it always had. No scope = both, as before.
+    const wantsPhotosGate = scope !== "video" && liveDeliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
+    const wantsVideoGate = scope !== "photos" && liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
       return { blocked: "Run your cull and confirm all four checks first — hero shots in, duplicates out, extras in Backup Photos. Clearly unnecessary photos can carry a $1 production charge; photos a property genuinely needed are never charged." };
     }
@@ -516,34 +640,22 @@ export async function finalizeUpload(
     if (wantsPhotosGate && !data.removalNotes?.trim() && !data.nothingToRemove && !prior.removalNotes) {
       return { blocked: "Answer the removal notes — list anything the editor needs to remove (pets, cans, vehicles, clutter), or tick “Nothing needs removal.”" };
     }
-    // What this order's video step demands — computed from LIVE lines only
-    // (canceled items filtered in the query; excused deliverables filtered
-    // here). It does NOT quite mirror the client, whatever this comment used
-    // to claim: the portal resolves the same spec from the Deliverable
-    // .videoStyle stamp (upload/[id]/page.tsx, specForStyle) and only falls
-    // back to product names, while the gate here is name-based throughout.
-    // When a stamp and the names disagree, the server can demand a brief the
-    // browser never asked for — and the photographer is then stuck in the
-    // field, blocked by a step their screen doesn't show. Measured against
-    // production Sep 20 2026 (scripts/_drill/fix-F06-verify.ts): of 630 jobs
-    // with video and no submit on record, four resolve differently and three
-    // of those would block — all four pre-pay-gate, all three already reachable
-    // before the first-submit predicate above was corrected, and none of the 16
-    // post-pay-gate ones diverge at all. Re-run that replay after the next
-    // Aryeo product mapping change. The cure is lifting specForStyle into
-    // lib/pipeline so both sides read the stamp — page.tsx's own comment
-    // already anticipates this one "once it reads the stamp".
-    const { videoStepSpec } = await import("@/lib/pipeline");
+    // What this order's video step demands — THE SAME resolution the page
+    // used (§7.4, Sep 25 2026). This used to be name-based while the portal
+    // read the Deliverable.videoStyle stamp first, so when the two disagreed
+    // the server could demand a brief the browser never asked for and the
+    // photographer was stuck in the field behind a step their screen did not
+    // show (measured Sep 20: 4 of 630 unsubmitted video jobs diverged, all
+    // pre-pay-gate). pipeline.resolveVideoSpec is the page's own resolution
+    // lifted out, so the gate, the page and the handoff engine cannot differ.
+    const { resolveVideoSpec } = await import("@/lib/pipeline");
     const { videoTier } = await import("@/lib/projectStatus");
-    const { isMonthlyContentJob } = await import("@/lib/pipeline");
-    const spec = videoStepSpec(
-      [prior.packageName, ...prior.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
-      {
-        hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO"),
-        isPremium: videoTier(liveDeliverables) === "premium",
-        isMonthly: isMonthlyContentJob(liveDeliverables, prior.packageName),
-      },
-    );
+    const { spec } = resolveVideoSpec({
+      deliverables: prior.deliverables,
+      orderItems: prior.orderItems,
+      packageName: prior.packageName,
+      isPremium: videoTier(liveDeliverables) === "premium",
+    });
     // A plain social reel demands no brief at all (Jordan: "if it's a standard
     // social reel, it doesn't need additional notes").
     if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions) {
@@ -638,8 +750,9 @@ export async function finalizeUpload(
       // The REAL folder (a rescheduled shoot's files stay where they were) —
       // the convention path made this warn "RAW-Video is empty" wrongly.
       const paths = actualFolderPaths(prior);
-      const wantsVideo = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-      const wantsPhotos = liveDeliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
+      // O05: a half is checked only when it is the one being handed off.
+      const wantsVideo = scope !== "photos" && liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+      const wantsPhotos = scope !== "video" && liveDeliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
       // Video is checked across the WHOLE job folder, not just 02-RAW-Video.
       // Clips dropped into the photos folder or the listing root are still
       // delivered footage, and counting only the one folder is what made this
@@ -714,6 +827,27 @@ export async function finalizeUpload(
   // the script — an office notes edit must not move it to the edit date.
   const scriptAnswerChanged =
     !prior?.scriptConfirmedAt || scriptTextChanged || (nextConfirmNote !== undefined && nextConfirmNote !== priorNote);
+
+  // ---- O05: WHICH HALF, AND IS THE WHOLE WRAP-UP IN NOW? ------------------
+  // A scoped submit writes its own half's answers and stamps its own handoff
+  // (first time only, and never over a whole-page stamp that already covers
+  // it). The whole-page stamp — My Pay visibility and the wrap-up KPI read it,
+  // and Jordan has not changed either — lands only when every half this job
+  // owes is handed off or excused ("couldn't complete", waived). No scope is
+  // the old single submit, byte for byte: whole stamp, no half stamps (the
+  // readers coalesce), both halves written.
+  const photoPart = scope !== "video";
+  const videoPart = scope !== "photos";
+  const nowStamp = new Date();
+  const { liveHandoffCategories } = await import("@/lib/handoff");
+  const owedHalves = liveHandoffCategories(prior?.deliverables ?? []);
+  const stampHalf = !!scope && !everSubmitted && !halfSubmittedBefore && owedHalves.includes(scope);
+  // The unscoped submit stamps the whole wrap-up inline, as it always has. A
+  // scoped one decides AFTER its own write (below), off the row as it now
+  // stands — two halves submitted at the same moment from two devices would
+  // otherwise each see the other still missing, and neither would stamp it.
+  const stampWhole = !scope && !prior?.debriefSubmittedAt;
+
   const projectWrite = prisma.project.update({
     where: { id: projectId },
     data: {
@@ -722,13 +856,15 @@ export async function finalizeUpload(
       ...(data.editorBrief.trim() ? { editorBrief: data.editorBrief.trim() } : {}),
       // The FIRST completed submit is the payroll-visibility moment ("once
       // submitted, this shoot will be added to your payroll") — keep the
-      // original stamp on re-submits.
-      ...(prior?.debriefSubmittedAt ? {} : { debriefSubmittedAt: new Date() }),
+      // original stamp on re-submits. O05: "completed" means every half.
+      ...(stampWhole ? { debriefSubmittedAt: nowStamp } : {}),
+      ...(stampHalf && scope === "photos" ? { photosHandoffAt: nowStamp, photosHandoffBy: submitterName } : {}),
+      ...(stampHalf && scope === "video" ? { videoHandoffAt: nowStamp, videoHandoffBy: submitterName } : {}),
       // The cull confirmation keeps its first stamp too (Sep 15): the
       // re-opened page sends the four ticks pre-checked, and "What you
       // submitted" reads this as WHEN the cull was confirmed.
-      ...(data.cullingConfirmed && !prior?.cullingConfirmedAt ? { cullingConfirmedAt: new Date() } : {}),
-      ...(data.shotOrder
+      ...(photoPart && data.cullingConfirmed && !prior?.cullingConfirmedAt ? { cullingConfirmedAt: new Date() } : {}),
+      ...(photoPart && data.shotOrder
         ? {
             shotOrderNotes: (() => {
               const mode = data.shotOrder.mode ?? (data.shotOrder.frontToBack ? "front-to-back" : "out-of-order");
@@ -742,7 +878,9 @@ export async function finalizeUpload(
             })(),
           }
         : {}),
-      ...(data.removalNotes?.trim()
+      ...(!photoPart
+        ? {}
+        : data.removalNotes?.trim()
         ? { removalNotes: data.removalNotes.trim().slice(0, 4000) }
         : data.nothingToRemove
           ? { removalNotes: NOTHING_TO_REMOVE_SENTINEL }
@@ -750,13 +888,13 @@ export async function finalizeUpload(
       // Only a job that actually ordered video can carry a video brief — a
       // fixed-style monthly job with no video deliverable would otherwise
       // store a bare "STYLE:" line that reads as a real brief everywhere.
-      ...(anyVideoOrdered && data.videoInstructions?.trim()
+      ...(videoPart && anyVideoOrdered && data.videoInstructions?.trim()
         ? { videoInstructions: data.videoInstructions.trim().slice(0, 6000) }
         : {}),
-      ...(typeof videosFilmedIn === "number" && videosFilmedIn > 0
+      ...(videoPart && typeof videosFilmedIn === "number" && videosFilmedIn > 0
         ? { videosFilmed: Math.min(videosFilmedIn, 999) }
         : {}),
-      ...(data.scriptConfirm
+      ...(videoPart && data.scriptConfirm
         ? {
             ...(scriptAnswerChanged ? { scriptConfirmedAt: new Date() } : {}),
             scriptConfirmNote: nextConfirmNote,
@@ -775,7 +913,7 @@ export async function finalizeUpload(
       // real Studio script is protected from being overwritten here (review:
       // the old !prior.reelScript guard silently discarded corrections after
       // the first submit, while showing a success banner).
-      ...(data.providedScript?.trim() &&
+      ...(videoPart && data.providedScript?.trim() &&
       (!prior?.reelScript || (prior?.scriptConfirmNote ?? "").startsWith(PROVIDED_ON_SITE) || data.sawScript === false)
         ? {
             reelScript: data.providedScript.trim().slice(0, 20_000),
@@ -793,6 +931,28 @@ export async function finalizeUpload(
       ...(prior?.uploadedAt ? {} : { uploadedAt: new Date() }),
     },
   });
+  // O05 — THE WHOLE WRAP-UP, decided off the committed row. updateMany on
+  // `debriefSubmittedAt: null` makes the completion a claim: exactly one
+  // submit completes it, and only that one writes the "completed upload"
+  // line, consumes the draft and hands the job on.
+  let wholeDone = !!prior?.debriefSubmittedAt || !scope;
+  let completedNow = !scope && !prior?.debriefSubmittedAt;
+  let photosAt: Date | null = prior?.photosHandoffAt ?? null;
+  let videoAt: Date | null = prior?.videoHandoffAt ?? null;
+  // The claim itself lives in lib/wrapUp (review, Sep 25): the excusal paths
+  // — "couldn't complete", the office's "Not required", Aryeo dropping the
+  // line — run the same one when a half stops being owed after the other half
+  // went in, so a video excused at 7 AM completes the wrap-up too.
+  const completeIfWhole = async () => {
+    if (!scope) return;
+    const { completeWrapUpIfWhole } = await import("@/lib/wrapUp");
+    const r = await completeWrapUpIfWhole(projectId, { at: nowStamp, fromSubmit: true });
+    if (!r) return;
+    photosAt = r.photosAt;
+    videoAt = r.videoAt;
+    if (r.wholeDone) wholeDone = true;
+    completedNow = r.completedNow;
+  };
   // The report and the debrief commit together. createMany + skipDuplicates:
   // the same answer submitted twice is the one row (unique projectId +
   // payloadHash), and a duplicate is a no-op rather than a P2002 that would
@@ -806,6 +966,44 @@ export async function finalizeUpload(
     reportIsNew = made.count > 0;
   } else {
     await projectWrite;
+  }
+  await completeIfWhole();
+  if (!scope) {
+    photosAt = prior?.photosHandoffAt ?? null;
+    videoAt = prior?.videoHandoffAt ?? null;
+  } else if (stampHalf) {
+    if (scope === "photos") photosAt = photosAt ?? nowStamp;
+    else videoAt = videoAt ?? nowStamp;
+  }
+
+  // O04 — the submitted answers are no longer a draft. Only the submitter's,
+  // and only once the whole wrap-up is in: after a photos-only submit the same
+  // draft still holds the unsent video answers.
+  if (wholeDone && me?.email && !me.impersonating) {
+    await prisma.uploadDraft
+      .updateMany({ where: { projectId, authorKey: me.email.trim().toLowerCase(), consumedAt: null }, data: { consumedAt: new Date() } })
+      .catch(() => {});
+  }
+
+  // THE VIDEO HALF, LATE (Jordan, Sep 25 2026): photos in, the video due by
+  // 8:00 AM ET the next day. A video half handed in after that is recorded on
+  // the timeline, once (this is its first submit), and the photographer's
+  // reliability KPI counts it as a late upload off the same two stamps. No pay
+  // effect.
+  let videoLate = false;
+  if (scope === "video" && stampHalf && prior?.photosHandoffAt) {
+    const { videoHalfClock } = await import("@/lib/handoff");
+    const clock = videoHalfClock({ photosHandoffAt: prior.photosHandoffAt, videoHandoffAt: nowStamp });
+    if (clock?.submittedLate) {
+      videoLate = true;
+      await prisma.activity.create({
+        data: {
+          projectId,
+          type: ActivityType.NOTE,
+          body: `Video half submitted late by ${submitterName} — it was due ${etDate(clock.due)} at 8:00 AM, the morning after the photos went in. Counts as a late upload on the photographer's reliability score.`.slice(0, 1000),
+        },
+      }).catch(() => {});
+    }
   }
 
   // F12 / CP-09 — APPLY IT NOW, and say so when it did not land.
@@ -866,8 +1064,10 @@ export async function finalizeUpload(
   // Sep 15: ONLY the first submit or the photographer's own re-submit
   // (mayAdvance) — the office re-opening a submitted page to fix the notes is
   // not the photographer's word, and must not release a hold the office set.
+  // O05: the photos half is not the footage the editor is waiting for — a
+  // Waiting hold stands until the video half (or the whole page) is in.
   let holdReleased = false;
-  if (mayAdvance) {
+  if (mayAdvance && (scope !== "photos" || completedNow)) {
     try {
       const { releaseWaitingHold } = await import("@/lib/queueWaiting");
       holdReleased = await releaseWaitingHold(projectId);
@@ -915,11 +1115,26 @@ export async function finalizeUpload(
   // this line (submissionTrail in lib/uploadSummary.ts). An office FIRST
   // submit keeps the FILE line (it is the raws-in handoff line) and adds
   // who did it, for the same reader.
+  // O05: a half gets its own line ("Photos submitted on the upload page by
+  // Harrison."), and the FILE line — "Photographer completed upload", which
+  // the "What you submitted" card and submissionTrail read as THE submit —
+  // lands only when the whole wrap-up does.
   if (officeEdit) {
     await prisma.activity.create({
       data: { projectId, type: ActivityType.NOTE, body: `${UPLOAD_EDITED_BY_PREFIX}${submitterName}.` },
     });
+  } else if (scope && !completedNow) {
+    const { HALF_SUBMITTED_PREFIX } = await import("@/lib/handoff");
+    await prisma.activity.create({
+      data: { projectId, type: ActivityType.NOTE, body: `${HALF_SUBMITTED_PREFIX[scope]} by ${submitterName}.` },
+    });
   } else {
+    if (scope) {
+      const { HALF_SUBMITTED_PREFIX } = await import("@/lib/handoff");
+      await prisma.activity.create({
+        data: { projectId, type: ActivityType.NOTE, body: `${HALF_SUBMITTED_PREFIX[scope]} by ${submitterName}.` },
+      }).catch(() => {});
+    }
     await prisma.activity.create({
       data: { projectId, type: ActivityType.FILE, body: UPLOAD_COMPLETED_BODY },
     });
@@ -948,7 +1163,8 @@ export async function finalizeUpload(
   // up to an hour after the photographer had in fact written it. Re-running is
   // safe: ensureEditorHandoff is idempotent (activity marker + dedupeKeys), so
   // no second bench ping and no second edit_video card.
-  if (firstFinalize || holdReleased) {
+  // O05: not on the photos half alone — the edit is waiting on the video.
+  if ((firstFinalize && (scope !== "photos" || completedNow)) || holdReleased) {
     try {
       const { syncProjectStatuses } = await import("@/lib/projectStatus");
       await syncProjectStatuses({ projectId });
@@ -969,7 +1185,46 @@ export async function finalizeUpload(
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");
   revalidatePath("/");
-  return { pdfPath, ...(topicsPending ? { topicsPending } : {}) };
+  const { submittedFieldsHash } = await import("@/lib/uploadDraft");
+  const { videoHalfClock } = await import("@/lib/handoff");
+  const clock = videoHalfClock({ photosHandoffAt: photosAt, videoHandoffAt: videoAt, debriefSubmittedAt: wholeDone ? nowStamp : null });
+  const nextHash = project
+    ? submittedFieldsHash({
+        editorBrief: project.editorBrief, videoInstructions: project.videoInstructions, removalNotes: project.removalNotes,
+        shotOrderNotes: project.shotOrderNotes, reelScript: project.reelScript, scriptConfirmNote: project.scriptConfirmNote,
+        videosFilmed: project.videosFilmed,
+      })
+    : null;
+  // O04: after a half, the submitter's open draft (still holding the unsent
+  // half's answers) is now based on what THIS submit wrote. Re-based here so a
+  // reload restoring it tomorrow morning does not read the photographer's own
+  // photos half as somebody else's change (review, Sep 25).
+  if (!wholeDone && nextHash && me?.email && !me.impersonating) {
+    await prisma.uploadDraft
+      .updateMany({ where: { projectId, authorKey: me.email.trim().toLowerCase(), consumedAt: null }, data: { baseHash: nextHash } })
+      .catch(() => {});
+  }
+  // O05: photos in after tonight's chaser already went — the photographer is
+  // told now, through that same text, instead of never (lib/uploadDigest).
+  if (scope === "photos" && stampHalf && clock?.owed) {
+    try {
+      const { sendSplitNoticeIfChaserPassed } = await import("@/lib/uploadDigest");
+      await sendSplitNoticeIfChaserPassed(projectId);
+    } catch { /* best-effort — the page itself states the deadline */ }
+  }
+  return {
+    pdfPath,
+    ...(topicsPending ? { topicsPending } : {}),
+    ...(nextHash ? { baseHash: nextHash } : {}),
+    handoff: {
+      scope: scope ?? "all",
+      photosAtISO: (photosAt as Date | null)?.toISOString() ?? null,
+      videoAtISO: (videoAt as Date | null)?.toISOString() ?? null,
+      wholeDone,
+      videoDueISO: clock?.owed ? clock.due.toISOString() : null,
+      videoLate,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1598,4 +1853,204 @@ export async function withdrawAdditionalShoot(
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// MISSED A SHOT (§7.6, Sep 25 2026). A shot that did not happen inside
+// something that was delivered — the pool at dusk, a locked basement — used to
+// be a free-text flag with no owner, no date and no recovery. It is now a
+// production-gap record the office plans on, AND the same words go to the
+// job's one field-flag loop, so Kyle hears it exactly the way he hears every
+// other field flag (no second task).
+// ---------------------------------------------------------------------------
+export async function reportMissedShot(
+  projectId: string,
+  input: { what: string; reason: string },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const what = (input.what ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const reason = (input.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+  if (!what) return { ok: false, message: "Say which shot was missed." };
+  if (!reason) return { ok: false, message: "Say why — that is what the office decides the recovery from." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = me?.name?.trim() || me?.email || "the photographer";
+  const { recordShotGap } = await import("@/lib/productionGaps");
+  const g = await recordShotGap({ projectId, what, reason, raisedBy: who });
+  if (g.created) {
+    const body = `Missed shot: ${what} — ${reason}`;
+    await prisma.activity.create({ data: { projectId, type: ActivityType.FLAG, body } });
+    const { fileFieldIssue } = await import("@/lib/fieldIssues");
+    await fileFieldIssue({ projectId, note: body, page: `/upload/${projectId}`, label: "Missed shot" });
+  }
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true, message: g.created ? "Logged for the office — they'll decide the recovery." : "Already logged." };
+}
+
+/** The office plans how a gap is recovered (owner, date, and for a reshoot the shot list and scope). Nothing is booked, waived or charged. */
+export async function planGapRecovery(
+  gapId: string,
+  input: { recovery: string; ownerKey: string; dueDay: string; shotList?: { shot: string; note?: string }[]; scopeNote?: string | null },
+): Promise<{ ok: boolean; message: string }> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Only the office can plan a recovery." };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dueDay ?? "")) return { ok: false, message: "Give it a date it has to be done by." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const { planRecovery } = await import("@/lib/productionGaps");
+  const r = await planRecovery(
+    gapId,
+    { recovery: input.recovery, ownerKey: input.ownerKey, dueAt: etAt(input.dueDay, 17), shotList: input.shotList, scopeNote: input.scopeNote },
+    me?.name?.trim() || me?.email || "the office",
+  );
+  const g = await prisma.productionGap.findUnique({ where: { id: gapId }, select: { projectId: true } });
+  if (g) revalidatePath(`/upload/${g.projectId}`);
+  return r.ok ? { ok: true, message: "Recovery planned." } : { ok: false, message: r.message };
+}
+
+/** The office closes a gap by hand — recovered, or not needed — with the note that is the record. */
+export async function closeProductionGap(gapId: string, how: "RESOLVED" | "CANCELLED", note: string): Promise<{ ok: boolean; message: string }> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Only the office can close a gap." };
+  }
+  if (how !== "RESOLVED" && how !== "CANCELLED") return { ok: false, message: "Pick how it was settled." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const { closeGap } = await import("@/lib/productionGaps");
+  const r = await closeGap(gapId, how, note, me?.name?.trim() || me?.email || "the office");
+  const g = await prisma.productionGap.findUnique({ where: { id: gapId }, select: { projectId: true } });
+  if (g) revalidatePath(`/upload/${g.projectId}`);
+  return { ok: r.ok, message: r.ok ? "Closed." : r.message ?? "Couldn't close that." };
+}
+
+// ---------------------------------------------------------------------------
+// FIELD FEEDBACK (§7.8, Sep 25 2026). What the client said on site, or what
+// the photographer noticed, recorded with its SOURCE and SCOPE — and always as
+// a proposal. Before this the only place for it was a timeline note, which the
+// nightly client-profile synthesis read as though it were the client's own
+// preference; a guess like "they probably prefer this font" could reach the
+// editor as fact. Now it is a PROPOSED ClientFact (lib/clientFacts), which no
+// brief and no generator reads until the office accepts it.
+// ---------------------------------------------------------------------------
+export async function recordFieldPreference(
+  projectId: string,
+  input: { body: string; basis: "client_said" | "observation"; scope: "project" | "client" },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const text = (input.body ?? "").replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (!text) return { ok: false, message: "Write what they asked for, or what you noticed." };
+  const basis = input.basis === "client_said" ? "client_said" : "observation";
+  const scope = input.scope === "client" ? "client" : "project";
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true, client: { select: { name: true } } } });
+  if (!project) return { ok: false, message: "Couldn't find that job." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = me?.name?.trim() || me?.email || "the photographer";
+  const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: project.clientId }, select: { id: true } }).catch(() => null);
+  const { createFact, fieldSourceRef } = await import("@/lib/clientFacts");
+  const r = await createFact({
+    clientId: project.clientId,
+    enrollmentId: enrollment?.id ?? null,
+    category: "PRODUCTION_PREFERENCE",
+    body: text,
+    source: "field",
+    sourceRef: fieldSourceRef(projectId, basis),
+    projectId: scope === "project" ? projectId : null,
+    scope: scope === "project" ? "PROJECT" : "PERMANENT",
+    speaker: basis === "client_said" ? `${project.client.name} (reported by ${who})` : who,
+    factDate: new Date(),
+    // Never auto-accepted: a person on the driveway is not the client.
+    unattended: false,
+  });
+  revalidatePath(`/upload/${projectId}`);
+  return {
+    ok: true,
+    message: r.existed ? "Already on file for the office to confirm." : "Sent to the office to confirm — it isn't on the editor brief until they do.",
+  };
+}
+
+/**
+ * The office confirms or rejects a field report from the upload page (the
+ * program workspace's facts panel does the same for program clients; a
+ * listing-only client has no other review surface). Accepting a client-wide
+ * preference tells the editors holding that client's open edits, bell only,
+ * once per editor per report, and notes it on each live job.
+ */
+export async function decideFieldReport(factId: string, decision: "ACCEPT" | "REJECT"): Promise<{ ok: boolean; message: string }> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Only the office can confirm a field report." };
+  }
+  const fact = await prisma.clientFact.findUnique({
+    where: { id: factId },
+    select: { id: true, clientId: true, source: true, sourceRef: true, scope: true, projectId: true, body: true, status: true },
+  });
+  if (!fact || fact.source !== "field") return { ok: false, message: "That field report no longer exists." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const by = me?.email ?? "the office";
+  const lib = await import("@/lib/clientFacts");
+  if (decision === "REJECT") {
+    await lib.rejectFact(factId, by);
+  } else {
+    await lib.acceptFact(factId, by);
+    if (fact.scope === "PERMANENT" && fact.status !== "ACCEPTED") {
+      // The work it changes: this client's jobs still being edited.
+      const live = await prisma.project.findMany({
+        where: { clientId: fact.clientId, status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+        select: { id: true, title: true },
+        take: 25,
+      });
+      for (const p of live) {
+        await prisma.activity.create({
+          data: { projectId: p.id, type: "SYSTEM", body: `Client preference confirmed by ${me?.name ?? "the office"} (from the field): ${fact.body}`.slice(0, 1000) },
+        }).catch(() => {});
+      }
+      const tasks = live.length
+        ? await prisma.smartTask.findMany({
+            where: { projectId: { in: live.map((p) => p.id) }, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] }, assignedKey: { not: null } },
+            select: { assignedKey: true, projectId: true },
+          })
+        : [];
+      const editors = [...new Set(tasks.map((t) => t.assignedKey!).filter((k) => k && k !== "kyle"))];
+      if (editors.length) {
+        const { notifyInApp } = await import("@/lib/notify");
+        for (const key of editors) {
+          const projectId = tasks.find((t) => t.assignedKey === key)?.projectId ?? live[0].id;
+          // "field_preference" is not in notifyPrefs.KIND_TO_EVENT, so this is
+          // the bell and nothing else — no new text or Slack channel.
+          await notifyInApp({
+            kind: "field_preference",
+            title: "Client preference confirmed",
+            body: fact.body.slice(0, 140),
+            href: `/edit/${projectId}`,
+            targets: [{ roles: ["EDITOR"], userKey: `editor:${key}` }],
+            dedupeKey: `fact-${fact.id}-${key}`,
+          }).catch(() => {});
+        }
+      }
+    }
+  }
+  if (fact.projectId) revalidatePath(`/upload/${fact.projectId}`);
+  const ref = /^field:([^:]+):/.exec(fact.sourceRef ?? "");
+  if (ref) revalidatePath(`/upload/${ref[1]}`);
+  return { ok: true, message: decision === "ACCEPT" ? "Confirmed — it's on the editor brief now." : "Rejected (kept as history)." };
 }

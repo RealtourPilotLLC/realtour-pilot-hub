@@ -23,7 +23,7 @@ import { photoTargetFor, roomBudgetText } from "@/lib/culling";
 import type { ShootView } from "@/lib/shoot";
 import {
   sendShootStatusText, draftClientMessage, sendClientMessage,
-  setDeliverableCaptured, saveShootNote, flagShootIssue, completeShoot,
+  setDeliverableCaptured, saveShootNote, flagShootIssue, completeShoot, recordShootPreference,
 } from "@/app/shoot/actions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
@@ -598,6 +598,20 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
   const [flags, setFlags] = useState(view.flags);
   const [input, setInput] = useState("");
   const [pending, start] = useTransition();
+  // §7.8: a client preference heard on site — a proposal for the office, not a fact.
+  const [pref, setPref] = useState("");
+  const [prefBasis, setPrefBasis] = useState<"client_said" | "observation">("client_said");
+  const [prefScope, setPrefScope] = useState<"project" | "client">("project");
+
+  function addPref() {
+    const body = pref.trim();
+    if (!body) return;
+    start(async () => {
+      const r = await recordShootPreference(project.id, { body, basis: prefBasis, scope: prefScope }).catch(() => ({ ok: false, message: "Couldn't save that — try again." }));
+      flash(r.ok ? "ok" : "err", r.message);
+      if (r.ok) setPref("");
+    });
+  }
 
   function addFlag() {
     const body = input.trim();
@@ -669,6 +683,30 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
             ))}
           </ul>
         )}
+      </div>
+
+      <div className="border-t pt-3">
+        <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted"><Info className="size-3.5 text-brand" /> Client preference or request</div>
+        <div className="flex gap-2">
+          <input
+            value={pref}
+            onChange={(e) => setPref(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addPref()}
+            maxLength={1000}
+            placeholder="e.g. Wants the logo bottom-right on every reel"
+            className="flex-1 rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+          />
+          <button onClick={addPref} disabled={pending || !pref.trim()} className="rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">Send</button>
+        </div>
+        <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs">
+          {([["client_said", "They asked for it"], ["observation", "I noticed it"]] as const).map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setPrefBasis(k)} className={cn("rounded-lg border px-2 py-1", prefBasis === k ? "border-brand bg-brand-soft" : "text-muted")}>{l}</button>
+          ))}
+          {([["project", "Just this job"], ["client", "Going forward"]] as const).map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setPrefScope(k)} className={cn("rounded-lg border px-2 py-1", prefScope === k ? "border-brand bg-brand-soft" : "text-muted")}>{l}</button>
+          ))}
+        </div>
+        <p className="mt-1 text-[11px] text-muted-2">The office confirms it before it reaches the editor.</p>
       </div>
     </Section>
   );

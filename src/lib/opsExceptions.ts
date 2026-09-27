@@ -38,7 +38,10 @@ export type ExceptionKind =
   | "overdue-followup"
   | "stalled-render"
   | "unsent-replacement"
-  | "unverified-render";
+  | "unverified-render"
+  | "library-missing"
+  | "legacy-identity"
+  | "reopened-work";
 
 export type OpsException = {
   id: string;
@@ -89,6 +92,9 @@ export function emptyExceptionBoard(): OpsExceptionBoard {
       "stalled-render": { ...none },
       "unsent-replacement": { ...none },
       "unverified-render": { ...none },
+      "library-missing": { ...none },
+      "legacy-identity": { ...none },
+      "reopened-work": { ...none },
     },
   };
 }
@@ -100,6 +106,9 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "stalled-render": "Render stuck at the provider",
   "unsent-replacement": "Approved replacement, not sent",
   "unverified-render": "1080p file held — sound not verified",
+  "library-missing": "Approved video not in the client's library",
+  "legacy-identity": "Old library file needs its video confirmed",
+  "reopened-work": "Reopened work",
 };
 
 const DAY = 86_400_000;
@@ -642,6 +651,152 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     });
   }
 
+  // 7. A CLIENT'S LIBRARY THAT WILL NOT REBUILD (A42, Sep 25 2026). The hourly
+  // repair (contentVideos.verifyApprovedCutsInLibrary) rebuilds a client whose
+  // approved program cut is not on their library, and writes the failure on
+  // the enrollment when the rebuild throws or still leaves it out. It retries
+  // every hour and clears itself when it works — so a row here has already
+  // survived at least one retry. One row per client; its own small read.
+  const libraryFailures = await prisma.contentEnrollment
+    .findMany({
+      where: { librarySyncFailedAt: { not: null } },
+      select: { id: true, clientId: true, librarySyncFailedAt: true, librarySyncError: true },
+      orderBy: { librarySyncFailedAt: "asc" },
+      take: SAFETY_CEILING,
+    })
+    .catch(() => []);
+  const libraryHours = (e: { librarySyncFailedAt: Date | null }) => Math.max(0, Math.floor((now - (e.librarySyncFailedAt?.getTime() ?? now)) / HOUR));
+  // Client names for the two program kinds below. ContentEnrollment.clientId is
+  // a plain reference (no relation), so the names are one small read per kind.
+  const programClientName = new Map<string, string>();
+  const nameClients = async (ids: string[]) => {
+    const want = ids.filter((id) => id && !programClientName.has(id));
+    if (!want.length) return;
+    for (const c of await prisma.client.findMany({ where: { id: { in: want } }, select: { id: true, name: true } }).catch(() => [] as { id: string; name: string }[])) programClientName.set(c.id, c.name);
+  };
+  await nameClients(libraryFailures.map((e) => e.clientId));
+  for (const e of libraryFailures.slice(0, cap)) {
+    const hours = libraryHours(e);
+    out.push({
+      id: `library:${e.id}`,
+      kind: "library-missing",
+      // An approved video the client cannot see: a day of that is today's work.
+      severity: hours >= 24 ? "high" : "medium",
+      title: programClientName.get(e.clientId) ?? "A program client",
+      why: (e.librarySyncError ?? "The client's video library couldn't be rebuilt").slice(0, 160),
+      owner: "Kyle",
+      nextAction: "Check the client's video list; the hub retries every hour — if it's still here tomorrow, tell Jordan",
+      href: `/content/${e.id}?tab=production&view=videos`,
+      ageDays: Math.floor(hours / 24),
+    });
+  }
+
+  // 8. OLD LIBRARY FILES NOBODY HAS VOUCHED FOR (legacy identity, Sep 25 2026).
+  // A delivered file still on a positional Aryeo key (aryeo:<listing>:<n>) whose
+  // pairing no person has confirmed — the rows the Library tab flags "unverified
+  // legacy row" (workspaceData, same test). They cannot drift any more
+  // (portalLibrary keys by video id now), but which video each one IS was
+  // never proved; the identity tool on that tab settles it. One row per client.
+  // The positional shape is tested on the PortalVideo's CURRENT key, as the
+  // Library tab does: a row re-keyed by URL (portalLibrary.rekeyIndexedLibraryRows)
+  // is settled even while its old source row lingers.
+  const LEGACY_KEY = /^aryeo:[^:]+:\d+$/;
+  const positional = (
+    await prisma.portalVideo
+      .findMany({ where: { source: "aryeo", externalKey: { startsWith: "aryeo:" } }, select: { id: true, externalKey: true }, take: 5_000 })
+      .catch(() => [] as { id: string; externalKey: string }[])
+  ).filter((r) => LEGACY_KEY.test(r.externalKey));
+  const legacySources = positional.length
+    ? (await prisma.contentVideoSource
+        .findMany({ where: { kind: "PORTAL_VIDEO", confirmedAt: null, portalVideoId: { in: positional.map((r) => r.id) } }, select: { videoId: true, ref: true, portalVideoId: true, matchBasis: true, createdAt: true } })
+        .catch(() => [])).filter((x) => x.matchBasis !== "staff" && positional.some((r) => r.id === x.portalVideoId && r.externalKey === x.ref))
+    : [];
+  const legacyVideos = legacySources.length
+    ? new Map(
+        (await prisma.contentVideo
+          .findMany({ where: { id: { in: [...new Set(legacySources.map((x) => x.videoId))] }, status: { not: "ARCHIVED" } }, select: { id: true, enrollmentId: true } })
+          .catch(() => [] as { id: string; enrollmentId: string }[])).map((v) => [v.id, v.enrollmentId]),
+      )
+    : new Map<string, string>();
+  const legacyByEnrollment = new Map<string, { count: number; since: Date }>();
+  for (const x of legacySources) {
+    const enrollmentId = legacyVideos.get(x.videoId);
+    if (!enrollmentId) continue;
+    const g = legacyByEnrollment.get(enrollmentId) ?? { count: 0, since: x.createdAt };
+    g.count++;
+    if (x.createdAt < g.since) g.since = x.createdAt;
+    legacyByEnrollment.set(enrollmentId, g);
+  }
+  const legacyEnrollments = legacyByEnrollment.size
+    ? await prisma.contentEnrollment.findMany({ where: { id: { in: [...legacyByEnrollment.keys()] } }, select: { id: true, clientId: true } }).catch(() => [] as { id: string; clientId: string }[])
+    : [];
+  await nameClients(legacyEnrollments.map((e) => e.clientId));
+  const legacyRows = [...legacyByEnrollment.entries()].sort((a, b) => b[1].count - a[1].count);
+  for (const [enrollmentId, g] of legacyRows.slice(0, cap)) {
+    out.push({
+      id: `legacy:${enrollmentId}`,
+      kind: "legacy-identity",
+      // History, not a live fault: the client already has these files.
+      severity: "medium",
+      title: programClientName.get(legacyEnrollments.find((e) => e.id === enrollmentId)?.clientId ?? "") ?? "A program client",
+      why: `${g.count} older delivered file${g.count === 1 ? " is" : "s are"} tied to a video by list position only, and nobody has confirmed which`,
+      owner: "Kyle",
+      nextAction: "Open the client's video list and confirm or relink each flagged file",
+      href: `/content/${enrollmentId}?tab=production&view=videos`,
+      ageDays: ageOf(g.since, now),
+    });
+  }
+
+  // 9. REOPENED WORK (A52, Sep 25 2026). A job that went out and came back is
+  // either dated — a client round's 48 business hours, the same business day
+  // for anything else reopened, or a date a person set — and then past it is
+  // late; or nothing dates it (reopened before the clock existed, or by a path
+  // with no timestamp), and then somebody owns dating it. Both are here.
+  // Overdue first: that is work owed now. Read whole under the ceiling — the
+  // pool is jobs currently reopened, a handful.
+  const reopened = await import("@/lib/deliveryBoard")
+    .then((m) => m.reopenedWork({ now: new Date(now) }))
+    .then((rows) => rows.filter((r) => r.overdue || r.due.undated))
+    .catch(() => [] as import("@/lib/deliveryBoard").ReopenedWorkRow[]);
+  {
+    const { etDateTime } = await import("@/lib/datetime");
+    const holderName = (key: string | null) => {
+      if (!key) return "Kyle";
+      const name = assigneeName(key, roster);
+      return name === key ? prettyKey(key) : name;
+    };
+    const ordered = [...reopened].sort((a, b) => Number(b.overdue) - Number(a.overdue) || (a.due.at?.getTime() ?? 0) - (b.due.at?.getTime() ?? 0));
+    for (const r of ordered.slice(0, cap)) {
+      if (r.overdue && r.due.at) {
+        out.push({
+          id: `reopened:${r.projectId}`,
+          kind: "reopened-work",
+          severity: "high",
+          title: streetOf(r.title),
+          why: `Reopened work was due ${etDateTime(r.due.at)} (${r.due.words ?? "its own date"})`,
+          owner: holderName(r.holderKey),
+          nextAction: "Finish it and send it back, or move the due date on the job's edit page",
+          href: `/edit/${r.projectId}`,
+          ageDays: ageOf(r.due.at, now),
+        });
+      } else {
+        out.push({
+          id: `reopened:${r.projectId}`,
+          kind: "reopened-work",
+          severity: "medium",
+          title: streetOf(r.title),
+          why: r.reopenedAt
+            ? `Reopened ${etDateTime(r.reopenedAt)} with no due date`
+            : "Reopened after delivery with no due date",
+          owner: "Kyle",
+          nextAction: "Set its due date on the job's edit page",
+          href: `/edit/${r.projectId}`,
+          ageDays: ageOf(r.reopenedAt ?? r.deliveredAt, now),
+        });
+      }
+    }
+  }
+
   return {
     // High first, then oldest. A list somebody reads top to bottom.
     rows: out.sort((a, b) => {
@@ -660,6 +815,9 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
       "unsent-replacement": { all: qualifying.length, high: qualifying.length },
       // Read whole (under the ceiling), so this is the pile too.
       "unverified-render": { all: heldRenders.length, high: heldRenders.filter((j) => heldHours(j) >= 24).length },
+      "library-missing": { all: libraryFailures.length, high: libraryFailures.filter((e) => libraryHours(e) >= 24).length },
+      "legacy-identity": { all: legacyByEnrollment.size, high: 0 },
+      "reopened-work": { all: reopened.length, high: reopened.filter((r) => r.overdue).length },
     },
   };
 }

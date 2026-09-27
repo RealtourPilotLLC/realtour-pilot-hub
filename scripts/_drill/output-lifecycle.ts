@@ -14,7 +14,12 @@
 // database it reached is empty, and every integration key is stripped from the
 // environment so no assertion here can reach a real phone, inbox or Dropbox.
 //
-//   PATH=<node20>:$PATH npx tsx scripts/_drill/output-lifecycle.ts
+//   PATH=<node20>:$PATH NODE_OPTIONS=--conditions=react-server npx tsx \
+//     --require ./scripts/_drill/_drill-preload.cjs scripts/_drill/output-lifecycle.ts
+//
+// (The react-server condition and the preload are required: without them the
+// app's `import "server-only"` throws before a single check runs — unified
+// handoff 9.1, Sep 25 2026.)
 //
 // BEFORE/AFTER: the drill also materialises the BASELINE copy of
 // lib/deliverableOutputs.ts out of git (BASELINE_REF, default HEAD) into a

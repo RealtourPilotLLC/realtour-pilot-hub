@@ -9,6 +9,9 @@
 // reels (external) · Kyle → QC (photos/floor plans/3D/video) + item removal /
 // virtual staging / declutter / fixes · AutoHDR → AI photo editing (external) ·
 // CubiCasa → floor plans (external). (Adrian was let go — not an editor.)
+// Since then: John Mark replaced Remar (Aug 2026); premium moved in-house; and
+// Luma Visuals is the outside shop jobs are HANDED to by hand — the
+// `external_agency` key below (Jordan, Sep 25 2026).
 // The Creative Director (Jordan) = scripting / creative direction ONLY.
 // Coordination — chasing the client's MUSIC SELECTION, DELIVERY DATES, and
 // virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
@@ -64,19 +67,27 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   // who never did it. He is absent from every picker and routing rule below, so
   // nothing new can land on him.
   remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video (departed)", teamMemberName: "Remar", tz: "Asia/Manila", departed: true },
-  // Luma — engagement ENDED Aug 2026 (premium moved in-house to John Mark).
-  // Key retained so historical tasks/jobs still render; absent from all pickers.
-  luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels (no longer used)" },
+  // Luma's OLD lane — the automatic premium-reel routing that ENDED Aug 2026
+  // (premium moved in-house to John Mark). Key retained so historical tasks and
+  // jobs still render; absent from all pickers. The agency itself is still
+  // used: jobs are handed to Luma Visuals by hand through `external_agency`
+  // below — this key is never written again.
+  luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels (old automatic lane, no longer used)" },
   autohdr: { key: "autohdr", name: "AutoHDR", kind: "external", does: "AI photo editing" },
   cubicasa: { key: "cubicasa", name: "CubiCasa", kind: "external", does: "floor plans" },
   // The outside editing shop overflow video goes to. Jordan, Sep 7: "I also
   // want to be able to unassign projects from editors and reassign them to an
   // external agency. That way, our editors don't see jobs that are not
-  // assigned to them." A generic key on purpose until Jordan names the shop —
-  // rename `name` here and every surface follows. Like Luma and CubiCasa it
-  // has no login, no TeamMember row and no bell: Kyle dispatches its work, so
-  // a job handed to it leaves John's and Kim's queues entirely.
-  external_agency: { key: "external_agency", name: "External agency", kind: "external", does: "overflow video editing (outside shop)" },
+  // assigned to them." The key stayed generic until Jordan named the shop, and
+  // on Sep 25 he did: "we do work with Luma visuals and I have certain video
+  // projects that I reassign to them right now as external agency." So the
+  // NAME is Luma Visuals and the key is unchanged — live jobs already carry
+  // editorVendorKey = external_agency, and the retired `luma` key above is a
+  // different thing (the old automatic lane). Like CubiCasa it has no login,
+  // no TeamMember row and no bell: Kyle hands the work over and records the
+  // send and Luma's acknowledgement (lib/editorPacket — nothing is sent to
+  // Luma automatically), so a job handed to it leaves John's and Kim's queues.
+  external_agency: { key: "external_agency", name: "Luma Visuals", kind: "external", does: "overflow video editing (outside agency, handed over by the office)" },
 };
 
 // The keys the VIDEO lane is narrated from — the Editing Room row's status,
@@ -150,8 +161,9 @@ export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
 // Their tasks show under "Needs <name>", not the delegated-editor groups.
 export const OPERATOR_KEYS: EditorKey[] = ["kyle", "jordan"];
 // The ones you delegate editing work to (everyone except the operators). Order =
-// how they list.
-export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "luma", "autohdr", "cubicasa", "external_agency"];
+// how they list. No `luma`: that retired key would list beside "Luma Visuals"
+// (external_agency) in the fallback pickers, and setTaskAssignee refuses it.
+export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "autohdr", "cubicasa", "external_agency"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
   return key && key in EDITORS ? EDITORS[key as EditorKey] : null;

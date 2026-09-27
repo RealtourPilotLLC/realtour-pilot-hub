@@ -16,7 +16,13 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const LINK_TTL_MS = 3.5 * 3600_000; // Dropbox temporary links live 4h
+// Keyed by submission AND path (9.8, Sep 25 2026). It used to be the id alone,
+// and the path behind one id moves: the 1080p pass files the editor's original
+// into superseded/ (topazJobs.fileAsFinal) and a portal viewer is now served
+// the render at a different path — so a link cached for the old path could be
+// handed out for up to 3.5 hours after the file under it had moved.
 const linkCache = new Map<string, { link: string; at: number }>();
+const linkKey = (id: string, path: string) => `${id}:${path}`;
 
 // The stable playback URL stored on every ReviewSubmission (assetUrl). It never
 // serves bytes itself for a Dropbox-held cut: it checks who is asking, mints a
@@ -131,28 +137,44 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   if (!allowed) return NextResponse.json({ error: "You don't have access to this cut." }, { status: 403 });
   if (!sub) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // TOPAZ BEFORE RELEASE (9.6b, Sep 25 2026). Jordan: approve first, run it
+  // through Topaz, "and deliver to the client in the client portal, already ran
+  // through topaz." For a CLIENT's request on a program cut, the bytes are the
+  // verified 1080p render once there is one; while the pass is still running
+  // or its file is HELD for a listen, the client gets nothing — never the
+  // editor's export standing in for it. Staff (the Review Room, the ready card,
+  // a staff media token, or a staff member who is also signed into a TEST
+  // portal in this browser) keep the approved original they reviewed.
+  let processed: { path: string; fileName: string } | null = null;
+  if (portalPair) {
+    let staffToo = false;
+    if (!media && !token) {
+      const { canViewProject } = await import("@/lib/auth/guards");
+      staffToo = await canViewProject(sub.projectId);
+    }
+    if (!staffToo) {
+      const { clientCutFiles, WHY } = await import("@/lib/cutEntitlement");
+      const cf = (await clientCutFiles([id])).get(id);
+      if (cf?.kind === "finishing") return NextResponse.json({ error: WHY.FINISHING }, { status: 409 });
+      if (cf?.kind === "processed") processed = { path: cf.path, fileName: cf.fileName };
+    }
+  }
+
   // Uploaded through the hub → served BY THIS ROUTE from the hub's own store.
-  // It used to 302 the browser at the blob URL, and those objects are public
-  // (see the note in /api/review/upload): the moment that URL left the gate it
-  // was a permanent, credential-free link to an unreleased client video — a
-  // 368 MB one in the audit's reproduction. The bytes now come back through
-  // here, so the gate above is the only way THROUGH THIS ROUTE, and playback
-  // never puts the object's address in a <video src>, an <a href> or the
-  // referrer of anything the player loads. Range is proxied straight through
-  // (and 206 returned verbatim) so scrubbing a 2 GB cut still works exactly
-  // as it did.
+  // It used to 302 the browser at the blob URL, and those objects were public:
+  // the moment that URL left the gate it was a permanent, credential-free link
+  // to an unreleased client video — a 368 MB one in the audit's reproduction.
+  // The bytes come back through here, so the gate above is the only way in,
+  // and playback never puts the object's address in a <video src>, an <a href>
+  // or the referrer of anything the player loads. Range is proxied straight
+  // through (and 206 returned verbatim) so scrubbing a 2 GB cut still works.
   //
-  // WHAT REMAINS (Sep 16). The client payload no longer carries the URL —
-  // CutSubmission passes `hasHubCopy`, a boolean — so this route is now the
-  // only door the hub opens. The objects themselves, however, are still in a
-  // PUBLIC store, so every URL ever emitted (the 11 files live today) stays
-  // reachable by anyone who kept one. That cannot be fixed in code: the SDK
-  // refuses a private upload to a public store ("Cannot use private access on
-  // a public store"), so the store has to be REPLACED by one created with
-  // private access and the existing objects moved across. Jordan's call; until
-  // then, treat any cut URL that has already left the building as still live.
-  // docs/REVIEW-CUT-STORE-HANDOVER.md is the order that replacement has to go
-  // in and the list of what else breaks; no private read has ever executed.
+  // THE STORE IS PRIVATE NOW (A43, Sep 25 2026). Cuts live on the private
+  // review-cut store (3a301ad; all 32 rows moved, an anonymous read refused for
+  // every one) and blobFetchDecision signs each read with the store token — so
+  // even the object URL in the database opens nothing on its own. The old
+  // public objects still answer until Jordan deletes them (docs/handoff.md);
+  // no page has emitted one of their URLs since Sep 16, and none does now.
   // `dl=1` (the portal's download door, /api/portal/download, and the
   // Ready-to-send card's Download button) asks for an attachment so the browser
   // saves the file instead of playing it.
@@ -178,6 +200,26 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     }
     if (!mayDownload) return NextResponse.json({ error: "This version can be downloaded once it's approved — approve it on your page first." }, { status: 403 });
   }
+  // The client's copy is the 1080p render (9.6b), RELAYED through this route
+  // for playback and download alike — Range passed up, 206 passed down, the
+  // video's own name on it (not "FINAL (Topaz)"). Playback used to 302 the
+  // player to a Dropbox temporary link: a credential-free URL to the whole
+  // file for ~4 hours, minted even for a cut the client had not approved, that
+  // outlived a revoked seat and side-stepped the dl=1 release check above
+  // (review, Sep 25). Hub-uploaded cuts were proxied before 9.6b, and every
+  // render comes from one, so the render keeps that: its address never leaves
+  // the hub. Nothing here stamps the office hand-off: this is the client's door.
+  if (processed) {
+    try {
+      const link = await dropboxLinkFor(id, processed.path);
+      return await relay(req, link, null, processed.fileName, wantsFile);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown";
+      const status = /not_found|path_lookup/i.test(msg) ? 404 : 502;
+      // Client copy: plain words, no dash, and no claim that anybody was told.
+      return NextResponse.json({ error: status === 404 ? "This video's file could not be found. Please try again shortly." : "The video couldn't be fetched right now. Please try again." }, { status });
+    }
+  }
   if (sub.blobUrl) {
     const res = await proxyBlob(req, sub.blobUrl, sub.fileName, wantsFile);
     // The store accepted the read and the body is on its way back. Everything
@@ -201,14 +243,14 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     // through the same Dropbox ceiling the status sweep uses. Cache the
     // minted link per submission for most of its 4-hour life (in memory,
     // never in the DB).
-    const cached = linkCache.get(id);
+    const cached = linkCache.get(linkKey(id, path));
     let link = cached && Date.now() - cached.at < LINK_TTL_MS ? cached.link : null;
     if (!link) {
       const { dbx } = await import("@/lib/integrations/dropbox");
       const r = await dbx<{ link?: string; metadata?: { content_hash?: string; rev?: string } }>("files/get_temporary_link", { path });
       if (!r.link) throw new Error("Dropbox returned no link");
       link = r.link;
-      linkCache.set(id, { link, at: Date.now() });
+      linkCache.set(linkKey(id, path), { link, at: Date.now() });
       // The link came with the file's metadata for free: if these are not the
       // bytes the editor checked, the check stops standing for them now.
       if (path === sub.assetPath) await voidCheckOnDrift(id, sub, r.metadata);
@@ -326,11 +368,6 @@ export { blobFetchDecision } from "@/lib/reviewCuts";
 export type { BlobFetchDecision } from "@/lib/reviewCuts";
 
 async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | null, asAttachment = false): Promise<Response> {
-  const range = req.headers.get("range");
-  const headers: Record<string, string> = {};
-  if (range) headers.Range = range;
-  const ifRange = req.headers.get("if-range");
-  if (ifRange) headers["If-Range"] = ifRange;
   // No token argument: the decision reads every store token this deployment
   // holds (blobStoreTokens), which during the store cutover is two — so a cut
   // still living in the old store and one already in the new one both play.
@@ -342,12 +379,37 @@ async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | n
     console.error("[review] private cut object on a store this deployment holds no token for:", decision.host);
     return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
   }
-  if (decision.authorization) headers.authorization = decision.authorization;
+  return relay(req, blobUrl, decision.authorization ?? null, fileName, asAttachment);
+}
+
+/** A fresh (or cached) Dropbox temporary link for this cut's file at `path`. */
+async function dropboxLinkFor(id: string, path: string): Promise<string> {
+  const cached = linkCache.get(linkKey(id, path));
+  if (cached && Date.now() - cached.at < LINK_TTL_MS) return cached.link;
+  const { dbx } = await import("@/lib/integrations/dropbox");
+  const r = await dbx<{ link?: string }>("files/get_temporary_link", { path });
+  if (!r.link) throw new Error("Dropbox returned no link");
+  linkCache.set(linkKey(id, path), { link: r.link, at: Date.now() });
+  return r.link;
+}
+
+/**
+ * Stream an upstream file back through this route: Range and If-Range passed
+ * up, a faithful 206 passed down, the name and disposition ours. Shared by the
+ * hub's own store (proxyBlob) and a client's 1080p download (9.6b).
+ */
+async function relay(req: NextRequest, url: string, authorization: string | null, fileName: string | null, asAttachment: boolean): Promise<Response> {
+  const range = req.headers.get("range");
+  const headers: Record<string, string> = {};
+  if (range) headers.Range = range;
+  const ifRange = req.headers.get("if-range");
+  if (ifRange) headers["If-Range"] = ifRange;
+  if (authorization) headers.authorization = authorization;
 
   let upstream: Response;
   try {
     // cache: "no-store" — a 368 MB video must never enter Next's fetch cache.
-    upstream = await fetch(blobUrl, { headers, cache: "no-store", redirect: "follow" });
+    upstream = await fetch(url, { headers, cache: "no-store", redirect: "follow" });
   } catch {
     return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
   }

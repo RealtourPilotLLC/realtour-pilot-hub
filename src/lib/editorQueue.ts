@@ -15,6 +15,9 @@ import { OWES_AN_ADDITIONAL_SHOOT } from "@/lib/uploadHistory";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
 import { isHeldForSelfCheck } from "@/lib/selfCheck";
+// A52: a reopened job's date is its reopen clock — the same reader the
+// delivery board, the project brief and the edit page use.
+import { dueSetTimesFor, reopenedClocksFor, reopenedDueFor } from "@/lib/deliveryBoard";
 import {
   computedVideosOwed,
   computedView,
@@ -96,7 +99,13 @@ export const CHECK_NEEDED_STATUS = "Check needed";
  */
 export const WAITING_ON_INSTRUCTIONS = "Waiting on instructions";
 
-export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[] }> {
+/** A queue row plus the words under its date (A52): where a reopened job's
+ *  due came from — "client revision · 24 to 48 business hours", "reopened ·
+ *  due the same business day", "moved by Kyle", or that nothing dates it yet.
+ *  Null on every other row, whose date is the delivery promise as before. */
+export type EditorQueueRow = QueueRow & { dueNote: string | null };
+
+export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; upcoming: EditorQueueRow[]; done: EditorQueueRow[] }> {
   const rules = await editorRouting();
   const now = new Date();
   const deliveredCutoff = etAddDays(now, -60);
@@ -307,26 +316,33 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   // these rows; sorting the queue by it would put a job filmed this morning at
   // the top of the board wearing a deadline from last week. The per-video
   // promise the portal stamped (DeliverableOutput.promisedAt, promiseSource
-  // "additional-shoot") is the only date that means anything here. One extra
-  // query, and only when a reopened job is actually on the rail.
-  const extraShootDue = new Map<string, Date>();
-  if (reopenedIds.size > 0) {
-    const extraRowIds = inflight
-      .filter((p) => reopenedIds.has(p.id))
-      .flatMap((p) => p.deliverables.filter(isAdditionalShootRow).map((d) => d.id));
-    if (extraRowIds.length > 0) {
-      const outs = await prisma.deliverableOutput.findMany({
-        where: { deliverableId: { in: extraRowIds }, removedFromOrderAt: null, waivedAt: null, promisedAt: { not: null } },
-        orderBy: { promisedAt: "asc" },
-        select: { projectId: true, promisedAt: true },
-      });
-      // Soonest first, so the first write per job wins — an extra shoot has one
-      // slot today, and if it ever has more the nearest deadline is the one the
-      // board has to show.
-      for (const o of outs) if (o.promisedAt && !extraShootDue.has(o.projectId)) extraShootDue.set(o.projectId, o.promisedAt);
-    }
-  }
-  const toRow = (p: P, upcoming = false): QueueRow => {
+  // "additional-shoot") is the only date that means anything here.
+  //
+  // …AND EVERY OTHER REOPENED JOB HAS ITS OWN CLOCK NOW (A52, Sep 25 2026). A
+  // REVISION on a job delivered once used to read the delivery promise it had
+  // already kept — "late" from the moment the client wrote back — while the
+  // delivery board and the project brief showed no date at all. One reader
+  // (deliveryBoard.reopenedClocksFor) answers for all of them: the extra
+  // video's promise, a client round's 48 business hours, the same business day
+  // for anything else reopened, or the date a person set. One query, only for
+  // rows delivered once.
+  const clocks = await reopenedClocksFor(inflight.filter((p) => !!p.deliveredAt).map((p) => p.id));
+  // …and when the office's own due was saved (A52 review): overrideAt moves on
+  // any override save, so it cannot say whether the date was set for THIS reopen.
+  const dueSet = await dueSetTimesFor(inflight.filter((p) => !!p.deliveredAt && !!p.dueOverrideAt).map((p) => p.id));
+  // ---- HANDED TO LUMA VISUALS (§7.7 / A33, Sep 25) -------------------------
+  // A job handed to the outside agency leaves our editors' boards, and its row
+  // said nothing about whether the files ever went. It now carries the office's
+  // own record of the send ("Not sent to Luma Visuals yet", "v2 sent … not
+  // acknowledged") from lib/editorPacket — one query for the whole board. A
+  // photographer's missing handoff still wins the line (O01).
+  const agencyIds = inflight
+    .filter((p) => (p.editorManual && p.editorVendorKey === "external_agency") || taskEditor.get(p.id) === "external_agency")
+    .map((p) => p.id);
+  const agencyLine = agencyIds.length
+    ? await import("@/lib/editorPacket").then((m) => m.dispatchLinesFor(agencyIds)).catch(() => new Map<string, string>())
+    : new Map<string, string>();
+  const toRow = (p: P, upcoming = false): EditorQueueRow => {
     const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const monthly = isMonthlyContentJob(p.deliverables);
     // The hub's own verdict; the office's override (Sep 13) is applied to the
@@ -449,7 +465,11 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       !upcoming && p.status !== "DELIVERED" && (effectiveStatus === "SHOT" || effectiveStatus === "EDITING")
         ? p.handoffBlockedReason?.trim().replace(/\.$/, "") || null
         : null;
-    if (blockedBy && !pinned && wl.label === "Ready for editing") wl.label = WAITING_ON_INSTRUCTIONS;
+    // …and an EDITING nobody has confirmed is the same state (A32 residual,
+    // Sep 25): nobody pressed Start, so the edit card and Kyle's board both
+    // said "Waiting on instructions" while this row said "In editing — not
+    // confirmed". Paused or active work keeps its own words, as above.
+    if (blockedBy && !pinned && (wl.label === "Ready for editing" || wl.label === "In editing — not confirmed")) wl.label = WAITING_ON_INSTRUCTIONS;
     // ---- FOUR VIDEOS, ONE WORD (Jordan, Sep 18) --------------------------
     //
     // "She has 4 videos. 1 is ready for review, and the rest are in editing.
@@ -483,12 +503,16 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
 
     const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
     const computedDue = upcoming ? null : p.deliveryDue ?? null;
-    // A reopened job's date is the EXTRA video's, when the portal stamped one
-    // (see extraShootDue). Falling back to the job's own date is what this
-    // replaces, so a slot that never got a promise reads exactly as before.
+    // A job delivered once and owed again reads its REOPEN clock (A52, see
+    // `clocks`): the extra video's promise, a client round's, the same-day
+    // one, or a person's — and the office's own date only if it was set for
+    // this reopen. Nothing dates it → no date (it sorts last and is on Kyle's
+    // exceptions), never the delivery promise it already kept.
     const reopened = reopenedIds.has(p.id);
+    const reopenedWork = !upcoming && !!p.deliveredAt && (p.status !== "DELIVERED" || reopened);
+    const rd = reopenedWork ? reopenedDueFor({ ...p, dueSetAt: dueSet.get(p.id) ?? null }, clocks.get(p.id) ?? null) : null;
     const due = upcoming ? p.shootDate ?? null
-      : reopened ? extraShootDue.get(p.id) ?? effectiveDue(p, computedDue)
+      : rd ? rd.at
       : effectiveDue(p, computedDue);
     return {
       id: p.id,
@@ -513,7 +537,7 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       workChip: upcoming || reopened ? null : wl.chip,
       // The handoff engine's sentence for what the photographer still owes
       // (O01) — the same words the edit card and the delivery board print.
-      blocker: reopened ? null : blockedBy,
+      blocker: reopened ? null : blockedBy ?? (upcoming ? null : agencyLine.get(p.id) ?? null),
       // The office is holding this job in Waiting (Sep 11): the pill on the
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job
@@ -530,8 +554,10 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       // other row shows the delivery due — the office's date when set.
       dueISO: due?.toISOString() ?? null,
       // A DELIVERED job is never late — except a reopened one, where `due` is
-      // the EXTRA video's own promise and nothing about the first delivery.
+      // the reopen's own clock and nothing about the first delivery.
       late: !upcoming && (p.status !== "DELIVERED" || reopened) && !!due && due < now,
+      // Where a reopened job's date came from, in plain words (A52).
+      dueNote: rd ? (rd.at ? rd.words : "reopened · no due date yet") : null,
       priority: effectivePriority(p, p.priority),
       // A reopened job owes the EXTRA videos, not the job's total. The job's
       // number counts the video the client already has — on the Not Done rail,

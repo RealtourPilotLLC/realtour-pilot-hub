@@ -116,6 +116,13 @@ export type DownloadPlan = {
 async function downloadPlanFor(e: Entitlement): Promise<DownloadPlan | null> {
   const f = e.file;
   if (!f) return null;
+  // 9.6b: the client's file is the verified 1080p render, which lives in
+  // Dropbox, not the hub's store. The stream route RELAYS it with an attachment
+  // header (so it saves under the video's own name), but its size is not known
+  // without a Dropbox call on every page render — so the page navigates to the
+  // door and the browser's own download shows the progress. Never held in the
+  // page's memory.
+  if (f.kind === "cut" && f.processed) return { mode: "redirect", fileName: f.processed.fileName, sizeBytes: null, ref: e.captionRef };
   if (f.kind === "cut" && f.submissionId) {
     const sub = await prisma.reviewSubmission.findUnique({ where: { id: f.submissionId }, select: { blobUrl: true, sizeBytes: true, fileName: true } });
     const size = sub?.sizeBytes ?? null;
@@ -409,6 +416,16 @@ export async function saveCaptionEdit(viewer: PortalViewer, videoId: string, inp
 type CaptionOut = { caption: string; shorterCaption?: string | null; ctaOptions?: string[] | null; coverTitles?: string[] | null; captionCta?: string | null; gaps?: { text?: string }[] };
 
 /**
+ * Words that mean "an offer the video promised" (caption grounding, Sep 25
+ * 2026). Carried over from the retired captionAssistant.ts, which had this
+ * guard while the live path below did not: when the approved strategy names
+ * no Caption CTA Examples, a CTA offering a free guide, a checklist or a
+ * discount is an offer the client never made, and it is dropped before it is
+ * saved — whatever the model wrote.
+ */
+const INVENTED_OFFER = /\b(free|download|guide|checklist|e-?book|template|webinar|workbook|cheat ?sheet|giveaway|discount|coupon)\b/i;
+
+/**
  * "Draft a caption" from the portal: a person's click, gated by the
  * caption_assistant switch. The final cut's transcript is the primary factual
  * source; when there is none the draft is made from the linked script and
@@ -454,10 +471,17 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   const sourceNote = transcriptText
     ? `Drafted from the transcript of the final cut, with ${scriptWord} as supporting context.`
     : `Drafted from ${scriptWord} — no transcript yet${transcript?.gap ? ` (${transcript.gap})` : ""}.`;
+  // The CTA may only offer what the approved strategy offers (grounding).
+  const hasExamples = (built.ctx.strategy?.document?.captionCtaExamples?.items ?? []).length > 0;
+  const ctaRule = hasExamples
+    ? "CTA OPTIONS: each modelled on the approved strategy's Caption CTA Examples or a plain engagement ask. Never invent an offer, a lead magnet or a resource the strategy does not name."
+    : "CTA OPTIONS: plain engagement asks only (save this, share it, a question in the comments, reach out to talk it through). The strategy names NO offers, so no free guides, checklists, downloads or discounts.";
   const user = [
     bundle.user,
     "",
     transcriptText ? `TRANSCRIPT OF THE FINAL CUT (primary factual source — the caption must not claim anything the video no longer says):\n${clip(transcriptText, 6000)}` : "NO TRANSCRIPT OF THE FINAL CUT EXISTS. Draft from the script only, and keep every claim to what the script says.",
+    "",
+    ctaRule,
     "",
     "Also return: shorterCaption (one or two lines), ctaOptions (0-3 short options that fit the video's goal — none if the video is purely educational), coverTitles (0-3 short on-screen title suggestions).",
   ].join("\n");
@@ -477,6 +501,9 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
     return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit — try again tomorrow, or write one below." : "The caption assistant couldn't draft just now — try again in a moment, or write one below." };
   }
   const draftSubmissionId = target.ref;
+  // No invented offers, whatever the model wrote (see INVENTED_OFFER).
+  const offerOk = (x: string | null | undefined) => !!x && x.trim() !== "" && (hasExamples || !INVENTED_OFFER.test(x));
+  out = { ...out, captionCta: offerOk(out.captionCta) ? out.captionCta : null, ctaOptions: (out.ctaOptions ?? []).filter((x) => offerOk(x)).slice(0, 3) };
   const rows: { kind: string; body: string; options: string[] }[] = [
     { kind: "CAPTION", body: out.caption, options: [] },
     ...(out.shorterCaption ? [{ kind: "SHORT_CAPTION", body: out.shorterCaption, options: [] }] : []),

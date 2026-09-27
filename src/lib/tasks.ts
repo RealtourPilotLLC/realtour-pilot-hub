@@ -525,6 +525,13 @@ export const VIP_SEGMENTS = new Set(["vip", "heavy"]);
 // Priority is HIGH; URGENT only when the client is a VIP/heavy account or the
 // ask itself says they are unhappy. Shared by every revision-type minter
 // (comms.raiseRevision, the re-QC card, the Editing Room's new-cut rail).
+//
+// SUPERSEDED FOR THE DATE (A52, Sep 25 2026): §3 now gives a client round a
+// clock — target 24, due 48 hours of weekday time after the ask — and Jordan
+// made anything else reopened due the same business day. Minters still write
+// dueAt null here (never "due now", which was the Sep 8 bug); the clock is
+// written on the RevisionBrief and copied onto the revision card by
+// revisionBrief.mirrorClockToTasks. Priority is unchanged.
 // ---------------------------------------------------------------------------
 // "again" only counts when it carries a complaint ("wrong again", "once again",
 // "again … not") — a bare `again` made "thanks again for the great video!"
@@ -718,6 +725,8 @@ export function specsForProject(p: {
   removalNotes?: string | null;
   shotOrderNotes?: string | null;
   debriefSubmittedAt?: Date | null;
+  /** O05: the photos half's own handoff — the photo QC line waits on this, not on the video brief */
+  photosHandoffAt?: Date | null;
   videoInstructions?: string | null;
   /** editable promise table (Settings → Turnaround promises) */
   turnarounds?: PromiseRules;
@@ -901,7 +910,11 @@ export function specsForProject(p: {
       // Positive framing so done:true = good; unchecked BLOCKS delivery until
       // the page is submitted (Jordan's law: the job isn't done until it is),
       // and the submit self-clears it on the next sweep.
-      qcItems.push({ label: QC_LABEL_PAGE_SUBMITTED, done: !!p.debriefSubmittedAt });
+      // O05 (Sep 25 2026): the PHOTOS half's handoff. Photos and video are
+      // submitted separately now, and a video brief still owed must not hold
+      // the gallery's QC card open. Coalesced: jobs submitted the old way
+      // carry only the whole-page stamp.
+      qcItems.push({ label: QC_LABEL_PAGE_SUBMITTED, done: !!(p.photosHandoffAt ?? p.debriefSubmittedAt) });
     }
 
     // QC and "deliver the gallery" are ONE motion for Kyle — a separate
@@ -1508,6 +1521,15 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
       });
     }
   } catch { /* dial is analytics-only — never block the revision */ }
+  // REOPENED WORK IS DUE THE SAME DAY (A52, Jordan Sep 25). A client's ask
+  // already carries its 24–48 business-hour clock by now (comms writes the
+  // brief first), so this only dates a job the OFFICE put back — the Editing
+  // Room's new cut on a finished job. A no-op on a job with any clock, or one
+  // never delivered. Never throws.
+  {
+    const { stampReopenedClock } = await import("@/lib/revisionBrief");
+    await stampReopenedClock(projectId, { why: reason?.trim() ? `a new round on the finished job: ${clip(reason.trim(), 160)}` : "a new round on the finished job" });
+  }
   const existing = await prisma.smartTask.findFirst({
     where: { projectId, taskType: "media_qa" },
     orderBy: { createdAt: "desc" },
@@ -1625,6 +1647,11 @@ export async function closeObsoleteTasks(
     // closeActiveWork never throws.
     const { closeActiveWork } = await import("@/lib/editorWork");
     await closeActiveWork(projectId, { reason: projectStatus === "DELIVERED" ? "PROJECT_DELIVERED" : "PROJECT_CANCELLED" });
+    // …and the reopened work's clocks are met (A52): the next time this job
+    // comes back it starts a clock of its own, never inherits this one's
+    // passed date. Checks the job really is settled; never throws.
+    const { settleReopenedClocks } = await import("@/lib/revisionBrief");
+    await settleReopenedClocks(projectId);
   }
   if (projectStatus === "CANCELLED") {
     const r = await prisma.smartTask.updateMany({
@@ -2483,12 +2510,41 @@ export async function confirmNotRequiredTask(deliverableId: string): Promise<voi
     },
   });
   if (!d?.project) return;
+  // O05 (review, Sep 25 2026): an item that stops being owed may be the last
+  // thing the WHOLE wrap-up was waiting on — the photos went in last night and
+  // the reel is excused this morning. Every excusal road passes through here,
+  // so the claim runs here (lib/wrapUp); without it My Pay kept hiding the
+  // shoot and the KPI scored a late video nobody wanted. Best-effort.
+  const excusedWhy = d.waivedAt
+    ? "marked not required by the office"
+    : d.removedFromOrderAt
+      ? "it came off the order"
+      : d.notCompletedReason
+        ? `marked not completed: ${clip(d.notCompletedReason, 120)}`
+        : null;
+  if (excusedWhy) {
+    try {
+      const { completeWrapUpIfWhole } = await import("@/lib/wrapUp");
+      await completeWrapUpIfWhole(d.project.id, { why: excusedWhy });
+    } catch { /* the hourly sweep's net (cron/sync wrapUps) completes it */ }
+  }
   const key = waiveConfirmKey(d.id);
   const open = { status: { notIn: ["COMPLETED", "CANCELLED"] } };
+  // §7.6 (Sep 25 2026): the job's production-gap record follows the same
+  // answer — raised with the reason, RESOLVED by the office's "Not required",
+  // CANCELLED when the reason is withdrawn or the line leaves the order. Every
+  // change of that answer already passes through here. Best-effort.
+  const syncGap = async (taskId?: string | null) => {
+    try {
+      const { syncOutputGap } = await import("@/lib/productionGaps");
+      await syncOutputGap(d.id, taskId ?? null);
+    } catch { /* the card is the office's signal either way */ }
+  };
   // The reason was withdrawn, the office already waived it, or the order lost
   // the line — there is nothing left to ask.
   if (!d.notCompletedReason || d.waivedAt || d.removedFromOrderAt || ["CANCELLED", "ON_HOLD"].includes(d.project.status)) {
     await prisma.smartTask.updateMany({ where: { dedupeKey: key, ...open }, data: { status: "CANCELLED" } }).catch(() => {});
+    await syncGap();
     return;
   }
   const category = TYPE_CATEGORY_LABEL[d.type] ?? labelFor(d.type);
@@ -2498,10 +2554,15 @@ export async function confirmNotRequiredTask(deliverableId: string): Promise<voi
   const summary = [
     `${who} marked the ${category.toLowerCase()} not completed at the shoot: "${clip(d.notCompletedReason, 220)}".`,
     `If the client really didn't buy it, mark it "Not required" on the job — it then stops counting as missing, stops the ${category === "Floor plan" ? "CubiCasa" : "vendor"} chase, and stays on the record with your note.`,
-    `If it IS still owed, leave it: /projects/${d.project.id}#deliverables`,
+    // §7.6: the ONE card for a missing video too — ensureEditorHandoff no
+    // longer mints a second "Video marked not completable" card beside it.
+    d.type === "VIDEO" || d.type === "SOCIAL_REEL"
+      ? `If it IS still owed, plan the recovery (a reshoot with its shot list, or the client supplies it) on the job's upload page: /upload/${d.project.id}`
+      : `If it IS still owed, leave it: /projects/${d.project.id}#deliverables`,
   ].join(" ");
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true, status: true } });
   if (existing) {
+    await syncGap(existing.id);
     if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return; // answered once, never re-asked
     await prisma.smartTask.update({ where: { id: existing.id }, data: { title, summary: summary.slice(0, 500) } }).catch(() => {});
     return;
@@ -2525,6 +2586,8 @@ export async function confirmNotRequiredTask(deliverableId: string): Promise<voi
       dedupeKey: key,
     },
   }).catch(() => { /* a race on the unique key is a no-op */ });
+  const card = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true } }).catch(() => null);
+  await syncGap(card?.id ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -3233,7 +3296,24 @@ export async function addRoundToEditCard(
     rules: await roundTurnarounds().catch(() => undefined),
     promisedDueAt: p?.promisedDueAt ?? null,
   });
-  const dueAt = p?.dueOverrideAt ?? rule.dueAt;
+  // A ROUND ON REOPENED WORK IS DUE BY THE REOPEN'S CLOCK (A52). On a job
+  // delivered once, the SLA rule above dates the round off the ORIGINAL shoot,
+  // so a new round on a finished job was born weeks overdue. Revisions on the
+  // queue pill on a delivered row come through here: that is the office
+  // reopening it, and it is due the same business day unless a client round
+  // or a person already dated it (stampReopenedClock is a no-op then).
+  let reopenedAt: Date | null | undefined;
+  {
+    const { stampReopenedClock } = await import("@/lib/revisionBrief");
+    const s = await stampReopenedClock(projectId, { why: opts.reason });
+    if (s.reason !== "not reopened work" && s.reason !== "no such job") {
+      const { reopenedClocksFor, reopenedDueFor, dueSetTimesFor } = await import("@/lib/deliveryBoard");
+      const pr = await prisma.project.findUnique({ where: { id: projectId }, select: { dueOverrideAt: true, overrideAt: true, deliveredAt: true } });
+      const dueSetAt = pr?.dueOverrideAt ? (await dueSetTimesFor([projectId])).get(projectId) ?? null : null;
+      reopenedAt = pr ? reopenedDueFor({ ...pr, dueSetAt }, (await reopenedClocksFor([projectId])).get(projectId) ?? null).at : undefined;
+    }
+  }
+  const dueAt = reopenedAt !== undefined ? reopenedAt : p?.dueOverrideAt ?? rule.dueAt;
 
   // ---------------------------------------------------------------------
   // A05 (Sep 21 audit, fixed Sep 22 2026) — THE APPEND HAPPENS UNDER A LOCK.
@@ -3336,11 +3416,12 @@ export async function editCardCutSubmitted(
 // ---------------------------------------------------------------------------
 /** The handoff question for the fields ensureEditorHandoff selects — one
  *  mapping, used for the receipt and the card alike (O01). */
-async function handoffReadinessOf(p: {
+export async function handoffReadinessOf(p: {
   orderItems: { title: string | null }[];
-  deliverables: { type: string; label: string | null; productTitle: string | null }[];
+  deliverables: { type: string; label: string | null; productTitle: string | null; videoStyle?: string | null; notCompletedReason?: string | null }[];
   packageName: string | null;
   debriefSubmittedAt: Date | null;
+  videoHandoffAt?: Date | null;
   videoInstructions: string | null;
   editorBrief: string | null;
   reelScript: string | null;
@@ -3350,11 +3431,28 @@ async function handoffReadinessOf(p: {
   photographer: { name: string } | null;
 }): Promise<import("@/lib/handoff").HandoffReadiness> {
   const { handoffReadiness } = await import("@/lib/handoff");
+  // §7.4 (Sep 25 2026): the SAME video step the upload page showed and the
+  // submit gate enforced — the Deliverable.videoStyle stamp first, the
+  // Settings premium mapping, canceled lines out (the select below filters
+  // them). Asked from names alone, a canceled premium line or an unmapped
+  // stamp made this card demand a script no screen could supply.
+  const { resolveVideoSpec } = await import("@/lib/pipeline");
+  const { videoTier } = await import("@/lib/projectStatus");
+  const live = p.deliverables.filter((d) => !d.notCompletedReason);
+  const { spec } = resolveVideoSpec({
+    deliverables: p.deliverables,
+    orderItems: p.orderItems,
+    packageName: p.packageName,
+    isPremium: videoTier(live) === "premium",
+  });
   return handoffReadiness({
     titles: [...p.orderItems.map((o) => o.title), ...p.deliverables.map((d) => d.productTitle ?? d.label)],
     hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
     isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
+    spec,
     debriefSubmittedAt: p.debriefSubmittedAt,
+    // O05: the edit waits on the VIDEO half's handoff, not the whole page.
+    videoSubmittedAt: p.videoHandoffAt ?? null,
     videoInstructions: p.videoInstructions,
     editorBrief: p.editorBrief,
     reelScript: p.reelScript,
@@ -3379,8 +3477,10 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       photographerId: true,
       photographer: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true, notCompletedReason: true, quantity: true } },
-      orderItems: { select: { title: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true, notCompletedReason: true, quantity: true, videoStyle: true } },
+      // Live lines only (§7.4): a canceled premium line must not keep
+      // demanding a script the order no longer carries.
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
       packageName: true,
       videosFilmed: true,
       videosOwedOverride: true, // the office's batch size (Sep 13) — wins below
@@ -3390,6 +3490,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       // of files — the delivery board then fell through to "ready to edit" and
       // told Kyle a job was ready to cut when nobody had said what to cut.
       debriefSubmittedAt: true,
+      videoHandoffAt: true, // O05 — the video half's own handoff
       videoInstructions: true,
       editorBrief: true,
       reelScript: true,
@@ -3457,10 +3558,22 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // HIGH). Instead: one Admin decision task — cancel the item (fix the order
   // in Aryeo so billing + expectations follow) or book the re-shoot.
   const videoDeliverables = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  // §7.6 (Sep 25 2026): ONE card per missing video. The wrap-up's answer
+  // already raises the per-deliverable "Confirm: Video not required?" card
+  // (confirmNotRequiredTask) and a production-gap record; this project-level
+  // card beside it gave Kyle two cards for one reel. It is kept only as the
+  // backstop for a reason no gap was ever recorded for.
+  let gapCarriesIt = false;
+  if (videoDeliverables.length > 0 && videoDeliverables.every((d) => d.notCompletedReason)) {
+    try {
+      const { hasOpenOutputGap } = await import("@/lib/productionGaps");
+      gapCarriesIt = await hasOpenOutputGap(projectId, ["VIDEO", "SOCIAL_REEL"]);
+    } catch { /* unknown → the old card, as before */ }
+  }
   if (videoDeliverables.length > 0 && videoDeliverables.every((d) => d.notCompletedReason)) {
     const street = (p.title || "this job").split(",")[0].trim();
     const reason = videoDeliverables.map((d) => d.notCompletedReason).filter(Boolean).join(" · ");
-    await prisma.smartTask.upsert({
+    if (!gapCarriesIt) await prisma.smartTask.upsert({
       where: { dedupeKey: dedupe([projectId, "video-not-completable"]) },
       create: {
         taskType: "internal_instruction",
@@ -3977,6 +4090,8 @@ type TaskProject = {
   // own notes instead of guessing (Jordan, Sep 1).
   removalNotes: string | null; shotOrderNotes: string | null;
   cullingConfirmedAt: Date | null; debriefSubmittedAt: Date | null; videoInstructions: string | null;
+  /** O05 — rides along with `include` */
+  photosHandoffAt?: Date | null;
   deliverables: { type: string; label: string | null; productTitle?: string | null }[];
   /** live Aryeo line items (isCanceled filtered at the query) — same-day rush */
   orderItems?: { title: string }[];
@@ -4130,6 +4245,7 @@ async function syncOneProjectTasks(
     removalNotes: p.removalNotes,
     shotOrderNotes: p.shotOrderNotes,
     debriefSubmittedAt: p.debriefSubmittedAt,
+    photosHandoffAt: p.photosHandoffAt ?? null,
     videoInstructions: p.videoInstructions,
     appointments: p.appointments,
     clientName: p.client.name,

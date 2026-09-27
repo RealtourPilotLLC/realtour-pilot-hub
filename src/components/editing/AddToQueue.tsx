@@ -44,19 +44,21 @@ export function AddToQueue() {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seq = useRef(0);
 
-  // Debounced server search; a stale response never overwrites a newer one.
-  useEffect(() => {
-    if (!open) return;
+  // Debounced server search, started by the typing itself; a stale response
+  // never overwrites a newer one. (It ran in an effect keyed on the query,
+  // which set state synchronously inside the effect — the react-hooks lint
+  // error this file carried; Sep 25. Same debounce, same sequence guard.)
+  const onQuery = (next: string) => {
+    setQ(next);
     if (timer.current) clearTimeout(timer.current);
-    const query = q.trim();
+    const query = next.trim();
+    const mySeq = ++seq.current; // invalidates any in-flight search so it can't repopulate
     if (query.length < 2) {
-      seq.current++; // invalidate any in-flight search so it can't repopulate
       setResults([]);
       setSearching(false);
       return;
     }
     setSearching(true);
-    const mySeq = ++seq.current;
     timer.current = setTimeout(async () => {
       const rows = await searchQueueCandidates(query).catch(() => []);
       if (seq.current === mySeq) {
@@ -64,12 +66,13 @@ export function AddToQueue() {
         setSearching(false);
       }
     }, 300);
-    return () => { if (timer.current) clearTimeout(timer.current); };
-  }, [q, open]);
+  };
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   const reset = () => {
     seq.current++; // stale in-flight searches must not land after a reset
-    setQ(""); setResults([]); setPicked(null); setNote(""); setErr(null); setDone(null);
+    if (timer.current) clearTimeout(timer.current);
+    setQ(""); setResults([]); setSearching(false); setPicked(null); setNote(""); setErr(null); setDone(null);
   };
 
   const pick = (c: QueueCandidate) => {
@@ -92,6 +95,7 @@ export function AddToQueue() {
       if (!r.ok) { setErr(r.message); return; }
       setDone(r.message);
       setPicked(null);
+      seq.current++; // a search still in flight must not refill the cleared list
       setQ("");
       setResults([]);
       setNote("");
@@ -133,7 +137,7 @@ export function AddToQueue() {
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-2" />
             <input
               value={q}
-              onChange={(e) => setQ(e.target.value)}
+              onChange={(e) => onQuery(e.target.value)}
               autoFocus
               placeholder="Search by address or client…"
               className="w-full rounded-xl border border-border bg-surface-2/50 py-2.5 pl-9 pr-3 text-sm outline-none focus:border-brand"
@@ -229,10 +233,10 @@ export function AddToQueue() {
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Add to queue
             </button>
+            {/* Kim or John only (EDITOR_CHOICES). A job goes to Luma Visuals
+                through the row's reassign select, where the send is recorded. */}
             <span className="text-[11px] text-muted-2">
-              {editor === "luma"
-                ? "Opens the work item for Luma — Kyle gets the dispatch ping (Luma is external)."
-                : `Opens the ${picked.priorCut ? "new-cut" : "edit"} task for ${EDITORS[editor].name} and pings them.`}
+              {`Opens the ${picked.priorCut ? "new-cut" : "edit"} task for ${EDITORS[editor].name} and pings them.`}
             </span>
           </div>
           {err && <p className="text-xs font-medium text-danger">{err}</p>}

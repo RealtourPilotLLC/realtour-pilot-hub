@@ -1,6 +1,10 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
+import { etDayKey, etAddDays, etDayStartUtc, etAt, addBusinessDayKeysET, isWeekdayET } from "@/lib/datetime";
+// §3's revision clock is 24–48 hours of WEEKDAY time — the one implementation
+// of that convention (A52). Light: prisma, the program's date helpers.
+import { addWeekdayHoursET } from "@/lib/programMonths";
 import {
   tierFor, dueAtFor, cappedByPromise, pinnedPromise, TIERS, type Tier,
   // §9's per-session clocks (F27 review, Sep 21 2026) — see boardSessions.
@@ -20,6 +24,7 @@ import { turnaroundRules } from "@/lib/settings";
 // Who is ACTUALLY editing a job right now — the editor's own Start/Pause (§7.1).
 // Light: prisma, the roster and the date helpers.
 import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
+import { overrideLineSetsDue } from "@/lib/editOverrides";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -106,6 +111,9 @@ export type BoardJob = {
   settled: boolean;
   /** Delivered once, and owed again since. */
   reopened: boolean;
+  /** Reopened with no clock at all (A52) — somebody has to set a due date;
+   *  the job is on Kyle's exceptions until they do. */
+  reopenedUndated: boolean;
   /** THE HONEST-DATE VERDICT for a monthly content job (Jordan, Sep 21 2026).
    *  Null on every other job kind. When `status` is not "known" this job has no
    *  production date at all, and a card MUST print `label` where the date would
@@ -197,6 +205,312 @@ function isSettled(p: { status: string; deliveredAt: Date | null; revisionReques
 }
 
 // ---------------------------------------------------------------------------
+// REOPENED WORK HAS A CLOCK (A52, Jordan, Sep 25 2026).
+//
+// Until today a job that went out and came back had NO date on any screen —
+// on purpose, because the only date to hand was the delivery promise it had
+// already kept, and "LATE · Aug 26" over the client's September notes was the
+// bug RTP-04 fixed. That left the other half of §9 undone: "Reopened work
+// needs either an agreed clock or a task assigning a due date." Jordan settled
+// the clock himself:
+//
+//   · a CLIENT revision round keeps §3's clock — target 24, due 48 hours of
+//     weekday time after the ask (CLIENT_ROUND);
+//   · work reopened WITHOUT one — the office puts a finished job back, a
+//     reshoot with no extra-shoot upload — "should be worked on immediately.
+//     It should be due same day": 6 PM ET that business day, or the next
+//     business day's 6 PM when it is reopened after hours or on a weekend
+//     (REOPENED_SAME_DAY);
+//   · a person may move either (MANUAL, with who and when).
+//
+// The clock lives on RevisionBrief (targetAt/dueAt/dueSource/dueSetBy/
+// dueSetAt), written ONCE when the ask or the reopen happens and never
+// recomputed on read, so nothing here can recede. An extra shoot keeps the
+// per-video promise the upload portal already stamped (EXTRA_SHOOT). This
+// file is the READ side — one reader for the board, the project brief, the
+// editor queue, the edit page and Kyle's exceptions; the writers are in
+// revisionBrief.ts.
+//
+// 6 PM, not the 5 PM that closes a delivery promise (BUSINESS_DAY_END_HOUR):
+// Jordan's words for this rule, and the end of the office's covered day (the
+// review rota runs 9–6).
+// ---------------------------------------------------------------------------
+
+export const DUE_SOURCES = ["CLIENT_ROUND", "REOPENED_SAME_DAY", "MANUAL"] as const;
+/** What RevisionBrief.dueSource holds. */
+export type DueSource = (typeof DUE_SOURCES)[number];
+/** …and the per-video promise of an extra shoot, which is not a brief. */
+export type ReopenClockSource = DueSource | "EXTRA_SHOOT";
+
+export const REVISION_TARGET_HOURS = 24;
+export const REVISION_DUE_HOURS = 48;
+export const REOPEN_DUE_HOUR = 18;
+
+/** §3: a client revision round, from the moment of the ask. */
+export function clientRoundClock(at: Date): { targetAt: Date; dueAt: Date } {
+  return { targetAt: addWeekdayHoursET(at, REVISION_TARGET_HOURS), dueAt: addWeekdayHoursET(at, REVISION_DUE_HOURS) };
+}
+
+/** Jordan: reopened work is due the end of that ET business day. A weekday
+ *  before 6 PM → 6 PM today; after 6 PM, or any time on a weekend → 6 PM on
+ *  the next business day. Weekends only, like every business-day rule here. */
+export function sameDayDue(at: Date): Date {
+  const end = etAt(etDayKey(at), REOPEN_DUE_HOUR);
+  if (isWeekdayET(at) && at.getTime() < end.getTime()) return end;
+  return etAt(addBusinessDayKeysET(at, 1), REOPEN_DUE_HOUR);
+}
+
+/**
+ * WHEN A JOB SETTLES, ITS CLOCKS ARE MET. Project.deliveredAt is stamped once
+ * (the first delivery) and never moved, so it cannot tell this reopen's asks
+ * from last month's. The settle point writes this marker — an AppSetting, the
+ * same no-schema shape as queue-waiting:<id> — and only clocks written AFTER
+ * it are open. revisionBrief.settleReopenedClocks writes it from
+ * closeObsoleteTasks, which every delivery and cancel path goes through.
+ */
+export const REOPEN_SETTLED_PREFIX = "reopen-settled:";
+export const reopenSettledKey = (projectId: string) => `${REOPEN_SETTLED_PREFIX}${projectId}`;
+
+/** An extra shoot still owed: the portal stamped its promise, and its cut has
+ *  not been approved (the same end the editor queue's rail uses,
+ *  uploadHistory.UNFINISHED_ADDITIONAL_SHOOT_WHERE), sent, waived or removed. */
+export const OPEN_EXTRA_SHOOT_OUTPUT_WHERE = {
+  promiseSource: "additional-shoot",
+  promisedAt: { not: null },
+  deliveredAt: null,
+  waivedAt: null,
+  removedFromOrderAt: null,
+  deliverable: { removedFromOrderAt: null, waivedAt: null, reviewSubmissions: { none: { status: "APPROVED" } } },
+} satisfies Prisma.DeliverableOutputWhereInput;
+
+export type OpenReopenClock = {
+  source: ReopenClockSource;
+  /** the due */
+  at: Date;
+  targetAt: Date | null;
+  /** when this clock started — the ask, the reopen, the day the extra was shot */
+  anchorAt: Date;
+  setBy: string | null;
+  setAt: Date | null;
+  briefId: string | null;
+  outputId: string | null;
+};
+
+export type ReopenedClock = OpenReopenClock & {
+  /** the source in plain words, for the line under the date */
+  words: string;
+  /** what the date is FOR */
+  label: string;
+  /** an extra shoot is still owed — a DELIVERED job is live work again */
+  extraOwed: boolean;
+  /** the earliest anchor of the open clocks: when this reopen began */
+  startedAt: Date;
+};
+
+/** The plain words under a reopened job's date (no em dashes: Kyle may quote them). */
+export function dueSourceWords(c: Pick<OpenReopenClock, "source" | "setBy">): string {
+  switch (c.source) {
+    case "CLIENT_ROUND": return "client revision · 24 to 48 business hours";
+    case "REOPENED_SAME_DAY": return "reopened · due the same business day";
+    case "MANUAL": return `moved by ${c.setBy?.trim() || "the office"}`;
+    case "EXTRA_SHOOT": return "extra video · its own promise";
+  }
+}
+
+const CLOCK_LABEL: Record<ReopenClockSource, string> = {
+  CLIENT_ROUND: "the client's changes",
+  REOPENED_SAME_DAY: "the reopened work",
+  MANUAL: "the reopened work",
+  EXTRA_SHOOT: "the extra video",
+};
+
+/**
+ * The open clocks on each job, one batched read. Never throws into a screen:
+ * a failed read is an empty map, which every reader shows as "no date" —
+ * exactly what these jobs showed before A52 — never as an invented one.
+ */
+export async function openReopenClocksFor(
+  projectIds: string[],
+  // A transaction client, for a writer that checks under its lock
+  // (revisionBrief.stampReopenedClock); every screen uses the default.
+  db: Pick<Prisma.TransactionClient, "revisionBrief" | "appSetting" | "deliverableOutput" | "project"> = prisma,
+): Promise<Map<string, OpenReopenClock[]>> {
+  const ids = [...new Set(projectIds)].filter(Boolean);
+  const out = new Map<string, OpenReopenClock[]>();
+  if (ids.length === 0) return out;
+  const [briefs, markers, extras, projects] = await Promise.all([
+    db.revisionBrief.findMany({
+      where: { projectId: { in: ids }, dueAt: { not: null } },
+      select: { id: true, projectId: true, createdAt: true, targetAt: true, dueAt: true, dueSource: true, dueSetBy: true, dueSetAt: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    db.appSetting.findMany({ where: { key: { in: ids.map(reopenSettledKey) } }, select: { key: true, value: true, updatedAt: true } }),
+    db.deliverableOutput.findMany({
+      where: { projectId: { in: ids }, ...OPEN_EXTRA_SHOOT_OUTPUT_WHERE },
+      select: { id: true, projectId: true, promisedAt: true, targetAt: true, promiseAnchorAt: true, createdAt: true },
+    }),
+    db.project.findMany({ where: { id: { in: ids } }, select: { id: true, deliveredAt: true } }),
+  ]);
+  const settledAt = new Map<string, number>();
+  for (const m of markers) {
+    let at = m.updatedAt.getTime();
+    try {
+      const v = JSON.parse(m.value) as { at?: string };
+      const t = v.at ? new Date(v.at).getTime() : NaN;
+      if (Number.isFinite(t)) at = t;
+    } catch { /* the row's own timestamp stands in */ }
+    settledAt.set(m.key.slice(REOPEN_SETTLED_PREFIX.length), at);
+  }
+  const deliveredAt = new Map(projects.map((p) => [p.id, p.deliveredAt?.getTime() ?? null]));
+  const push = (pid: string, c: OpenReopenClock) => out.set(pid, [...(out.get(pid) ?? []), c]);
+  for (const b of briefs) {
+    const created = b.createdAt.getTime();
+    // Met at a settle since: last month's round is not this month's clock.
+    const settled = settledAt.get(b.projectId);
+    if (settled != null && created <= settled) continue;
+    // An ask from before the FIRST delivery belongs to the original job,
+    // whose own promise answered for it.
+    const first = deliveredAt.get(b.projectId);
+    if (first != null && created < first) continue;
+    const source = (DUE_SOURCES as readonly string[]).includes(b.dueSource ?? "") ? (b.dueSource as DueSource) : "CLIENT_ROUND";
+    push(b.projectId, {
+      source,
+      at: b.dueAt!,
+      targetAt: b.targetAt,
+      anchorAt: b.createdAt,
+      setBy: b.dueSetBy,
+      setAt: b.dueSetAt,
+      briefId: b.id,
+      outputId: null,
+    });
+  }
+  for (const o of extras) {
+    push(o.projectId, {
+      source: "EXTRA_SHOOT",
+      at: o.promisedAt!,
+      targetAt: o.targetAt,
+      anchorAt: o.promiseAnchorAt ?? o.createdAt,
+      setBy: null,
+      setAt: null,
+      briefId: null,
+      outputId: o.id,
+    });
+  }
+  return out;
+}
+
+/**
+ * ONE DATE FOR THE JOB. A person's word outranks the arithmetic — the newest
+ * MANUAL move stands until somebody moves it again, the same way the office's
+ * due outranks every product promise. Otherwise the EARLIEST open clock: two
+ * asks on one reopen are due when the first one is, so a second message can
+ * never push the date out.
+ */
+export function resolveReopenedClock(clocks: OpenReopenClock[] | null | undefined): ReopenedClock | null {
+  if (!clocks || clocks.length === 0) return null;
+  const setTime = (c: OpenReopenClock) => (c.setAt ?? c.anchorAt).getTime();
+  const manual = clocks.filter((c) => c.source === "MANUAL").sort((a, b) => setTime(b) - setTime(a))[0];
+  const pick = manual ?? clocks.reduce((a, b) => (a.at.getTime() <= b.at.getTime() ? a : b));
+  return {
+    ...pick,
+    words: dueSourceWords(pick),
+    label: CLOCK_LABEL[pick.source],
+    extraOwed: clocks.some((c) => c.source === "EXTRA_SHOOT"),
+    startedAt: new Date(Math.min(...clocks.map((c) => c.anchorAt.getTime()))),
+  };
+}
+
+/** The resolved clock per job. A failed read is an empty map (see above). */
+export async function reopenedClocksFor(projectIds: string[]): Promise<Map<string, ReopenedClock>> {
+  const open = await openReopenClocksFor(projectIds).catch(() => new Map<string, OpenReopenClock[]>());
+  const out = new Map<string, ReopenedClock>();
+  for (const [pid, clocks] of open) {
+    const r = resolveReopenedClock(clocks);
+    if (r) out.set(pid, r);
+  }
+  return out;
+}
+
+/**
+ * WHEN THE OFFICE'S DUE ITSELF WAS SAVED, per job (A52 review, Sep 25 2026):
+ * the newest override-dialog line that changed the due (editOverrides
+ * overrideLineSetsDue). Project.overrideAt is the save time of the WHOLE
+ * override record and moves on a priority bump or a note, so reading it as
+ * "the date was set for this reopen" dated a reopened job by its original
+ * work's due — three weeks late on every screen. A job with no such line is
+ * left out of the map, and the reader falls back to overrideAt as before. A
+ * failed read is an empty map.
+ */
+export async function dueSetTimesFor(projectIds: string[]): Promise<Map<string, Date>> {
+  const out = new Map<string, Date>();
+  const ids = [...new Set(projectIds)];
+  if (ids.length === 0) return out;
+  const rows = await prisma.activity
+    .findMany({
+      where: { projectId: { in: ids }, type: "SYSTEM", body: { startsWith: "Override by " } },
+      select: { projectId: true, body: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    })
+    .catch(() => [] as { projectId: string | null; body: string; createdAt: Date }[]);
+  for (const r of rows) {
+    if (r.projectId && !out.has(r.projectId) && overrideLineSetsDue(r.body)) out.set(r.projectId, r.createdAt);
+  }
+  return out;
+}
+
+/** Delivered once and owed again — the board's own test (a terminal status
+ *  with no open ask is settled), with an owed extra shoot counting as owed. */
+export function isReopenedJob(
+  p: { status: string; deliveredAt: Date | null; revisionRequestedAt: Date | null },
+  clock?: ReopenedClock | null,
+): boolean {
+  return !!p.deliveredAt && !(isSettled(p) && !clock?.extraOwed);
+}
+
+export type ReopenedDue = {
+  at: Date | null;
+  /** a person set this date — the office's override or a MANUAL move */
+  office: boolean;
+  source: ReopenClockSource | "OFFICE_OVERRIDE" | null;
+  /** plain words under the date */
+  words: string | null;
+  /** what the date is for */
+  label: string | null;
+  targetAt: Date | null;
+  /** reopened, and nothing dates it — somebody has to (Kyle's exception) */
+  undated: boolean;
+};
+
+/**
+ * THE DUE OF A REOPENED JOB, for every screen. The office's own date
+ * (Project.dueOverrideAt) still outranks the clock — but only a date the
+ * office saved for THIS reopen. One saved before the reopen began (or, with no
+ * clock, before the job was first delivered) was a date for the original work,
+ * which the delivery already answered; reading it now called a finished job
+ * late the moment it came back, which is the "never mark an old delivered job
+ * overdue" half of §9. `dueSetAt` (dueSetTimesFor) is when the DATE was saved;
+ * without one, overrideAt — the save time of the whole override record, which
+ * any later priority or note save moves — stands in. When a caller selects
+ * neither the office's date stands, as before.
+ */
+export function reopenedDueFor(
+  p: { dueOverrideAt: Date | null; overrideAt?: Date | null; deliveredAt?: Date | null; dueSetAt?: Date | null },
+  clock: ReopenedClock | null,
+): ReopenedDue {
+  const since = clock?.startedAt ?? p.deliveredAt ?? null;
+  const savedAt = p.dueSetAt ?? p.overrideAt;
+  const officeCounts =
+    !!p.dueOverrideAt && (savedAt === undefined || !savedAt || !since || savedAt.getTime() >= since.getTime());
+  if (officeCounts) {
+    return { at: p.dueOverrideAt, office: true, source: "OFFICE_OVERRIDE", words: "set by the office", label: clock?.label ?? null, targetAt: null, undated: false };
+  }
+  if (clock) {
+    return { at: clock.at, office: clock.source === "MANUAL", source: clock.source, words: clock.words, label: clock.label, targetAt: clock.targetAt, undated: false };
+  }
+  return { at: null, office: false, source: null, words: null, label: null, targetAt: null, undated: true };
+}
+
+// ---------------------------------------------------------------------------
 // ONE PROMISE ENGINE (review, Sep 16).
 //
 // The board and the project page's Status check card each worked out their own
@@ -240,6 +554,17 @@ export type PromiseInput = {
   // `appointment_start` rung), which is labelled as estimated and is never
   // LATER than the end, so the board can only ever call a job late sooner.
   appointments: { id?: string; startAt: Date | null; endAt?: Date | null; durationMin?: number | null; status: string | null }[];
+  /** THE REOPENED CLOCK (A52), from reopenedClocksFor — null when the job has
+   *  none. OPTIONAL on purpose: a caller that does not pass it (the project
+   *  page's Status check card, older drills) gets exactly the pre-A52 answer,
+   *  where a reopened job has no date. Passing it — even as null — opts in. */
+  reopenedClock?: ReopenedClock | null;
+  /** Project.overrideAt — when the office's override record was saved, so a
+   *  date saved for the ORIGINAL work does not outrank a reopen's clock. */
+  overrideAt?: Date | null;
+  /** When the office's DUE itself was saved (dueSetTimesFor) — preferred over
+   *  overrideAt, which any later override save moves (A52 review). */
+  dueSetAt?: Date | null;
 };
 
 /**
@@ -294,6 +619,15 @@ export type BoardPromise = {
    *  (§9; F27 review, Sep 21 2026). Null everywhere else, which is every job
    *  but one today. */
   sessionLabel?: string | null;
+  /** A52: this date is a REOPENED job's clock (or its absence), not a
+   *  delivery promise. Set only when the caller passed `reopenedClock`. */
+  reopened?: boolean;
+  /** A52: where the reopened date came from; null with no date. */
+  dueSource?: ReopenedDue["source"];
+  /** A52: reopened and undated — somebody has to set one. */
+  undated?: boolean;
+  /** A52: the client round's 24-hour target, when that is the clock. */
+  targetAt?: Date | null;
 };
 
 export type TurnaroundRuleSet = Awaited<ReturnType<typeof turnaroundRules>> | undefined;
@@ -510,7 +844,10 @@ export function outstandingPromise(
   const now = opts.now ?? new Date();
   const ev = opts.evidence !== undefined ? opts.evidence : parseEvidence(p.statusEvidence);
   const missingCategories = ev ? ev.missing : null;
-  const settled = isSettled(p);
+  // An extra shoot still owed makes a DELIVERED job live work again (A52): the
+  // editor queue has always listed it with the extra video's own promise, and
+  // this board filed the same job under Delivered with no date.
+  const settled = isSettled(p) && !p.reopenedClock?.extraOwed;
   // REOPENED, not merely "has an open ask" (review, Sep 16). 1337 Carolannes
   // met every promise its order carried back in August and is owed the
   // client's Sep 14 notes; printing "LATE · Aug 26" would date it against a
@@ -521,6 +858,29 @@ export function outstandingPromise(
   // 893 S Matlack is a REVISION with no delivery, five days past its 48-hour
   // video, and gating on the ask alone quietly took it off Kyle's late list.
   const reopened = !settled && !!p.deliveredAt;
+
+  // …AND NOW IT HAS ONE (A52, Sep 25 2026). Jordan answered the question
+  // above: a client round is due 48 business hours after the ask, anything
+  // else reopened is due the same business day, and a person can move either.
+  // The clock was written when the job came back (revisionBrief.ts), so this
+  // only reads it — the delivery promise the job already kept is still never
+  // reused, and a reopened job with no clock at all still has no date (it is
+  // on Kyle's exceptions instead, for somebody to set one).
+  if (reopened && p.reopenedClock !== undefined) {
+    const r = reopenedDueFor(p, p.reopenedClock);
+    return {
+      at: r.at,
+      label: r.at ? r.label ?? "the reopened work" : null,
+      tierLabel: r.words,
+      office: r.office,
+      reason: r.source === "OFFICE_OVERRIDE" ? p.promisedReason ?? null : null,
+      sessionLabel: null,
+      reopened: true,
+      dueSource: r.source,
+      undated: r.undated,
+      targetAt: r.targetAt,
+    };
+  }
 
   const startedAt = clockStart(p, now);
   // The clock above is anchored on the EARLIEST session, so a job with more
@@ -651,7 +1011,7 @@ export function outstandingPromise(
  * thing that needs doing.
  */
 function blockerFor(
-  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null; handoffBlockedReason?: string | null },
+  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null; handoffBlockedReason?: string | null; statusEvidence?: string | null },
   deliverables: { type: string; status: string; uploadedAt: Date | null }[],
   /** the status engine's own answer — categories ordered but not live on
    *  Aryeo. Null when the job has no evidence yet (then the rows decide). */
@@ -659,6 +1019,8 @@ function blockerFor(
   /** Who has pressed Start / Pause on the job (lib/editorWork.workStateFor).
    *  Absent or empty = nobody said so. */
   work?: ProjectWork | null,
+  /** A52: an extra shoot is still owed on this job (reopenedClocksFor). */
+  extraOwed = false,
 ): { kind: BlockerKind; label: string } {
   // THE OBLIGATION IS TESTED FIRST (RTP-04, Sep 16). This used to open with
   // `if (p.deliveredAt) return "Delivered"`, which read a job delivered months
@@ -668,7 +1030,7 @@ function blockerFor(
   // Neutral: a revision is the client's ask OR the owner bouncing a cut in review.
   if (hasOpenRevision(p)) return { kind: "revision", label: "Changes requested" };
   // Only now may the history speak, and only for a job that is genuinely done.
-  if (isSettled(p)) return { kind: "delivered", label: "Delivered" };
+  if (isSettled(p) && !extraOwed) return { kind: "delivered", label: "Delivered" };
 
   const now = new Date();
   if (!p.shootDate || p.shootDate > now) {
@@ -691,6 +1053,34 @@ function blockerFor(
     return { kind: "awaiting_upload", label: `Waiting on ${name}` };
   }
 
+  // A TICK IS NOT A FILE (§7.3, Sep 25 2026). isIn() counts the photographer's
+  // "uploaded" tick as the files having arrived — so a tick over a folder the
+  // Dropbox read had just found EMPTY suppressed "Waiting on video" and the
+  // job read ready. Only for a half whose rows are in on the tick alone (the
+  // status sweep has not seen the media live): a FRESH read of zero says so, a
+  // carried-forward (stale) zero is "can't confirm", and a job Dropbox has
+  // never been read for keeps the tick, as before.
+  {
+    const dbx = parseEvidence(p.statusEvidence ?? null)?.dropbox ?? null;
+    if (dbx) {
+      const onTickOnly = (types: string[]) => {
+        const rows = deliverables.filter((d) => types.includes(d.type));
+        return rows.length > 0 && rows.every((d) => d.status !== "DONE" && d.status !== "IN_PROGRESS");
+      };
+      const halves: { name: string; count: number; types: string[] }[] = [
+        { name: "video", count: dbx.rawVideo, types: ["VIDEO", "SOCIAL_REEL"] },
+        { name: "photos", count: dbx.rawPhotos, types: ["PHOTOS"] },
+      ];
+      for (const h of halves) {
+        // An older evidence blob without this count is not a zero.
+        if (!onTickOnly(h.types) || typeof h.count !== "number" || h.count > 0) continue;
+        return dbx.stale
+          ? { kind: "awaiting_upload", label: `Can't confirm the ${h.name} files (Dropbox unreadable)` }
+          : { kind: "awaiting_upload", label: `Upload reported, ${h.name} files not found` };
+      }
+    }
+  }
+
   // THE FILES ARE IN AND THE BRIEF IS NOT. Read, never recomputed: the handoff
   // engine stamps this sentence (and the person it is waiting on) when it mints
   // the edit card, so the board and the queue say the same thing rather than
@@ -700,6 +1090,9 @@ function blockerFor(
   if (p.handoffBlockedReason) {
     return { kind: "handoff_incomplete", label: p.handoffBlockedReason.replace(/\.$/, "") };
   }
+  // A DELIVERED job that owes an extra video (A52): its footage is in, and the
+  // words are the editor queue's own for the same row (EXTRA_SHOOT_STATUS).
+  if (extraOwed && TERMINAL_STATUSES.has(p.status)) return { kind: "ready_to_edit", label: "Extra video owed" };
 
   if (p.status === "REVIEW") {
     // THE FILES ARE IN — but "in" counts the photographer's raw drop
@@ -764,6 +1157,17 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   // (328 Columbia's video lives inside "Standard Package") is dated by the same
   // engine as the QC card and never by a stale constant.
   const turnarounds = await turnaroundRules().catch(() => undefined);
+  // DELIVERED jobs that owe an extra video (A52) — live work at any age, like a
+  // reopened ask. A small pool: one row per unapproved extra shoot.
+  const extraShootIds = [
+    ...new Set(
+      (
+        await prisma.deliverableOutput
+          .findMany({ where: OPEN_EXTRA_SHOOT_OUTPUT_WHERE, select: { projectId: true }, take: 200 })
+          .catch(() => [] as { projectId: string }[])
+      ).map((o) => o.projectId),
+    ),
+  ];
 
   const rows = await prisma.project.findMany({
     where: {
@@ -785,6 +1189,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
         // Zero rows today (comms.ts flips such a job to REVISION), so this is a
         // guard against the two rules drifting apart, not a live fix.
         { revisionRequestedAt: { gt: prisma.project.fields.deliveredAt } },
+        ...(extraShootIds.length ? [{ id: { in: extraShootIds } }] : []),
       ],
     },
     select: {
@@ -801,6 +1206,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       statusCheckedAt: true, evidenceAttemptedAt: true, evidenceSucceededAt: true, evidenceError: true,
       packageName: true, // monthly-content detection (the one job kind whose clock runs without a shoot)
       dueOverrideAt: true, // the office's due for the job (Sep 13, editOverrides.ts) — wins over every promise below
+      overrideAt: true, // …saved when — a date saved for the original work does not date a reopen (A52)
       tierOverride: true, // the office's tier (Sep 16) — branding → the monthly window, premium → four business days
       // The promise the job was SOLD under, and the documented reason for it
       // (Sep 18) — a job pinned before a default moved keeps its own date.
@@ -828,22 +1234,28 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   // (Ready for editing / not confirmed), never to somebody's live work.
   const work = await workStateFor(rows.filter((p) => p.status === "SHOT" || p.status === "EDITING").map((p) => p.id))
     .catch(() => new Map<string, ProjectWork>());
+  // Reopened jobs' clocks (A52) — one batched read, only for jobs that have
+  // been delivered once. A failed read is an empty map: those jobs read "no
+  // date", as they did before, never an invented one.
+  const clocks = await reopenedClocksFor(rows.filter((p) => !!p.deliveredAt).map((p) => p.id));
+  const dueSet = await dueSetTimesFor(rows.filter((p) => !!p.deliveredAt && !!p.dueOverrideAt).map((p) => p.id));
 
   const jobs: BoardJob[] = rows.map((p) => {
     const items = boardItems(p, now, turnarounds);
+    const clock = clocks.get(p.id) ?? null;
 
     const ev = parseEvidence(p.statusEvidence);
     const missingCategories = ev ? ev.missing : null;
-    const { kind, label } = blockerFor(p, p.deliverables, missingCategories, work.get(p.id));
+    const { kind, label } = blockerFor(p, p.deliverables, missingCategories, work.get(p.id), !!clock?.extraOwed);
     // THE OBLIGATION, once, for the column, the promise and the card.
-    const settled = isSettled(p);
+    const settled = isSettled(p) && !clock?.extraOwed;
     const openAsk = !settled && hasOpenRevision(p);
     const reopened = !settled && !!p.deliveredAt;
 
     // The promise — the same function the project page's Status check card
     // reads, so the two screens can never call a job late on different days
-    // (review, Sep 16).
-    const promise = outstandingPromise(p, { now, turnarounds, evidence: ev });
+    // (review, Sep 16). The reopened clock rides in with it (A52).
+    const promise = outstandingPromise({ ...p, reopenedClock: clock, dueSetAt: dueSet.get(p.id) ?? null }, { now, turnarounds, evidence: ev });
     const dueAt = promise.at;
     // §9's grouping, computed once for the card and for the "for …" line.
     const sessions = boardSessions(p, turnarounds);
@@ -904,6 +1316,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       revisionAskedAt: openAsk ? p.revisionRequestedAt : null,
       settled,
       reopened,
+      reopenedUndated: reopened && !dueAt && !!promise.undated,
       productionDate: productionDateState(p, now),
     };
   });
@@ -928,7 +1341,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       // shoots — the quietest possible place to put the one card that says "I
       // do not know whether this is late."
       const owedNoClock = (j: BoardJob) =>
-        !j.dueAt && (j.blocker === "revision" || j.blocker === "on_hold" || j.productionDate?.needsCheck) ? 0 : 1;
+        !j.dueAt && (j.blocker === "revision" || j.blocker === "on_hold" || j.productionDate?.needsCheck || j.reopenedUndated) ? 0 : 1;
       return owedNoClock(a) - owedNoClock(b) || byDue(a, b);
     });
   // The delivered tail. Sorted on the stamp where there is one — a terminal
@@ -947,4 +1360,79 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     overdueCount: today.filter((j) => j.overdue).length,
     needsProductionDate,
   };
+}
+
+// ---------------------------------------------------------------------------
+// REOPENED WORK FOR KYLE'S EXCEPTIONS (A52). "Explicit responsibility": every
+// job that came back is either dated — and then late is late — or it is not,
+// and then somebody owns dating it. Read-only; opsExceptions turns these into
+// rows. Live editing stages only (and a DELIVERED job with an open ask or an
+// extra shoot): a job re-booked for a new visit is a shoot, not reopened work,
+// and a held one is parked on purpose.
+// ---------------------------------------------------------------------------
+
+export type ReopenedWorkRow = {
+  projectId: string;
+  title: string;
+  deliveredAt: Date;
+  /** the reopen, when a stamp says so: the ask, or the clock's own start */
+  reopenedAt: Date | null;
+  due: ReopenedDue;
+  overdue: boolean;
+  /** who holds the work: the open revision/edit card's editor key, if any */
+  holderKey: string | null;
+};
+
+export async function reopenedWork(opts: { now?: Date; max?: number } = {}): Promise<ReopenedWorkRow[]> {
+  const now = opts.now ?? new Date();
+  const extraIds = [
+    ...new Set(
+      (await prisma.deliverableOutput.findMany({ where: OPEN_EXTRA_SHOOT_OUTPUT_WHERE, select: { projectId: true }, take: 200 })).map((o) => o.projectId),
+    ),
+  ];
+  const rows = await prisma.project.findMany({
+    where: {
+      deliveredAt: { not: null },
+      aryeoMissingAt: null,
+      OR: [
+        { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+        { status: "DELIVERED", revisionRequestedAt: { gt: prisma.project.fields.deliveredAt } },
+        ...(extraIds.length ? [{ status: "DELIVERED" as const, id: { in: extraIds } }] : []),
+      ],
+    },
+    select: {
+      id: true, title: true, status: true, deliveredAt: true, revisionRequestedAt: true,
+      dueOverrideAt: true, overrideAt: true,
+      smartTasks: {
+        where: { taskType: { in: ["revision", "edit_video"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        select: { taskType: true, assignedKey: true },
+      },
+    },
+    orderBy: { deliveredAt: "desc" },
+    take: opts.max ?? 200,
+  });
+  const clocks = await reopenedClocksFor(rows.map((r) => r.id));
+  const dueSet = await dueSetTimesFor(rows.filter((r) => !!r.dueOverrideAt).map((r) => r.id));
+  const out: ReopenedWorkRow[] = [];
+  for (const r of rows) {
+    const clock = clocks.get(r.id) ?? null;
+    // Settled after all (a DELIVERED row whose only reason to be here was a
+    // stale read): not reopened work.
+    if (r.status === "DELIVERED" && !clock?.extraOwed && !(r.revisionRequestedAt && r.deliveredAt && r.revisionRequestedAt > r.deliveredAt)) continue;
+    const due = reopenedDueFor({ ...r, dueSetAt: dueSet.get(r.id) ?? null }, clock);
+    const holder =
+      r.smartTasks.find((t) => t.taskType === "revision" && t.assignedKey)?.assignedKey ??
+      r.smartTasks.find((t) => t.taskType === "edit_video" && t.assignedKey)?.assignedKey ??
+      null;
+    out.push({
+      projectId: r.id,
+      title: r.title,
+      deliveredAt: r.deliveredAt!,
+      reopenedAt: clock?.startedAt ?? (r.revisionRequestedAt && r.revisionRequestedAt > r.deliveredAt! ? r.revisionRequestedAt : null),
+      due,
+      overdue: !!due.at && due.at.getTime() < now.getTime(),
+      holderKey: holder,
+    });
+  }
+  return out;
 }

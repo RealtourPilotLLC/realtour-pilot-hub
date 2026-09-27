@@ -24,7 +24,22 @@ import { markVideoSentAction } from "@/app/ops/actions";
  * silenced: the action is idempotent in Postgres and answers with who marked it
  * and when, which is exactly the question that started this card ("did anyone
  * actually re-send it?").
+ *
+ * THE SECOND TAP SAYS HOW THE CLIENT WAS TOLD (9.2, Sep 25 2026). "Sent" and
+ * "the client knows" are different facts: Aryeo emails the agent only when
+ * "notify" is ticked, and it is unticked by default. So the confirm step is now
+ * the choice itself — Aryeo's email, our text, a call or in person, or not yet —
+ * and whichever is pressed IS the second tap. "Not yet" keeps the video on the
+ * card's "client not told yet" list. The words match readyToSend.NOTICE_CHOICES
+ * (a server module this file must not import); the server refuses anything else.
  */
+export const NOTICE_OPTIONS: { value: string; label: string }[] = [
+  { value: "aryeo-email", label: "Aryeo emailed them" },
+  { value: "our-text", label: "We texted them" },
+  { value: "phone", label: "Call or in person" },
+  { value: "not-yet", label: "Not told yet" },
+];
+
 export function MarkSent({ submissionId, street }: { submissionId: string; street: string }) {
   const router = useRouter();
   const [msg, setMsg] = useState<string | null>(null);
@@ -39,7 +54,7 @@ export function MarkSent({ submissionId, street }: { submissionId: string; stree
   // not leave a timer holding a setState behind it.
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
-  const press = () => {
+  const press = (notice?: string) => {
     // A repair press is not the irreversible act the two-tap confirm exists for
     // — the video has already gone. Skip straight to it.
     if (incomplete) {
@@ -53,16 +68,18 @@ export function MarkSent({ submissionId, street }: { submissionId: string; stree
       });
       return;
     }
-    if (!asking) {
+    if (!asking || !notice) {
       setAsking(true);
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setAsking(false), 6000);
+      // Long enough to read four choices on a phone; a stray first tap still
+      // costs nothing.
+      timer.current = setTimeout(() => setAsking(false), 15000);
       return;
     }
     if (timer.current) clearTimeout(timer.current);
     setAsking(false);
     start(async () => {
-      const r = await markVideoSentAction(submissionId).catch(() => ({ ok: false, message: "Couldn’t save — try again.", already: false }));
+      const r = await markVideoSentAction(submissionId, notice).catch(() => ({ ok: false, message: "Couldn’t save — try again.", already: false }));
       // R5 — A PARTIAL SETTLE IS NOT A CLEAN SEND.
       //
       // markVideoSent has been able to say "the video went, but one of the
@@ -87,7 +104,7 @@ export function MarkSent({ submissionId, street }: { submissionId: string; stree
   return (
     <>
       <button
-        onClick={press}
+        onClick={() => press()}
         disabled={busy || done}
         title={
           incomplete
@@ -106,10 +123,24 @@ export function MarkSent({ submissionId, street }: { submissionId: string; stree
         }
       >
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : done ? <Check className="size-3.5" /> : <Send className="size-3.5" />}
-        {done ? "Sent" : incomplete ? "Finish the bookkeeping" : asking ? "Yes, it’s been sent" : "Mark as sent"}
+        {done ? "Sent" : incomplete ? "Finish the bookkeeping" : asking ? "It’s been sent — how were they told?" : "Mark as sent"}
       </button>
       {asking && !busy && (
-        <span className="basis-full text-[11px] text-muted">Only after the file is on Aryeo and the listing is delivered. This can&rsquo;t be undone.</span>
+        <span className="basis-full space-y-1.5">
+          <span className="block text-[11px] text-muted">Only after the file is on Aryeo and the listing is delivered. This can&rsquo;t be undone. Pick how the client heard it&rsquo;s there:</span>
+          <span className="flex flex-wrap gap-1.5">
+            {NOTICE_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => press(o.value)}
+                className="inline-flex min-h-9 items-center rounded-lg border border-success/40 bg-success/10 px-2.5 py-1 text-[11px] font-semibold text-success hover:bg-success/20"
+              >
+                {o.label}
+              </button>
+            ))}
+          </span>
+        </span>
       )}
       {msg && <span className="basis-full text-[11px] font-medium text-warning">{msg}</span>}
     </>

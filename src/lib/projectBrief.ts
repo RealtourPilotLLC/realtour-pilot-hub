@@ -5,7 +5,7 @@ import { outputsForProject, filmingBriefFor, type OutputRowView, type FilmingBri
 import { handoffReadiness, meaningfulBrief } from "@/lib/handoff";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, evidenceTone, type EvidenceTone } from "@/lib/statusEvidence";
-import { outstandingPromise } from "@/lib/deliveryBoard";
+import { dueSetTimesFor, outstandingPromise, reopenedClocksFor } from "@/lib/deliveryBoard";
 import { turnaroundRules } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,14 @@ export type ProjectBrief = {
   /** the promise the client was given, and where it came from */
   promisedAt: Date | null;
   promiseSource: "frozen" | "office" | "computed" | null;
+  /** A52: where a REOPENED job's date came from, in plain words ("client
+   *  revision · 24 to 48 business hours", "reopened · due the same business
+   *  day", "moved by Kyle", "set by the office"). Null on every other job. */
+  promiseWords: string | null;
+  /** A52: delivered once and owed again — the date above is the reopen's. */
+  reopened: boolean;
+  /** A52: reopened with nothing dating it; somebody has to set one. */
+  reopenedUndated: boolean;
   targetAt: Date | null;
   overdue: boolean;
   /** the newest thing the client asked for, with its date */
@@ -76,6 +84,8 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       dueOverrideAt: true, videosOwedOverride: true, videosFilmed: true,
       revisionNote: true, revisionRequestedAt: true,
       debriefSubmittedAt: true, videoInstructions: true, editorBrief: true,
+      // O05: each half's own handoff (null on jobs submitted the old way).
+      photosHandoffAt: true, videoHandoffAt: true,
       reelScript: true, reelHook: true, scriptConfirmedAt: true,
       editor: { select: { name: true } }, editorVendorKey: true,
       photographer: { select: { name: true } },
@@ -85,6 +95,9 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       // answer. deliveredAt and tierOverride are new here; the rest were
       // already loaded.
       deliveredAt: true, tierOverride: true,
+      // When the office's override was saved — a date saved for the original
+      // work does not date a reopen (A52, deliveryBoard.reopenedDueFor).
+      overrideAt: true,
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
       appointments: { select: { startAt: true, status: true }, orderBy: { startAt: "asc" } },
       deliverables: {
@@ -94,9 +107,12 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
         // proves the job SOLD video (owesVideo below), and the promise engine
         // gets the same waivedAt-free list the board gives it, filtered in
         // memory a few lines down.
-        select: { type: true, label: true, productTitle: true, quantity: true, waivedAt: true, status: true, uploadedAt: true },
+        select: { type: true, label: true, productTitle: true, quantity: true, waivedAt: true, status: true, uploadedAt: true, videoStyle: true, notCompletedReason: true },
       },
       revisionBriefs: {
+        // "What the client asked" — an office reopen's own row (A52) is the
+        // office's note, not the client's words.
+        where: { NOT: { source: "office" } },
         orderBy: { createdAt: "desc" },
         take: 1,
         select: { createdAt: true, headline: true, originalText: true, source: true },
@@ -187,6 +203,13 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   // The Status check card beneath has always shown no date on those six; now
   // both cards say the same nothing.
   const turnarounds = await turnaroundRules().catch(() => undefined);
+  // A REOPENED JOB READS ITS REOPEN CLOCK (A52) — the same reader and the same
+  // answer as Kyle's board and the Editing Room row. Only a job delivered once
+  // can have one; a failed read is "no clock", which is what this card said
+  // before.
+  const reopenedClock = p.deliveredAt ? (await reopenedClocksFor([projectId])).get(projectId) ?? null : null;
+  // When the office's due itself was saved (A52 review) — not overrideAt, which any later override save moves.
+  const dueSetAt = p.deliveredAt && p.dueOverrideAt ? (await dueSetTimesFor([projectId])).get(projectId) ?? null : null;
   const promise = outstandingPromise(
     {
       status: p.status,
@@ -206,6 +229,9 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
         .filter((d) => !d.waivedAt)
         .map((d) => ({ type: d.type, status: d.status, uploadedAt: d.uploadedAt, label: d.label })),
       appointments: p.appointments,
+      reopenedClock,
+      overrideAt: p.overrideAt,
+      dueSetAt,
     },
     { turnarounds },
   );
@@ -226,7 +252,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   // included: there the stored date is one the job already MET, and printing
   // it is exactly the "LATE · Aug 21" that started this.
   const settledPromise =
-    !promise.at && (p.status === "DELIVERED" || p.status === "CANCELLED") ? p.promisedDueAt ?? null : null;
+    !promise.at && !promise.reopened && (p.status === "DELIVERED" || p.status === "CANCELLED") ? p.promisedDueAt ?? null : null;
   const promisedAt = promise.at ?? settledPromise;
   // Where the date came from, in the engine's own terms: the office set it by
   // hand, or it is the frozen promise capping a later recomputed one, or it is
@@ -249,7 +275,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       ? "frozen"
       : promise.office
         ? "office"
-        : promise.pinned || (!!p.promisedDueAt && promise.at.getTime() === p.promisedDueAt.getTime())
+        : promise.pinned || (!promise.reopened && !!p.promisedDueAt && promise.at.getTime() === p.promisedDueAt.getTime())
           ? "frozen"
           : "computed";
 
@@ -387,12 +413,28 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     const names = [d.productTitle, d.label].filter((s): s is string => !!s && !!s.trim());
     return names.length > 0 ? names : [d.type];
   });
+  // §7.4 (Sep 25 2026): and the video step itself is the one the upload page
+  // resolved — the Deliverable.videoStyle stamp first — so this card asks for
+  // exactly what the photographer's screen asked for (pipeline.resolveVideoSpec).
+  const { resolveVideoSpec } = await import("@/lib/pipeline");
+  const { videoTier } = await import("@/lib/projectStatus");
+  const resolvedSpec = owesVideo
+    ? resolveVideoSpec({
+        deliverables: p.deliverables,
+        orderItems: p.orderItems,
+        packageName: p.packageName,
+        isPremium: videoTier(p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt)) === "premium",
+      }).spec
+    : undefined;
   const handoff = owesVideo
     ? handoffReadiness({
         titles,
         hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
         isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
+        spec: resolvedSpec,
         debriefSubmittedAt: p.debriefSubmittedAt,
+        // O05: the edit waits on the video half, not the whole page.
+        videoSubmittedAt: p.videoHandoffAt,
         videoInstructions: p.videoInstructions,
         editorBrief: p.editorBrief,
         reelScript: p.reelScript,
@@ -473,7 +515,8 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
           ? { who: p.photographer.name, whose: "field" }
           : { who: "The office", whose: "office" };
       nextAction = p.shootDate ? "Shoot it on the date booked" : "Get a shoot date on the calendar";
-    } else if (!p.debriefSubmittedAt) {
+    } else if (!(p.photosHandoffAt ?? p.debriefSubmittedAt)) {
+      // O05: on a photo job the photos half IS the wrap-up it is waiting on.
       owner = { who: p.photographer?.name ?? "The photographer", whose: "field" };
       nextAction = "Finish the wrap-up on the upload page";
       blocker = blocker ?? `Waiting on the wrap-up on the upload page${p.photographer?.name ? ` from ${p.photographer.name}` : ""}.`;
@@ -502,7 +545,12 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     currentVersion: furthest?.round ? `v${furthest.round} — ${furthest.label}` : null,
     promisedAt,
     promiseSource,
-    targetAt: p.promisedTargetAt ?? null,
+    promiseWords: promise.reopened ? promise.tierLabel ?? null : null,
+    reopened: !!promise.reopened,
+    reopenedUndated: !!promise.reopened && !!promise.undated,
+    // A reopen's target is its own (a client round's 24 business hours), never
+    // the original job's.
+    targetAt: promise.reopened ? promise.targetAt ?? null : p.promisedTargetAt ?? null,
     // PAST THE DATE IS PAST THE DATE. Keying this on `tone.kind === "overdue"`
     // let a job slip out of it whenever the tone had something more specific to
     // say, and keying it on the COUNT let an anonymous listing video stop the
@@ -554,7 +602,10 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     // right, because the promise it is being measured against is one it
     // already kept. 1337 Carolannes Way read "LATE · Aug 21" for the client's
     // September notes until this line.
-    overdue:
+    // A REOPENED job is late when its reopen clock has passed — nothing else
+    // (A52). Its date is the reopen's own, so the per-video count below, which
+    // counts videos sent the first time round, says nothing about it.
+    overdue: promise.reopened ? !!promise.at && promise.at.getTime() < Date.now() :
       p.status !== "DELIVERED" &&
       p.status !== "CANCELLED" &&
       !!promise.at &&

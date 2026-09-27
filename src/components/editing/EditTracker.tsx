@@ -171,6 +171,8 @@ export function EditTracker({
   revisionHref,
   showSubmitAnchor,
   overridden,
+  dueWords,
+  moveDue,
 }: {
   stage: EditStage;
   statusLine: string;
@@ -208,6 +210,20 @@ export function EditTracker({
   revisionHref?: string | null;
   /** Editors get a jump link to the "Done — send to review" card further down. */
   showSubmitAnchor: boolean;
+  /** A52: on a REOPENED job, where the deadline came from in plain words
+      ("client revision · 24 to 48 business hours", "reopened · due the same
+      business day", "moved by Kyle"), or that nothing dates it yet. Null on
+      every other job, whose deadline is the delivery promise as before. */
+  dueWords?: string | null;
+  /** A52: the office's control to move a reopened job's due date — a plain
+      form post to a server action (owner/admin; the action re-checks). */
+  moveDue?: {
+    action: (form: FormData) => Promise<void>;
+    projectId: string;
+    /** the current due as an ET datetime-local value */
+    defaultLocal: string;
+    notice?: { ok: boolean; text: string } | null;
+  } | null;
 }) {
   const dotColor =
     stage === "done" ? "text-success" : stage === "revision" ? "text-danger" : stage === "review" ? "text-warning" : "text-brand";
@@ -270,8 +286,15 @@ export function EditTracker({
                   reading "OVERDUE" forever is noise, not urgency. */}
               {stage !== "done" && <SlaCountdown dueISO={dueISO} />}
             </span>
+          ) : dueWords ? (
+            "Not set"
           ) : (
             "—"
+          )}
+          {dueWords && (
+            <span className="block truncate text-xs font-normal text-muted" title={dueWords}>
+              {dueWords}
+            </span>
           )}
         </Fact>
         <Fact label="Shoot date">{shootDateISO ? etDate(shootDateISO) : "—"}</Fact>
@@ -290,6 +313,35 @@ export function EditTracker({
           )}
         </Fact>
       </div>
+
+      {/* A52: the office moves a reopened job's due date here. The form posts
+          without any script; the page comes back with the new date on it. */}
+      {moveDue && (
+        <form
+          id="reopened-due"
+          action={moveDue.action}
+          className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs text-muted"
+        >
+          <input type="hidden" name="projectId" value={moveDue.projectId} />
+          <label htmlFor="reopened-due-at" className="font-semibold text-muted-2">
+            Reopened work due (ET)
+          </label>
+          <input
+            id="reopened-due-at"
+            type="datetime-local"
+            name="dueAt"
+            required
+            defaultValue={moveDue.defaultLocal}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-xs text-foreground"
+          />
+          <button type="submit" className="rounded-md bg-surface-2 px-2.5 py-1 font-semibold text-foreground hover:bg-border">
+            Move due date
+          </button>
+          {moveDue.notice && (
+            <span className={moveDue.notice.ok ? "text-success" : "text-danger"}>{moveDue.notice.text}</span>
+          )}
+        </form>
+      )}
 
       {/* The client's revision asks — the amber card Luma renders in chat,
           here where the editor actually works. Newest ask last, all rounds

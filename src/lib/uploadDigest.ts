@@ -110,14 +110,40 @@ export async function sendUploadProcessIntro(): Promise<{ sent: number; skipped:
 
 // The 10 PM chaser: shoots that HAPPENED today whose upload page still isn't
 // submitted. One text per photographer, atomic per-day marker.
-export function nagText(firstName: string, streets: string[]): string {
-  const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
-  return (
-    `Hi ${firstName} — RealTour Pilot here.\n\n` +
-    `Still waiting on today's upload page${streets.length === 1 ? "" : "s"}:\n${list}\n\n` +
-    `Finish tonight — files in Dropbox + the page submitted. The shoot is added to your payroll when you submit:\n` +
-    `${APP_URL}/upload`
-  );
+//
+// O05 (Jordan, Sep 25 2026): photos and video are submitted separately now,
+// and a job whose photos are in but whose video is not gets its own line in
+// the same text — "photos are uploaded but video is not. Please upload the
+// video before 8am tomorrow. And then a link to the upload portal. This is
+// something that will affect their KPI's." Same channel, same switch, same
+// hour and the same one-text-a-night marker as the chaser it rides on.
+export type SplitNag = { street: string; url: string };
+/** ONE split notice per job, ever — the chaser and the late-evening send
+ *  (sendSplitNoticeIfChaserPassed) both claim it, so it never goes twice. */
+export const splitNoticeKey = (projectId: string) => `upload-split-${projectId}`;
+export function nagText(firstName: string, streets: string[], split: SplitNag[] = []): string {
+  const parts: string[] = [`Hi ${firstName} — RealTour Pilot here.`];
+  if (streets.length > 0) {
+    const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
+    parts.push(
+      `Still waiting on today's upload page${streets.length === 1 ? "" : "s"}:\n${list}\n\n` +
+        `Finish tonight — files in Dropbox + the page submitted. The shoot is added to your payroll when you submit:\n` +
+        `${APP_URL}/upload`,
+    );
+  }
+  if (split.length === 1) {
+    parts.push(
+      `Photos are uploaded for ${split[0].street}, but the video is not. Please upload the video and submit it before 8:00 AM tomorrow:\n${split[0].url}\n\n` +
+        `A video that comes in after 8:00 AM counts as a late upload on your KPIs.`,
+    );
+  } else if (split.length > 1) {
+    const list = split.map((s, i) => `${i + 1}. ${s.street}: ${s.url}`).join("\n");
+    parts.push(
+      `Photos are uploaded but the video is not for:\n${list}\n\n` +
+        `Please upload each video and submit it before 8:00 AM tomorrow. A video that comes in after 8:00 AM counts as a late upload on your KPIs.`,
+    );
+  }
+  return parts.join("\n\n");
 }
 
 export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: number; notes: string[] }> {
@@ -126,28 +152,60 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
   const dayKey = etDayKey();
   const now = new Date();
 
-  const shoots = await prisma.project.findMany({
-    where: {
-      shootDate: { gte: start, lte: now }, // happened TODAY (never nag a future or ON_HOLD shoot)
-      status: { notIn: ["CANCELLED", "ON_HOLD"] },
-      aryeoMissingAt: null,
-      photographerId: { not: null },
-      debriefSubmittedAt: null,
-    },
-    select: {
-      id: true, title: true,
-      photographer: { select: { id: true, name: true, phone: true } },
-    },
-    orderBy: { shootDate: "asc" },
-  });
-  if (shoots.length === 0) return { sent: 0, skipped: 0, notes: ["nothing unsubmitted today"] };
+  const [shoots, halfIn] = await Promise.all([
+    prisma.project.findMany({
+      where: {
+        shootDate: { gte: start, lte: now }, // happened TODAY (never nag a future or ON_HOLD shoot)
+        status: { notIn: ["CANCELLED", "ON_HOLD"] },
+        aryeoMissingAt: null,
+        photographerId: { not: null },
+        debriefSubmittedAt: null,
+      },
+      select: {
+        id: true, title: true,
+        photographer: { select: { id: true, name: true, phone: true } },
+      },
+      orderBy: { shootDate: "asc" },
+    }),
+    // O05: the photos went in TODAY and the video half is still owed — the
+    // 8:00 AM clock started today, whatever day the shoot was. A video every
+    // line of which was marked "couldn't complete", waived or taken off the
+    // order owes nothing, and is not chased.
+    prisma.project.findMany({
+      where: {
+        photosHandoffAt: { gte: start, lte: now },
+        videoHandoffAt: null,
+        debriefSubmittedAt: null,
+        status: { notIn: ["CANCELLED", "ON_HOLD"] },
+        aryeoMissingAt: null,
+        photographerId: { not: null },
+        deliverables: {
+          some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, waivedAt: null, notCompletedReason: null },
+        },
+      },
+      select: {
+        id: true, title: true,
+        photographer: { select: { id: true, name: true, phone: true } },
+      },
+      orderBy: { photosHandoffAt: "asc" },
+    }),
+  ]);
+  if (shoots.length === 0 && halfIn.length === 0) return { sent: 0, skipped: 0, notes: ["nothing unsubmitted today"] };
 
-  const byMember = new Map<string, { name: string; phone: string | null; streets: string[] }>();
+  const splitIds = new Set(halfIn.map((p) => p.id));
+  const byMember = new Map<string, { name: string; phone: string | null; streets: string[]; split: (SplitNag & { projectId: string })[] }>();
+  const entry = (ph: { id: string; name: string; phone: string | null }) => {
+    const cur = byMember.get(ph.id) ?? { name: ph.name, phone: ph.phone, streets: [], split: [] };
+    byMember.set(ph.id, cur);
+    return cur;
+  };
   for (const s of shoots) {
+    if (!s.photographer || splitIds.has(s.id)) continue; // its own, more specific line below
+    entry(s.photographer).streets.push(s.title.split(",")[0]);
+  }
+  for (const s of halfIn) {
     if (!s.photographer) continue;
-    const cur = byMember.get(s.photographer.id) ?? { name: s.photographer.name, phone: s.photographer.phone, streets: [] };
-    cur.streets.push(s.title.split(",")[0]);
-    byMember.set(s.photographer.id, cur);
+    entry(s.photographer).split.push({ projectId: s.id, street: s.title.split(",")[0], url: `${APP_URL}/upload/${s.id}` });
   }
 
   const from = await defaultOpenPhoneNumber();
@@ -161,7 +219,24 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
     try {
       await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
     } catch { skipped++; continue; }
-    const text = nagText(m.name.split(" ")[0], m.streets);
+    // Each split job's own once-ever claim: a job already told (the
+    // late-evening send got there first) is not told again.
+    const split: SplitNag[] = [];
+    const splitKeys: string[] = [];
+    for (const sj of m.split) {
+      const key = splitNoticeKey(sj.projectId);
+      try {
+        await prisma.appSetting.create({ data: { key, value: new Date().toISOString() } });
+        split.push({ street: sj.street, url: sj.url });
+        splitKeys.push(key);
+      } catch { /* already told */ }
+    }
+    if (m.streets.length === 0 && split.length === 0) {
+      await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+      skipped++;
+      continue;
+    }
+    const text = nagText(m.name.split(" ")[0], m.streets, split);
     try {
       await OpenPhone.sendMessage(from, `+1${k}`, text);
       sent++;
@@ -172,11 +247,77 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
       }).catch((e) => { notes.push(`${m.name}: sent but comms log failed — ${e instanceof Error ? e.message : "?"}`); });
     } catch (e) {
       await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+      if (splitKeys.length) await prisma.appSetting.deleteMany({ where: { key: { in: splitKeys } } }).catch(() => {});
       skipped++;
       notes.push(`${m.name}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
     }
   }
   return { sent, skipped, notes };
+}
+
+/**
+ * THE PHOTOS WENT IN AFTER TONIGHT'S CHASER (O05 review, Sep 25 2026). The
+ * split line rides the chaser, and the chaser only reads photos handed off
+ * earlier the same ET day, so a photos half at 10:30 PM — common, they are
+ * told to finish tonight — was never told at all: the next night's chaser
+ * skips it and the 8:00 AM deadline has passed by then. Called by the photos
+ * half's submit: when that day's chaser hour has already come, the same text
+ * goes now. Same channel, same switch, same phone checks; its own once-ever
+ * claim per job (splitNoticeKey), shared with the chaser, so it never goes
+ * twice. Before the chaser hour it does nothing — the chaser carries it. A
+ * photos half after midnight is the next chaser's (its clock started that
+ * day). Never throws.
+ */
+export async function sendSplitNoticeIfChaserPassed(projectId: string, now: Date = new Date()): Promise<{ sent: boolean; reason: string }> {
+  try {
+    const { internalAlertRules } = await import("@/lib/settings");
+    const alerts = await internalAlertRules();
+    if (!alerts.uploadChaser.enabled) return { sent: false, reason: "the upload chaser is switched off" };
+    const etHour = Number(now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false })) % 24;
+    if (etHour < alerts.uploadChaser.hour) return { sent: false, reason: "tonight's chaser carries it" };
+    const today = etDayKey(now);
+    const p = await prisma.project.findFirst({
+      where: {
+        id: projectId,
+        videoHandoffAt: null,
+        debriefSubmittedAt: null,
+        photosHandoffAt: { not: null },
+        status: { notIn: ["CANCELLED", "ON_HOLD"] },
+        aryeoMissingAt: null,
+        deliverables: {
+          some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, waivedAt: null, notCompletedReason: null },
+        },
+      },
+      select: { id: true, title: true, photosHandoffAt: true, photographer: { select: { name: true, phone: true } } },
+    });
+    if (!p?.photographer || !p.photosHandoffAt) return { sent: false, reason: "nothing owed" };
+    if (etDayKey(p.photosHandoffAt) !== today) return { sent: false, reason: "not tonight's photos" };
+    const k = phoneKey(p.photographer.phone ?? "");
+    if (k.length !== 10) return { sent: false, reason: "no valid phone" };
+    const from = await defaultOpenPhoneNumber();
+    if (!from) return { sent: false, reason: "OpenPhone not connected" };
+    const key = splitNoticeKey(p.id);
+    try {
+      await prisma.appSetting.create({ data: { key, value: now.toISOString() } });
+    } catch {
+      return { sent: false, reason: "already told" };
+    }
+    const text = nagText(p.photographer.name.split(" ")[0], [], [{ street: p.title.split(",")[0], url: `${APP_URL}/upload/${p.id}` }]);
+    try {
+      await OpenPhone.sendMessage(from, `+1${k}`, text);
+    } catch (e) {
+      await prisma.appSetting.delete({ where: { key } }).catch(() => {});
+      return { sent: false, reason: `send failed: ${e instanceof Error ? e.message : "unknown"}` };
+    }
+    await logComm({
+      channel: "text", direction: "out", minRole: "ADMIN",
+      contactName: p.photographer.name, fromPhone: k, body: text,
+      source: "upload-nag", externalId: key,
+    }).catch(() => {});
+    return { sent: true, reason: "sent" };
+  } catch (e) {
+    return { sent: false, reason: e instanceof Error ? e.message : "failed" };
+  }
 }
 
 export async function sendEveningUploadDigests(): Promise<{ sent: number; skipped: number; notes: string[] }> {

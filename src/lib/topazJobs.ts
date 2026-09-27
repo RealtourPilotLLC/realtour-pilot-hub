@@ -355,6 +355,8 @@ async function loadJob(jobId: string) {
           clientId: true,
           aryeoListingId: true,
           aryeoOrderId: true,
+          // 9.6b: a program video is delivered through the portal, not Aryeo (pingKyle).
+          contentMonthId: true,
           client: { select: { name: true } },
         },
       },
@@ -2242,7 +2244,16 @@ async function finishHeldAsProcessed(
       },
     })
     .catch(() => {});
-  return { ok: true, message: "Released — it's the file to send now, and Kyle has the upload card." };
+  // A program video has no upload card (pingKyle's 9.6b branch makes none):
+  // the client's portal gives them this file, or the Ready-to-send card lists
+  // it while they cannot sign in. Telling the reviewer "Kyle has the upload
+  // card" was untrue for every one of them (review, Sep 25).
+  return {
+    ok: true,
+    message: job.project.contentMonthId
+      ? "Released. It's the file the client's portal gives them now. If they can't sign in yet, it's on the Ready-to-send card to send by hand."
+      : "Released — it's the file to send now, and Kyle has the upload card.",
+  };
 }
 
 /**
@@ -2322,7 +2333,12 @@ export async function resolveHeldTopazJob(
       },
     })
     .catch(() => {});
-  return { ok: true, message: "Kept the approved original — it's on the ready card as the file to send." };
+  return {
+    ok: true,
+    message: job.project.contentMonthId
+      ? "Kept the approved original. It's the file the client's portal gives them now. If they can't sign in yet, it's on the Ready-to-send card."
+      : "Kept the approved original — it's on the ready card as the file to send.",
+  };
 }
 
 /**
@@ -2478,6 +2494,31 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   const project = job.project;
   const street = streetOf(project.title);
   const fileName = path.split("/").pop() ?? "the video";
+
+  // A PROGRAM VIDEO IS NOT AN ARYEO UPLOAD (9.6b, Sep 25 2026). Program cuts go
+  // through this pass like every approved cut, and this step used to hand Kyle
+  // "Upload the 1080p video to Aryeo" for them too — a card nothing ever
+  // closed, because program videos are never on a listing (aryeoDelivery skips
+  // them and the ready card's proof pass never stamps them). Jordan: approve,
+  // run it through Topaz, "and deliver to the client in the client portal,
+  // already ran through topaz." The portal hands the client THIS file
+  // (cutEntitlement.clientCutFiles); where the client cannot sign in yet, the
+  // Ready-to-send card lists it for Kyle to send by hand and mark sent. So: no
+  // task, no Slack DM, a line on the job — and a card an earlier run left open
+  // for this job is closed with the reason, not left for him.
+  if (project.contentMonthId) {
+    await closeProgramUploadCard(job.id).catch(() => {});
+    await prisma.activity
+      .create({
+        data: {
+          projectId: job.projectId,
+          type: "SYSTEM",
+          body: `1080p file ready — ${fileName}. A program video: the client's portal gives them this file (no Aryeo upload); until they can sign in, the Ready-to-send card lists it to send by hand.`.slice(0, 500),
+        },
+      })
+      .catch(() => {});
+    return null;
+  }
   const folder = path.slice(0, path.lastIndexOf("/"));
   const aryeo = aryeoJobUrl(project);
 
@@ -2608,6 +2649,44 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     });
   } catch { /* bell is best-effort */ }
   return taskId;
+}
+
+/** The reason a program video's Aryeo-upload card is closed (9.6b). */
+const PROGRAM_CARD_CLOSED = "Closed by the hub: a program video is delivered through the client's portal, not uploaded to Aryeo. If the client can't sign in yet, it is on the Ready-to-send card.";
+
+/** Close the Aryeo-upload card of one 1080p job, if it is open. */
+async function closeProgramUploadCard(jobId: string): Promise<number> {
+  const r = await prisma.smartTask.updateMany({
+    where: { dedupeKey: `topaz-deliver-${jobId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "CANCELLED", completedAt: new Date(), summary: PROGRAM_CARD_CLOSED },
+  });
+  return r.count;
+}
+
+/**
+ * The cards pingKyle made for PROGRAM videos before 9.6b: "Upload the 1080p
+ * video to Aryeo" on a job that is never on a listing, which nothing closes.
+ * Each is CANCELLED with the reason (never deleted), from the cron's
+ * libraryRepair step. Database-only, contacts nobody. The video itself is not
+ * touched: if it has not reached the client, the Ready-to-send card still has
+ * it — that card, not this task, is where a program video's send is tracked.
+ */
+export async function closeProgramUploadCards(opts: { max?: number } = {}): Promise<{ checked: number; closed: number }> {
+  const open = await prisma.smartTask.findMany({
+    where: { dedupeKey: { startsWith: "topaz-deliver-" }, status: { notIn: ["COMPLETED", "CANCELLED"] }, project: { contentMonthId: { not: null } } },
+    select: { id: true, dedupeKey: true, projectId: true },
+    take: opts.max ?? 100,
+  });
+  let closed = 0;
+  for (const t of open) {
+    const jobId = t.dedupeKey!.slice("topaz-deliver-".length);
+    const n = await closeProgramUploadCard(jobId).catch(() => 0);
+    closed += n;
+    if (n && t.projectId) {
+      await prisma.activity.create({ data: { projectId: t.projectId, type: "SYSTEM", body: PROGRAM_CARD_CLOSED } }).catch(() => {});
+    }
+  }
+  return { checked: open.length, closed };
 }
 
 // ---------------------------------------------------------------------------

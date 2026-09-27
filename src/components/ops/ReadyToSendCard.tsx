@@ -7,6 +7,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { RetryRender } from "@/components/ops/RetryRender";
 import { HeldRender } from "@/components/ops/HeldRender";
+import { NotTold } from "@/components/ops/NotTold";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
 import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
@@ -74,6 +75,8 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
 
 export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
   const { ready, rendering, needsFinishing } = board;
+  // 9.2: sent, and the client not told yet — its own short list (NotTold).
+  const notTold = board.notTold ?? [];
   if (ready.length === 0) {
     return (
       <div className="space-y-2">
@@ -81,6 +84,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
           <CheckCircle2 className="size-4" /> Nothing waiting to go out.
         </p>
         <NeedsFinishing rows={needsFinishing ?? []} />
+        <NotTold rows={notTold} />
         <Rendering rows={rendering} />
       </div>
     );
@@ -88,6 +92,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
   return (
     <div className="space-y-2">
       <NeedsFinishing rows={needsFinishing ?? []} />
+      <NotTold rows={notTold} />
       <p className="text-[11px] text-muted">
         Download the file, upload it to Aryeo and deliver the listing — then mark it sent. Aryeo has no way for
         another program to do that step, so this card is the record that it happened. Each row also says what Aryeo

@@ -218,6 +218,9 @@ export default async function UploadListPage() {
 
 type Shoot = {
   debriefSubmittedAt: Date | null;
+  /** O05: each half's own handoff — set while the other half is still owed */
+  photosHandoffAt: Date | null;
+  videoHandoffAt: Date | null;
   id: string; title: string; status: string; shootDate: Date | null; uploadedAt: Date | null;
   client: { name: string; avatarUrl: string | null }; photographer: { name: string; avatarColor: string } | null;
   deliverables: { type: DeliverableType }[]; _count: { uploads: number };
@@ -284,6 +287,12 @@ function JobRow({ s, extraShoot, overBudget, nowMs }: { s: Shoot; extraShoot: Da
           )}
           {s.debriefSubmittedAt && !extraShoot ? (
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Submitted ✓ {etDateTime(s.debriefSubmittedAt)}</Badge>
+          ) : s.photosHandoffAt && !s.videoHandoffAt ? (
+            // O05: half in, half owed — the row says which, so "Submit to add
+            // to payroll" beside it is not read as "nothing was sent".
+            <Badge color="#f59e0b" soft="rgba(245,158,11,0.14)">Photos submitted · video pending</Badge>
+          ) : s.videoHandoffAt && !s.photosHandoffAt ? (
+            <Badge color="#f59e0b" soft="rgba(245,158,11,0.14)">Video submitted · photos pending</Badge>
           ) : uploaded ? (
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Uploaded</Badge>
           ) : null}

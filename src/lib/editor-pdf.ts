@@ -7,7 +7,9 @@ import { isFieldFlag } from "@/lib/debrief";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { musicPickLine, readMusicPick } from "@/lib/musicPick";
 import { EXPORT_SPEC, EXPORT_SPEC_LINES } from "@/lib/videoStyles";
-import type { FilmingBrief } from "@/lib/deliverableOutputs";
+import { etDate } from "@/lib/datetime";
+import type { FilmingBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
+import type { BrandBrief } from "@/lib/brandProfile";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -47,18 +49,28 @@ const RULE = rgb(0.9, 0.91, 0.93);
  *  deliverableOutputs.filmingBriefFor). Left out, it is read here — so the one
  *  route that prints this brief needs no change, and a caller that already has
  *  it (a drill, a batch) passes it in. null = print the plain count, as a
- *  listing shoot always has. */
+ *  listing shoot always has.
+ *
+ *  `outputs` (§7.5) and `brand` (§6.8) follow the same rule: each video's own
+ *  brief with its version, and the client's brand kit — both read here when
+ *  left out, money-scrubbed, and never a reason the brief fails to print. */
 export async function buildEditorBriefPdf(
   project: FullProject,
-  opts: { filming?: FilmingBrief | null } = {},
+  opts: { filming?: FilmingBrief | null; outputs?: OutputBrief[] | null; brand?: BrandBrief | null } = {},
 ): Promise<Uint8Array> {
-  const filming =
+  const briefs = await import("@/lib/deliverableOutputs");
+  const [filming, outputs, brand] = await Promise.all([
     opts.filming !== undefined
       ? opts.filming
-      : await import("@/lib/deliverableOutputs")
-          .then((m) => m.filmingBriefFor(project.id))
-          // A brief with the plain count is better than no brief at all.
-          .catch(() => null);
+      // A brief with the plain count is better than no brief at all.
+      : briefs.filmingBriefFor(project.id).catch(() => null),
+    opts.outputs !== undefined ? opts.outputs : briefs.outputBriefsFor(project.id, { scrub: true }).catch(() => null),
+    // links:false — a printed page cannot follow a link that expires in four
+    // hours, and building the brief must never wait on Dropbox.
+    opts.brand !== undefined
+      ? opts.brand
+      : import("@/lib/brandProfile").then((m) => m.brandBriefFor(project.client.id, { projectId: project.id, scrub: true, links: false })).catch(() => null),
+  ]);
   const doc = await PDFDocument.create();
   doc.setTitle(`Editor Brief — ${project.title}`);
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -193,6 +205,26 @@ export async function buildEditorBriefPdf(
     text(clientNote, { size: 11 });
   }
 
+  // ---- Brand kit (§6.8, Sep 25) -----------------------------------------
+  // The same registry read /edit shows (brandProfile.brandBriefFor): the
+  // latest version of every brand file, fonts, music, the standing production
+  // defaults and the accepted call preferences. The printed copy used to carry
+  // none of it — the one copy an editor keeps beside Final Cut.
+  const brandLines: string[] = [];
+  if (brand) {
+    if (brand.colors.length) brandLines.push(`Colors: ${brand.colors.map((x) => x.toUpperCase()).join(", ")}${brand.colorWords ? ` (${brand.colorWords})` : ""}`);
+    if (brand.fontNames) brandLines.push(`Fonts: ${brand.fontNames}`);
+    for (const f of brand.files) brandLines.push(`${f.typeWord}: ${f.name} (v${f.versionNo})`);
+    if (brand.music) brandLines.push(`Music: ${brand.music}`);
+    if (brand.videoStyle) brandLines.push(`Their style: ${brand.videoStyle}`);
+    for (const d of brand.productionDefaults) brandLines.push(`${d.name}: ${d.text}`);
+    for (const x of brand.acceptedPreferences) brandLines.push(`Preference: ${x}`);
+  }
+  if (brandLines.length) {
+    heading("Brand kit");
+    for (const l of brandLines) text(`-  ${l}`, { size: 10, gap: 3 });
+  }
+
   // ---- Special requests -------------------------------------------------
   const requests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
   if (requests.length) {
@@ -235,6 +267,7 @@ export async function buildEditorBriefPdf(
       if (r.script) {
         text(`Script: ${r.script.title}${r.script.versionNo ? ` (v${r.script.versionNo})` : ""} - ${r.script.standing}`, { size: 10, x: MARGIN + 14, gap: 2 });
         if (r.script.text) text(stripMarkdownSyntax(r.script.text), { size: 9, color: MUTED, x: MARGIN + 28, gap: 2 });
+        for (const l of directionLines(r.script.direction)) text(l, { size: 9, x: MARGIN + 28, gap: 2 });
       } else {
         text("Script: none on file for this topic.", { size: 10, color: MUTED, x: MARGIN + 14, gap: 2 });
       }
@@ -260,8 +293,26 @@ export async function buildEditorBriefPdf(
     heading("Videos filmed");
     text(`${project.videosFilmed} video${project.videosFilmed === 1 ? "" : "s"} were filmed on this session - cut this many.`, { size: 11 });
   }
+  // ---- Each video's brief (§7.5, Sep 25) ------------------------------
+  // A reel and an MLS video on one order are separate briefs now. Printed when
+  // any video has one of its own, or when the job owes more than one video —
+  // then each says whether it goes by the shared instructions below. A
+  // one-video job with no brief of its own prints exactly as it always did.
+  const outs = outputs ?? [];
+  if (outs.some((o) => o.directionSource === "own") || outs.length > 1) {
+    heading("Each video's brief");
+    for (const o of outs) {
+      y -= 4;
+      text(`${o.index}. ${o.label}${o.format !== o.label ? ` - ${o.format}` : ""}`, { size: 11, f: bold, gap: 2 });
+      text(o.versionLabel, { size: 9, color: MUTED, x: MARGIN + 14, gap: 2 });
+      for (const sec of o.sections) text(`${sec.label}: ${sec.text}`, { size: 10, x: MARGIN + 14, gap: 2 });
+      const due = o.promisedAtISO ? etDate(o.promisedAtISO) : null; // ET, not the server's clock
+      const who = [o.reviewer ? `Reviewer: ${o.reviewer.name}${o.reviewer.from === "chain" ? " (first in line)" : ""}` : null, due ? `Due ${due}` : null].filter(Boolean).join("  ·  ");
+      if (who) text(who, { size: 9, color: MUTED, x: MARGIN + 14, gap: 2 });
+    }
+  }
   if (project.videoInstructions) {
-    heading("Video - instructions from the shoot");
+    heading(outs.length > 1 ? "Video - instructions from the shoot (all videos)" : "Video - instructions from the shoot");
     text(project.videoInstructions, { size: 11 });
   }
   if (project.scriptConfirmNote) {
@@ -307,6 +358,16 @@ export async function buildEditorBriefPdf(
   drawFooter(page, font, project.title);
 
   return doc.save();
+}
+
+/** A script version's production direction as printable lines (§6.8). */
+function directionLines(d: ScriptDirection | null | undefined): string[] {
+  if (!d) return [];
+  return [
+    d.filmingNotes ? `Filming: ${d.filmingNotes}` : null,
+    d.creativeDirection ? `Direction: ${d.creativeDirection}` : null,
+    d.productionNotes ? `Production: ${d.productionNotes}` : null,
+  ].filter((x): x is string => !!x);
 }
 
 function drawFooter(page: PDFPage, font: PDFFont, title: string) {

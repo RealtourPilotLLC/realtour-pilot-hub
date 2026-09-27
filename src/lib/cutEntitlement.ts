@@ -31,9 +31,11 @@ import { TEXT_KYLE_START } from "@/lib/portalWords";
 //     review, delivery-stamped, or marked sent by Kyle). Internal rounds they
 //     never saw are skipped.
 //   · only the decisive round's OWN decision counts. A replacement never
-//     inherits an approval, and while one awaits a decision the earlier
-//     approved version is NOT downloadable (Jordan's default; flipping it is
-//     one branch in decideEntitlement).
+//     inherits an approval. While one awaits a decision (or the client asked
+//     for changes on it) the EARLIER approved version stays downloadable —
+//     Jordan, Sep 24: "approved v1 stays downloadable" (KEEP_PRIOR_APPROVED_
+//     VERSION below; false restores the stricter reading in one branch of
+//     decideEntitlement).
 //   · client approval unlocks it when the approval's recorded identity still
 //     matches the cut (stableCutIdentity) and there are bytes to serve.
 //   · a delivery made OUTSIDE the portal also unlocks it: Kyle's Mark-as-sent
@@ -45,6 +47,20 @@ import { TEXT_KYLE_START } from "@/lib/portalWords";
 //     accounts too.
 //   · with no decisive round, an Aryeo-delivered file is the video's final —
 //     unless the only thing tying it to a cut chain is list position.
+//
+// TOPAZ BEFORE RELEASE (unified handoff 9.6b, Sep 25 2026). Jordan: "When we
+// approve the edit (which should be done first) it should run through topaz,
+// and deliver to the client in the client portal, already ran through topaz."
+// The approved cut is still the thing the client decides on — the decision and
+// its identity stay bound to the ReviewSubmission — but for a PROGRAM cut the
+// BYTES the client is handed are the verified 1080p render once one exists
+// (clientCutFiles below). While the pass is still running, or its output is
+// HELD because nobody could verify its sound (topazJobs O02), the client gets
+// nothing in its place: the video reads as being finished, Kyle's Ready-to-send
+// card owns it, and the editor's approved original stays where batch 1 put it.
+// A pass that was skipped, failed, cancelled, or resolved by a reviewer as
+// "keep the original" leaves the editor's export as the file — the same file
+// the ready card offers Kyle in those cases.
 // ---------------------------------------------------------------------------
 
 /**
@@ -147,7 +163,26 @@ export type EntitlementFacts = {
    *  so a delivery fact the gate would otherwise wait past is taken as it is.
    *  Omitted = active. */
   enrollmentActive?: boolean;
+  /** 9.6b: per round, which bytes the CLIENT is handed (clientCutFiles). A
+   *  round missing from the map — or the whole map omitted — is the editor's
+   *  original, exactly as before. */
+  clientFiles?: Map<string, ClientCutFile>;
 };
+
+/**
+ * WHICH BYTES OF A PROGRAM CUT THE CLIENT GETS (9.6b). Decided by the cut's
+ * 1080p job alone:
+ *   finishing  the pass still owes work, or finished and is HELD for a listen —
+ *              the client is handed nothing, not the editor's export instead
+ *   processed  the pass is done and its file was verified (or a reviewer
+ *              listened and accepted it) — that file is the client's
+ *   original   no pass, or it was skipped / failed / cancelled / resolved as
+ *              "keep the original" — the editor's approved export
+ */
+export type ClientCutFile =
+  | { kind: "finishing"; state: string }
+  | { kind: "processed"; topazJobId: string; path: string; fileName: string }
+  | { kind: "original" };
 
 export type FinalFile = {
   kind: "cut" | "delivered";
@@ -160,10 +195,14 @@ export type FinalFile = {
   approvedAtISO: string | null;
   /** Kept for readers of the old shape: a file is only ever handed out when it is true. */
   hashOk: boolean;
+  /** 9.6b: the verified 1080p render of this cut, when THAT is what the client
+   *  is handed (the stream route serves its Dropbox path for a portal proof).
+   *  Absent = the editor's own export. */
+  processed?: { topazJobId: string; path: string; fileName: string } | null;
 };
 
 export type EntitlementBasis = "CLIENT_APPROVED" | "HISTORICAL_DELIVERY" | "DELIVERED_OUTSIDE_PORTAL" | "NONE";
-export type EntitlementBlock = "AWAITING_DECISION" | "CHANGES_REQUESTED" | "HASH_DRIFT" | "NO_FILE" | "UNCONFIRMED_PAIRING";
+export type EntitlementBlock = "AWAITING_DECISION" | "CHANGES_REQUESTED" | "HASH_DRIFT" | "NO_FILE" | "UNCONFIRMED_PAIRING" | "FINISHING";
 
 export type Entitlement = {
   basis: EntitlementBasis;
@@ -202,6 +241,9 @@ export const WHY = {
   NOT_YET_CUT: "The final file lands here once this version is approved and finished.",
   NOT_YET: "No file yet — it appears here once the video is edited and delivered.",
   PRIOR: "This is the version you approved. The newer version is waiting for your review above; its download unlocks once you approve it.",
+  /** 9.6b — the 1080p pass is running or its file is held for a listen. Client
+   *  copy: plain words, no dash. */
+  FINISHING: "This video is being finished. It will be ready here shortly.",
 } as const;
 
 /** What the stream route can actually serve (stream/route.ts: blob first, then the Dropbox path). */
@@ -212,11 +254,30 @@ const hasBytes = (c: ChainRound) => !!c.assetUrl && !!(c.blobUrl || c.assetPath 
  * calls this — nothing restates it.
  */
 export function decideEntitlement(f: EntitlementFacts, opts: { gateSince?: Date } = {}): Entitlement {
-  const e = decideForDecisiveRound(f, opts);
+  const e = withClientFile(decideForDecisiveRound(f, opts), f);
   if (!KEEP_PRIOR_APPROVED_VERSION || e.basis !== "NONE" || !e.current) return e;
-  if (e.blockedBy !== "AWAITING_DECISION" && e.blockedBy !== "CHANGES_REQUESTED") return e;
+  // FINISHING joins the two waits (9.6b): a v2 still in its 1080p pass is no
+  // more the client's than a v2 awaiting their decision, so an approved v1
+  // stays theirs meanwhile.
+  if (e.blockedBy !== "AWAITING_DECISION" && e.blockedBy !== "CHANGES_REQUESTED" && e.blockedBy !== "FINISHING") return e;
   const prior = priorApprovedVersion(f, e.current.submissionId, opts);
   return prior ? { ...prior, current: e.current, why: WHY.PRIOR, priorVersion: true } : e;
+}
+
+/**
+ * 9.6b, applied to whatever the rule decided: a cut file whose 1080p pass is
+ * still finishing is withheld (never swapped for the editor's export), and one
+ * with a verified render hands over the render. Every other answer — an Aryeo
+ * file, a refusal, a cut with no 1080p job — passes through untouched.
+ */
+function withClientFile(e: Entitlement, f: EntitlementFacts): Entitlement {
+  if (e.file?.kind !== "cut" || !e.file.submissionId || !f.clientFiles) return e;
+  const cf = f.clientFiles.get(e.file.submissionId);
+  if (!cf || cf.kind === "original") return e;
+  if (cf.kind === "finishing") {
+    return { basis: "NONE", current: e.current, file: null, captionRef: null, blockedBy: "FINISHING", why: WHY.FINISHING, deliveredAt: null };
+  }
+  return { ...e, file: { ...e.file, fileName: cf.fileName, processed: { topazJobId: cf.topazJobId, path: cf.path, fileName: cf.fileName } } };
 }
 
 /**
@@ -230,16 +291,18 @@ function priorApprovedVersion(f: EntitlementFacts, decisiveId: string, opts: { g
   for (let i = idx - 1; i >= 0; i--) {
     const r = f.chain[i];
     if (!hasBytes(r) || f.changeRequests.has(r.id)) continue;
+    // An earlier round still in its own 1080p pass is not a fallback either.
+    if (f.clientFiles?.get(r.id)?.kind === "finishing") continue;
     const approval = f.priorApprovals?.get(r.id) ?? f.approvals.get(r.id) ?? null;
     if (approval && decisionMatchesCut(approval.contentHash, r)) {
-      return {
+      return withClientFile({
         basis: "CLIENT_APPROVED", current: null, captionRef: r.id, blockedBy: null, why: null, deliveredAt: approval.decidedAt,
         file: { kind: "cut", url: r.assetUrl ?? streamUrlFor(r.id), submissionId: r.id, fileName: r.fileName, label: `v${r.round} (approved)`, approvedByLabel: approval.actorLabel, approvedAtISO: approval.decidedAt.toISOString(), hashOk: true },
-      };
+      }, f);
     }
     // A version delivered to them outside the portal (or before the gate) is
     // theirs too: judge it by the same rule as if it were the only round.
-    const alone = decideForDecisiveRound({ ...f, chain: f.chain.slice(0, i + 1), aryeoFinal: null }, opts);
+    const alone = withClientFile(decideForDecisiveRound({ ...f, chain: f.chain.slice(0, i + 1), aryeoFinal: null }, opts), f);
     if (alone.file && alone.file.submissionId === r.id && alone.basis !== "CLIENT_APPROVED") return { ...alone, current: null };
   }
   return null;
@@ -346,6 +409,87 @@ export function aryeoMatchBasis(title: string | null, chain: { fileName: string 
 
 // ---- loaders -----------------------------------------------------------------
 
+/** The two outcomes of the O02 check a finished render can carry. A "done" job
+ *  from before the check was recorded (outputCheck null) is NOT treated as
+ *  verified: its client keeps the editor's export, which is what every such
+ *  client was already being served. */
+const VERIFIED_OUTPUT = new Set(["verified", "resolved-processed"]);
+
+/**
+ * The name a client's download is saved under: the video's own name (the
+ * editor's export, which is what the page has been calling it), with the
+ * finished file's extension. The Dropbox name — "… - v1 - FINAL (Topaz).mp4"
+ * — is the office's filing word, not the client's.
+ */
+function clientFileName(cutName: string | null, processedPath: string): string {
+  const processed = processedPath.split("/").pop() || "video.mp4";
+  const ext = processed.match(/\.[a-z0-9]{2,4}$/i)?.[0] ?? ".mp4";
+  const stem = (cutName ?? "").replace(/\.[a-z0-9]{2,4}$/i, "").trim();
+  return stem ? `${stem}${ext}` : processed;
+}
+
+/**
+ * 9.6b — the bytes the CLIENT is handed, per program cut: a fixed two queries
+ * however many ids. Cuts that are not on a program month, and cuts with no
+ * 1080p job, are left out of the map (= the editor's original), so listing
+ * work and the Review Room are untouched by construction.
+ *
+ * "Still finishing" is read through readyToSend.laneStillOwesWork — the one
+ * list of terminal 1080p states — so a state added to the lane later can only
+ * make a client wait, never hand them the wrong file. HELD is in it: finished
+ * and paid for, but not the client's until a person decides.
+ *
+ * The hold is for cuts whose delivery IS the portal. A cut the client already
+ * has by another road — Kyle marked it sent, the delivery auto-stamp, or a round
+ * decided before the portal gate (CLIENT_APPROVAL_GATE_SINCE) — keeps its file
+ * while a later pass (a "Try again") runs: taking a delivered video back off a
+ * client's page for half an hour would help nobody.
+ *
+ * …AND SO DOES ONE THE PORTAL ITSELF ALREADY GAVE THEM (review, Sep 25). A
+ * program cut whose pass failed or was skipped is served as the editor's
+ * export; the client approves it (the cut's live approval pointer,
+ * clientApprovedDecisionId — cleared when a reopen sets the approval aside)
+ * and downloads it. A later "Try again", or a render queued by hand, used to
+ * put that cut back to "being finished": the download door 404'd and the
+ * player 409'd on a video the client had approved and had, indefinitely if
+ * the re-run ended HELD. §3 keeps prior approved downloads. The client keeps
+ * the file they approved while the pass runs, and gets the render once it is
+ * verified (the `processed` branch below does not look at this). A client
+ * cannot approve a version while it is finishing — the page has no player or
+ * decision for it — so this never hands out the editor's export in place of a
+ * render the client was still waiting for.
+ */
+export async function clientCutFiles(submissionIds: string[]): Promise<Map<string, ClientCutFile>> {
+  const out = new Map<string, ClientCutFile>();
+  const ids = [...new Set(submissionIds.filter((x) => ID_RE.test(x)))];
+  if (ids.length === 0) return out;
+  const jobs = await prisma.topazJob.findMany({
+    where: { submissionId: { in: ids }, submission: { project: { contentMonthId: { not: null } } } },
+    select: {
+      id: true, submissionId: true, state: true, finalPath: true, savedAt: true, outputCheck: true,
+      submission: { select: { fileName: true, sentToClientAt: true, decidedBy: true, decidedAt: true, clientApprovedDecisionId: true } },
+    },
+  });
+  if (jobs.length === 0) return out;
+  const { laneStillOwesWork } = await import("@/lib/readyToSend");
+  const gate = CLIENT_APPROVAL_GATE_SINCE.getTime();
+  for (const j of jobs) {
+    if (laneStillOwesWork(j.state)) {
+      const s = j.submission;
+      const deliveredElsewhere =
+        !!s && (!!s.sentToClientAt || s.decidedBy === DELIVERED_STAMP || (!!s.decidedAt && s.decidedAt.getTime() < gate) || !!s.clientApprovedDecisionId);
+      out.set(j.submissionId, deliveredElsewhere ? { kind: "original" } : { kind: "finishing", state: j.state });
+      continue;
+    }
+    if (j.state === "done" && j.finalPath && j.savedAt && VERIFIED_OUTPUT.has(j.outputCheck ?? "")) {
+      out.set(j.submissionId, { kind: "processed", topazJobId: j.id, path: j.finalPath, fileName: clientFileName(j.submission?.fileName ?? null, j.finalPath) });
+      continue;
+    }
+    out.set(j.submissionId, { kind: "original" });
+  }
+  return out;
+}
+
 /**
  * Every round of the video this cut belongs to, oldest first. One chain for
  * approval, history and the library alike — including legacy rows, where the
@@ -429,11 +573,12 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
   }
   const chainIds = [...new Set([...chainOf.values()].flat().map((r) => r.id))];
   const enrollmentIds = [...new Set(videos.map((v) => v.enrollmentId))];
-  const [decisions, sources] = await Promise.all([
+  const [decisions, sources, clientFiles] = await Promise.all([
     chainIds.length
       ? prisma.clientDecision.findMany({ where: { submissionId: { in: chainIds }, enrollmentId: { in: enrollmentIds } }, select: { id: true, submissionId: true, enrollmentId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
       : Promise.resolve([]),
     prisma.contentVideoSource.findMany({ where: { videoId: { in: videos.map((v) => v.id) }, kind: "PORTAL_VIDEO", isFinal: true }, orderBy: { createdAt: "asc" }, select: { videoId: true, portalVideoId: true, matchBasis: true, confirmedAt: true } }),
+    clientCutFiles(chainIds),
   ]);
   const pvIds = [...new Set(sources.map((s) => s.portalVideoId).filter((x): x is string => !!x))];
   const pvs = pvIds.length ? await prisma.portalVideo.findMany({ where: { id: { in: pvIds }, source: "aryeo" }, select: { id: true, enrollmentId: true, title: true, download: true, playback: true, deliveredAt: true } }) : [];
@@ -461,6 +606,7 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
       monthHistorical: !!month && (month.historical || month.status === "IMPORTED"),
       aryeoFinal,
       enrollmentActive: (enrollmentStatus.get(v.enrollmentId) ?? "ACTIVE") === "ACTIVE",
+      clientFiles,
     }, opts));
   }
   return out;

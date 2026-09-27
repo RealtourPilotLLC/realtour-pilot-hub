@@ -1,13 +1,13 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
-import { MessageSquare } from "lucide-react";
+import { Clapperboard, MessageSquare } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { getTeam } from "@/lib/queries";
 import { redactMoney } from "@/lib/hubTools";
 import { Section } from "@/components/ui/Section";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
-import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
+import { getShoot, photographerMemberId, photographerOwnsShoot, type ShootView } from "@/lib/shoot";
 import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
@@ -133,6 +133,11 @@ export default async function ShootDetailPage({
       <Suspense fallback={<ShootMapCardSkeleton />}>
         <ShootMapCard projectId={id} memberId={payMemberId} />
       </Suspense>
+      {/* §6.8 / A28 (Sep 25): what this session is FOR, straight under the
+          route — the topics, the words the client was shown and the direction
+          written with them, and any video with a brief of its own. The same
+          readers the editor's page and printed brief use. */}
+      <SessionBriefCard session={view.session} outputs={view.outputBriefs} />
     </>
   );
 
@@ -187,4 +192,91 @@ export default async function ShootDetailPage({
   const backHref = user?.role !== "PHOTOGRAPHER" && as ? `/shoot?as=${as}` : "/shoot";
 
   return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} />;
+}
+
+// ---------------------------------------------------------------------------
+// THIS SESSION'S VIDEOS (§6.8 / §7.5 / A28, Sep 25 2026). Server-rendered and
+// read-only: the photographer directs from it, and the office changes it where
+// it lives (the scripts in the content workspace, a video's brief on its edit
+// page). Everything in it arrived money-scrubbed from lib/shoot.
+// ---------------------------------------------------------------------------
+function SessionBriefCard({ session, outputs }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"] }) {
+  if (!session && outputs.length === 0) return null;
+  const toFilm = session?.topics.filter((t) => !t.filmedElsewhere) ?? [];
+  const elsewhere = session?.topics.filter((t) => t.filmedElsewhere) ?? [];
+  const brand = session?.brand ?? null;
+  const hasBrand = !!brand && (!!brand.fontNames || brand.files.length > 0 || !!brand.music || brand.productionDefaults.length > 0 || brand.acceptedPreferences.length > 0);
+  return (
+    <Section
+      icon={Clapperboard}
+      title={session ? "This session's videos" : "Each video's brief"}
+      count={session ? `${toFilm.length} topic${toFilm.length === 1 ? "" : "s"}` : undefined}
+      bodyClassName="space-y-3"
+    >
+      {session && toFilm.length === 0 && (
+        <p className="text-sm text-muted">No topics are chosen for this session yet. Ask the office before you start.</p>
+      )}
+      {toFilm.map((t, i) => (
+        <div key={t.topicId} className="rounded-xl border border-border bg-surface-2/40 p-3">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-sm font-semibold">{i + 1}. {t.title}</span>
+            {t.pillarName && <span className="text-[11px] text-muted">{t.pillarName}</span>}
+            {t.overflow && <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">extra, if there is time</span>}
+          </div>
+          {t.script ? (
+            <details className="mt-1.5">
+              <summary className="cursor-pointer text-xs text-foreground/85">
+                Script v{t.script.versionNo}{" "}
+                <span className={t.script.clientApproved ? "text-success" : "text-warning"}>({t.script.standing})</span>
+              </summary>
+              {t.script.text && <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{t.script.text}</p>}
+            </details>
+          ) : (
+            <p className="mt-1 text-xs text-muted">{t.noScript}</p>
+          )}
+          {t.script?.direction && (
+            <div className="mt-1.5 space-y-0.5 text-xs leading-relaxed text-foreground/85">
+              {t.script.direction.filmingNotes && <p><span className="text-muted">Filming: </span>{t.script.direction.filmingNotes}</p>}
+              {t.script.direction.creativeDirection && <p><span className="text-muted">Direction: </span>{t.script.direction.creativeDirection}</p>}
+              {t.script.direction.productionNotes && <p><span className="text-muted">Production: </span>{t.script.direction.productionNotes}</p>}
+            </div>
+          )}
+        </div>
+      ))}
+      {elsewhere.length > 0 && (
+        <p className="text-xs text-muted">Already filmed at the other session: {elsewhere.map((t) => t.title).join(", ")}.</p>
+      )}
+      {hasBrand && brand && (
+        <div className="rounded-xl border border-brand/25 bg-brand-soft/40 p-3 text-xs leading-relaxed">
+          <div className="mb-1 font-semibold text-brand">Their brand</div>
+          {brand.fontNames && <p><span className="text-muted">Fonts: </span>{brand.fontNames}</p>}
+          {brand.files.length > 0 && <p><span className="text-muted">On file: </span>{brand.files.map((f) => `${f.typeWord} (${f.name}, v${f.versionNo})`).join(", ")}</p>}
+          {brand.music && <p><span className="text-muted">Music: </span>{brand.music}</p>}
+          {brand.productionDefaults.map((d) => <p key={d.name}><span className="text-muted">{d.name}: </span>{d.text}</p>)}
+          {brand.acceptedPreferences.length > 0 && (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {brand.acceptedPreferences.map((x, i) => <li key={i}>{x}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+      {outputs.map((o) => (
+        <div key={o.outputId} className="rounded-xl border border-border bg-surface-2/40 p-3">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-sm font-semibold">{o.label}</span>
+            {o.format !== o.label && <span className="text-[11px] text-muted">{o.format}</span>}
+          </div>
+          <p className="text-[11px] text-muted-2">{o.versionLabel}</p>
+          <dl className="mt-1 space-y-1 text-xs leading-relaxed">
+            {o.sections.map((x) => (
+              <div key={x.label}>
+                <dt className="font-medium text-muted">{x.label}</dt>
+                <dd className="whitespace-pre-wrap">{x.text}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </Section>
+  );
 }

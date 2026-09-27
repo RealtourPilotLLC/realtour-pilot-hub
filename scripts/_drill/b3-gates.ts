@@ -435,8 +435,16 @@ async function main() {
     const remOld = await primaryLane(E3.monthId, NOW0);
     c.ok("a window that closed weeks ago is not quoted as 'the earliest we can film' (the picker offers tomorrow on)", remOld.candidate.action === "BOOK_SESSION" && !!remOld.body && !/earliest we can film/i.test(remOld.body) && remOld.candidate.state.earliestSessionAt === et(2026, 10, 8, 9).toISOString(), remOld.body?.split("\n")[2]);
     const callers = (fn: string) => srcFiles("src").filter((f) => new RegExp(`\\b${fn}\\s*\\(`).test(code(read(f))) && !code(read(f)).includes(`export function ${fn}(`));
+    // The one sanctioned caller outside programMonths is the REVISION clock
+    // (deliveryBoard.clientRoundClock, batch 4): §3 defines "24-48 business
+    // hours" on the same elapsed-weekday-hours convention as the 72, so it
+    // borrows the same arithmetic. It is not a scheduling gate — the guard is
+    // about nobody re-deriving WHEN A SESSION MAY START.
+    const SANCTIONED = new Set(["src/lib/deliveryBoard.ts"]);
     const weekdayCallers = callers("addWeekdayHoursET");
-    c.ok("nothing outside programMonths calls addWeekdayHoursET", weekdayCallers.length === 0, weekdayCallers.join(", "));
+    const stray = weekdayCallers.filter((f) => !SANCTIONED.has(f.replace(/^.*?(src\/)/, "src/")));
+    const boardCalls = code(read("src/lib/deliveryBoard.ts")).match(/\baddWeekdayHoursET\s*\(/g)?.length ?? 0;
+    c.ok("nothing outside programMonths computes a session gate with addWeekdayHoursET (the revision clock is the one sanctioned caller)", stray.length === 0 && boardCalls <= 2, `${stray.join(", ")} · deliveryBoard calls: ${boardCalls}`);
     const seamCallers = callers("earliestFilmingStart").sort();
     c.ok("earliestFilmingStart (the arithmetic seam) outside programMonths: only a HYPOTHETICAL call's preview (callBooking) and a stored snapshot's own window (sessionReassess)", JSON.stringify(seamCallers) === JSON.stringify(["src/lib/callBooking.ts", "src/lib/sessionReassess.ts"]), seamCallers.join(", "));
 

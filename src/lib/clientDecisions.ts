@@ -243,7 +243,18 @@ export async function cutHistory(viewer: PortalViewer, submissionId: string): Pr
   // The client opened it: evidence an automatic approval can stand on (CP-02).
   // The client's own seat or their link — never staff looking through the iframe.
   if (current && (viewer.actor.kind === "CLIENT" || viewer.actor.kind === "TOKEN")) {
-    await prisma.contentReviewWindow.updateMany({ where: { submissionId: current.id, firstViewedAt: null }, data: { firstViewedAt: new Date() } }).catch(() => {});
+    // …but not while the version is still being finished (9.6b review, Sep 25):
+    // its 1080p pass is running or HELD, the page shows no player, and opening
+    // it is not seeing the video. Stamped, it cleared the NEVER_SEEN hold, so an
+    // automatic approval could stand on a video the client never could play.
+    // A read that fails counts as finishing — the safe side for that hold.
+    const finishing = await import("@/lib/cutEntitlement")
+      .then((m) => m.clientCutFiles([current.id]))
+      .then((f) => f.get(current.id)?.kind === "finishing")
+      .catch(() => true);
+    if (!finishing) {
+      await prisma.contentReviewWindow.updateMany({ where: { submissionId: current.id, firstViewedAt: null }, data: { firstViewedAt: new Date() } }).catch(() => {});
+    }
   }
   return rounds.map((r): CutVersion => {
     const releasedAt = cutReleasedAt(r);

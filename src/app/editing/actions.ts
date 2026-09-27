@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireRole, requireShootAccess } from "@/lib/auth/guards";
-import { editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
+import { getCurrentUser } from "@/lib/auth/user";
+import { EDITORS, editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
 import { EDIT_PRIORITIES, EDIT_STATUS_LABELS, EDIT_TIERS, type EditOverrideInput, type EditTier } from "@/lib/editOverrideDefaults";
@@ -24,8 +25,8 @@ import {
 //   · setEditVideoEditor — owner/admin reassign a video job to a different
 //     editor (one-click select on the tracker row). Updates the edit_video
 //     task's assignedKey AND Project.editorId when the new editor maps to a
-//     TeamMember (Kim/John); externals (Luma, the external agency) clear the
-//     link, and "" takes the job off every editor's board.
+//     TeamMember (Kim/John); the external agency (Luma Visuals, Sep 25)
+//     clears the link, and "" takes the job off every editor's board.
 // The editor's "Done — send to review" action moved to
 // src/app/review/actions.ts (submitCutForReview) — see the note at the bottom.
 // Fail-closed once auth is enforced (no-op in local dev).
@@ -45,10 +46,11 @@ import {
 //     null) — that PAIR is what stops every engine, and the queue's own
 //     routing prediction, from putting John or Kim straight back on the row.
 //     The job lands in "Needs assigning" on /tasks, where a human picks it up.
-//   · "external_agency" = the outside shop. Same pin, plus the key on the
-//     task so the row still says who has it. Like Luma, it has no login and
-//     no bell, so the dispatch ping goes to the ADMIN (Kyle) who actually
-//     hands the files over.
+//   · "external_agency" = the outside shop — Luma Visuals (Jordan, Sep 25).
+//     Same pin, plus the key on the task so the row still says who has it. It
+//     has no login and no bell, so the dispatch ping goes to the ADMIN (Kyle)
+//     who actually hands the files over — and records that he did, with
+//     recordEditorPacketSent below: the bell is a reminder, never evidence.
 export async function setEditVideoEditor(projectId: string, editorKey: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireAdmin();
@@ -58,7 +60,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   const unassign = editorKey === "";
   const external = editorKey === EXTERNAL_EDITOR_KEY;
   if (!unassign && !external && !(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: "Pick a video editor (Kim or John Mark), the external agency, or Unassigned." };
+    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${EXTERNAL_NAME()}, or Unassigned.` };
   }
   const key = unassign ? null : (editorKey as EditorKey);
   const { editorMeta } = await import("@/lib/editors");
@@ -148,10 +150,11 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
         external
           ? {
               // The agency has no hub login, so this is Kyle's cue to send the
-              // files out — the same shape Luma dispatch has always used.
+              // files out. The bell proves nothing was sent — the packet card
+              // on the job page records the send and the acknowledgement.
               kind: "edit_assigned",
-              title: `Dispatch to the external agency — ${street}`,
-              body: "This edit was handed to the outside shop — send them the footage and the brief.",
+              title: `Dispatch to ${EXTERNAL_NAME()} — ${street}`,
+              body: `This edit was handed to ${EXTERNAL_NAME()} — send them the packet from the job page and record the send there.`,
               href: `/edit/${projectId}`,
               targets: [{ roles: ["ADMIN"] }],
             }
@@ -177,8 +180,8 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
           // so all we can truthfully record is "not one of ours". Say that
           // rather than claim a hand-off the row won't show.
           moved.count > 0
-          ? "Handed to the external agency — it's off our editors' queues."
-          : "Taken off our editors — there's no edit task on this job yet, so name the agency again once the raws land."
+          ? `Handed to ${EXTERNAL_NAME()} — it's off our editors' queues.`
+          : `Taken off our editors — there's no edit task on this job yet, so name ${EXTERNAL_NAME()} again once the raws land.`
         : `Assigned to ${editorName}.`,
   };
 }
@@ -210,8 +213,9 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
 const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john"];
 // The outside shop. Not in VIDEO_EDITOR_KEYS: work never AUTO-routes there, a
-// human hands it over (Jordan, Sep 7).
+// human hands it over (Jordan, Sep 7). Named in editors.ts — Luma Visuals.
 const EXTERNAL_EDITOR_KEY: EditorKey = "external_agency";
+const EXTERNAL_NAME = () => EDITORS[EXTERNAL_EDITOR_KEY].name;
 
 export type QueueCandidate = {
   id: string;
@@ -357,21 +361,19 @@ export async function addToEditorQueue(
   } catch { /* unreadable evidence → treat as none */ }
   const priorCut = project.status === "DELIVERED" || project._count.reviewSubmissions > 0 || videoEvidence;
 
-  // Who gets pinged: Kim/John directly (their channel bridge); Luma is an
-  // external vendor with no login/phone — Kyle dispatches Luma work, so the
-  // bell goes to ADMIN instead of a row nobody can see.
+  // Who gets pinged: Kim/John directly (their channel bridge). Only they can
+  // be picked here (VIDEO_EDITOR_KEYS) — a job goes to Luma Visuals through
+  // the reassign select instead, whose bell goes to the ADMIN. (A `luma`
+  // branch that lived here could never run; it went with O08, Sep 25.)
   const notifyQueued = async (kind: string, title: string) => {
     try {
       const { notifyInApp } = await import("@/lib/notify");
-      const isExternal = key === "luma";
       await notifyInApp({
         kind,
-        title: isExternal ? `Dispatch to Luma — ${street}` : title,
+        title,
         body: cleanNote ? cleanNote.slice(0, 140) : "Added to your queue from the Editing Room.",
         href: `/edit/${projectId}`,
-        targets: isExternal
-          ? [{ roles: ["ADMIN"] }]
-          : [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
+        targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
         // No dedupeKey on purpose: every manual add is news, including a re-add.
       });
     } catch { /* bell is best-effort */ }
@@ -1530,7 +1532,7 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
   if (note && note.length > 300) return { ok: false, message: "Keep the note under 300 characters." };
   const wantsEditor = input.editorKey != null;
   if (wantsEditor && !EDITOR_SELECT_KEYS.has(input.editorKey as string)) {
-    return { ok: false, message: "Pick a video editor (Kim or John Mark), the external agency, or Unassigned." };
+    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${EXTERNAL_NAME()}, or Unassigned.` };
   }
 
   const proj = await prisma.project.findUnique({
@@ -2335,4 +2337,127 @@ export async function mergePreview(projectId: string): Promise<{ deliverables: n
   const { previewMerge } = await import("@/lib/projectMerge");
   const p = await previewMerge(projectId);
   return { deliverables: p.deliverableIds.length, cuts: p.submissionIds.length, cards: p.taskIds.length, videos: p.videos };
+}
+
+// ---------------------------------------------------------------------------
+// ONE BRIEF PER VIDEO, AND THE OUTSIDE AGENCY'S PACKET (unified handoff §7.5 /
+// §7.7 / A33, Sep 25 2026). Office-only writes, from the job's edit page:
+//   · saveVideoBrief — this video's own direction (deliverableOutputs.
+//     saveOutputBrief): versioned, attributed, refused when somebody else
+//     saved since the page was loaded.
+//   · recordEditorPacketSent / recordEditorPacketAck — the office's record
+//     that the packet went to Luma Visuals and that they acknowledged it
+//     (lib/editorPacket). Nothing is sent from here; these are the evidence
+//     of a send the office made.
+// The *Form variants are what the server-rendered forms on /edit/<id> post
+// to: they redirect back with a short notice CODE (never the typed words,
+// which can carry a person's name or address) and the page says what happened.
+// ---------------------------------------------------------------------------
+
+async function staffActor(): Promise<{ name: string; userId: string | null }> {
+  const me = await getCurrentUser().catch(() => null);
+  return { name: me?.name ?? me?.email ?? "the office", userId: me?.id ?? null };
+}
+
+export async function saveVideoBrief(
+  projectId: string,
+  outputId: string,
+  sections: Record<string, string | null>,
+  expectedVersion: number | null,
+): Promise<{ ok: boolean; changed: boolean; message: string; version: number | null; reason?: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, changed: false, message: (e as Error).message, version: null, reason: "forbidden" };
+  }
+  const { saveOutputBrief } = await import("@/lib/deliverableOutputs");
+  const actor = await staffActor();
+  const res = await saveOutputBrief({ outputId, projectId, sections, expectedVersion, actor: actor.name });
+  if (!res.ok) return { ok: false, changed: false, message: res.message, version: res.version, reason: res.reason };
+  revalidatePath(`/edit/${projectId}`);
+  revalidatePath(`/shoot/${projectId}`);
+  return {
+    ok: true,
+    changed: res.changed,
+    message: res.changed ? `Saved as v${res.version}.` : "Nothing changed, so no new version was made.",
+    version: res.version,
+  };
+}
+
+export async function recordEditorPacketSent(
+  projectId: string,
+  input: { recipient: string; channel: string; note?: string | null },
+): Promise<{ ok: boolean; message: string; version?: number; duplicate?: boolean }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { recordEditorDispatch, vendorName } = await import("@/lib/editorPacket");
+  const res = await recordEditorDispatch(projectId, { ...input, actor: await staffActor() });
+  if (!res.ok) return { ok: false, message: res.message };
+  revalidatePath(`/edit/${projectId}`);
+  revalidatePath("/editing");
+  return {
+    ok: true,
+    version: res.version,
+    duplicate: res.duplicate,
+    message: res.duplicate
+      ? `Already recorded: v${res.version} went to that recipient with this exact packet.`
+      : `Recorded: packet v${res.version} sent to ${vendorName()}.${res.missing.length ? ` ${res.missing.length} thing${res.missing.length === 1 ? " was" : "s were"} missing and are listed with it.` : ""}`,
+  };
+}
+
+export async function recordEditorPacketAck(
+  projectId: string,
+  dispatchId: string,
+  input: { by: string; source: string; note?: string | null },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { recordEditorAcknowledgment } = await import("@/lib/editorPacket");
+  const res = await recordEditorAcknowledgment(dispatchId, { ...input, projectId, actor: await staffActor() });
+  if (!res.ok) return { ok: false, message: res.message };
+  revalidatePath(`/edit/${projectId}`);
+  revalidatePath("/editing");
+  return { ok: true, message: `Recorded: v${res.version} acknowledged.` };
+}
+
+const formText = (f: FormData, k: string) => {
+  const v = f.get(k);
+  return typeof v === "string" ? v : "";
+};
+async function backToJob(projectId: string, notice: string, anchor: string): Promise<never> {
+  const { redirect } = await import("next/navigation");
+  return redirect(`/edit/${encodeURIComponent(projectId)}?notice=${notice}#${anchor}`);
+}
+
+export async function saveVideoBriefForm(form: FormData): Promise<void> {
+  const projectId = formText(form, "projectId");
+  const outputId = formText(form, "outputId");
+  const { OUTPUT_BRIEF_FIELDS } = await import("@/lib/deliverableOutputs");
+  const sections: Record<string, string | null> = {};
+  for (const f of OUTPUT_BRIEF_FIELDS) if (form.has(`s_${f.key}`)) sections[f.key] = formText(form, `s_${f.key}`);
+  const ev = formText(form, "expectedVersion");
+  const res = await saveVideoBrief(projectId, outputId, sections, ev === "" ? null : Number(ev));
+  await backToJob(
+    projectId,
+    res.ok ? (res.changed ? "brief-saved" : "brief-unchanged") : res.reason === "conflict" ? "brief-conflict" : res.reason === "too_long" ? "brief-too-long" : "brief-error",
+    `brief-${outputId}`,
+  );
+}
+
+export async function recordEditorPacketSentForm(form: FormData): Promise<void> {
+  const projectId = formText(form, "projectId");
+  const res = await recordEditorPacketSent(projectId, { recipient: formText(form, "recipient"), channel: formText(form, "channel"), note: formText(form, "note") });
+  await backToJob(projectId, res.ok ? (res.duplicate ? "packet-duplicate" : "packet-sent") : "packet-error", "agency-packet");
+}
+
+export async function recordEditorPacketAckForm(form: FormData): Promise<void> {
+  const projectId = formText(form, "projectId");
+  const res = await recordEditorPacketAck(projectId, formText(form, "dispatchId"), { by: formText(form, "by"), source: formText(form, "source"), note: formText(form, "note") });
+  await backToJob(projectId, res.ok ? "ack-saved" : "ack-error", "agency-packet");
 }

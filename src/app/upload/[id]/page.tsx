@@ -13,7 +13,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { UploadPortal } from "@/components/upload/UploadPortal";
-import { isVideoStyleKey, type VideoStyleKey } from "@/lib/videoStyles";
+import type { VideoStyleKey } from "@/lib/videoStyles";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { AddedAtShoot } from "./AddedAtShoot";
 import { AdditionalShoot } from "./AdditionalShoot";
@@ -30,7 +30,9 @@ import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
-import { videoStepSpec, isMonthlyContentJob, type VideoStepSpec } from "@/lib/pipeline";
+import { resolveVideoSpec, type VideoStepSpec } from "@/lib/pipeline";
+import { handoffEvidence } from "@/lib/handoff";
+import { normalizeDraftPayload, draftHasContent, submittedFieldsHash, type DraftPayload } from "@/lib/uploadDraft";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
 import { submissionTrail, UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
@@ -41,56 +43,12 @@ export const dynamic = "force-dynamic";
 // ---------------------------------------------------------------------------
 // WHICH video this job is (shared contract, Sep 2 2026). The Aryeo sync stamps
 // Deliverable.videoStyle from Product.videoStyle at order time, so the brief's
-// shape follows the PRODUCT the client bought — "Photography and Standard Reel
-// w/ Agent intro" used to reach here as a "Social Reel" label, and the intro
-// script was only demanded when a name regex happened to match. The stamp is
-// authoritative; a job with no stamped live row (orders synced before the
-// column existed, products nobody has mapped) falls back to exactly the Sep 2
-// name + tier logic, so nothing regresses.
+// shape follows the PRODUCT the client bought. The stamp is authoritative; a
+// job with no stamped live row falls back to the Sep 2 name + tier logic.
+// §7.4 (Sep 25 2026): the resolution that lived here is now
+// pipeline.resolveVideoSpec, so the submit gate, the handoff engine and the
+// project brief ask it exactly the way this page does.
 // ---------------------------------------------------------------------------
-// The most demanding brief wins when a job carries several video lines (a reel
-// + a cinematic, a bundle + an intro add-on) — the precedence videoStepSpec
-// already uses: monthly, then premium, then agent intro, then standard.
-const STYLE_RANK: Record<VideoStyleKey, number> = {
-  personal_branding: 0,
-  premium_cinematic: 1,
-  premium_social_reel: 2,
-  standard_reel_agent_intro: 3,
-  standard_cinematic: 4,
-  standard_reel: 5,
-};
-/** What the video step demands for a resolved style — the same VideoStepSpec
- *  videoStepSpec() builds from names, so the portal (and the server gate in
- *  upload/actions.ts once it reads the stamp) keep consuming one type. Per
- *  Jordan: standard reels don't get scripts; agent-intro reels get the intro
- *  script + notes; premium can't be submitted without the script; monthly
- *  plans need every field plus the videos-filmed count. */
-function specForStyle(style: VideoStyleKey): VideoStepSpec {
-  const base = { requireScript: false, requireIntro: false, requireVideoCount: false, fullBrief: false, minimalReel: false, fixedStyle: false };
-  switch (style) {
-    case "personal_branding":
-      return { ...base, mode: "standard", requireVideoCount: true, fullBrief: true, fixedStyle: true };
-    case "premium_social_reel":
-    case "premium_cinematic":
-      return { ...base, mode: "premium-script", requireScript: true, fullBrief: true };
-    case "standard_reel_agent_intro":
-      return { ...base, mode: "agent-intro", requireIntro: true };
-    case "standard_cinematic":
-      // One box like a reel, but a full horizontal cut always needs direction
-      // — only a plain reel earns "nothing demanded" (videoStepSpec's rule).
-      return { ...base, mode: "standard", fullBrief: true };
-    case "standard_reel":
-      return { ...base, mode: "standard", minimalReel: true };
-  }
-}
-
-/** The Sep 2 tier answer as a style key — for jobs nothing has stamped yet. */
-function styleFromTier(spec: VideoStepSpec, hasFullVideo: boolean): VideoStyleKey {
-  if (spec.fixedStyle) return "personal_branding";
-  if (spec.mode === "premium-script") return hasFullVideo ? "premium_cinematic" : "premium_social_reel";
-  if (spec.mode === "agent-intro") return "standard_reel_agent_intro";
-  return hasFullVideo ? "standard_cinematic" : "standard_reel";
-}
 
 export default async function UploadProjectPage({
   params,
@@ -285,39 +243,69 @@ export default async function UploadProjectPage({
   // "couldn't complete" are excused, so they must not drive the requirements
   // either (review).
   const liveDeliverables = project.deliverables.filter((d) => !d.notCompletedReason);
-  const hasFullVideo = liveDeliverables.some((d) => d.type === "VIDEO");
   // Tier comes from the SETTINGS product mapping (videoTier() reads the label
   // itemToDeliverables stamped from Product.videoTier), so "Premium Video" and
   // anything else Jordan maps premium follows the premium rules automatically.
   // Sep 2: premium is shot S-Log3 / D-LogM and gets every instruction field;
   // standard is an iPhone reel and gets one editing-instructions box.
   const isPremium = videoTier(liveDeliverables) === "premium";
-  // The name + tier answer: THE spec when no live row is stamped, and the
-  // agent-intro signal even when one is (below). Names live in the verbatim
-  // order items.
-  const tierSpec = videoStepSpec(
-    [project.packageName, ...project.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
-    { hasFullVideo, isPremium, isMonthly: isMonthlyContentJob(liveDeliverables, project.packageName) },
-  );
-  // The stamp — read off EVERY live row, not just the video ones: the "Agent
-  // on Camera" add-on is mapped OTHER, so its style can ride on a non-video
-  // row. Most demanding first (STYLE_RANK).
-  const stamped = liveDeliverables
-    .map((d) => d.videoStyle)
-    .filter(isVideoStyleKey)
-    .sort((a, b) => STYLE_RANK[a] - STYLE_RANK[b]);
-  let stampedStyle: VideoStyleKey | null = stamped.length ? stamped[0] : null;
-  // An agent-intro line on the order still upgrades a STANDARD stamp — the
-  // add-on is its own product and may be unmapped while the reel is mapped
-  // (Jordan: the "Agent on Camera" add-on upgrades a standard reel to
-  // agent-intro). Never a premium one: "Premium Social Media Reel (No Agent
-  // on camera …)" is live data, and videoStepSpec checks premium first.
-  if (tierSpec.mode === "agent-intro" && (stampedStyle === "standard_reel" || stampedStyle === "standard_cinematic")) {
-    stampedStyle = "standard_reel_agent_intro";
+  // Resolved ONCE here and handed to the portal, never re-derived from a name
+  // — and the submit gate and the handoff engine ask the same function.
+  const resolved = resolveVideoSpec({
+    deliverables: project.deliverables,
+    orderItems: project.orderItems,
+    packageName: project.packageName,
+    isPremium,
+  });
+  const videoStyle: VideoStyleKey = resolved.style;
+  const videoSpec: VideoStepSpec = resolved.spec;
+
+  // O04: this viewer's unsent answers, if any. One draft per person per job —
+  // the office's "Edit this upload" never sees the photographer's.
+  const canSaveDraft = !!viewer?.email && !viewer.impersonating;
+  const draftRow = canSaveDraft
+    ? await prisma.uploadDraft
+        .findUnique({
+          where: { projectId_authorKey: { projectId: project.id, authorKey: viewer!.email.trim().toLowerCase() } },
+          select: { revision: true, payloadJson: true, savedAt: true, consumedAt: true, baseHash: true },
+        })
+        .catch(() => null)
+    : null;
+  // baseHash: the fingerprint the draft was typed against (review, Sep 25). A
+  // restored draft submits with IT, not this page's, so a job that moved
+  // underneath it — Kyle's Editing Room edit, an office submit — is refused
+  // and named instead of being overwritten by answers typed before it.
+  let draft: { revision: number; payload: DraftPayload; savedAtISO: string; baseHash: string | null } | null = null;
+  if (draftRow && !draftRow.consumedAt) {
+    let payload: DraftPayload | null = null;
+    try { payload = normalizeDraftPayload(JSON.parse(draftRow.payloadJson)); } catch { payload = null; }
+    if (payload && draftHasContent(payload)) draft = { revision: draftRow.revision, payload, savedAtISO: draftRow.savedAt.toISOString(), baseHash: draftRow.baseHash };
   }
-  // Resolved ONCE here and handed to the portal, never re-derived from a name.
-  const videoStyle: VideoStyleKey = stampedStyle ?? styleFromTier(tierSpec, hasFullVideo);
-  const videoSpec: VideoStepSpec = stampedStyle ? specForStyle(stampedStyle) : tierSpec;
+  // The revision a fresh page saves onto: the open draft's, or none.
+  const draftRevision = draftRow && !draftRow.consumedAt ? draftRow.revision : null;
+  // §7.3: what is actually true about the files, half by half.
+  const evidence = handoffEvidence({
+    deliverables: project.deliverables,
+    statusEvidence: project.statusEvidence,
+    photosHandoffAt: project.photosHandoffAt,
+    videoHandoffAt: project.videoHandoffAt,
+    debriefSubmittedAt: project.debriefSubmittedAt,
+    handoffReadyAt: project.handoffReadyAt,
+    handoffBlockedReason: project.handoffBlockedReason,
+  }).map((e) => ({
+    category: e.category,
+    uploadReportedISO: e.uploadReported?.toISOString() ?? null,
+    filesDetected: e.filesDetected,
+    fileCount: e.fileCount,
+    handoffISO: e.handoffSubmitted?.toISOString() ?? null,
+  }));
+  // §7.6 / §7.8: the job's production gaps and field reports.
+  const { gapsForProject } = await import("@/lib/productionGaps");
+  const gaps = await gapsForProject(project.id).catch(() => []);
+  const { fieldReportsForProject } = await import("@/lib/clientFacts");
+  const fieldReports = (await fieldReportsForProject(project.id).catch(() => [])).map((f) => ({
+    id: f.id, body: f.body, status: f.status, scope: f.scope, basis: f.basis, createdAtISO: f.createdAt.toISOString(),
+  }));
 
   // Video jobs: pull the shoot script from Script Studio (freshness-gated,
   // never blocks the page on a dead Studio) so the photographer confirms the
@@ -325,6 +313,8 @@ export default async function UploadProjectPage({
   let scriptBody = project.reelScript;
   let scriptHook = project.reelHook;
   let scriptUrl = project.reelScriptUrl;
+  // The script the fingerprint below is taken over — the stored one after any pull.
+  let hashScript = project.reelScript;
   if (videoOrdered) {
     try {
       const { autoSyncScript } = await import("@/lib/scriptSync");
@@ -337,9 +327,24 @@ export default async function UploadProjectPage({
         scriptBody = fresh?.reelScript ?? scriptBody;
         scriptHook = fresh?.reelHook ?? scriptHook;
         scriptUrl = fresh?.reelScriptUrl ?? scriptUrl;
+        if (fresh) hashScript = fresh.reelScript;
       }
     } catch { /* Studio down → the page still works with what's stored */ }
   }
+
+  // O04: the fingerprint of what is SUBMITTED right now — a re-submit that
+  // would write over somebody else's later edit is refused with it. Taken
+  // AFTER the Studio pull above (review, Sep 25): taken before it, a pulled
+  // script made the page's own next submit read as "somebody changed the
+  // notes" when nobody had.
+  const baseHash = submittedFieldsHash({
+    editorBrief: project.editorBrief, videoInstructions: project.videoInstructions, removalNotes: project.removalNotes,
+    shotOrderNotes: project.shotOrderNotes, reelScript: hashScript, scriptConfirmNote: project.scriptConfirmNote,
+    videosFilmed: project.videosFilmed,
+  });
+
+  // The page's one clock reading, handed down (a render must not read the clock twice).
+  const renderedAt = new Date();
 
   return (
     <div className="mx-auto max-w-3xl p-4 sm:p-6">
@@ -361,6 +366,10 @@ export default async function UploadProjectPage({
           editorBrief: project.editorBrief,
           uploadedAt: project.uploadedAt?.toISOString() ?? null,
           debriefSubmittedAt: project.debriefSubmittedAt?.toISOString() ?? null,
+          photosHandoffAt: project.photosHandoffAt?.toISOString() ?? null,
+          photosHandoffBy: project.photosHandoffBy,
+          videoHandoffAt: project.videoHandoffAt?.toISOString() ?? null,
+          videoHandoffBy: project.videoHandoffBy,
           editorPdfPath: project.editorPdfPath,
           clientName: project.client.name,
           // The agent's Aryeo headshot for the portal header (Jordan, Sep 2:
@@ -400,6 +409,7 @@ export default async function UploadProjectPage({
           status: d.status,
           uploadedAt: d.uploadedAt?.toISOString() ?? null,
           notCompletedReason: d.notCompletedReason,
+          waivedAt: d.waivedAt?.toISOString() ?? null,
         }))}
         specialRequests={project.activities
           .filter((a) => a.type === ActivityType.SPECIAL_REQUEST)
@@ -419,6 +429,14 @@ export default async function UploadProjectPage({
         }}
         viewerIsOffice={viewerIsOffice}
         payGateFromMs={DEBRIEF_PAY_GATE_FROM}
+        draft={draft}
+        draftRevision={draftRevision}
+        canSaveDraft={canSaveDraft}
+        baseHash={baseHash}
+        evidence={evidence}
+        gaps={gaps}
+        fieldReports={fieldReports}
+        nowMs={renderedAt.getTime()}
       />
 
       {/* Anything the agent added on site that the order doesn't know about —

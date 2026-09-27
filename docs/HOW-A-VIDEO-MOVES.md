@@ -21,6 +21,13 @@ part that is about money already spent.
    it** hands over the bytes, minting the link at the moment of the press.
    **Mark as sent** records that Kyle uploaded it to Aryeo and delivered the
    listing — it asks twice, because nothing in the hub can clear that stamp.
+   Since Sep 25 the second tap **is the answer to "how was the client told?"**:
+   *Aryeo emailed them* (he ticked notify), *We texted them*, *Call or in
+   person*, or *Not told yet*. "Sent" and "the client knows" are different
+   facts; the hub now keeps both. *Not told yet* puts the video on a short
+   **"went out, client not told yet"** list on the same card until somebody
+   records how they were told. The hub's own delivery text, once the phone
+   provider accepts it, records itself.
 
    A row can also say **1080p file held, not sent** (since Sep 25). That is a
    finished pass whose sound or picture the hub could not verify: the row offers
@@ -86,6 +93,63 @@ and instructions ready are two different facts.** A premium or branding job owes
 a brief; a plain social reel owes nothing beyond the footage. Until what is owed
 arrives, the job's card says what is missing, who has it, and when to chase.
 
+**Photos and video are handed off separately** (Sep 25). On a job with both,
+the upload page has a Submit photos and a Submit video button, each with its
+own checks. The photos can go in tonight and Kyle's photo QC card stops waiting
+on the video brief; the edit waits on the video half only. The shoot joins the
+photographer's payroll only when both halves are in (or a half was marked
+"couldn't complete"). With the photos in and the video still owed, the 10 PM
+upload chaser text says so with the job's own upload link: the video is due by
+8:00 AM ET the next day, and a video after that is recorded late on the job's
+timeline and counts as a late upload on the photographer's reliability score.
+No pay amount changes.
+
+**The answers are saved as they are typed** (Sep 25). The wrap-up is kept as a
+draft for the person typing it (Saving… / Draft saved / Unable to save), so a
+closed tab or a dead phone loses nothing. A draft is never a submit: it does not
+notify anyone, move the job or count toward pay. A re-submit that would write
+over a brief somebody changed in the Editing Room since the page opened asks
+first.
+
+**What the page says about the files is only what is true** (Sep 25): ticked
+uploaded, found in Dropbox, and handed off are three separate lines, and a
+submit past an empty-folder warning is never described as "the files are in".
+A tick over a folder Dropbox just read as empty shows on Kyle's board as "Upload
+reported, video files not found".
+
+**Missing work is a record, not a note** (Sep 25). An item marked "couldn't
+complete", or a shot reported missed, becomes one production gap on the job:
+what, why and who said so. The office plans the recovery on the upload page (a
+reshoot needs its shot list and scope; or the client supplies it; or use what
+we have), with an owner and a date, or closes it with a note. "Not required"
+closes it. Nothing is booked, waived or charged by it.
+
+**Client preferences from the shoot are proposals** (Sep 25). What the agent
+asked for on site, or what the photographer noticed, is sent to the office with
+where it came from and whether it is for this job or the client going forward.
+It reaches the editor's brief only once the office confirms it; confirmed
+client-wide, the editors on that client's open edits get a bell.
+
+**Each video has its own brief** (Sep 25). A reel and an MLS video on one order
+no longer share one set of instructions: the office writes a brief per video on
+the job's edit page (what it is for, how to cut it, must show, avoid, footage,
+music, limitations). Every save is a new version with the saver's name, and a
+page that went stale cannot overwrite a newer one. A video with no brief of its
+own says it goes by the job's shared instructions. The same rows reach the
+editor's page, the printed brief, the photographer's shoot screen and the
+outside agency's packet. On a content session the shoot screen also lists the
+session's topics with the words the client was shown (approved or not, never an
+unreleased draft), the direction written with them, and the brand kit.
+
+**Jobs handed to Luma Visuals** (the external agency, Sep 25). The hub sends
+nothing to Luma. The office sends the packet the way it always has, then records
+the send on the job's edit page: who it went to and how. The packet is frozen
+with a fingerprint at each send, with what was missing at the time, and can be
+downloaded as sent. When the brief changes afterwards the card says the sent
+version is out of date. Luma's acknowledgement (who, how, when) is recorded
+once. Until a send is recorded the Editing Room row says "Not sent to Luma
+Visuals yet"; a bell, a Dropbox folder or a task label is not a send.
+
 ### 4. Edited and submitted
 The editor uploads a version from `/edit`. Version numbers are allocated behind a
 lock on that one video, so two editors uploading at the same moment cannot both
@@ -147,7 +211,38 @@ row, and the decision and their name go on the job's timeline:
 
 ### 7. Delivered
 The video shows on Kyle's Ready-to-send card. He uploads it to Aryeo, delivers
-the listing, and presses **Mark as sent**.
+the listing, and presses **Mark as sent** — saying how the client was told.
+
+**A program video (the monthly content program) is not an Aryeo upload**
+(Sep 25, Jordan: approve first, run it through Topaz, "and deliver to the client
+in the client portal, already ran through topaz"). For a program client:
+
+- The portal plays and downloads the **verified 1080p file** once it exists —
+  the approved cut is still what the client decides on, but the bytes they get
+  are the finished render, saved under the video's own name.
+- While the pass is running, or its file is **held** because its sound could not
+  be verified, the client gets nothing in its place: the video reads *"being
+  finished"* on their page, and the row sits on Kyle's card with the other
+  renders. The editor's export never stands in for it.
+- A pass that was skipped, failed, cancelled, or resolved *keep the original*
+  leaves the editor's export as the client's file, as before.
+- No "upload the 1080p video to Aryeo" card and no Slack DM are made for a
+  program video; old ones are closed by the hourly repair with the reason. Where
+  the client cannot sign in yet, the finished render is a normal ready row for
+  Kyle to send by hand and mark sent.
+
+Approval also puts a program cut on the client's library at once (it used to
+wait for the portal to be opened, or the hourly rotation to reach them). If that
+rebuild fails, the failure is written on the client's program and shows on the
+exceptions board as *Approved video not in the client's library*; the hourly
+repair retries it and clears the row when it works.
+
+**The evidence, in order, for any video** (readyToSend.deliveryEvidenceFor):
+approved → 1080p pass state → the file that is trusted (the verified render, a
+render a reviewer listened to and accepted, or the approved original) → sent
+(who) → told (how, or "not yet") → opened or downloaded by the client (program
+videos, from the portal). Each rung is its own record; none is inferred from
+the one above it, and "delivered" is not a rung.
 
 **A video in our Dropbox is not a video the client can open.** The status engine
 keeps those apart: what the Aryeo listing carries is the only evidence the client
@@ -166,6 +261,17 @@ lands on the video editor's card.
 After an internal approval the job is not finished: the corrected file still has
 to go back to the client, and it stays on the Ready-to-send card until somebody
 says it went.
+
+**Reopened work has a due date** (Jordan, Sep 25). A client's round is due 48
+business hours after the ask, with 24 as the target. Anything else that puts a
+finished job back — the office queueing a new cut, Revisions on the pill, a
+board move off Delivered, a reshoot with no extra-shoot upload — is due the
+same business day: 6 PM ET, or the next business day's 6 PM when it comes back
+after hours or on a weekend. An extra video keeps its own promise. The office
+can move any of these on the job's edit page, and the page, the board and the
+Editing Room say where the date came from. A reopened job with nothing dating
+it is on Kyle's exceptions until somebody sets one; the delivery promise it
+already kept is never reused.
 
 ### 9. Replacing something already sent
 An approved video can still be replaced. The wall stays — an approval is a

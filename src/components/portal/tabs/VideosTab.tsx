@@ -154,6 +154,8 @@ export type VideoDetailData = {
   readOnly: boolean;
   /** Set only on the emailed-link seat, which can never approve: where to go to get a seat that can. */
   signInHref: string | null;
+  /** 9.6b: the current version is still in its 1080p pass — nothing to play yet. */
+  finishing?: boolean;
 };
 
 export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: string, extra?: string) => string }) {
@@ -188,6 +190,8 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>
+        ) : d.finishing ? (
+          <p className="mt-2 text-sm text-muted">This video is being finished. It will be ready to watch here shortly.</p>
         ) : (
           <p className="mt-2 text-sm text-muted">Nothing to watch yet — the first cut appears here after filming and editing.</p>
         )}
@@ -446,6 +450,8 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>
+        ) : d.finishing ? (
+          <p className="mt-2 text-sm text-muted">This video is being finished. It will be ready to watch here shortly.</p>
         ) : (
           <p className="mt-2 text-sm text-muted">Nothing to watch yet — the first cut appears here after filming and editing.</p>
         )}

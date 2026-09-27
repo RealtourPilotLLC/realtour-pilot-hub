@@ -289,7 +289,12 @@ export type RenderingVideo = {
 /** R5: a cut recorded as SENT whose own records did not finish. Survives a refresh. */
 export type NeedsFinishing = { submissionId: string; street: string; sentAtISO: string; sentBy: string | null; why: string };
 
-export type ReadyBoard = { ready: ReadyVideo[]; rendering: RenderingVideo[]; needsFinishing: NeedsFinishing[] };
+/** 9.2: a cut marked sent with "the client hasn't been told yet". Stays listed
+ *  until somebody records how they were told (or the hub's own delivery text
+ *  proves it). */
+export type NotTold = { submissionId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null };
+
+export type ReadyBoard = { ready: ReadyVideo[]; rendering: RenderingVideo[]; needsFinishing: NeedsFinishing[]; notTold?: NotTold[] };
 
 const HOUR = 3_600_000;
 
@@ -789,7 +794,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []) };
+  if (subs.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []), notTold: await clientNotToldYet({ projectId: opts?.projectId }).catch(() => []) };
 
   // Still the live version of its cut, and not already with the client.
   // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
@@ -810,7 +815,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
       : [],
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
-  if (open.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []) };
+  if (open.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []), notTold: await clientNotToldYet({ projectId: opts?.projectId }).catch(() => []) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -908,7 +913,8 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
   const needsFinishing = await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []);
-  return { ready, rendering, needsFinishing };
+  const notTold = await clientNotToldYet({ projectId: opts?.projectId }).catch(() => []);
+  return { ready, rendering, needsFinishing, notTold };
 }
 
 /**
@@ -1147,7 +1153,19 @@ function wentOut(sub: CandidateSub, portalClientIds: ReadonlySet<string>): boole
   // after the file was ready, and is the silent one the client rejected.
   // (A job the lane is still working on has not been handed to anybody either;
   // it is filtered out later, as a rendering row rather than a sent one.)
-  if (sub.topazJob) return Boolean(sub.topazJob.deliveredAt);
+  //
+  // TOPAZ BEFORE RELEASE (9.6b, Sep 25 2026) is the one exception, and only
+  // for a program cut whose client can open the portal: there the portal hands
+  // them the verified 1080p file itself (cutEntitlement.clientCutFiles), so a
+  // FINISHED pass is the delivery and Kyle has nothing to upload. A pass still
+  // running or HELD keeps the row here — this card owns a program video until
+  // its finished file exists, because the portal will not show the editor's
+  // export in its place.
+  if (sub.topazJob) {
+    if (sub.project.contentMonthId && !stillRendering(sub.topazJob.state) && cutReleasedAt({ ...sub, status: "APPROVED" })
+      && !!sub.project.clientId && portalClientIds.has(sub.project.clientId)) return true;
+    return Boolean(sub.topazJob.deliveredAt);
+  }
 
   // A content-program cut IS the client's the moment it is approved — IF the
   // client can actually open the portal (R09, external review, Sep 18).
@@ -1339,13 +1357,16 @@ export async function markCutDownloaded(
  * and exactly one wins. The loser is told the truth — who marked it and when —
  * instead of quietly overwriting the first person's name.
  */
-export async function markVideoSent(submissionId: string, by: string | null): Promise<SentResult> {
+export async function markVideoSent(submissionId: string, by: string | null, opts: { notice?: NoticeChoice | null } = {}): Promise<SentResult> {
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: { ...CANDIDATE_SELECT, status: true, sentToClientAt: true, sentToClientBy: true },
   });
   if (!sub) return { ok: false, message: "That cut no longer exists." };
   if (sub.status !== "APPROVED") return { ok: false, message: "Only an approved cut can be marked sent." };
+  // 9.2: a choice that is not one of the card's own words is refused before
+  // anything is written, rather than stored as something nobody said.
+  if (opts.notice != null && !isNoticeChoice(opts.notice)) return { ok: false, message: "Say how the client was told." };
   // A04 (Sep 21 audit, fixed Sep 22 2026). This used to return here, full stop.
   // The stamp on the cut row is written FIRST, so any later write that failed —
   // the per-video delivery row, the 1080p job, Kyle's upload task — was
@@ -1354,6 +1375,9 @@ export async function markVideoSent(submissionId: string, by: string | null): Pr
   // of the bookkeeping is reconciled and the caller is told what it repaired.
   if (sub.sentToClientAt) {
     const repair = await settleDeliveryBookkeeping(sub, sub.sentToClientBy ?? by, { first: false });
+    // A repeat press may carry the notice the first one did not; the first
+    // recorded notice still stands (recordClientNotice never overwrites one).
+    if (opts.notice) await recordClientNotice(submissionId, by, opts.notice).catch(() => null);
     return alreadySent(sub.sentToClientAt, sub.sentToClientBy, repair);
   }
   // The card never offers a button on a cut the 1080p lane is still working on,
@@ -1379,6 +1403,11 @@ export async function markVideoSent(submissionId: string, by: string | null): Pr
   }
 
   const settled = await settleDeliveryBookkeeping(sub, by, { first: true });
+  // 9.2: HOW THE CLIENT WAS TOLD, from the person who pressed — after the send
+  // is stamped, because a notice is only ever about a video that went out. The
+  // proof pass (aryeoDelivery) passes none: it can see the video on the
+  // listing, not whether Aryeo's email went, so it leaves the question open.
+  if (opts.notice) await recordClientNotice(submissionId, by, opts.notice).catch(() => null);
   if (settled.incomplete.length) {
     // The send happened and the stamp is real. What did NOT happen is named,
     // and pressing again now re-runs exactly the steps that failed.
@@ -1513,6 +1542,233 @@ function alreadySent(at: Date, by: string | null, repair?: { repaired: string[];
   }
   if (repair?.repaired.length) return { ok: true, already: true, message: `${head} Finished off what the first attempt left: ${repair.repaired.join(", ")}.`, repaired: repair.repaired };
   return { ok: true, already: true, message: head };
+}
+
+// ---------------------------------------------------------------------------
+// 9.2 — THE CLIENT WAS TOLD (unified handoff, Sep 25 2026).
+//
+// "Sent" and "the client knows" are different facts, and until today the hub
+// had only the first. Kyle uploading a file to Aryeo delivers the listing; the
+// client hears about it only if he ticked Aryeo's "notify" box (unticked by
+// default since c338f87), or texted them, or called. So a video could read
+// "sent" for days while the agent had no idea it was there.
+//
+// ReviewSubmission.clientNotice* holds the answer, and ONLY from evidence the
+// hub has:
+//   · a person's word at Mark as sent — Aryeo's delivery email, our text, a
+//     call or in person — stored with their name (clientNoticeBy);
+//   · "not yet", which is a person saying the client has NOT been told: the
+//     row stays on the card's "client not told yet" list until it is recorded;
+//   · the hub's own delivery text, ACCEPTED by the provider for that job
+//     (stampNoticesFromDeliveryTexts) — via "hub-text", ref the outbox row. A
+//     text that failed, was held, or is unknown stamps nothing.
+// A program cut's notice is its review window's clientNotifiedAt (the portal's
+// own email), read where it lives rather than copied here.
+//
+// Records only. Nothing in this section sends anything to anyone, and the
+// first notice recorded is never overwritten.
+// ---------------------------------------------------------------------------
+
+/** What the Mark-as-sent dialog offers. */
+export const NOTICE_CHOICES = ["aryeo-email", "our-text", "phone", "not-yet"] as const;
+export type NoticeChoice = (typeof NOTICE_CHOICES)[number];
+export const isNoticeChoice = (v: unknown): v is NoticeChoice => typeof v === "string" && (NOTICE_CHOICES as readonly string[]).includes(v);
+
+/** The words a notice is shown in — the card, the project's video rows. */
+export const NOTICE_WORDS: Record<string, string> = {
+  "aryeo-email": "Aryeo's delivery email",
+  "our-text": "a text from us",
+  phone: "a call or in person",
+  "hub-text": "the hub's delivery text",
+  portal: "the portal's email",
+  "not-yet": "not told yet",
+};
+
+/**
+ * Record how the client was told about THIS cut. First notice wins, by the
+ * database (the WHERE carries clientNoticeAt: null); "not-yet" is a marker a
+ * later notice replaces, never the other way round. Only a cut that has gone
+ * out can carry one.
+ */
+export async function recordClientNotice(
+  submissionId: string,
+  by: string | null,
+  via: NoticeChoice | "hub-text",
+  ref: string | null = null,
+  at: Date = new Date(),
+): Promise<{ ok: boolean; message: string; already?: boolean }> {
+  if (via !== "hub-text" && !isNoticeChoice(via)) return { ok: false, message: "Say how the client was told." };
+  const sub = await prisma.reviewSubmission.findUnique({
+    where: { id: submissionId },
+    select: { projectId: true, sentToClientAt: true, clientNoticeAt: true, clientNoticeVia: true, clientNoticeBy: true, fileName: true },
+  });
+  if (!sub) return { ok: false, message: "That cut no longer exists." };
+  if (!sub.sentToClientAt) return { ok: false, message: "Mark the video sent first — a client can only be told about a video that went out." };
+  if (sub.clientNoticeAt) {
+    return { ok: true, already: true, message: `Already recorded: ${NOTICE_WORDS[sub.clientNoticeVia ?? ""] ?? sub.clientNoticeVia}${sub.clientNoticeBy ? ` (${sub.clientNoticeBy})` : ""}.` };
+  }
+  if (via === "not-yet") {
+    const r = await prisma.reviewSubmission.updateMany({
+      where: { id: submissionId, clientNoticeAt: null, clientNoticeVia: null },
+      data: { clientNoticeVia: "not-yet", clientNoticeBy: by },
+    });
+    return r.count === 1 ? { ok: true, message: "Noted — it stays on the card until you record how they were told." } : { ok: true, already: true, message: "Already noted as not told yet." };
+  }
+  const r = await prisma.reviewSubmission.updateMany({
+    where: { id: submissionId, clientNoticeAt: null },
+    data: { clientNoticeAt: at, clientNoticeVia: via, clientNoticeBy: by, clientNoticeRef: ref },
+  });
+  if (r.count === 0) return { ok: true, already: true, message: "Already recorded." };
+  await prisma.activity
+    .create({ data: { projectId: sub.projectId, type: "SYSTEM", body: `Client told about ${sub.fileName ?? "the video"} by ${NOTICE_WORDS[via] ?? via}${by ? ` (recorded by ${by})` : ""}.`.slice(0, 500) } })
+    .catch(() => {});
+  return { ok: true, message: "Recorded." };
+}
+
+/** The card's "client not told yet" list: sent, marked not-yet, still unrecorded. */
+export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: number; max?: number } = {}): Promise<NotTold[]> {
+  const since = new Date(Date.now() - (opts.sinceDays ?? 30) * 86_400_000);
+  const rows = await prisma.reviewSubmission.findMany({
+    where: {
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      sentToClientAt: { not: null, gte: since },
+      clientNoticeAt: null,
+      clientNoticeVia: "not-yet",
+      project: { status: { not: "CANCELLED" } },
+    },
+    select: { id: true, fileName: true, assetPath: true, sentToClientAt: true, sentToClientBy: true, clientNoticeBy: true, project: { select: { title: true } } },
+    orderBy: { sentToClientAt: "asc" },
+    take: opts.max ?? 40,
+  });
+  return rows.map((r) => ({
+    submissionId: r.id,
+    street: streetOf(r.project?.title) || (r.project?.title ?? "a job"),
+    fileName: r.fileName ?? r.assetPath?.split("/").pop() ?? "video",
+    sentAtISO: r.sentToClientAt!.toISOString(),
+    sentBy: r.sentToClientBy,
+    markedBy: r.clientNoticeBy,
+  }));
+}
+
+/**
+ * The hub's own delivery text as evidence (9.2b). An OutboxMessage for a job's
+ * delivery text (outbox.deliveryKey — the sweep and the send-all panel share
+ * it) that the provider ACCEPTED told that client their job was wrapped up, so
+ * every cut on that job sent BEFORE it and still carrying no notice is stamped
+ * via "hub-text" with the outbox row as the reference. Read-and-stamp only;
+ * sends nothing. A text in any other state stamps nothing.
+ */
+export async function stampNoticesFromDeliveryTexts(opts: { sinceDays?: number; max?: number } = {}): Promise<{ texts: number; stamped: number }> {
+  const since = new Date(Date.now() - (opts.sinceDays ?? 30) * 86_400_000);
+  const texts = await prisma.outboxMessage.findMany({
+    where: { dedupeKey: { startsWith: "delivery:" }, state: "accepted", acceptedAt: { gte: since }, projectId: { not: null } },
+    select: { id: true, projectId: true, acceptedAt: true },
+    orderBy: { acceptedAt: "desc" },
+    take: opts.max ?? 200,
+  });
+  let stamped = 0;
+  for (const t of texts) {
+    const cuts = await prisma.reviewSubmission.findMany({
+      where: { projectId: t.projectId!, sentToClientAt: { not: null, lte: t.acceptedAt! }, clientNoticeAt: null },
+      select: { id: true },
+    });
+    for (const c of cuts) {
+      const r = await recordClientNotice(c.id, "Delivery text", "hub-text", t.id, t.acceptedAt!).catch(() => null);
+      if (r?.ok && !r.already) stamped++;
+    }
+  }
+  return { texts: texts.length, stamped };
+}
+
+/**
+ * 9.2 — THE EVIDENCE LADDER for one video, in the handoff's own stages. Each
+ * rung is a fact the hub holds, or null; nothing is inferred from the rung
+ * above it. "Delivered" is never a rung: sent and told are.
+ *   approved   the internal verdict on this round
+ *   processed  the 1080p pass's state (null = no pass for this cut)
+ *   validated  the file that is trusted: the verified render, a reviewer's
+ *              accepted render, or the approved original (no pass, or the pass
+ *              ended without a file) — null while a pass is running or HELD
+ *   sent       Mark as sent / the Aryeo proof pass, with who
+ *   told       how the client was told (or "not-yet"); a program cut reads
+ *              its review window's reminder
+ *   opened     the client opened it in the portal, or started / finished a
+ *              download (program cuts — a listing download is Aryeo's own)
+ */
+export type EvidenceLadder = {
+  submissionId: string;
+  approved: { at: string; by: string | null } | null;
+  processed: { state: string } | null;
+  validated: { how: "verified-render" | "accepted-render" | "approved-original" } | null;
+  sent: { at: string; by: string | null } | null;
+  told: { at: string | null; via: string; by: string | null } | null;
+  opened: { at: string; how: "viewed" | "download-started" | "download-finished" } | null;
+};
+
+export async function deliveryEvidenceFor(submissionIds: string[]): Promise<Map<string, EvidenceLadder>> {
+  const out = new Map<string, EvidenceLadder>();
+  if (submissionIds.length === 0) return out;
+  const subs = await prisma.reviewSubmission.findMany({
+    where: { id: { in: submissionIds } },
+    select: {
+      id: true, status: true, decidedAt: true, decidedBy: true, sentToClientAt: true, sentToClientBy: true, videoId: true,
+      clientNoticeAt: true, clientNoticeVia: true, clientNoticeBy: true,
+      topazJob: { select: { state: true, outputCheck: true, finalPath: true } },
+    },
+  });
+  const ids = subs.map((x) => x.id);
+  const videoIds = [...new Set(subs.map((x) => x.videoId).filter((x): x is string => !!x))];
+  const [windows, visits] = await Promise.all([
+    prisma.contentReviewWindow.findMany({ where: { submissionId: { in: ids } }, select: { submissionId: true, clientNotifiedAt: true, firstViewedAt: true } }),
+    videoIds.length
+      ? prisma.portalVisit.findMany({
+          // The client's own visits: a staff hit through the door is recorded
+          // too, attributed to the staff member, and is not the client opening it.
+          where: { staffUserId: null, OR: videoIds.map((v) => ({ path: { startsWith: `/portal/download/${v}` } })) },
+          select: { path: true, createdAt: true },
+          orderBy: { createdAt: "asc" },
+        })
+      : Promise.resolve([] as { path: string; createdAt: Date }[]),
+  ]);
+  const windowOf = new Map(windows.map((w) => [w.submissionId, w]));
+  for (const x of subs) {
+    const j = x.topazJob;
+    const validated: EvidenceLadder["validated"] = !j || j.state === "failed" || j.state === "skipped" || j.state === "cancelled"
+      ? (x.status === "APPROVED" ? { how: "approved-original" } : null)
+      : j.state === "done"
+        ? j.outputCheck === "resolved-processed" ? { how: "accepted-render" } : j.outputCheck === "verified" ? { how: "verified-render" } : { how: "approved-original" }
+        : null;
+    const w = windowOf.get(x.id);
+    const told: EvidenceLadder["told"] = x.clientNoticeAt
+      ? { at: x.clientNoticeAt.toISOString(), via: x.clientNoticeVia ?? "unknown", by: x.clientNoticeBy }
+      : w?.clientNotifiedAt
+        ? { at: w.clientNotifiedAt.toISOString(), via: "portal", by: null }
+        : x.clientNoticeVia === "not-yet"
+          ? { at: null, via: "not-yet", by: x.clientNoticeBy }
+          : null;
+    // A download visit names the cut it served (`?cut=<id>`); only this cut's count.
+    const cutRe = new RegExp(`[?&]cut=${x.id}(?:&|$)`);
+    const mine = visits.filter((v) => cutRe.test(v.path));
+    const finished = mine.find((v) => v.path.includes("done=1"));
+    const started = mine.find((v) => !v.path.includes("done=1"));
+    const opened: EvidenceLadder["opened"] = finished
+      ? { at: finished.createdAt.toISOString(), how: "download-finished" }
+      : started
+        ? { at: started.createdAt.toISOString(), how: "download-started" }
+        : w?.firstViewedAt
+          ? { at: w.firstViewedAt.toISOString(), how: "viewed" }
+          : null;
+    out.set(x.id, {
+      submissionId: x.id,
+      approved: x.status === "APPROVED" && x.decidedAt ? { at: x.decidedAt.toISOString(), by: x.decidedBy } : null,
+      processed: j ? { state: j.state } : null,
+      validated,
+      sent: x.sentToClientAt ? { at: x.sentToClientAt.toISOString(), by: x.sentToClientBy } : null,
+      told,
+      opened,
+    });
+  }
+  return out;
 }
 
 /**

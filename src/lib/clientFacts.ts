@@ -54,7 +54,8 @@ export function factDedupeHash(body: string): string {
 
 export type NewFact = {
   clientId: string; enrollmentId?: string | null; category: FactCategory; fieldKey?: string | null; body: string;
-  source: "call" | "import" | "client" | "staff" | "ai" | "note_migration" | "review" | "comms"; sourceRef?: string | null; callRecordId?: string | null; transcriptSourceId?: string | null;
+  /** "field" (§7.8, Sep 25 2026): told to, or noticed by, the photographer on site — always PROPOSED until the office confirms it. */
+  source: "call" | "import" | "client" | "staff" | "ai" | "note_migration" | "review" | "comms" | "field"; sourceRef?: string | null; callRecordId?: string | null; transcriptSourceId?: string | null;
   excerpt?: { time?: string | null; speaker?: string | null; text: string }[] | null; speaker?: string | null; factDate?: Date | null;
   scope?: FactScope; monthId?: string | null; projectId?: string | null; confidential?: boolean; confidence?: number | null; aiRunId?: string | null; legacyNoteId?: string | null;
   /** "let's try faster cuts on this one" → PROJECT scope by default when a projectId is at hand. */
@@ -230,6 +231,35 @@ export function factLines(facts: PromptFact[]): string[] {
 export async function productionFactsForProject(clientId: string, projectId: string | null): Promise<string[]> {
   const facts = await factsForPrompt(clientId, { projectId, take: 20, production: true });
   return factLines(facts.filter((f) => f.category === "PRODUCTION_PREFERENCE" || (f.scope === "PROJECT" && f.projectId === projectId)));
+}
+
+// ---------------------------------------------------------------------------
+// FIELD FEEDBACK IS A PROPOSAL, NOT A FACT (§7.8, Sep 25 2026).
+//
+// "They probably prefer this font" said by a photographer on the driveway is
+// not the client's preference until somebody confirms it. A field report is a
+// ClientFact with source "field", created PROPOSED and never auto-accepted
+// (unattended: false), so no generator and no editor brief reads it
+// (factsForPrompt reads ACCEPTED only). The basis — the client SAID it, or the
+// photographer NOTICED it — rides on sourceRef, which is what the review list
+// shows next to it. sourceRef: "field:<projectId>:<client_said|observation>".
+// ---------------------------------------------------------------------------
+export type FieldBasis = "client_said" | "observation";
+export const fieldSourceRef = (projectId: string, basis: FieldBasis) => `field:${projectId}:${basis}`;
+export function fieldBasisOf(sourceRef: string | null | undefined): FieldBasis | null {
+  const m = /^field:[^:]+:(client_said|observation)$/.exec(sourceRef ?? "");
+  return m ? (m[1] as FieldBasis) : null;
+}
+
+/** Field reports raised on one job — every status, newest first — for the upload page's list. */
+export async function fieldReportsForProject(projectId: string) {
+  const rows = await prisma.clientFact.findMany({
+    where: { source: "field", sourceRef: { startsWith: `field:${projectId}:` } },
+    orderBy: { createdAt: "desc" },
+    take: 30,
+    select: { id: true, body: true, status: true, scope: true, speaker: true, sourceRef: true, createdAt: true, reviewedBy: true },
+  });
+  return rows.map((r) => ({ ...r, basis: fieldBasisOf(r.sourceRef) }));
 }
 
 /** The "Updated from your latest call" strip: proposed facts newest first, conflicts flagged. */

@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { cutSlots, slotKeyOf, type CutSlot } from "@/lib/reviewCuts";
 import type { EditorKey } from "@/lib/editors";
 import { unitCategoryFor } from "@/lib/evidenceUnits";
+import { stripMoneySentences } from "@/lib/text";
+import { etDateTime } from "@/lib/datetime";
 
 /** Rounds that are not a version of anything — the same list reviewCuts keeps. */
 const NOT_A_ROUND = ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] as const;
@@ -405,6 +407,23 @@ export type OutputRowView = {
 /** "v3 " when there is more than one version, "" otherwise. */
 const verPrefix = (round: number | null | undefined) => (round && round > 1 ? `v${round} ` : "");
 
+/** 9.2 — sent is not told. What the row adds after "Sent to the client": how
+ *  the client heard (recorded at Mark as sent, or the hub's own delivery text),
+ *  "not told yet" when a person said so, and nothing when it was never asked —
+ *  a send from before the question existed, or one the Aryeo proof pass found.
+ *  The words match readyToSend.NOTICE_WORDS. */
+const TOLD_WORDS: Record<string, string> = {
+  "aryeo-email": "Aryeo's delivery email",
+  "our-text": "a text from us",
+  phone: "a call or in person",
+  "hub-text": "the hub's delivery text",
+};
+function toldBit(r: { clientNoticeAt?: Date | null; clientNoticeVia?: string | null } | null): string {
+  if (!r?.clientNoticeVia) return "";
+  if (!r.clientNoticeAt) return r.clientNoticeVia === "not-yet" ? " · client not told yet" : "";
+  return ` · told by ${TOLD_WORDS[r.clientNoticeVia] ?? r.clientNoticeVia}`;
+}
+
 /**
  * Every owed video on a job, in order, with the state its own evidence
  * supports. Read-only and self-contained (no Aryeo call, no Dropbox call), so
@@ -452,7 +471,8 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
     prisma.reviewSubmission.findMany({
       where: { projectId, deliverableId: { not: null }, withdrawnAt: null, status: { notIn: [...NOT_A_ROUND] } },
       orderBy: { round: "asc" },
-      select: { id: true, deliverableId: true, slot: true, status: true, round: true, sentToClientAt: true },
+      // clientNotice*: 9.2 — how the client was told, printed beside "sent".
+      select: { id: true, deliverableId: true, slot: true, status: true, round: true, sentToClientAt: true, clientNoticeAt: true, clientNoticeVia: true },
     }),
   ]);
   if (outputs.length === 0) return [];
@@ -521,7 +541,7 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
     const priorBit = prior ? (prior.round ? `v${prior.round} sent; ` : "Sent once already; ") : "";
     const detail =
       state === "sent"
-        ? `${ver ? `${ver}sent` : "Sent"} to the client${o.deliveredVia === "aryeo-listing" ? " — on the Aryeo listing" : ""}`
+        ? `${ver ? `${ver}sent` : "Sent"} to the client${o.deliveredVia === "aryeo-listing" ? " — on the Aryeo listing" : ""}${toldBit(latest)}`
         : state === "approved"
           ? prior
             ? `${priorBit}${ver}approved, awaiting send`
@@ -909,6 +929,18 @@ export async function bindTopicVideosToSlots(projectId: string, opts: { notes?: 
 // itself, so the editor is never told less than the photographer said.
 // ===========================================================================
 
+/** A script version's own production direction — the parts of the canonical
+ *  format that are NOT spoken (ContentScriptVersion.filmingNotes /
+ *  creativeDirection / productionNotes, manifest C-A9). Written with the
+ *  script, and until §6.8 (Sep 25) read by nobody: the photographer and the
+ *  editor were handed the words and never the direction that came with them.
+ *  Money-scrubbed at the read, because every destination is a creative's. */
+export type ScriptDirection = {
+  filmingNotes: string | null;
+  creativeDirection: string | null;
+  productionNotes: string | null;
+};
+
 export type FilmingBriefScript = {
   title: string;
   versionNo: number | null;
@@ -918,7 +950,21 @@ export type FilmingBriefScript = {
   clientApproved: boolean;
   /** how far these words got, in a phrase an editor can read */
   standing: string;
+  /** the SAME version's production direction; null for a draft with no version */
+  direction: ScriptDirection | null;
 };
+
+const DIRECTION_CAP = 1500;
+/** The direction a version carries, scrubbed and clipped; null when it carries none. */
+export function directionOf(v: { filmingNotes?: string | null; creativeDirection?: string | null; productionNotes?: string | null } | null | undefined): ScriptDirection | null {
+  if (!v) return null;
+  const one = (x: string | null | undefined) => {
+    const t = stripMoneySentences((x ?? "").trim()).trim();
+    return t ? (t.length > DIRECTION_CAP ? `${t.slice(0, DIRECTION_CAP - 1).trimEnd()}…` : t) : null;
+  };
+  const d = { filmingNotes: one(v.filmingNotes), creativeDirection: one(v.creativeDirection), productionNotes: one(v.productionNotes) };
+  return d.filmingNotes || d.creativeDirection || d.productionNotes ? d : null;
+}
 
 export type FilmingBriefRow = {
   /** the slot key (deliverableId:slot) when bound; "video:<id>" when not */
@@ -1044,8 +1090,11 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
   ];
   const [versions, verdicts] = await Promise.all([
     versionIds.length
-      ? prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, versionNo: true, title: true, body: true } })
-      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string }[]),
+      ? prisma.contentScriptVersion.findMany({
+          where: { id: { in: versionIds } },
+          select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true },
+        })
+      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null }[]),
     // R1: ONE rule for "did the client approve this" — the ledger reader the
     // portal, the staff panel and the upload page all ask.
     month && scripts.length
@@ -1067,7 +1116,7 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
     //    (confirmFilmedTopics records only an APPROVED version here).
     const filmedAs = v?.scriptVersionId ? versionOf.get(v.scriptVersionId) : undefined;
     if (filmedAs) {
-      return { title: filmedAs.title || sc.title, versionNo: filmedAs.versionNo, text: clip(filmedAs.body), clientApproved: true, standing: "approved by the client before filming" };
+      return { title: filmedAs.title || sc.title, versionNo: filmedAs.versionNo, text: clip(filmedAs.body), clientApproved: true, standing: "approved by the client before filming", direction: directionOf(filmedAs) };
     }
     // 2. The version the client has been shown, and their verdict on it.
     const shared = sc.sharedVersionId ? versionOf.get(sc.sharedVersionId) : undefined;
@@ -1078,13 +1127,14 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
         text: clip(shared.body),
         clientApproved: approvedNow,
         standing: approvedNow ? "approved by the client" : "shared with the client — not approved by them yet",
+        direction: directionOf(shared),
       };
     }
     // 3. Never shown to the client: the office's approved copy, else the draft.
     const approved = sc.approvedVersionId ? versionOf.get(sc.approvedVersionId) : undefined;
     return approved
-      ? { title: approved.title || sc.title, versionNo: approved.versionNo, text: clip(approved.body), clientApproved: false, standing: "approved by the office, not shared with the client" }
-      : { title: sc.title, versionNo: null, text: clip(sc.body), clientApproved: false, standing: "a working draft — not approved" };
+      ? { title: approved.title || sc.title, versionNo: approved.versionNo, text: clip(approved.body), clientApproved: false, standing: "approved by the office, not shared with the client", direction: directionOf(approved) }
+      : { title: sc.title, versionNo: null, text: clip(sc.body), clientApproved: false, standing: "a working draft — not approved", direction: null };
   };
   const extraOf = (topicId: string | null, kind: string | null): FilmingBriefRow["extra"] => {
     const t = topicId ? topicOf.get(topicId) : undefined;
@@ -1142,6 +1192,393 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
     rows,
     slotsWithoutTopic: outputs.filter((o) => !o.topicId).length,
     pending,
+  };
+}
+
+// ===========================================================================
+// ONE BRIEF PER VIDEO (unified handoff §7.5 / §6.8 / A28, Sep 25 2026).
+//
+// Until now a listing job's editing instructions were ONE field for the whole
+// job (Project.videoInstructions), so a reel and an MLS video on the same order
+// were cut from the same words — and on a content session the script's own
+// production direction (filming notes, creative direction, production notes)
+// reached nobody. Two pieces:
+//
+//   · DeliverableOutput.briefJson — this video's OWN direction, in named
+//     sections, with a version number that goes up on every change and the
+//     person who made it (briefUpdatedBy/At, plus an Activity row per save so
+//     the history is on the job). A compare-and-set on the stored JSON means
+//     two people saving at once cannot silently overwrite each other: the
+//     second is told the brief moved and shown the version it is now.
+//   · outputBriefsFor — every destination reads the SAME rows: the editor's
+//     page, the printed brief, the shoot screen and the outside agency's
+//     packet (lib/editorPacket). Each row says which version it is, so a
+//     printed copy can be checked against the screen.
+//
+// NOTHING IS MIGRATED. A video with no brief of its own goes by the job's
+// instructions exactly as before, and says so ("shared by all 2 videos") —
+// the old single field is still what a one-video job is cut from.
+// ===========================================================================
+
+export const OUTPUT_BRIEF_FIELDS = [
+  { key: "purpose", label: "What this video is for" },
+  { key: "direction", label: "How to cut it" },
+  { key: "onSite", label: "Changed on site" },
+  { key: "mustShow", label: "Must show" },
+  { key: "avoid", label: "Avoid" },
+  { key: "footage", label: "Footage and takes to use" },
+  { key: "music", label: "Music and references" },
+  { key: "limitations", label: "Limitations" },
+] as const;
+export type OutputBriefKey = (typeof OUTPUT_BRIEF_FIELDS)[number]["key"];
+const OUTPUT_BRIEF_KEYS = new Set<string>(OUTPUT_BRIEF_FIELDS.map((f) => f.key));
+/** Per section. A brief longer than this is a document, and belongs in the job's files. */
+export const OUTPUT_BRIEF_FIELD_CAP = 2000;
+
+export type StoredOutputBrief = { version: number; sections: Partial<Record<OutputBriefKey, string>> };
+
+/** The stored brief, or null when there is none (or it cannot be read — then the next save starts it over at v1). */
+export function readOutputBrief(json: string | null | undefined): StoredOutputBrief | null {
+  if (!json) return null;
+  try {
+    const o = JSON.parse(json) as { version?: unknown; sections?: unknown };
+    const version = typeof o.version === "number" && Number.isInteger(o.version) && o.version > 0 ? o.version : null;
+    if (!version || !o.sections || typeof o.sections !== "object") return null;
+    const sections: Partial<Record<OutputBriefKey, string>> = {};
+    for (const [k, v] of Object.entries(o.sections as Record<string, unknown>)) {
+      if (OUTPUT_BRIEF_KEYS.has(k) && typeof v === "string" && v.trim()) sections[k as OutputBriefKey] = v;
+    }
+    return { version, sections };
+  } catch {
+    return null;
+  }
+}
+
+/** Sections in the fixed field order, so equal briefs serialise identically. */
+function orderedSections(s: Partial<Record<OutputBriefKey, string>>): Partial<Record<OutputBriefKey, string>> {
+  const out: Partial<Record<OutputBriefKey, string>> = {};
+  for (const f of OUTPUT_BRIEF_FIELDS) if (s[f.key]) out[f.key] = s[f.key];
+  return out;
+}
+
+export type SaveOutputBriefResult =
+  | { ok: true; changed: boolean; version: number }
+  | { ok: false; reason: "not_found" | "wrong_project" | "not_owed" | "too_long" | "conflict"; message: string; version: number | null };
+
+/**
+ * Save this video's brief. `sections` merges: a key left out keeps its text,
+ * a key given as "" or null clears it. `expectedVersion` is the version the
+ * person was looking at (null = there was none); when given and it is not the
+ * stored one, nothing is written and they are told. Saving the same words
+ * again is not a new version. Never throws for a person's mistake; the caller
+ * (a staff action, or the upload portal's submit) owns the permission check.
+ */
+export async function saveOutputBrief(input: {
+  outputId: string;
+  projectId?: string | null;
+  sections: Partial<Record<OutputBriefKey, string | null>>;
+  expectedVersion?: number | null;
+  actor: string;
+}): Promise<SaveOutputBriefResult> {
+  const row = await prisma.deliverableOutput.findUnique({
+    where: { id: input.outputId },
+    select: { id: true, projectId: true, deliverableId: true, slot: true, title: true, briefJson: true, removedFromOrderAt: true, waivedAt: true },
+  });
+  if (!row) return { ok: false, reason: "not_found", message: "That video is not on this job any more.", version: null };
+  // The id arrives from a form: it must be one of THIS job's videos.
+  if (input.projectId && row.projectId !== input.projectId) {
+    return { ok: false, reason: "wrong_project", message: "That video belongs to a different job.", version: null };
+  }
+  const current = readOutputBrief(row.briefJson);
+  const curVersion = current?.version ?? null;
+  if (row.removedFromOrderAt || row.waivedAt) {
+    return { ok: false, reason: "not_owed", message: "This video is no longer owed on the job, so its brief is kept as it was.", version: curVersion };
+  }
+  if (input.expectedVersion !== undefined && (input.expectedVersion ?? null) !== curVersion) {
+    return {
+      ok: false,
+      reason: "conflict",
+      message: `This brief was changed while you were editing it (it is now ${curVersion ? `v${curVersion}` : "empty"}). Reload to see it, then save again.`,
+      version: curVersion,
+    };
+  }
+  const next: Partial<Record<OutputBriefKey, string>> = { ...(current?.sections ?? {}) };
+  for (const [k, v] of Object.entries(input.sections)) {
+    if (!OUTPUT_BRIEF_KEYS.has(k) || v === undefined) continue;
+    const t = (v ?? "").replace(/\r\n/g, "\n").trim();
+    if (t.length > OUTPUT_BRIEF_FIELD_CAP) {
+      const label = OUTPUT_BRIEF_FIELDS.find((f) => f.key === k)?.label ?? k;
+      return { ok: false, reason: "too_long", message: `"${label}" is over ${OUTPUT_BRIEF_FIELD_CAP} characters. Put long notes in the job's files and link them here.`, version: curVersion };
+    }
+    if (t) next[k as OutputBriefKey] = t;
+    else delete next[k as OutputBriefKey];
+  }
+  if (JSON.stringify(orderedSections(current?.sections ?? {})) === JSON.stringify(orderedSections(next))) {
+    return { ok: true, changed: false, version: curVersion ?? 0 };
+  }
+  const version = (curVersion ?? 0) + 1;
+  const actor = (input.actor || "the office").trim().slice(0, 120);
+  const json = JSON.stringify({ version, sections: orderedSections(next) });
+  // Compare-and-set on what was READ: a save that raced this one wins, and
+  // this one is refused rather than overwriting it.
+  const res = await prisma.deliverableOutput.updateMany({
+    where: { id: row.id, briefJson: row.briefJson },
+    data: { briefJson: json, briefUpdatedAt: new Date(), briefUpdatedBy: actor },
+  });
+  if (res.count === 0) {
+    const now = readOutputBrief((await prisma.deliverableOutput.findUnique({ where: { id: row.id }, select: { briefJson: true } }))?.briefJson);
+    return {
+      ok: false,
+      reason: "conflict",
+      message: `Someone saved this brief at the same moment (it is now ${now?.version ? `v${now.version}` : "empty"}). Reload to see it, then save again.`,
+      version: now?.version ?? null,
+    };
+  }
+  const slotLabel = await cutSlots(row.projectId)
+    .then((ss) => ss.find((x) => x.deliverableId === row.deliverableId && x.slot === row.slot)?.label ?? null)
+    .catch(() => null);
+  const name = row.title?.trim() || slotLabel || `video ${row.slot}`;
+  await prisma.activity
+    .create({ data: { projectId: row.projectId, type: "SYSTEM", body: `Brief for “${name}” saved as v${version} by ${actor}.` } })
+    .catch(() => {});
+  return { ok: true, changed: true, version };
+}
+
+export type OutputBriefSection = { key: OutputBriefKey; label: string; text: string };
+
+export type OutputBrief = {
+  outputId: string;
+  key: string;
+  /** what this video is called everywhere (outputsForProject's label) */
+  label: string;
+  index: number;
+  total: number;
+  /** the Style Guide name of what is being cut ("Standard Reel with Agent Intro") */
+  format: string;
+  /** this video's own direction, in field order; empty when it has none */
+  sections: OutputBriefSection[];
+  /** this video's brief version; null = none has ever been written */
+  version: number | null;
+  updatedAtISO: string | null;
+  updatedBy: string | null;
+  /** where this video's direction comes from: its own brief, the job's shared instructions, or nowhere yet */
+  directionSource: "own" | "job" | "none";
+  /** one line that says which version this is, for every surface that prints it */
+  versionLabel: string;
+  /** content sessions: the topic, the photographer's note, the script and its raw folder (filmingBriefFor's row) */
+  topicTitle: string | null;
+  note: string | null;
+  script: FilmingBriefScript | null;
+  folder: { label: string; path: string; url: string } | null;
+  /** who reviews it: the cut's named reviewer, else who is first in line now */
+  reviewer: { name: string; from: "cut" | "chain" } | null;
+  ownerName: string | null;
+  promisedAtISO: string | null;
+  targetAtISO: string | null;
+  promiseFromJob: boolean;
+  state: OutputRowView["state"];
+};
+
+/**
+ * Every owed video's brief, in the order the job prints them. Read-only; no
+ * provider call. `scrub` money-scrubs every free-text value — true for any
+ * creative's copy (the editor, the photographer, the outside agency).
+ */
+export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean } = {}): Promise<OutputBrief[]> {
+  const rows = (await outputsForProject(projectId)).filter((o) => o.state !== "waived" && o.state !== "removed");
+  if (!rows.length) return [];
+  const [stored, slots, filming, project, rounds] = await Promise.all([
+    prisma.deliverableOutput.findMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      select: { id: true, briefJson: true, briefUpdatedAt: true, briefUpdatedBy: true },
+    }),
+    cutSlots(projectId).catch(() => [] as CutSlot[]),
+    filmingBriefFor(projectId).catch(() => null),
+    prisma.project.findUnique({ where: { id: projectId }, select: { videoInstructions: true } }),
+    prisma.reviewSubmission.findMany({
+      where: { projectId, deliverableId: { not: null }, withdrawnAt: null, status: { notIn: [...NOT_A_ROUND] }, reviewerTeamMemberId: { not: null } },
+      orderBy: { round: "desc" },
+      select: { deliverableId: true, slot: true, reviewerTeamMemberId: true },
+    }),
+  ]);
+  const scrub = (t: string) => (opts.scrub ? stripMoneySentences(t).trim() : t.trim());
+  const storedOf = new Map(stored.map((r) => [r.id, r]));
+  const formatOf = new Map(slots.map((sl) => [slotKeyOf(sl.deliverableId, sl.slot), sl.deliverableLabel]));
+  const filmedOf = new Map((filming?.rows ?? []).map((r) => [r.key, r]));
+  const { meaningfulBrief } = await import("@/lib/handoff");
+  const jobHas = !!meaningfulBrief(project?.videoInstructions);
+
+  // WHO REVIEWS IT (§8.1): the reviewer named on the video's newest round, else
+  // whoever the chain would give it to now. A name only — never a promise that
+  // they have looked.
+  const reviewerByKey = new Map<string, string>();
+  for (const r of rounds) {
+    const k = slotKeyOf(r.deliverableId!, r.slot);
+    if (!reviewerByKey.has(k) && r.reviewerTeamMemberId) reviewerByKey.set(k, r.reviewerTeamMemberId);
+  }
+  const ra = await import("@/lib/reviewerAssignment");
+  const [names, chain] = await Promise.all([
+    ra.reviewerNamesFor([...reviewerByKey.values()]).catch(() => new Map<string, string>()),
+    ra.resolveActiveReviewer().catch(() => null),
+  ]);
+
+  return rows.map((o): OutputBrief => {
+    const st = storedOf.get(o.id);
+    const brief = readOutputBrief(st?.briefJson);
+    const sections: OutputBriefSection[] = OUTPUT_BRIEF_FIELDS.flatMap((f) => {
+      const t = brief?.sections[f.key] ? scrub(brief.sections[f.key]!) : "";
+      return t ? [{ key: f.key, label: f.label, text: t }] : [];
+    });
+    const directionSource: OutputBrief["directionSource"] = sections.length ? "own" : jobHas ? "job" : "none";
+    const by = st?.briefUpdatedBy ?? null;
+    const at = st?.briefUpdatedAt ?? null;
+    const saved = brief ? `v${brief.version} · saved by ${by ?? "the office"}${at ? `, ${etDateTime(at)}` : ""}` : null;
+    const shared = o.total > 1 ? `the job's instructions, shared by all ${o.total} videos` : "the job's instructions";
+    const versionLabel =
+      directionSource === "own"
+        ? `Brief ${saved}`
+        : saved
+          ? `Brief ${saved} (emptied); goes by ${shared}`
+          : directionSource === "job"
+            ? `No brief of its own; goes by ${shared}`
+            : "No brief of its own, and the job has no instructions yet";
+    const film = filmedOf.get(o.key) ?? null;
+    const reviewerId = reviewerByKey.get(o.key);
+    const reviewer = reviewerId && names.get(reviewerId)
+      ? { name: names.get(reviewerId)!, from: "cut" as const }
+      : chain
+        ? { name: chain.name, from: "chain" as const }
+        : null;
+    return {
+      outputId: o.id,
+      key: o.key,
+      label: o.label,
+      index: o.index,
+      total: o.total,
+      format: formatOf.get(o.key) ?? o.label,
+      sections,
+      version: brief?.version ?? null,
+      updatedAtISO: at?.toISOString() ?? null,
+      updatedBy: by,
+      directionSource,
+      versionLabel,
+      topicTitle: o.topicTitle,
+      note: film?.note ? scrub(film.note) : o.filmingNote ? scrub(o.filmingNote) : null,
+      script: film?.script ? { ...film.script, text: film.script.text ? scrub(film.script.text) : null } : null,
+      folder: film?.folder ?? null,
+      reviewer,
+      ownerName: o.ownerName,
+      promisedAtISO: o.promisedAt?.toISOString() ?? null,
+      targetAtISO: o.targetAt?.toISOString() ?? null,
+      promiseFromJob: o.promiseFromJob,
+      state: o.state,
+    };
+  });
+}
+
+// ===========================================================================
+// THE PHOTOGRAPHER'S SESSION BRIEF (§6.8 / A28, Sep 25 2026).
+//
+// The shoot screen showed a content session's photographer the Studio reel
+// script (which nothing fills for a program month) and the client's colours —
+// and none of the month's topics, scripts or the direction written with them.
+// The topics this session is FOR (filmedTopics.topicsForSession — the same
+// list the upload page ticks), each with the words the client was SHOWN and
+// whether they approved them, the direction that version carries, and the
+// brand kit an on-camera shoot needs.
+//
+// WHAT IT NEVER SHOWS: an unreleased draft, an office-only version, or a
+// confidential call fact. The photographer is directing the client on camera;
+// words the client has not seen are not theirs to read out. A topic whose
+// script is not released says so instead.
+// ===========================================================================
+
+export type SessionBriefTopic = {
+  topicId: string;
+  title: string;
+  pillarName: string | null;
+  /** chosen beyond the package's allowance: film it if there is time */
+  overflow: boolean;
+  /** already filmed at another session of this month (a Pro month's first) */
+  filmedElsewhere: boolean;
+  script: { title: string; versionNo: number; text: string | null; clientApproved: boolean; standing: string; direction: ScriptDirection | null } | null;
+  /** why there are no words to show, when there are none */
+  noScript: string | null;
+};
+
+export type SessionBrand = {
+  fontNames: string | null;
+  files: { typeWord: string; name: string; versionNo: number }[];
+  music: string | null;
+  productionDefaults: { name: string; text: string }[];
+  acceptedPreferences: string[];
+};
+
+export type SessionBrief = {
+  monthKey: string;
+  owed: number;
+  topics: SessionBriefTopic[];
+  brand: SessionBrand | null;
+};
+
+export async function sessionBriefFor(projectId: string): Promise<SessionBrief | null> {
+  const { topicsForSession } = await import("@/lib/filmedTopics");
+  const session = await topicsForSession(projectId);
+  if (!session) return null;
+  const scriptIds = [...new Set(session.topics.map((t) => t.scriptId).filter((x): x is string => !!x))];
+  const versionIds = [...new Set(session.topics.map((t) => t.scriptSharedVersionId).filter((x): x is string => !!x))];
+  const [versions, brand] = await Promise.all([
+    versionIds.length
+      ? prisma.contentScriptVersion.findMany({
+          where: { id: { in: versionIds }, scriptId: { in: scriptIds } },
+          select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true },
+        })
+      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null }[]),
+    // links:false — the names of the files are what a shoot needs; minting a
+    // Dropbox link per logo on every page load is not.
+    import("@/lib/brandProfile")
+      .then((m) => m.brandBriefFor(session.clientId, { projectId, scrub: true, links: false }))
+      .catch(() => null),
+  ]);
+  const versionOf = new Map(versions.map((v) => [v.id, v]));
+  const clip = (s: string | null | undefined) => {
+    const t = stripMoneySentences((s ?? "").trim()).trim();
+    return t ? (t.length > SCRIPT_TEXT_CAP ? `${t.slice(0, SCRIPT_TEXT_CAP - 1).trimEnd()}…` : t) : null;
+  };
+  const topics = session.topics.map((t): SessionBriefTopic => {
+    const v = t.scriptSharedVersionId ? versionOf.get(t.scriptSharedVersionId) : undefined;
+    return {
+      topicId: t.topicId,
+      title: t.title,
+      pillarName: t.pillarName,
+      overflow: t.overflow,
+      filmedElsewhere: !!t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId,
+      script: v
+        ? {
+            title: v.title || t.scriptTitle || t.title,
+            versionNo: v.versionNo,
+            text: clip(v.body),
+            clientApproved: t.clientApproved,
+            standing: t.clientApproved ? "approved by the client" : "shared with the client, not approved by them yet",
+            direction: directionOf(v),
+          }
+        : null,
+      noScript: v ? null : t.scriptId ? "The script is still with the office; nothing has been released to the client yet." : "No script for this topic yet.",
+    };
+  });
+  return {
+    monthKey: session.monthKey,
+    owed: session.owed,
+    topics,
+    brand: brand
+      ? {
+          fontNames: brand.fontNames,
+          files: brand.files.map((f) => ({ typeWord: f.typeWord, name: f.name, versionNo: f.versionNo })),
+          music: brand.music,
+          productionDefaults: brand.productionDefaults.map((d) => ({ name: d.name, text: d.text })),
+          acceptedPreferences: brand.acceptedPreferences,
+        }
+      : null,
   };
 }
 

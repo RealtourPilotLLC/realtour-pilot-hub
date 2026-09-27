@@ -239,7 +239,17 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, orderBy: { isFinal: "desc" }, select: { portalVideoId: true } })
             .then(async (s) => (s?.portalVideoId ? prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { playback: true, thumb: true } }) : null)).catch(() => null),
         ]);
-        const versions = hist.ok ? hist.data.map((v) => ({ ...v, assetUrl: v.assetUrl ? withMediaToken(v.assetUrl, scope) : null })) : [];
+        // 9.6b: a version still in its 1080p pass (or held for a listen) has
+        // nothing to play for the client — never the editor's export in its
+        // place. Its player is withheld and the page says it is being finished;
+        // the stream route refuses it too.
+        const finishing = hist.ok
+          ? await import("@/lib/cutEntitlement")
+            .then((m) => m.clientCutFiles(hist.data.filter((x) => x.assetUrl).map((x) => x.submissionId)))
+            .then((files) => new Set([...files].filter(([, f]) => f.kind === "finishing").map(([id]) => id)))
+            .catch(() => new Set<string>())
+          : new Set<string>();
+        const versions = hist.ok ? hist.data.map((v) => ({ ...v, assetUrl: v.assetUrl && !finishing.has(v.submissionId) ? withMediaToken(v.assetUrl, scope) : null })) : [];
         // CP-02: the review deadline and rounds used ride on the CURRENT version
         // into CutReview — from the window the server enforces; null (nothing
         // shown) while revision_policy is off.
@@ -260,6 +270,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
             section: await import("@/lib/contentVideos").then((m) => m.videoLibrarySection(video)).catch(() => "RECENT" as const),
           },
           versions, versionsFailed: !hist.ok,
+          finishing: versions.some((x) => x.isCurrent && finishing.has(x.submissionId)),
           kit: kitData, kitFailed: !kit.ok,
           // A delivered (Aryeo/Mux) file plays directly — it is a CDN URL, not a hub cut, so no token applies.
           delivered: deliveredSrc?.playback && !/^\/api\/review\/cut\//.test(deliveredSrc.playback) ? { playback: deliveredSrc.playback, thumb: deliveredSrc.thumb } : null,

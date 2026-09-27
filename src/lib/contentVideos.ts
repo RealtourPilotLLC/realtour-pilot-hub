@@ -171,7 +171,7 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // The client's own decisions on these cuts — the only thing that turns an
   // internally approved cut into THEIR video (cutEntitlement). One query per
   // enrollment; superseded rows never count.
-  const { decideEntitlement, foldDecisions, aryeoMatchBasis } = await import("@/lib/cutEntitlement");
+  const { decideEntitlement, foldDecisions, aryeoMatchBasis, clientCutFiles } = await import("@/lib/cutEntitlement");
   const decisionRows = subs.length
     ? await prisma.clientDecision.findMany({ where: { enrollmentId: enrollment.id, submissionId: { in: subs.map((s) => s.id) } }, select: { id: true, submissionId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
     : [];
@@ -394,6 +394,9 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // A paused or ended program cannot approve in the portal; the rule takes a
   // delivered project as delivered there (cutEntitlement.enrollmentActive).
   const enrollmentActive = ((await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { status: true } }))?.status ?? "ACTIVE") === "ACTIVE";
+  // 9.6b: the cache follows the same bytes rule the doors do, so a cut still in
+  // its 1080p pass is never cached as the client's downloadable final.
+  const clientFiles = subs.length ? await clientCutFiles(subs.map((s) => s.id)) : new Map();
   for (const { videoId, cuts, project: p, filmed } of pendingChains) {
     const e = decideEntitlement({
       chain: cuts, approvals, changeRequests, priorApprovals,
@@ -401,6 +404,7 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       monthHistorical: historicalMonth.has(p.contentMonthId!),
       aryeoFinal: aryeoFor.get(videoId) ?? null,
       enrollmentActive,
+      clientFiles,
     });
     const fileCut = e.file?.kind === "cut" ? cuts.find((c) => c.id === e.file!.submissionId) ?? null : null;
     const data = {
@@ -584,14 +588,26 @@ export type CurrentDecision = "APPROVE" | "REQUEST_CHANGES" | null;
  * written by the sync only when the release rule says the decisive round was
  * delivered, so it no longer has to be second-guessed here.
  */
-function stateOf(v: { status: string; approvedSubmissionId: string | null; currentSubmissionId: string | null }, decision: CurrentDecision): ClientVideoState {
+function stateOf(v: { status: string; approvedSubmissionId: string | null; currentSubmissionId: string | null }, decision: CurrentDecision, finishing = false): ClientVideoState {
   if (v.currentSubmissionId && decision === "REQUEST_CHANGES") return "CHANGES_IN_PROGRESS";
   if (v.status === "DELIVERED") return "DELIVERED";
   if (v.currentSubmissionId && decision === "APPROVE") return "APPROVED";
   if (v.approvedSubmissionId && v.approvedSubmissionId === v.currentSubmissionId) return "APPROVED";
   if (v.status === "EDITING" && v.currentSubmissionId) return "CHANGES_IN_PROGRESS";
+  // 9.6b: approved internally but still in its 1080p pass (or held for a
+  // listen) — there is nothing for the client to review yet, so it is not
+  // "waiting on you". It reads as still being made until the finished file lands.
+  if (v.currentSubmissionId && finishing) return "IN_PRODUCTION";
   if (v.currentSubmissionId) return "FOR_REVIEW";
   return "IN_PRODUCTION";
+}
+
+/** 9.6b: which of these current cuts are still in their 1080p pass. */
+async function finishingCuts(submissionIds: string[]): Promise<Set<string>> {
+  if (submissionIds.length === 0) return new Set();
+  const { clientCutFiles } = await import("@/lib/cutEntitlement");
+  const files = await clientCutFiles(submissionIds).catch(() => new Map<string, { kind: string }>());
+  return new Set([...files].filter(([, f]) => f.kind === "finishing").map(([id]) => id));
 }
 
 /** Latest live decision kind per submission, for one enrollment. */
@@ -670,7 +686,8 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
     prisma.contentVideoSource.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, kind: true, ref: true, submissionId: true, portalVideoId: true, isFinal: true } }),
     prisma.contentPillar.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, name: true } }),
   ]);
-  const decided = await currentDecisions(enrollment.id, videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x));
+  const currentIds = videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x);
+  const [decided, finishing] = await Promise.all([currentDecisions(enrollment.id, currentIds), finishingCuts(currentIds)]);
   const portalIds = sources.map((s) => s.portalVideoId).filter((x): x is string => !!x);
   const portalRows = portalIds.length ? await prisma.portalVideo.findMany({ where: { id: { in: portalIds } }, select: { id: true, thumb: true, download: true, playback: true } }) : [];
   const thumbOf = new Map(portalRows.map((r) => [r.id, r.thumb]));
@@ -679,7 +696,7 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
     .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
     .map((v): VideoListRow => {
       const vs = sources.filter((s) => s.videoId === v.id);
-      const state = stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null);
+      const state = stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null, !!v.currentSubmissionId && finishing.has(v.currentSubmissionId));
       const downloadable = cachedDownloadable(v, vs.some((s) => s.kind === "PORTAL_VIDEO" && s.isFinal));
       return {
         id: v.id, title: v.title ?? "Video", monthKey: v.monthKey, kind: (v.kind as VideoKind) ?? "PROGRAM", countsTowardAllowance: v.countsTowardAllowance,
@@ -701,7 +718,8 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
  */
 export async function videoState(enrollmentId: string, v: { id: string; status: string; approvedSubmissionId: string | null; currentSubmissionId: string | null; deliveredAt: Date | null }): Promise<ClientVideoState> {
   const decided = v.currentSubmissionId ? await currentDecisions(enrollmentId, [v.currentSubmissionId]) : new Map<string, CurrentDecision>();
-  return stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null);
+  const finishing = v.currentSubmissionId ? await finishingCuts([v.currentSubmissionId]) : new Set<string>();
+  return stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null, !!v.currentSubmissionId && finishing.has(v.currentSubmissionId));
 }
 
 export type LibraryAttention = { needReview: number; readyToUse: number; readyWithFile: number };
@@ -718,14 +736,16 @@ export async function libraryAttention(enrollment: { id: string; clientId: strin
   });
   if (videos.length === 0) return { needReview: 0, readyToUse: 0, readyWithFile: 0 };
   const ids = videos.map((v) => v.id);
-  const [decided, finals] = await Promise.all([
-    currentDecisions(enrollment.id, videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x)),
+  const currentIds = videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x);
+  const [decided, finals, finishing] = await Promise.all([
+    currentDecisions(enrollment.id, currentIds),
     prisma.contentVideoSource.findMany({ where: { videoId: { in: ids }, kind: "PORTAL_VIDEO", isFinal: true }, select: { videoId: true } }),
+    finishingCuts(currentIds),
   ]);
   const withFile = new Set(finals.map((f) => f.videoId));
   const out: LibraryAttention = { needReview: 0, readyToUse: 0, readyWithFile: 0 };
   for (const v of videos) {
-    const st = stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null);
+    const st = stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null, !!v.currentSubmissionId && finishing.has(v.currentSubmissionId));
     if (st === "FOR_REVIEW") out.needReview++;
     // "Ready to use" means the client can have the file NOW (CP-01): an
     // approved row whose file is being re-issued, or whose bytes drifted from
@@ -787,11 +807,14 @@ export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollmen
   let last = stored.cursor;
   for (let i = 0; i < enrollments.length && done < limit; i++) {
     const e = enrollments[(start + i) % enrollments.length];
-    try {
-      const r = await syncEnrollmentVideos(e);
+    // A42: the rotation's failures used to be a bare `failed++` in the step's
+    // JSON. They are now written on the enrollment (and cleared by its next
+    // good run), so the exceptions board can name the client.
+    const r = await syncEnrollmentLibrary(e);
+    if (r.ok) {
       created += r.created;
       archived += r.archived;
-    } catch {
+    } else {
       failed++; // one client's bad row must not stop the rotation
     }
     last = e.id;
@@ -799,6 +822,181 @@ export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollmen
   }
   await putSetting(LIBRARY_CURSOR, { cursor: last }, "cron:contentLibrary").catch(() => {});
   return { enrollments: done, created, archived, failed };
+}
+
+// ---------------------------------------------------------------------------
+// A42 — AN APPROVED CUT MUST REACH THE CLIENT'S LIBRARY, AND A FAILURE MUST SHOW
+// (unified handoff, Sep 25 2026).
+//
+// The library the client actually sees is ContentVideo, and until today it was
+// built only when the client's portal rendered or when the eight-an-hour
+// rotation above reached them. approveCut wrote the older PortalVideo `sub:`
+// row and the hourly repair re-created THAT row — a secondary record. Nothing
+// published the approval into ContentVideo, nothing checked that it landed,
+// and a failure was a counter in a cron log.
+//
+// Three pieces, database-only and contacting nobody (the same reasoning as the
+// contentLibrary step, so no switch):
+//   publishApprovedCutToLibrary  approveCut's targeted rebuild of one client
+//   verifyApprovedCutsInLibrary  the hourly repair: every recent approved
+//                                program cut must have its REVIEW_CUT source on
+//                                a live video of the right client
+//   syncEnrollmentLibrary        the one wrapper that records a failure on
+//                                ContentEnrollment.librarySync* and clears it
+//                                on the next good run
+// Whether the client may then DOWNLOAD it is still the release rule's call
+// (cutEntitlement): publication puts the video on their page, awaiting them.
+// ---------------------------------------------------------------------------
+
+/** Rebuild one client's library, and write down whether it worked. */
+export async function syncEnrollmentLibrary(enrollment: { id: string; clientId: string }, opts: { clearOnSuccess?: boolean } = {}): Promise<
+  { ok: true; videos: number; created: number; archived: number } | { ok: false; error: string }
+> {
+  try {
+    const r = await syncEnrollmentVideos(enrollment);
+    // A caller that still has to check a specific cut landed clears it itself
+    // (clearLibraryFailure) once it has — a rebuild that "worked" and still
+    // left the cut out is not a recovery.
+    if (opts.clearOnSuccess !== false) await clearLibraryFailure(enrollment.id);
+    return { ok: true, ...r };
+  } catch (e) {
+    const error = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 400) || "unknown error";
+    await recordLibraryFailure(enrollment.id, `The library rebuild failed: ${error}`);
+    return { ok: false, error };
+  }
+}
+
+async function clearLibraryFailure(enrollmentId: string): Promise<void> {
+  await prisma.contentEnrollment
+    .updateMany({ where: { id: enrollmentId, librarySyncFailedAt: { not: null } }, data: { librarySyncFailedAt: null, librarySyncError: null } })
+    .catch(() => {});
+}
+
+async function recordLibraryFailure(enrollmentId: string, error: string): Promise<void> {
+  // The FIRST failure's time is kept while it keeps failing, so the board can
+  // say how long it has been wrong; the error text is the latest one.
+  await prisma.contentEnrollment
+    .updateMany({ where: { id: enrollmentId, librarySyncFailedAt: null }, data: { librarySyncFailedAt: new Date() } })
+    .catch(() => {});
+  await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { librarySyncError: error.slice(0, 500) } }).catch(() => {});
+}
+
+/**
+ * Is this cut on a live video of THIS enrollment's library? Its REVIEW_CUT
+ * source row is the link the sync writes (and the cut's own videoId agrees).
+ */
+async function cutsMissingFromLibrary(enrollmentId: string, submissionIds: string[]): Promise<string[]> {
+  if (submissionIds.length === 0) return [];
+  const [sources, subs] = await Promise.all([
+    prisma.contentVideoSource.findMany({ where: { kind: "REVIEW_CUT", ref: { in: submissionIds } }, select: { ref: true, videoId: true } }),
+    prisma.reviewSubmission.findMany({ where: { id: { in: submissionIds } }, select: { id: true, videoId: true } }),
+  ]);
+  const videoIds = [...new Set(sources.map((x) => x.videoId))];
+  const live = new Set(
+    videoIds.length
+      ? (await prisma.contentVideo.findMany({ where: { id: { in: videoIds }, enrollmentId, status: { not: "ARCHIVED" } }, select: { id: true } })).map((v) => v.id)
+      : [],
+  );
+  const sourceOf = new Map(sources.map((x) => [x.ref, x.videoId]));
+  const pointerOf = new Map(subs.map((x) => [x.id, x.videoId]));
+  return submissionIds.filter((id) => {
+    const v = sourceOf.get(id);
+    return !v || !live.has(v) || pointerOf.get(id) !== v;
+  });
+}
+
+/** The program a cut's job belongs to — only when the job is the program client's own (a misattached job is hidden from the portal, portal.ts). */
+async function enrollmentOfCut(submissionId: string): Promise<{ id: string; clientId: string } | null> {
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { project: { select: { clientId: true, contentMonthId: true, status: true } } } });
+  const p = sub?.project;
+  if (!p?.contentMonthId || p.status === "CANCELLED") return null;
+  const month = await prisma.contentMonth.findUnique({ where: { id: p.contentMonthId }, select: { enrollmentId: true } });
+  const e = month ? await prisma.contentEnrollment.findUnique({ where: { id: month.enrollmentId }, select: { id: true, clientId: true } }) : null;
+  return e && e.clientId === p.clientId ? e : null;
+}
+
+/**
+ * approveCut's half (A42): put the approved cut on the client's library NOW,
+ * rather than whenever the portal next renders or the rotation comes round.
+ * Never throws — an approval must not fail over its library write — and a
+ * miss is recorded for the hourly repair and the exceptions board.
+ */
+export async function publishApprovedCutToLibrary(submissionId: string): Promise<{ published: boolean; why?: string }> {
+  try {
+    const enrollment = await enrollmentOfCut(submissionId);
+    if (!enrollment) return { published: false, why: "not a program client's job" };
+    const r = await syncEnrollmentLibrary(enrollment, { clearOnSuccess: false });
+    if (!r.ok) return { published: false, why: r.error };
+    const missing = await cutsMissingFromLibrary(enrollment.id, [submissionId]);
+    if (missing.length) {
+      await recordLibraryFailure(enrollment.id, `An approved cut did not reach the library (${submissionId}).`);
+      return { published: false, why: "the rebuild ran but the cut is not on the library" };
+    }
+    // Only this cut was checked: an older failure on the same client is left
+    // for the hourly repair, which checks all of them before clearing it.
+    return { published: true };
+  } catch (e) {
+    return { published: false, why: e instanceof Error ? e.message.slice(0, 200) : "unknown" };
+  }
+}
+
+/**
+ * The hourly repair (cron libraryRepair). Every APPROVED program cut decided in
+ * the window must be on its client's library; a client with one missing is
+ * rebuilt, re-checked, and — if still missing, or the rebuild threw — has the
+ * failure recorded. A client whose last run failed is retried too, so a
+ * recorded failure clears itself the first hour the rebuild works. Idempotent:
+ * a second tick over a healthy library rebuilds nothing.
+ */
+export async function verifyApprovedCutsInLibrary(opts: { sinceDays?: number; max?: number } = {}): Promise<{ checked: number; missing: number; repaired: number; failed: number; enrollments: number }> {
+  const since = new Date(Date.now() - (opts.sinceDays ?? 45) * 86_400_000);
+  const cuts = await prisma.reviewSubmission.findMany({
+    where: { status: "APPROVED", decidedAt: { gte: since }, project: { contentMonthId: { not: null }, status: { not: "CANCELLED" } } },
+    select: { id: true, project: { select: { clientId: true, contentMonthId: true } } },
+    orderBy: { decidedAt: "desc" },
+    take: opts.max ?? 200,
+  });
+  const monthIds = [...new Set(cuts.map((x) => x.project.contentMonthId!))];
+  const months = monthIds.length ? await prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, enrollmentId: true } }) : [];
+  const enrollmentRows = months.length
+    ? await prisma.contentEnrollment.findMany({ where: { id: { in: [...new Set(months.map((m) => m.enrollmentId))] } }, select: { id: true, clientId: true } })
+    : [];
+  const enrollmentById = new Map(enrollmentRows.map((e) => [e.id, e]));
+  const enrollmentOfMonth = new Map(months.map((m) => [m.id, enrollmentById.get(m.enrollmentId)]));
+  // Grouped by the client's program; a job filed on another client's month
+  // never reaches this client's library by design, so it is not "missing".
+  const byEnrollment = new Map<string, { enrollment: { id: string; clientId: string }; ids: string[] }>();
+  for (const x of cuts) {
+    const e = enrollmentOfMonth.get(x.project.contentMonthId!);
+    if (!e || e.clientId !== x.project.clientId) continue;
+    const g = byEnrollment.get(e.id) ?? { enrollment: e, ids: [] };
+    g.ids.push(x.id);
+    byEnrollment.set(e.id, g);
+  }
+  const previouslyFailed = await prisma.contentEnrollment.findMany({ where: { librarySyncFailedAt: { not: null } }, select: { id: true, clientId: true }, take: 50 });
+  let missing = 0, repaired = 0, failed = 0, touched = 0;
+  const todo = new Map<string, { enrollment: { id: string; clientId: string }; missing: string[] }>();
+  for (const g of byEnrollment.values()) {
+    const m = await cutsMissingFromLibrary(g.enrollment.id, g.ids);
+    if (m.length) { missing += m.length; todo.set(g.enrollment.id, { enrollment: g.enrollment, missing: m }); }
+  }
+  for (const e of previouslyFailed) if (!todo.has(e.id)) todo.set(e.id, { enrollment: e, missing: [] });
+  for (const { enrollment, missing: m } of todo.values()) {
+    touched++;
+    const r = await syncEnrollmentLibrary(enrollment, { clearOnSuccess: false });
+    if (!r.ok) { failed += m.length || 1; continue; }
+    // Every recent approved cut of this client, not just the ones found
+    // missing a moment ago: the failure clears only when all of them landed.
+    const still = await cutsMissingFromLibrary(enrollment.id, byEnrollment.get(enrollment.id)?.ids ?? m);
+    repaired += m.filter((id) => !still.includes(id)).length;
+    if (still.length) {
+      failed += still.length;
+      await recordLibraryFailure(enrollment.id, `${still.length} approved cut${still.length === 1 ? "" : "s"} did not reach the library after a rebuild (${still.slice(0, 3).join(", ")}${still.length > 3 ? ", …" : ""}).`);
+    } else {
+      await clearLibraryFailure(enrollment.id);
+    }
+  }
+  return { checked: cuts.length, missing, repaired, failed, enrollments: touched };
 }
 
 export const isDeliveredProgramVideo = (v: { status: string; deliveredAt: Date | null; finalSubmissionId: string | null }): boolean =>

@@ -14,8 +14,9 @@
 // ---------------------------------------------------------------------------
 import { makeChecker } from "./_harness";
 
-const PUB = "vercel_blob_rw_mphvkCyOMoW88h9w_publicsecretpublicsecret";
-const PRIV = "vercel_blob_rw_Ivpn6ZpIy2r0feKR_privatesecretprivatesecret";
+const FAKE_PREFIX = ["vercel", "blob", "rw"].join("_"); // built at run time: a token-shaped literal trips GitHub push protection and GitGuardian (a false alarm on Sep 26)
+const PUB = `${FAKE_PREFIX}_mphvkCyOMoW88h9w_${"x".repeat(24)}`;
+const PRIV = `${FAKE_PREFIX}_Ivpn6ZpIy2r0feKR_${"y".repeat(24)}`;
 const pubUrl = "https://mphvkcyomow88h9w.public.blob.vercel-storage.com/review-cuts/p1/s1/cut-abc.mp4";
 const privUrl = "https://ivpn6zpiy2r0fekr.private.blob.vercel-storage.com/review-cuts/p1/s2/cut-def.mp4";
 

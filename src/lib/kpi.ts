@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc, etAt } from "@/lib/datetime";
+import { liveHandoffCategories, videoHalfClock } from "@/lib/handoff";
 import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
 
 // ---------------------------------------------------------------------------
@@ -336,6 +337,13 @@ export async function scoreQuarter(opts: {
       select: {
         id: true, shootDate: true, createdAt: true, uploadedAt: true,
         debriefSubmittedAt: true, cullingConfirmedAt: true,
+        // O05: the two halves' own handoffs — a video half handed in after
+        // its 8:00 AM deadline is a late upload (Jordan, Sep 25 2026).
+        photosHandoffAt: true, videoHandoffAt: true,
+        // …and whether a video is still owed at all: one excused after the
+        // photos went in ("couldn't complete", waived, off the order) is not
+        // a late upload (review, Sep 25).
+        deliverables: { where: { removedFromOrderAt: null }, select: { type: true, notCompletedReason: true, waivedAt: true } },
         rawPhotoCount: true, photoTarget: true, squareFeet: true,
         revisionRequestedAt: true,
       },
@@ -387,7 +395,10 @@ export async function scoreQuarter(opts: {
       select: { id: true, rating: true, photographerRating: true, attribution: true, attributionWhy: true },
     }),
     shootIds.length
-      ? prisma.revisionBrief.findMany({ where: onIds, select: { projectId: true }, distinct: ["projectId"] })
+      // An OFFICE reopen's brief (source "office", A52) is the office putting a
+      // finished job back, not the client asking — it is not a shoot that came
+      // back, so it never counts against the photographer.
+      ? prisma.revisionBrief.findMany({ where: { ...onIds, NOT: { source: "office" } }, select: { projectId: true }, distinct: ["projectId"] })
       : Promise.resolve([] as { projectId: string }[]),
     shootIds.length
       ? prisma.qcRecord.findMany({ where: { ...onIds, reopenedByRevisionAt: { not: null } }, select: { projectId: true }, distinct: ["projectId"] })
@@ -552,7 +563,28 @@ export async function scoreQuarter(opts: {
   const datable = shoots.filter(
     (s) => s.shootDate && s.uploadedAt && s.uploadedAt.getTime() >= s.shootDate.getTime(),
   );
-  const onTimeRaws = datable.filter((s) => s.uploadedAt!.getTime() <= etAt(nextEtDayKey(etDayKey(s.shootDate!)), 12).getTime());
+  // THE VIDEO HALF HAS ITS OWN DEADLINE (Jordan, Sep 25 2026: "Please upload
+  // the video before 8am tomorrow … This is something that will affect their
+  // KPI's"). When the photos went in ahead of the video, the video is due by
+  // 8:00 AM ET the next day; handed in after that — or still owed once it has
+  // passed — the shoot counts as a late upload here, whatever time the photos
+  // landed. Read off the two stamps (lib/handoff videoHalfClock), the same
+  // deadline the reminder text and the timeline use. No pay effect.
+  // Two ways to be late, said apart on the card: the video came in after the
+  // deadline, or it is STILL owed past it. A video excused after the photos is
+  // neither (videoLive) — the clock used to read the stamps alone and counted
+  // that shoot late for good.
+  const videoCameLate = new Set<string>();
+  const videoStillOwed = new Set<string>();
+  for (const s of shoots) {
+    const clock = videoHalfClock({ ...s, videoLive: liveHandoffCategories(s.deliverables).includes("video") }, now);
+    if (clock?.submittedLate) videoCameLate.add(s.id);
+    else if (clock?.overdue) videoStillOwed.add(s.id);
+  }
+  const videoHalfLate = new Set([...videoCameLate, ...videoStillOwed]);
+  const onTimeRaws = datable.filter(
+    (s) => s.uploadedAt!.getTime() <= etAt(nextEtDayKey(etDayKey(s.shootDate!)), 12).getTime() && !videoHalfLate.has(s.id),
+  );
   const rawsRate = datable.length ? onTimeRaws.length / datable.length : 0;
   const rawsOk = datable.length >= TARGETS.minDatableShoots && (n ? datable.length / n : 0) >= TARGETS.minDatableCoverage;
 
@@ -593,6 +625,18 @@ export async function scoreQuarter(opts: {
     notes: [
       ...(datable.length < n
         ? [`${n - datable.length} shoot${n - datable.length === 1 ? "" : "s"} have no upload time on record and are left out — a missing timestamp is never counted as late.`]
+        : []),
+      ...(datable.some((s) => videoCameLate.has(s.id))
+        ? [(() => {
+            const k = datable.filter((s) => videoCameLate.has(s.id)).length;
+            return `${k} shoot${k === 1 ? " counts" : "s count"} as late because the video came in after 8:00 AM the morning after the photos.`;
+          })()]
+        : []),
+      ...(datable.some((s) => videoStillOwed.has(s.id))
+        ? [(() => {
+            const k = datable.filter((s) => videoStillOwed.has(s.id)).length;
+            return `${k} shoot${k === 1 ? " counts" : "s count"} as late because the video is still not in, and it was due by 8:00 AM the morning after the photos.`;
+          })()]
         : []),
       ...(!wrapOk && wrapDue.length > 0
         ? [`${wrapDue.length} shoot${wrapDue.length === 1 ? "" : "s"} since the wrap-up became part of the job — it starts counting at ${TARGETS.minWrapShoots}.`]

@@ -316,15 +316,20 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
  * gate the QC closes above use (Kyle is ADMIN); no editor or photographer lane
  * reaches a client delivery surface.
  */
-export async function markVideoSentAction(submissionId: string): Promise<SentResult> {
+export async function markVideoSentAction(submissionId: string, notice?: string | null): Promise<SentResult> {
   try {
     await requireAdmin();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
   const me = await getCurrentUser().catch(() => null);
-  const { markVideoSent } = await import("@/lib/readyToSend");
-  const r = await markVideoSent(submissionId, me?.name ?? me?.email ?? null);
+  const { markVideoSent, isNoticeChoice } = await import("@/lib/readyToSend");
+  // 9.2: HOW THE CLIENT WAS TOLD rides on the same press — the card asks it
+  // before the stamp. A value that is not one of the card's choices is refused
+  // here rather than stored; an absent one (an older tab) records the send and
+  // leaves the question open, which is what every send before today did.
+  if (notice != null && !isNoticeChoice(notice)) return { ok: false, message: "Say how the client was told." };
+  const r = await markVideoSent(submissionId, me?.name ?? me?.email ?? null, { notice: notice ?? null });
   // R5 (follow-up audit, Sep 22 2026) — TWO THINGS HERE USED TO SWALLOW THE
   // BACKEND'S OWN "press it again" AND MAKE IT IMPOSSIBLE TO DO.
   //
@@ -344,6 +349,28 @@ export async function markVideoSentAction(submissionId: string): Promise<SentRes
     revalidatePath("/");
     revalidatePath("/ops");
     revalidatePath("/tasks");
+  }
+  return r;
+}
+
+/**
+ * 9.2: "the client was told" for a video already marked sent — the answer to a
+ * row on the card's "client not told yet" list. Records only; sends nothing.
+ * Same gate as Mark as sent: a server action is a public endpoint.
+ */
+export async function recordClientNoticeAction(submissionId: string, notice: string): Promise<{ ok: boolean; message: string; already?: boolean }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { recordClientNotice, isNoticeChoice } = await import("@/lib/readyToSend");
+  if (!isNoticeChoice(notice)) return { ok: false, message: "Say how the client was told." };
+  const me = await getCurrentUser().catch(() => null);
+  const r = await recordClientNotice(submissionId, me?.name ?? me?.email ?? null, notice);
+  if (r.ok) {
+    revalidatePath("/");
+    revalidatePath("/ops");
   }
   return r;
 }

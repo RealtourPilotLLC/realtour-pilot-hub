@@ -293,6 +293,20 @@ export async function flagShootIssue(projectId: string, body: string): Promise<{
   return { ok: true };
 }
 
+// §7.8 (Sep 25 2026): a client preference or request heard on site, recorded
+// from the field screen. The same action as the upload page's box — a
+// PROPOSED client fact the office confirms before any editor sees it (see
+// upload/actions.ts recordFieldPreference), so both screens record it one way.
+export async function recordShootPreference(
+  projectId: string,
+  input: { body: string; basis: "client_said" | "observation"; scope: "project" | "client" },
+): Promise<{ ok: boolean; message: string }> {
+  const { recordFieldPreference } = await import("@/app/upload/actions");
+  const r = await recordFieldPreference(projectId, input);
+  if (r.ok) revalShoot(projectId);
+  return r;
+}
+
 // Mark the shoot complete from the field. Records the moment, moves the job to
 // SHOT (so the pipeline + Kyle see it’s captured), and drops a clear note in the
 // project’s team thread. Does NOT text the client — that’s the separate "Shoot

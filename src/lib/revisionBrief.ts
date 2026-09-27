@@ -3,6 +3,11 @@ import { prisma } from "@/lib/prisma";
 import { aiJson } from "@/lib/integrations/ai";
 import { stripMoneySentences } from "@/lib/text";
 import { cutSlots, slotKeyOf } from "@/lib/reviewCuts";
+import { etDateTime } from "@/lib/datetime";
+import { lockAdvisory } from "@/lib/dbLocks";
+// Types only — the reopened-clock READER is deliveryBoard.ts, loaded
+// dynamically below so this module's import graph does not change.
+import type { DueSource, ReopenedClock } from "@/lib/deliveryBoard";
 
 // ---------------------------------------------------------------------------
 // THE REVISION WORK ORDER.
@@ -410,6 +415,11 @@ export async function createRevisionBrief(opts: {
   const worthAnalyzing = text.length >= 240 && !opts.skipAnalysis;
   const pin = opts.pin;
   const items = pin?.cutKey ? pinnedItems(text, pin.cutKey) : null;
+  // THE ROUND'S CLOCK (A52, §3): written once, here, and never by a re-read.
+  // The row's createdAt is the same instant the clock starts from, so the
+  // reader's "created since the last settle" and the clock agree to the ms.
+  const at = new Date();
+  const clock = await clientRoundClockFor(opts, at);
 
   let brief;
   try {
@@ -421,6 +431,8 @@ export async function createRevisionBrief(opts: {
         sourceDetail: opts.sourceDetail ?? null,
         originalText: text,
         twoSided: !!opts.twoSided,
+        createdAt: at,
+        ...(clock ?? {}),
         ...(pin
           ? {
               submissionId: pin.submissionId, decisionId: pin.decisionId, roundId: pin.roundId,
@@ -434,6 +446,9 @@ export async function createRevisionBrief(opts: {
   } catch {
     return null; // never break a revision over its paperwork
   }
+  // The revision card carries the same date the job does (§3 replaces the Sep
+  // 8 "revisions promise nothing" rule). Best-effort; never throws.
+  if (clock) await mirrorClockToTasks(opts.projectId);
 
   if (!worthAnalyzing) {
     // Already a work order (a short ask, or a portal pin) — its items are the
@@ -693,4 +708,355 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
       cutNames,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// THE REOPENED CLOCK — WRITE SIDE (A52, Jordan, Sep 25 2026).
+//
+// deliveryBoard.ts explains the rule and READS it; this is where it is
+// written. Three writers, one column set (targetAt/dueAt/dueSource/dueSetBy/
+// dueSetAt), each stamped once:
+//
+//   CLIENT_ROUND       createRevisionBrief — every client ask (comms,
+//                      portal, email) comes through it. Target 24, due 48
+//                      hours of weekday time after the ask (§3). A portal
+//                      ADDENDUM joins the round it adds to and keeps that
+//                      round's clock.
+//   REOPENED_SAME_DAY  stampReopenedClock — the office puts a finished job
+//                      back (queue-add of a new cut, Revisions on the pill, a
+//                      board move off Delivered), or it comes back for a
+//                      reshoot with no extra-shoot upload. Due 6 PM ET that
+//                      business day. The job has no client words to carry, so
+//                      the row is the OFFICE's: source "office", no items, no
+//                      model call, no revision issues — an office note is not
+//                      a client ask and must not count as one (the
+//                      photographer KPI excludes it; see kpi.ts).
+//   MANUAL             moveReopenedDue — a person moves it; who and when on
+//                      the row, what it was on the timeline.
+//
+// settleReopenedClocks closes them when the job settles (closeObsoleteTasks),
+// and reconcileReopenedClocks is the hourly net for every path that did not
+// come through a writer above.
+// ---------------------------------------------------------------------------
+
+type ClockFields = {
+  targetAt: Date | null;
+  dueAt: Date;
+  dueSource: DueSource;
+  dueSetBy: string | null;
+  dueSetAt: Date;
+};
+
+/** "hub" — the automatic clocks' author, so a MANUAL row always names a person. */
+const HUB = "hub";
+
+/** The clock a new client-ask brief is born with. Null only if the arithmetic
+ *  itself failed — the brief is still written, just undated. */
+async function clientRoundClockFor(opts: { sourceDetail?: string | null; pin?: BriefPin; skipAnalysis?: boolean }, at: Date): Promise<ClockFields | null> {
+  try {
+    // An addendum is more notes on the SAME round (clientDecisions: the first
+    // ask is `decision:<id>`, each addition `decision:<id>:addendum:<n>`).
+    // Another clock would make adding a note move the round's date.
+    if (opts.pin && /:addendum:/.test(opts.sourceDetail ?? "")) {
+      const first = await prisma.revisionBrief.findFirst({
+        where: { decisionId: opts.pin.decisionId, sourceDetail: `decision:${opts.pin.decisionId}`, dueAt: { not: null } },
+        select: { targetAt: true, dueAt: true, dueSource: true, dueSetBy: true, dueSetAt: true },
+      });
+      if (first?.dueAt) {
+        return {
+          targetAt: first.targetAt,
+          dueAt: first.dueAt,
+          dueSource: (first.dueSource as DueSource | null) ?? "CLIENT_ROUND",
+          dueSetBy: first.dueSetBy,
+          dueSetAt: first.dueSetAt ?? at,
+        };
+      }
+    }
+    const { clientRoundClock } = await import("@/lib/deliveryBoard");
+    const c = clientRoundClock(at);
+    return { targetAt: c.targetAt, dueAt: c.dueAt, dueSource: "CLIENT_ROUND", dueSetBy: HUB, dueSetAt: at };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The job's revision cards carry the job's reopened date. Only a card with NO
+ * date, or the date this job was last read at (`previous`), is written — a due
+ * somebody typed onto a card by hand is theirs. Never throws.
+ */
+export async function mirrorClockToTasks(projectId: string, opts: { previous?: Date | null } = {}): Promise<number> {
+  try {
+    const { reopenedClocksFor } = await import("@/lib/deliveryBoard");
+    const clock = (await reopenedClocksFor([projectId])).get(projectId);
+    if (!clock) return 0;
+    const r = await prisma.smartTask.updateMany({
+      where: {
+        projectId,
+        taskType: "revision",
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        // (No `NOT: { dueAt: clock.at }` guard: in SQL that is NULL for an
+        // undated card and would skip exactly the cards this is for.)
+        OR: [{ dueAt: null }, ...(opts.previous && opts.previous.getTime() !== clock.at.getTime() ? [{ dueAt: opts.previous }] : [])],
+      },
+      data: { dueAt: clock.at },
+    });
+    return r.count;
+  } catch {
+    return 0;
+  }
+}
+
+/** Is this job reopened work right now: delivered once, and owed again. */
+function isReopened(p: { status: string; deliveredAt: Date | null; revisionRequestedAt: Date | null }): boolean {
+  if (!p.deliveredAt) return false;
+  if (p.status === "CANCELLED" || p.status === "ON_HOLD") return false;
+  if (p.status !== "DELIVERED") return true;
+  return !!p.revisionRequestedAt && p.revisionRequestedAt > p.deliveredAt;
+}
+
+/** When the job last settled, per the marker (deliveryBoard.reopenSettledKey). */
+async function settledMarkerAt(projectId: string): Promise<Date | null> {
+  const { reopenSettledKey } = await import("@/lib/deliveryBoard");
+  const row = await prisma.appSetting.findUnique({ where: { key: reopenSettledKey(projectId) }, select: { value: true, updatedAt: true } }).catch(() => null);
+  if (!row) return null;
+  try {
+    const v = JSON.parse(row.value) as { at?: string };
+    const t = v.at ? new Date(v.at) : null;
+    if (t && Number.isFinite(t.getTime())) return t;
+  } catch { /* the row's own timestamp stands in */ }
+  return row.updatedAt;
+}
+
+export type StampResult = { stamped: boolean; reason: string; briefId?: string; dueAt?: Date };
+
+/**
+ * REOPENED WITHOUT A CLIENT ROUND → DUE THE SAME BUSINESS DAY. Called by the
+ * minters that put a finished job back (tasks.reflectRevisionInQc,
+ * tasks.addRoundToEditCard) and by the hourly net. A no-op unless the job is
+ * reopened AND nothing dates it yet — a client round, an extra shoot's own
+ * promise, an earlier stamp or a person's move all win, so calling it twice,
+ * or from two places at once, writes one row (advisory lock per job).
+ */
+export async function stampReopenedClock(
+  projectId: string,
+  opts: { at?: Date; why: string; by?: string | null },
+): Promise<StampResult> {
+  const at = opts.at ?? new Date();
+  try {
+    const p = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { status: true, deliveredAt: true, revisionRequestedAt: true, dueOverrideAt: true, overrideAt: true },
+    });
+    if (!p) return { stamped: false, reason: "no such job" };
+    if (!isReopened(p)) return { stamped: false, reason: "not reopened work" };
+    // The office dated THIS reopen by hand already — a due saved at or after
+    // the reopen (or one with no save time to judge by, which the reader lets
+    // stand too) — and its word stands. One saved before it was a date for
+    // earlier work, and the reopen gets its own clock.
+    //
+    // Two corrections (A52 review, Sep 25): the save time is the DUE's own
+    // (dueSetTimesFor), not overrideAt, which a priority bump moves; and it is
+    // compared with when the job was actually reopened, not with this call.
+    // The live minters (the Revisions pill, a Review Room bounce) call with
+    // `at` = now on a job that may have been reopened an hour earlier, so a
+    // date the office set in between read as "before the reopen" and was
+    // overruled by a same-day clock.
+    const { openReopenClocksFor, sameDayDue, dueSetTimesFor } = await import("@/lib/deliveryBoard");
+    if (p.dueOverrideAt) {
+      const setAt = (await dueSetTimesFor([projectId])).get(projectId) ?? p.overrideAt;
+      const settled = await settledMarkerAt(projectId);
+      const floor = new Date(Math.max(p.deliveredAt!.getTime(), settled?.getTime() ?? 0));
+      const reopenedAt = (await reopenMomentOf(projectId, p.deliveredAt!)) ?? floor;
+      const since = new Date(Math.min(reopenedAt.getTime(), at.getTime()));
+      if (!setAt || setAt.getTime() >= since.getTime()) return { stamped: false, reason: "the office set a date" };
+    }
+    return await prisma.$transaction(async (tx) => {
+      await lockAdvisory(tx, `reopen-clock:${projectId}`);
+      const open = (await openReopenClocksFor([projectId], tx)).get(projectId) ?? [];
+      if (open.length > 0) return { stamped: false, reason: "already dated" };
+      const dueAt = sameDayDue(at);
+      const why = opts.why.trim().replace(/\.$/, "") || "reopened";
+      const row = await tx.revisionBrief.create({
+        data: {
+          projectId,
+          // The clock starts at the reopen, so the row is dated there too (the
+          // net may write it up to an hour later) — the reader's settle and
+          // "office date saved for this reopen" tests compare against it.
+          createdAt: at,
+          source: "office",
+          sourceDetail: `reopen:${at.toISOString()}`,
+          // Said as the office's, in words a client-profile reader cannot
+          // mistake for the client's own.
+          originalText: `Reopened by the office, not a client request: ${why}.`,
+          headline: `Reopened work, due ${etDateTime(dueAt)}`,
+          analyzedAt: at,
+          targetAt: null,
+          dueAt,
+          dueSource: "REOPENED_SAME_DAY",
+          dueSetBy: opts.by?.trim() || HUB,
+          dueSetAt: at,
+        },
+        select: { id: true },
+      });
+      await tx.activity.create({
+        data: {
+          projectId,
+          type: "SYSTEM",
+          body: `Reopened work is due ${etDateTime(dueAt)}, the same business day (${why}). A person can move it on the job's edit page.`.slice(0, 1000),
+        },
+      });
+      return { stamped: true, reason: "stamped", briefId: row.id, dueAt };
+    }).then(async (r) => {
+      if (r.stamped) await mirrorClockToTasks(projectId);
+      return r;
+    });
+  } catch (e) {
+    return { stamped: false, reason: `could not stamp: ${(e as Error).message.slice(0, 120)}` };
+  }
+}
+
+/**
+ * THE JOB SETTLED → ITS CLOCKS ARE MET. Writes the settle marker the reader
+ * filters on, but only when there is an open brief clock to close (so the
+ * hourly delivered sweep does not rewrite it every pass) and only when the job
+ * really is settled right now. An extra shoot's promise is closed by its own
+ * approval, not by this. Never throws.
+ */
+export async function settleReopenedClocks(projectId: string, at: Date = new Date()): Promise<boolean> {
+  try {
+    const p = await prisma.project.findUnique({ where: { id: projectId }, select: { status: true, deliveredAt: true, revisionRequestedAt: true } });
+    if (!p) return false;
+    const terminal = p.status === "DELIVERED" || p.status === "CANCELLED";
+    const openAsk = p.status === "REVISION" || (!!p.revisionRequestedAt && (!p.deliveredAt || p.revisionRequestedAt > p.deliveredAt));
+    if (!terminal || openAsk) return false;
+    const { openReopenClocksFor, reopenSettledKey } = await import("@/lib/deliveryBoard");
+    const open = (await openReopenClocksFor([projectId])).get(projectId) ?? [];
+    if (!open.some((c) => c.briefId)) return false;
+    const key = reopenSettledKey(projectId);
+    const value = JSON.stringify({ at: at.toISOString(), status: p.status });
+    await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A PERSON MOVES THE REOPENED DUE (MANUAL). The clock the job is read by is
+ * moved in place — dueSource MANUAL, who and when on the row — and the
+ * timeline keeps what it was, so the history the row gives up is still on the
+ * job. With no clock at all (an extra shoot, or nothing) the office's own row
+ * is written. Reopened work only: the date of a job's first delivery is the
+ * office override's (the Editing Room's override dialog), not this.
+ */
+export async function moveReopenedDue(opts: { projectId: string; dueAt: Date; by: string; now?: Date }): Promise<{ ok: boolean; message: string }> {
+  const now = opts.now ?? new Date();
+  const by = opts.by.trim().slice(0, 120) || "The office";
+  if (!Number.isFinite(opts.dueAt.getTime())) return { ok: false, message: "That isn't a date." };
+  if (opts.dueAt.getTime() < now.getTime() - 5 * 60_000) return { ok: false, message: "Pick a time that hasn't passed yet." };
+  if (opts.dueAt.getTime() > now.getTime() + 60 * 86_400_000) return { ok: false, message: "That's more than 60 days out. Pick a nearer date." };
+  const p = await prisma.project.findUnique({ where: { id: opts.projectId }, select: { status: true, deliveredAt: true, revisionRequestedAt: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  if (!isReopened(p)) return { ok: false, message: "This job isn't reopened work, so its date is the delivery promise." };
+  const { openReopenClocksFor, resolveReopenedClock } = await import("@/lib/deliveryBoard");
+  let before: ReopenedClock | null = null;
+  await prisma.$transaction(async (tx) => {
+    await lockAdvisory(tx, `reopen-clock:${opts.projectId}`);
+    before = resolveReopenedClock((await openReopenClocksFor([opts.projectId], tx)).get(opts.projectId));
+    const moved = { targetAt: null, dueAt: opts.dueAt, dueSource: "MANUAL" as const, dueSetBy: by, dueSetAt: now };
+    if (before?.briefId) {
+      await tx.revisionBrief.update({ where: { id: before.briefId }, data: moved });
+    } else {
+      await tx.revisionBrief.create({
+        data: {
+          projectId: opts.projectId,
+          createdAt: now,
+          source: "office",
+          sourceDetail: `reopen-due:${now.toISOString()}`,
+          originalText: `Reopened by the office, not a client request: due date set by ${by}.`,
+          headline: `Reopened work, due ${etDateTime(opts.dueAt)}`,
+          analyzedAt: now,
+          ...moved,
+        },
+      });
+    }
+    const was: ReopenedClock | null = before;
+    await tx.activity.create({
+      data: {
+        projectId: opts.projectId,
+        type: "SYSTEM",
+        body: `Due date for the reopened work moved to ${etDateTime(opts.dueAt)} by ${by}${was ? ` (was ${etDateTime(was.at)}, ${was.words})` : " (it had none)"}.`.slice(0, 1000),
+      },
+    });
+  });
+  const was = before as ReopenedClock | null;
+  await mirrorClockToTasks(opts.projectId, { previous: was?.at ?? null });
+  return { ok: true, message: `Due ${etDateTime(opts.dueAt)}.` };
+}
+
+/** How long after a reopen the hourly net will still date it by itself. A
+ *  reopen older than this (history at deploy, or a sweep that was down) is
+ *  NOT back-dated into an instant "late": it waits on Kyle's exceptions for a
+ *  person to set it. */
+export const REOPEN_NET_WINDOW_MS = 26 * 3_600_000;
+
+/**
+ * THE HOURLY NET. Every path that reopens a job without going through a
+ * writer above — a board move off Delivered, a pill, a status sweep — lands
+ * here within the hour:
+ *   1. a settled job still carrying open clocks is settled (a delivery path
+ *      that closed tasks before it wrote the status);
+ *   2. a reopened job with no date is stamped same-day FROM THE MOMENT IT WAS
+ *      REOPENED, when that moment is on the record (the ask stamp, or the
+ *      board's "Moved from Delivered to …" line) and recent — never from now;
+ *   3. revision cards with no date take the job's.
+ * Read-heavy, write-light, idempotent. Never throws per job.
+ */
+export async function reconcileReopenedClocks(opts: { now?: Date } = {}): Promise<{ settled: number; stamped: number; undated: number; mirrored: number }> {
+  const now = opts.now ?? new Date();
+  const out = { settled: 0, stamped: 0, undated: 0, mirrored: 0 };
+  // 1. Settled jobs whose clocks nobody closed.
+  const toSettle = await prisma.revisionBrief.findMany({
+    where: { dueAt: { not: null }, createdAt: { gte: new Date(now.getTime() - 90 * 86_400_000) }, project: { status: { in: ["DELIVERED", "CANCELLED"] } } },
+    select: { projectId: true },
+    distinct: ["projectId"],
+    take: 200,
+  });
+  for (const r of toSettle) if (await settleReopenedClocks(r.projectId, now)) out.settled++;
+  // 2 + 3. Reopened work.
+  const { reopenedWork } = await import("@/lib/deliveryBoard");
+  for (const r of await reopenedWork({ now })) {
+    try {
+      if (r.due.undated) {
+        const at = await reopenMomentOf(r.projectId, r.deliveredAt);
+        if (!at || now.getTime() - at.getTime() > REOPEN_NET_WINDOW_MS) {
+          out.undated++;
+          continue;
+        }
+        const s = await stampReopenedClock(r.projectId, { at, why: "put back after delivery", by: HUB });
+        if (s.stamped) out.stamped++;
+        else out.undated++;
+      } else if (r.due.source !== "OFFICE_OVERRIDE") {
+        out.mirrored += await mirrorClockToTasks(r.projectId);
+      }
+    } catch { /* one job never stops the rest */ }
+  }
+  return out;
+}
+
+/** When this reopen happened, from the record — or null when nothing says. */
+async function reopenMomentOf(projectId: string, deliveredAt: Date): Promise<Date | null> {
+  const settled = await settledMarkerAt(projectId);
+  const floor = new Date(Math.max(deliveredAt.getTime(), settled?.getTime() ?? 0));
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { revisionRequestedAt: true } });
+  const asked = p?.revisionRequestedAt && p.revisionRequestedAt > floor ? p.revisionRequestedAt : null;
+  // moveProjectStatus's own timeline line (app/actions.ts): the board move.
+  const moved = await prisma.activity.findFirst({
+    where: { projectId, createdAt: { gt: floor }, body: { startsWith: "Moved from Delivered to " } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  const candidates = [asked, moved?.createdAt ?? null].filter((d): d is Date => !!d);
+  return candidates.length ? new Date(Math.min(...candidates.map((d) => d.getTime()))) : null;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   Upload,
@@ -21,10 +21,17 @@ import {
 import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
 import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
 import { photoRangeFor } from "@/lib/culling";
-import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback, setProjectSquareFeet } from "@/app/upload/actions";
+import {
+  markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback, setProjectSquareFeet,
+  reportMissedShot, planGapRecovery, closeProductionGap, recordFieldPreference, decideFieldReport,
+} from "@/app/upload/actions";
+import { saveUploadDraft, discardUploadDraft } from "@/app/upload/draftActions";
+import { createAutosaver, changedSubmittedFields, type AutosaveStatus, type DraftPayload, type SubmittedFields } from "@/lib/uploadDraft";
+import { handoffCategoryOf, receiptSentence, videoHalfDueAt, type HandoffCategory, type Tri } from "@/lib/handoff";
+import type { GapView } from "@/lib/productionGaps";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
-import { etDateTime } from "@/lib/datetime";
+import { etDate, etDateTime, etTime } from "@/lib/datetime";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { Markdown } from "@/components/ui/Markdown";
 import { Avatar } from "@/components/ui/Avatar";
@@ -39,8 +46,16 @@ import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYo
 // ---------------------------------------------------------------------------
 
 type AskAction =
-  | { kind: "submit"; force: boolean }
+  // scope: O05 — which half this submit hands off (absent = the whole page).
+  // baseHash: O04 — "submit mine anyway" after a conflict re-sends with the
+  // fingerprint the server just reported, so it lands on purpose.
+  | { kind: "submit"; force: boolean; scope?: HandoffCategory; baseHash?: string }
   | { kind: "toggle"; id: string; next: boolean; prevReason: string | undefined };
+
+/** §7.3: what the page knew about the files when it loaded, half by half. */
+type EvidenceView = { category: HandoffCategory; uploadReportedISO: string | null; filesDetected: Tri; fileCount: number | null; handoffISO: string | null };
+type FieldReportView = { id: string; body: string; status: string; scope: string; basis: "client_said" | "observation" | null; createdAtISO: string };
+const DRAFT_MIRROR_KEY = (projectId: string) => `upload-draft:${projectId}`;
 
 type Deliverable = {
   id: string;
@@ -49,6 +64,8 @@ type Deliverable = {
   status: DeliverableStatus;
   uploadedAt: string | null;
   notCompletedReason: string | null;
+  /** the office marked it "Not required" — owed by nobody (O05 review) */
+  waivedAt?: string | null;
 };
 
 const DETECTED: DeliverableStatus[] = ["UPLOADED", "IN_PROGRESS", "DONE"];
@@ -273,6 +290,43 @@ function newExtraKey(): string {
   return `x${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// O04: the autosave's state, said plainly beside the submit button.
+function draftChip(st: AutosaveStatus, canSave: boolean): React.ReactNode {
+  if (!canSave) return null;
+  if (st.kind === "saving") return <span className="ml-1.5 text-muted-2"> · Saving…</span>;
+  if (st.kind === "saved") return <span className="ml-1.5 text-success"> · Draft saved {etTime(st.atISO)}</span>;
+  if (st.kind === "failed") return <span className="ml-1.5 text-warning"> · Unable to save — retrying (kept on this device)</span>;
+  if (st.kind === "conflict") return <span className="ml-1.5 text-warning"> · Another copy was saved — choose one above</span>;
+  return null;
+}
+
+// §7.3: one plain line per half — ticked, found, handed off — each only if true.
+function evidenceText(e: EvidenceView, halfAt: { photos: string | null; video: string | null }): string {
+  const name = e.category === "photos" ? "Photos" : "Video";
+  const handed = (e.category === "photos" ? halfAt.photos : halfAt.video) ?? e.handoffISO;
+  return [
+    `${name}:`,
+    e.uploadReportedISO ? `ticked uploaded ${etDateTime(e.uploadReportedISO)}` : "not ticked yet",
+    "·",
+    e.filesDetected === "yes"
+      ? `Dropbox shows ${e.fileCount ?? "the"} file${e.fileCount === 1 ? "" : "s"}`
+      : e.filesDetected === "no"
+        ? "Dropbox shows no files yet"
+        : "Dropbox not confirmed",
+    "·",
+    handed ? `handed off ${etDateTime(handed)}` : "not handed off yet",
+  ].join(" ");
+}
+
+// O04: a draft's style and sections, read back through the same keys the
+// page composes with — anything the page does not know is dropped.
+function draftStyle(p: DraftPayload): VidStyle | null {
+  return p.vidStyle && p.vidStyle in VID_STYLES ? (p.vidStyle as VidStyle) : null;
+}
+function draftSections(p: DraftPayload): Record<VidKey, string> {
+  return Object.fromEntries(VID_SECTIONS.map((sec) => [sec.key, p.vidSections[sec.key] ?? ""])) as Record<VidKey, string>;
+}
+
 export function UploadPortal({
   project,
   deliverables,
@@ -285,6 +339,14 @@ export function UploadPortal({
   viewerIsOffice,
   payGateFromMs,
   sessionTopics,
+  draft,
+  draftRevision,
+  canSaveDraft,
+  baseHash: loadedBaseHash,
+  evidence,
+  gaps,
+  fieldReports,
+  nowMs,
 }: {
   project: {
     id: string;
@@ -300,6 +362,11 @@ export function UploadPortal({
     uploadedAt: string | null;
     /** the human submit (finalizeUpload) — null while only the sweep has stamped uploadedAt */
     debriefSubmittedAt: string | null;
+    /** O05: each half's own handoff — null on a page submitted in one go */
+    photosHandoffAt: string | null;
+    photosHandoffBy: string | null;
+    videoHandoffAt: string | null;
+    videoHandoffBy: string | null;
     editorPdfPath: string | null;
     clientName: string;
     /** the agent's Aryeo headshot (Client.avatarUrl); null = initials disc */
@@ -377,11 +444,31 @@ export function UploadPortal({
   /** DEBRIEF_PAY_GATE_FROM (lib/payroll is server-only, so the page passes
    *  the number): shoots from this instant on are done only on the SUBMIT */
   payGateFromMs: number;
+  /** O04: this viewer's unsent answers from an earlier visit (null = none worth restoring).
+   *  baseHash = the submitted-fields fingerprint the draft was typed against. */
+  draft: { revision: number; payload: DraftPayload; savedAtISO: string; baseHash?: string | null } | null;
+  /** O04: the open draft's revision, whatever it holds (null = no open draft) */
+  draftRevision: number | null;
+  /** O04: signed in and not previewing — drafts are keyed to a person */
+  canSaveDraft: boolean;
+  /** O04: the submitted-fields fingerprint this page loaded with */
+  baseHash: string;
+  /** §7.3: received vs found vs handed off, per half */
+  evidence: EvidenceView[];
+  /** §7.6: missing work on this job */
+  gaps: GapView[];
+  /** §7.8: client preferences reported from the field, and where each stands */
+  fieldReports: FieldReportView[];
+  /** the page's one clock reading (a render must not read the clock) */
+  nowMs: number;
 }) {
   const [uploaded, setUploaded] = useState<Record<string, boolean>>(
     Object.fromEntries(deliverables.map((d) => [d.id, initialUploaded(d)])),
   );
-  const [editorBrief, setEditorBrief] = useState(project.editorBrief ?? "");
+  // O04: a draft from an earlier visit seeds every answer below instead of
+  // the submitted values — it is what the person last typed.
+  const d0 = draft?.payload ?? null;
+  const [editorBrief, setEditorBrief] = useState(d0 ? d0.editorBrief : project.editorBrief ?? "");
   const [flags, setFlags] = useState(initialFlags);
   const [flagInput, setFlagInput] = useState("");
   const [isPending, startTransition] = useTransition();
@@ -406,7 +493,9 @@ export function UploadPortal({
   // After a submit the whole checklist collapses to the confirmation — the page
   // is ~1,300px of answered steps, and scrolling back into it read as "did that
   // work?" (Jordan, Sep 3). Reopening is one tap for a correction.
-  const [reopened, setReopened] = useState(false);
+  // A restored draft on a submitted page opens the checklist: the unsent
+  // answers are the reason the person came back.
+  const [reopened, setReopened] = useState(!!d0);
   const [pdfPath, setPdfPath] = useState<string | null>(project.editorPdfPath);
   // "Last edited by" on the read-back card — the server's answer until a
   // re-submit lands on this page, then "you" without a reload.
@@ -421,16 +510,17 @@ export function UploadPortal({
   // --- Debrief state (prefilled from prior submits — re-opening never re-asks). ---
   // The SOP §27 pre-upload checklist: four groups, all four required.
   const confirmedBefore = !!project.cullingConfirmedAt;
-  const [checks, setChecks] = useState({ coverage: confirmedBefore, culling: confirmedBefore, quality: confirmedBefore, count: confirmedBefore });
+  const [checks, setChecks] = useState(d0 ? d0.checks : { coverage: confirmedBefore, culling: confirmedBefore, quality: confirmedBefore, count: confirmedBefore });
   const cullOk = checks.coverage && checks.culling && checks.quality && checks.count;
   const setCheck = (k: keyof typeof checks) => (v: boolean) => setChecks((c) => ({ ...c, [k]: v }));
   const priorNothing = project.removalNotes === NOTHING_SENTINEL;
-  const [removal, setRemoval] = useState(priorNothing ? "" : project.removalNotes ?? "");
-  const [nothingToRemove, setNothingToRemove] = useState(priorNothing);
+  const [removal, setRemoval] = useState(d0 ? d0.removal : priorNothing ? "" : project.removalNotes ?? "");
+  const [nothingToRemove, setNothingToRemove] = useState(d0 ? d0.nothingToRemove : priorNothing);
   const priorStandardOrder =
     project.shotOrderNotes === FRONT_TO_BACK_SENTINEL || project.shotOrderNotes === INTERIOR_EXTERIOR_SENTINEL;
   const [orderChoice, setOrderChoice] = useState<"front-to-back" | "interior-exterior" | "out-of-order" | null>(
-    !project.shotOrderNotes ? null
+    d0 ? d0.orderChoice
+      : !project.shotOrderNotes ? null
       : project.shotOrderNotes === FRONT_TO_BACK_SENTINEL ? "front-to-back"
       : project.shotOrderNotes === INTERIOR_EXTERIOR_SENTINEL ? "interior-exterior"
       : "out-of-order",
@@ -438,11 +528,11 @@ export function UploadPortal({
   // Strip the storage prefix on rehydrate — otherwise every re-submit would
   // re-wrap it ("Out of order — Out of order — …") — same pattern as scriptNote.
   const [orderNotes, setOrderNotes] = useState(
-    priorStandardOrder ? "" : (project.shotOrderNotes ?? "").replace(/^Out of order — /, ""),
+    d0 ? d0.orderNotes : priorStandardOrder ? "" : (project.shotOrderNotes ?? "").replace(/^Out of order — /, ""),
   );
   const parsedVid = parseVideoInstructions(project.videoInstructions);
-  const [vidStyle, setVidStyle] = useState<VidStyle | null>(parsedVid.style);
-  const [vidSections, setVidSections] = useState<Record<VidKey, string>>(parsedVid.sections);
+  const [vidStyle, setVidStyle] = useState<VidStyle | null>(d0 ? draftStyle(d0) : parsedVid.style);
+  const [vidSections, setVidSections] = useState<Record<VidKey, string>>(d0 ? draftSections(d0) : parsedVid.sections);
   // A job that already carries a brief (legacy free text, or a prior submit)
   // is never retro-blocked for the new required fields — same rule as the
   // server's first-finalize-only gates.
@@ -453,7 +543,7 @@ export function UploadPortal({
   // this number (Jordan, Sep 1) — it's the only place the real batch size is
   // known, since the order carries one line item.
   const [videosFilmed, setVideosFilmed] = useState<string>(
-    project.videosFilmed != null ? String(project.videosFilmed) : "",
+    d0 ? d0.videosFilmed : project.videosFilmed != null ? String(project.videosFilmed) : "",
   );
   // F12: the topics this session is for. Pre-ticked ONLY where somebody has
   // already confirmed one — never a helpful default, because a pre-ticked box
@@ -472,11 +562,12 @@ export function UploadPortal({
   // this job: its ticks come back ticked, so re-sending the page unchanged is
   // the same report rather than a different answer.
   const pendingTicks = sessionTopics?.pending?.topicIds ?? [];
-  const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(
-    () => (sessionTopics?.topics ?? [])
-      .filter((t) => recordedHere(t) || (pendingTicks.includes(t.topicId) && !confirmedElsewhere(t)))
-      .map((t) => t.topicId),
-  );
+  // A draft's ticks come back too — but only for topics this session can
+  // still tick, and never un-ticking one already recorded here.
+  const ticksFrom = (ids: string[]) => (sessionTopics?.topics ?? [])
+    .filter((t) => recordedHere(t) || (ids.includes(t.topicId) && !confirmedElsewhere(t)))
+    .map((t) => t.topicId);
+  const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(() => ticksFrom(d0 ? d0.filmedTopicIds : pendingTicks));
   const hasTopics = (sessionTopics?.topics.length ?? 0) > 0;
   const toggleTopic = (id: string) => {
     if (sessionTopics?.topics.some((t) => t.topicId === id && (confirmedElsewhere(t) || recordedHere(t)))) return;
@@ -486,11 +577,15 @@ export function UploadPortal({
   // topics filmed on site that were not on the list. Both ride the same report
   // as the ticks, so they land — or wait and retry — together.
   const [topicNotes, setTopicNotes] = useState<Record<string, string>>(
-    () => Object.fromEntries((sessionTopics?.topics ?? []).filter((t) => t.note?.trim()).map((t) => [t.topicId, t.note as string])),
+    () => d0
+      ? { ...d0.topicNotes }
+      : Object.fromEntries((sessionTopics?.topics ?? []).filter((t) => t.note?.trim()).map((t) => [t.topicId, t.note as string])),
   );
   const [notesOpen, setNotesOpen] = useState<string[]>(() => Object.keys(topicNotes));
   const [extraRows, setExtraRows] = useState<{ key: string; title: string; note: string }[]>(
-    () => (sessionTopics?.pending?.extras ?? []).map((x, i) => ({ key: `pending-${i}`, title: x.title, note: x.note })),
+    () => d0
+      ? d0.extraRows.map((x) => ({ key: newExtraKey(), title: x.title, note: x.note }))
+      : (sessionTopics?.pending?.extras ?? []).map((x, i) => ({ key: `pending-${i}`, title: x.title, note: x.note })),
   );
   const liveExtras = extraRows
     .map((x) => ({ ...x, title: x.title.replace(/\s+/g, " ").trim() }))
@@ -557,14 +652,16 @@ export function UploadPortal({
       (!fullFields || (!!vidSections.vision.trim() && effectiveStyle !== null)) &&
       (!notesRequired || !!vidSections.editNotes.trim())));
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
-    project.scriptConfirmedAt
+    d0 ? d0.scriptChoice
+      : project.scriptConfirmedAt
       ? project.scriptConfirmNote?.startsWith("Edited") ? "edited" : "as-written"
       : null,
   );
-  const [scriptText, setScriptText] = useState(script?.body ?? "");
+  const [scriptText, setScriptText] = useState(d0 && (d0.scriptChoice === "edited" || !script) && d0.scriptText ? d0.scriptText : script?.body ?? "");
   // Re-hydrate the "what changed" detail so a re-submit can't wipe it.
   const [scriptNote, setScriptNote] = useState(
-    project.scriptConfirmNote?.startsWith("Edited on site — ")
+    d0 ? d0.scriptNote
+      : project.scriptConfirmNote?.startsWith("Edited on site — ")
       ? project.scriptConfirmNote.slice("Edited on site — ".length)
       : "",
   );
@@ -589,13 +686,190 @@ export function UploadPortal({
   // yes button dispatches from the CURRENT render instead.
   const [ask, setAsk] = useState<{ body: string; yes: string; action: AskAction } | null>(null);
 
+  // ---- O04: THE DRAFT AUTOSAVE -------------------------------------------
+  // Every answer below is saved as the person types (1.2 s after they pause,
+  // never more than 10 s behind), to their own server-side draft. Saving is
+  // NOT submitting: it writes one UploadDraft row and nothing else, so it can
+  // never finalize the job, notify an editor or put the shoot on payroll.
+  // While the server cannot be reached the answers are mirrored on this device
+  // and retried; a copy saved elsewhere since this page loaded is a conflict
+  // the person resolves, never a silent overwrite.
+  const draftPayload: DraftPayload = useMemo(
+    () => ({
+      editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes,
+      vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes,
+      extraRows: extraRows.map((x) => ({ title: x.title, note: x.note })),
+      scriptChoice, scriptText: scriptChoice === "edited" || !script ? scriptText : "", scriptNote,
+    }),
+    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script],
+  );
+  const payloadJson = JSON.stringify(draftPayload);
+  const payloadRef = useRef(draftPayload);
+  const lastSavedJson = useRef(payloadJson);
+  const revRef = useRef<number | null>(draftRevision);
+  // O04 (review, Sep 25): a restored draft keeps the fingerprint IT was typed
+  // against — for its autosaves and its submit — so a job that moved after it
+  // was saved is refused and named at submit, never overwritten by it. Taking
+  // this page's fresh fingerprint instead is what let a stale draft through.
+  const draftBase = draft?.baseHash || null;
+  const baseHashRef = useRef(draftBase ?? loadedBaseHash);
+  /** When the answers the fingerprint describes were read — a change is only
+   *  pinned on a person whose timeline line is newer. */
+  const baseAtRef = useRef(draft && draftBase ? draft.savedAtISO : new Date(nowMs).toISOString());
+  const [movedSinceDraft, setMovedSinceDraft] = useState(!!draftBase && draftBase !== loadedBaseHash);
+  // O04: the fingerprint the next re-submit carries — the page's (or the
+  // restored draft's), then each submit's own answer.
+  const [submitHash, setSubmitHash] = useState(draftBase ?? loadedBaseHash);
+  const saverRef = useRef<ReturnType<typeof createAutosaver> | null>(null);
+  const [saveStatus, setSaveStatus] = useState<AutosaveStatus>({ kind: "idle" });
+  const [draftConflict, setDraftConflict] = useState<{ revision: number; payload: DraftPayload; savedAtISO: string; by: string | null; submitted: boolean } | null>(null);
+  const [restored, setRestored] = useState<{ atISO: string; from: "server" | "device" } | null>(
+    draft ? { atISO: draft.savedAtISO, from: "server" } : null,
+  );
+  const mirrorKey = DRAFT_MIRROR_KEY(project.id);
+  const writeMirror = (json: string) => {
+    try { window.localStorage.setItem(mirrorKey, JSON.stringify({ savedAtISO: new Date().toISOString(), baseHash: baseHashRef.current, baseAtISO: baseAtRef.current, payload: JSON.parse(json) })); } catch { /* private window */ }
+  };
+  const clearMirror = () => {
+    try { window.localStorage.removeItem(mirrorKey); } catch { /* private window */ }
+  };
+  /** Put a draft's answers back on the page (the conflict's "use that copy", a device copy). */
+  function applyDraft(p: DraftPayload) {
+    setEditorBrief(p.editorBrief);
+    setChecks(p.checks);
+    setRemoval(p.removal);
+    setNothingToRemove(p.nothingToRemove);
+    setOrderChoice(p.orderChoice);
+    setOrderNotes(p.orderNotes);
+    setVidStyle(draftStyle(p));
+    setVidSections(draftSections(p));
+    setVideosFilmed(p.videosFilmed);
+    setFilmedTopicIds(ticksFrom(p.filmedTopicIds));
+    setTopicNotes({ ...p.topicNotes });
+    setExtraRows(p.extraRows.map((x) => ({ key: newExtraKey(), title: x.title, note: x.note })));
+    setScriptChoice(p.scriptChoice);
+    if (p.scriptChoice === "edited" || !script) setScriptText(p.scriptText || script?.body || "");
+    setScriptNote(p.scriptNote);
+  }
+  useEffect(() => { payloadRef.current = draftPayload; }, [draftPayload]);
+  useEffect(() => {
+    if (!canSaveDraft) return;
+    const saver = createAutosaver({
+      onStatus: setSaveStatus,
+      save: async () => {
+        const payload = payloadRef.current;
+        const json = JSON.stringify(payload);
+        try {
+          const r = await saveUploadDraft(project.id, { revision: revRef.current, baseHash: baseHashRef.current, payload });
+          if (r.ok) {
+            revRef.current = r.revision;
+            lastSavedJson.current = json;
+            clearMirror();
+            return { ok: true, savedAtISO: r.savedAtISO };
+          }
+          if ("conflict" in r) {
+            writeMirror(json);
+            setDraftConflict(r.conflict);
+            return { ok: false, conflict: true };
+          }
+          writeMirror(json);
+          return { ok: false, message: r.message };
+        } catch {
+          writeMirror(json);
+          return { ok: false, message: "Unable to save" };
+        }
+      },
+    });
+    saverRef.current = saver;
+    // A copy kept on THIS device while the server was unreachable, newer than
+    // the server's: it is what the person last typed, so it wins the restore
+    // and is pushed to the server by the change below. Read after mount (the
+    // server render has no device storage), on the next tick.
+    const restoreTimer = setTimeout(() => {
+      try {
+        const raw = window.localStorage.getItem(mirrorKey);
+        if (!raw) return;
+        const m = JSON.parse(raw) as { savedAtISO?: string; baseHash?: string; baseAtISO?: string; payload?: DraftPayload };
+        // A copy older than the whole wrap-up's submit is not unsent any more:
+        // that submit (from here or another device) is what went in. Dropped,
+        // not restored over it (review, Sep 25). A copy from before one HALF
+        // may still hold the other half's unsent answers, so it is kept — its
+        // fingerprint below makes the submit show what changed since.
+        if (project.debriefSubmittedAt && (m.savedAtISO ?? "") < project.debriefSubmittedAt) { clearMirror(); return; }
+        const newer = m?.payload && (!draft || (m.savedAtISO ?? "") > draft.savedAtISO);
+        if (newer && m.payload) {
+          applyDraft(m.payload);
+          // The fingerprint the copy was typed against, when it carries one.
+          if (m.baseHash) {
+            baseHashRef.current = m.baseHash;
+            setSubmitHash(m.baseHash);
+            baseAtRef.current = m.baseAtISO ?? m.savedAtISO ?? baseAtRef.current;
+            setMovedSinceDraft(m.baseHash !== loadedBaseHash);
+          }
+          setRestored({ atISO: m.savedAtISO ?? new Date().toISOString(), from: "device" });
+          setReopened(true);
+        }
+      } catch { /* unreadable mirror — the server copy stands */ }
+    }, 0);
+    const onHide = () => { if (document.visibilityState === "hidden") void saver.flush(); };
+    const onOnline = () => { void saver.flush(); };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("online", onOnline);
+    return () => {
+      clearTimeout(restoreTimer);
+      saver.stop();
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("online", onOnline);
+    };
+    // Built once per page: its save reads the latest answers through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canSaveDraft, project.id]);
+  useEffect(() => {
+    if (!canSaveDraft || !saverRef.current) return;
+    if (payloadJson === lastSavedJson.current) return;
+    saverRef.current.change();
+  }, [payloadJson, canSaveDraft]);
+
+  function keepMineAfterConflict() {
+    if (!draftConflict) return;
+    revRef.current = draftConflict.submitted ? null : draftConflict.revision;
+    setDraftConflict(null);
+    saverRef.current?.resume();
+    saverRef.current?.change();
+  }
+  function takeTheirsAfterConflict() {
+    if (!draftConflict) return;
+    revRef.current = draftConflict.revision;
+    lastSavedJson.current = JSON.stringify(draftConflict.payload);
+    applyDraft(draftConflict.payload);
+    clearMirror();
+    setDraftConflict(null);
+    saverRef.current?.resume();
+  }
+  function discardDraft() {
+    saverRef.current?.stop();
+    clearMirror();
+    startTransition(async () => {
+      await discardUploadDraft(project.id).catch(() => null);
+      window.location.reload();
+    });
+  }
+
+  // O05: each half's own handoff, as this page knows it (updated by a submit).
+  const [halfAt, setHalfAt] = useState<{ photos: string | null; video: string | null }>({
+    photos: project.photosHandoffAt,
+    video: project.videoHandoffAt,
+  });
+  // §7.3: the person pressed "Submit anyway" past an empty-folder warning.
+  const [forcedSubmit, setForcedSubmit] = useState(false);
+
   const addr = [project.addressLine, project.city, project.state, project.zip].filter(Boolean).join(", ");
   const total = deliverables.length;
   const doneCount = Object.values(uploaded).filter(Boolean).length;
   const notDoneCount = deliverables.filter((d) => !uploaded[d.id] && notDone[d.id]).length;
   // "Remaining" = truly unanswered — a "couldn't complete + reason" item is
   // accounted for, so it doesn't nag on submit.
-  const remaining = deliverables.filter((d) => !uploaded[d.id] && !notDone[d.id]);
+  const remaining = deliverables.filter((d) => !uploaded[d.id] && !notDone[d.id] && !d.waivedAt);
 
   function toggle(id: string) {
     const next = !uploaded[id];
@@ -680,58 +954,76 @@ export function UploadPortal({
   // excuses its whole category (the server mirrors this in finalizeUpload) —
   // a reel the agent canceled on site must not demand fabricated video
   // instructions or a script attestation (review HIGH).
+  // An item the office marked "Not required" is owed by nobody either (O05
+  // review): the page used to keep telling the photographer the reel was due
+  // by 8 AM, and asking for its answers, after the office waived it.
   const liveType = (types: string[]) =>
-    deliverables.some((d) => types.includes(d.type) && (uploaded[d.id] || !notDone[d.id]));
+    deliverables.some((d) => types.includes(d.type) && !d.waivedAt && (uploaded[d.id] || !notDone[d.id]));
   const photosLive = policy.photosOrdered && liveType(["PHOTOS", "DRONE", "TWILIGHT"]);
   const videoLive = policy.videoOrdered && liveType(["VIDEO", "SOCIAL_REEL"]);
 
-  // What still blocks the submit — same rules the server enforces.
-  function missingItems(): string[] {
+  // O05: photos and video are handed off separately when a job owes both and
+  // the whole wrap-up is not in yet. A job with one half keeps the one button.
+  const splitMode = photosLive && videoLive && !done;
+
+  // What still blocks the submit — same rules the server enforces. `scope`
+  // narrows it to one half (O05); absent = the whole page, as before.
+  function missingItems(scope?: HandoffCategory): string[] {
     const missing: string[] = [];
-    if (photosLive && !cullOk) missing.push("the pre-upload checklist (all four boxes)");
-    if (photosLive && orderChoice === null) missing.push("answer the shot order");
-    if (photosLive && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
-    if (photosLive && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (videoLive && !hadPriorBrief) {
+    const pOn = photosLive && scope !== "video";
+    const vOn = videoLive && scope !== "photos";
+    if (pOn && !cullOk) missing.push("the pre-upload checklist (all four boxes)");
+    if (pOn && orderChoice === null) missing.push("answer the shot order");
+    if (pOn && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
+    if (pOn && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
+    if (vOn && !hadPriorBrief) {
       if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
       if (fullFields && !vidSections.vision.trim()) missing.push("the vision for the edit");
       if (fullFields && effectiveStyle === null) missing.push("pick an edit style");
       if (notesRequired && !vidSections.editNotes.trim()) missing.push("your editing instructions for the editor");
     }
-    if (videoLive && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
+    if (vOn && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
       missing.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
     }
-    if (videoLive && script && !scriptChoice) missing.push("confirm the script");
-    if (videoLive && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
+    if (vOn && script && !scriptChoice) missing.push("confirm the script");
+    if (vOn && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
     // Premium packages: the script can NOT be left blank (Jordan, Sep 1) —
     // when Studio has none, the photographer types what was delivered.
-    if (videoLive && spec.requireScript && !script && !hadPriorBrief && !scriptText.trim()) {
+    if (vOn && spec.requireScript && !script && !hadPriorBrief && !scriptText.trim()) {
       missing.push("the script — this premium package can't be submitted without it");
     }
     return missing;
   }
 
-  function finalize() {
-    const missing = missingItems();
+  function finalize(scope?: HandoffCategory) {
+    const missing = missingItems(scope);
     if (missing.length > 0) {
-      setErr(`Not done yet — ${missing.join(" · ")}. The job isn't finished until every step is answered.`);
+      setErr(`Not done yet — ${missing.join(" · ")}. ${scope ? `The ${scope} can't be submitted until every step for them is answered.` : "The job isn't finished until every step is answered."}`);
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
-    if (remaining.length > 0) {
+    const rem = scope ? remaining.filter((d) => handoffCategoryOf(d.type) === scope) : remaining;
+    if (rem.length > 0) {
       setAsk({
         body:
-          `${remaining.length} item${remaining.length === 1 ? " isn’t" : "s aren’t"} checked off yet ` +
-          `(${remaining.map((d) => DELIVERABLE_META[d.type].label).join(", ")}). Submit to editors anyway?`,
+          `${rem.length} item${rem.length === 1 ? " isn’t" : "s aren’t"} checked off yet ` +
+          `(${rem.map((d) => DELIVERABLE_META[d.type].label).join(", ")}). Submit to editors anyway?`,
         yes: "Submit anyway",
-        action: { kind: "submit", force: false },
+        action: { kind: "submit", force: false, scope },
       });
       return;
     }
-    runSubmit(false);
+    runSubmit(false, scope);
   }
 
-  function runSubmit(force: boolean) {
+  /** What the page showed as submitted when it loaded — what a conflict is described against. */
+  const loadedFields: SubmittedFields = {
+    editorBrief: project.editorBrief, videoInstructions: project.videoInstructions, removalNotes: project.removalNotes,
+    shotOrderNotes: project.shotOrderNotes, reelScript: script?.body ?? null, scriptConfirmNote: project.scriptConfirmNote,
+    videosFilmed: project.videosFilmed,
+  };
+
+  function runSubmit(force: boolean, scope?: HandoffCategory, baseHashOverride?: string) {
     setErr(null);
     const payload = {
       editorBrief,
@@ -763,30 +1055,68 @@ export function UploadPortal({
       introScript: spec.requireIntro ? vidSections.intro.trim() || null : undefined,
       providedScript: spec.requireScript && !script ? scriptText.trim() || null : undefined,
       ...(force ? { force: true } : {}),
+      ...(scope ? { scope } : {}),
+      baseHash: baseHashOverride ?? submitHash,
+      baseAtISO: baseAtRef.current,
+    };
+    // A submit is not a draft save: hold the autosave while it runs, so the
+    // answers being submitted are not written back as an unsent draft.
+    saverRef.current?.stop();
+    const submittedJson = payloadJson;
+    const resumeAutosave = () => {
+      saverRef.current?.resume();
+      if (payloadRef.current && JSON.stringify(payloadRef.current) !== lastSavedJson.current) saverRef.current?.change();
     };
     startTransition(async () => {
       try {
         const res = await finalizeUpload(project.id, payload);
-        if (res.blocked) { setErr(res.blocked); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+        if (res.blocked) { resumeAutosave(); setErr(res.blocked); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
         if (res.needsConfirm) {
+          resumeAutosave();
           // Ask IN PAGE and re-submit with force on "yes" — never a native
           // dialog here: this point is past an await, where mobile browsers
           // silently swallow confirm() (Harrison's stuck "hold on").
           setAsk({
             body: res.warning ?? "Some ordered items look missing. Submit anyway?",
             yes: "Submit anyway",
-            action: { kind: "submit", force: true },
+            action: { kind: "submit", force: true, scope },
+          });
+          return;
+        }
+        if (res.conflict) {
+          resumeAutosave();
+          // O04: somebody changed the submitted answers since this page loaded.
+          const changed = changedSubmittedFields(loadedFields, res.conflict.current);
+          const who = res.conflict.by ?? "someone";
+          const when = res.conflict.atISO ? ` (${etDateTime(res.conflict.atISO)})` : "";
+          setAsk({
+            body: `Since this page opened, ${who} changed ${changed.length ? changed.join(", ") : "the submitted notes"}${when}. Submitting now replaces their version with what is on this page.`,
+            yes: "Submit mine anyway",
+            action: { kind: "submit", force, scope, baseHash: res.conflict.currentHash },
           });
           return;
         }
         if (res.pdfPath) setPdfPath(res.pdfPath);
+        if (res.baseHash) { setSubmitHash(res.baseHash); baseHashRef.current = res.baseHash; baseAtRef.current = new Date().toISOString(); setMovedSinceDraft(false); }
         setTopicsPending(res.topicsPending?.message ?? null);
-        if (done) setLastEdited({ by: "you", atISO: new Date().toISOString() });
-        setDone(true);
-        setReopened(false); // collapse back to the confirmation after a re-submit
+        setForcedSubmit(force);
+        const whole = res.handoff ? res.handoff.wholeDone : true;
+        if (res.handoff) setHalfAt({ photos: res.handoff.photosAtISO, video: res.handoff.videoAtISO });
+        if (whole) {
+          // The draft is spent: the server consumed it with this submit.
+          revRef.current = null;
+          lastSavedJson.current = submittedJson;
+          clearMirror();
+          setRestored(null);
+          if (done) setLastEdited({ by: "you", atISO: new Date().toISOString() });
+          setDone(true);
+          setReopened(false); // collapse back to the confirmation after a re-submit
+        }
+        resumeAutosave();
         window.scrollTo({ top: 0, behavior: "smooth" });
       } catch {
-        setErr("Couldn’t submit — the editors were NOT notified. Please try again.");
+        resumeAutosave();
+        setErr("Couldn’t submit — the editors were NOT notified. Your answers are kept on this page. Please try again.");
       }
     });
   }
@@ -796,6 +1126,10 @@ export function UploadPortal({
   // wins, and a legacy shoot keeps its briefed ceiling.
   const liveRange = policy.rangeMode === "sop" ? photoRangeFor(sqftSaved) : policy.range;
   const collapsed = done && !reopened;
+  // §7.3: say only what is true about the files. A tick is the photographer's
+  // word; Dropbox showing the files is evidence; an unreadable folder is
+  // neither, and "Submit anyway" past an empty-folder warning is not proof.
+  const filesSentence = receiptSentence(evidence, forcedSubmit);
   // Where the size came from, said plainly: the ordered band is a range the
   // client picked, not a measurement, so the page never prints it as one.
   const sizeNote = bandText
@@ -857,6 +1191,84 @@ export function UploadPortal({
         {project.packageName && <p className="mt-0.5 text-[13px] text-muted-2">{project.packageName}</p>}
       </div>
 
+      {/* O04: where the unsent answers stand. A restored draft says so and
+          can be thrown away; a copy saved elsewhere is a question, never a
+          silent overwrite. */}
+      {restored && !draftConflict && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-brand/30 bg-brand-soft/40 px-3.5 py-2.5 text-sm">
+          <NotebookPen className="size-4 shrink-0 text-brand" />
+          <span className="flex-1">
+            {restored.from === "device"
+              ? `Restored answers kept on this device (${etDateTime(restored.atISO)}) — they weren't submitted yet.`
+              : `Restored answers you hadn't submitted (saved ${etDateTime(restored.atISO)}).`}
+            {movedSinceDraft && " The submitted answers changed after these were saved, so submitting will show you what changed before it replaces anything."}
+          </span>
+          <button onClick={discardDraft} disabled={isPending} className="text-xs font-medium text-muted underline hover:text-foreground disabled:opacity-50">
+            Discard
+          </button>
+        </div>
+      )}
+      {draftConflict && (
+        <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm">
+          <p className="flex items-start gap-2 text-foreground/90">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+            <span>
+              {draftConflict.submitted
+                ? `These answers were submitted from another tab or device (${etDateTime(draftConflict.savedAtISO)}). What you typed here is still on this page.`
+                : `Another copy of your unsent answers was saved ${etDateTime(draftConflict.savedAtISO)}${draftConflict.by ? ` by ${draftConflict.by}` : ""}, probably in another tab or on another device. Which one should be kept?`}
+            </span>
+          </p>
+          <div className="mt-2.5 flex flex-wrap gap-2">
+            {draftConflict.submitted ? (
+              <>
+                <button onClick={() => window.location.reload()} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
+                  Reload to see what went in
+                </button>
+                <button onClick={keepMineAfterConflict} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                  Keep editing here
+                </button>
+              </>
+            ) : (
+              <>
+                <button onClick={keepMineAfterConflict} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
+                  Keep this page&rsquo;s answers
+                </button>
+                <button onClick={takeTheirsAfterConflict} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                  Load the other copy
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* O05: one half is in and the other is still owed. The video half has
+          its own deadline (Jordan, Sep 25): 8:00 AM ET the next day. */}
+      {!done && halfAt.photos && !halfAt.video && videoLive && (() => {
+        const due = videoHalfDueAt(new Date(halfAt.photos));
+        const past = due.getTime() < nowMs;
+        return (
+          <div className={cn("rounded-2xl border p-4", past ? "border-danger/40 bg-danger/10" : "border-warning/40 bg-warning/10")}>
+            <div className="flex items-center gap-2 font-semibold">
+              <CheckCircle2 className="size-5 text-success" /> Photos submitted {etDateTime(halfAt.photos)}. The video is still owed.
+            </div>
+            <p className="mt-1 text-sm text-foreground/85">
+              {past
+                ? `It was due by 8:00 AM ${etDate(due)}. Upload the video and submit the video half now. A late video counts as a late upload on your score.`
+                : `Upload the video to Dropbox and submit the video half before 8:00 AM ${etDate(due)}. A video that comes in after that counts as a late upload on your score.`}
+            </p>
+          </div>
+        );
+      })()}
+      {!done && halfAt.video && !halfAt.photos && photosLive && (
+        <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+          <div className="flex items-center gap-2 font-semibold">
+            <CheckCircle2 className="size-5 text-success" /> Video submitted {etDateTime(halfAt.video)}. The photos are still owed.
+          </div>
+          <p className="mt-1 text-sm text-foreground/85">Upload the photos and submit the photo half to finish this shoot.</p>
+        </div>
+      )}
+
       {/* Success banner + process feedback */}
       {done && (
         <div className="rounded-2xl border border-success/30 bg-success-soft/50 p-4">
@@ -866,14 +1278,13 @@ export function UploadPortal({
           </div>
           {viewerIsOffice ? (
             <p className="mt-1 text-sm text-foreground/80">
-              The notes are on the editor brief and the editors know the files are in Dropbox. Everything
-              submitted reads back below; reopen it to make a correction.
+              The notes are on the editor brief. {filesSentence} Everything submitted reads back below; reopen
+              it to make a correction.
             </p>
           ) : (
             <p className="mt-1 text-sm text-foreground/80">
-              Nothing else is needed from you on this shoot. Your notes are on the editor brief, the editors
-              know the files are in Dropbox, and <strong>this shoot is on your payroll</strong> — you&rsquo;ll
-              see it in My Pay.
+              Nothing else is needed from you on this shoot. Your notes are on the editor brief.{" "}
+              {filesSentence} <strong>This shoot is on your payroll</strong> — you&rsquo;ll see it in My Pay.
             </p>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -1005,6 +1416,18 @@ export function UploadPortal({
             addOns={submission.addOns}
             files={submission.files}
             flags={flags}
+            halves={[
+              ...(halfAt.photos ? [{ label: "Photos", atISO: halfAt.photos, by: project.photosHandoffBy }] : []),
+              ...(halfAt.video
+                ? [{
+                    label: "Video",
+                    atISO: halfAt.video,
+                    by: project.videoHandoffBy,
+                    late: !!halfAt.photos && Date.parse(halfAt.video) > Date.parse(halfAt.photos) &&
+                      Date.parse(halfAt.video) > videoHalfDueAt(new Date(halfAt.photos)).getTime(),
+                  }]
+                : []),
+            ]}
           />
           <button
             onClick={() => { setReopened(true); }}
@@ -1027,6 +1450,13 @@ export function UploadPortal({
               </>
             )}
           </button>
+          {/* §7.6 / §7.8 stay reachable after the submit: a missed shot or a
+              client request often comes up once the page is done, and the
+              office plans recoveries from here. */}
+          <section className="rounded-2xl border bg-surface p-4 sm:p-5">
+            <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
+            <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
+          </section>
         </>
       ) : (
       <>
@@ -1038,6 +1468,11 @@ export function UploadPortal({
         subtitle="Raw files in the Raw folders · culled extras in Backup Photos."
       >
         {foldersSlot}
+        {evidence.length > 0 && (
+          <ul className="mt-2.5 space-y-0.5 text-xs text-muted">
+            {evidence.map((e) => <li key={e.category}>{evidenceText(e, halfAt)}</li>)}
+          </ul>
+        )}
       </StepCard>
 
       {/* ---- STEP: The photo standard (the SOP, enforced) ---- */}
@@ -1745,6 +2180,9 @@ export function UploadPortal({
             </ul>
           )}
         </div>
+
+        <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
+        <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
       </StepCard>
       </>
       )}
@@ -1767,7 +2205,7 @@ export function UploadPortal({
                   setAsk(null);
                   // Dispatched from THIS render, so it carries whatever the
                   // photographer has typed up to the moment they confirm.
-                  if (a.kind === "submit") runSubmit(a.force);
+                  if (a.kind === "submit") runSubmit(a.force, a.scope, a.baseHash);
                   else applyToggle(a.id, a.next, a.prevReason);
                 }}
                 className="rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
@@ -1785,17 +2223,60 @@ export function UploadPortal({
         )}
         {!done && !ask && (
           <p className="mb-2.5 text-[13px] font-medium text-brand">
-            Once submitted, this shoot is added to your payroll.
+            {splitMode
+              ? "Submit the photos and the video each when they're ready. The shoot is added to your payroll once both are in."
+              : "Once submitted, this shoot is added to your payroll."}
           </p>
         )}
+        {splitMode ? (
+          // O05: one button per half, each with its own checks. A half that is
+          // already in can be re-submitted to correct its notes.
+          <div className="space-y-2">
+            {(["photos", "video"] as const).map((half) => {
+              const at = half === "photos" ? halfAt.photos : halfAt.video;
+              const label = half === "photos" ? "photos" : "video";
+              return (
+                <div key={half} className="flex items-center justify-between gap-3">
+                  <div className="text-sm text-muted">
+                    {at ? (
+                      <span className="inline-flex items-center gap-1 text-success">
+                        <CheckCircle2 className="size-4" /> {half === "photos" ? "Photos" : "Video"} submitted {etTime(at)}
+                      </span>
+                    ) : (
+                      <>{half === "photos" ? "Photos" : "Video"} not submitted yet</>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => finalize(half)}
+                    disabled={isPending}
+                    className={cn(
+                      "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50",
+                      at ? "border border-border bg-surface text-foreground" : "bg-brand text-brand-fg",
+                    )}
+                  >
+                    {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+                    {at ? `Re-submit ${label}` : `Submit ${label}`}
+                  </button>
+                </div>
+              );
+            })}
+            <div className="text-xs text-muted-2">
+              {doneCount}/{total} uploaded
+              {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
+              {project.photographerName && ` · ${project.photographerName}`}
+              {draftChip(saveStatus, canSaveDraft)}
+            </div>
+          </div>
+        ) : (
         <div className="flex items-center justify-between gap-3">
         <div className="text-sm text-muted">
           {doneCount}/{total} uploaded
           {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
           {project.photographerName && ` · ${project.photographerName}`}
+          {draftChip(saveStatus, canSaveDraft)}
         </div>
         <button
-          onClick={finalize}
+          onClick={() => finalize()}
           disabled={isPending}
           className="inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
         >
@@ -1803,7 +2284,218 @@ export function UploadPortal({
           {done ? "Re-submit to editors" : "Everything's uploaded — submit"}
         </button>
         </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// §7.6 MISSING WORK — the job's production gaps: a whole item that couldn't be
+// delivered (from "couldn't complete" above) and a shot missed inside
+// something that was. The photographer reports; the office plans the recovery
+// (who, by when, and for a reshoot the shot list and scope) or closes it with
+// the note that is the record. Nothing here books, waives or charges.
+// ---------------------------------------------------------------------------
+const RECOVERY_OPTIONS: { value: string; label: string }[] = [
+  { value: "RESHOOT", label: "Reshoot" },
+  { value: "CLIENT_SUPPLIES", label: "The client supplies it" },
+  { value: "USE_EXISTING", label: "Use what we already have" },
+  { value: "OFFICE_DECIDES", label: "The office decides" },
+];
+
+function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: GapView[]; office: boolean }) {
+  const [what, setWhat] = useState("");
+  const [why, setWhy] = useState("");
+  const [open, setOpen] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, start] = useTransition();
+  const [planFor, setPlanFor] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState("RESHOOT");
+  const [owner, setOwner] = useState("");
+  const [dueDay, setDueDay] = useState("");
+  const [shots, setShots] = useState("");
+  const [scopeNote, setScopeNote] = useState("");
+  const [closeFor, setCloseFor] = useState<string | null>(null);
+  const [closeNote, setCloseNote] = useState("");
+
+  const report = () => start(async () => {
+    const r = await reportMissedShot(projectId, { what, reason: why }).catch(() => ({ ok: false, message: "Couldn't save that — check your connection and try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+    if (r.ok) { setWhat(""); setWhy(""); setOpen(false); }
+  });
+  const plan = (gapId: string) => start(async () => {
+    const shotList = shots.split("\n").map((l) => l.trim()).filter(Boolean).map((shot) => ({ shot }));
+    const r = await planGapRecovery(gapId, { recovery, ownerKey: owner, dueDay, shotList, scopeNote }).catch(() => ({ ok: false, message: "Couldn't save that — try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+    if (r.ok) setPlanFor(null);
+  });
+  const close = (gapId: string, how: "RESOLVED" | "CANCELLED") => start(async () => {
+    const r = await closeProductionGap(gapId, how, closeNote).catch(() => ({ ok: false, message: "Couldn't save that — try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+    if (r.ok) { setCloseFor(null); setCloseNote(""); }
+  });
+  const input = "w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand";
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
+        <XCircle className="size-4 text-warning" /> Missing work
+      </div>
+      {gaps.length > 0 && (
+        <ul className="mb-2 space-y-1.5">
+          {gaps.map((g) => {
+            const closed = g.state === "RESOLVED" || g.state === "CANCELLED";
+            return (
+              <li key={g.id} className={cn("rounded-lg border px-3 py-2 text-[13px]", closed ? "border-border bg-surface-2/40 text-muted" : g.overdue ? "border-danger/40 bg-danger/5" : "border-warning/40 bg-warning/5")}>
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-medium text-foreground">{g.what}</span>
+                  <span className="text-xs text-muted">{g.kind === "SHOT" ? "missed shot" : "not delivered"} · raised by {g.raisedBy}</span>
+                  <span className={cn("ml-auto text-xs font-semibold", closed ? "text-muted" : g.overdue ? "text-danger" : "text-warning")}>
+                    {g.state === "OPEN" ? "Needs a recovery plan"
+                      : g.state === "PLANNED" ? `${RECOVERY_OPTIONS.find((o) => o.value === g.recovery)?.label ?? "Planned"}${g.ownerKey ? ` · ${g.ownerKey}` : ""}${g.dueISO ? ` · due ${etDate(g.dueISO)}` : ""}${g.overdue ? " · overdue" : ""}`
+                      : g.state === "RESOLVED" ? "Resolved" : "Cancelled"}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-foreground/80">{g.reason}</p>
+                {g.shotList.length > 0 && (
+                  <ul className="ml-4 mt-1 list-disc text-xs text-foreground/80">
+                    {g.shotList.map((l, i) => <li key={i}>{l.shot}{l.note ? ` — ${l.note}` : ""}</li>)}
+                  </ul>
+                )}
+                {g.scopeNote && <p className="mt-0.5 text-xs text-muted">Scope: {g.scopeNote}</p>}
+                {g.resolutionNote && <p className="mt-0.5 text-xs text-muted">{g.resolutionNote}</p>}
+                {office && !closed && planFor !== g.id && closeFor !== g.id && (
+                  <div className="mt-1.5 flex gap-3 text-xs">
+                    <button onClick={() => { setPlanFor(g.id); setOwner(g.ownerKey ?? ""); setScopeNote(g.scopeNote ?? ""); setShots(g.shotList.map((l) => l.shot).join("\n")); }} className="font-medium text-brand underline">Plan recovery</button>
+                    <button onClick={() => { setCloseFor(g.id); setCloseNote(""); }} className="font-medium text-muted underline">Close</button>
+                  </div>
+                )}
+                {office && planFor === g.id && (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex flex-wrap gap-2">
+                      <select value={recovery} onChange={(e) => setRecovery(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm">
+                        {RECOVERY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                      <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="Who owns it (e.g. kyle, harrison)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm" />
+                      <input type="date" value={dueDay} onChange={(e) => setDueDay(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm" />
+                    </div>
+                    {recovery === "RESHOOT" && (
+                      <>
+                        <AutoTextarea value={shots} onChange={(e) => setShots(e.target.value)} minRows={2} placeholder="The shot list, one shot per line" className={input} />
+                        <input value={scopeNote} onChange={(e) => setScopeNote(e.target.value)} placeholder="Scope: what is and is not being reshot" className={input} />
+                      </>
+                    )}
+                    <div className="flex gap-2">
+                      <button disabled={pending} onClick={() => plan(g.id)} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Save plan</button>
+                      <button onClick={() => setPlanFor(null)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {office && closeFor === g.id && (
+                  <div className="mt-2 space-y-1.5">
+                    <input value={closeNote} onChange={(e) => setCloseNote(e.target.value)} placeholder="How it was settled — this note is the record" className={input} />
+                    <div className="flex flex-wrap gap-2">
+                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "RESOLVED")} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Recovered</button>
+                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "CANCELLED")} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium disabled:opacity-50">No longer needed</button>
+                      <button onClick={() => setCloseFor(null)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {open ? (
+        <div className="space-y-1.5">
+          <input value={what} onChange={(e) => setWhat(e.target.value)} maxLength={200} placeholder="Which shot? e.g. Pool at dusk" className={input} />
+          <input value={why} onChange={(e) => setWhy(e.target.value)} maxLength={500} placeholder="Why? e.g. Rain rolled in before sunset" className={input} />
+          <div className="flex gap-2">
+            <button disabled={pending || !what.trim() || !why.trim()} onClick={report} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">Tell the office</button>
+            <button onClick={() => setOpen(false)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="px-1 text-xs text-muted underline hover:text-foreground">
+          Missed a shot? Tell the office what and why
+        </button>
+      )}
+      {msg && <p className={cn("mt-1 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// §7.8 FIELD FEEDBACK — a client preference or request from the shoot, with
+// where it came from (they said it, or it was noticed) and how far it reaches
+// (this job, or the client going forward). It is a PROPOSAL until the office
+// confirms it; only then does it reach the editor brief.
+// ---------------------------------------------------------------------------
+function FieldFeedback({ projectId, clientName, reports, office }: { projectId: string; clientName: string; reports: FieldReportView[]; office: boolean }) {
+  const [body, setBody] = useState("");
+  const [basis, setBasis] = useState<"client_said" | "observation">("client_said");
+  const [scope, setScope] = useState<"project" | "client">("project");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, start] = useTransition();
+  const send = () => start(async () => {
+    const r = await recordFieldPreference(projectId, { body, basis, scope }).catch(() => ({ ok: false, message: "Couldn't save that — check your connection and try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+    if (r.ok) setBody("");
+  });
+  const decide = (id: string, d: "ACCEPT" | "REJECT") => start(async () => {
+    const r = await decideFieldReport(id, d).catch(() => ({ ok: false, message: "Couldn't save that — try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+  });
+  const pill = (active: boolean) => cn("rounded-lg border px-2.5 py-1 text-xs font-medium", active ? "border-brand bg-brand-soft text-foreground" : "border-border text-muted hover:bg-surface-2");
+  return (
+    <div className="mt-4">
+      <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+        <NotebookPen className="size-4 text-brand" /> Client preference or request
+      </div>
+      <p className="mb-1.5 text-xs text-muted">
+        Something {clientName} asked for, or something you noticed about what they like. The office confirms it before it reaches the editor.
+      </p>
+      <AutoTextarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        minRows={1}
+        maxLength={1000}
+        placeholder="e.g. Wants the logo bottom-right on every reel"
+        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+      />
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        <button type="button" onClick={() => setBasis("client_said")} className={pill(basis === "client_said")}>They asked for it</button>
+        <button type="button" onClick={() => setBasis("observation")} className={pill(basis === "observation")}>I noticed it</button>
+        <span className="mx-1 text-muted-2">·</span>
+        <button type="button" onClick={() => setScope("project")} className={pill(scope === "project")}>Just this job</button>
+        <button type="button" onClick={() => setScope("client")} className={pill(scope === "client")}>This client going forward</button>
+        <button disabled={pending || !body.trim()} onClick={send} className="ml-auto rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
+          Send to the office
+        </button>
+      </div>
+      {reports.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {reports.map((r) => (
+            <li key={r.id} className="rounded-lg border border-border bg-surface-2/40 px-2.5 py-1.5 text-[13px]">
+              <span className="text-foreground/85">{r.body}</span>
+              <span className="ml-1.5 text-xs text-muted">
+                {r.basis === "client_said" ? "they asked" : r.basis === "observation" ? "noticed on site" : "from the field"} · {r.scope === "PROJECT" ? "this job" : "going forward"} ·{" "}
+                <span className={cn("font-semibold", r.status === "ACCEPTED" ? "text-success" : r.status === "REJECTED" ? "text-muted" : "text-warning")}>
+                  {r.status === "ACCEPTED" ? "confirmed" : r.status === "REJECTED" ? "not used" : "waiting for the office"}
+                </span>
+              </span>
+              {office && r.status === "PROPOSED" && (
+                <span className="ml-2 inline-flex gap-2 text-xs">
+                  <button disabled={pending} onClick={() => decide(r.id, "ACCEPT")} className="font-medium text-brand underline disabled:opacity-50">Confirm</button>
+                  <button disabled={pending} onClick={() => decide(r.id, "REJECT")} className="font-medium text-muted underline disabled:opacity-50">Reject</button>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {msg && <p className={cn("mt-1 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>
   );
 }

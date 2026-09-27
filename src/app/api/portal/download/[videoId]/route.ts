@@ -34,9 +34,15 @@ export const dynamic = "force-dynamic";
 // downloaded here, and so did a replacement round. Refusals now say which:
 //   403  the client has not approved this version, or asked for changes to it
 //   409  the bytes changed since they approved (never a different file)
-//   404  there is no file to give (yet, or it is being re-issued)
+//   404  there is no file to give (yet, or it is being re-issued — or, since
+//        9.6b, its 1080p pass is still running or held: FINISHING)
 // The STAFF scope gets the same answer: this door shows the client's truth.
 // Staff keep the Review Room and the Ready-to-send card for the raw file.
+//
+// 9.6b (Sep 25 2026): for a program cut with a verified 1080p render the
+// redirect below still names the cut's stream route — the route itself hands a
+// portal proof the render instead of the editor's export (stream/route.ts), so
+// there is still ONE door for the bytes and one rule for which bytes.
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest, ctx: { params: Promise<{ videoId: string }> }) {
   const { videoId } = await ctx.params;

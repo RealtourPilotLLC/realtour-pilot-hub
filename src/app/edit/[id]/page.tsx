@@ -28,6 +28,9 @@ import { CutUploader } from "@/components/editing/CutUploader";
 // The server's own answer to "may this viewer replace the approved cut on this
 // slot" — the panel draws the door from it rather than guessing (Sep 18).
 import { canReplaceApprovedCut } from "@/app/review/actions";
+// §7.5 / §7.7: the per-video brief and the Luma Visuals packet record, posted
+// from plain server-rendered forms on this page.
+import { recordEditorPacketAckForm, recordEditorPacketSentForm, saveVideoBriefForm } from "@/app/editing/actions";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
@@ -123,12 +126,12 @@ export default async function EditBriefPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ cut?: string; slots?: string }>;
+  searchParams: Promise<{ cut?: string; slots?: string; notice?: string }>;
 }) {
   const { id } = await params;
   // `slots=all` opens the empty cut slots a big job collapses by default
   // (Jordan, Sep 16 — see the Send to Review block below).
-  const { cut, slots: slotsParam } = await searchParams;
+  const { cut, slots: slotsParam, notice } = await searchParams;
   const showAllSlots = slotsParam === "all";
 
   const viewer = await getCurrentUser();
@@ -501,6 +504,14 @@ export default async function EditBriefPage({
   // Money-scrubbed exactly like the notes above.
   const { brandBriefFor } = await import("@/lib/brandProfile");
   const brandBrief = await brandBriefFor(project.client.id, { projectId: project.id, scrub: !canSeeRaw }).catch(() => null);
+  // §7.8 (Sep 25): what the client ASKED for on site, for this job, that the
+  // office has not confirmed yet. Shown to the editor as exactly that — never
+  // as a preference (a photographer's own guess is not listed here at all).
+  const { fieldReportsForProject } = await import("@/lib/clientFacts");
+  const unconfirmedAsks = (await fieldReportsForProject(project.id).catch(() => []))
+    .filter((f) => f.status === "PROPOSED" && f.basis === "client_said" && f.scope === "PROJECT")
+    .map((f) => ({ id: f.id, body: scrub(f.body) ?? "", by: f.speaker }))
+    .filter((f) => f.body);
   const canAckBrand = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
   // CP-09: WHICH topic each owed video is — the note from the shoot, the
   // script the client approved and the topic's raw folder. The same rows the
@@ -508,6 +519,37 @@ export default async function EditBriefPage({
   // cannot describe one video differently. Money-scrubbed like the notes above.
   const { filmingBriefFor } = await import("@/lib/deliverableOutputs");
   const filming = await filmingBriefFor(project.id).catch(() => null);
+  // §7.5 (Sep 25): each owed video's OWN brief, with the version it is — the
+  // same rows the printed brief, the shoot screen and the outside agency's
+  // packet read (deliverableOutputs.outputBriefsFor). Money-scrubbed for an
+  // editor, exactly like the notes above.
+  const { outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
+  const outputBriefs = await outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []);
+  const canWriteBriefs = canSeeRaw && !viewer?.impersonating;
+  // §7.7 / A33: the Luma Visuals packet card — the office's, and only on a job
+  // handed to the agency or one with a send already on record.
+  const agencyMod = await import("@/lib/editorPacket");
+  const agency = canSeeRaw
+    ? await (async () => {
+        const relevant = (await agencyMod.isHandedToAgency(project.id)) || (await prisma.editorDispatch.count({ where: { projectId: project.id } })) > 0;
+        return relevant ? agencyMod.editorDispatchState(project.id) : null;
+      })().catch(() => null)
+    : null;
+  // What the last brief/packet form did (a code from editing/actions — never
+  // the words typed, which can carry a name).
+  const PAGE_NOTICES: Record<string, { where: "brief" | "packet"; ok: boolean; text: string }> = {
+    "brief-saved": { where: "brief", ok: true, text: "Brief saved as a new version." },
+    "brief-unchanged": { where: "brief", ok: true, text: "Nothing changed, so no new version was made." },
+    "brief-conflict": { where: "brief", ok: false, text: "Someone else saved that brief while you were editing, so yours was not saved. What you see now is the newest version." },
+    "brief-too-long": { where: "brief", ok: false, text: `A section was over ${OUTPUT_BRIEF_FIELD_CAP} characters, so nothing was saved.` },
+    "brief-error": { where: "brief", ok: false, text: "That brief could not be saved. Reload and try again." },
+    "packet-sent": { where: "packet", ok: true, text: "The send is recorded, with the packet exactly as it went." },
+    "packet-duplicate": { where: "packet", ok: true, text: "Already recorded: that exact packet went to that recipient, so no new version was made." },
+    "packet-error": { where: "packet", ok: false, text: "Not recorded. Say who it went to and how, and check the job is handed to the agency." },
+    "ack-saved": { where: "packet", ok: true, text: "Their acknowledgement is recorded." },
+    "ack-error": { where: "packet", ok: false, text: "Not recorded. Say who acknowledged it and how (it may already be acknowledged)." },
+  };
+  const pageNotice = notice ? PAGE_NOTICES[notice] ?? null : null;
   const rawAsks = videoRevisionTasks
     .flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /))
     .map((s) => s.trim())
@@ -594,7 +636,23 @@ export default async function EditBriefPage({
     null;
   const editorName = editorKey ? editorMeta(editorKey)?.name ?? project.editor?.name ?? editorKey : null;
   // The effective deadline and type for the tracker: the office's word wins.
-  const trackerDue = effectiveDue(project, sla?.due ?? null);
+  // A REOPENED job reads its reopen clock instead (A52) — the same reader and
+  // the same answer as Kyle's board and the Editing Room row — and the office
+  // can move it here, which is the "a person sets it" half of the rule.
+  const reopened = await (async () => {
+    if (!project.deliveredAt) return null;
+    try {
+      const { reopenedClocksFor, reopenedDueFor, isReopenedJob, dueSetTimesFor } = await import("@/lib/deliveryBoard");
+      const clock = (await reopenedClocksFor([id])).get(id) ?? null;
+      if (!isReopenedJob(project, clock)) return null;
+      const dueSetAt = project.dueOverrideAt ? (await dueSetTimesFor([id])).get(id) ?? null : null;
+      return reopenedDueFor({ ...project, dueSetAt }, clock);
+    } catch {
+      return null;
+    }
+  })();
+  const trackerDue = reopened ? reopened.at : effectiveDue(project, sla?.due ?? null);
+  const dueNotice = notice ? REOPENED_DUE_NOTICES[notice] ?? null : null;
   const trackerEditType = effectiveTypeDetail(project, videoTypeLabel(editDeliverables, videoTier(owedDeliverables)) || "Video edit");
   // ---- ONE instruction card ----------------------------------------------
   // Everything the editor is TOLD to do, gathered from the three cards that
@@ -773,7 +831,15 @@ export default async function EditBriefPage({
             // the facts say so with a tag.
             editType={trackerEditType}
             dueISO={trackerDue ? trackerDue.toISOString() : null}
-            overridden={{ due: overrides.dueAt != null, editType: overrides.typeDetail != null }}
+            overridden={{ due: reopened ? reopened.office : overrides.dueAt != null, editType: overrides.typeDetail != null }}
+            // A52: where a reopened job's date came from, and the office's
+            // control to move it (owner/admin only; the action checks again).
+            dueWords={reopened ? (reopened.at ? reopened.words : "Reopened, no due date yet") : null}
+            moveDue={
+              reopened && strictOwnerAdmin && !viewer?.impersonating
+                ? { action: moveReopenedDueForm, projectId: id, defaultLocal: etLocalInput(trackerDue ?? new Date()), notice: dueNotice }
+                : null
+            }
             shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
             photographerName={project.photographer?.name ?? null}
             song={project.reelSong}
@@ -1000,6 +1066,14 @@ export default async function EditBriefPage({
                           <span className={r.script.clientApproved ? "text-success" : "text-muted"}>— {r.script.standing}</span>
                         </summary>
                         {r.script.text && <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">{scrub(r.script.text)}</p>}
+                        {/* §6.8 (Sep 25): the direction written WITH these words. */}
+                        {r.script.direction && (
+                          <div className="mt-1 space-y-0.5 text-xs leading-relaxed text-foreground/85">
+                            {r.script.direction.filmingNotes && <p><span className="text-muted">Filming: </span>{scrub(r.script.direction.filmingNotes)}</p>}
+                            {r.script.direction.creativeDirection && <p><span className="text-muted">Direction: </span>{scrub(r.script.direction.creativeDirection)}</p>}
+                            {r.script.direction.productionNotes && <p><span className="text-muted">Production: </span>{scrub(r.script.direction.productionNotes)}</p>}
+                          </div>
+                        )}
                       </details>
                     ) : (
                       <p className="mt-1 text-xs text-muted">No script on file for this topic.</p>
@@ -1028,6 +1102,71 @@ export default async function EditBriefPage({
                     </ul>
                   </div>
                 )}
+              </div>
+            )}
+            {/* §7.5 (Sep 25) — ONE BRIEF PER VIDEO. A reel and an MLS video on
+                one order used to share one set of instructions. Each owed video
+                now carries its own brief with its version (and who saved it),
+                or says plainly that it goes by the job's shared instructions.
+                The office writes it here; the photographer's shoot screen, the
+                printed brief and the agency packet read the same rows. */}
+            {outputBriefs.length > 0 && (outputBriefs.length > 1 || canWriteBriefs || outputBriefs.some((o) => o.directionSource === "own")) && (
+              <div className="mt-4 space-y-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">Each video&apos;s brief</div>
+                {pageNotice?.where === "brief" && (
+                  <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
+                )}
+                {outputBriefs.map((o) => (
+                  <div key={o.outputId} id={`brief-${o.outputId}`} className="rounded-xl border border-border bg-surface-2/40 p-3">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-sm font-medium">{o.index}. {o.label}</span>
+                      {o.format !== o.label && <span className="text-[11px] text-muted">{o.format}</span>}
+                    </div>
+                    <p className="text-[11px] text-muted-2">{o.versionLabel}</p>
+                    {o.sections.length > 0 && (
+                      <dl className="mt-1.5 space-y-1 text-xs leading-relaxed">
+                        {o.sections.map((x) => (
+                          <div key={x.key}>
+                            <dt className="font-medium text-muted">{x.label}</dt>
+                            <dd className="whitespace-pre-wrap text-foreground/90">{x.text}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                    {(o.reviewer || o.promisedAtISO) && (
+                      <p className="mt-1 text-[11px] text-muted">
+                        {o.reviewer ? `Reviewed by ${o.reviewer.name}${o.reviewer.from === "chain" ? " (first in line)" : ""}` : ""}
+                        {o.reviewer && o.promisedAtISO ? " · " : ""}
+                        {o.promisedAtISO ? `due ${new Date(o.promisedAtISO).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
+                      </p>
+                    )}
+                    {canWriteBriefs && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs font-medium text-brand">{o.version ? "Edit this video's brief" : "Write a brief for this video"}</summary>
+                        <form action={saveVideoBriefForm} className="mt-2 space-y-2">
+                          <input type="hidden" name="projectId" value={project.id} />
+                          <input type="hidden" name="outputId" value={o.outputId} />
+                          <input type="hidden" name="expectedVersion" value={o.version ?? ""} />
+                          {OUTPUT_BRIEF_FIELDS.map((f) => (
+                            <label key={f.key} className="block text-[11px] font-medium text-muted">
+                              {f.label}
+                              <textarea
+                                name={`s_${f.key}`}
+                                defaultValue={o.sections.find((x) => x.key === f.key)?.text ?? ""}
+                                maxLength={OUTPUT_BRIEF_FIELD_CAP}
+                                rows={2}
+                                className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-xs font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-brand/30"
+                              />
+                            </label>
+                          ))}
+                          <button type="submit" className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                            Save as v{(o.version ?? 0) + 1}
+                          </button>
+                        </form>
+                      </details>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
             {/* HOW IT LEAVES FINAL CUT — one line for the whole job, not one
@@ -1063,6 +1202,81 @@ export default async function EditBriefPage({
               </div>
             )}
           </Section>
+
+          {/* §7.7 / A33 (Sep 25) — THE LUMA VISUALS PACKET. Office only, on a
+              job handed to the agency (or one with a send on record). The hub
+              sends NOTHING: the office sends the packet the way it always has,
+              then records who it went to and how, and later that Luma said
+              they have it. The packet is frozen at each send; when the brief
+              changes afterwards the card says the sent version is out of date. */}
+          {agency && (
+            <div id="agency-packet">
+              <Section icon={ExternalLink} title={`${agency.vendorName} packet`} tone={agency.status === "not_sent" || agency.status === "out_of_date" ? "warning" : "default"} bodyClassName="space-y-3">
+                {pageNotice?.where === "packet" && (
+                  <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
+                )}
+                <p className="text-sm font-medium">{agency.line}</p>
+                {!agency.handedOver && (
+                  <p className="text-xs text-muted">This job is not handed to {agency.vendorName} right now. The sends below are its history.</p>
+                )}
+                {agency.packet && agency.packet.missing.length > 0 && (
+                  <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                    <p className="font-medium">Missing from the packet right now:</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                      {agency.packet.missing.map((m) => <li key={m.key}>{m.label} ({m.owner})</li>)}
+                    </ul>
+                  </div>
+                )}
+                <p className="text-xs">
+                  <a href={`/api/projects/${project.id}/editor-packet/preview`} className="font-medium text-brand hover:underline">Preview the packet as it would go now</a>
+                  <span className="text-muted"> · nothing is sent from the hub</span>
+                </p>
+                {agency.history.length > 0 && (
+                  <ul className="space-y-1.5 text-xs">
+                    {agency.history.map((d) => (
+                      <li key={d.id} className="rounded-lg border border-border bg-surface-2/40 px-3 py-2">
+                        <span className="font-medium">v{d.version}</span> sent to {d.recipient} ({d.channelLabel}) by {d.dispatchedBy},{" "}
+                        {new Date(d.dispatchedAtISO).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                        {d.acknowledgedAtISO ? ` · acknowledged by ${d.acknowledgedBy ?? "someone"}` : " · not acknowledged"}
+                        {d.superseded ? " · replaced by a later version" : ""}
+                        {d.missing.length > 0 ? ` · ${d.missing.length} missing when sent` : ""}{" "}
+                        <a href={`/api/projects/${project.id}/editor-packet/${d.version}`} className="font-medium text-brand hover:underline">Download v{d.version}</a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {agency.handedOver && !viewer?.impersonating && (
+                  <form action={recordEditorPacketSentForm} className="space-y-2 rounded-xl border border-border p-3">
+                    <p className="text-xs font-semibold">Record a send</p>
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <input name="recipient" required minLength={2} maxLength={200} placeholder={`Who at ${agency.vendorName} it went to (email or name)`} className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
+                    <select name="channel" required defaultValue="" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs">
+                      <option value="" disabled>How it was sent</option>
+                      {agencyMod.DISPATCH_CHANNELS.map((c) => <option key={c} value={c}>{agencyMod.DISPATCH_CHANNEL_LABEL[c]}</option>)}
+                    </select>
+                    <input name="note" maxLength={500} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
+                    <button type="submit" className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                      Record packet v{(agency.latest?.version ?? 0) + 1} as sent
+                    </button>
+                  </form>
+                )}
+                {agency.latest && !agency.latest.acknowledgedAtISO && !viewer?.impersonating && (
+                  <form action={recordEditorPacketAckForm} className="space-y-2 rounded-xl border border-border p-3">
+                    <p className="text-xs font-semibold">Record that {agency.vendorName} has v{agency.latest.version}</p>
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <input type="hidden" name="dispatchId" value={agency.latest.id} />
+                    <input name="by" required maxLength={120} placeholder="Who acknowledged it" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
+                    <select name="source" required defaultValue="" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs">
+                      <option value="" disabled>How they said so</option>
+                      {agencyMod.ACK_SOURCES.map((c) => <option key={c} value={c}>{agencyMod.ACK_SOURCE_LABEL[c]}</option>)}
+                    </select>
+                    <input name="note" maxLength={500} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
+                    <button type="submit" className="rounded-lg border border-brand px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft/40">Record acknowledgement</button>
+                  </form>
+                )}
+              </Section>
+            </div>
+          )}
 
           {/* 3b · MUSIC — right under What to make (Jordan, Sep 15: "they
               should be able to find music in the editor brief for copyright
@@ -1293,6 +1507,18 @@ export default async function EditBriefPage({
               instruction card — and ABOVE the profile: the client's own words
               outrank the AI's read of them (Jordan, Sep 2: "How they like it
               should be above the working profile"). */}
+          {unconfirmedAsks.length > 0 && (
+            <Section icon={Quote} title="Asked for on site, not confirmed yet">
+              <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
+                {unconfirmedAsks.map((f) => (
+                  <li key={f.id}>
+                    {f.body}
+                    <span className="ml-1.5 text-xs text-muted-2">{f.by ? `${f.by}, ` : ""}waiting for the office to confirm</span>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
           {(showPrefs || showTheirStyle || showTheirPrefs || !!brandBrief?.music || !!brandBrief?.productionDefaults.length || !!brandBrief?.acceptedPreferences.length) && (
             <Section icon={Quote} title="How they like it">
               <div className="space-y-3">
@@ -1391,4 +1617,44 @@ function UploadDot({ n, stale }: { n: number; stale: boolean }) {
       }
     />
   );
+}
+
+// ---------------------------------------------------------------------------
+// MOVE THE REOPENED DUE (A52 — "a person can move it"). A plain form post, so
+// it works before any script loads; the office only, re-checked here because a
+// server action is reachable by a direct POST. The time is typed as ET wall
+// clock (the office's own clock) and saved by revisionBrief.moveReopenedDue,
+// which records who, when, and what it was.
+// ---------------------------------------------------------------------------
+const REOPENED_DUE_NOTICES: Record<string, { ok: boolean; text: string }> = {
+  "due-moved": { ok: true, text: "Moved. The board, the Editing Room and this page all read the new date." },
+  "due-error": { ok: false, text: "Not moved. Pick a time that hasn't passed and is within 60 days, on a job that is reopened." },
+  "due-denied": { ok: false, text: "Only the office can move a due date." },
+};
+
+/** A Date as the value a datetime-local input takes, on the ET wall clock. */
+function etLocalInput(d: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(d);
+  const g = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${g("year")}-${g("month")}-${g("day")}T${g("hour") === "24" ? "00" : g("hour")}:${g("minute")}`;
+}
+
+async function moveReopenedDueForm(form: FormData): Promise<void> {
+  "use server";
+  const projectId = String(form.get("projectId") ?? "").trim().slice(0, 64);
+  const raw = String(form.get("dueAt") ?? "").trim();
+  const back = (n: string): never => redirect(`/edit/${encodeURIComponent(projectId)}?notice=${n}#reopened-due`);
+  const { requireRole } = await import("@/lib/auth/guards");
+  const allowed = await requireRole(["OWNER", "ADMIN"]).then(() => true, () => false);
+  if (!allowed) back("due-denied");
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(raw);
+  if (!projectId || !m) back("due-error");
+  const { etAt } = await import("@/lib/datetime");
+  const dueAt = etAt(m![1], Number(m![2]), Number(m![3]));
+  const me = await getCurrentUser().catch(() => null);
+  const { moveReopenedDue } = await import("@/lib/revisionBrief");
+  const r = await moveReopenedDue({ projectId, dueAt, by: me?.name?.trim() || me?.email || "The office" }).catch(() => ({ ok: false }));
+  back(r.ok ? "due-moved" : "due-error");
 }

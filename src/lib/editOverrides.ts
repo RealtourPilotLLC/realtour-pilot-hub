@@ -297,3 +297,18 @@ export function describeOverrides(before: OverrideSnapshot, after: OverrideSnaps
   if (parts.length === 0) return `Override saved by ${by} — nothing changed.`;
   return `Override by ${by}: ${parts.join(" · ")}`;
 }
+
+/**
+ * Did this timeline line (describeOverrides above) CHANGE the due? The one
+ * record of when the office's date itself was saved (A52 review, Sep 25):
+ * Project.overrideAt moves on every override save — a priority bump, a note —
+ * so a date typed for the original work read as "set for this reopen" the
+ * moment anybody touched anything else. Pure; the contract is the "due …"
+ * part the sentence above writes.
+ */
+export function overrideLineSetsDue(body: string): boolean {
+  if (!body.startsWith("Override by ")) return false;
+  const i = body.indexOf(": ");
+  if (i < 0) return false;
+  return body.slice(i + 2).split(" · ").some((part) => part.startsWith("due "));
+}

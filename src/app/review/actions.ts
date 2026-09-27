@@ -1078,8 +1078,21 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
     // arrives and the sentence would have been a promise the hub did not keep.
     // "Queued" is true in every one of those cases, and the lane on Connections
     // says what happened next.
-    if (q.queued) topazNote = " Queued for the 1080p pass — Kyle gets a card once it's done.";
+    // A program video gets no Aryeo card (9.6b): its finished file goes to the
+    // client's portal, so the sentence names what is true for both.
+    if (q.queued) topazNote = " Queued for the 1080p pass — the finished file is what goes out once it's done.";
   } catch { /* the 1080p pass never blocks an approval */ }
+
+  // A42 (Sep 25 2026): …and onto the client's ACTUAL library (ContentVideo) now,
+  // rather than whenever their portal next renders or the hourly rotation
+  // reaches them. After the release and the 1080p queue above, so the rebuild
+  // sees both. Program jobs only (the function checks); never fails the
+  // approval — a miss is recorded on the enrollment for the libraryRepair step
+  // and the exceptions board.
+  try {
+    const { publishApprovedCutToLibrary } = await import("@/lib/contentVideos");
+    await publishApprovedCutToLibrary(submissionId);
+  } catch { /* the hourly repair retries it */ }
 
   // Multi-video sets: "Ready to deliver" is a SET verdict, not a per-cut one
   // (audit: Kyle was told to deliver on video 1 of 4). Count the cuts still

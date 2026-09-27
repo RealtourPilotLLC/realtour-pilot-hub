@@ -6,7 +6,7 @@ import {
   DeliverableStatus,
 } from "@prisma/client";
 import { PALETTE, soft as softTint } from "@/lib/palette";
-import { MONTHLY_PLAN_RE, videoStyleFor, type VideoStyleInput } from "@/lib/videoStyles";
+import { MONTHLY_PLAN_RE, videoStyleFor, isVideoStyleKey, type VideoStyleInput, type VideoStyleKey } from "@/lib/videoStyles";
 
 // ---------------------------------------------------------------------------
 // Pipeline stages (the booked -> delivered workflow)
@@ -344,4 +344,115 @@ export function videoStepSpec(
   // product used to land here and silently drop every requirement.
   const plainReel = STANDARD_REEL_RE.test(t) && !opts.hasFullVideo;
   return { ...base, mode: "standard", fullBrief: !plainReel, minimalReel: plainReel };
+}
+
+// ---------------------------------------------------------------------------
+// ONE ANSWER TO "WHAT DOES THIS VIDEO STEP DEMAND" (§7.4, Sep 25 2026).
+//
+// Three readers used to answer it three ways: the upload page read the
+// Deliverable.videoStyle stamp first (specForStyle, in upload/[id]/page.tsx),
+// the submit gate in upload/actions.ts read product NAMES only, and the
+// handoff engine read names only with no premium flag and with CANCELLED order
+// lines still in the titles. So a canceled "Premium Social Media Reel" line
+// kept the card saying "Waiting on the script for this premium video" while
+// the page (stamped standard_reel) never showed a script step and no screen
+// could satisfy it. This is the page's resolution lifted here verbatim, so the
+// page, the gate, the handoff engine and the brief all ask it the same way.
+// It filters canceled lines and excused rows ITSELF — a caller cannot forget.
+// ---------------------------------------------------------------------------
+/** The most demanding brief wins when a job carries several video lines (a reel
+ *  + a cinematic, a bundle + an intro add-on): monthly, then premium, then
+ *  agent intro, then standard — the precedence videoStepSpec already uses. */
+export const STYLE_RANK: Record<VideoStyleKey, number> = {
+  personal_branding: 0,
+  premium_cinematic: 1,
+  premium_social_reel: 2,
+  standard_reel_agent_intro: 3,
+  standard_cinematic: 4,
+  standard_reel: 5,
+};
+
+/** What the video step demands for a resolved style — the same VideoStepSpec
+ *  videoStepSpec() builds from names. Per Jordan: standard reels don't get
+ *  scripts; agent-intro reels get the intro script + notes; premium can't be
+ *  submitted without the script; monthly plans need every field plus the
+ *  videos-filmed count. */
+export function specForStyle(style: VideoStyleKey): VideoStepSpec {
+  const base = { requireScript: false, requireIntro: false, requireVideoCount: false, fullBrief: false, minimalReel: false, fixedStyle: false };
+  switch (style) {
+    case "personal_branding":
+      return { ...base, mode: "standard", requireVideoCount: true, fullBrief: true, fixedStyle: true };
+    case "premium_social_reel":
+    case "premium_cinematic":
+      return { ...base, mode: "premium-script", requireScript: true, fullBrief: true };
+    case "standard_reel_agent_intro":
+      return { ...base, mode: "agent-intro", requireIntro: true };
+    case "standard_cinematic":
+      // One box like a reel, but a full horizontal cut always needs direction
+      // — only a plain reel earns "nothing demanded" (videoStepSpec's rule).
+      return { ...base, mode: "standard", fullBrief: true };
+    case "standard_reel":
+      return { ...base, mode: "standard", minimalReel: true };
+  }
+}
+
+/** The Sep 2 tier answer as a style key — for jobs nothing has stamped yet. */
+export function styleFromTier(spec: VideoStepSpec, hasFullVideo: boolean): VideoStyleKey {
+  if (spec.fixedStyle) return "personal_branding";
+  if (spec.mode === "premium-script") return hasFullVideo ? "premium_cinematic" : "premium_social_reel";
+  if (spec.mode === "agent-intro") return "standard_reel_agent_intro";
+  return hasFullVideo ? "standard_cinematic" : "standard_reel";
+}
+
+export type VideoSpecDeliverable = {
+  type: string;
+  label?: string | null;
+  productTitle?: string | null;
+  videoStyle?: string | null;
+  /** the photographer's "couldn't complete" — excused from the step */
+  notCompletedReason?: string | null;
+  /** the office's "not required" — excused from the step */
+  waivedAt?: Date | string | null;
+  removedFromOrderAt?: Date | string | null;
+};
+
+/**
+ * THE video step for a job. `isPremium` is the Settings-mapped tier
+ * (projectStatus.videoTier over the live rows) — a server-only module, so the
+ * caller passes it; left out, the premium name regex decides, as videoStepSpec
+ * always has.
+ */
+export function resolveVideoSpec(input: {
+  deliverables: VideoSpecDeliverable[];
+  orderItems: { title: string | null; isCanceled?: boolean | null }[];
+  packageName: string | null | undefined;
+  isPremium?: boolean;
+}): { spec: VideoStepSpec; style: VideoStyleKey; source: "stamp" | "names"; hasFullVideo: boolean } {
+  const live = input.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt && !d.removedFromOrderAt);
+  const items = input.orderItems.filter((i) => !i.isCanceled);
+  const hasFullVideo = live.some((d) => d.type === "VIDEO");
+  // The name + tier answer: THE spec when no live row is stamped, and the
+  // agent-intro signal even when one is (below).
+  const tierSpec = videoStepSpec(
+    [input.packageName, ...items.map((i) => i.title), ...live.map((d) => d.label)],
+    { hasFullVideo, isPremium: input.isPremium, isMonthly: isMonthlyContentJob(live, input.packageName) },
+  );
+  // The stamp — read off EVERY live row, not just the video ones: the "Agent
+  // on Camera" add-on is mapped OTHER, so its style can ride on a non-video
+  // row. Most demanding first.
+  const stamped = live
+    .map((d) => d.videoStyle)
+    .filter(isVideoStyleKey)
+    .sort((a, b) => STYLE_RANK[a] - STYLE_RANK[b]);
+  let stampedStyle: VideoStyleKey | null = stamped.length ? stamped[0] : null;
+  // An agent-intro line on the order still upgrades a STANDARD stamp — the
+  // add-on is its own product and may be unmapped while the reel is mapped.
+  // Never a premium one: "Premium Social Media Reel (No Agent on camera …)"
+  // is live data, and videoStepSpec checks premium first.
+  if (tierSpec.mode === "agent-intro" && (stampedStyle === "standard_reel" || stampedStyle === "standard_cinematic")) {
+    stampedStyle = "standard_reel_agent_intro";
+  }
+  return stampedStyle
+    ? { spec: specForStyle(stampedStyle), style: stampedStyle, source: "stamp", hasFullVideo }
+    : { spec: tierSpec, style: styleFromTier(tierSpec, hasFullVideo), source: "names", hasFullVideo };
 }

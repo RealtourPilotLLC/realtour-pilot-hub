@@ -228,6 +228,24 @@ export async function GET(req: NextRequest) {
     const { generateTasksForActiveProjects } = await import("@/lib/tasks");
     return generateTasksForActiveProjects();
   });
+  // REOPENED WORK HAS A DATE (A52, Sep 25 2026). The net under every path that
+  // puts a finished job back without dating it (a board move off Delivered, a
+  // status sweep): same business day from the moment it was reopened, when
+  // that moment is on the record and recent. Older or unknown reopens are left
+  // for a person — they are on Kyle's exceptions — never back-dated into
+  // "late". Internal dates only; nothing is sent.
+  await step("reopenedClocks", async () => {
+    const { reconcileReopenedClocks } = await import("@/lib/revisionBrief");
+    return reconcileReopenedClocks();
+  });
+  // O05: a job whose photos (or video) went in, and whose other half was
+  // excused afterwards by a road that did not complete it, has its whole
+  // wrap-up stamped here — My Pay and the wrap-up KPI read that stamp. The
+  // excusal paths complete it on the spot; this is only the net. No message.
+  await step("wrapUps", async () => {
+    const { reconcileWrapUps } = await import("@/lib/wrapUp");
+    return reconcileWrapUps();
+  });
   // Client texts that send themselves (Jordan, Sep 1): shoot confirmations 48h
   // out and delivery texts once Aryeo shows every deliverable shipped. Both
   // self-gate to 9am-4pm ET, atomically claim the task + an idempotency marker
@@ -333,8 +351,22 @@ export async function GET(req: NextRequest) {
     const reviewWindows = await repairReviewWindows({ max: 100 });
     const { repairPortalRevisionRequests } = await import("@/lib/clientDecisions");
     const portalRequests = await repairPortalRevisionRequests({ max: 50 });
-    return { library, changes, deliveries, reviewWindows, portalRequests };
-  }, { maxMs: 30_000 });
+    // A42: the client's ACTUAL library (ContentVideo) holds every recently
+    // approved program cut; a client missing one is rebuilt, and a rebuild that
+    // fails or still leaves it out is recorded for the exceptions board.
+    const { verifyApprovedCutsInLibrary } = await import("@/lib/contentVideos");
+    const programLibrary = await verifyApprovedCutsInLibrary({ sinceDays: 45, max: 200 });
+    // 9.2: a delivery text the provider accepted is evidence the client was
+    // told — stamped on the cuts it covered. 9.6b: "upload to Aryeo" cards made
+    // for program videos (never on a listing) are closed with the reason.
+    const { stampNoticesFromDeliveryTexts } = await import("@/lib/readyToSend");
+    const notices = await stampNoticesFromDeliveryTexts({ sinceDays: 30, max: 200 });
+    const { closeProgramUploadCards } = await import("@/lib/topazJobs");
+    const programCards = await closeProgramUploadCards({ max: 100 });
+    return { library, changes, deliveries, reviewWindows, portalRequests, programLibrary, notices, programCards };
+    // 45s (was 30s): the A42 check can rebuild a client's library, which is a
+    // few seconds each on the rare hour one is missing a cut.
+  }, { maxMs: 45_000 });
   await step("scriptDrafting", async () => {
     const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
     // Questions first: phrasing them for the topic has to happen BEFORE the

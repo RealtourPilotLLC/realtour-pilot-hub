@@ -10,6 +10,7 @@ import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
+import type { SessionBrief } from "@/lib/deliverableOutputs";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
 // clean, serializable view model per shoot — appointment access brief, customer
@@ -212,6 +213,28 @@ export type ShootView = {
   flags: string[];
   photographer: { id: string; name: string } | null;
   zillowTourUrl: string | null; // a Zillow 3D tour link found in the order notes
+  /**
+   * §6.8 / A28 (Sep 25 2026): a content session's topics, the words the client
+   * was shown for each (and whether they approved them), the direction written
+   * with those words, and the brand kit. Null on a listing shoot. Never an
+   * unreleased draft (deliverableOutputs.sessionBriefFor).
+   */
+  session: SessionBrief | null;
+  /**
+   * §7.5: the videos on this job that have a brief of their OWN (a reel and
+   * an MLS video scoped separately) — money-scrubbed, each with its version.
+   * Empty when every video goes by the job's shared instructions.
+   */
+  outputBriefs: ShootOutputBrief[];
+};
+
+/** A per-video brief as the field screen carries it — plain, serialisable, no money. */
+export type ShootOutputBrief = {
+  outputId: string;
+  label: string;
+  format: string;
+  versionLabel: string;
+  sections: { label: string; text: string }[];
 };
 
 export async function getShoot(projectId: string): Promise<ShootView | null> {
@@ -261,6 +284,15 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
   const fieldDoneAt: Date | null =
     p.uploadedAt ??
     (PAST_FIELD.has(p.status) && p.shootDate ? new Date(p.shootDate.getTime() + 24 * 60 * 60 * 1000) : null);
+
+  // §6.8 / §7.5 — the same readers the editor's page and the printed brief
+  // use, so the person holding the camera and the person cutting read one
+  // brief. A failed read is a missing card, never a broken shoot screen.
+  const briefs = await import("@/lib/deliverableOutputs");
+  const [session, outputBriefs] = await Promise.all([
+    p.contentMonthId ? briefs.sessionBriefFor(p.id).catch(() => null) : Promise.resolve(null),
+    briefs.outputBriefsFor(p.id, { scrub: true }).catch(() => []),
+  ]);
 
   return {
     project: {
@@ -356,6 +388,10 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
     flags: p.activities.filter((a) => a.type === ActivityType.FLAG).map((a) => a.body).filter(isFieldFlag),
     photographer: p.photographer,
     zillowTourUrl: extractZillowUrl(primary?.description),
+    session,
+    outputBriefs: outputBriefs
+      .filter((o) => o.directionSource === "own")
+      .map((o) => ({ outputId: o.outputId, label: o.label, format: o.format, versionLabel: o.versionLabel, sections: o.sections.map((x) => ({ label: x.label, text: x.text })) })),
   };
 }
 
