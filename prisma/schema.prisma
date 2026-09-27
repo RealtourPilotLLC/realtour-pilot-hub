@@ -1020,6 +1020,8 @@ model SmartTask {
   id               String    @id @default(cuid())
   status           String    @default("OPEN") // OPEN | IN_PROGRESS | WAITING_* | BLOCKED | COMPLETED | CANCELLED
   taskType         String // appointment_prep | media_qa | delivery | client_reply | reschedule_confirmation | ...
+  // §10 J3: the one output (video) a task is about, when it is about one.
+  outputId         String?
   priority         String    @default("MEDIUM") // URGENT | HIGH | MEDIUM | LOW
   title            String
   summary          String? // human "what happened + what's needed" — shown in the card's expandable section
@@ -1286,6 +1288,9 @@ model Product {
   id               String    @id @default(cuid())
   aryeoId          String    @unique
   title            String
+  // §10 AU-01 phase 2: what an order line needs before it can be fulfilled
+  // (e.g. a video needs a shoot). JSON, owner-edited; null = none known.
+  prerequisitesJson String?
   type             String? // MAIN | ADDON
   category         String?
   active           Boolean   @default(true)
@@ -2429,6 +2434,10 @@ model ProgramSignup {
   id               String   @id @default(cuid())
   checkoutId       String   @unique // Stripe checkout.session id
   subscriptionId   String? // present on monthly plans; watched for lapses
+  // §9 AU-25 (unified handoff batch 5): the subscription's own status as last
+  // read, so a lapse is a money exception rather than a silent live seat.
+  subscriptionStatus    String?
+  subscriptionCheckedAt DateTime?
   stripeCustomerId String?
   email            String?
   name             String?
@@ -5279,3 +5288,98 @@ model EditorDispatch {
   @@unique([projectId, packetVersion])
   @@index([projectId])
 }
+
+// ===========================================================================
+// UNIFIED HANDOFF BATCH 5 (Sep 26 2026) — additive only.
+// ===========================================================================
+
+// §10 capacity and training (G2, G3, A4): a recorded fact about a person's
+// availability. The hub records the decision; it never reassigns, does hours
+// maths or touches payroll from it.
+model CapacityException {
+  id           String    @id @default(cuid())
+  teamMemberId String
+  kind         String // TIME_OFF | TRAINING | BLOCKED | CONNECTIVITY | OTHER
+  startsAt     DateTime
+  endsAt       DateTime?
+  note         String?
+  recordedBy   String
+  createdAt    DateTime  @default(now())
+  cancelledAt  DateTime?
+  cancelledBy  String?
+
+  @@index([teamMemberId, startsAt])
+}
+
+// §10 AutoHDR batch register (A53/AU-21): one row per job per vendor
+// attempt, read from the same Dropbox lists the photo count already makes.
+// An unreadable read is UNKNOWN, never a zero.
+model PhotoEditBatch {
+  id                       String    @id @default(cuid())
+  projectId                String
+  vendorKey                String // 'autohdr'
+  attempt                  Int       @default(1)
+  sourcePath               String?
+  sourceFingerprint        String?
+  rawCount                 Int?
+  droneCount               Int?
+  expectedFinals           Int?
+  finalsPath               String?
+  finalsCount              Int?
+  firstRawAt               DateTime?
+  lastRawAt                DateTime?
+  lastReadAt               DateTime?
+  readOk                   Boolean   @default(false)
+  state                    String    @default("AWAITING_RAWS") // AWAITING_RAWS | SUBMITTED_BY_UPLOAD | PARTIAL | COMPLETE | MISSING | UNKNOWN
+  submissionEvidence       String?
+  duplicateUploadSuspected Boolean   @default(false)
+  resubmittedAt            DateTime?
+  resubmittedBy            String?
+  resubmitReason           String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  @@unique([projectId, vendorKey, attempt])
+  @@index([state])
+}
+
+// §10 AutoHDR balance (AU-20/J1): a reading, never a purchase. Kyle records
+// one on Mondays (Jordan, Sep 25); an API source slots in later.
+model VendorBalanceReading {
+  id         String   @id @default(cuid())
+  vendorKey  String
+  observedAt DateTime
+  credits    Int?
+  dollars    Float?
+  source     String // manual | vendor-email | bank-topup | api
+  recordedBy String
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([vendorKey, observedAt])
+}
+
+// §10 rework cost (AU-26/I4): what a redo actually cost, with evidence.
+// Shown beside the modelled margin, never folded into an "actual profit".
+// Manual rows carry a unique evidenceRef ("manual:<id>") so the pair is unique.
+model ReworkCost {
+  id              String    @id @default(cuid())
+  projectId       String
+  outputId        String?
+  revisionBriefId String?
+  roundId         String?
+  issueCause      String?
+  kind            String // EDITOR_LABOR | VENDOR | TRAVEL | RESHOOT_PAY | REFUND | CREDIT | WAIVED_REVENUE | OTHER
+  amountCents     Int
+  basis           String // actual | estimate
+  evidenceRef     String
+  enteredBy       String
+  enteredAt       DateTime  @default(now())
+  note            String?
+  voidedAt        DateTime?
+  voidedBy        String?
+
+  @@unique([evidenceRef, kind])
+  @@index([projectId])
+}
+
