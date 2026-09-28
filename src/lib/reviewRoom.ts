@@ -113,14 +113,29 @@ const cutKeyOf = (s: { projectId: string; deliverableId: string | null; slot: nu
  * returned today.
  */
 const inWindow = (
-  s: { status: string; decidedAt: Date | null; project?: { status: string } | null },
+  s: { status: string; decidedAt: Date | null; project?: { status: string; deliveredAt?: Date | null } | null },
   since: Date,
 ) => {
   // An approved cut leaves the desk a fortnight after the verdict.
   if (s.status === "APPROVED") return !!s.decidedAt && s.decidedAt >= since;
   // A DELIVERED job's still-PENDING cut is not a work list — the client already
   // has it (131 Woodcutter sat in the queue for days after delivery).
-  return !(s.status === "PENDING" && s.project?.status === "DELIVERED");
+  if (s.status === "PENDING" && s.project?.status === "DELIVERED") return false;
+  // …and nor is a SENT-BACK cut on a job delivered AFTER the send-back: the
+  // revision was finished and delivered outside the Room (Jordan, Sep 28: "38 E
+  // Gay St project is done but its still in the review room" — sent back Sep 1,
+  // delivered Sep 14, still under "In revisions" 27 days later). A job the
+  // client reopens after delivery leaves DELIVERED (REVISION/EDITING), and a
+  // send-back made AFTER delivery with no reopen is real open work, so both of
+  // those still show.
+  if (
+    s.status === "CHANGES_REQUESTED" &&
+    s.project?.status === "DELIVERED" &&
+    !!s.project.deliveredAt &&
+    !!s.decidedAt &&
+    s.project.deliveredAt > s.decidedAt
+  ) return false;
+  return true;
 };
 
 // The projects worth reading at all: those with a cut in flight or a verdict
@@ -154,6 +169,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
             id: true,
             title: true,
             status: true,
+            deliveredAt: true,
             // avatarUrl: Jordan (Sep 2) — "if the agent has a profile photo in
             // Aryeo that should be shown … in other places the clients are
             // mentioned." The queue rows are one of those places.
@@ -374,7 +390,7 @@ export async function getPhotographerReviewQueue(memberId: string): Promise<Phot
     take: 200,
     include: {
       project: {
-        select: { id: true, title: true, status: true, client: { select: { name: true, avatarUrl: true } } },
+        select: { id: true, title: true, status: true, deliveredAt: true, client: { select: { name: true, avatarUrl: true } } },
       },
     },
   });
