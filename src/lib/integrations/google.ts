@@ -419,6 +419,12 @@ async function gmailAccounts(): Promise<{ email: string; refreshToken: string }[
   }
 }
 
+/** The connected mailboxes' addresses — no tokens leave this file (§9 mailbox
+ *  health: "connected" is its own line, separate from "reading"). */
+export async function connectedGmailMailboxes(): Promise<string[]> {
+  return (await gmailAccounts()).map((a) => a.email.toLowerCase());
+}
+
 /**
  * A live access token for the OWNER's Google account (info@) — the identity
  * whose calendar and Drive the hub acts on. Returns null when that mailbox
@@ -501,6 +507,13 @@ function parseFrom(from: string): { name: string; email: string } {
 // list (no "new lead" tasks from unknown senders). info@ is Jordan's personal
 // account, so unknown senders there are usually personal mail, not leads.
 const CLIENTS_ONLY_MAILBOXES = ["info@realtourpilot.com"];
+
+// THE MAILBOXES THE HUB IS SUPPOSED TO BE READING (§9, Sep 26 2026). info@ is
+// Jordan's (known clients only); hello@ is Kyle's login and the ONLY path an
+// email lead comes in on. A healthy info@ says nothing about hello@, so each is
+// checked on its own every scan (gmailHealth.ts), and one missing from the
+// connected map is reported as not connected — never quietly retired.
+export const EXPECTED_MAILBOXES = ["info@realtourpilot.com", "hello@realtourpilot.com"] as const;
 
 // Jordan's personal mailbox — its comms are OWNER-tier (logComm stamps unknown
 // senders minRole OWNER). The task full-view must not live-fetch its threads
@@ -909,11 +922,36 @@ export async function closeAckedEmailReplyTasks(): Promise<number> {
   return closed;
 }
 
-export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
+/** One mailbox's read on one scan (§9 mailbox health, Sep 26 2026). */
+export type MailboxRead = { email: string; ok: boolean; scanned: number; error?: string };
+
+export async function syncGmail(): Promise<{ degraded: boolean; scanned: number; tasks: number; mailboxes: MailboxRead[] }> {
   const { recordClientCommunication } = await import("@/lib/comms");
   const { logComm } = await import("@/lib/commLog");
   const accounts = await gmailAccounts();
-  if (accounts.length === 0) throw new Error("Gmail is not connected.");
+  // CONNECTED IS NOT READING (§9, Sep 26 2026). A mailbox whose token Google
+  // refused used to be skipped with no record at all, and the cron step stayed
+  // green: the only symptom of hello@ going dark was email that never appeared.
+  // hello@ is the only path an email LEAD comes in on, and client mail sent
+  // only there vanishes too, so each mailbox's read is now recorded and the
+  // owner is told the moment an expected one stops being read.
+  const mailboxes: MailboxRead[] = [];
+  const reportReads = async () => {
+    const { reportGmailReadBroken, reportGmailReadWorking } = await import("@/lib/gmailHealth");
+    for (const m of mailboxes) {
+      if (m.ok) await reportGmailReadWorking(m.email);
+      else await reportGmailReadBroken(m.email, m.error ?? "not read");
+    }
+  };
+  for (const mb of EXPECTED_MAILBOXES) {
+    if (!accounts.some((a) => a.email.toLowerCase() === mb)) {
+      mailboxes.push({ email: mb, ok: false, scanned: 0, error: "not connected" });
+    }
+  }
+  if (accounts.length === 0) {
+    await reportReads().catch(() => {});
+    throw new Error("Gmail is not connected.");
+  }
 
   // Preload clients + contacts for email matching (shared across mailboxes).
   const [clients, contacts] = await Promise.all([
@@ -954,7 +992,9 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     try {
       token = await accessTokenFor(account.refreshToken);
     } catch {
-      continue; // token revoked / expired — skip this mailbox
+      // Token revoked / expired — skip this mailbox, and SAY so (§9, Sep 26).
+      mailboxes.push({ email: account.email, ok: false, scanned: 0, error: "token refresh failed — reconnect this mailbox" });
+      continue;
     }
     tokens.set(account.email, token);
     // NOTE: do NOT add `category:primary` — these are Workspace mailboxes that
@@ -966,16 +1006,26 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     // flooded mailbox can't run away.
     const ids: string[] = [];
     let pageToken: string | undefined;
-    for (let page = 0; page < 6; page++) {
-      const list = await gmail<{ messages?: { id: string }[]; nextPageToken?: string }>(
-        "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me") + "&maxResults=50" +
-          (pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : ""),
-        token,
-      );
-      for (const m of list.messages ?? []) ids.push(m.id);
-      if (!list.nextPageToken) break;
-      pageToken = list.nextPageToken;
+    // A failed LIST used to throw out of syncGmail altogether, so one broken
+    // mailbox stopped the other one being read as well. Now it is this
+    // mailbox's failure, recorded, and the loop moves on (§9, Sep 26).
+    try {
+      for (let page = 0; page < 6; page++) {
+        const list = await gmail<{ messages?: { id: string }[]; nextPageToken?: string }>(
+          "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me") + "&maxResults=50" +
+            (pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : ""),
+          token,
+        );
+        for (const m of list.messages ?? []) ids.push(m.id);
+        if (!list.nextPageToken) break;
+        pageToken = list.nextPageToken;
+      }
+    } catch (e) {
+      mailboxes.push({ email: account.email, ok: false, scanned: 0, error: `inbox read failed — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}` });
+      tokens.delete(account.email); // nothing below may lean on a mailbox we could not read
+      continue;
     }
+    mailboxes.push({ email: account.email, ok: true, scanned: ids.length });
     scanned += ids.length;
 
     // One query for everything already seen, instead of a read per message.
@@ -1039,6 +1089,26 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           // in-house/Review Room now, so a stray Luma email must never mint
           // work again. The email still logs to comms memory above.
           return 0;
+        }
+
+        // AutoHDR (§10 AU-20/A53, Sep 26): its mail used to fall into the
+        // vendor drop below unlogged, so a low-credit warning reached nobody.
+        // Now it is logged owner-only, a credit/payment warning becomes one
+        // task a day for Jordan, and a "batch complete" notice is attached to
+        // the batch whose street it names. Never a lead, never a client task.
+        if (domain) {
+          const vb = await import("@/lib/vendorBalance");
+          if (vb.isAutohdrDomain(domain)) {
+            const r = await vb.handleAutohdrMail({
+              externalId: `gmail-${dedupe}`,
+              gmailId: id,
+              subject,
+              body: fullBody || snippet || text,
+              fromEmail: email,
+              occurredAt: msg.internalDate ? new Date(Number(msg.internalDate)) : undefined,
+            });
+            return r.tasksCreated;
+          }
         }
 
         // Resolve the sender to a client account FIRST (email → synced contact →
@@ -1363,5 +1433,9 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     }
   } catch { /* best-effort: the boards are no worse off than before */ }
 
-  return { scanned, tasks };
+  // Health last, so a slow report can never cost a message its scan.
+  await reportReads().catch((e) => console.warn("gmail read-health report failed", e));
+  // `degraded` FIRST: the cron summary clips each step's result at 300
+  // characters, and /connections reads this flag off the stored run.
+  return { degraded: mailboxes.some((m) => !m.ok), scanned, tasks, mailboxes };
 }

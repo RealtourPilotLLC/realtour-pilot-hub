@@ -312,6 +312,16 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
       }
     }
     if (latest && (latest.direction ?? "").toLowerCase().startsWith("out")) {
+      // THE NEWEST OUTBOUND MAY BE A MACHINE (§9, Sep 26 2026). This backstop
+      // closed on direction alone, so the after-hours auto-reply sent at 20:06
+      // closed the client's 20:05 question when the top-of-the-hour tick ran at
+      // 21:00 — outside the few minutes repairAfterHoursCollateral looks at —
+      // and OpenPhone's missed-call greeting closed callbacks the same way. The
+      // row the receiver (or the sender) logged for that message says who wrote
+      // it; without one we cannot tell, and the realtime webhook is the
+      // authority, so the task stays open — a stale "waiting" costs Kyle a
+      // glance, a false "answered" costs a client.
+      if (!(await outboundWasHuman(t.clientId, latest))) continue;
       const r = await prisma.smartTask.updateMany({
         where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
         data: { status: "COMPLETED", completedAt: new Date() },
@@ -320,6 +330,34 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
     }
   }
   return closed;
+}
+
+/** Did a PERSON send this outbound OpenPhone message? Read off the comms row
+ *  logged for it — by OpenPhone's message id first (the receiver and every
+ *  automated sender stamp `op-<id>`), then by the same words to the same
+ *  client within half an hour of it. No row, or an automated one (auto-*, a
+ *  hub staff text, OpenPhone's greeting): not a person, as far as we can
+ *  prove. The words alone are checked too, so a greeting with no row is
+ *  refused on its face. Exported for the acceptance drill. */
+export async function outboundWasHuman(clientId: string | null, m: OpMessage): Promise<boolean> {
+  // Dynamic on purpose: replyQueue imports this file (phoneKey).
+  const { isAutomatedOutbound } = await import("@/lib/replyQueue");
+  const { prisma: db } = await import("@/lib/prisma");
+  const text = (m.text ?? m.body ?? "").trim();
+  if (isAutomatedOutbound({ source: null, body: text })) return false;
+  const at = m.createdAt ? new Date(m.createdAt) : null;
+  const row =
+    (m.id ? await db.commLog.findFirst({ where: { externalId: `op-${m.id}` }, select: { source: true, body: true } }).catch(() => null) : null) ??
+    (clientId && text && at && !isNaN(at.getTime())
+      ? await db.commLog
+          .findFirst({
+            where: { clientId, direction: "out", body: text, occurredAt: { gte: new Date(at.getTime() - 30 * 60_000), lte: new Date(at.getTime() + 30 * 60_000) } },
+            select: { source: true, body: true },
+          })
+          .catch(() => null)
+      : null);
+  if (!row) return false;
+  return !isAutomatedOutbound(row);
 }
 
 // Pull conversations across pages and return them sorted newest-first.

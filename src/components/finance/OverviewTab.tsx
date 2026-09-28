@@ -12,6 +12,7 @@ import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
 import { BooksReview } from "@/components/finance/BooksReview";
 import { listFlaggedQbo } from "@/app/sales/booksReviewActions";
 import { SavingsPlan, type SavingsItemView } from "@/components/finance/SavingsPlan";
+import { MoneyExceptionsCard } from "@/components/finance/MoneyExceptionsCard";
 import { getCashPosition, getMonthlyPnl, monthBounds } from "@/lib/finance";
 import { prisma } from "@/lib/prisma";
 import { etDate , etYearStartKey } from "@/lib/datetime";
@@ -247,6 +248,10 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
         {/* SAVINGS PLAN — the $5k/mo cut checklist, tick-off-able */}
         {savingsItems.length > 0 && <SavingsPlan items={savingsItems} />}
 
+        {/* MONEY & IDENTITY CHECKS (§10 AU-25, Sep 26) — silent when nothing
+            disagrees; report-only when something does. */}
+        <MoneyExceptionsCard />
+
         {/* CASH & RUNWAY */}
         <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -295,7 +300,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           </div>
           {cash.arOutstanding > 0 && (
             <Link href="/sales?tab=unpaid" className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
-              Chase the {m0(cash.arOutstanding)} you're owed <ArrowRight className="size-3" />
+              Chase the {m0(cash.arOutstanding)} you&rsquo;re owed <ArrowRight className="size-3" />
             </Link>
           )}
         </section>
@@ -312,7 +317,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               </span>
             )}
           </div>
-          <p className="mb-4 text-xs text-muted">Counted where the money is processed — never at the bank, so payout deposits and personal-account detours can't double-count.</p>
+          <p className="mb-4 text-xs text-muted">Counted where the money is processed — never at the bank, so payout deposits and personal-account detours can&rsquo;t double-count.</p>
           {/* bookkeeping.ts builds venmoNote precisely so any surface showing the
               Venmo rail (or the total) states the gap. It had no render site. */}
           {rev.venmoNote && (
@@ -518,16 +523,14 @@ function Donut({ total, rails }: { total: number; rails: { key: string; label: s
     return <div className="flex h-40 items-center justify-center text-sm text-muted">No revenue recorded yet for 2026.</div>;
   }
   const r = 42, cx = 60, cy = 60, C = 2 * Math.PI * r;
-  let offset = 0;
-  const arcs = rails.map((s) => {
-    const len = (s.amount / total) * C;
-    const el = (
-      <circle key={s.key} cx={cx} cy={cy} r={r} fill="none" stroke={s.color} strokeWidth={16}
-        strokeDasharray={`${len} ${C - len}`} strokeDashoffset={-offset} transform={`rotate(-90 ${cx} ${cy})`} />
-    );
-    offset += len;
-    return el;
-  });
+  // Each arc starts where the ones before it ended — computed up front, since
+  // the React compiler refuses a variable reassigned while rendering.
+  const lens = rails.map((s) => (s.amount / total) * C);
+  const starts = lens.map((_, i) => lens.slice(0, i).reduce((a, b) => a + b, 0));
+  const arcs = rails.map((s, i) => (
+    <circle key={s.key} cx={cx} cy={cy} r={r} fill="none" stroke={s.color} strokeWidth={16}
+      strokeDasharray={`${lens[i]} ${C - lens[i]}`} strokeDashoffset={-starts[i]} transform={`rotate(-90 ${cx} ${cy})`} />
+  ));
   return (
     <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center sm:gap-7">
       <svg viewBox="0 0 120 120" className="size-40 shrink-0">

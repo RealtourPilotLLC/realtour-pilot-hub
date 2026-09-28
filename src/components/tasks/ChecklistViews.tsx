@@ -11,6 +11,7 @@ import { HandledButton, SlackDoneButton, NotNeededButton, SlackAssignPicker } fr
 import type { SlackTaskRow } from "@/lib/commsBoard";
 import { etTime } from "@/lib/datetime";
 import { TaskFocus } from "@/components/queue/TaskFocus";
+import { AtRiskUpdates } from "@/components/tasks/AtRiskUpdates";
 
 // No money on an ADMIN screen (Jordan's standing rule): a Slack to-do's title,
 // a client's revision ask, or the message a client is waiting on can carry a
@@ -53,6 +54,8 @@ export async function CommsView({ tabs, channel }: { tabs: ReactNode; channel: "
   const sub = "Everything still owed an answer, grouped by who's waiting. Rows clear on their own when a reply goes out — tick only what you handled outside the hub.";
   return (
     <Shell tabs={tabs} title="Unanswered Comms" subtitle={sub}>
+      {/* Promises at risk (AU-24, Sep 26): get ahead of the client's "where is it?". */}
+      <AtRiskUpdates />
       <div className="mb-4 flex gap-1.5">
         <Link href="/tasks?tab=comms" className={channel === "phone" ? subActive : subIdle}>
           <Phone className="mr-1.5 inline size-3.5" />Phone {phone.length > 0 && <b className="ml-1">{phone.length}</b>}

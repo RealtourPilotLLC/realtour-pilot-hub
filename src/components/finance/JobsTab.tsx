@@ -25,7 +25,9 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
   // Best/worst only over jobs with a cost actually booked — a $0-cost job (owner
   // shot it, payout excluded, or rates unconfigured) shows a fake 100% margin and
   // would falsely crown "most profitable."
-  const rated = data.jobs.filter((j) => j.revenue > 0 && (j.photographerCost > 0 || j.editingCost > 0));
+  // …and only over jobs whose costs are all KNOWN: a photo job with uncounted
+  // raws is missing its photo editing, so its margin reads high (§10 AU-26).
+  const rated = data.jobs.filter((j) => j.costComplete && j.revenue > 0 && (j.photographerCost > 0 || j.editingCost > 0));
   const best = [...rated].sort((a, b) => (b.marginPct ?? -9) - (a.marginPct ?? -9))[0];
   const worst = [...rated].sort((a, b) => (a.marginPct ?? 9) - (b.marginPct ?? 9))[0];
 
@@ -39,8 +41,25 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
           <Kpi icon={Briefcase} accent="#6ba3d6" label="Jobs shot" value={String(data.count)} sub={`last ${WINDOW_DAYS} days`} />
           <Kpi icon={DollarSign} accent="#5cb98a" label="Revenue" value={m0(data.revenue)} sub="eligible invoice" />
           <Kpi icon={Camera} accent="#d4a95f" label="Shooter + editing" value={m0(data.photographerCost + data.editingCost)} sub={`${m0(data.photographerCost)} shoot · ${m0(data.editingCost)} editing`} />
-          <Kpi icon={Percent} accent={data.avgMarginPct != null && data.avgMarginPct < 0.3 ? "#ec6a6a" : "#5cb98a"} label="Avg margin" value={pctOf(data.avgMarginPct)} sub={`${m0(data.margin)} after shooter + editing`} />
+          <Kpi icon={Percent} accent={data.avgMarginPct != null && data.avgMarginPct < 0.3 ? "#ec6a6a" : "#5cb98a"} label={data.marginComplete ? "Avg margin" : "Avg margin · incomplete"} value={pctOf(data.avgMarginPct)} sub={data.marginComplete ? `${m0(data.margin)} after shooter + editing` : `${m0(data.margin)} · ${data.uncountedJobs} job${data.uncountedJobs === 1 ? "" : "s"} missing photo cost`} />
         </div>
+
+        {/* UNKNOWN IS NOT ZERO, and rework is not profit maths (§10 AU-26). */}
+        {(data.uncountedJobs > 0 || data.reworkActual != null || data.reworkEstimate != null) && (
+          <div className="space-y-1 rounded-2xl border border-border bg-surface px-4 py-3 text-xs text-muted">
+            {data.uncountedJobs > 0 && (
+              <p>
+                <span className="font-semibold text-warning">{data.uncountedJobs} photo job{data.uncountedJobs === 1 ? "" : "s"} not counted yet</span> — their photo editing is unknown, so the margin above is higher than it will be. Marked * below.
+              </p>
+            )}
+            {(data.reworkActual != null || data.reworkEstimate != null) && (
+              <p>
+                <span className="font-semibold text-foreground">Rework recorded:</span> {data.reworkActual != null ? `${m2(data.reworkActual)} actual` : "no actuals"}
+                {data.reworkEstimate != null && ` · ${m2(data.reworkEstimate)} estimated`} — shown beside the modelled margin, never taken out of it.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* best / worst */}
         {best && worst && (
@@ -64,7 +83,7 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
             <Briefcase className="size-4 text-brand" /> Job-by-job
           </div>
           <div className="overflow-x-auto scroll-thin">
-            <table className="w-full min-w-[860px] text-sm">
+            <table className="w-full min-w-[940px] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-2">
                   <th className="px-5 py-2 font-medium">Property</th>
@@ -74,7 +93,8 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
                   <th className="px-3 py-2 text-right font-medium">Photog</th>
                   <th className="px-3 py-2 text-right font-medium">Editing</th>
                   <th className="px-3 py-2 text-right font-medium">Margin</th>
-                  <th className="px-5 py-2 text-right font-medium">%</th>
+                  <th className="px-3 py-2 text-right font-medium">%</th>
+                  <th className="px-5 py-2 text-right font-medium" title="Recorded rework cost (actual), beside the margin — not subtracted">Rework</th>
                 </tr>
               </thead>
               <tbody>
@@ -88,13 +108,14 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
                     <td className="px-3 py-2.5 text-muted-2">{j.shootDate ? etDate(j.shootDate) : "—"}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{m2(j.revenue)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted">{m2(j.photographerCost)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-muted" title={[j.premiumVideos ? `${j.premiumVideos}× premium @ $299 (Luma)` : "", j.monthlyVideos ? `${j.monthlyVideos}× monthly social @ $120` : "", j.standardVideos ? `${j.standardVideos}× standard @ $40` : "", j.finishedPhotos != null ? `${j.finishedPhotos} finished photos @ $0.50 (AutoHDR)` : "photos not counted yet"].filter(Boolean).join(" · ") || "no editing"}>{j.editingCost ? m2(j.editingCost) : "—"}</td>
-                    <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${j.margin < 0 ? "text-danger" : "text-foreground"}`}>{m2(j.margin)}</td>
-                    <td className={`px-5 py-2.5 text-right tabular-nums ${j.marginPct != null && j.marginPct < 0.3 ? "text-warning" : "text-muted"}`}>{pctOf(j.marginPct)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted" title={[j.premiumVideos ? `${j.premiumVideos}× premium @ $299 (Luma)` : "", j.monthlyVideos ? `${j.monthlyVideos}× monthly social @ $120` : "", j.standardVideos ? `${j.standardVideos}× standard @ $40` : "", j.finishedPhotos != null ? `${j.finishedPhotos} finished photos @ $0.50 (AutoHDR)` : j.photoCost === null ? "photos not counted yet — photo editing unknown, not included" : ""].filter(Boolean).join(" · ") || "no editing"}>{j.editingCost ? m2(j.editingCost) : "—"}{j.photoCost === null && <span className="text-warning"> +?</span>}</td>
+                    <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${j.margin < 0 ? "text-danger" : "text-foreground"}`} title={j.costComplete ? undefined : "Incomplete — photo editing not counted yet"}>{m2(j.margin)}{!j.costComplete && <span className="text-warning">*</span>}</td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums ${j.marginPct != null && j.marginPct < 0.3 ? "text-warning" : "text-muted"}`}>{pctOf(j.marginPct)}</td>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-muted" title={j.reworkEstimate != null ? `${m2(j.reworkEstimate)} estimated` : undefined}>{j.reworkActual != null ? m2(j.reworkActual) : j.reworkEstimate != null ? `~${m2(j.reworkEstimate)}` : "—"}</td>
                   </tr>
                 ))}
                 {data.jobs.length === 0 && (
-                  <tr><td colSpan={8} className="px-5 py-8 text-center text-sm text-muted">No shoots in the last {WINDOW_DAYS} days.</td></tr>
+                  <tr><td colSpan={9} className="px-5 py-8 text-center text-sm text-muted">No shoots in the last {WINDOW_DAYS} days.</td></tr>
                 )}
               </tbody>
             </table>

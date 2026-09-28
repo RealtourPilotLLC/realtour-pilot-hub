@@ -2961,7 +2961,7 @@ async function announceReady(
     channel === "slack" ? `— ${name} pinged by Slack DM; ${slack}.`
     : channel === "sms" ? `— ${name} texted (SMS); ${slack}.`
     : channel === "relay" ? `— ${name} has no Slack/phone on file; relayed to ops Slack to pass along by hand.`
-    : channel === "quiet" ? `— bell posted for ${name}; ping held for their overnight quiet hours; ${slack}.`
+    : channel === "quiet" ? `— bell posted for ${name}; their ping is held until their quiet time ends; ${slack}.`
     : `— bell posted for ${name}; no direct ping went out; ${slack}.`
   );
 }
@@ -3740,15 +3740,22 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
         },
       });
       try {
-        const { notifyInApp } = await import("@/lib/notify");
-        const targets = await creativeAlertTargets(p.photographerId, `/upload/${projectId}`);
-        await notifyInApp({
-          kind: "raws_missing",
-          title: `Video files needed — ${street}`,
-          href: `/projects/${projectId}`,
-          targets,
-          dedupeKey: `raw-video-missing-bell-${projectId}`,
-        });
+        // Settings → Internal alerts → "Raw video missing" (Sep 26 2026: the
+        // switch was drawn and read by nothing). It gates the ALERT — the bell
+        // rows and the texts/DMs they bridge to — never the task above: the
+        // "Find the raw video" row is capture, and capture is always on.
+        const { internalAlertRules } = await import("@/lib/settings");
+        if ((await internalAlertRules()).rawVideoMissing.enabled) {
+          const { notifyInApp } = await import("@/lib/notify");
+          const targets = await creativeAlertTargets(p.photographerId, `/upload/${projectId}`);
+          await notifyInApp({
+            kind: "raws_missing",
+            title: `Video files needed — ${street}`,
+            href: `/projects/${projectId}`,
+            targets,
+            dedupeKey: `raw-video-missing-bell-${projectId}`,
+          });
+        }
       } catch { /* nudge bell is best-effort */ }
     }
     return; // hold the edit task until footage is findable
@@ -4612,6 +4619,14 @@ async function syncOneProjectTasks(
     });
     created++;
   }
+  // §10 J3 (Sep 26 2026): an order line whose work needs a document first (Lot
+  // Lines → the recorded plat) gets its find-the-file and work-from-it pair,
+  // idempotently; the pair goes when the line does. Its own module; a failure
+  // here never stops the rest of the reconcile.
+  try {
+    const { ensureSpecialCorrectionDependencies } = await import("@/lib/assetDependencies");
+    created += await ensureSpecialCorrectionDependencies(p.id, (p.orderItems ?? []).map((it) => it.title));
+  } catch { /* the next hourly pass is the backstop */ }
   return created;
 }
 

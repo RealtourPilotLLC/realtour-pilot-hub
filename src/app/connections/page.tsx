@@ -10,6 +10,8 @@ import { googleAuthorizeUrl, googleConfigured, gmailSendHealth } from "@/lib/int
 import { slackBotScopes } from "@/lib/integrations/slack";
 import { webhookHealthByProvider, webhookLaneHealth, unresolvedWebhookFailures, webhookErrorCount } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
+import { MailboxHealth, type MailboxRow } from "@/components/connections/MailboxHealth";
+import { mailboxReadHealth } from "@/lib/gmailHealth";
 import { WebhookHealthStrip } from "@/components/connections/WebhookHealthStrip";
 import { AryeoCutover, type CutoverState } from "@/components/connections/AryeoCutover";
 import { TopazLane, type TopazLaneJob, type TopazLaneStats } from "@/components/connections/TopazLane";
@@ -17,6 +19,7 @@ import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
 import { TranscriptionCard } from "@/components/connections/TranscriptionCard";
 import { InstagramCard } from "@/components/connections/InstagramCard";
 import { StripeWebhookCard } from "@/components/connections/StripeWebhookCard";
+import { AutohdrCard } from "@/components/connections/AutohdrCard";
 import { stripeWebhookStatus } from "@/lib/stripeSignups";
 import { transcriptionCardData } from "@/lib/cutTranscripts";
 import { instagramCardData } from "@/lib/publishing";
@@ -66,12 +69,16 @@ async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }>
             slowest = `${name} ${Math.round(t / 1000)}s`;
           }
         } catch { /* unreadable summary */ }
+        // A run whose steps all returned can still have failed at part of its
+        // job: the comms scan reads two mailboxes and says `degraded` when one
+        // of them was not read (§9, Sep 26). That is not green.
+        const degraded = r.job === "gmail" && /\\?"degraded\\?":true/.test(r.summary ?? "");
         entry.runs.push({
           id: r.id,
           at: r.startedAt.toISOString(),
           // No finishedAt = still running or hard-killed mid-run: unknown, shown grey.
-          ok: r.finishedAt ? r.ok : null,
-          error: r.error,
+          ok: r.finishedAt ? r.ok && !degraded : null,
+          error: r.error ?? (degraded ? "degraded — a mailbox was not read (see Mailboxes below)" : null),
           skipped,
           timedOut,
           slowest,
@@ -82,6 +89,30 @@ async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }>
     return { crons: [...byJob.values()].sort((a, b) => a.job.localeCompare(b.job)), ready: true };
   } catch {
     return { crons: [], ready: false };
+  }
+}
+
+// The Mailboxes panel's rows (§9, Sep 26 2026): connected, reading and sending
+// as three separate facts. Reading comes off what the five-minute scan
+// recorded — this page never asks Google about it — and sending off the live
+// probe the page already runs. Ages are worded here, once, at request time.
+async function mailboxRowsFor(send: { email: string; canSend: boolean | null }[] | null): Promise<MailboxRow[] | null> {
+  try {
+    const now = Date.now();
+    const ago = (d: Date) => {
+      const min = Math.max(0, Math.round((now - d.getTime()) / 60_000));
+      return min < 60 ? `${min}m ago` : min < 48 * 60 ? `${Math.round(min / 60)}h ago` : `${Math.round(min / 1440)}d ago`;
+    };
+    return (await mailboxReadHealth()).map((m) => ({
+      email: m.email,
+      connected: m.connected,
+      lastReadAgo: m.lastReadAt ? ago(m.lastReadAt) : null,
+      problem: m.problem,
+      reading: m.reading,
+      canSend: send?.find((g) => g.email.toLowerCase() === m.email)?.canSend ?? null,
+    }));
+  } catch {
+    return null;
   }
 }
 
@@ -241,6 +272,11 @@ export default async function ConnectionsPage({
     // and how signups were activated. Never calls Stripe.
     stripeWebhookStatus().catch(() => null),
   ]);
+
+  // Mailboxes (§9, Sep 26 2026): connected, reading and sending as three
+  // separate facts. Reading comes off what the five-minute scan recorded —
+  // this page never asks Google about it — and sending off the probe above.
+  const mailboxRows = byProvider.has("gmail") ? await mailboxRowsFor(gmailSend) : null;
 
   // Dates out, ISO strings in: the card is a client component, and the house
   // rule is that every date crosses that line already formatted for ET.
@@ -471,6 +507,9 @@ export default async function ConnectionsPage({
         {/* Sync health: cron run history + webhook rejections + unsigned receivers. */}
         <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />
 
+        {/* Mailboxes (§9, Sep 26): is each inbox actually being READ? */}
+        {mailboxRows && <MailboxHealth rows={mailboxRows} />}
+
         {/* The 1080p pass (Sep 16). It sits with the other lane-health panels
             rather than on the Topaz card below, because it answers an
             operational question — what is running, what did it cost, what
@@ -478,6 +517,11 @@ export default async function ConnectionsPage({
             API to build against at all, so the card says that in plain words
             where it is explained. */}
         <TopazLane stats={topazStats} jobs={topazRows} />
+
+        {/* AutoHDR (§10 AU-20, Sep 26): not a provider the hub connects to —
+            its own card says so, with the last reading and the last top-up
+            seen in the bank. The reading form is on Settings, where Kyle is. */}
+        <AutohdrCard />
         <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
           <div className="text-sm">

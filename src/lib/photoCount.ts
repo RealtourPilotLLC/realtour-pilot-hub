@@ -54,14 +54,36 @@ export async function countProjectPhotos(projectId: string): Promise<{ raw: numb
       where: { id: p.id },
       data: { rawPhotoCount: imgs.length, dronePhotoCount: drone, photoCountedAt: new Date() },
     });
+    await registerBatch(p.id, entries);
     return { raw: imgs.length, drone };
   } catch (e) {
     if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) {
       // Folder genuinely doesn't exist → trustworthy zero.
       await prisma.project.update({ where: { id: p.id }, data: { rawPhotoCount: 0, dronePhotoCount: 0, photoCountedAt: new Date() } });
+      await registerBatch(p.id, []);
       return { raw: 0, drone: 0 };
     }
+    await registerBatch(p.id, null, e);
     return null; // auth/rate-limit/network — leave existing counts untouched
+  }
+}
+
+/**
+ * The AutoHDR batch register (§10 A53, Sep 26) rides on THIS read: the raws
+ * just listed are handed over whole, so the register costs one more list (the
+ * 04 finals) and never a second read of 01. `null` = the raw read failed —
+ * the register marks the batch unreadable and moves no count. Best-effort: a
+ * register failure must never cost the job its photo count.
+ */
+async function registerBatch(projectId: string, entries: { name: string; tag: string; path: string }[] | null, err?: unknown) {
+  try {
+    const { reconcilePhotoBatch } = await import("@/lib/photoEditBatches");
+    await reconcilePhotoBatch(projectId, {
+      rawEntries: entries,
+      readError: err === undefined ? undefined : (err instanceof Error ? err.message : String(err)).slice(0, 120),
+    });
+  } catch (e) {
+    console.warn("photoCount: batch register skipped", projectId, e instanceof Error ? e.message : e);
   }
 }
 

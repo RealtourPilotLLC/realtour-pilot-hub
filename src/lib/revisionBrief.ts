@@ -34,6 +34,9 @@ import type { DueSource, ReopenedClock } from "@/lib/deliveryBoard";
 //     than dropping them — with the client's wording, so the editor can judge.
 //   · A question the client asked, or a thing they merely mentioned, is not a
 //     change request.
+//   · Never state a property fact — lot lines, boundaries, acreage — except
+//     from a plat or survey the client supplies (§10 J3, Sep 26 2026; the
+//     file itself is a dependency task, lib/assetDependencies).
 // ---------------------------------------------------------------------------
 
 export const REVISION_AREAS = [
@@ -149,7 +152,8 @@ RULES
 7. Preserve exact specifics — colour names, capitalisation they asked for, wording, timestamps, which video. These are the difference between a usable item and a useless one.
 8. Write asks in the imperative: "Replace the gold glitter with big chunky colourful glitter."
 9. Never mention prices, invoices, or payment. If the client discussed money, leave it out entirely.
-10. SAY WHICH VIDEO. When the job has more than one video you are given the list, each with a reference code and its current file name. Match each item to the video(s) the client was talking about and put those codes in "videos" with scope "named". Use "all" only when they plainly meant every one of them. If they never said, scope is "unknown" — an item on the wrong video is worse than one nobody has placed.`;
+10. SAY WHICH VIDEO. When the job has more than one video you are given the list, each with a reference code and its current file name. Match each item to the video(s) the client was talking about and put those codes in "videos" with scope "named". Use "all" only when they plainly meant every one of them. If they never said, scope is "unknown" — an item on the wrong video is worse than one nobody has placed.
+11. NEVER STATE PROPERTY FACTS. Lot lines, property or boundary lines, acreage, easements and survey measurements come only from a recorded plat or survey the client supplies. Never state, estimate or describe where a boundary runs. If the client asks for lot lines or a boundary drawn, the item says to draw them from the plat or survey they send, and that document goes under what the client is sending.`;
 
 // The client's ask can be long (a 20-minute call). Give the model plenty of
 // room but keep a hard ceiling so one runaway transcript can't blow the request.

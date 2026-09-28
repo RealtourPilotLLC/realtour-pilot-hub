@@ -200,8 +200,10 @@ export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ o
     // forever on is an empty rota, so that case gets its own sentence.
     const { describeCoverage } = await import("@/lib/coverage");
     const window = describeCoverage(merged.coverage);
+    // Sep 26 2026 (Jordan): an urgent page to the on-call between 10 PM and
+    // 7 AM waits until 7 AM — the sentence says so rather than "goes to Kyle".
     const rota = onCallName
-      ? `Outside that, routine alerts wait for the next covered period and urgent ones go to ${onCallName.split(/\s+/)[0]}.`
+      ? `Outside that, routine alerts wait for the next covered period and urgent ones go to ${onCallName.split(/\s+/)[0]} — except between 10 PM and 7 AM, when the page waits until 7 AM and the ops channel is told it is waiting.`
       : "Outside that, routine alerts wait for the next covered period. Nobody is named for urgent ones, so they page whoever holds the owner/admin role, exactly as before.";
     return { ok: true, message: `Saved — the next run follows these rules. Covered ${window}. ${rota}` };
   } catch (e) {
@@ -281,6 +283,128 @@ export async function saveTeamNotifyPrefs(teamMemberId: string, prefs: NotifyPre
       ok: true,
       message: `Saved for ${first} — ${summary}. Applies from the next ping.`,
     };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
+// ---- Notification schedule (Jordan, Sep 26 2026: "I just don't want
+// notifications on Saturdays, until 7:30pm. Implement in settings a setting
+// for controlling notification timing by day and time.") -------------------
+// One store row PER PERSON (notify-schedule:<id>), saved on its own press, so
+// saving Kyle's windows can never touch Jordan's. Owner or admin may edit
+// anyone's; anybody signed in may edit their OWN (a person's quiet time is
+// theirs to set). Every save writes an AuditLog row, and a save built on a
+// stale read is refused rather than silently winning.
+
+/** Who may write this person's schedule. Local dev (no enforcement) passes. */
+async function scheduleWriter(teamMemberId: string): Promise<{ ok: true; by: string | null } | { ok: false; message: string }> {
+  const { authEnforced } = await import("@/lib/auth/guards");
+  const me = await getCurrentUser().catch(() => null);
+  if (!authEnforced()) return { ok: true, by: me?.email ?? null };
+  if (!me) return { ok: false, message: "Please sign in to do that." };
+  if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
+  if (me.realRole === "OWNER" || me.realRole === "ADMIN") return { ok: true, by: me.email };
+  if (me.teamMemberId && me.teamMemberId === teamMemberId) return { ok: true, by: me.email };
+  return { ok: false, message: "You can set your own notification schedule; someone else's is for Jordan or Kyle to change." };
+}
+
+async function scheduleRows(ids: string[] | null): Promise<import("@/lib/notifyPrefDefaults").NotifyScheduleRow[]> {
+  const { prisma } = await import("@/lib/prisma");
+  const { scheduleOf, heldForMembers } = await import("@/lib/notifySchedule");
+  const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+  const { describeQuietWindows } = await import("@/lib/notifyPrefDefaults");
+  const members = await prisma.teamMember.findMany({
+    where: { active: true, ...(ids ? { id: { in: ids } } : {}) },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+  const owners = await ownerTeamMemberIds().catch(() => [] as string[]);
+  const held = await heldForMembers(members.map((m) => m.id));
+  const rows = [];
+  for (const m of members) {
+    const s = await scheduleOf(m.id);
+    rows.push({
+      teamMemberId: m.id,
+      name: m.name,
+      isOwner: owners.includes(m.id),
+      source: s.source,
+      windows: s.windows,
+      setAt: s.setAt,
+      setBy: s.setBy,
+      summary: describeQuietWindows(m.name.split(/\s+/)[0], s.windows),
+      held: held.get(m.id) ?? { texts: 0, dms: 0, nextAt: null },
+    });
+  }
+  // The owner first — his is the schedule that exists today — then by name.
+  return rows.sort((a, b) => Number(b.isOwner) - Number(a.isOwner) || a.name.localeCompare(b.name));
+}
+
+export async function loadNotifySchedules(): Promise<{
+  rows: import("@/lib/notifyPrefDefaults").NotifyScheduleRow[];
+  canEditAll: boolean;
+}> {
+  const { authEnforced } = await import("@/lib/auth/guards");
+  const me = await getCurrentUser().catch(() => null);
+  const all = !authEnforced() || (!!me && !me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN"));
+  if (all) return { rows: await scheduleRows(null), canEditAll: true };
+  if (!me?.teamMemberId) return { rows: [], canEditAll: false };
+  return { rows: await scheduleRows([me.teamMemberId]), canEditAll: false };
+}
+
+export async function saveNotifySchedule(
+  teamMemberId: string,
+  windows: import("@/lib/notifyPrefDefaults").QuietWindow[] | null,
+  expectedSetAt: string | null,
+): Promise<{ ok: boolean; message: string; row?: import("@/lib/notifyPrefDefaults").NotifyScheduleRow }> {
+  try {
+    if (typeof teamMemberId !== "string" || !/^[a-z0-9_-]{8,64}$/i.test(teamMemberId)) {
+      return { ok: false, message: "That row doesn't point at a person — reload and try again." };
+    }
+    const who = await scheduleWriter(teamMemberId);
+    if (!who.ok) return who;
+    const { prisma } = await import("@/lib/prisma");
+    const member = await prisma.teamMember.findFirst({ where: { id: teamMemberId, active: true }, select: { name: true } });
+    if (!member) return { ok: false, message: "That person isn't on the active roster any more." };
+    const first = member.name.split(/\s+/)[0];
+    const { parseQuietWindows, quietWindowProblem, describeQuietWindows } = await import("@/lib/notifyPrefDefaults");
+    let clean: import("@/lib/notifyPrefDefaults").QuietWindow[] | null = null;
+    if (windows !== null) {
+      clean = parseQuietWindows(windows);
+      if (!clean) {
+        const problem = Array.isArray(windows) ? windows.map((w) => quietWindowProblem(w)).find(Boolean) : null;
+        return { ok: false, message: `Not saved. ${problem ?? "Each quiet time needs a day and a start before its end, inside that day."} Nothing about ${first}'s schedule changed.` };
+      }
+    }
+    // A save built on a stale read is refused (read straight from the table,
+    // past the 60-second settings cache — another tab may have saved since).
+    const { notifyScheduleKey, scheduleOf, saveSchedule } = await import("@/lib/notifySchedule");
+    const stored = await prisma.appSetting.findUnique({ where: { key: notifyScheduleKey(teamMemberId) }, select: { value: true } });
+    let storedAt: string | null = null;
+    try {
+      storedAt = stored ? ((JSON.parse(stored.value) as { setAt?: string | null }).setAt ?? null) : null;
+    } catch { storedAt = null; }
+    if ((storedAt ?? null) !== (expectedSetAt ?? null)) {
+      return { ok: false, message: `Someone changed ${first}'s schedule since this page loaded — reload to see it, then make your change again. Nothing was saved.` };
+    }
+    const before = await scheduleOf(teamMemberId);
+    const after = await saveSchedule(teamMemberId, clean, who.by);
+    const beforeWords = describeQuietWindows(first, before.windows);
+    const afterWords = describeQuietWindows(first, after.windows);
+    await prisma.auditLog
+      .create({
+        data: {
+          actor: who.by ?? "local",
+          action: "notify_schedule",
+          target: `${member.name} (${teamMemberId})`,
+          detail: `${before.source}: ${beforeWords} -> ${after.source}: ${afterWords}`.slice(0, 4000),
+        },
+      })
+      .catch(() => {});
+    revalidatePath("/settings");
+    const [row] = await scheduleRows([teamMemberId]);
+    const tail = after.source === "preset" ? " (Jordan's preset — nothing of his own saved)" : after.source === "none" ? " The office weekend rule applies to routine notices again." : "";
+    return { ok: true, message: `Saved. ${afterWords}${tail} Applies from the next notice.`, row };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };
   }

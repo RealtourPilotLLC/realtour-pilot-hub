@@ -1,6 +1,8 @@
-import { Gauge, AlertTriangle } from "lucide-react";
+import Link from "next/link";
+import { Gauge, AlertTriangle, CalendarOff } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { LANES, LANE_LABEL, LANE_OWNER, type WorkloadView, type EditorLoad } from "@/lib/editorWorkload";
+import type { CapacityChip, CapacityWindows } from "@/lib/capacity";
 
 // ---------------------------------------------------------------------------
 // WHAT IS ON WHOSE DESK (R08, review Sep 18).
@@ -29,9 +31,24 @@ function LaneChip({ label, jobs, videos, owner }: { label: string; jobs: number;
   );
 }
 
+/** A recorded capacity fact (§10, lib/capacity.ts): "Time off · until Fri
+ *  5:00 PM". In force now reads amber; coming up this week reads quiet. It is a
+ *  sentence for a person to weigh — nothing on the panel is recomputed from it. */
+function CapacityChipView({ c, now }: { c: CapacityChip; now: boolean }) {
+  return (
+    <span
+      title={[c.note, `recorded by ${c.recordedBy}`].filter(Boolean).join(" · ")}
+      className={`inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-medium ${now ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted"}`}
+    >
+      <CalendarOff className="size-3" />
+      {c.label} · {c.when}
+    </span>
+  );
+}
+
 /** One editor's line: what they can work, how fast they have actually been
  *  going, and how much of it is already late. */
-function EditorRow({ e }: { e: EditorLoad }) {
+function EditorRow({ e, cap }: { e: EditorLoad; cap?: CapacityWindows }) {
   const unassigned = e.kind === "unassigned";
   const rate =
     e.perWeek == null
@@ -62,6 +79,8 @@ function EditorRow({ e }: { e: EditorLoad }) {
           {e.overdue === 0 && e.dueSoon > 0 && (
             <span className="rounded-lg bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">{e.dueSoon} due within 2 days</span>
           )}
+          {cap?.now.map((c) => <CapacityChipView key={c.id} c={c} now />)}
+          {cap?.next7d.map((c) => <CapacityChipView key={c.id} c={c} now={false} />)}
         </div>
         <div className="text-[11px] text-muted-2">
           {e.activeVideos > 0 ? (
@@ -106,7 +125,15 @@ export function WorkloadPanel({ view, mine }: { view: WorkloadView; mine?: boole
       </p>
       <div className="divide-y divide-border">
         {view.editors.length === 0 && <p className="px-5 py-4 text-sm text-muted">Nothing in the room.</p>}
-        {view.editors.map((e) => <EditorRow key={e.key ?? "__none__"} e={e} />)}
+        {view.editors.map((e) => <EditorRow key={e.key ?? "__none__"} e={e} cap={e.key ? view.capacity?.[e.key] : undefined} />)}
+      </div>
+      {/* §10 capacity: the register where time off, training and blocked time
+          are written down. An editor can record their own "offline" or
+          "blocked" there; the office records anything for anyone. */}
+      <div className="border-t border-border px-5 py-2 text-[11px]">
+        <Link href="/people/capacity" className="font-medium text-brand hover:underline">
+          {mine ? "Offline or stuck? Tell the office →" : "Time off, training and blocked time →"}
+        </Link>
       </div>
       {/* WHERE EVERY NUMBER CAME FROM. A capacity figure nobody can trace is
           worse than none, so the sample is printed beside it. */}

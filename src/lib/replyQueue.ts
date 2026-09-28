@@ -680,10 +680,39 @@ const UNANSWERED_CALL_WORDS = ["missed", "no answer", "unanswered"] as const;
 /** Did this outbound row actually answer anybody? Pure, and the only place the
  *  question is decided. */
 export function outboundIsAnswer(r: { channel: string; source: string | null; body: string | null }): boolean {
-  if ((r.source ?? "").startsWith("auto-")) return false; // our robots
-  if (isHubSmsSource(r.source) || isHubSms(r.body)) return false; // the hub's own staff texts
+  if (isAutomatedOutbound(r)) return false; // our robots, the hub's staff texts, OpenPhone's greeting
   if (r.channel === "call" && UNANSWERED_CALL_WORDS.some((w) => (r.body ?? "").toLowerCase().includes(w))) return false;
   return true;
+}
+
+/**
+ * WAS THIS OUTBOUND WRITTEN BY A MACHINE? (unified handoff §9, Sep 26 2026:
+ * "A canned acknowledgment or scheduled automated message must not
+ * automatically count as resolving a substantive question.")
+ *
+ * One test, shared by every path that closes a reply task or clears a waiting
+ * thread: the live walk (through outboundIsAnswer), the OpenPhone receiver's
+ * close, and the hourly backstop in integrations/openphone.ts. Before this each
+ * kept its own list — the receiver named four `auto-*` sources by hand, the
+ * backstop checked nothing at all, and OpenPhone's own missed-call greeting
+ * was recognised by the ledger only — so the after-hours echo closed the
+ * client's question when the backstop ran at the top of the hour, and the
+ * greeting closed Bety Pena's callback four seconds after it was raised.
+ *   · `auto-*` — every automated client text (confirmation, delivery,
+ *     after-hours, welcome, and the greeting once the receiver stamps it);
+ *   · the hub's own staff texts, by source or by the "⚙️ RealTour Hub" prefix;
+ *   · OpenPhone's greeting by its words, for the rows logged before the
+ *     receiver stamped it (48 of them, all `source: "openphone"`).
+ */
+export function isAutomatedOutbound(r: { source: string | null; body: string | null }): boolean {
+  if ((r.source ?? "").startsWith("auto-")) return true;
+  if (isHubSmsSource(r.source) || isHubSms(r.body)) return true;
+  return isOpenPhoneGreeting(r.body);
+}
+
+/** OpenPhone's missed-call greeting, by its opening words (see below). */
+export function isOpenPhoneGreeting(body: string | null | undefined): boolean {
+  return (body ?? "").trimStart().toLowerCase().startsWith(OPENPHONE_GREETING.toLowerCase());
 }
 
 /**
@@ -706,8 +735,22 @@ export function outboundIsAnswer(r: { channel: string; source: string | null; bo
  * missed call that starts paging people is a decision for Jordan, not a side
  * effect of a visibility fix. Persisting an obligation is a visibility change;
  * it must never become an alerting one (see `includeOwed`).
+ *
+ * Sep 26 2026 (§9): the ingest repair is now in — the receiver stamps
+ * OPENPHONE_GREETING_SOURCE and no longer closes a task on the greeting, and
+ * the hourly backstop refuses it too. The live walk changed by exactly ONE
+ * thing: the greeting no longer answers a TEXT. A client who wrote "can you
+ * call me about the Harrow Ct aerials?" and then rang and got the greeting was
+ * being read as answered; that text is now still waiting, and pages like any
+ * other unanswered text. What the greeting still settles in the walk is the
+ * missed CALL it was sent for (see clearFor's `callsOnly`), so a lone
+ * unreturned missed call pages exactly as often as it did yesterday (never,
+ * in practice) — the decision above stays Jordan's. The callback itself is no
+ * longer lost: its task stays open, and the ledger keeps it on the board.
  */
-const OPENPHONE_GREETING = "Hey! Thanks for calling Realtour Pilot";
+export const OPENPHONE_GREETING = "Hey! Thanks for calling Realtour Pilot";
+/** The source the OpenPhone receiver stamps on the greeting's echo (Sep 26). */
+export const OPENPHONE_GREETING_SOURCE = "auto-openphone-greeting";
 
 /**
  * A REPLY IN THE SAME BREATH ANSWERED THE QUESTION, WHATEVER IT WAS FILED
@@ -1719,7 +1762,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   /** Our side answered — drop what was owed, WITHIN THIS CHANNEL FAMILY. A
    *  text reply must never clear a genuinely unanswered email (and vice versa);
    *  that was one of the reviewed rules the old boards each kept separately. */
-  const clearFor = (r: Row, key: string, how: "outbound" | "teammate") => {
+  const clearFor = (r: Row, key: string, how: "outbound" | "teammate", opts: { callsOnly?: boolean } = {}) => {
     const family: WaitingFamily = r.channel === "email" ? "email" : "phone";
     const kill = new Set<string>([key]);
     if (family === "email") {
@@ -1780,6 +1823,15 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     for (const k of kill) {
       const b = buckets.get(k);
       if (!b || b.family !== family) continue;
+      if (opts.callsOnly) {
+        // OpenPhone's greeting settles the missed call it was sent for and
+        // nothing else (Sep 26, see OPENPHONE_GREETING): a text still owed an
+        // answer stays owed, and its clock keeps its true start.
+        b.pending = b.pending.filter((m) => m.channel !== "call");
+        b.courtesy = b.courtesy.filter((m) => m.channel !== "call");
+        b.firstAt = b.pending.reduce<Date | null>((min, m) => (!min || m.at < min ? m.at : min), null);
+        continue;
+      }
       b.pending = [];
       b.courtesy = [];
       b.firstAt = null;
@@ -1815,6 +1867,14 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       // number, which used to make a payday notice read as Kyle answering
       // Jordan; nor does a missed outgoing call, though an ANSWERED one is a
       // real reply. openObligations applies the same predicate in SQL.
+      //
+      // OpenPhone's greeting (Sep 26) is automated like the rest, so it answers
+      // no TEXT — but it keeps settling the missed call it was sent for, which
+      // is all it ever did for a lone call (see OPENPHONE_GREETING for why).
+      if (isOpenPhoneGreeting(r.body)) {
+        clearFor(r, id.key, ours, { callsOnly: true });
+        continue;
+      }
       if (!outboundIsAnswer(r)) continue;
       clearFor(r, id.key, ours);
       continue;

@@ -505,15 +505,28 @@ async function main() {
   const jSat = (await texts(jordan.id)).filter((t) => t.deferUntil);
   console.log(`     Jordan: DMs ${dms("U-JORDAN").length}, deferred texts ${jSat.length} → ${jSat[0]?.deferUntil?.toISOString() ?? "-"}`);
   check("his text is queued, not discarded", jSat.length === 1, `${jSat.length}`);
-  check("…dated to the Monday", jSat[0]?.deferUntil?.toISOString() === holdCut?.toISOString());
-  const jSkipped = await dbRetry(() =>
+  // Sep 26 2026 (batch 5, Jordan's notification schedule): until then this
+  // asserted "dated to the Monday" and a DM skipped as "nobody works today".
+  // Jordan's own answer replaced that for him — quiet on Saturday until
+  // 7:30 PM, delivered when it ends — so the owner (by his preset) is timed by
+  // his schedule, not the office weekend rule. Kept and dated, never dropped,
+  // exactly as before; only the date moved. b5-notify-schedule drives it fully.
+  const { holdFor } = await import("@/lib/notifySchedule");
+  const quietEnds = await holdFor(jordan.id);
+  check(
+    "…dated to the end of HIS quiet time — Saturday 7:30 PM ET, not Monday",
+    !!quietEnds && jSat[0]?.deferUntil?.toISOString() === quietEnds.toISOString() &&
+      quietEnds.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" }) === "Sat 7:30 PM",
+    `${jSat[0]?.deferUntil?.toISOString()} vs ${quietEnds?.toISOString()} (Monday would be ${holdCut?.toISOString()})`,
+  );
+  const jHeld = await dbRetry(() =>
     prisma.notificationDelivery.findFirst({
-      where: { teamMemberId: jordan.id, channel: "slack", status: "skipped" },
+      where: { teamMemberId: jordan.id, channel: "slack", status: "queued" },
       orderBy: { createdAt: "desc" },
       select: { detail: true },
     }),
   );
-  check("the DM waits with it, and the log says exactly why", /nobody works today/.test(jSkipped?.detail ?? ""), jSkipped?.detail?.slice(0, 80) ?? "no row");
+  check("the DM waits with it — held on Slack, and the log says exactly why", /their quiet time/.test(jHeld?.detail ?? ""), jHeld?.detail?.slice(0, 80) ?? "no row");
   check("he still gets a bell row — coverage decides who is woken, never what is seen", (await legs(jordan.id, "bell", "sent")) >= 1);
 
   restoreClock();

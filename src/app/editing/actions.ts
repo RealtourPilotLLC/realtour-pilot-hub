@@ -1497,7 +1497,21 @@ const OVERRIDE_STATUS_LABEL: Record<string, string> = {
 };
 const EDITOR_SELECT_KEYS = new Set<string>(["", "kim", "john", "external_agency"]);
 
-export async function saveEditOverrides(projectId: string, input: EditOverrideInput): Promise<{ ok: boolean; message: string }> {
+/** §10 rush (Sep 26): what the approver saw and why, sent with a save that
+ *  moves a job ahead of others. `seen` = the displaced project ids the dialog
+ *  showed; the server recomputes and refuses if the list has changed. */
+export type RushApproval = { seen: string[]; reason: string };
+/** Returned with a refused save so the dialog can show the list and who may approve. */
+export type RushGate = {
+  impact: import("@/lib/editorWorkload").PriorityImpact;
+  authority: import("@/lib/editorWorkload").RushAuthority;
+};
+
+export async function saveEditOverrides(
+  projectId: string,
+  input: EditOverrideInput,
+  rush?: RushApproval,
+): Promise<{ ok: boolean; message: string; rush?: RushGate }> {
   try {
     await requireRole(["OWNER", "ADMIN"]);
   } catch {
@@ -1647,6 +1661,65 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
     note: merged.overrideNote,
   };
 
+  // ---- A RUSH NEEDS JAMES OR KYLE, AND THEY SEE WHAT IT PUSHES BACK (§10,
+  // Jordan Sep 25-26: "James and Kyle - James is the creative manager now.
+  // Also It can be escalated to me."). Only when the date moves earlier or the
+  // priority rises — the one kind of change that can put this job ahead of
+  // another on an editor's desk — and only when it actually does. Checked
+  // before anything is written, so a refusal leaves the job exactly as it was.
+  // The promise the client was sold (promisedDueAt) is never re-pinned here.
+  let rushLine = "";
+  const dueOrPriorityChanged = !sameInstant(merged.dueOverrideAt, proj.dueOverrideAt) || merged.priorityOverride !== proj.priorityOverride;
+  if (dueOrPriorityChanged) {
+    const { mayDisplace, priorityImpact, rushAuthority } = await import("@/lib/editorWorkload");
+    const iso = (d: Date | null) => d?.toISOString() ?? null;
+    // The cheap test reads the job's own dates; a job delivered once may be
+    // dated on the queue by its REOPEN clock instead (A52), which this cannot
+    // see — so a reopened job always takes the full read.
+    if (!!proj.deliveredAt || mayDisplace({ dueISO: iso(before.dueAt), priority: before.priority }, { dueISO: iso(after.dueAt), priority: after.priority })) {
+      let impact: import("@/lib/editorWorkload").PriorityImpact;
+      try {
+        impact = await priorityImpact(projectId, {
+          dueAt: dueAt === undefined ? undefined : iso(dueAt),
+          priority: input.priority,
+          ...(wantsEditor ? { editorKey: input.editorKey as string } : {}),
+        });
+      } catch {
+        // Fail closed: a rush nobody could check is a rush nobody approved.
+        return { ok: false, message: "Couldn't check what this moves ahead of — try again." };
+      }
+      if (impact.displaced.length > 0) {
+        const { authEnforced } = await import("@/lib/auth/guards");
+        const authority = await rushAuthority(
+          me ? { realRole: me.realRole, teamMemberId: me.teamMemberId, impersonating: me.impersonating, status: me.status } : null,
+          { authEnforced: authEnforced() },
+        );
+        const gate: RushGate = { impact, authority };
+        if (!authority.may) return { ok: false, message: authority.why ?? "Only James or Kyle can approve this.", rush: gate };
+        const reason = (rush?.reason ?? "").trim();
+        // James and Kyle must have looked and said why. Jordan is the one a
+        // rush escalates TO and keeps his intervention authority without a
+        // form to fill (§3 "owner oversight"): the dialog shows him the same
+        // list, a reason is his option, and the line below records what his
+        // save pushed back either way.
+        const mustAck = authority.as !== "OWNER";
+        if (mustAck && (!rush || !reason)) {
+          return { ok: false, message: `${impact.sentence}. Look at them and say why before saving.`, rush: gate };
+        }
+        if (reason.length > 200) return { ok: false, message: "Keep the reason under 200 characters.", rush: gate };
+        // The list they saw must still be the list: a job that became due in
+        // the meantime is one they did not agree to push back.
+        const seen = new Set(rush?.seen ?? []);
+        if (rush && impact.displaced.some((d) => !seen.has(d.projectId))) {
+          return { ok: false, message: "The queue changed since you looked — check the list again.", rush: gate };
+        }
+        const seat = authority.as === "PRIMARY" ? " (creative manager)" : authority.as === "BACKUP" ? " (review backup)" : "";
+        const faster = impact.fasterThanPromise && !impact.paidRush ? " Faster than the client paid for." : "";
+        rushLine = ` — rush approved by ${actor}${seat}: ${impact.sentence.replace(/^This /, "it ")}.${faster}${reason ? ` Why: “${reason}”` : ""}`;
+      }
+    }
+  }
+
   // ---- The editor, through the row's own road. A job that is Completed
   // refuses a reassign there (no live work to hand off), so when this save
   // also moves the job OFF Completed the editor step runs after the status
@@ -1722,8 +1795,19 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
   const stillMissing = targetStatus === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : null;
   const sentence =
     describeOverrides(before, after, actor) +
-    (stillMissing && stillMissing.categories.length ? ` — with ${owedPhrase(stillMissing)} still missing on Aryeo` : "");
+    (stillMissing && stillMissing.categories.length ? ` — with ${owedPhrase(stillMissing)} still missing on Aryeo` : "") +
+    // §10 rush: who approved it, what it pushed back and why — the record.
+    rushLine;
   await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: sentence } }).catch(() => {});
+  // An approved rush answers any "approve this rush?" card sent to Jordan.
+  if (rushLine) {
+    await prisma.smartTask
+      .updateMany({
+        where: { dedupeKey: rushApprovalKey(projectId), status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: { status: "COMPLETED", completedAt: now },
+      })
+      .catch(() => {});
+  }
 
   // ---- A forced status: the hold, the card, the close-outs. ----
   if (targetStatus) {
@@ -1846,6 +1930,211 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
     ok: !editorNote,
     message: `${street}: ${receipt}.${editorNote}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// THE RUSH PREVIEW AND THE ESCALATION (§10 priority/rush, Sep 26 2026).
+//
+// previewPriorityImpact is what the override dialog shows BEFORE Save: the
+// jobs on the same editor's desk the change would push back, their promises
+// and how tight they are, and whether this login may approve it. Read-only.
+//
+// escalateRushToJordan is "it can be escalated to me": one card on Jordan's
+// list (one per job — a second ask updates it) and a bell row, with exactly
+// what was asked, what it pushes back and why. It changes nothing on the job.
+// Jordan approves by saving the change himself in the same dialog, which
+// closes the card; closing the card without saving leaves the date alone.
+// Bell only — no text, no Slack DM — and nothing reaches a client.
+// ---------------------------------------------------------------------------
+const rushApprovalKey = (projectId: string) => `rush-approval:${projectId}`;
+
+type RushChange = { dueAt?: string | null; priority?: string | null; editorKey?: string | null };
+
+function cleanRushChange(change: RushChange): { ok: true; value: RushChange } | { ok: false; message: string } {
+  const out: RushChange = {};
+  if (change.dueAt !== undefined) {
+    if (change.dueAt === null) out.dueAt = null;
+    else {
+      const d = new Date(change.dueAt);
+      if (Number.isNaN(d.getTime())) return { ok: false, message: "That due date isn't a real date." };
+      out.dueAt = d.toISOString();
+    }
+  }
+  if (change.priority !== undefined) {
+    if (change.priority !== null && !(EDIT_PRIORITIES as readonly string[]).includes(change.priority)) {
+      return { ok: false, message: "Priority has to be Low, Normal, High or Urgent." };
+    }
+    out.priority = change.priority;
+  }
+  if (change.editorKey != null) {
+    if (!EDITOR_SELECT_KEYS.has(change.editorKey)) return { ok: false, message: "Pick a video editor." };
+    out.editorKey = change.editorKey;
+  }
+  return { ok: true, value: out };
+}
+
+export async function previewPriorityImpact(
+  projectId: string,
+  change: RushChange,
+): Promise<{ ok: boolean; message?: string; gate?: RushGate }> {
+  try {
+    await requireRole(["OWNER", "ADMIN"]);
+  } catch {
+    return { ok: false, message: "Only the office can override a job." };
+  }
+  const c = cleanRushChange(change);
+  if (!c.ok) return { ok: false, message: c.message };
+  try {
+    const { priorityImpact, rushAuthority } = await import("@/lib/editorWorkload");
+    const { authEnforced } = await import("@/lib/auth/guards");
+    const me = await getCurrentUser().catch(() => null);
+    const [impact, authority] = await Promise.all([
+      priorityImpact(projectId, c.value),
+      rushAuthority(me ? { realRole: me.realRole, teamMemberId: me.teamMemberId, impersonating: me.impersonating, status: me.status } : null, {
+        authEnforced: authEnforced(),
+      }),
+    ]);
+    return { ok: true, gate: { impact, authority } };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message || "Couldn't check what this moves ahead of — try again." };
+  }
+}
+
+export async function escalateRushToJordan(
+  projectId: string,
+  change: RushChange,
+  reason: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireRole(["OWNER", "ADMIN"]);
+  } catch {
+    return { ok: false, message: "Only the office can override a job." };
+  }
+  const c = cleanRushChange(change);
+  if (!c.ok) return { ok: false, message: c.message };
+  if (c.value.dueAt === undefined && c.value.priority === undefined) return { ok: false, message: "Set the new due date or priority first." };
+  const why = (reason ?? "").trim();
+  if (!why) return { ok: false, message: "Say why — Jordan decides from what you write." };
+  if (why.length > 200) return { ok: false, message: "Keep the reason under 200 characters." };
+  const me = await getCurrentUser().catch(() => null);
+  if (me?.realRole === "OWNER") return { ok: false, message: "You can approve it yourself — save it here." };
+  const actor = me?.name ?? me?.email ?? "The office";
+
+  const { priorityImpact, rushAuthority } = await import("@/lib/editorWorkload");
+  const { authEnforced } = await import("@/lib/auth/guards");
+  const { etDateTime } = await import("@/lib/datetime");
+  let impact: import("@/lib/editorWorkload").PriorityImpact;
+  try {
+    impact = await priorityImpact(projectId, c.value);
+  } catch (e) {
+    return { ok: false, message: (e as Error).message || "Couldn't check what this moves ahead of — try again." };
+  }
+  const authority = await rushAuthority(
+    me ? { realRole: me.realRole, teamMemberId: me.teamMemberId, impersonating: me.impersonating, status: me.status } : null,
+    { authEnforced: authEnforced() },
+  );
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true, status: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  if (p.status === "CANCELLED") return { ok: false, message: "That job is cancelled." };
+  const street = impact.street;
+  const asked = [
+    c.value.dueAt !== undefined ? (impact.after.dueISO ? `due ${etDateTime(impact.after.dueISO)} ET` : "the hub's own date") : null,
+    c.value.priority !== undefined ? `priority ${impact.after.priority}` : null,
+  ].filter(Boolean).join(" and ");
+  const faster = impact.fasterThanPromise && !impact.paidRush ? " That is faster than the client paid for." : "";
+  const summary =
+    `${actor} asks for ${asked}. ${impact.sentence}.${faster} Why: “${why}”. ` +
+    `Approve by saving the same change in the job's Override (you'll see the same list); close this card to leave it as it is.`;
+
+  // Whose card: the fallback review seat (Jordan), else the owner's roster row.
+  const { reviewRoomRules } = await import("@/lib/settings");
+  const rules = await reviewRoomRules().catch(() => null);
+  const ownerLogin = await prisma.appUser.findFirst({ where: { role: "OWNER", status: "ACTIVE" }, select: { teamMemberId: true } }).catch(() => null);
+  const ownerId = rules?.fallbackReviewerTeamMemberId ?? ownerLogin?.teamMemberId ?? null;
+  const now = new Date();
+  const data = {
+    taskType: "rush_approval",
+    title: `Approve a rush? ${street}`.slice(0, 120),
+    summary: summary.slice(0, 1000),
+    reasonCreated: `Rush sent to ${authority.escalateTo ?? "Jordan"} by ${actor}`,
+    source: "manual",
+    priority: "HIGH",
+    dueAt: impact.after.dueISO ? new Date(impact.after.dueISO) : null,
+    projectId,
+    clientId: p.clientId,
+    propertyAddress: p.title,
+    ownerId,
+    assignedKey: "jordan",
+    assignedManually: true,
+    // "When I flag something for someone it should pop up on their home screen
+    // at the top" (Jordan, Sep 7) — a person sent this, not an engine.
+    flaggedBy: actor,
+    flaggedAt: now,
+    dedupeKey: rushApprovalKey(projectId),
+  };
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey }, select: { id: true } });
+  if (existing) {
+    await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+  } else {
+    const made = await prisma.smartTask.createMany({ data: [data], skipDuplicates: true });
+    if (!made.count) await prisma.smartTask.update({ where: { dedupeKey: data.dedupeKey }, data: { ...data, status: "OPEN", completedAt: null } });
+  }
+  await prisma.activity
+    .create({ data: { projectId, type: "SYSTEM", body: `Rush sent to ${authority.escalateTo ?? "Jordan"} by ${actor}: ${asked}. ${impact.sentence}. Why: “${why}”. Nothing on the job changed.` } })
+    .catch(() => {});
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const crypto = await import("node:crypto");
+    await notifyInApp({
+      kind: "rush_approval",
+      title: `Rush to approve — ${street}`,
+      body: `${actor}: ${asked}. ${impact.displaced.length} job${impact.displaced.length === 1 ? "" : "s"} pushed back.`,
+      href: `/edit/${projectId}`,
+      targets: [{ roles: ["OWNER"] }],
+      dedupeKey: `rush-approval-${projectId}-${crypto.createHash("sha1").update(`${asked}|${why}`).digest("hex").slice(0, 12)}`,
+    });
+  } catch { /* the card is the record; the bell is a courtesy */ }
+  for (const path of [`/edit/${projectId}`, "/tasks", "/"]) revalidatePath(path);
+  return { ok: true, message: `Sent to ${(authority.escalateTo ?? "Jordan").split(/\s+/)[0]}. Nothing on ${street} changes until it is approved.` };
+}
+
+// ---------------------------------------------------------------------------
+// A FILE THE WORK CANNOT START WITHOUT (§10 J3, Sep 26 2026) — the office's two
+// presses: record what a video (or the job) is waiting on, and attach the
+// file once it is found. The rules live in lib/assetDependencies: retrieval is
+// Kyle's, reading/drawing from it is a named person's or Jordan's, attaching
+// closes retrieval only, nothing reaches the client. Office only.
+// ---------------------------------------------------------------------------
+export async function recordAssetDependencyAction(input: {
+  projectId: string;
+  outputId?: string | null;
+  slug: string;
+  need: string;
+  interpretation?: { what: string; ownerKey?: string | null } | null;
+}): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireRole(["OWNER", "ADMIN"]);
+  } catch {
+    return { ok: false, message: "Only the office can record what a job is waiting on." };
+  }
+  const me = await getCurrentUser().catch(() => null);
+  const { recordAssetDependency } = await import("@/lib/assetDependencies");
+  const r = await recordAssetDependency({ ...input, need: (input.need ?? "").slice(0, 160), by: me?.name ?? me?.email ?? "The office" });
+  if (r.ok) for (const path of [`/edit/${input.projectId}`, `/projects/${input.projectId}`, "/tasks"]) revalidatePath(path);
+  return { ok: r.ok, message: r.message };
+}
+
+export async function attachAssetReferenceAction(taskId: string, ref: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireRole(["OWNER", "ADMIN"]);
+  } catch {
+    return { ok: false, message: "Only the office can attach the file." };
+  }
+  const me = await getCurrentUser().catch(() => null);
+  const { attachAssetReference } = await import("@/lib/assetDependencies");
+  const r = await attachAssetReference(taskId, ref, me?.name ?? me?.email ?? "The office");
+  if (r.ok) for (const path of ["/tasks", "/"]) revalidatePath(path);
+  return r;
 }
 
 // ---------------------------------------------------------------------------

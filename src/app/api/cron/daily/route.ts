@@ -72,6 +72,18 @@ export async function GET(req: NextRequest) {
     const { closeStaleDeliveryTexts } = await import("@/lib/tasks");
     return closeStaleDeliveryTexts(7);
   });
+  // §10 AU-20 (Sep 26): Kyle's Monday AutoHDR balance check — one task on the
+  // check day, none once a reading has landed. A reading, never a purchase.
+  await step("autohdrBalanceCheck", async () => {
+    const { ensureWeeklyBalanceCheck } = await import("@/lib/vendorBalance");
+    return ensureWeeklyBalanceCheck();
+  });
+  // §10 AU-26 (Sep 26): a waived extra-round fee is revenue given up — one
+  // rework row per round, idempotent, voided (never deleted) if reversed.
+  await step("reworkWaivers", async () => {
+    const { deriveWaivedRevenue } = await import("@/lib/reworkCost");
+    return deriveWaivedRevenue();
+  });
   // Retire week-old positive/neutral feedback-review tasks.
   await step("webhookLogTrimmed", async () => {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);

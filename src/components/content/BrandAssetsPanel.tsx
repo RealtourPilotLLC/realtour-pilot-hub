@@ -57,6 +57,9 @@ const ALERT_WORDS: Record<string, string> = {
   slack: "editor messaged on Slack", sms: "editor texted", bell: "editor's bell only", deduped: "covered by this hour's message",
   pending: "editor not messaged (alerts off) — on their brief", sending: "sending…", none: "editor not reachable", no_editor: "no editor on their work",
   skipped_test: "test client — nobody told",
+  // Sep 26 2026: the editor's message is waiting for their quiet time to end
+  // (notify.ts reports a held ping as "quiet", never as "slack").
+  quiet: "editor's message held for their quiet time — on their brief",
 };
 
 export function BrandAssetsPanel({

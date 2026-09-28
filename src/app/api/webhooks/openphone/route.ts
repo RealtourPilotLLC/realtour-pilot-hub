@@ -5,6 +5,7 @@ import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, find
 import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
 import { HUB_REPLY_SOURCE, HUB_SMS_SOURCES, isHubSms } from "@/lib/hubSms";
+import { isAutomatedOutbound, isOpenPhoneGreeting, OPENPHONE_GREETING_SOURCE } from "@/lib/replyQueue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -432,7 +433,11 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
           ? sender?.name ?? match?.clientName ?? (fromPhone.length === 10 ? prettyPhone(fromPhone) : null)
           : "RealTour Pilot",
       body: text,
-      source: hubReply ? HUB_REPLY_SOURCE : "openphone",
+      // OpenPhone's own missed-call greeting is OUR outbound, but no person
+      // wrote it (§9, Sep 26 2026): stamped `auto-*` here, at ingest, so every
+      // reader that asks "did we answer?" sees a robot without re-reading the
+      // words (replyQueue.isAutomatedOutbound).
+      source: hubReply ? HUB_REPLY_SOURCE : !effIncoming && isOpenPhoneGreeting(text) ? OPENPHONE_GREETING_SOURCE : "openphone",
       externalId: data.id ? `op-${data.id as string}` : undefined,
       projectGuess,
     });
@@ -557,14 +562,18 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
         // the human-send heuristics below must NOT fire for them: an auto
         // confirmation used to blanket-close every pending delivery_text for
         // the client, and an auto text answers no one's question (review).
-        const autoSent = await prisma.commLog
+        // Sep 26 2026 (§9): ANY `auto-*` source, not a hand-kept list of four —
+        // the list is how the greeting slipped through, and the next automated
+        // kind would have too — plus the words themselves, for a machine text
+        // this receiver sees before (or without) its own logged row.
+        const autoSent = isAutomatedOutbound({ source: null, body: text }) || (await prisma.commLog
           .findFirst({
             where: {
               // "auto-afterhours" belongs here too: the echo of our OWN
               // out-of-hours auto-reply must not be read as a human answering,
               // or it closes the client's reply task and blanket-completes their
               // queued delivery text with nothing actually sent (Sep 2).
-              source: { in: ["auto-confirmation", "auto-delivery", "auto-afterhours", "auto-welcome"] },
+              source: { startsWith: "auto-" },
               OR: [
                 ...(data.id ? [{ externalId: `op-${data.id as string}` }] : []),
                 { clientId, body: text, createdAt: { gte: new Date(Date.now() - 30 * 60_000) } },
@@ -572,7 +581,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
             },
             select: { id: true },
           })
-          .catch(() => null);
+          .catch(() => null));
         if (!autoSent) {
           await closeReplyForOutbound(clientId, text);
           // Kyle often sends the "your gallery is ready" text straight from his

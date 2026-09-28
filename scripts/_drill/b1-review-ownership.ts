@@ -394,7 +394,16 @@ async function main() {
   const cut9 = await mkCut(J4);
   await announce(J4, cut9);
   c.ok("a cut arriving while James is away goes to Kyle (BACKUP)", (await sub(cut9)).reviewerTeamMemberId === kyle.id && (await sub(cut9)).reviewerRole === "BACKUP");
-  c.ok("…and James, away, is not FYI'd about it", !(await rowsFor(cut9)).some((r) => r.userKey === `tm:${james.id}`));
+  // Sep 26 2026 (Jordan: "no matter what is going on, James, Kyle, and myself
+  // should get a notification"): until batch 5 this line asserted the OPPOSITE
+  // — an away seat was dropped from the FYI. Away now changes whose cut it is
+  // first, never who hears about it (b5-notify-schedule pins the old answer).
+  const r9 = await rowsFor(cut9);
+  c.ok("…and James, away, STILL hears about it — one FYI person row", r9.filter((r) => r.userKey === `tm:${james.id}`).length === 1, JSON.stringify(r9));
+  c.ok("…Kyle, its reviewer now, has exactly one row (no FYI on top of his own)", r9.filter((r) => r.userKey === `tm:${kyle.id}`).length === 1);
+  const awayTargets = await ra.reviewAnnounceTargets({ reviewer: { teamMemberId: kyle.id, name: kyle.name }, street: J4.street, editor: "Kim", round: 9, href: `/review/${J4.id}` });
+  const jamesLine = awayTargets?.find((t) => t.userKey === `tm:${james.id}`)?.slackDm ?? "";
+  c.ok("…and his line says he is away and who has it", /marked away/i.test(jamesLine) && /Kyle has it/.test(jamesLine), jamesLine);
   await actions.setCutReviewerAway(kyle.id, "2026-09-25");
   c.ok("Kyle away too → his waiting cuts go to Jordan", [cut7, cut8, cut9].every(Boolean) && (await sub(cut9)).reviewerTeamMemberId === jordan.id);
   slack.length = 0;

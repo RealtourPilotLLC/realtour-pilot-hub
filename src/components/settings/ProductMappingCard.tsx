@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, Loader2, Save } from "lucide-react";
+import { Check, ListChecks, Loader2, Save } from "lucide-react";
 import { saveProductMapping } from "@/app/settings/products/actions";
+import { loadProductPrerequisites, saveProductPrerequisites } from "@/app/settings/products/prerequisites.actions";
+import { PREREQUISITE_KEYS, PREREQUISITES, type PrerequisiteKey } from "@/lib/productPrerequisites";
 import { VIDEO_TYPES } from "@/lib/videoStyles";
 
 export type ProductCard = {
@@ -87,6 +89,86 @@ function suggestStyle(card: ProductCard): string | null {
   return null;
 }
 
+// WHAT IT NEEDS FIRST (§10 AU-01 phase 2, Sep 26 2026). Folded shut and read
+// on open, one product at a time: the page renders ~200 cards and only a few
+// will ever carry a list, so nothing is fetched until someone asks. Jordan
+// saves; Kyle can read. A missing prerequisite on a live job is a row on
+// Kyle's exceptions board — it never blocks a booking or an edit.
+function PrerequisitesEditor({ productId }: { productId: string }) {
+  const [open, setOpen] = useState(false);
+  const [keys, setKeys] = useState<Set<PrerequisiteKey> | null>(null);
+  const [canEdit, setCanEdit] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+  const show = () => {
+    setOpen((v) => !v);
+    if (keys) return;
+    start(async () => {
+      const r = await loadProductPrerequisites(productId).catch(() => null);
+      if (!r?.ok) { setMsg(r?.message ?? "Couldn't read this product's list — try again."); return; }
+      setKeys(new Set(r.keys));
+      setCanEdit(r.canEdit);
+    });
+  };
+  const toggle = (k: PrerequisiteKey) => {
+    if (!keys || !canEdit) return;
+    const next = new Set(keys);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    setKeys(next);
+    setMsg(null);
+  };
+  return (
+    <div className="mt-3 border-t border-border pt-2">
+      <button type="button" onClick={show} className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted hover:text-foreground">
+        <ListChecks className="size-3.5" /> Needs first{keys && keys.size > 0 ? ` (${keys.size})` : ""} {open ? "▾" : "▸"}
+      </button>
+      {open && (
+        <div className="mt-2">
+          {!keys && !msg && <p className="text-[11px] text-muted-2">Reading…</p>}
+          {keys && (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {PREREQUISITE_KEYS.map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    disabled={!canEdit}
+                    title={PREREQUISITES[k].hint}
+                    onClick={() => toggle(k)}
+                    className={keys.has(k)
+                      ? "rounded-lg border border-brand/40 bg-brand-soft px-2.5 py-1 text-xs font-semibold text-brand disabled:cursor-default"
+                      : "rounded-lg border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent"}
+                  >
+                    {PREREQUISITES[k].label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11px] text-muted-2">
+                A live job with this product that is missing one of these shows on Kyle&rsquo;s exceptions. Nothing is blocked.
+                {!canEdit && " Only Jordan can change the list."}
+              </p>
+              {canEdit && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => start(async () => {
+                    const r = await saveProductPrerequisites(productId, [...keys]).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+                    setMsg(r.message);
+                  })}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-surface-2 disabled:opacity-50"
+                >
+                  {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />} Save what it needs
+                </button>
+              )}
+            </>
+          )}
+          {msg && <p className="mt-1.5 text-[11px] text-muted">{msg}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProductMappingCard({ card }: { card: ProductCard }) {
   const [types, setTypes] = useState<Set<string>>(new Set(card.types));
   const [tier, setTier] = useState(card.videoTier ?? "standard");
@@ -125,7 +207,9 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
   };
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4">
+    // The id is the anchor Kyle's exceptions board links to ("Map it on
+    // Settings → Products", §10 AU-01).
+    <div id={card.id} className="scroll-mt-20 rounded-2xl border border-border bg-surface p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -264,6 +348,7 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
         </button>
       </div>
       {msg && <p className="mt-2 text-[11px] text-muted">{msg}</p>}
+      {saved && <PrerequisitesEditor productId={card.id} />}
     </div>
   );
 }

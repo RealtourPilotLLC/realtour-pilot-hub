@@ -69,6 +69,8 @@ import { listAssignees } from "@/lib/assignees";
 import { ActivityType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
+import { PhotoBatchPanel } from "@/components/project/PhotoBatchPanel";
+import { ReworkCostPanel } from "@/components/project/ReworkCostPanel";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 
 export const dynamic = "force-dynamic";
@@ -751,6 +753,12 @@ export default async function ProjectPage({
               </div>
             </Section>
           )}
+
+          {/* The AutoHDR batch (§10 A53, Sep 26): what was sent and what came
+              back, before anyone re-runs it — office, counts only. Then what
+              the job's rework actually cost (§10 AU-26) — owner only. */}
+          <PhotoBatchPanel projectId={project.id} canAct={!viewer?.impersonating} />
+          {showMoney && <ReworkCostPanel projectId={project.id} />}
 
           {/* Team messages — editor/crew coordination on this job */}
           <ProjectMessages

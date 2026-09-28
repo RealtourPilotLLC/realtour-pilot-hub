@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { Loader2, Mail, ChevronDown, ChevronRight, Sparkles, Copy } from "lucide-react";
+import { Loader2, Mail, ChevronDown, ChevronRight, Sparkles, Copy, AlertCircle } from "lucide-react";
 import type { GmailEmail } from "@/lib/integrations/google";
 import { loadClientEmails, draftEmailReply } from "@/app/clients/actions";
+import { loadMailboxGap } from "@/components/clients/mailboxHealth.actions";
 
 function fmt(iso: string): string {
   if (!iso) return "";
@@ -24,6 +25,15 @@ export function ClientEmails({ clientId }: { clientId: string }) {
   const [drafting, startDraft] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string; note?: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // Which inbox is NOT being read, if any (§9, Sep 26): this list is live from
+  // Gmail, and a mailbox whose token Google refused is skipped silently — so
+  // the panel says so rather than implying it saw every inbox.
+  const [gap, setGap] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    loadMailboxGap().then((g) => { if (alive) setGap(g); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // The most recent email is unanswered when it came FROM the client (not us).
   const latest = emails[emails.length - 1];
@@ -98,6 +108,12 @@ export function ClientEmails({ clientId }: { clientId: string }) {
             </>
           )}
         </div>
+      )}
+
+      {gap && (
+        <p className="mb-2 flex items-start gap-1.5 text-[11px] text-warning" data-mailbox-gap>
+          <AlertCircle className="mt-px size-3.5 shrink-0" /> {gap}
+        </p>
       )}
 
       {state === "loading" && (

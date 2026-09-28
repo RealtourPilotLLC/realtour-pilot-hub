@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
-import { Check, Loader2, Pin, PinOff, SlidersHorizontal, X } from "lucide-react";
-import { saveEditOverrides } from "@/app/editing/actions";
+import { AlertTriangle, Check, Loader2, Pin, PinOff, Send, SlidersHorizontal, X } from "lucide-react";
+import { escalateRushToJordan, previewPriorityImpact, saveEditOverrides, type RushGate } from "@/app/editing/actions";
 import { etAt, etDateTime } from "@/lib/datetime";
 import {
   EDIT_PRIORITIES,
@@ -259,12 +259,160 @@ function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (v: 
   );
 }
 
+// ---- WHAT A RUSH PUSHES BACK (§10, Sep 26 2026) ----------------------------
+// Jordan: "James and Kyle - James is the creative manager now. Also It can be
+// escalated to me." When the new date or priority would put this job ahead of
+// others on the same editor's desk, the dialog shows those jobs BEFORE Save,
+// asks the approver to say they looked and why, and offers "Send to Jordan".
+// The server recomputes the list and is the real guard (saveEditOverrides).
+
+/** The due/priority part of a draft, as the server takes it — undefined when unchanged. */
+function rushChangeOf(init: Draft, d: Draft): { dueAt?: string | null; priority?: EditPriority | null; editorKey?: string } | null {
+  const out: { dueAt?: string | null; priority?: EditPriority | null; editorKey?: string } = {};
+  if (d.dueLocal !== init.dueLocal) {
+    if (d.dueLocal === "") out.dueAt = null;
+    else {
+      const iso = fromEtLocal(d.dueLocal);
+      if (!iso) return null;
+      out.dueAt = iso;
+    }
+  }
+  if (d.priority !== init.priority) out.priority = d.priority === "" ? null : d.priority;
+  if (out.dueAt === undefined && out.priority === undefined) return null;
+  if (d.editorKey !== init.editorKey) out.editorKey = d.editorKey;
+  return out;
+}
+
+function RushPanel({
+  gate, loading, ack, onAck, reason, onReason, onEscalate, escalating,
+}: {
+  gate: RushGate | null;
+  loading: boolean;
+  ack: boolean;
+  onAck: (v: boolean) => void;
+  reason: string;
+  onReason: (v: string) => void;
+  onEscalate: () => void;
+  escalating: boolean;
+}) {
+  if (loading && !gate) {
+    return <p className="flex items-center gap-1.5 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Checking what this moves ahead of…</p>;
+  }
+  if (!gate) return null;
+  const { impact, authority } = gate;
+  if (impact.displaced.length === 0) {
+    return (
+      <p className="text-[11px] text-muted-2">
+        {impact.note ?? "Moves nothing ahead on the editor's desk."}
+        {impact.editorOut.length > 0 && ` Internal: ${impact.editorOut.join(" · ")}.`}
+      </p>
+    );
+  }
+  const first = (n: string) => n.split(/\s+/)[0];
+  return (
+    <div className="rounded-xl border border-warning/40 bg-warning-soft/30 px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+        <AlertTriangle className="size-3.5 text-warning" />
+        This pushes back {impact.displaced.length} of {impact.editorName ? `${first(impact.editorName)}'s` : "the editor's"} job{impact.displaced.length === 1 ? "" : "s"}
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {impact.displaced.map((j) => (
+          <li key={j.projectId} className="text-[12px] leading-snug text-foreground/90">
+            <span className="font-medium">{j.street}</span>
+            <span className="text-muted"> · {j.client}</span>
+            <span className="block text-[11px] text-muted">
+              {j.promiseISO ? `promised ${etDateTime(j.promiseISO)} ET` : j.dueISO ? `due ${etDateTime(j.dueISO)} ET` : "no date"}
+              {j.dueISO && j.promiseISO && j.dueISO !== j.promiseISO && ` · on the board ${etDateTime(j.dueISO)} ET`}
+              {j.why === "priority" && " · due sooner, now outranked"}
+              {j.atRisk && <span className="font-medium text-danger"> · {j.slackHours != null && j.slackHours < 0 ? "already late" : "due inside a day"}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1.5 text-[11px] text-muted">
+        {impact.promiseISO ? `This job was promised ${etDateTime(impact.promiseISO)} ET` : "This job has no pinned promise"}
+        {impact.paidRush ? " · a rush is on the order (paid)" : impact.fasterThanPromise ? " · the new date is faster than the client paid for" : ""}.
+        {impact.editorOut.length > 0 && ` Internal: ${impact.editorOut.join(" · ")}.`}
+      </p>
+      {authority.may ? (
+        <div className="mt-2 space-y-1.5">
+          {authority.as !== "OWNER" && (
+            <label className="flex items-start gap-2 text-[12px] text-foreground">
+              <input type="checkbox" checked={ack} onChange={(e) => onAck(e.target.checked)} className="mt-0.5" />
+              I&rsquo;ve looked at {impact.displaced.length === 1 ? "this job" : `these ${impact.displaced.length} jobs`} and approve moving this ahead of {impact.displaced.length === 1 ? "it" : "them"}.
+            </label>
+          )}
+          <input
+            aria-label="Why"
+            value={reason}
+            maxLength={200}
+            placeholder={authority.as === "OWNER" ? "Why — optional; goes on the job's timeline" : "Why — goes on the job's timeline with your name"}
+            onChange={(e) => onReason(e.target.value)}
+            className={cx(INPUT, "w-full text-[12px]")}
+          />
+        </div>
+      ) : (
+        <p className="mt-2 text-[12px] font-medium text-warning">{authority.why}</p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-2">
+        {!authority.seatsNamed && <span>The review seats aren&rsquo;t named in Settings, so any office login can approve this.</span>}
+        {authority.as !== "OWNER" && (
+          <button
+            type="button"
+            onClick={onEscalate}
+            disabled={escalating}
+            title={`Puts it on ${authority.escalateTo ?? "Jordan"}'s list with the reason — nothing on the job changes until it is approved`}
+            className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1 font-medium text-muted hover:text-foreground disabled:opacity-50"
+          >
+            {escalating ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send to {first(authority.escalateTo ?? "Jordan")} instead
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onClose: () => void; onSaved: (msg: string) => void }) {
   const [init] = useState(() => draftFrom(job));
   const [d, setD] = useState<Draft>(init);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const set = (patch: Partial<Draft>) => { setD((p) => ({ ...p, ...patch })); setMsg(null); };
+
+  // The rush check follows the draft: re-read (debounced) whenever the date,
+  // the priority or the editor changes; cleared when neither date nor priority
+  // differs from what the dialog opened on.
+  // The answer is stored WITH the change it answers, so a stale one is never
+  // shown against a newer draft: loading = no answer for this change yet.
+  const [fetched, setFetched] = useState<{ key: string; gate: RushGate | null }>({ key: "", gate: null });
+  const [ack, setAck] = useState(false);
+  const [reason, setReason] = useState("");
+  const [escalating, startEscalate] = useTransition();
+  const change = rushChangeOf(init, d);
+  const changeKey = change ? JSON.stringify(change) : "";
+  useEffect(() => {
+    if (!changeKey) return;
+    let live = true;
+    const t = setTimeout(async () => {
+      const r = await previewPriorityImpact(job.projectId, JSON.parse(changeKey)).catch(() => null);
+      if (!live) return;
+      setFetched({ key: changeKey, gate: r?.ok && r.gate ? r.gate : null });
+      setAck(false);
+    }, 400);
+    return () => { live = false; clearTimeout(t); };
+  }, [changeKey, job.projectId]);
+  const gate = changeKey && fetched.key === changeKey ? fetched.gate : null;
+  const gateLoading = !!changeKey && fetched.key !== changeKey;
+  const displacing = !!gate && gate.impact.displaced.length > 0;
+  const escalate = () =>
+    startEscalate(async () => {
+      if (!change) return setMsg("Set the new due date or priority first.");
+      if (!reason.trim()) return setMsg("Say why first — Jordan decides from what you write.");
+      const r = await escalateRushToJordan(job.projectId, change, reason).catch(() => ({ ok: false, message: "That didn't send — try again." }));
+      if (!r.ok) return setMsg(r.message);
+      onSaved(r.message);
+      onClose();
+    });
 
   // Escape closes, like clicking the backdrop.
   useEffect(() => {
@@ -287,8 +435,22 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
       const r = diff(init, d);
       if ("error" in r) return setMsg(r.error);
       if (Object.keys(r.input).length === 0) return setMsg("Nothing changed.");
-      const res = await saveEditOverrides(job.projectId, r.input).catch(() => ({ ok: false, message: "That didn't save — try again." }));
-      if (!res.ok) return setMsg(res.message || "That didn't save — try again.");
+      if (gateLoading) return setMsg("Still checking what this moves ahead of — one moment.");
+      // Jordan (the escalation) is shown the list but never made to fill a
+      // form; James and Kyle tick and say why (the server holds the same line).
+      const owner = gate?.authority.as === "OWNER";
+      if (displacing && gate && !owner) {
+        if (!gate.authority.may) return setMsg(gate.authority.why ?? "Only James or Kyle can approve this.");
+        if (!ack) return setMsg("Tick that you've looked at the jobs this pushes back.");
+        if (!reason.trim()) return setMsg("Say why — it goes on the timeline with your name.");
+      }
+      const rush = displacing && gate && (!owner || reason.trim()) ? { seen: gate.impact.displaced.map((j) => j.projectId), reason } : undefined;
+      const res: { ok: boolean; message: string; rush?: RushGate } = await saveEditOverrides(job.projectId, r.input, rush).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      if (!res.ok) {
+        // The server's list is the one that counts: show it, and ask again.
+        if (res.rush) { setFetched({ key: changeKey, gate: res.rush }); setAck(false); }
+        return setMsg(res.message || "That didn't save — try again.");
+      }
       onSaved(res.message || "Override saved.");
       onClose();
     });
@@ -479,11 +641,27 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
           </div>
         </div>
 
+        {/* §10: what the new date / priority pushes back, before Save. */}
+        {change && (
+          <div className="mt-3">
+            <RushPanel
+              gate={gate}
+              loading={gateLoading}
+              ack={ack}
+              onAck={(v) => { setAck(v); setMsg(null); }}
+              reason={reason}
+              onReason={(v) => { setReason(v); setMsg(null); }}
+              onEscalate={escalate}
+              escalating={escalating}
+            />
+          </div>
+        )}
+
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={save}
-            disabled={busy}
+            disabled={busy || (displacing && !!gate && !gate.authority.may)}
             className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
           >
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save

@@ -18,6 +18,8 @@ const RATE_PREMIUM = 299;
 const RATE_MONTHLY_SOCIAL = 120;
 const RATE_STANDARD = 40;
 const VIDEO_TYPES = new Set(["VIDEO", "SOCIAL_REEL"]);
+// The photo-bearing deliverables (packageMargin.ts PHOTO_TYPES — one list).
+const PHOTO_TYPES = new Set(["PHOTOS", "DRONE"]);
 const PREMIUM_RE = /premium|influencer/i;
 
 /**
@@ -59,10 +61,19 @@ export type JobRow = {
   monthlyVideos: number;    // $120 monthly-social videos (Kim)
   standardVideos: number;   // $40 standard videos/reels (in-house)
   finishedPhotos: number | null; // (brackets ÷ 5) + drone singles — null until counted
-  photoCost: number;        // finished × $0.50 (AutoHDR)
-  editingCost: number;      // tiered video editing + photo editing
-  margin: number;           // revenue − photographer − editing
+  /** finished × $0.50 (AutoHDR). NULL when the job owes photos and its raws
+   *  have not been counted: unknown, not free (§10 AU-26, Sep 26). */
+  photoCost: number | null;
+  editingCost: number;      // tiered video editing + photo editing (the known part)
+  /** false when a cost the job certainly has is unknown (photoCost null), so
+   *  its margin is overstated by that much and must say so. */
+  costComplete: boolean;
+  margin: number;           // revenue − photographer − editing — MODELLED
   marginPct: number | null;
+  /** Recorded rework (ReworkCost), in dollars, BESIDE the margin — never taken
+   *  out of it. null = no row recorded, which is not the same as $0. */
+  reworkActual: number | null;
+  reworkEstimate: number | null;
 };
 
 export type JobProfit = {
@@ -73,6 +84,13 @@ export type JobProfit = {
   editingCost: number;
   margin: number;
   avgMarginPct: number | null;
+  /** photo jobs whose raws were never counted — the margin above is missing
+   *  their photo editing, so it is incomplete, not exact */
+  uncountedJobs: number;
+  marginComplete: boolean;
+  /** recorded rework over the window, beside the margin (null = none recorded) */
+  reworkActual: number | null;
+  reworkEstimate: number | null;
   start: Date;
   end: Date;
 };
@@ -107,6 +125,9 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     },
     orderBy: { shootDate: "desc" },
   });
+  const rework = await import("@/lib/reworkCost")
+    .then((m) => m.reworkByProject(projects.map((p) => p.id)))
+    .catch(() => new Map<string, { actualCents: number | null; estimateCents: number | null; rows: number }>());
 
   const jobs: JobRow[] = projects.map((pr) => {
     // Revenue = the order total (what the client paid). payableInvoice is the
@@ -120,9 +141,15 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     const fin = pr.rawPhotoCount != null
       ? finishedPhotos(pr.rawPhotoCount, pr.dronePhotoCount ?? 0)
       : null;
-    const photoCost = fin != null ? fin * RATE_PER_PHOTO : 0;
-    const editingCost = v.cost + photoCost;
+    // UNKNOWN IS NOT ZERO (§10 AU-26). This used to be `: 0`, so a photo job
+    // the sweep had not reached carried no photo editing at all and its
+    // margin read better than it was, while the cell printed "—". A job that
+    // owes no photos really does cost nothing here.
+    const owesPhotos = pr.deliverables.some((d) => PHOTO_TYPES.has(d.type));
+    const photoCost = fin != null ? fin * RATE_PER_PHOTO : owesPhotos ? null : 0;
+    const editingCost = v.cost + (photoCost ?? 0);
     const margin = revenue - photographerCost - editingCost;
+    const rw = rework.get(pr.id);
     return {
       id: pr.id,
       title: pr.title,
@@ -139,14 +166,19 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
       finishedPhotos: fin,
       photoCost,
       editingCost,
+      costComplete: photoCost !== null,
       margin,
       marginPct: revenue > 0 ? margin / revenue : null,
+      reworkActual: rw?.actualCents != null ? rw.actualCents / 100 : null,
+      reworkEstimate: rw?.estimateCents != null ? rw.estimateCents / 100 : null,
     };
   });
 
   const revenue = jobs.reduce((s, j) => s + j.revenue, 0);
   const photographerCost = jobs.reduce((s, j) => s + j.photographerCost, 0);
   const editingCost = jobs.reduce((s, j) => s + j.editingCost, 0);
+  const uncountedJobs = jobs.filter((j) => !j.costComplete).length;
+  const sumOrNull = (xs: (number | null)[]) => (xs.some((x) => x != null) ? xs.reduce<number>((s, x) => s + (x ?? 0), 0) : null);
   return {
     jobs,
     count: jobs.length,
@@ -155,6 +187,10 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     editingCost,
     margin: revenue - photographerCost - editingCost,
     avgMarginPct: revenue > 0 ? (revenue - photographerCost - editingCost) / revenue : null,
+    uncountedJobs,
+    marginComplete: uncountedJobs === 0,
+    reworkActual: sumOrNull(jobs.map((j) => j.reworkActual)),
+    reworkEstimate: sumOrNull(jobs.map((j) => j.reworkEstimate)),
     start,
     end,
   };

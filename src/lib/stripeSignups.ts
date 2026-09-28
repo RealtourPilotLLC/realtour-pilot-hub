@@ -928,9 +928,19 @@ export async function checkSubscription(subscriptionId: string): Promise<{ statu
   });
   if (!r) return null;
   const sub = await stripeGet<{ id: string; status: string; billing_cycle_anchor?: number | null }>(`/subscriptions/${subscriptionId}`, {});
-  if (typeof sub.billing_cycle_anchor === "number") {
-    await prisma.programSignup.updateMany({ where: { subscriptionId }, data: { billingAnchorAt: new Date(sub.billing_cycle_anchor * 1000) } }).catch(() => {});
-  }
+  // The status is KEPT as well as rung (§10 AU-25, Sep 26): the owner's money
+  // exceptions read it from here, so a lapse stays visible after the one bell
+  // and the Finance page never has to call Stripe to show it.
+  await prisma.programSignup
+    .updateMany({
+      where: { subscriptionId },
+      data: {
+        subscriptionStatus: sub.status,
+        subscriptionCheckedAt: new Date(),
+        ...(typeof sub.billing_cycle_anchor === "number" ? { billingAnchorAt: new Date(sub.billing_cycle_anchor * 1000) } : {}),
+      },
+    })
+    .catch(() => {});
   let alerted = false;
   if (LAPSED.includes(sub.status)) {
     try {

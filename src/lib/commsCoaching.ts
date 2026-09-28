@@ -954,6 +954,16 @@ async function sendNote(
     return { sent: true, reason: null }; // the bridge delivered it
   }
   if (!person.slackId) return { sent: false, reason: "no Slack ID on file" };
+  // THEIR QUIET TIME (Sep 26 2026 review). This DM never went through the
+  // bridge, so it never asked the notification schedule: a quiet window saved
+  // over 7 PM still got the note at 7 PM. Now it is held and goes when the
+  // window ends, through the same flusher as every other held DM. It counts
+  // as SENT here — it is handed over and goes exactly once — because an audit
+  // left unsent is re-sent by the next run the same day, and that would hold
+  // a second copy. The delivery log says "held until …" and then "sent".
+  const { holdStaffDmForQuietTime } = await import("@/lib/notify");
+  const heldUntil = await holdStaffDmForQuietTime({ teamMemberId: person.id, slackId: person.slackId, text: slackDm, kind: COMMS_COACHING_KIND });
+  if (heldUntil) return { sent: true, reason: `held until ${heldUntil.toISOString()} (their quiet time) — the DM goes then` };
   const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
   const dm = await slackDmUserDetailed(person.slackId, slackDm);
   return dm.ok ? { sent: true, reason: null } : { sent: false, reason: `Slack DM failed: ${dm.error}` };

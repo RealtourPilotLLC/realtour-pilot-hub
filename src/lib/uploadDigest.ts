@@ -14,6 +14,22 @@ import { logComm } from "@/lib/commLog";
 
 const APP_URL = appBase();
 
+// ---------------------------------------------------------------------------
+// THE NOTIFICATION SCHEDULE (Sep 26 2026 review). Every text below goes
+// straight through OpenPhone, and until this review none of them asked the
+// schedule: the owner shoots, so a Saturday job of his own texted him at 7:00
+// PM, inside the quiet time the Settings card says holds his texts until 7:30.
+// Each sender now asks first (notify.ts holdStaffTextForQuietTime). A person
+// inside their quiet time gets the SAME text, from the staff queue, when the
+// window ends — the per-day (or per-job) claim is kept, so it still goes once
+// and the second UTC firing still does nothing. Nobody without a schedule —
+// every photographer but the owner today — sees any change at all.
+// ---------------------------------------------------------------------------
+async function heldForQuietTime(memberId: string, text: string, kind: string, at?: Date): Promise<Date | null> {
+  const { holdStaffTextForQuietTime } = await import("@/lib/notify");
+  return holdStaffTextForQuietTime(memberId, text, kind, at).catch(() => null);
+}
+
 function etDayKey(d: Date = new Date()): string {
   return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // YYYY-MM-DD
 }
@@ -146,8 +162,9 @@ export function nagText(firstName: string, streets: string[], split: SplitNag[] 
   return parts.join("\n\n");
 }
 
-export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: number; notes: string[] }> {
+export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: number; notes: string[]; held?: string[] }> {
   const notes: string[] = [];
+  const held: string[] = [];
   const { start } = etDayWindow();
   const dayKey = etDayKey();
   const now = new Date();
@@ -237,6 +254,13 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
       continue;
     }
     const text = nagText(m.name.split(" ")[0], m.streets, split);
+    // Their quiet time: the same text waits in the staff queue; the night's
+    // claim and the split claims stay taken, so it still goes once.
+    const heldUntil = await heldForQuietTime(memberId, text, "upload_nag");
+    if (heldUntil) {
+      held.push(`${m.name}: held until ${heldUntil.toISOString()} (their quiet time)`);
+      continue;
+    }
     try {
       await OpenPhone.sendMessage(from, `+1${k}`, text);
       sent++;
@@ -252,7 +276,10 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
       notes.push(`${m.name}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
     }
   }
-  return { sent, skipped, notes };
+  // `held` is kept out of `notes` on purpose: the evening route reads a night
+  // with nothing sent and something in `notes` as a failure (a 500 on the cron
+  // dashboard), and a text waiting for someone's quiet time to end is not one.
+  return { sent, skipped, notes, held };
 }
 
 /**
@@ -288,7 +315,7 @@ export async function sendSplitNoticeIfChaserPassed(projectId: string, now: Date
           some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, waivedAt: null, notCompletedReason: null },
         },
       },
-      select: { id: true, title: true, photosHandoffAt: true, photographer: { select: { name: true, phone: true } } },
+      select: { id: true, title: true, photosHandoffAt: true, photographer: { select: { id: true, name: true, phone: true } } },
     });
     if (!p?.photographer || !p.photosHandoffAt) return { sent: false, reason: "nothing owed" };
     if (etDayKey(p.photosHandoffAt) !== today) return { sent: false, reason: "not tonight's photos" };
@@ -303,6 +330,10 @@ export async function sendSplitNoticeIfChaserPassed(projectId: string, now: Date
       return { sent: false, reason: "already told" };
     }
     const text = nagText(p.photographer.name.split(" ")[0], [], [{ street: p.title.split(",")[0], url: `${APP_URL}/upload/${p.id}` }]);
+    // Their quiet time: the text waits in the staff queue; the job's claim
+    // stays taken, so it still goes once.
+    const heldUntil = await heldForQuietTime(p.photographer.id, text, "upload_nag", now);
+    if (heldUntil) return { sent: false, reason: `held until ${heldUntil.toISOString()} (their quiet time) — it goes then` };
     try {
       await OpenPhone.sendMessage(from, `+1${k}`, text);
     } catch (e) {
@@ -320,8 +351,9 @@ export async function sendSplitNoticeIfChaserPassed(projectId: string, now: Date
   }
 }
 
-export async function sendEveningUploadDigests(): Promise<{ sent: number; skipped: number; notes: string[] }> {
+export async function sendEveningUploadDigests(): Promise<{ sent: number; skipped: number; notes: string[]; held?: string[] }> {
   const notes: string[] = [];
+  const held: string[] = [];
   const { start, end } = etDayWindow();
   const dayKey = etDayKey();
 
@@ -374,6 +406,14 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       ? await prisma.appSetting.findUnique({ where: { key: `upload-ack-${m.email.toLowerCase()}` } }).catch(() => null)
       : null;
     const text = digestText(m.name.split(" ")[0], m.streets, { newProcess: !acked });
+    // Their quiet time (the owner's Saturday until 7:30 PM): the same list
+    // waits in the staff queue and goes when the window ends. The day's claim
+    // stays taken, so the 8 PM EDT firing and tomorrow cannot send it again.
+    const heldUntil = await heldForQuietTime(memberId, text, "upload_digest");
+    if (heldUntil) {
+      held.push(`${m.name}: held until ${heldUntil.toISOString()} (their quiet time)`);
+      continue;
+    }
     try {
       await OpenPhone.sendMessage(from, `+1${k}`, text);
       sent++;
@@ -394,5 +434,6 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       notes.push(`${m.name}: sent but comms log failed — ${e instanceof Error ? e.message : "unknown"}`);
     }
   }
-  return { sent, skipped, notes };
+  // Held texts are reported apart from `notes` (see sendNightlyUploadNags).
+  return { sent, skipped, notes, held };
 }

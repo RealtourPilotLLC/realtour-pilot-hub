@@ -244,6 +244,11 @@ const BELL_RULES: Record<string, BellRule> = {
   // and staff pages ride a switch.
   program_message: "all",
   reply_sla: "all", // the client pager (see the warning above)
+  // Unanswered client EMAIL (commsSla.sweepEmailSla, Sep 26 2026): Kyle's bell
+  // at 4 covered hours, Jordan's at 9. The same warning as reply_sla applies —
+  // the row IS that lane's ledger — and it is deliberately absent from
+  // notifyPrefs.KIND_TO_EVENT: Jordan asked for the bell and nothing else.
+  reply_sla_email: "all",
   system: "all", // integration failures — the owner is the only one who can fix them
   slack_id_missing: "all", // a mention had no Slack ID to go to — the office fixes that on People (Sep 15)
 };
@@ -719,6 +724,14 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     if (n > 0) console.warn(`flushMemberSms: ${member?.name ?? teamMemberId} — ${reason}; parked ${n} queued line${n === 1 ? "" : "s"}`);
     return n > 0 ? "parked" : "none";
   }
+  // NOT INSIDE THEIR QUIET TIME (Sep 26 2026, the notification schedule). The
+  // lines the bridge holds carry deferUntil already; this is for everything
+  // queued WITHOUT one — the payroll digest, notifyStaffSms's quiet-hours
+  // branch, a line queued before somebody's schedule was saved — which would
+  // otherwise go out at 10 AM on Jordan's Saturday. They wait, and the first
+  // flush after the window ends carries them all.
+  const { holdFor } = await import("@/lib/notifySchedule");
+  if (await holdFor(teamMemberId)) return "none";
   // DUE, not merely unsent (Sep 18): a routine alert raised out of cover
   // carries the next covered moment, and a flush triggered by somebody else's
   // line must not sweep it up early — the body is built from exactly the rows
@@ -1029,8 +1042,15 @@ export async function recordDrainedStaffSms(
 // Sep 16) counts lines a killed flush left claimed and unsent, put back in the
 // queue by the watchdog above — it runs FIRST, and before the early return,
 // because those lines are claimed and so never appear in the pending groups.
-export async function flushPendingSms(): Promise<{ flushed: number; failed: string[]; skipped: number; held: number; recovered: number }> {
+// `dms` (Sep 26 2026, the notification schedule): Slack DMs held through a
+// person's quiet time are released here too — one flusher for everything that
+// waits, so a text and a DM held until 7:30 PM go out on the same tick.
+export async function flushPendingSms(): Promise<{ flushed: number; failed: string[]; skipped: number; held: number; recovered: number; dms: { sent: number; failed: number } }> {
   const recovered = await recoverUnclaimedStaffSms().catch(() => 0);
+  const dms = await releaseHeldStaffDms().catch((e) => {
+    console.warn("releasing held Slack DMs failed (next tick retries)", e);
+    return { sent: 0, failed: 0 };
+  });
   // DUE lines only. Held lines are excluded from the grouping itself, not just
   // from the send: `_min.createdAt` drives the 30-minute batch window below, so
   // a Saturday line held until Monday would otherwise make every one of that
@@ -1040,7 +1060,7 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
     where: dueSmsWhere(),
     _min: { createdAt: true },
   });
-  if (pending.length === 0) return { flushed: 0, failed: [], skipped: 0, held: 0, recovered };
+  if (pending.length === 0) return { flushed: 0, failed: [], skipped: 0, held: 0, recovered, dms };
   const { editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
   const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
   const editorKeys = await editorKeysByTeamMemberId();
@@ -1083,7 +1103,7 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
       failed.push(`${p.teamMemberId}: ${e instanceof Error ? e.message : "send failed"}`);
     }
   }
-  return { flushed, failed, skipped, held, recovered };
+  return { flushed, failed, skipped, held, recovered, dms };
 }
 
 // INTERNAL STAFF SMS. For alerts that must reach a named person's phone rather
@@ -1102,7 +1122,16 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
 // relayed to Slack instead of being silently dropped, because a missed alert is
 // the failure this whole feature exists to prevent.
 // ---------------------------------------------------------------------------
-export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "slack" | "no-phone" | "own-line" | "quiet-hours" | "deferred" | "failed" };
+// "held" (Sep 26 2026, the notification schedule): kept — a Slack DM or a text
+// dated to the end of the person's quiet time or, for an urgent on-call page,
+// to 7 AM. Like "deferred" it is a success for the relay below (the alert WILL
+// reach them); `until` says when.
+export type StaffSmsResult = {
+  teamMemberId: string;
+  name: string;
+  outcome: "sent" | "slack" | "no-phone" | "own-line" | "quiet-hours" | "deferred" | "held" | "failed";
+  until?: string;
+};
 
 /** Anyone we could not reach still gets the alert — via Slack ops. Lifted out
  *  of notifyStaffSms (Sep 18) so the deferred path shares it: a routine alert
@@ -1127,7 +1156,7 @@ export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sen
  *  that does not exist. */
 async function relayUnreached(out: StaffSmsResult[], text: string, verb: "text" | "reach" = "text"): Promise<void> {
   const unreached = out.filter(
-    (r) => r.outcome !== "sent" && r.outcome !== "slack" && r.outcome !== "quiet-hours" && r.outcome !== "deferred",
+    (r) => r.outcome !== "sent" && r.outcome !== "slack" && r.outcome !== "quiet-hours" && r.outcome !== "deferred" && r.outcome !== "held",
   );
   if (unreached.length) {
     await opsAlert(`⚠️ Couldn't ${verb} ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
@@ -1153,6 +1182,18 @@ async function relayUnreached(out: StaffSmsResult[], text: string, verb: "text" 
 //     agreed to be reachable, not five people who happen to hold a role;
 //   · urgent, NOBODY named  → the caller's own list, exactly as today. An unset
 //     rota must degrade to the old behaviour, never to silence.
+//
+// AND WHETHER THIS PERSON MAY BE INTERRUPTED (Sep 26 2026, the notification
+// schedule). Every recipient is asked notifySchedule.holdFor: inside their own
+// quiet time (Jordan: Saturday until 7:30 PM) the alert is KEPT — as a held
+// Slack DM when they have a Slack ID, else as a text dated to the window's
+// end — and goes then, once. The urgent on-call page also carries the
+// business-wide overnight rule: Jordan, Sep 26, "when an URGENT page would go
+// to the on-call person between 10 PM and 7 AM ET, HOLD it until 7 AM (not an
+// immediate text)". Until today the on-call's Slack leg went out at 3 AM, and
+// a phone-only on-call's line queued for the morning was counted as reached,
+// so nothing said the page was waiting. Now it is dated, logged, and the ops
+// channel is told in so many words that the page is held and until when.
 export async function notifyStaffSms(
   teamMemberIds: string[],
   text: string,
@@ -1162,7 +1203,13 @@ export async function notifyStaffSms(
   let ids = [...new Set(teamMemberIds.filter(Boolean))];
   if (ids.length === 0) return [];
   const out: StaffSmsResult[] = [];
+  const now = new Date();
+  // The on-call person this call is PAGING, when the rota redirected it — the
+  // only recipient the overnight rule applies to (coverage.ts rule 3: a page
+  // with nobody named goes exactly as it always did).
+  let paging: string | null = null;
   try {
+    const { holdFor } = await import("@/lib/notifySchedule");
     if (opts.urgency) {
       const { routeAlert } = await import("@/lib/coverage");
       const route = await routeAlert(opts.urgency);
@@ -1172,7 +1219,10 @@ export async function notifyStaffSms(
           // Slack is deliberately NOT tried here. A DM buzzes a phone like a
           // text does, so holding the text and DMing anyway would deliver the
           // weekend page this exists to remove.
-          const queued = await queueStaffSms(m.id, text, undefined, { kind }, route.until);
+          // A person's own quiet time adds to the rota (Sep 26): Monday 9 AM
+          // for everyone, later for somebody quiet on Monday morning.
+          const personal = await holdFor(m.id, route.until);
+          const queued = await queueStaffSms(m.id, text, undefined, { kind }, personal && personal > route.until ? personal : route.until);
           // Refused (no US number, or our own OpenPhone line — Kyle's roster
           // phone IS the office line) means the queue has nowhere to hold it.
           // That falls through to the ops-channel relay below rather than
@@ -1185,7 +1235,10 @@ export async function notifyStaffSms(
       // The rota answers for everyone on an urgent out-of-hours page — and
       // only when somebody is actually named (routeAlert returns null when
       // nobody is, which leaves `ids` as the caller sent them).
-      if (route.toOnCall) ids = [route.toOnCall];
+      if (route.toOnCall) {
+        ids = [route.toOnCall];
+        if (opts.urgency === "urgent") paging = route.toOnCall;
+      }
     }
     const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, phone: true, slackId: true } });
     const quiet = !withinTextingHours();
@@ -1198,6 +1251,21 @@ export async function notifyStaffSms(
       logDelivery({ teamMemberId, kind, channel, status, detail });
 
     for (const m of members) {
+      // Held? Their own quiet time, and — for the on-call being paged — the
+      // 10 PM–7 AM rule. Kept on the channel they would have got it on: a
+      // held DM for a Slack ID, else a text dated to the end. Only when
+      // neither can keep it does it fall through and go now (a hold never
+      // drops an alert).
+      const until = await holdFor(m.id, now, { page: paging === m.id });
+      if (until) {
+        const kept = m.slackId
+          ? await holdStaffDm({ teamMemberId: m.id, slackId: m.slackId, text, until, kind, why: paging === m.id ? "urgent page, quiet hours" : "their quiet time" })
+          : await queueStaffSms(m.id, text, undefined, { kind }, until);
+        if (kept) {
+          out.push({ teamMemberId: m.id, name: m.name, outcome: "held", until: until.toISOString() });
+          continue;
+        }
+      }
       // Slack first — Jordan (Aug 24): "instead of texting Kyle, message him
       // on Slack." Anyone with a Slack id gets a DM; SMS is the fallback.
       if (m.slackId) {
@@ -1243,10 +1311,363 @@ export async function notifyStaffSms(
       }
     }
     await relayUnreached(out, text);
+    // AN URGENT PAGE THAT IS WAITING IS SAID TO BE WAITING (Sep 26). A held
+    // routine alert is quiet by design; a held URGENT one means nobody is
+    // being interrupted until the hold ends, and the ops channel — which the
+    // pagers post to first — is told that plainly, with the time, instead of
+    // the old silent "quiet-hours" that counted as reached.
+    if (opts.urgency === "urgent") {
+      const held = out.filter((r) => r.outcome === "held" && r.until);
+      if (held.length) {
+        const { etDateTime } = await import("@/lib/datetime");
+        const { scrubMoney } = await import("@/lib/text");
+        await opsAlert(
+          `⏸ Urgent page held (quiet hours) — ${held.map((r) => `${r.name} gets it ${etDateTime(r.until!)}`).join(", ")}. Relaying: ${scrubMoney(text)}`,
+        );
+      }
+    }
   } catch (e) {
     console.warn("notifyStaffSms failed", e);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// HELD SLACK DMs (Sep 26 2026, the notification schedule).
+//
+// A text can wait: PendingSms has carried deferUntil since Sep 18. A Slack DM
+// had nowhere to wait, which is why the coverage hold above could only ever
+// SUPPRESS a DM when the same sentence was held as a text. Jordan's quiet time
+// needs more than that — "texts/Slack DMs to that person are held and go out
+// when the window ends" — and turning his Slack-only notices into texts would
+// quietly overrule the channel he chose on Team notifications.
+//
+// So a held DM is one AppSetting row (`held-dm:<person>:<stamp>`, created
+// atomically), released by the same 5-minute flusher as the texts
+// (flushPendingSms → releaseHeldStaffDms). CLAIM, SEND, THEN DELETE: a tick
+// claims a row by compare-and-set on its exact stored value (two ticks cannot
+// both win), sends, and only then deletes it — so a worker killed mid-release
+// leaves a claimed row that the next tick takes back after 15 minutes, the
+// same rule recoverUnclaimedStaffSms uses for texts. Deleting first would make
+// that crash a lost notice; the cost of this order is a duplicate only if the
+// worker dies in the instant between Slack accepting and the delete.
+// Everything one person has waiting goes as ONE DM, oldest first, the way the
+// text digest batches. Every step writes a delivery row: slack/queued when
+// held ("held until …"), slack/sent or slack/failed when released. A refused
+// release is retried on the next two ticks and then relayed to the ops channel
+// — never dropped.
+// ---------------------------------------------------------------------------
+type HeldDm = {
+  teamMemberId: string;
+  slackId: string | null;
+  text: string;
+  until: string;
+  kind: string;
+  notificationId: string | null;
+  heldAt: string;
+  why: string;
+  attempts: number;
+  /** set while a release is in flight; older than HELD_DM_LEASE_MS = a dead worker */
+  claimedAt?: string;
+  /** TERMINAL (Sep 26 2026 review): the release finished with this row — sent,
+   *  skipped or given up — but the delete that should have removed it failed.
+   *  A row carrying it is never sent again; the next tick only deletes it. */
+  settledAt?: string;
+};
+const HELD_DM_MAX_ATTEMPTS = 3;
+const HELD_DM_LEASE_MS = 15 * 60_000;
+/** One release per person per tick carries at most this many notices; the rest
+ *  go on the next tick (Slack caps a message; a person's Saturday rarely nears it). */
+const HELD_DM_BATCH = 20;
+
+async function holdStaffDm(d: {
+  teamMemberId: string;
+  slackId: string | null;
+  text: string;
+  until: Date;
+  kind: string;
+  notificationId?: string | null;
+  why: string;
+}): Promise<boolean> {
+  try {
+    const { heldDmKey } = await import("@/lib/notifySchedule");
+    const key = heldDmKey(d.teamMemberId);
+    const row: HeldDm = {
+      teamMemberId: d.teamMemberId,
+      slackId: d.slackId,
+      text: d.text,
+      until: d.until.toISOString(),
+      kind: d.kind,
+      notificationId: d.notificationId ?? null,
+      heldAt: new Date().toISOString(),
+      why: d.why,
+      attempts: 0,
+    };
+    await prisma.appSetting.create({ data: { key, value: JSON.stringify(row), updatedBy: "notify:held-dm" } });
+    await logDelivery({
+      notificationId: d.notificationId ?? null,
+      teamMemberId: d.teamMemberId,
+      kind: d.kind,
+      channel: "slack",
+      status: "queued",
+      detail: `held until ${row.until} (${d.why}) — ${key}`,
+    });
+    return true;
+  } catch (e) {
+    console.warn("holding a Slack DM failed (sending now instead)", d.kind, e);
+    return false;
+  }
+}
+
+/** Is a DM for this bell row already held for this person, and not yet
+ *  released? The held row is the durable record; its slack/queued log line is
+ *  best-effort (see bridgePerson's retry gate). Never throws: a read that
+ *  fails answers "no", which is today's behaviour. */
+async function heldDmWaiting(teamMemberId: string, notificationId: string): Promise<boolean> {
+  try {
+    const { HELD_DM_PREFIX } = await import("@/lib/notifySchedule");
+    const rows = await prisma.appSetting.findMany({
+      where: { key: { startsWith: `${HELD_DM_PREFIX}${teamMemberId}:` } },
+      select: { value: true },
+    });
+    return rows.some((r) => {
+      try {
+        const dm = JSON.parse(r.value) as HeldDm;
+        return dm.notificationId === notificationId && !dm.settledAt;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Release every held DM whose hold has passed and whose person is not inside
+ *  a new quiet window (a schedule saved since can only make it wait longer,
+ *  never early). Returns how many DMs went and how many failed this tick. */
+export async function releaseHeldStaffDms(now: Date = new Date()): Promise<{ sent: number; failed: number }> {
+  const res = { sent: 0, failed: 0 };
+  const { HELD_DM_PREFIX, holdFor } = await import("@/lib/notifySchedule");
+  const rows = await prisma.appSetting
+    .findMany({ where: { key: { startsWith: HELD_DM_PREFIX } }, select: { key: true, value: true } })
+    .catch(() => [] as { key: string; value: string }[]);
+  if (rows.length === 0) return res;
+  const byPerson = new Map<string, { key: string; raw: string; dm: HeldDm }[]>();
+  const settledLeftovers: string[] = [];
+  for (const r of rows) {
+    let dm: HeldDm;
+    try {
+      dm = JSON.parse(r.value) as HeldDm;
+    } catch {
+      continue; // unreadable — left in place, visible on the store, never guessed at
+    }
+    // Finished with on an earlier tick whose delete failed: only the delete is
+    // owed, never a second send.
+    if (dm?.settledAt) {
+      settledLeftovers.push(r.key);
+      continue;
+    }
+    if (!dm?.teamMemberId || !dm.text || !dm.until || new Date(dm.until) > now) continue;
+    // Another tick is releasing it right now — unless that claim is old enough
+    // to belong to a worker that died.
+    if (dm.claimedAt && now.getTime() - new Date(dm.claimedAt).getTime() < HELD_DM_LEASE_MS) continue;
+    const list = byPerson.get(dm.teamMemberId) ?? [];
+    list.push({ key: r.key, raw: r.value, dm });
+    byPerson.set(dm.teamMemberId, list);
+  }
+  if (settledLeftovers.length) {
+    await prisma.appSetting.deleteMany({ where: { key: { in: settledLeftovers } } }).catch((e) => {
+      console.warn(`held Slack DMs: ${settledLeftovers.length} finished row(s) still could not be deleted (never re-sent; next tick tries again)`, e);
+    });
+  }
+  const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
+  for (const [teamMemberId, due] of byPerson) {
+    if (await holdFor(teamMemberId, now)) continue;
+    due.sort((a, b) => a.dm.heldAt.localeCompare(b.dm.heldAt));
+    // CLAIM by compare-and-set on the exact stored value: the row whose value
+    // this tick replaced is the row this tick owns.
+    const mine: { key: string; raw: string; dm: HeldDm }[] = [];
+    for (const r of due.slice(0, HELD_DM_BATCH)) {
+      const claimed: HeldDm = { ...r.dm, claimedAt: now.toISOString() };
+      const raw = JSON.stringify(claimed);
+      const won = await prisma.appSetting
+        .updateMany({ where: { key: r.key, value: r.raw }, data: { value: raw } })
+        .catch(() => ({ count: 0 }));
+      if (won.count === 1) mine.push({ key: r.key, raw, dm: claimed });
+    }
+    if (mine.length === 0) continue;
+    // FINISHED MEANS FINISHED (Sep 26 2026 review). This used to be one
+    // deleteMany with its failure swallowed — so a transient error right after
+    // Slack accepted left the claimed rows in the store, the lease ran out 15
+    // minutes later, and the next tick sent the same DM again. The code KNEW
+    // the delete had failed and carried on. Now: the delete is tried twice;
+    // if it still fails, each row is compare-and-set to a terminal settledAt
+    // (on the exact value this tick claimed it with), which the loop above
+    // only ever deletes. A duplicate is left only for a store that refuses
+    // every write — the same thing as a worker killed between send and delete.
+    const done = async () => {
+      const keys = mine.map((r) => r.key);
+      for (let i = 0; i < 2; i++) {
+        if (await prisma.appSetting.deleteMany({ where: { key: { in: keys } } }).then(() => true, () => false)) return;
+      }
+      for (const r of mine) {
+        const settled = JSON.stringify({ ...r.dm, settledAt: new Date().toISOString() } satisfies HeldDm);
+        await prisma.appSetting
+          .updateMany({ where: { key: r.key, value: r.raw }, data: { value: settled } })
+          .catch((e) => console.warn("held Slack DM: could not delete or settle a finished row — it may be sent again", r.key, e));
+      }
+    };
+    const log = (r: { dm: HeldDm }, status: DeliveryStatus, detail: string) =>
+      logDelivery({ notificationId: r.dm.notificationId, teamMemberId, kind: r.dm.kind, channel: "slack", status, detail });
+    const member = await prisma.teamMember
+      .findUnique({ where: { id: teamMemberId }, select: { name: true, slackId: true, active: true } })
+      .catch(() => null);
+    if (!member?.active) {
+      await done();
+      for (const r of mine) await log(r, "skipped", "no longer on the active roster — held DM not sent");
+      continue;
+    }
+    const slackId = member.slackId || mine[0].dm.slackId;
+    const text =
+      mine.length === 1
+        ? mine[0].dm.text
+        : [`🔕 Held during your quiet time — ${mine.length} notices, oldest first:`, ...mine.map((r) => r.dm.text)].join("\n\n");
+    const dm = slackId ? await slackDmUserDetailed(slackId, text) : { ok: false as const, error: "no Slack ID on file" };
+    if (dm.ok) {
+      await done();
+      res.sent++;
+      for (const r of mine) await log(r, "sent", `held until ${r.dm.until}, sent when the hold ended`);
+      continue;
+    }
+    res.failed++;
+    const attempts = Math.max(...mine.map((r) => r.dm.attempts ?? 0)) + 1;
+    if (attempts < HELD_DM_MAX_ATTEMPTS && slackId) {
+      // Hand them back — claim released, attempt counted — for the next tick.
+      for (const r of mine) {
+        const back: HeldDm = { ...r.dm, attempts };
+        delete back.claimedAt;
+        await prisma.appSetting
+          .updateMany({ where: { key: r.key, value: r.raw }, data: { value: JSON.stringify(back) } })
+          .catch((e) => console.warn("could not hand a held Slack DM back after a refused release", r.key, e));
+        await log(r, "failed", `${dm.error} — held DM will be retried (attempt ${attempts} of ${HELD_DM_MAX_ATTEMPTS})`);
+      }
+      continue;
+    }
+    await done();
+    for (const r of mine) await log(r, "failed", `${dm.error} — gave up after ${attempts} attempt(s); relayed to the ops channel`);
+    const { scrubMoney } = await import("@/lib/text");
+    await relayUnreached(
+      [{ teamMemberId, name: member.name, outcome: "failed" }],
+      scrubMoney(mine.map((r) => r.dm.text).join(" · ")).slice(0, 2500),
+      "reach",
+    );
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// KYLE'S TWO DIGESTS — the shared tail (Sep 26 2026; unified handoff items
+// "digest reports sent on failure" and "inert alert switches").
+//
+// Both digests called slackDmUser, ignored its false, and returned
+// { sent: true }: a refused DM kept the day's claim, so the list was lost AND
+// recorded as sent, and no delivery row was ever written. The Settings switch
+// "Kyle's Slack digests" was read by nothing. What they share now:
+//   · digestGate — the switch, read before the day is claimed;
+//   · kyleDigestRecipient — his roster row (id for the schedule and the log),
+//     the long-standing literal Slack ID as the fallback;
+//   · deliverDigestDm — his quiet time first (a held digest keeps its claim
+//     and goes when the window ends), then the send, and on a refusal the
+//     claim is RELEASED so the next 5-minute tick retries, a failed delivery
+//     row is written with Slack's own words, and the answer is sent: false.
+//
+// NOT gated on the weekday, though the batch-0 design asked for it. Jordan's
+// Sep 26 answer came after it: "no matter what is going on, James, Kyle, and
+// myself should get a notification", with timing controlled per person in
+// Settings. A weekend skip would stop Kyle's Saturday list with no switch that
+// says so; his own quiet time on the schedule card is where that belongs.
+// ---------------------------------------------------------------------------
+export async function digestGate(): Promise<string | null> {
+  const { internalAlertRules } = await import("@/lib/settings");
+  const rules = await internalAlertRules();
+  return rules.kyleDigests.enabled ? null : "switched off — Settings → Internal alerts → Kyle's Slack digests";
+}
+
+export async function kyleDigestRecipient(): Promise<{ teamMemberId: string | null; slackId: string }> {
+  const kyle = await prisma.teamMember
+    .findFirst({ where: { name: { contains: "Kyle", mode: "insensitive" }, active: true }, select: { id: true, slackId: true } })
+    .catch(() => null);
+  return { teamMemberId: kyle?.id ?? null, slackId: kyle?.slackId || (await kyleSlackId()) };
+}
+
+export async function deliverDigestDm(input: {
+  teamMemberId: string | null;
+  slackId: string;
+  text: string;
+  kind: string;
+  /** the once-a-day AppSetting claim the caller already took */
+  claimKey: string;
+}): Promise<{ sent: boolean; reason?: string }> {
+  const { holdFor } = await import("@/lib/notifySchedule");
+  const until = input.teamMemberId ? await holdFor(input.teamMemberId) : null;
+  if (until && input.teamMemberId) {
+    const kept = await holdStaffDm({ teamMemberId: input.teamMemberId, slackId: input.slackId, text: input.text, until, kind: input.kind, why: "their quiet time" });
+    if (kept) return { sent: false, reason: `held until ${until.toISOString()} (quiet time) — it goes out then` };
+  }
+  const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
+  const dm = await slackDmUserDetailed(input.slackId, input.text);
+  if (dm.ok) {
+    if (input.teamMemberId) await logDelivery({ teamMemberId: input.teamMemberId, kind: input.kind, channel: "slack", status: "sent" });
+    return { sent: true };
+  }
+  // Release the day so the next tick tries again — the claim was taken before
+  // Slack answered, and a refusal must not eat the day's list.
+  await prisma.appSetting.deleteMany({ where: { key: input.claimKey } }).catch(() => {});
+  if (input.teamMemberId) await logDelivery({ teamMemberId: input.teamMemberId, kind: input.kind, channel: "slack", status: "failed", detail: dm.error });
+  return { sent: false, reason: `Slack refused the DM: ${dm.error}` };
+}
+
+// ---------------------------------------------------------------------------
+// QUIET TIME FOR THE SENDERS THAT NEVER GO THROUGH THE BRIDGE (Sep 26 2026
+// review). The 7 PM upload digest, the 10 PM chaser and its late split notice
+// (uploadDigest.ts) text a photographer straight through OpenPhone, and the
+// comms coaching note (commsCoaching.ts) DMs straight through Slack. None of
+// them asked the schedule, so a Saturday job Jordan shot himself texted him at
+// 7:00 PM — half an hour inside the window the Settings card tells him is
+// quiet. These two are the whole change for them: ask holdFor, and when the
+// person is quiet, KEEP the message on the channel it would have gone on —
+//   · a text goes into the staff queue dated to the window's end. The flusher
+//     asks the schedule again before it sends, batches it with anything else
+//     that waited, and adds the hub prefix — which is also what tells the
+//     OpenPhone receiver the text was ours, the job the upload texts' own comms
+//     row does when they go straight out;
+//   · a DM becomes a held row, released by the same flusher.
+// Null back = not quiet, or nothing could keep it (no US number, our own line,
+// no Slack ID): the caller sends now, exactly as before — notifySchedule rule
+// 2, louder than asked beats silent. The caller keeps its own once-a-day claim
+// either way, so a held message still goes once.
+// ---------------------------------------------------------------------------
+export async function holdStaffTextForQuietTime(teamMemberId: string, text: string, kind: string, at: Date = new Date()): Promise<Date | null> {
+  const { holdFor } = await import("@/lib/notifySchedule");
+  const until = await holdFor(teamMemberId, at);
+  if (!until) return null;
+  return (await queueStaffSms(teamMemberId, text, undefined, { kind }, until)) ? until : null;
+}
+
+export async function holdStaffDmForQuietTime(d: {
+  teamMemberId: string;
+  slackId: string | null;
+  text: string;
+  kind: string;
+  notificationId?: string | null;
+  at?: Date;
+}): Promise<Date | null> {
+  const { holdFor } = await import("@/lib/notifySchedule");
+  const until = await holdFor(d.teamMemberId, d.at ?? new Date());
+  if (!until || !d.slackId) return null;
+  const kept = await holdStaffDm({ teamMemberId: d.teamMemberId, slackId: d.slackId, text: d.text, until, kind: d.kind, notificationId: d.notificationId ?? null, why: "their quiet time" });
+  return kept ? until : null;
 }
 
 // What actually happened when we tried to reach an editor — callers use this
@@ -1334,7 +1755,10 @@ export async function notifyInApp(n: {
           // both / neither (see the bridge header above and bridgePerson).
           const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href, notificationId: row.id }, delivered);
           if (editorKey && roles.includes("EDITOR")) {
-            bridged.push({ userKey: t.userKey!, channel: out.slack ? "slack" : out.sms ? "sms" : "bell" });
+            // A held ping is "quiet", never "slack": the emitters turn this
+            // word into "pinged by Slack DM" on the job's timeline and the
+            // brand panel, and a DM waiting in its row has pinged nobody yet.
+            bridged.push({ userKey: t.userKey!, channel: out.held ? "quiet" : out.slack ? "slack" : out.sms ? "sms" : "bell" });
           }
         } else if ((roles.includes("OWNER") || roles.includes("ADMIN")) && t.ownerSms) {
           // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
@@ -1439,7 +1863,12 @@ export async function notifyInApp(n: {
 }
 
 // What went out for one person in one notifyInApp call (the `delivered` map).
-type Delivery = { slack: boolean; sms: boolean };
+// `held` (Sep 26 2026 review): everything that reached them was KEPT for later
+// — a DM held through their quiet time, a text dated to its end — and nothing
+// went now. slack/sms stay true for the relay (kept is reached, never
+// unreached); `held` is what stops a caller from writing "pinged by Slack DM"
+// on a timeline while the DM is still waiting in its row.
+type Delivery = { slack: boolean; sms: boolean; held?: boolean };
 
 /** How many times ONE person's channel legs may be driven for ONE bell row —
  *  the first announcement plus two re-announcements (Sep 20, journey 5).
@@ -1546,6 +1975,17 @@ async function bridgePerson(
         select: { channel: true, status: true },
       });
       if (legs.some((l) => l.status === "sent" || l.status === "queued")) return state;
+      // A HELD DM IS ITS OWN RECORD (Sep 26 2026 review) — the same "ask the
+      // queue, not the log" rule the text leg below follows. holdStaffDm writes
+      // the held row FIRST and its slack/queued line SECOND, and that line is
+      // best-effort; lose it and this gate reads "nobody reached", so a
+      // re-announcement inside their quiet time would hold a second copy and
+      // the release would put the same notice in their DM twice.
+      if (await heldDmWaiting(personId, ctx.notificationId)) {
+        state.slack = true;
+        state.held = true;
+        return state;
+      }
       const attempts = Math.max(
         legs.filter((l) => l.channel === "slack").length,
         legs.filter((l) => l.channel === "sms").length,
@@ -1576,7 +2016,17 @@ async function bridgePerson(
     const editorKey = ctx.editorKey ?? (await editorKeysByTeamMemberId()).get(personId) ?? null;
     const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
     const tz = editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined;
-    const hold = await holdUntilCovered(kind, tz);
+    // WHOSE CLOCK DECIDES (Sep 26 2026, the notification schedule). A person
+    // with a schedule of their own — saved on the card, or Jordan's preset —
+    // is timed by it: inside their quiet time BOTH legs wait for its end (the
+    // text dated in the queue, the DM held in its own row); outside it nothing
+    // is held, and the office rota's weekend hold does not apply to them
+    // (notifySchedule.scheduleHold says why). Everyone with no schedule gets
+    // exactly the Sep 20 rule.
+    const { scheduleHold } = await import("@/lib/notifySchedule");
+    const sched = await scheduleHold(personId);
+    const quiet = sched.until;
+    const hold = quiet ?? (sched.own ? null : await holdUntilCovered(kind, tz));
     // THE TEXT GOES FIRST when the alert is being held (Slack went first until
     // Sep 20, audit F07). The digest queue is the only channel that can keep a
     // line until Monday, so whether it took the line is what decides whether
@@ -1628,6 +2078,10 @@ async function bridgePerson(
         state.sms = await queueStaffSms(personId, line, tz, meta, hold);
       }
     }
+    // Was the text KEPT for later (dated to the end of their quiet time or to
+    // the next covered day) rather than queued for the next flush? `held` at
+    // the bottom is decided from this and the DM's own answer.
+    const smsKept = state.sms && !!hold;
     // Did the Slack leg ever actually get tried? A person who wants Slack and
     // has no ID on file is a CONFIGURATION gap, and the codebase already
     // handles it weekly (nudgeMissingSlackId, throttled, on the People page).
@@ -1636,8 +2090,20 @@ async function bridgePerson(
     // that nudge, for a week, saying nothing the nudge does not (review,
     // Sep 20).
     let slackIdMissing = false;
+    let dmSentNow = false;
+    let dmKept = false;
     if (want.slack) {
-      if (hold && state.sms) {
+      const { escapeSlack } = await import("@/lib/text");
+      const dmText = t.slackDm ?? `${escapeSlack(ctx.title)}\n${link}`;
+      // Their quiet time: the DM itself waits, on Slack, for the window's end
+      // (holdStaffDm) — never turned into a text they did not ask for. Only if
+      // that row cannot be written does it fall back to the rules below.
+      const heldDm = !!quiet && !!member.slackId &&
+        (await holdStaffDm({ teamMemberId: personId, slackId: member.slackId, text: dmText, until: quiet, kind, notificationId: ctx.notificationId, why: "their quiet time" }));
+      if (heldDm) {
+        state.slack = true; // kept and dated — reached, as far as the relay is concerned
+        dmKept = true;
+      } else if (hold && state.sms) {
         // Held, not dropped: the same sentence is in the digest queue dated to
         // the next covered moment, and the bell row is already there. A DM
         // buzzes a phone exactly like a text does, which is why notifyStaffSms's
@@ -1647,13 +2113,15 @@ async function bridgePerson(
           teamMemberId: personId,
           channel: "slack",
           status: "skipped",
-          detail: `routine alert, nobody works today — held as a text until ${hold.toISOString()}`,
+          detail: quiet
+            ? `their quiet time — held as a text until ${hold.toISOString()}`
+            : `routine alert, nobody works today — held as a text until ${hold.toISOString()}`,
         });
       } else if (member.slackId) {
         const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
-        const { escapeSlack } = await import("@/lib/text");
-        const dm = await slackDmUserDetailed(member.slackId, t.slackDm ?? `${escapeSlack(ctx.title)}\n${link}`);
+        const dm = await slackDmUserDetailed(member.slackId, dmText);
         state.slack = dm.ok;
+        dmSentNow = dm.ok;
         if (dm.ok) await logDelivery({ ...meta, teamMemberId: personId, channel: "slack", status: "sent" });
         else {
           console.warn("slack DM failed (bell row kept)", kind, member.name, dm.error);
@@ -1691,6 +2159,10 @@ async function bridgePerson(
         "reach",
       );
     }
+    // Held = something was kept for later and nothing went now. A text queued
+    // WITHOUT a date (the ordinary digest queue) counts as going now, exactly
+    // as it always has; a DM that went out is going now whatever the text did.
+    state.held = (dmKept || smsKept) && !dmSentNow && !(state.sms && !smsKept);
     return state;
   } catch (e) {
     console.warn("notify bridge failed (bell row kept)", kind, e);
@@ -1741,11 +2213,18 @@ async function bridgeBroadcast(
     // path the Saturday Sep 19 09:26 and 12:22 "cut ready" DMs and texts to
     // Jordan, Kyle and Harrison came down — the wave the hold is scoped to,
     // and the reason it is scoped to weekend days and nothing else.
-    const hold = await holdUntilCovered(kind, undefined);
+    const rotaHold = await holdUntilCovered(kind, undefined);
+    const { scheduleHold } = await import("@/lib/notifySchedule");
     for (const id of ids) {
       if (delivered.has(id)) continue;
       const state: Delivery = { slack: false, sms: false };
       delivered.set(id, state);
+      // Per person (Sep 26 2026): somebody with a schedule of their own — the
+      // owner, by his preset — is timed by it instead of by the rota; the
+      // office without one keeps the one rota answer above. See bridgePerson.
+      const sched = await scheduleHold(id);
+      const quiet = sched.until;
+      const hold = quiet ?? (sched.own ? null : rotaHold);
       const member = await prisma.teamMember.findUnique({ where: { id }, select: { name: true, slackId: true, active: true } });
       if (!member?.active) continue;
       await logDelivery({ ...meta, teamMemberId: id, channel: "bell", status: "sent" });
@@ -1777,13 +2256,20 @@ async function bridgeBroadcast(
       // relay's — see the same flag in bridgePerson (review, Sep 20).
       let slackIdMissing = false;
       if (want.slack) {
-        if (hold && state.sms) {
+        // Their quiet time: the DM waits on Slack for the window's end.
+        const heldDm = !!quiet && !!member.slackId &&
+          (await holdStaffDm({ teamMemberId: id, slackId: member.slackId, text: escapeSlack(line), until: quiet, kind, notificationId: ctx.notificationId, why: "their quiet time" }));
+        if (heldDm) {
+          state.slack = true;
+        } else if (hold && state.sms) {
           await logDelivery({
             ...meta,
             teamMemberId: id,
             channel: "slack",
             status: "skipped",
-            detail: `routine alert, nobody works today — held as a text until ${hold.toISOString()}`,
+            detail: quiet
+              ? `their quiet time — held as a text until ${hold.toISOString()}`
+              : `routine alert, nobody works today — held as a text until ${hold.toISOString()}`,
           });
         } else if (member.slackId) {
           const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
@@ -1893,21 +2379,27 @@ export async function alertWebhookRejections(provider: string): Promise<void> {
 // Kyle's MORNING digest — the day's list at the start of the day (audit: the
 // function literally named getMorningBrief was only ever delivered at 4 PM).
 // Same shape and dedupe pattern as the 4 o'clock check; 8–10am ET window.
+// Sep 26 2026: gated on the Settings switch, timed by Kyle's own schedule, and
+// honest about a refused DM (deliverDigestDm above).
 // ---------------------------------------------------------------------------
 export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: string }> {
   const etHour = Number(
     new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
   );
   if (etHour < 8 || etHour >= 10) return { sent: false, reason: "outside 8-10am ET" };
+  // The switch BEFORE the day is claimed, so turning it back on mid-window
+  // still gets that morning's list.
+  const off = await digestGate();
+  if (off) return { sent: false, reason: off };
   const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const claimKey = `kyle-morning-${day}`;
   try {
-    await prisma.appSetting.create({ data: { key: `kyle-morning-${day}`, value: "sent" } });
+    await prisma.appSetting.create({ data: { key: claimKey, value: "sent" } });
   } catch {
     return { sent: false, reason: "already sent today" };
   }
   try {
-    const slackId = await kyleSlackId();
-    const { slackDmUser } = await import("@/lib/integrations/slack");
+    const to = await kyleDigestRecipient();
     const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
     const [brief, overdue, texts] = await Promise.all([
       getMorningBrief().catch(() => []),
@@ -1916,9 +2408,14 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     ]);
     const seen = new Set(overdue.map((t) => t.id));
     const openToday = brief.filter((t) => !seen.has(t.id));
-    if (overdue.length + openToday.length + texts.length === 0) {
-      await slackDmUser(slackId, "☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
-      return { sent: true };
+    const send = (text: string) => deliverDigestDm({ ...to, text, kind: "kyle_morning", claimKey });
+    // The exceptions with Kyle's name on them and the unanswered counts (§9,
+    // Sep 26 — commsBoard.exceptionDigestLines, shared with the 4 o'clock).
+    const exceptionLines = await import("@/lib/commsBoard")
+      .then((m) => m.exceptionDigestLines(appBase()))
+      .catch(() => [] as string[]);
+    if (overdue.length + openToday.length + texts.length + exceptionLines.length === 0) {
+      return await send("☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
     }
     const lines: string[] = ["☀️ *Morning check* — today's list:"];
     for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${t.title}`);
@@ -1926,6 +2423,7 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
     if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
     if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & ready in the Outbox`);
+    lines.push(...exceptionLines);
     // Land where the listed rows actually live: Slack asks moved to their own
     // tab on Sep 16 (the Other tab now excludes them), so a digest that lists
     // both must offer both doors rather than one that shows half the list.
@@ -1934,61 +2432,22 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     }).catch(() => 0);
     lines.push(`${appBase()}/tasks?tab=other`);
     if (slackAsks > 0) lines.push(`Slack asks (${slackAsks}): ${appBase()}/tasks?tab=slack`);
-    await slackDmUser(slackId, lines.join("\n"));
-    return { sent: true };
+    return await send(lines.join("\n"));
   } catch (e) {
     console.warn("kyleMorningDigest failed", e);
-    await prisma.appSetting.delete({ where: { key: `kyle-morning-${day}` } }).catch(() => {});
+    await prisma.appSetting.delete({ where: { key: claimKey } }).catch(() => {});
     return { sent: false, reason: "failed" };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Kyle's 4 PM Slack digest — open to-dos and things to check, once per ET day
-// in the 4-6pm window (the 5-minute cron calls this; the AppSetting key makes
-// it fire exactly once). Jordan (Aug 24): "by 4PM that day, send Kyle a
-// reminder of his open to-dos and things to check."
+// Kyle's 4 PM Slack digest — RETIRED into commsBoard.afternoonSlackDigest
+// (Sep 16, Kyle's call: the rebuilt one leads with the Slack asks and links
+// every line to the tab that holds it). Nothing calls this any more; it stays
+// as a one-line alias so an old import cannot bring back the version that
+// linked /today and reported "sent" on a refused DM (Sep 26 2026).
 // ---------------------------------------------------------------------------
 export async function kyleAfternoonDigest(): Promise<{ sent: boolean; reason?: string }> {
-  const etHour = Number(
-    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
-  );
-  if (etHour < 16 || etHour >= 18) return { sent: false, reason: "outside 4-6pm ET" };
-  const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-  try {
-    await prisma.appSetting.create({ data: { key: `kyle-digest-${day}`, value: "sent" } });
-  } catch {
-    return { sent: false, reason: "already sent today" };
-  }
-  try {
-    const slackId = await kyleSlackId();
-    const { slackDmUser } = await import("@/lib/integrations/slack");
-    const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
-    const [brief, overdue, texts] = await Promise.all([
-      getMorningBrief().catch(() => []),
-      getOverdueTasks().catch(() => []),
-      getClientTextTasks().catch(() => []),
-    ]);
-    const seen = new Set(overdue.map((t) => t.id));
-    const openToday = brief.filter((t) => !seen.has(t.id));
-    if (overdue.length + openToday.length + texts.length === 0) {
-      await slackDmUser(slackId, "🕓 4 o'clock check — everything's clear. Nice work today. 🎉");
-      return { sent: true };
-    }
-    const lines: string[] = ["🕓 *4 o'clock check* — still open today:"];
-    for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${t.title}`);
-    if (overdue.length > 8) lines.push(`  …and ${overdue.length - 8} more overdue`);
-    for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
-    if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
-    if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & waiting in the Outbox`);
-    lines.push(`${appBase()}/today`);
-    await slackDmUser(slackId, lines.join("\n"));
-    return { sent: true };
-  } catch (e) {
-    console.warn("kyleAfternoonDigest failed", e);
-    // Release the day claim — marking "sent" BEFORE a Slack hiccup permanently
-    // ate that day's digest with no retry (audit). The next 5-min tick retries.
-    await prisma.appSetting.delete({ where: { key: `kyle-digest-${day}` } }).catch(() => {});
-    return { sent: false, reason: "failed" };
-  }
+  const { afternoonSlackDigest } = await import("@/lib/commsBoard");
+  return afternoonSlackDigest();
 }

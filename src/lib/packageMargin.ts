@@ -172,10 +172,14 @@ export async function packageMargins(start: Date, end: Date): Promise<PackageMar
     // Photo editing lands on the photo-bearing items, weighted by their value.
     const photoWeighted = amounts.map((a, i) => a * photoW[i]);
 
-    const videoCost = Math.max(job.editingCost - job.photoCost, 0);
+    // photoCost is null for a photo job whose raws were never counted (§10
+    // AU-26): editingCost then holds only the video part, and the unknown photo
+    // part is already reported as photoCostKnown < 1 — it is not invented here.
+    const photoCost = job.photoCost ?? 0;
+    const videoCost = Math.max(job.editingCost - photoCost, 0);
     const shooterParts = allocate(job.photographerCost, shooterW, amounts);
     const videoParts = allocate(videoCost, videoW, amounts);
-    const photoParts = allocate(job.photoCost, photoWeighted, amounts);
+    const photoParts = allocate(photoCost, photoWeighted, amounts);
 
     rows.forEach((it, i) => {
       const label = canonicalPackage(it.title);

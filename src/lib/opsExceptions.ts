@@ -41,7 +41,12 @@ export type ExceptionKind =
   | "unverified-render"
   | "library-missing"
   | "legacy-identity"
-  | "reopened-work";
+  | "reopened-work"
+  | "unmapped-scope"
+  | "other-output"
+  | "missing-prerequisite"
+  | "photo-batch"
+  | "at-risk-promise";
 
 export type OpsException = {
   id: string;
@@ -95,6 +100,11 @@ export function emptyExceptionBoard(): OpsExceptionBoard {
       "library-missing": { ...none },
       "legacy-identity": { ...none },
       "reopened-work": { ...none },
+      "unmapped-scope": { ...none },
+      "other-output": { ...none },
+      "missing-prerequisite": { ...none },
+      "photo-batch": { ...none },
+      "at-risk-promise": { ...none },
     },
   };
 }
@@ -109,6 +119,11 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "library-missing": "Approved video not in the client's library",
   "legacy-identity": "Old library file needs its video confirmed",
   "reopened-work": "Reopened work",
+  "unmapped-scope": "Product nobody has mapped",
+  "other-output": "Order line with no known output",
+  "missing-prerequisite": "Missing what the product needs first",
+  "photo-batch": "AutoHDR batch short or doubled",
+  "at-risk-promise": "Promise at risk — client not updated",
 };
 
 const DAY = 86_400_000;
@@ -797,6 +812,32 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     }
   }
 
+  // 10–12. WHAT THE ORDER ACTUALLY ASKED FOR (§10 AU-01, Sep 26 2026). Its own
+  // function below; a failed read costs these three kinds, never the board.
+  const scope = await orderScopeExceptions({ now: new Date(now), cap }).catch((e: unknown) => {
+    console.warn("orderScopeExceptions failed", (e as Error).message);
+    return null;
+  });
+  if (scope) out.push(...scope.rows);
+
+  // 13. AUTOHDR BATCHES (§10 A53, Sep 26 2026): a batch that came back short
+  // or never came back past the vendor's two days, or a raw folder that looks
+  // uploaded twice. Built in photoEditBatches.ts; a failed read costs this
+  // kind, never the board.
+  const photoBatches = await import("@/lib/photoEditBatches")
+    .then((m) => m.photoBatchExceptionRows({ now: new Date(now), cap }))
+    .catch(() => null);
+  if (photoBatches) out.push(...photoBatches.rows);
+
+  // 14. PROMISES AT RISK (AU-24 / F5, Sep 26 2026): something owed to a client
+  // inside a day of its recorded promise, or past it, with no client update
+  // drafted for that promise. Built in atRiskUpdates.ts; drafting is a button
+  // on Tasks → Comms (the AI runs on the click, never here).
+  const atRisk = await import("@/lib/atRiskUpdates")
+    .then((m) => m.atRiskExceptionRows({ now: new Date(now), cap }))
+    .catch(() => null);
+  if (atRisk) out.push(...atRisk.rows);
+
   return {
     // High first, then oldest. A list somebody reads top to bottom.
     rows: out.sort((a, b) => {
@@ -818,6 +859,232 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
       "library-missing": { all: libraryFailures.length, high: libraryFailures.filter((e) => libraryHours(e) >= 24).length },
       "legacy-identity": { all: legacyByEnrollment.size, high: 0 },
       "reopened-work": { all: reopened.length, high: reopened.filter((r) => r.overdue).length },
+      "unmapped-scope": scope?.totals["unmapped-scope"] ?? { all: 0, high: 0 },
+      "other-output": scope?.totals["other-output"] ?? { all: 0, high: 0 },
+      "missing-prerequisite": scope?.totals["missing-prerequisite"] ?? { all: 0, high: 0 },
+      "photo-batch": photoBatches?.total ?? { all: 0, high: 0 },
+      "at-risk-promise": atRisk?.total ?? { all: 0, high: 0 },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ORDER SCOPE (§10 AU-01 / H1 / B1, Sep 26 2026).
+//
+// Settings → Products is the authority for what a product produces, and the
+// sync obeys it. What nobody could see was the per-ORDER case: a live job
+// carrying a product nobody has mapped is parsed from its name by the keyword
+// fallback, and anything the fallback cannot place becomes an OTHER row that no
+// lane owns. Both happened silently. Three kinds, all computed on each read and
+// stored nowhere, so a re-import can never duplicate them and mapping the
+// product clears its row on the next read:
+//
+//   unmapped-scope        a product title on a live order that neither the
+//                         hand-set map nor the static map covers — one row per
+//                         TITLE, listing the jobs, because the fix is one
+//                         mapping, not one per job.
+//   other-output          an owed OTHER row on a live job whose product IS
+//                         mapped (a human chose "Other", e.g. Lot Lines) or has
+//                         no product at all — the unmapped ones are already the
+//                         row above, and a special correction the hub already
+//                         tracks (an open asset task on that category) is
+//                         that task's, not a second item.
+//   missing-prerequisite  a MAPPED product whose owner-set list (Product.
+//                         prerequisitesJson) the job does not meet yet.
+//
+// Live = booked through in revision, not on hold (a parked job is nobody's to
+// chase, the rule every kind above keeps) and not an order Aryeo has lost.
+// Nothing here blocks anything or writes anything.
+// ---------------------------------------------------------------------------
+const SCOPE_LIVE_STATUSES = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as const;
+const SCOPE_IN_PRODUCTION = new Set(["SHOT", "EDITING", "REVIEW", "REVISION"]);
+/** Lines that are money or logistics, not work: they produce nothing to map. */
+const FEE_LINE_RE = /\b(fees?|tip|gratuity|discount|surcharge|coupon|deposit|tax|travel|mileage|reschedul\w*|cancell?ation)\b/i;
+/** "2D Floorplan - Moved to Order #1611" is a negation (aryeo.ts MOVED_TO_ORDER_RE). */
+const MOVED_LINE_RE = /moved\s+to\s+order/i;
+/** A seatbelt on the live-job read. Live jobs number in the low hundreds; the
+ *  read is whole under this so the totals are the pile, not a page. */
+const SCOPE_CEILING = 1_000;
+
+type ScopeKind = "unmapped-scope" | "other-output" | "missing-prerequisite";
+
+export async function orderScopeExceptions(opts: { now?: Date; cap?: number } = {}): Promise<{
+  rows: OpsException[];
+  totals: Record<ScopeKind, ExceptionTotal>;
+}> {
+  const now = (opts.now ?? new Date()).getTime();
+  const cap = opts.cap ?? EXCEPTION_RULES.perKind;
+  const { isMapped, loadManualProductMap } = await import("@/lib/integrations/aryeo");
+  const { PREREQUISITES, missingPrerequisites, parsePrerequisites, DISCOVERY_DONE_STATES } = await import("@/lib/productPrerequisites");
+  // FRESH, not the five-minute cache: the row's whole promise is "map it and it
+  // goes", and the save lands in another lambda. One small read.
+  await loadManualProductMap(true);
+
+  const projects = await prisma.project.findMany({
+    where: { status: { in: [...SCOPE_LIVE_STATUSES] }, aryeoMissingAt: null },
+    select: {
+      id: true, title: true, status: true, createdAt: true, clientId: true,
+      shootDate: true, addressLine: true, lat: true, lng: true, photographerId: true, reelScript: true, reelHook: true,
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
+      deliverables: { where: { ...OWED_DELIVERABLE_WHERE, type: "OTHER" }, select: { label: true, productTitle: true } },
+    },
+    orderBy: { createdAt: "asc" },
+    take: SCOPE_CEILING,
+  });
+
+  const mappedMemo = new Map<string, boolean>();
+  const known = (title: string) => {
+    const k = title.trim();
+    let v = mappedMemo.get(k);
+    if (v === undefined) { v = isMapped(k); mappedMemo.set(k, v); }
+    return v;
+  };
+  const work = (title: string) => !FEE_LINE_RE.test(title) && !MOVED_LINE_RE.test(title);
+
+  // ---- 10. unmapped-scope: one row per title --------------------------------
+  const byTitle = new Map<string, { title: string; jobs: typeof projects }>();
+  for (const p of projects) {
+    const seen = new Set<string>();
+    for (const it of p.orderItems) {
+      const title = it.title.trim();
+      if (!title || seen.has(title) || !work(title) || known(title)) continue;
+      seen.add(title);
+      const g = byTitle.get(title) ?? { title, jobs: [] };
+      g.jobs.push(p);
+      byTitle.set(title, g);
+    }
+  }
+  const unmapped = [...byTitle.values()].sort((a, b) => b.jobs.length - a.jobs.length || a.title.localeCompare(b.title));
+  const unmappedIsHigh = (g: { jobs: { status: string }[] }) => g.jobs.some((j) => SCOPE_IN_PRODUCTION.has(j.status));
+  const productIds = new Map(
+    (
+      unmapped.length
+        ? await prisma.product.findMany({ where: { title: { in: unmapped.slice(0, cap).map((g) => g.title) } }, select: { id: true, title: true } }).catch(() => [])
+        : []
+    ).map((p) => [p.title, p.id]),
+  );
+  const rows: OpsException[] = [];
+  for (const g of unmapped.slice(0, cap)) {
+    const streets = g.jobs.map((j) => streetOf(j.title));
+    const shown = streets.slice(0, 3).join(", ") + (streets.length > 3 ? ` and ${streets.length - 3} more` : "");
+    const pid = productIds.get(g.title);
+    rows.push({
+      id: `unmapped:${g.title.toLowerCase()}`,
+      kind: "unmapped-scope",
+      // Already in production = the guess is already deciding what an editor
+      // or photographer owes. Before the shoot there is still time to map it.
+      severity: unmappedIsHigh(g) ? "high" : "medium",
+      title: `“${g.title.slice(0, 80)}”`,
+      why: `On ${g.jobs.length} live job${g.jobs.length === 1 ? "" : "s"} (${shown}) — nobody has said what it produces, so the hub guessed from the name`,
+      owner: "Kyle",
+      nextAction: "Map it on Settings → Products (what it actually produces), or tell Jordan it is new",
+      href: pid ? `/settings/products#${pid}` : "/settings/products",
+      ageDays: ageOf(g.jobs.reduce((m, j) => (j.createdAt < m ? j.createdAt : m), g.jobs[0].createdAt), now),
+    });
+  }
+
+  // ---- 11. other-output: one row per job --------------------------------------
+  const otherJobs = projects.filter((p) => p.deliverables.some((d) => !d.productTitle || known(d.productTitle)));
+  // A special correction the hub already tracks is that task's (J3,
+  // assetDependencies.ts): one owner and one next action per thing, never two.
+  const tracked = new Set(
+    otherJobs.length
+      ? (
+          await prisma.smartTask
+            .findMany({
+              where: {
+                projectId: { in: otherJobs.map((p) => p.id) },
+                taskType: { in: ["asset_dependency", "asset_interpretation"] },
+                deliverableType: "OTHER",
+                status: { notIn: ["COMPLETED", "CANCELLED"] },
+              },
+              select: { projectId: true },
+            })
+            .catch(() => [] as { projectId: string | null }[])
+        ).map((t) => t.projectId)
+      : [],
+  );
+  const other = otherJobs.filter((p) => !tracked.has(p.id));
+  const otherIsHigh = (p: { status: string }) => SCOPE_IN_PRODUCTION.has(p.status);
+  for (const p of [...other].sort((a, b) => Number(otherIsHigh(b)) - Number(otherIsHigh(a))).slice(0, cap)) {
+    const labels = [...new Set(p.deliverables.filter((d) => !d.productTitle || known(d.productTitle)).map((d) => d.productTitle || d.label || "Other"))];
+    rows.push({
+      id: `other:${p.id}`,
+      kind: "other-output",
+      severity: otherIsHigh(p) ? "high" : "medium",
+      title: streetOf(p.title),
+      why: `${labels.slice(0, 3).join(", ")} ${labels.length === 1 ? "is" : "are"} owed, and no lane makes ${labels.length === 1 ? "it" : "them"} — nothing tracks ${labels.length === 1 ? "it" : "them"} until somebody does`,
+      owner: "Kyle",
+      nextAction: "Decide who makes it and what file it needs, or mark it not required on the job",
+      href: `/projects/${p.id}`,
+      ageDays: ageOf(p.createdAt, now),
+    });
+  }
+
+  // ---- 12. missing-prerequisite: one row per job ------------------------------
+  const withNeeds = await prisma.product
+    .findMany({ where: { prerequisitesJson: { not: null }, mediaTypes: { not: null } }, select: { title: true, prerequisitesJson: true } })
+    .catch(() => [] as { title: string; prerequisitesJson: string | null }[]);
+  const needsByTitle = new Map(
+    withNeeds
+      .map((p) => [p.title.toLowerCase().trim(), { title: p.title, keys: parsePrerequisites(p.prerequisitesJson) }] as const)
+      .filter(([, v]) => v.keys.length > 0),
+  );
+  type Missing = { p: (typeof projects)[number]; lines: string[]; soon: boolean };
+  const missing: Missing[] = [];
+  if (needsByTitle.size) {
+    const needing = projects
+      .map((p) => ({ p, needs: p.orderItems.map((it) => needsByTitle.get(it.title.toLowerCase().trim())).filter((x): x is NonNullable<typeof x> => !!x) }))
+      .filter((x) => x.needs.length > 0);
+    const clientIds = [...new Set(needing.filter((x) => x.needs.some((n) => n.keys.includes("brand_discovery"))).map((x) => x.p.clientId))];
+    const onboardings = clientIds.length
+      ? await prisma.programOnboarding.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, status: true, discoveryWaivedAt: true } }).catch(() => [])
+      : [];
+    const discovery = new Map<string, boolean>();
+    for (const o of onboardings) {
+      const done = DISCOVERY_DONE_STATES.has(o.status) || !!o.discoveryWaivedAt;
+      discovery.set(o.clientId, (discovery.get(o.clientId) ?? false) || done);
+    }
+    for (const { p, needs } of needing) {
+      const facts = {
+        shootDate: p.shootDate, addressLine: p.addressLine, lat: p.lat, lng: p.lng, photographerId: p.photographerId,
+        reelScript: p.reelScript, reelHook: p.reelHook,
+        discoveryDone: discovery.has(p.clientId) ? discovery.get(p.clientId)! : null,
+      };
+      const lines: string[] = [];
+      for (const n of needs) {
+        const gaps = missingPrerequisites(n.keys, facts);
+        if (gaps.length) lines.push(`${n.title}: ${gaps.map((k) => PREREQUISITES[k].missing).join(", ")}`);
+      }
+      if (!lines.length) continue;
+      // Soon = the shoot is within two days (or has passed): the gap is about
+      // to cost something.
+      const soon = !!p.shootDate && p.shootDate.getTime() - now <= 2 * DAY;
+      missing.push({ p, lines: [...new Set(lines)], soon });
+    }
+  }
+  missing.sort((a, b) => Number(b.soon) - Number(a.soon) || (a.p.shootDate?.getTime() ?? Infinity) - (b.p.shootDate?.getTime() ?? Infinity));
+  for (const m of missing.slice(0, cap)) {
+    rows.push({
+      id: `prereq:${m.p.id}`,
+      kind: "missing-prerequisite",
+      severity: m.soon ? "high" : "medium",
+      title: streetOf(m.p.title),
+      why: m.lines.slice(0, 2).join(" · ").slice(0, 200),
+      owner: "Kyle",
+      nextAction: "Get it in place before it's needed — nothing is blocked; the list is on Settings → Products",
+      href: `/projects/${m.p.id}`,
+      ageDays: ageOf(m.p.createdAt, now),
+    });
+  }
+
+  return {
+    rows,
+    totals: {
+      // Read whole under the ceiling, so these are the pile.
+      "unmapped-scope": { all: unmapped.length, high: unmapped.filter(unmappedIsHigh).length },
+      "other-output": { all: other.length, high: other.filter(otherIsHigh).length },
+      "missing-prerequisite": { all: missing.length, high: missing.filter((m) => m.soon).length },
     },
   };
 }

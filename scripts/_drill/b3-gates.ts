@@ -440,7 +440,10 @@ async function main() {
     // hours" on the same elapsed-weekday-hours convention as the 72, so it
     // borrows the same arithmetic. It is not a scheduling gate — the guard is
     // about nobody re-deriving WHEN A SESSION MAY START.
-    const SANCTIONED = new Set(["src/lib/deliveryBoard.ts"]);
+    // …and, since A50 (Sep 26 2026), the reminder FOLLOW-UP cadence in
+    // programReminders.ts: §6.7's "follow-up after 72 hours" is the same 72
+    // weekday hours. Also not a session gate — it spaces two emails.
+    const SANCTIONED = new Set(["src/lib/deliveryBoard.ts", "src/lib/programReminders.ts"]);
     const weekdayCallers = callers("addWeekdayHoursET");
     const stray = weekdayCallers.filter((f) => !SANCTIONED.has(f.replace(/^.*?(src\/)/, "src/")));
     const boardCalls = code(read("src/lib/deliveryBoard.ts")).match(/\baddWeekdayHoursET\s*\(/g)?.length ?? 0;

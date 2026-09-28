@@ -8,6 +8,8 @@ import type { ReviewerSeat } from "@/components/review/reviewerTypes";
 import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
+import { EmailSlaSettings } from "@/components/settings/EmailSlaSettings";
+import { NotificationSchedule } from "@/components/settings/NotificationSchedule";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
 // settings for turnaround promises, alert thresholds, anything currently hard
@@ -112,6 +114,25 @@ export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
   );
 }
 
+// WHAT READS EACH SWITCH (Sep 26 2026, unified handoff §11: "do not make a
+// switch look effective when another gate prevents its operation"). Two of
+// these toggles — Raw video missing and Kyle's Slack digests — were drawn here
+// and read by nothing until today. Each card now names the engine that obeys
+// it, and scripts/_drill/alert-switch-readers.ts fails the build's drill run
+// when a key has no entry here or a named file stops reading it.
+const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; files: string[] }> = {
+  uploadReminder: { words: "the evening upload sweep", files: ["src/app/api/cron/evening/route.ts"] },
+  uploadChaser: { words: "the evening upload sweep", files: ["src/app/api/cron/evening/route.ts"] },
+  photosUndelivered: { words: "the late-photos check, 4–7 PM", files: ["src/lib/deliveryWatch.ts"] },
+  rawVideoMissing: { words: "the raw-footage check when a video job's folders are read", files: ["src/lib/tasks.ts"] },
+  kyleDigests: { words: "Kyle's morning list and 4 o'clock check", files: ["src/lib/notify.ts", "src/lib/commsBoard.ts"] },
+  coverage: { words: "the client-reply pager, staff alerts, the notification bridge and the review cover clock", files: ["src/lib/coverage.ts"] },
+};
+
+function ReadBy({ k }: { k: keyof InternalAlertRules }) {
+  return <p className="mt-0.5 text-[11px] text-muted-2">Read by {ALERT_SWITCH_READERS[k].words}.</p>;
+}
+
 type OnCallCandidate = Awaited<ReturnType<typeof loadOnCallCandidates>>[number];
 
 // Coverage in one sentence, live as the boxes change. The server says the same
@@ -135,8 +156,11 @@ function coverageSentence(c: InternalAlertRules["coverage"], onCall: OnCallCandi
   }
   const days = c.weekdaysOnly ? "Monday to Friday" : "every day";
   const window = `${days}, ${hour12(c.fromHour)} to ${hour12(c.toHour)} Eastern`;
+  // Sep 26 2026 (Jordan): an urgent page to the on-call between 10 PM and
+  // 7 AM is HELD until 7 AM — Slack and text alike, so "goes to Kyle" is no
+  // longer the whole truth and the sentence says the rest.
   const rota = onCall
-    ? `Outside it, routine alerts wait for the next covered period and urgent ones go to ${onCall.name.split(/\s+/)[0]}.`
+    ? `Outside it, routine alerts wait for the next covered period and urgent ones go to ${onCall.name.split(/\s+/)[0]} — except between 10 PM and 7 AM, when the page waits until 7 AM (on Slack and by text alike) and the ops channel is told it is waiting.`
     : "Outside it, routine alerts wait for the next covered period. Nobody is named for urgent ones, so they still page whoever holds the owner or admin role — the same people as today.";
   return `Somebody is on ${window}. ${rota}`;
 }
@@ -201,13 +225,21 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
         </div>
 
         <p className={cn("mt-2 border-t border-border pt-2 text-[13px]", windowOk(r.coverage) ? "text-muted" : "text-warning")}>{coverageSentence(r.coverage, onCall)}</p>
+        <ReadBy k="coverage" />
       </div>
+
+      {/* Unanswered client email (O06, Sep 26) — counts on the coverage above; saves on its own. */}
+      <EmailSlaSettings />
+
+      {/* Quiet time per person (Jordan, Sep 26) — loads and saves on its own, one person at a time. */}
+      <NotificationSchedule />
 
       <div className="rounded-lg border border-border p-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold">Upload reminder</p>
             <p className="text-[13px] text-muted">Texts a photographer whose shoot has no submitted upload page.</p>
+            <ReadBy k="uploadReminder" />
           </div>
           <Toggle on={r.uploadReminder.enabled} onChange={(v) => set({ uploadReminder: { ...r.uploadReminder, enabled: v } })} label="Upload reminder" />
         </div>
@@ -222,6 +254,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           <div>
             <p className="text-sm font-semibold">Late-night chaser</p>
             <p className="text-[13px] text-muted">Second nudge if the upload page is still not submitted.</p>
+            <ReadBy k="uploadChaser" />
           </div>
           <Toggle on={r.uploadChaser.enabled} onChange={(v) => set({ uploadChaser: { ...r.uploadChaser, enabled: v } })} label="Upload chaser" />
         </div>
@@ -236,6 +269,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           <div>
             <p className="text-sm font-semibold">Photos not delivered</p>
             <p className="text-[13px] text-muted">Texts Kyle and Jordan when a shoot&rsquo;s photos still aren&rsquo;t released.</p>
+            <ReadBy k="photosUndelivered" />
           </div>
           <Toggle on={r.photosUndelivered.enabled} onChange={(v) => set({ photosUndelivered: { ...r.photosUndelivered, enabled: v } })} label="Photos not delivered" />
         </div>
@@ -257,7 +291,8 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-semibold">Raw video missing</p>
-          <p className="text-[13px] text-muted">Bell + text to the creative when a video job&rsquo;s footage can&rsquo;t be found.</p>
+          <p className="text-[13px] text-muted">Bell + text to the creative when a video job&rsquo;s footage can&rsquo;t be found. The &ldquo;Find the raw video&rdquo; task for Kyle is made either way.</p>
+          <ReadBy k="rawVideoMissing" />
         </div>
         <Toggle on={r.rawVideoMissing.enabled} onChange={(v) => set({ rawVideoMissing: { enabled: v } })} label="Raw video missing" />
       </div>
@@ -265,7 +300,8 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-semibold">Kyle&rsquo;s Slack digests</p>
-          <p className="text-[13px] text-muted">Morning list and the 4 PM open-items recap.</p>
+          <p className="text-[13px] text-muted">Morning list and the 4 PM open-items recap. Timed by Kyle&rsquo;s own quiet time on the schedule above.</p>
+          <ReadBy k="kyleDigests" />
         </div>
         <Toggle on={r.kyleDigests.enabled} onChange={(v) => set({ kyleDigests: { enabled: v } })} label="Kyle's Slack digests" />
       </div>

@@ -67,6 +67,12 @@ export type ProjectBrief = {
    * a listing shoot.
    */
   filming: FilmingBrief | null;
+  /**
+   * §10 J3: files the work is waiting on, and who works from them once they
+   * are in (assetDependencies.ts). `outputId` set = one video's; null = the
+   * whole job's. Filter with dependenciesForOutput for one video's brief.
+   */
+  assetNeeds: import("@/lib/assetDependencies").OpenAssetDependency[];
 };
 
 const clip = (s: string, n = 180) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
@@ -536,6 +542,18 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     blocker = blocker ?? "No editor is on this job";
   }
 
+  // §10 J3 (Sep 26 2026): a file the work cannot start without — the client's
+  // logo, the recorded plat before anybody draws lot lines. Read from its own
+  // tasks (assetDependencies.ts); a video's dependency is carried with its
+  // outputId, so a reader asking about video 2 gets video 2's and the job's,
+  // never video 1's (dependenciesForOutput). With nothing else in the way, the
+  // first one IS what is in the way. Facts about boundaries come only from the
+  // attached file — this line names the missing file, it never describes it.
+  const assetNeeds = await import("@/lib/assetDependencies")
+    .then((m) => m.openAssetDependencies(projectId))
+    .catch(() => [] as import("@/lib/assetDependencies").OpenAssetDependency[]);
+  if (!blocker && assetNeeds.length) blocker = assetNeeds[0].sentence;
+
   return {
     projectId: p.id,
     scope,
@@ -643,5 +661,6 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     nextAction,
     tone,
     filming,
+    assetNeeds,
   };
 }

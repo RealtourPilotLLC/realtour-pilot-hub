@@ -1,8 +1,9 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { EDITORS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { EDITORS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorMeta, editorTeamMemberId } from "@/lib/editors";
 import { NOT_A_CUT } from "@/lib/reviewCuts";
+import { capacityWindows, type CapacityWindows } from "@/lib/capacity";
 
 // ---------------------------------------------------------------------------
 // WHAT IS ON WHOSE DESK, AND WHETHER IT FITS (R08, review Sep 18).
@@ -120,6 +121,15 @@ export type WorkloadView = {
   firstCutSamples: number;
   sampleWeeks: number;
   measuredAt: string;
+  /**
+   * §10 capacity (Sep 26 2026): who is out now or in the next week, by editor
+   * key — recorded facts (lib/capacity.ts), shown as chips. Kept BESIDE the
+   * editors rather than inside EditorLoad on purpose: the lanes, rates and
+   * weeks-of-work above are byte-identical with and without an exception,
+   * because an exception is a sentence for a person to weigh, never an input
+   * to the arithmetic. Absent when the read failed.
+   */
+  capacity?: Record<string, CapacityWindows>;
 };
 
 export type WorkloadRow = {
@@ -336,10 +346,329 @@ export async function editingWorkload(rows: WorkloadRow[], opts: { now?: Date; s
   const sampleWeeks = opts.sampleWeeks ?? 8;
   const [throughput, firstCut] = await Promise.all([measuredThroughput(sampleWeeks), measuredFirstCut()]);
   const folded = foldWorkload(rows, throughput, { now: opts.now, sampleWeeks });
+  const capacity = await editorCapacity(folded.editors.map((e) => e.key), opts.now ?? new Date()).catch(() => undefined);
   return {
     ...folded,
     medianFirstCutHours: firstCut.medianHours,
     firstCutSamples: firstCut.samples,
     measuredAt: (opts.now ?? new Date()).toISOString(),
+    ...(capacity ? { capacity } : {}),
+  };
+}
+
+/** Capacity entries for the editors on the panel, keyed by editor key. Only a
+ *  key that is a roster person can carry one (the outside shop has no row). */
+export async function editorCapacity(keys: (string | null)[], at: Date = new Date()): Promise<Record<string, CapacityWindows>> {
+  const pairs = (
+    await Promise.all([...new Set(keys.filter((k): k is string => !!k))].map(async (k) => [k, await editorTeamMemberId(k)] as const))
+  ).filter((p): p is readonly [string, string] => !!p[1]);
+  const windows = await capacityWindows(pairs.map(([, id]) => id), at);
+  const out: Record<string, CapacityWindows> = {};
+  for (const [key, id] of pairs) {
+    const w = windows.get(id);
+    if (w && (w.now.length || w.next7d.length)) out[key] = w;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// WHAT A RUSH PUSHES BACK (§10 priority/rush + AU-24, Sep 26 2026).
+//
+// The override dialog could pull any job's date forward and nobody saw what it
+// cost. The queue is ordered by due date (editorQueue's byDue), so an earlier
+// date on one job silently moves it ahead of everything due between the new
+// date and the old one on the same editor's desk. Priority does not reorder
+// the queue, but URGENT on a row is the office telling the editor to do it
+// first — ahead of jobs that are due sooner.
+//
+// priorityImpact answers one question, read-only: if this change were saved,
+// which of the SAME editor's jobs would it put behind, and how tight are they?
+// It never reorders anything and never re-pins a promise; the queue's own
+// ordering is unchanged, and other editors' desks are never in the answer.
+//
+// Jordan, Sep 25-26: "James and Kyle - James is the creative manager now. Also
+// It can be escalated to me." So a change that displaces anybody needs James or
+// Kyle (the review seats: primary and backup), who must see the displaced jobs
+// before saving; Jordan is the escalation and may always decide. Recorded on
+// the timeline with who, when and why. Nothing here touches pay.
+// ---------------------------------------------------------------------------
+
+const PRIORITY_RANK: Record<string, number> = { LOW: 0, NORMAL: 1, HIGH: 2, URGENT: 3 };
+const rankOf = (p: string | null | undefined) => PRIORITY_RANK[p ?? "NORMAL"] ?? 1;
+const PAID_RUSH_RE = /\bsame[-\s]?day\b|\brush\b|\bexpedit/i;
+/** Same threshold the status engine calls "at risk" (statusEvidence.AT_RISK_HOURS). */
+const IMPACT_AT_RISK_HOURS = 24;
+const HOUR_MS = 3_600_000;
+
+export type DisplacedJob = {
+  projectId: string;
+  street: string;
+  client: string;
+  dueISO: string | null;
+  /** the promise it was SOLD under (Project.promisedDueAt), when pinned */
+  promiseISO: string | null;
+  /** hours from now to its due; negative = already late; null = undated */
+  slackHours: number | null;
+  /** due inside a day or already late — the ones a delay is most likely to break */
+  atRisk: boolean;
+  /** date = it would now sort behind; priority = it is due sooner but now outranked */
+  why: "date" | "priority";
+  priority: string;
+};
+
+export type PriorityImpact = {
+  projectId: string;
+  street: string;
+  editorKey: string | null;
+  editorName: string | null;
+  before: { dueISO: string | null; priority: string };
+  after: { dueISO: string | null; priority: string };
+  /** this job's own pinned promise */
+  promiseISO: string | null;
+  /** a same-day / rush line is on the order — the client paid for speed */
+  paidRush: boolean;
+  /** the new date is earlier than the promise the client was sold */
+  fasterThanPromise: boolean;
+  displaced: DisplacedJob[];
+  /** capacity entries for this editor in force now or in the next week — INTERNAL words only */
+  editorOut: string[];
+  /** one line for the dialog and the timeline */
+  sentence: string;
+  /** why nothing was computed, when that is the answer */
+  note: string | null;
+};
+
+type QueueLike = { id: string; street: string; client: string; editorKey: string | null; editor: string | null; status: string; dueISO: string | null; shootISO: string | null; priority: string };
+
+/** editorQueue's byDue, restated for a row whose date is hypothetical: undated
+ *  last, then the older shoot, then the street. Kept identical on purpose. */
+function queueOrder(a: Pick<QueueLike, "dueISO" | "shootISO" | "street">, b: Pick<QueueLike, "dueISO" | "shootISO" | "street">): number {
+  const at = a.dueISO ? new Date(a.dueISO).getTime() : Infinity;
+  const bt = b.dueISO ? new Date(b.dueISO).getTime() : Infinity;
+  return at - bt || (a.shootISO ?? "").localeCompare(b.shootISO ?? "") || a.street.localeCompare(b.street);
+}
+
+/** The fold, with no database in it. `rows` is the Not Done rail. */
+export function foldPriorityImpact(
+  rows: QueueLike[],
+  targetId: string,
+  /** editorKey: the desk it lands on when the same save reassigns it ("" = nobody) */
+  after: { dueISO: string | null; priority: string; editorKey?: string | null },
+  now: Date,
+): { displaced: Omit<DisplacedJob, "promiseISO">[]; note: string | null; target: QueueLike | null } {
+  const target = rows.find((r) => r.id === targetId) ?? null;
+  if (!target) return { displaced: [], note: "It isn't on the editing board yet (the shoot is still ahead) — nothing on a desk moves.", target };
+  const desk = after.editorKey === undefined ? target.editorKey : after.editorKey || null;
+  if (!desk) return { displaced: [], note: "No editor is on it yet — nothing on anybody's desk moves until one is.", target };
+  const targetLane = laneOf(target.status);
+  if (targetLane === "in_review" || targetLane === "awaiting_send") {
+    return { displaced: [], note: "It is waiting on the office, not the editor — nothing on the editor's desk moves.", target };
+  }
+  // A job handed to another editor in the same save lands on THEIR desk: there
+  // was no "before" place there, so everything it now sorts ahead of is moved.
+  const newDesk = desk !== target.editorKey;
+  const before = target;
+  const moved = { ...target, dueISO: after.dueISO };
+  const raised = newDesk ? rankOf(after.priority) > rankOf("NORMAL") : rankOf(after.priority) > rankOf(before.priority);
+  const floor = newDesk ? rankOf("LOW") : rankOf(before.priority);
+  const out: Omit<DisplacedJob, "promiseISO">[] = [];
+  for (const r of rows) {
+    if (r.id === target.id || r.editorKey !== desk || laneOf(r.status) !== "editing") continue;
+    const aheadBefore = newDesk || queueOrder(r, before) < 0;
+    const behindAfter = queueOrder(moved, r) < 0;
+    let why: DisplacedJob["why"] | null = null;
+    if (aheadBefore && behindAfter) why = "date";
+    else if (raised && queueOrder(r, moved) < 0 && rankOf(r.priority) < rankOf(after.priority) && rankOf(r.priority) >= floor) why = "priority";
+    if (!why) continue;
+    const due = r.dueISO ? new Date(r.dueISO) : null;
+    // Whole hours LEFT, rounded down: "22 hours" when it is 22½ never
+    // overstates the room a job has.
+    const slack = due ? Math.floor((due.getTime() - now.getTime()) / HOUR_MS) : null;
+    out.push({
+      projectId: r.id,
+      street: r.street,
+      client: r.client,
+      dueISO: r.dueISO,
+      slackHours: slack,
+      atRisk: slack != null && slack <= IMPACT_AT_RISK_HOURS,
+      why,
+      priority: r.priority,
+    });
+  }
+  return { displaced: out, note: null, target };
+}
+
+/**
+ * What saving { dueAt, priority } on this job would push back. Read-only.
+ * `change.dueAt`: undefined = unchanged, null = hand back to the hub's date,
+ * an ISO string = the office's date. Same for priority.
+ */
+export async function priorityImpact(
+  projectId: string,
+  change: { dueAt?: string | null; priority?: string | null; editorKey?: string | null },
+  opts: { now?: Date } = {},
+): Promise<PriorityImpact> {
+  const now = opts.now ?? new Date();
+  const [{ buildEditorQueue }, { effectiveDue, effectivePriority }, { etDateTime }] = await Promise.all([
+    import("@/lib/editorQueue"),
+    import("@/lib/editOverrides"),
+    import("@/lib/datetime"),
+  ]);
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      id: true, title: true, priority: true, priorityOverride: true, dueOverrideAt: true, promisedDueAt: true, shootDate: true, deliveryDue: true,
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
+    },
+  });
+  if (!p) throw new Error("That job no longer exists.");
+  const queue = await buildEditorQueue();
+  const row = queue.notDone.find((r) => r.id === projectId) ?? null;
+  const beforeDue = row?.dueISO ?? effectiveDue(p, p.deliveryDue)?.toISOString() ?? null;
+  const beforePriority = row?.priority ?? effectivePriority(p, p.priority);
+  const afterDue =
+    change.dueAt === undefined ? beforeDue
+    : change.dueAt === null ? effectiveDue({ ...p, dueOverrideAt: null }, p.deliveryDue)?.toISOString() ?? null
+    : new Date(change.dueAt).toISOString();
+  const afterPriority = change.priority === undefined ? beforePriority : effectivePriority({ priorityOverride: change.priority }, p.priority);
+
+  const folded = foldPriorityImpact(
+    queue.notDone,
+    projectId,
+    { dueISO: afterDue, priority: afterPriority, ...(change.editorKey !== undefined && change.editorKey !== null ? { editorKey: change.editorKey } : {}) },
+    now,
+  );
+  const promises = new Map(
+    folded.displaced.length
+      ? (await prisma.project.findMany({ where: { id: { in: folded.displaced.map((d) => d.projectId) } }, select: { id: true, promisedDueAt: true } })).map((x) => [x.id, x.promisedDueAt])
+      : [],
+  );
+  const displaced: DisplacedJob[] = folded.displaced.map((d) => ({ ...d, promiseISO: promises.get(d.projectId)?.toISOString() ?? null }));
+  const reassigned = change.editorKey != null && change.editorKey !== (row?.editorKey ?? "");
+  const editorKey = reassigned ? change.editorKey || null : row?.editorKey ?? null;
+  const editorName = reassigned ? (editorKey ? editorMeta(editorKey)?.name ?? editorKey : null) : row?.editor ?? null;
+  // INTERNAL reason only (AU-24): an editor out this week is a fact for the
+  // person deciding, never a sentence for a client.
+  const editorOut = editorKey
+    ? await editorCapacity([editorKey], now)
+        .then((m) => [...(m[editorKey]?.now ?? []), ...(m[editorKey]?.next7d ?? [])].map((c) => `${editorName ?? "The editor"}: ${c.label.toLowerCase()} ${c.when}`))
+        .catch(() => [] as string[])
+    : [];
+
+  const promise = p.promisedDueAt;
+  const who = editorName ? `${editorName}'s` : "the editor's";
+  // The board's date first when it is not the promise (the office already
+  // moved it), so "due inside a day" is never printed beside a date a week out.
+  const when = (d: DisplacedJob) =>
+    d.dueISO && d.promiseISO && d.dueISO !== d.promiseISO
+      ? `due ${etDateTime(d.dueISO)} ET, promised ${etDateTime(d.promiseISO)} ET`
+      : d.promiseISO ? `promised ${etDateTime(d.promiseISO)} ET`
+      : d.dueISO ? `due ${etDateTime(d.dueISO)} ET`
+      : "no date";
+  const name = (d: DisplacedJob) =>
+    `${d.street} (${when(d)}${d.atRisk ? (d.slackHours != null && d.slackHours < 0 ? "; already late" : "; due inside a day") : ""})`;
+  const list = (xs: DisplacedJob[]) => xs.slice(0, 4).map(name).join(", ") + (xs.length > 4 ? ` and ${xs.length - 4} more` : "");
+  const byDate = displaced.filter((d) => d.why === "date");
+  const byRank = displaced.filter((d) => d.why === "priority");
+  const parts: string[] = [];
+  if (byDate.length) parts.push(`moves ahead of ${byDate.length} of ${who} jobs — ${list(byDate)}`);
+  if (byRank.length) parts.push(`is flagged above ${byRank.length} of ${who} jobs due sooner — ${list(byRank)}`);
+  const sentence = parts.length ? `This ${parts.join("; and ")}` : folded.note ?? `Moves nothing ahead on ${who} desk.`;
+
+  return {
+    projectId,
+    street: (p.title || "this job").split(",")[0].trim(),
+    editorKey,
+    editorName,
+    before: { dueISO: beforeDue, priority: beforePriority },
+    after: { dueISO: afterDue, priority: afterPriority },
+    promiseISO: promise?.toISOString() ?? null,
+    paidRush: p.orderItems.some((it) => PAID_RUSH_RE.test(it.title)),
+    fasterThanPromise: !!afterDue && !!promise && new Date(afterDue).getTime() < promise.getTime(),
+    displaced,
+    editorOut,
+    sentence,
+    note: folded.note,
+  };
+}
+
+/** Could this change displace anything at all? False when the date only moves
+ *  later (or stays) and the priority does not rise — the cheap answer that
+ *  lets a save skip the queue read entirely. */
+export function mayDisplace(before: { dueISO: string | null; priority: string }, after: { dueISO: string | null; priority: string }): boolean {
+  if (rankOf(after.priority) > rankOf(before.priority)) return true;
+  const b = before.dueISO ? new Date(before.dueISO).getTime() : Infinity;
+  const a = after.dueISO ? new Date(after.dueISO).getTime() : Infinity;
+  return a < b;
+}
+
+export type RushAuthority = {
+  /** this login may approve a change that displaces other jobs */
+  may: boolean;
+  /** which seat it is approving from */
+  as: "PRIMARY" | "BACKUP" | "OWNER" | "OFFICE" | null;
+  /** the people who may approve, for the sentence */
+  approvers: string[];
+  /** who a rush is escalated to (Jordan) */
+  escalateTo: string | null;
+  /** the refusal, in words, when may = false */
+  why: string | null;
+  /** the review seats are named — otherwise the office's old authority stands */
+  seatsNamed: boolean;
+};
+
+/**
+ * WHO MAY APPROVE A RUSH (Jordan, Sep 25-26). The review seats, read the way
+ * the Review Room reads them (reviewerAssignment.reviewerChain): the PRIMARY
+ * (James) and the BACKUP (Kyle). The owner may always decide — "it can be
+ * escalated to me" — and so may the FALLBACK seat, which is him. Never the
+ * creative-manager flag: that is a shoot-bonus basis and grants nothing.
+ *
+ * With no seat named at all the office's existing authority stands (owner and
+ * admin), exactly as before this rule — §4 never narrows anybody silently —
+ * and the dialog says the seats are not set.
+ */
+export async function rushAuthority(
+  me: { realRole: string; teamMemberId: string | null; impersonating: boolean; status?: string } | null,
+  opts: { authEnforced: boolean },
+): Promise<RushAuthority> {
+  const { reviewerChain } = await import("@/lib/reviewerAssignment");
+  const chain = await reviewerChain().catch(() => null);
+  const owner = chain?.fallback
+    ? null
+    : await prisma.appUser.findFirst({ where: { role: "OWNER", status: "ACTIVE" }, select: { name: true } }).catch(() => null);
+  const escalateTo = chain?.fallback?.name ?? owner?.name ?? "Jordan";
+  if (!chain?.configured) {
+    const may = !me ? !opts.authEnforced : !me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN");
+    return {
+      may,
+      as: may ? (me?.realRole === "OWNER" ? "OWNER" : "OFFICE") : null,
+      approvers: ["the office"],
+      escalateTo,
+      why: may ? null : "Only the office can approve this.",
+      seatsNamed: false,
+    };
+  }
+  const approvers = [chain.primary, chain.backup].filter((m): m is NonNullable<typeof m> => !!m && m.canRule);
+  const names = approvers.map((m) => m.name);
+  if (!me) {
+    const may = !opts.authEnforced;
+    return { may, as: may ? "OFFICE" : null, approvers: names, escalateTo, why: may ? null : "Please sign in to do that.", seatsNamed: true };
+  }
+  if (me.impersonating) return { may: false, as: null, approvers: names, escalateTo, why: "You're previewing another user — exit the preview to make changes.", seatsNamed: true };
+  if (me.status && me.status !== "ACTIVE") return { may: false, as: null, approvers: names, escalateTo, why: "You don't have access to do that.", seatsNamed: true };
+  const seat = approvers.find((m) => m.teamMemberId === me.teamMemberId);
+  if (seat) return { may: true, as: seat.slot === "PRIMARY" ? "PRIMARY" : "BACKUP", approvers: names, escalateTo, why: null, seatsNamed: true };
+  if (me.realRole === "OWNER" || (chain.fallback && chain.fallback.teamMemberId === me.teamMemberId)) {
+    return { may: true, as: "OWNER", approvers: names, escalateTo, why: null, seatsNamed: true };
+  }
+  const first = (n: string) => n.split(/\s+/)[0];
+  return {
+    may: false,
+    as: null,
+    approvers: names,
+    escalateTo,
+    why: `Only ${names.length ? names.map(first).join(" or ") : "the review seats"} can approve moving this ahead of other jobs — or send it to ${first(escalateTo)}.`,
+    seatsNamed: true,
   };
 }

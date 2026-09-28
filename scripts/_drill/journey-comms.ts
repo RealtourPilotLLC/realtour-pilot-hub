@@ -17,6 +17,13 @@
  *   3. A bell backlog past one screenful.              (/api/notifications GET+POST, sweepReplySla)
  *   4. A routine weekend event versus an urgent one.   (holdUntilCovered, routeAlert, sweepReplySla)
  *   5. Slack fails transiently after the bell row.     (notifyInApp bridge, retry)
+ *   6. A canned or automated message is not an answer. (OpenPhone receiver, hourly backstop, sweepReplySla)
+ *      Sep 26 2026: the after-hours echo at the 9 PM backstop, OpenPhone's
+ *      missed-call greeting, a real reply (and its replay), and a backstop
+ *      with no row to go on. OLD behaviour first, off 17df024.
+ *   9. A mailbox nobody can read owns one task.        (syncGmail, gmailHealth)
+ *      (7 and 8 — the digest's delivery truth and the overnight urgent hold —
+ *      are the notification builders' acceptance, not this file's.)
  *
  * NOTHING SENDS. `fetch` itself is replaced with a recorder that answers Slack
  * and REFUSES every other URL, and OpenPhone is left unconnected, so no text can
@@ -29,7 +36,10 @@
  */
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "util";
 import Module from "node:module";
 
@@ -45,6 +55,9 @@ const slackCalls: SlackCall[] = [];
 const blockedUrls: string[] = [];
 let slackUp = true;
 let slackError = "ratelimited";
+/** Journey 6's fake OpenPhone: our line, and each participant's messages. */
+const OP_LINE = "+12156454889";
+const opMessages = new Map<string, { id: string; direction: string; text: string; createdAt: string }[]>();
 
 /** A stub module object. It has to be a PLAIN object: a dynamic
  *  `await import()` of one of these goes through Node's CJS→ESM interop, which
@@ -92,6 +105,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       return jsonRes(slackUp ? { ok: true } : { ok: false, error: slackError });
     }
     return jsonRes({ ok: false, error: `drill: unstubbed slack method ${method}` });
+  }
+  // A FAKE OPENPHONE, READ-ONLY (journey 6, Sep 26 2026): the line's number
+  // and each participant's own messages, for the hourly backstop. A POST — a
+  // send — is refused and recorded, so journey 5d's "no text was ever handed
+  // to OpenPhone" still catches one.
+  if (url.startsWith("https://api.openphone.com/v1/") && (init?.method ?? "GET").toUpperCase() === "GET") {
+    const u = new URL(url);
+    if (u.pathname === "/v1/phone-numbers") return jsonRes({ data: [{ id: "PN-DRILL", number: OP_LINE }] });
+    if (u.pathname === "/v1/messages") return jsonRes({ data: opMessages.get(u.searchParams.get("participants") ?? "") ?? [] });
   }
   blockedUrls.push(url);
   throw new Error(`drill: outbound network is disabled — ${url}`);
@@ -154,7 +176,7 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
 };
 
 const exec = promisify(execFile);
-const PORT = 5493;
+const PORT = Number(process.env.DRILL_PORT) || 5493; // a parallel builder passes its own
 const URL_ = `postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres?sslmode=disable`;
 process.env.DATABASE_URL = URL_;
 process.env.DIRECT_URL = URL_;
@@ -200,6 +222,36 @@ async function withClock<T>(shiftMs: number, fn: () => Promise<T>): Promise<T> {
 const MIN = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
+
+// An ET wall clock, DST-correct (journey 6 pins its own instants).
+const ET_PARTS = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", hourCycle: "h23" });
+function etWall(y: number, mo: number, d: number, h: number, mi = 0): Date {
+  for (const off of [4, 5]) {
+    const t = new RealDate(RealDate.UTC(y, mo - 1, d, h + off, mi));
+    const p = Object.fromEntries(ET_PARTS.formatToParts(t).map((x) => [x.type, x.value]));
+    if (+p.year === y && +p.month === mo && +p.day === d && +p.hour === h && +p.minute === mi) return t;
+  }
+  throw new Error(`no such ET wall time ${y}-${mo}-${d} ${h}:${mi}`);
+}
+
+// THE OLD CODE, RUNNABLE (journey 6): files at 17df024 — pinned, never HEAD —
+// with their `@/` and `./` imports pointed at this tree.
+const BASE = "17df024";
+const REPO = path.resolve(__dirname, "../..");
+const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "journey-comms-base-"));
+fs.symlinkSync(path.join(REPO, "node_modules"), path.join(baseDir, "node_modules"));
+async function loadBase<T>(rel: string): Promise<T> {
+  const src = execFileSync("git", ["show", `${BASE}:${rel}`], { cwd: REPO, encoding: "utf8" });
+  const dir = path.join(REPO, path.dirname(rel));
+  const file = path.join(baseDir, rel.replace(/\//g, "__"));
+  fs.writeFileSync(
+    file,
+    src
+      .replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)
+      .replace(/(["'])\.\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(dir, p)}${q}`),
+  );
+  return (await import(file)) as T;
+}
 
 let pass = 0;
 let fail = 0;
@@ -1064,6 +1116,127 @@ async function main() {
     sameEventRows === 2,
     `${sameEventRows} bell rows for the same tag`,
   );
+
+  // =========================================================================
+  // JOURNEY 6 — A CANNED OR AUTOMATED MESSAGE NEVER ANSWERS THE CLIENT
+  // (§9 / A51, Sep 26 2026). OLD behaviour first, off 17df024 (pinned).
+  // =========================================================================
+  console.log("\n" + "-".repeat(78));
+  console.log("JOURNEY 6 — a canned or automated message never answers the client");
+  console.log("-".repeat(78));
+
+  const { processOpenPhoneEvent, POST: openphonePOST } = await import("@/app/api/webhooks/openphone/route");
+  const { sweepRepliedOpenPhoneTasks } = await import("@/lib/integrations/openphone");
+  const { outboundIsAnswer, isAutomatedOutbound, OPENPHONE_GREETING_SOURCE } = await import("@/lib/replyQueue");
+  const oldOpenphone = await loadBase<typeof import("@/lib/integrations/openphone")>("src/lib/integrations/openphone.ts");
+  const oldRoute = await loadBase<typeof import("@/app/api/webhooks/openphone/route")>("src/app/api/webhooks/openphone/route.ts");
+  await saveSecret("openphone", ["op", "drill", "key"].join("-"));
+  const at = (d: Date) => d.getTime() - RealDate.now();
+  const msgEvent = (id: string, direction: "incoming" | "outgoing", phone: string, text: string) =>
+    direction === "incoming"
+      ? { data: { object: { id, direction, from: `+1${phone}`, to: [OP_LINE], text } } }
+      : { data: { object: { id, direction, from: OP_LINE, to: [`+1${phone}`], text } } };
+  const openReply = (clientId: string) =>
+    prisma.smartTask.findMany({ where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true, title: true } });
+  const GREETING_TEXT = "Hey! Thanks for calling Realtour Pilot. We're sorry we missed your call — we'll get back to you shortly.";
+
+  console.log("\n6a. Client texts Fri 8:05 PM; our after-hours auto-reply goes at 8:06; the hourly backstop runs at 9:00");
+  const FRI_2005 = etWall(2026, 10, 2, 20, 5);
+  const FRI_2006 = etWall(2026, 10, 2, 20, 6);
+  const FRI_2100 = etWall(2026, 10, 2, 21, 0);
+  const bety = await mkClient("Bety Pena", "(610) 555-0199");
+  const BETY = "6105550199";
+  await mkProject("77 Orchard Way, Wayne, PA 19087", bety.id, "DELIVERED");
+  const BETY_ASK = "Can you send me the Zillow link for 77 Orchard Way? My sellers are asking.";
+  await withClock(at(FRI_2005), () => processOpenPhoneEvent("message.received", msgEvent("MSG-IN-1", "incoming", BETY, BETY_ASK)));
+  check("her text files one reply task", (await openReply(bety.id)).length === 1, `${(await openReply(bety.id)).length}`);
+  const AH_TEXT = "Thanks for your message! Our office is closed for the evening — we'll reply first thing tomorrow.";
+  await prisma.commLog.create({ data: { channel: "text", direction: "out", clientId: bety.id, contactName: "Us", fromPhone: BETY, body: AH_TEXT, occurredAt: FRI_2006, source: "auto-afterhours", externalId: "op-MSG-AH-1" } });
+  await withClock(at(FRI_2006), () => processOpenPhoneEvent("message.delivered", msgEvent("MSG-AH-1", "outgoing", BETY, AH_TEXT)));
+  check("the realtime echo of the auto-reply closes nothing (as before)", (await openReply(bety.id)).length === 1);
+  opMessages.set(`+1${BETY}`, [
+    { id: "MSG-AH-1", direction: "outgoing", text: AH_TEXT, createdAt: FRI_2006.toISOString() },
+    { id: "MSG-IN-1", direction: "incoming", text: BETY_ASK, createdAt: FRI_2005.toISOString() },
+  ]);
+  const oldClosed = await withClock(at(FRI_2100), () => oldOpenphone.sweepRepliedOpenPhoneTasks());
+  check("OLD (17df024): the 9 PM backstop CLOSED her question on the auto-reply", oldClosed >= 1 && (await openReply(bety.id)).length === 0, `closed ${oldClosed}`);
+  await prisma.smartTask.updateMany({ where: { clientId: bety.id, taskType: "client_reply" }, data: { status: "OPEN", completedAt: null } });
+  const newClosed = await withClock(at(FRI_2100), () => sweepRepliedOpenPhoneTasks());
+  check("NEW: the backstop leaves it OPEN — the newest outbound is a machine", (await openReply(bety.id)).length === 1, `closed ${newClosed}`);
+  check("…and she is still on the live walk the pager reads", (await findUnansweredInbound(FRI_2100, { families: ["phone"] })).some((w) => w.clientId === bety.id));
+  const SAT_1200 = etWall(2026, 10, 3, 12, 0);
+  const MON_0935 = etWall(2026, 10, 5, 9, 35);
+  await withClock(at(SAT_1200), () => sweepReplySla());
+  const betyTier1 = () => prisma.notification.count({ where: { kind: "reply_sla", dedupeKey: { startsWith: `sla-1-${bety.id}-` } } });
+  check("Saturday: a routine text waits for cover — no page", (await betyTier1()) === 0);
+  await withClock(at(MON_0935), () => sweepReplySla());
+  check("Monday 9:35 in cover: she pages (the auto-reply answered nothing)", (await betyTier1()) === 1);
+  for (let i = 0; i < 2; i++) await withClock(at(MON_0935) + (i + 1) * 5 * MIN, () => sweepReplySla());
+  check("…once, across three sweeps", (await betyTier1()) === 1);
+
+  console.log("\n6b. A missed call, then OpenPhone's greeting");
+  const TUE_1000 = etWall(2026, 10, 6, 10, 0);
+  const missedCall = (id: string, phone: string) => ({ data: { object: { id, direction: "incoming", status: "no-answer", duration: 0, answeredAt: null, from: `+1${phone}`, to: OP_LINE } } });
+  // OLD first, on its own client.
+  const nina = await mkClient("Nina Ross", "(610) 555-0187");
+  await mkProject("12 Birch Ln, Berwyn, PA 19312", nina.id, "DELIVERED");
+  await withClock(at(TUE_1000), () => oldRoute.processOpenPhoneEvent("call.completed", missedCall("CALL-N1", "6105550187")));
+  check("OLD: the missed call files a callback task", (await openReply(nina.id)).length === 1);
+  await withClock(at(TUE_1000) + 1000, () => oldRoute.processOpenPhoneEvent("message.delivered", msgEvent("MSG-GR-N1", "outgoing", "6105550187", GREETING_TEXT)));
+  check("OLD (17df024): the greeting CLOSED the callback a second later (Bety Pena, Sep 20)", (await openReply(nina.id)).length === 0);
+  const mike = await mkClient("Mike Flatley", "(610) 555-0188");
+  const MIKE = "6105550188";
+  await mkProject("9 Firethorn Ln, Malvern, PA 19355", mike.id, "DELIVERED");
+  await withClock(at(TUE_1000), () => processOpenPhoneEvent("call.completed", missedCall("CALL-M1", MIKE)));
+  check("NEW: the missed call files a callback task", (await openReply(mike.id)).length === 1);
+  await withClock(at(TUE_1000) + 1000, () => processOpenPhoneEvent("message.delivered", msgEvent("MSG-GR-M1", "outgoing", MIKE, GREETING_TEXT)));
+  check("NEW: the greeting leaves the callback OPEN", (await openReply(mike.id)).length === 1);
+  const grRow = await prisma.commLog.findUnique({ where: { externalId: "op-MSG-GR-M1" }, select: { source: true, body: true, channel: true } });
+  check("…its comms row is stamped as a machine at ingest", grRow?.source === OPENPHONE_GREETING_SOURCE, grRow?.source ?? "no row");
+  check("…and it answers nobody (outboundIsAnswer false, isAutomatedOutbound true)", !!grRow && !outboundIsAnswer(grRow) && isAutomatedOutbound(grRow));
+  check("…the 48 legacy rows (source 'openphone') read the same way by their words", !outboundIsAnswer({ channel: "text", source: "openphone", body: GREETING_TEXT }));
+  check("a lone missed call still does not page (unchanged — Jordan's call)", !(await findUnansweredInbound(new RealDate(TUE_1000.getTime() + 40 * MIN), { families: ["phone"] })).some((w) => w.clientId === mike.id));
+
+  console.log("\n6c. Kyle's real text closes exactly one task; the same webhook replayed closes nothing more");
+  const kyleText = "Hi Mike, sorry we missed you — calling you back in five minutes.";
+  const postOp = (payload: unknown) =>
+    openphonePOST(new NextRequest("https://hub.realtourpilot.invalid/api/webhooks/openphone", { method: "POST", body: JSON.stringify(payload), headers: { "content-type": "application/json" } }));
+  const kyleEvt = { id: "EVT-KYLE-1", type: "message.delivered", ...msgEvent("MSG-K1", "outgoing", MIKE, kyleText) };
+  await withClock(at(TUE_1000) + 10 * MIN, () => postOp(kyleEvt));
+  check("Kyle's text closes Mike's callback", (await openReply(mike.id)).length === 0);
+  await withClock(at(TUE_1000) + 20 * MIN, () => processOpenPhoneEvent("message.received", msgEvent("MSG-IN-M2", "incoming", MIKE, "Also — can you add 4 flower photos to the Firethorn Zillow showcase?")));
+  check("Mike writes again: one new open request", (await openReply(mike.id)).length === 1);
+  const replay = await withClock(at(TUE_1000) + 21 * MIN, () => postOp(kyleEvt));
+  const replayBody = (await replay.json()) as { deduped?: boolean };
+  check("the replayed webhook is recognised as already processed", replayBody.deduped === true, JSON.stringify(replayBody));
+  check("…and closes nothing more", (await openReply(mike.id)).length === 1);
+
+  console.log("\n6d. The backstop with no comms row for the outbound message");
+  const rhea = await mkClient("Rhea Lang", "(610) 555-0166");
+  const RHEA = "6105550166";
+  await mkProject("4 Mill Rd, Devon, PA 19333", rhea.id, "DELIVERED");
+  await withClock(at(TUE_1000) + 30 * MIN, () => processOpenPhoneEvent("message.received", msgEvent("MSG-IN-R1", "incoming", RHEA, "Is Thursday at 2 still good for the reshoot at 4 Mill Rd?")));
+  opMessages.set(`+1${RHEA}`, [{ id: "MSG-X9", direction: "outgoing", text: "Yes, Thursday at 2 works — see you then.", createdAt: new RealDate(TUE_1000.getTime() + 40 * MIN).toISOString() }]);
+  await withClock(at(TUE_1000) + 60 * MIN, () => sweepRepliedOpenPhoneTasks());
+  check("no row on our side for that message → the task stays open (the webhook is the authority)", (await openReply(rhea.id)).length === 1);
+  await prisma.commLog.create({ data: { channel: "text", direction: "out", clientId: rhea.id, contactName: "Us", fromPhone: RHEA, body: "Yes, Thursday at 2 works — see you then.", occurredAt: new RealDate(TUE_1000.getTime() + 40 * MIN), source: "openphone", externalId: "op-MSG-X9" } });
+  await withClock(at(TUE_1000) + 61 * MIN, () => sweepRepliedOpenPhoneTasks());
+  check("with the row a person's reply is on record → the backstop closes it (it still does its job)", (await openReply(rhea.id)).length === 0);
+
+  // =========================================================================
+  // JOURNEY 9 — A MAILBOX NOBODY CAN READ OWNS ONE TASK (§9 / A51)
+  // (the full journey, with a fake Google, is scripts/_drill/gmail-mailbox-health.ts)
+  // =========================================================================
+  console.log("\n" + "-".repeat(78));
+  console.log("JOURNEY 9 — a mailbox nobody can read");
+  console.log("-".repeat(78));
+  const { syncGmail } = await import("@/lib/integrations/google");
+  await saveSecret("gmail", JSON.stringify({ "info@realtourpilot.com": ["rt", "drill", "info"].join("-") }));
+  for (let i = 0; i < 3; i++) await syncGmail().catch(() => null);
+  const readTasks = await prisma.smartTask.findMany({ where: { dedupeKey: { startsWith: "gmail-read-" } }, select: { dedupeKey: true, status: true } });
+  check("three scans: exactly one OPEN task per unreadable mailbox (info@ refused, hello@ not connected)", readTasks.length === 2 && readTasks.every((t) => t.status === "OPEN"), readTasks.map((t) => `${t.dedupeKey}:${t.status}`).join(" "));
+  const readBells = await prisma.notification.count({ where: { kind: "system", dedupeKey: { startsWith: "gmail-read-" } } });
+  check("…and one owner bell each, not one per scan", readBells === 2, `${readBells}`);
 
   console.log("\n5d. Nothing left this process");
   check("no text was ever handed to OpenPhone", !blockedUrls.some((u) => /openphone/i.test(u)), blockedUrls.join(" ") || "no outbound attempts at all");

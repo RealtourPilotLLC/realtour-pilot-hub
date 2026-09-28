@@ -1709,6 +1709,19 @@ function manualMappingForTitle(title: string): ManualMapping | undefined {
   return bindByBaseName(title, norm, [...MANUAL_MAP.keys()], (k) => MANUAL_MAP!.get(k));
 }
 
+/**
+ * IS THIS ORDER LINE KNOWN, OR GUESSED? (§10 AU-01, Sep 26 2026.) True when a
+ * hand-set Settings → Products mapping or the static per-product map covers
+ * the title — the two branches of deliverablesForItem that resolve a product
+ * exactly. False means the line fell through to the keyword parser, which is
+ * the silent guess Kyle's exceptions board now names. Same matchers as the
+ * sync, so "unmapped" here means exactly what the sync did. The caller loads
+ * the manual map first (loadManualProductMap).
+ */
+export function isMapped(title: string): boolean {
+  return !!manualMappingForTitle(title) || !!mappedTypesForTitle(title);
+}
+
 // Labels for manually-mapped products carry the tier signal every downstream
 // engine reads from the label text: premium → "Premium <Type>"; personal
 // branding keeps the plan TITLE (suffixed so MONTHLY_PLAN_RE always matches

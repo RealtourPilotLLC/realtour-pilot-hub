@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
-import { recalcProgramMonth, addBusinessDaysET, preparationGate, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
+import { recalcProgramMonth, addBusinessDaysET, addWeekdayHoursET, preparationGate, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef } from "@/lib/outbox";
@@ -150,6 +150,10 @@ export type ReminderPolicy = {
   // ---- additions beyond docs/CONTENT-PROGRAM-SCHEMA.md §5 (all documented on the settings panel)
   /** The pre-launch lock: only TEST clients may receive, even with the switch on. */
   testClientsOnly: boolean;
+  /** A50 (Sep 26 2026): while the lock holds, still raise Kyle's 15th-of-the-
+   *  month task for a REAL client. Internal only — never a client message and
+   *  never a ledger row. Off until someone turns it on. */
+  staffFollowUpsForRealClients: boolean;
   /** Past open months (an August still OPEN in September) are obligations, not reminder targets, unless asked for. */
   includePastMonths: boolean;
   /** Booking-type reminders need an enabled Calendly mapping synced within this many hours. */
@@ -254,6 +258,7 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   ],
   templates: { ...DEFAULT_TEMPLATE_IDS },
   testClientsOnly: true,
+  staffFollowUpsForRealClients: false,
   includePastMonths: false,
   staleSchedulerSyncHours: 6,
   reviewWorkAfterBusinessDays: 2,
@@ -356,7 +361,7 @@ export function validateReminderPolicy(input: unknown): PolicyValidation {
     errors.push("quotedPlanningDeadlineDayOfMonth cannot be earlier in the month than monthlyOpenDayOfMonth — the client would be given a deadline before the first email reaches them.");
   if (typeof p.quotedPlanningDeadlineDayOfMonth === "number")
     warnings.push(`quotedPlanningDeadlineDayOfMonth is set: every planning email will tell the client "We'd love to have it planned by the ${p.quotedPlanningDeadlineDayOfMonth}th so your filming session lands on time." That is a promise about turnaround, so set it only if the ${p.quotedPlanningDeadlineDayOfMonth}th really does leave time to film and edit inside the month.`);
-  bool("digestBothAppointments"); bool("includeNoCallOptionOnlyIfEligible"); bool("testClientsOnly"); bool("includePastMonths");
+  bool("digestBothAppointments"); bool("includeNoCallOptionOnlyIfEligible"); bool("testClientsOnly"); bool("includePastMonths"); bool("staffFollowUpsForRealClients");
   if (!Array.isArray(p.suppressWhen) || !p.suppressWhen.every((s) => typeof s === "string")) errors.push("suppressWhen must be a list of reason names.");
   if (!p.templates || typeof p.templates !== "object" || Array.isArray(p.templates)) errors.push("templates must map actions to template ids.");
   else {
@@ -1216,7 +1221,22 @@ async function evaluateMonth(
   // pre-launch — but it means Kyle's 15th-of-the-month list stays empty for real
   // clients until Jordan authorises client reminders, which is his call to make,
   // not this file's to assume (F20, Sep 21 2026).
-  if (p.testClientsOnly && !isTest) return sup("launch_not_authorised", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised");
+  if (p.testClientsOnly && !isTest) {
+    // KYLE'S 15th FOR REAL CLIENTS, BEFORE LAUNCH (A50, Sep 26 2026). The lock
+    // above the calendar kept his mid-month list empty for every real client
+    // (see the note above). With staffFollowUpsForRealClients on, the 15th
+    // still raises HIS task — the one internal row, keyed per month — while
+    // the client gets nothing and no ledger row is written: the candidate
+    // stays suppressed, and only suppressed-with-a-follow-up reaches
+    // raiseMidMonthFollowUp. Off by default; internal only.
+    if (p.staffFollowUpsForRealClients && lane === "PRIMARY" && now >= cal.midMonthAt) {
+      return sup("launch_not_authorised", "policy.testClientsOnly is on — the client is not written to; Kyle's mid-month follow-up is raised (staffFollowUpsForRealClients)", action, {
+        milestone: "MID_MONTH",
+        kyleFollowUp: { due: true, reason: `mid-month check on ${month.monthKey}: still needs ${actionLabel(action)} (client reminders are not launched)` },
+      });
+    }
+    return sup("launch_not_authorised", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised");
+  }
 
   // ---- the §12 calendar ---------------------------------------------------------
   const sessionTag = sessionOrdinal && sessionOrdinal > 1 ? `s${sessionOrdinal}` : "s1";
@@ -1383,11 +1403,21 @@ async function evaluateMonth(
       // send. A first email held overnight by quiet hours moves the whole tail
       // with it, which is what §12 asks for and what "72 staffed hours" would
       // not have given.
-      : lastSentAt ? addBusinessDaysET(lastSentAt, spacingBusinessDays) : laneReadyAt;
+      //
+      // …MEASURED IN WEEKDAY HOURS on the planning lane (A50, Sep 26 2026):
+      // §6.7's "follow-up after 72 hours" is §3's 72 elapsed weekday hours, and
+      // addBusinessDaysET lands at MIDNIGHT of the third weekday — so a Monday
+      // 3pm send became eligible Thursday 00:00 and went at 9am, 66 hours
+      // later. addWeekdayHoursET keeps the wall clock: Mon 3pm → Thu 3pm,
+      // Fri 2pm → Wed 2pm, across a clock change too. The review lane keeps its
+      // business-day spacing (§8 counts that one in business days).
+      : lastSentAt
+        ? lane === "PRIMARY" ? addWeekdayHoursET(lastSentAt, spacingBusinessDays * 24) : addBusinessDaysET(lastSentAt, spacingBusinessDays)
+        : laneReadyAt;
   if (now < opensAt) {
     return out({
       ...withMid, action, decision: "wait", noCallEligible, digestSession, answersStarted,
-      reason: milestone === "MONTH_OPEN" ? `this month's planning email goes out ${fmtDay(opensAt)}` : `follow-up due ${fmtDay(opensAt)} (${spacingBusinessDays} weekdays after the last one actually sent)`,
+      reason: milestone === "MONTH_OPEN" ? `this month's planning email goes out ${fmtDay(opensAt)}` : `follow-up due ${fmtDay(opensAt)} (${lane === "PRIMARY" ? `${spacingBusinessDays * 24} weekday hours` : `${spacingBusinessDays} weekdays`} after the last one actually sent)`,
       nextEligibleAt: opensAt,
     });
   }

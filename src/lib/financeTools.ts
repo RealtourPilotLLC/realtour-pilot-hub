@@ -58,7 +58,7 @@ export const FINANCE_TOOLS: HubTool[] = [
   },
   {
     name: "job_profitability",
-    description: "Per-job margins for recent shoots: revenue minus exact photographer pay and editing costs (video tiers + $0.50/finished photo). Returns totals plus the best and worst jobs.",
+    description: "Per-job margins for recent shoots: revenue minus exact photographer pay and editing costs (video tiers + $0.50/finished photo). Returns totals plus the best and worst jobs. A photo job whose raws were never counted has an UNKNOWN photo cost: it is flagged cost_complete=false, left out of best/worst, and counted in uncounted_jobs — when margin_complete is false the totals are overstated by that missing cost, so say so rather than quoting the margin as exact.",
     input_schema: { type: "object", properties: { days_back: { type: "number", description: "window size in days (default 60, max 365)" } } },
   },
   {
@@ -225,17 +225,25 @@ export async function execFinanceTool(name: string, input: Record<string, unknow
       const to = new Date();
       const fromD = new Date(Date.now() - days * 864e5);
       const jp = await jobProfitability(fromD, to);
-      const rows = [...jp.jobs].sort((a, b) => b.margin - a.margin);
+      // UNKNOWN IS NOT ZERO (§10, Sep 26 2026 review). A photo job whose raws
+      // were never counted carries no photo editing in its margin, so it reads
+      // better than it is. The Jobs tab leaves those out of best/worst and
+      // stars them; the advisor answers from the same rule, or "which jobs
+      // made the most money" names the ones whose cost is missing.
+      const rows = jp.jobs.filter((j) => j.costComplete).sort((a, b) => b.margin - a.margin);
       const slim = (r: (typeof rows)[number]) => ({
         job: r.title, client: r.client, photographer: r.photographer,
         date: r.shootDate?.toISOString().slice(0, 10) ?? null,
         revenue: r2(r.revenue), photographer_cost: r2(r.photographerCost), editing_cost: r2(r.editingCost),
-        margin: r2(r.margin), margin_pct: r.marginPct,
+        margin: r2(r.margin), margin_pct: r.marginPct, cost_complete: r.costComplete,
       });
       return {
         window_days: days, jobs: jp.count,
         revenue: r2(jp.revenue), photographer_cost: r2(jp.photographerCost), editing_cost: r2(jp.editingCost),
         margin: r2(jp.margin), avg_margin_pct: jp.avgMarginPct,
+        margin_complete: jp.marginComplete,
+        uncounted_jobs: jp.uncountedJobs,
+        ...(jp.marginComplete ? {} : { note: `${jp.uncountedJobs} photo job${jp.uncountedJobs === 1 ? "" : "s"} not counted yet — their photo editing cost is unknown, so the margin above is higher than it will be. Those jobs are left out of best_jobs and worst_jobs.` }),
         best_jobs: rows.slice(0, 8).map(slim),
         worst_jobs: rows.slice(-8).reverse().map(slim),
       };

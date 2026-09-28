@@ -524,6 +524,15 @@ export async function recordRulingReviewer(
  *      own switch, which keeps the Slack DM Kyle asked for on Sep 21.
  * The ADMIN role broadcast is dropped: the assignee must not get a second
  * bell for the same cut, and a bell that belongs to everybody is nobody's.
+ *
+ * AWAY CHANGES WHOSE IT IS, NOT WHO HEARS (Jordan, Sep 26 2026: "no matter
+ * what is going on, James, Kyle, and myself should get a notification").
+ * Until today a seat marked away was dropped from the FYI, so James back from
+ * a day off found cuts he had never heard about. Now every seat is told about
+ * every cut — the away person's copy says who has it — and WHEN it reaches
+ * their phone is their own notification schedule's business (notifySchedule),
+ * not this list's. A seat that cannot rule (no active login) is told too, in
+ * words that do not ask them to rule.
  */
 export async function reviewAnnounceTargets(input: {
   reviewer: { teamMemberId: string; name: string } | null;
@@ -561,18 +570,20 @@ export async function reviewAnnounceTargets(input: {
       : `FYI video in review — ${what} · ${who} reviews it first; approve it any time. ${link}`,
     ...(input.ownerActed ? { ownerActed: true } : {}),
   });
-  const away = new Set(chain.members.filter((m) => m.awayUntil).map((m) => m.teamMemberId));
-  const fyi = [...new Set([...chain.members.filter((m) => m.canRule).map((m) => m.teamMemberId), ...office])].filter(
-    (id) => id !== input.reviewer!.teamMemberId && !owners.includes(id) && !away.has(id),
+  const seat = new Map(chain.members.map((m) => [m.teamMemberId, m]));
+  const fyi = [...new Set([...chain.members.map((m) => m.teamMemberId), ...office])].filter(
+    (id) => id !== input.reviewer!.teamMemberId && !owners.includes(id),
   );
   // Kyle's copy says his part in it (Jordan: "Kyle should just know his role
-  // and get notified as well as James").
+  // and get notified as well as James"); an away seat's copy says who has it.
   for (const id of fyi) {
-    targets.push({
-      roles: ANY_ROLE,
-      userKey: `tm:${id}`,
-      slackDm: `Video in review — ${what}. ${who} reviews it first; if ${who} hasn't got to it, approve it or send it back yourself. ${link}`,
-    });
+    const m = seat.get(id);
+    const slackDm = m && !m.canRule
+      ? `Video in review — ${what}. ${who} reviews it. ${link}`
+      : m?.awayUntil
+        ? `Video in review — ${what}. You're marked away, so ${who} has it; approve it or send it back any time. ${link}`
+        : `Video in review — ${what}. ${who} reviews it first; if ${who} hasn't got to it, approve it or send it back yourself. ${link}`;
+    targets.push({ roles: ANY_ROLE, userKey: `tm:${id}`, slackDm });
   }
   return targets;
 }

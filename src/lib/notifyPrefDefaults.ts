@@ -122,6 +122,17 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   photos_undelivered: "photos not delivered",
   staff_sms: "staff alert",
   brand_updated: "brand updated", // CP-06
+  // Sep 26 2026: the digests and the client pager now write delivery rows
+  // too (notify.ts deliverDigestDm, notifyStaffSms), so they need a name.
+  kyle_morning: "morning list",
+  kyle_digest: "4 o'clock check",
+  reply_sla: "client waiting",
+  // Sep 26 2026 review: the upload texts and the coaching note write a
+  // delivery row when somebody's quiet time holds them (notify.ts
+  // holdStaffTextForQuietTime / holdStaffDmForQuietTime).
+  upload_digest: "tonight's uploads",
+  upload_nag: "upload reminder",
+  comms_coaching: "comms note",
 };
 export function notifyKindLabel(kind: string): string {
   return NOTIFY_KIND_LABELS[kind] ?? kind.replace(/_/g, " ");
@@ -287,3 +298,140 @@ export function mergeNotifyPrefs(base: NotifyPrefs, stored: unknown): NotifyPref
 export function notifyPrefsEqual(a: NotifyPrefs, b: NotifyPrefs): boolean {
   return NOTIFY_EVENT_KEYS.every((k) => a[k].slack === b[k].slack && a[k].sms === b[k].sms);
 }
+
+// ---------------------------------------------------------------------------
+// THE NOTIFICATION SCHEDULE — quiet time per person (Jordan, Sep 26 2026).
+//
+// "No matter what is going on, James, Kyle, and myself should get a
+// notification. I just don't want notifications on Saturdays, until 7:30pm.
+// Implement in settings a setting for controlling notification timing by day
+// and time." And, asked how: the quiet time is HIS (nobody else's by
+// default), and what arrives inside it is DELIVERED WHEN IT ENDS — the bell
+// row at once, the texts and Slack DMs held and sent at 7:30 PM, once, in the
+// order they came.
+//
+// This is the client-safe half: the shape, the strict reader and the words.
+// The store (one AppSetting per person, `notify-schedule:<teamMemberId>`, so a
+// stale Settings tab can never overwrite somebody else's schedule) and the one
+// question every channel asks — holdFor(person, at) — live in
+// src/lib/notifySchedule.ts.
+// ---------------------------------------------------------------------------
+
+/** Sunday first — the order Date#getUTCDay() counts in, so a stored `day` is
+ *  that number and nothing has to translate it. */
+export const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
+/**
+ * One quiet window on the Eastern clock: a weekday and a span inside it, in
+ * minutes past midnight. `to` may be 1440 — "until midnight" — and a window
+ * never runs past its own day: Friday night into Saturday is two windows
+ * (Friday from 10 PM, Saturday until 7 AM), which the hold simply chains.
+ */
+export type QuietWindow = { day: number; from: number; to: number };
+
+/** Jordan's own answer, as a code default — used for the OWNER login's roster
+ *  row until a schedule is saved for him (never written to production by the
+ *  deploy). Saturday from midnight to 7:30 PM Eastern. */
+export const OWNER_PRESET_WINDOWS: readonly QuietWindow[] = [{ day: 6, from: 0, to: 19 * 60 + 30 }];
+
+/**
+ * The business-wide layer, the same for everyone (Jordan, Sep 26: an URGENT
+ * page to the on-call person between 10 PM and 7 AM is held until 7 AM, not
+ * texted). Texts already keep this window in the staff queue (its 7:00–22:00
+ * texting hours); what is new is that the on-call page's Slack leg keeps it
+ * too. A person's own windows add to it.
+ */
+export const OVERNIGHT_FROM = 22 * 60;
+export const OVERNIGHT_TO = 7 * 60;
+
+export const MAX_QUIET_WINDOWS = 21;
+
+/**
+ * Strict read of a window list from the wire or the store. Null when anything
+ * is the wrong shape — the save action refuses it, and the reader treats the
+ * row as unset rather than guessing. Windows on one day that overlap or touch
+ * are merged, so "Saturday until noon" plus "Saturday 11–7:30" is stored as
+ * the one span a person would describe.
+ */
+export function parseQuietWindows(input: unknown): QuietWindow[] | null {
+  if (!Array.isArray(input) || input.length > MAX_QUIET_WINDOWS) return null;
+  const rows: QuietWindow[] = [];
+  for (const w of input) {
+    if (!w || typeof w !== "object" || Array.isArray(w)) return null;
+    const { day, from, to } = w as Record<string, unknown>;
+    if (typeof day !== "number" || !Number.isInteger(day) || day < 0 || day > 6) return null;
+    if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to)) return null;
+    if (from < 0 || to > 1440 || from >= to) return null;
+    rows.push({ day, from, to });
+  }
+  rows.sort((a, b) => a.day - b.day || a.from - b.from);
+  const out: QuietWindow[] = [];
+  for (const w of rows) {
+    const last = out[out.length - 1];
+    if (last && last.day === w.day && w.from <= last.to) last.to = Math.max(last.to, w.to);
+    else out.push({ ...w });
+  }
+  return out;
+}
+
+/** What is wrong with one window as typed, in words — or null. The card shows
+ *  it before Save; the action refuses the same things. */
+export function quietWindowProblem(w: { day: number; from: number; to: number }): string | null {
+  if (!Number.isInteger(w.day) || w.day < 0 || w.day > 6) return "Pick a day.";
+  if (!Number.isInteger(w.from) || !Number.isInteger(w.to) || w.from < 0 || w.to > 1440) return "Give it a start and an end time.";
+  if (w.from === w.to) return `${clockLabel(w.from)} to ${clockLabel(w.to)} is no time at all.`;
+  if (w.to < w.from) {
+    return `${clockLabel(w.from)} to ${clockLabel(w.to)} runs past midnight — add it as two windows: ${WEEKDAY_NAMES[w.day]} from ${clockLabel(w.from)} to midnight, and ${WEEKDAY_NAMES[(w.day + 1) % 7]} until ${clockLabel(w.to)}.`;
+  }
+  return null;
+}
+
+/** "7:30 PM", "9 AM", "midnight" (1440, the end of a day), "12 AM" (0). */
+export function clockLabel(mins: number): string {
+  if (mins >= 1440) return "midnight";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}${m ? `:${String(m).padStart(2, "0")}` : ""} ${h < 12 ? "AM" : "PM"}`;
+}
+
+function spanWords(w: QuietWindow): string {
+  const day = WEEKDAY_NAMES[w.day];
+  if (w.from === 0 && w.to >= 1440) return `all day ${day}`;
+  if (w.from === 0) return `${day} until ${clockLabel(w.to)}`;
+  if (w.to >= 1440) return `${day} from ${clockLabel(w.from)}`;
+  return `${day} ${clockLabel(w.from)}–${clockLabel(w.to)}`;
+}
+
+/**
+ * The plain summary the card prints for one person — "Jordan: no
+ * notifications Saturday until 7:30 PM — held ones arrive at 7:30 PM." —
+ * and the save action says back. One function for both, so the sentence you
+ * read before Save is the sentence the server confirms.
+ */
+export function describeQuietWindows(first: string, windows: readonly QuietWindow[]): string {
+  if (windows.length === 0) return `${first}: no quiet time — notified as things happen.`;
+  const spans = windows.map(spanWords);
+  if (windows.length === 1) {
+    const end = windows[0].to >= 1440 ? "midnight" : clockLabel(windows[0].to);
+    return `${first}: no notifications ${spans[0]} — held ones arrive at ${end}.`;
+  }
+  return `${first}: no notifications ${spans.join("; ")} — held ones arrive when each quiet spell ends.`;
+}
+
+/** What the card and the settings action exchange per person. ISO strings:
+ *  it crosses the server → client boundary as data. */
+export type NotifyScheduleRow = {
+  teamMemberId: string;
+  name: string;
+  isOwner: boolean;
+  /** saved on the card · Jordan's preset (nothing saved yet) · nothing set */
+  source: "saved" | "preset" | "none";
+  windows: QuietWindow[];
+  /** the stored row's own stamp — sent back on Save, so a stale tab is refused */
+  setAt: string | null;
+  setBy: string | null;
+  summary: string;
+  /** what is waiting for them right now: queued texts and Slack DMs, and when the first goes */
+  held: { texts: number; dms: number; nextAt: string | null };
+};

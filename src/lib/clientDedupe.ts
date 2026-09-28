@@ -380,12 +380,38 @@ export async function reviewClientDuplicates(opts?: { dryRun?: boolean }): Promi
  * behind it.
  *
  * DESTRUCTIVE: it deletes the loser rows. Call it only from a human action —
- * no cron, sweep or listener may call it (see the header).
+ * no cron, sweep or listener may call it (see the header; merge-guard.ts
+ * checks the import graph).
+ *
+ * HARDENED Sep 26 (§10 A54 — "never assume a Hub merge transfers Aryeo
+ * credits"). It used to ignore blockersFor() and keep ONE aryeoCustomerId via
+ * pick(), silently dropping the other customer's link — the orders, invoices
+ * and any credit on it would have lost their client. Now:
+ *   · two distinct Aryeo customers → REFUSED, no override: Aryeo holds them as
+ *     two people and nothing here can move what sits on either;
+ *   · any other blocker → refused unless the actor writes the reason;
+ *   · an AuditLog row, written in the SAME transaction, carries every re-pointed
+ *     row id per table and a snapshot of every deleted client, so the merge can
+ *     be put back by hand.
  */
-export async function mergeClientsById(ids: string[]): Promise<{ ok: boolean; survivor?: string; message?: string }> {
+export async function mergeClientsById(
+  ids: string[],
+  opts: { actor: string; overrideBlockers?: string } = { actor: "" },
+): Promise<{ ok: boolean; survivor?: string; message?: string }> {
+  const actor = (opts.actor ?? "").trim();
+  if (!actor) return { ok: false, message: "A merge needs the name of the person approving it." };
   if (ids.length < 2) return { ok: false, message: "Need at least two clients to merge." };
   const cluster = (await prisma.client.findMany({ where: { id: { in: ids } }, select: CLIENT_SELECT })) as DedupeClient[];
   if (cluster.length !== ids.length) return { ok: false, message: "Some of those clients no longer exist." };
+  const aryeoIds = [...new Set(cluster.map((c) => c.aryeoCustomerId).filter(Boolean))];
+  if (aryeoIds.length > 1) {
+    return { ok: false, message: `Aryeo holds these as ${aryeoIds.length} separate customers. A hub merge cannot move Aryeo orders, balances or credits, so it is refused — settle it in Aryeo first.` };
+  }
+  const blockers = blockersFor(cluster);
+  const override = (opts.overrideBlockers ?? "").trim();
+  if (blockers.length > 0 && override.length < 5) {
+    return { ok: false, message: `Not merged — the records disagree: ${blockers.join("; ")}. Write why they are still one person to merge anyway.` };
+  }
 
   // The content program hangs off clientId with NO foreign key, and two of its
   // tables are one-row-per-client (ContentEnrollment, AgentProfile). Re-pointing
@@ -420,6 +446,42 @@ export async function mergeClientsById(ids: string[]): Promise<{ ok: boolean; su
   };
   const loserIds = losers.map((l) => l.id);
   await prisma.$transaction(async (tx) => {
+    // THE WAY BACK, first and inside the transaction: it exists exactly when
+    // the merge does. Every id the updates below re-point, per table, and the
+    // whole of every client row about to be deleted.
+    const owned = { where: { clientId: { in: loserIds } }, select: { id: true } } as const;
+    const idsOf = (rows: { id: string }[]) => rows.map((r) => r.id);
+    const moved = {
+      project: idsOf(await tx.project.findMany(owned)),
+      smartTask: idsOf(await tx.smartTask.findMany(owned)),
+      contact: idsOf(await tx.contact.findMany(owned)),
+      commLog: idsOf(await tx.commLog.findMany(owned)),
+      contentEnrollment: idsOf(await tx.contentEnrollment.findMany(owned)),
+      contentMonth: idsOf(await tx.contentMonth.findMany(owned)),
+      contentTopic: idsOf(await tx.contentTopic.findMany(owned)),
+      contentScript: idsOf(await tx.contentScript.findMany(owned)),
+      contentNote: idsOf(await tx.contentNote.findMany(owned)),
+      contentStrategy: idsOf(await tx.contentStrategy.findMany(owned)),
+      agentProfile: idsOf(await tx.agentProfile.findMany(owned)),
+      programSignup: idsOf(await tx.programSignup.findMany(owned)),
+      ownerTodo: idsOf(await tx.ownerTodo.findMany(owned)),
+      childClient: idsOf(await tx.client.findMany({ where: { parentClientId: { in: loserIds } }, select: { id: true } })),
+    };
+    await tx.auditLog.create({
+      data: {
+        actor,
+        action: "client_merge",
+        target: survivor.email ?? survivor.name,
+        detail: JSON.stringify({
+          survivorId: survivor.id,
+          survivorBefore: await tx.client.findUnique({ where: { id: survivor.id } }),
+          deleted: await tx.client.findMany({ where: { id: { in: loserIds } } }),
+          moved,
+          blockers,
+          override: override || null,
+        }),
+      },
+    });
     const to = { where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } };
     await tx.project.updateMany(to);
     await tx.smartTask.updateMany(to);

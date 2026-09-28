@@ -435,6 +435,13 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
     new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
   );
   if (etHour < 16 || etHour >= 18) return { sent: false, reason: "outside 4-6pm ET" };
+  // Sep 26 2026: the Settings switch "Kyle's Slack digests" is read here (it
+  // was read by nothing), BEFORE the day is claimed; the send is notify.ts
+  // deliverDigestDm — Kyle's own quiet time, and a refused DM no longer
+  // reports sent (it releases the day for the next tick and logs Slack's words).
+  const { digestGate, kyleDigestRecipient, deliverDigestDm } = await import("@/lib/notify");
+  const off = await digestGate();
+  if (off) return { sent: false, reason: off };
   const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const claim = `kyle-digest-${day}`;
   try {
@@ -444,15 +451,12 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
   }
   try {
     const { appBase } = await import("@/lib/appUrl");
-    const { slackDmUser } = await import("@/lib/integrations/slack");
     const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
     const base = appBase();
-    // Kyle's Slack id off the roster; the literal is the long-standing fallback
-    // that notify.ts has always carried for a row with no slackId.
-    const kyle = await prisma.teamMember
-      .findFirst({ where: { name: { contains: "Kyle", mode: "insensitive" }, active: true }, select: { slackId: true } })
-      .catch(() => null);
-    const slackId = kyle?.slackId || "U07SCBTPDC7";
+    // Kyle's roster row (his id for the schedule and the delivery log) and his
+    // Slack id; the literal is the long-standing fallback notify.ts carries.
+    const to = await kyleDigestRecipient();
+    const send = (text: string) => deliverDigestDm({ ...to, text, kind: "kyle_digest", claimKey: claim });
 
     const [slack, overdue, brief, texts] = await Promise.all([
       slackBoard().catch(() => ({ rows: [], unassignedCount: 0, overdueCount: 0, total: 0, capped: false } as SlackBoard)),
@@ -473,10 +477,12 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
     // nothing appears twice.
     const listed = new Set([...slackIds, ...boardOverdue.map((t) => t.id)]);
     const dueToday = brief.filter((t) => !listed.has(t.id));
+    // The exceptions with Kyle's name on them, and who is still waiting on a
+    // reply (§9, Sep 26) — see exceptionDigestLines at the end of this file.
+    const exceptionLines = await exceptionDigestLines(base).catch(() => [] as string[]);
 
-    if (slack.total === 0 && boardOverdue.length === 0 && dueToday.length === 0 && texts.length === 0) {
-      await slackDmUser(slackId, "🕓 4 o'clock check — everything's clear. Nice work today. 🎉");
-      return { sent: true };
+    if (slack.total === 0 && boardOverdue.length === 0 && dueToday.length === 0 && texts.length === 0 && exceptionLines.length === 0) {
+      return await send("🕓 4 o'clock check — everything's clear. Nice work today. 🎉");
     }
 
     const where = (client: string | null, property: string | null) => {
@@ -519,11 +525,11 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
         lines.push(`  …and ${dueToday.length - DIGEST_ITEMS} more → ${base}/tasks`);
       }
     }
+    lines.push(...exceptionLines);
     if (texts.length > 0) {
       lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & waiting → ${base}/communications?tab=outbox`);
     }
-    await slackDmUser(slackId, lines.join("\n"));
-    return { sent: true };
+    return await send(lines.join("\n"));
   } catch (e) {
     console.warn("afternoonSlackDigest failed", e);
     // Release the day claim — marking "sent" BEFORE a Slack hiccup permanently
@@ -531,4 +537,53 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
     await prisma.appSetting.delete({ where: { key: claim } }).catch(() => {});
     return { sent: false, reason: "failed" };
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE EXCEPTIONS, IN KYLE'S DIGESTS (§9 "an actionable exception digest using
+// real outstanding work", Sep 26 2026).
+//
+// The exceptions board (lib/opsExceptions) was rendered on the owner's
+// dashboard only, and Kyle's home is /ops, so the rows with HIS name on them —
+// a job nobody assigned, a follow-up date passed, an approved replacement
+// unsent — reached him only if he opened Jordan's screen. His two Slack
+// digests now carry them: the rows whose owner is Kyle or nobody yet (which is
+// the office's to pick up), each with its link, the honest "n of m" when the
+// board's per-kind cap bit, and the unanswered-comms counts from the same walk
+// the Comms tab reads. Jordan keeps the whole board on the dashboard —
+// oversight without a required action. Read-only, like the board itself.
+// ---------------------------------------------------------------------------
+
+const EXCEPTION_DIGEST_ROWS = 5;
+
+/** Lines for a Kyle digest; [] when there is nothing to say. Never throws. */
+export async function exceptionDigestLines(base: string, opts: { now?: Date; limit?: number } = {}): Promise<string[]> {
+  const limit = opts.limit ?? EXCEPTION_DIGEST_ROWS;
+  const out: string[] = [];
+  try {
+    const { opsExceptionsBoard } = await import("@/lib/opsExceptions");
+    const board = await opsExceptionsBoard({ now: opts.now });
+    const his = board.rows.filter((r) => /\bkyle\b/i.test(r.owner) || /^nobody\b|^the office\b/i.test(r.owner));
+    const total = Object.values(board.totals).reduce((n, t) => n + t.all, 0);
+    if (his.length > 0) {
+      out.push(`*Exceptions* (${his.length} for you${total > his.length ? ` · ${total} on the board` : ""}):`);
+      for (const r of his.slice(0, limit)) {
+        const dot = r.severity === "high" ? "🔴 " : "";
+        out.push(`• ${dot}${r.title} — ${r.why}. ${r.nextAction}${/^kyle$/i.test(r.owner) ? "" : ` (${r.owner})`} → ${base}${r.href}`);
+      }
+      if (his.length > limit) out.push(`  …and ${his.length - limit} more → ${base}/`);
+    }
+  } catch (e) {
+    console.warn("exception digest: board read failed", e);
+  }
+  try {
+    const { replyWaitingSummary } = await import("@/lib/replyQueue");
+    const w = await replyWaitingSummary();
+    if (w.phone + w.email > 0) {
+      out.push(`💬 Unanswered: ${w.phone} text${w.phone === 1 ? "" : "s"}, ${w.email} email${w.email === 1 ? "" : "s"} → ${base}/tasks?tab=comms`);
+    }
+  } catch (e) {
+    console.warn("exception digest: unanswered count failed", e);
+  }
+  return out;
 }

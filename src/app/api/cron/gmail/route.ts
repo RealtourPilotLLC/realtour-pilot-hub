@@ -31,6 +31,9 @@ export async function GET(req: NextRequest) {
   // /connections instead of silently degrading.
   const { step, out, finish } = cronBudget(100_000, Date.now(), "gmail"); // ~20s headroom under maxDuration
 
+  // Per-mailbox reads (§9, Sep 26): the step reports `degraded` when any
+  // mailbox — info@ or hello@ — was not read, and syncGmail itself opens the
+  // owner's reconnect task. /connections reads the flag off this run.
   await step("gmail", () => syncGmail());
   // Backstop only — the realtime webhook already closes answered threads.
   // Run it on the top-of-hour tick instead of all 12 (audit: the 5-minute poll
