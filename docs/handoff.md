@@ -11,22 +11,23 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 - **Current batch:** all six built and deployed. Remaining: the queued follow-ups below,
   role walkthroughs, the final report and launch package, the supervised Aryeo test.
-- **Deployed:** `15fc7f4` (batch 6 `57a2820` + the 38 E Gay St fix merged), Vercel `fojahizaz`.
+- **Deployed:** `eaee7fa` (batches 1–6, the 38 E Gay St fix, the delivered-notes rule, the test
+  inboxes and the editor clarity rebuild), Vercel `mqazwgvmn`. 99 isolated drills green.
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
   Jordan's Saturday quiet time is a code default (Sat 00:00–19:30 ET, held → delivered at 19:30).
 - **Queued for right after batch 6 (Jordan, Sep 28):**
   1. ~~merge branch `room-delivered-closeout`~~ — merged in `15fc7f4`;
-  2. a standing rule: editor-cut and delivery-fix notes on a job delivered after them close
+  2. ~~standing rule~~ — done `ac297e8` (closes only notes their cut's own history answered): editor-cut and delivery-fix notes on a job delivered after them close
      themselves ("job delivered", never counted as a checked fix); "Feedback follow-through" rows
      open the cut with its notes, not the project page;
-  3. test inboxes: `jspackman215@gmail.com` and `bobmike0214@gmail.com` are Jordan's own ("The
+  3. ~~test inboxes~~ — done `ac297e8`; Bobby moved to jspackman215+bobbytest@. `jspackman215@gmail.com` and `bobmike0214@gmail.com` are Jordan's own ("The
      email for bobby test is my email so that works. the test email for bobby test can just be
      my jspackman215@gmail.com so I can see the test emails") — add both as verified test
      destinations beside info@, set Bobby TEST's hub email to jspackman215@ (backup first); the
      Aryeo side can stay bobmike0214@, so the Aryeo dashboard edit is no longer needed.
-  4. merge branch `editor-clarity` (Jordan, Sep 28: "the working on now button for the editors
+  4. ~~merge branch `editor-clarity`~~ — merged `e9f7f42`, deployed `eaee7fa` (Jordan, Sep 28: "the working on now button for the editors
      needs to be clearer … there is just a lot of information … It says Kim is not working on
      anything, but I believe he is!"). Measured: Kim has never pressed Start (all recorded
      events are John's) yet uploaded 3 versions of 107 E Old Baltimore Pike that morning; the
@@ -166,8 +167,21 @@ jobs, neither linked to an Aryeo order). So the sitting uses **Bobby**
 API cannot change a customer's email (only create), and an undocumented PATCH
 is not used on a live record — so step 1 is a dashboard edit.
 
+**Update (Sep 28, later):** both of Jordan's Gmail inboxes are now verified
+test inboxes (`ac297e8`), and Bobby's hub email was moved to
+`jspackman215+bobbytest@gmail.com` (Gmail delivers it to jspackman215@; a
+distinct address so nothing email-matched confuses it with Jordan's REAL row,
+which carries jspackman215@ as email and bobmike0214@ as backupEmail).
+Backup `~/rtp-backup-2026-09-28-fixture-cmtl98xl90008jl04yt5zawnv.json`,
+AuditLog `cmull0gt100009k2xc2a2wbrc`. **The dry run now passes identity**
+(own email and the Aryeo customer's bobmike0214@ are both verified inboxes).
+**No Aryeo dashboard edit is needed any more.** Remaining preconditions, both
+done AT the sitting: set Bobby's enrollment package Starter → Accelerator (the
+test books 240 minutes), and arm `session_booking` + `address_sync` for Bobby
+only. Step 1 below is superseded.
+
 The sitting, in order (about 20 minutes):
-1. Jordan/Kyle in Aryeo: change Bobby TEST Michael TEST's email to
+1. ~~Jordan/Kyle in Aryeo: change Bobby TEST Michael TEST's email to~~
    `info+bobbytest@realtourpilot.com`. Then the hub side (main session): the
    same email on the hub client, the unverified phone (…9038) cleared, the old
    values backed up first.
