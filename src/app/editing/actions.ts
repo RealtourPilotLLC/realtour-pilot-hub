@@ -460,6 +460,17 @@ export async function addToEditorQueue(
         where: { id: existing.id },
         data: { ...taskData, status: "OPEN", completedAt: null },
       });
+      // The ask may have just changed hands (Kim's open revision routed to
+      // John): whoever held the job only through it stops holding it now, and
+      // their started work closes after this write (R01, Sep 28 2026).
+      if (existing.assignedKey !== key) {
+        const { closeGhostWork } = await import("@/lib/editorWork");
+        await closeGhostWork(projectId, {
+          reason: "REASSIGNED",
+          actor: { userId: me?.id ?? null, name: queuedBy ?? "The office", role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          detail: `the new cut was routed to ${editorName}`,
+        });
+      }
     } else {
       await prisma.smartTask.create({ data: taskData });
     }
@@ -2270,10 +2281,21 @@ export async function removeFromEditorQueue(projectId: string, note?: string): P
 
   const at = new Date();
   const clean = (note ?? "").trim().slice(0, 300) || null;
-  await prisma.appSetting.upsert({
-    where: { key: queueRemovedKey(projectId) },
-    create: { key: queueRemovedKey(projectId), value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
-    update: { value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+  // THE MARKER IS WRITTEN UNDER THE JOB'S ROW LOCK (R01, Sep 28 2026). A job
+  // off the Editing Room can't be started (editorWork.startBlock), and a Start
+  // judges that under a FOR NO KEY UPDATE on this same Project row — but this
+  // is the one eligibility writer that otherwise touches no row a Start locks
+  // (the marker is an AppSetting; a job held only through a video revision
+  // has no edit card to cancel). Taking the row lock here orders the two: a
+  // Start in flight finishes first and is closed by the closeActiveWork below;
+  // a Start after this commits sees the marker and is refused.
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR NO KEY UPDATE`;
+    await tx.appSetting.upsert({
+      where: { key: queueRemovedKey(projectId) },
+      create: { key: queueRemovedKey(projectId), value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+      update: { value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+    });
   });
 
   // CANCELLED, not deleted, and only if it is still live — a task somebody has
@@ -2656,6 +2678,17 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
     await ensureOutputsSafely(fromId, `unmerge#${m.intoId}`);
     await ensureOutputsSafely(m.intoId, `unmerge-away#${fromId}`);
   } catch { /* the hourly sweep repairs it */ }
+  // The cards went home, so an editor started on the survivor only through
+  // one of them holds nothing there any more (R01, Sep 28 2026): closed after
+  // the move, as merged. Anyone still holding the survivor keeps theirs.
+  {
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    await closeGhostWork(m.intoId, {
+      reason: "MERGED",
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      detail: `${actor} put the merged work back on its own job`,
+    });
+  }
 
   const p = await prisma.project.findUnique({ where: { id: fromId }, select: { title: true } });
   const street = (p?.title || "that job").split(",")[0].trim();

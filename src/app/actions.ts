@@ -1171,6 +1171,13 @@ export async function toggleTaskChecklistItem(
     revalidatePath("/pipeline");
     revalidatePath("/");
   }
+  // The last tick on an EDIT card is a Complete too (R01, Sep 28): the card
+  // editor's stretch on the job ends with it, exactly as the Complete button
+  // closes it (setSmartTaskStatus) — otherwise the tick left them "In
+  // editing" on a job with no card, holding their one active slot.
+  if (completed && t.status !== "COMPLETED" && t.projectId && t.assignedKey && (await isDeskEditorCard({ taskType: t.taskType, projectId: t.projectId, assignedKey: t.assignedKey }))) {
+    await closeEditCardWork(t.projectId, t.assignedKey, (by) => `the edit card's checklist was completed by ${by}`);
+  }
   revalidatePath("/queue");
   revalidatePath("/history");
   revalidatePath("/tasks");
@@ -1215,6 +1222,24 @@ export async function assignMember(
       body: member ? `${role[0].toUpperCase() + role.slice(1)} set to ${member.name}.` : `${role} unassigned.`,
     },
   });
+  // THE CARD FOLLOWS THE PICK NOW, not within the hour (R01, Sep 28 2026).
+  // This only writes the pin; mintEditTask moves a live edit card onto the
+  // picked editor and closes whoever was on it. Left to the hourly refresh,
+  // the old editor could keep pressing Start on a job the project page already
+  // gave to someone else. Only a LIVE card — mintEditTask would otherwise mint
+  // a "Raws are in" card on a job that has none (the saveEditOverrides guard).
+  if (role === "editor") {
+    try {
+      const live = await prisma.smartTask.findFirst({
+        where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        select: { id: true },
+      });
+      if (live) {
+        const { mintEditTask } = await import("@/lib/tasks");
+        await mintEditTask(projectId);
+      }
+    } catch { /* the hourly refresh is the backstop */ }
+  }
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");
   revalidatePath("/schedule");
@@ -1300,6 +1325,20 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       const { closeActiveWork } = await import("@/lib/editorWork");
       const actor = await workActorNow();
       await closeActiveWork(projectId, { reason: "PUT_BACK", actor, detail: `moved back to ${stageMeta(status).label} on the board by ${actor.name}` });
+    } catch { /* never blocks the move */ }
+  }
+
+  // ON HOLD STOPS THE EDIT (R01 default, Sep 28 2026 — Jordan to confirm).
+  // A job the office parks can't be started (startEditing refuses On hold for
+  // everyone), and whoever is actively editing it is PAUSED — not closed: the
+  // work is still theirs to Resume when the job comes off hold. After the
+  // status write, so a Start that committed a moment before it is paused too;
+  // one that comes after it sees On hold under its lock and is refused.
+  if (status === ProjectStatus.ON_HOLD) {
+    try {
+      const { pauseActiveWorkOnHold } = await import("@/lib/editorWork");
+      const actor = await workActorNow();
+      await pauseActiveWorkOnHold(projectId, { actor, detail: `${actor.name} put the job on hold` });
     } catch { /* never blocks the move */ }
   }
 

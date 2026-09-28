@@ -3246,6 +3246,15 @@ export async function reconcileDeliverablesToOrder(
           },
           data: { status: "CANCELLED" },
         }).catch(() => {});
+        // No video owed = nobody is editing one (R01, Sep 28 2026): the edit
+        // card just went, and an editor's started stretch goes after it — on
+        // this job AND on the merge survivor the card lived on. After the
+        // write, so a Start that landed a moment before it is closed too.
+        // closeGhostWork never throws; a holder of other work keeps theirs.
+        const { closeGhostWork } = await import("@/lib/editorWork");
+        for (const pid of new Set([projectId, rowHome])) {
+          await closeGhostWork(pid, { reason: "REMOVED", detail: "the video was removed from the Aryeo order" });
+        }
       }
     }
     // THE ORDER MOVED, SO THE PER-VIDEO ROWS MOVE (audit R06, Sep 18).
@@ -3522,6 +3531,12 @@ export async function flagOrphanedOrders(): Promise<{ checked: number; flagged: 
         // reconciler never re-mints a CANCELLED dedupe key on its own.
         data: { status: "CANCELLED", sourceDetail: ORPHAN_STAND_DOWN },
       }).catch(() => {});
+      // The stood-down edit card takes its editor's started work with it (R01,
+      // Sep 28 2026), after the write. Never throws.
+      {
+        const { closeGhostWork } = await import("@/lib/editorWork");
+        await closeGhostWork(p.id, { reason: "REMOVED", detail: "the Aryeo order no longer exists" });
+      }
       await prisma.activity.create({
         data: {
           projectId: p.id, type: "SYSTEM",

@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // ---------------------------------------------------------------------------
@@ -116,10 +117,19 @@ export async function removedProjectIds(): Promise<Set<string>> {
   return new Set((await allRemovals()).filter((r) => !r.restoredAt).map((r) => r.projectId));
 }
 
-/** One removal, or null. */
-export async function removalFor(projectId: string): Promise<QueueRemoval | null> {
-  const row = await prisma.appSetting
-    .findUnique({ where: { key: queueRemovedKey(projectId) }, select: { key: true, value: true, updatedAt: true } })
-    .catch(() => null);
+/** One removal, or null. `db` (Sep 28 2026, R01): startEditing reads the
+ *  marker inside its switch transaction, after the job's row is locked — a
+ *  job taken off the Editing Room can't be started until it is brought back.
+ *  Inside a transaction a failed read is NOT swallowed into "not removed": on
+ *  Postgres that transaction is already aborted, and the Start fails safe. */
+export async function removalFor(projectId: string, db?: Prisma.TransactionClient): Promise<QueueRemoval | null> {
+  const read = (db ?? prisma).appSetting.findUnique({ where: { key: queueRemovedKey(projectId) }, select: { key: true, value: true, updatedAt: true } });
+  const row = db ? await read : await read.catch(() => null);
   return row ? parse(row.key, row.value, row.updatedAt) : null;
+}
+
+/** Off the Editing Room right now: removed, and not brought back. The one
+ *  definition the Start rule and the queue share (removedProjectIds). */
+export function isRemoved(r: QueueRemoval | null | undefined): boolean {
+  return !!r && !r.restoredAt;
 }

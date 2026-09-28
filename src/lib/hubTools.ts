@@ -866,7 +866,7 @@ export async function execHubTool(
         },
         orderBy: { createdAt: "desc" },
         take: 25, // score over a real pool — 5-newest could exclude the true match (review)
-        select: { id: true, title: true, taskType: true, status: true },
+        select: { id: true, title: true, taskType: true, status: true, projectId: true, assignedKey: true },
       });
       const scored = matches
         .map((m) => ({ m, hits: q.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && m.title.toLowerCase().includes(w)).length }))
@@ -880,6 +880,19 @@ export async function execHubTool(
         where: { id: best.m.id },
         data: reopen ? { status: "OPEN", completedAt: null } : { status: "COMPLETED", completedAt: new Date() },
       });
+      // A chat Complete on an EDIT or VIDEO-REVISION card takes the editor's
+      // started work with it, as the task board's Complete does (R01, Sep 28
+      // 2026) — after the write, so a Start that landed a moment before it is
+      // closed too. The edit card closes its own editor's stretch outright; a
+      // revision closes only work nobody still holds another way. Never throws.
+      if (!reopen && best.m.projectId && (best.m.taskType === "edit_video" || best.m.taskType === "revision")) {
+        const work = await import("@/lib/editorWork");
+        const actor = { userId: null, name: ctx.who?.trim() || "The office", role: ctx.role === "OWNER" ? ("OWNER" as const) : ("ADMIN" as const) };
+        if (best.m.taskType === "edit_video" && best.m.assignedKey && work.WORK_EDITOR_KEYS.includes(best.m.assignedKey)) {
+          await work.closeActiveWork(best.m.projectId, { editorKey: best.m.assignedKey, reason: "REMOVED", actor, detail: `the edit card was completed through Ask the Hub by ${actor.name}` });
+        }
+        await work.closeGhostWork(best.m.projectId, { reason: "UNASSIGNED", actor, detail: `completed through Ask the Hub by ${actor.name}` });
+      }
       return { done: true, task: best.m.title, nowStatus: reopen ? "OPEN" : "COMPLETED" };
     }
 
@@ -903,7 +916,7 @@ export async function execHubTool(
         },
         orderBy: { createdAt: "desc" },
         take: 25, // score over a real pool (review)
-        select: { id: true, title: true },
+        select: { id: true, title: true, taskType: true, projectId: true },
       });
       const scored2 = matches
         .map((m) => ({ m, hits: q.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && m.title.toLowerCase().includes(w)).length }))
@@ -915,6 +928,19 @@ export async function execHubTool(
       }
       // Human assignment through chat IS manual — the engines must respect it.
       await prisma.smartTask.update({ where: { id: best2.m.id }, data: { assignedKey: target.key, assignedManually: true } });
+      // Handing an edit or video-revision card to someone else through chat
+      // ends the previous editor's started work, as every other reassign does
+      // (R01, Sep 28 2026) — after the write, recomputed under the desk lock,
+      // so a co-editor who still holds a video keeps theirs. Never throws.
+      if (best2.m.projectId && (best2.m.taskType === "edit_video" || best2.m.taskType === "revision")) {
+        const { closeGhostWork } = await import("@/lib/editorWork");
+        const actorName = ctx.who?.trim() || "The office";
+        await closeGhostWork(best2.m.projectId, {
+          reason: "REASSIGNED",
+          actor: { userId: null, name: actorName, role: ctx.role === "OWNER" ? "OWNER" : "ADMIN" },
+          detail: `reassigned to ${target.name} through Ask the Hub by ${actorName}`,
+        });
+      }
       return { done: true, task: best2.m.title, assignedTo: target.name };
     }
 

@@ -1,4 +1,5 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // ---------------------------------------------------------------------------
@@ -29,11 +30,16 @@ export const waitingHoldKey = (projectId: string) => `${WAITING_HOLD_PREFIX}${pr
 export type WaitingHold = { by: string | null; at: Date };
 
 /** Every hold in a batch, one query — the sweeps load it once per pass, the
- *  way manualQueued is. */
-export async function loadWaitingHolds(projectIds: string[]): Promise<Map<string, WaitingHold>> {
+ *  way manualQueued is. `db` (Sep 28 2026, R01): startEditing re-reads the
+ *  hold INSIDE its switch transaction, after it has locked the job's row, so
+ *  the read that decides a Start is the one that transaction sees. */
+export async function loadWaitingHolds(
+  projectIds: string[],
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<Map<string, WaitingHold>> {
   const out = new Map<string, WaitingHold>();
   if (projectIds.length === 0) return out;
-  const rows = await prisma.appSetting.findMany({
+  const rows = await db.appSetting.findMany({
     where: { key: { in: projectIds.map(waitingHoldKey) } },
     select: { key: true, value: true, updatedAt: true },
   });

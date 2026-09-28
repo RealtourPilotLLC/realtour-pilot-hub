@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { Prisma } from "@prisma/client";
+import { Prisma, type ProjectStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
 import { EDITORS, TEAM_MEMBER_EDITOR_KEYS, editorMeta } from "@/lib/editors";
@@ -44,6 +44,26 @@ import { etDayKey, etMonthDay, etTime } from "@/lib/datetime";
 // A is still ACTIVE with its original activeSince. A retried click carries the
 // same requestId (EditorWorkEvent.requestId @unique) and replays instead of
 // logging twice.
+//
+// WHETHER A START IS ALLOWED IS DECIDED UNDER LOCK (R01, Sep 28 2026). The
+// external review found that startEditing judged a Start from reads taken
+// BEFORE its transaction, and the transaction then paused the editor's current
+// job, wrote ACTIVE and moved the lifecycle without looking again. A cancel, a
+// reassign or an office hold landing in between was simply written over: a
+// board-cancelled job came back as In editing for good (nothing re-cancels a
+// board cancel), Kim was started on a job the office had just handed to John,
+// and either way her real job was paused and the office's bell rang. Now:
+//   · the switch locks the rows every eligibility writer UPDATEs — the job's
+//     Project row, its owned videos, its open edit and video-revision cards
+//     (lockStartRows) — and judges the Start again from what it reads under
+//     those locks (startFacts + startBlock), BEFORE it pauses anything. A
+//     writer that committed first is always seen; one that comes second waits
+//     for the Start, and then —
+//   · every writer that takes eligibility away closes (or, for On hold,
+//     pauses) work AFTER its own write, so a Start that committed first is
+//     undone right behind it. Those calls live at the writers.
+// A refused Start writes nothing and rings nobody: the previous job is still
+// ACTIVE with its original activeSince.
 // ---------------------------------------------------------------------------
 
 export const WORK_ACTIVE = "ACTIVE";
@@ -159,6 +179,150 @@ async function editCardOf(projectId: string, db: Db = prisma) {
   });
 }
 
+// ---- may this editor start this job? (R01, Sep 28 2026) ----------------------
+
+/** The job's row as the switch sees it. `status` is the enum as text. */
+type StartSnap = { id: string; title: string | null; status: string; statusPinnedAt: Date | null };
+
+/**
+ * Lock, in this fixed order, the rows every Start-eligibility writer UPDATEs:
+ * the Project row (a cancel, a hold, On hold, a status move, the Waiting pin),
+ * the job's videos that name an owner plus the one picked (a merge or retire of
+ * it), and the open edit / video-revision cards (a reassign, a dispatch, a
+ * close). Called inside the switch transaction, after the desk lock and
+ * nothing else.
+ *
+ * ORDER: editor-desk advisory → Project → DeliverableOutput → SmartTask. Only
+ * this file takes a desk lock and always first; the merge takes Output before
+ * SmartTask and the client dedupe Project before SmartTask, so nothing waits
+ * in the opposite direction. FOR NO KEY UPDATE, not FOR UPDATE: it conflicts
+ * with every UPDATE and DELETE of these rows but not with the FOR KEY SHARE a
+ * child insert takes (a timeline line, a new card), so writers that only add
+ * rows never queue behind a Start. Not FOR SHARE: two Starts on one job both
+ * go on to update the Project row, and share-then-upgrade deadlocks. Default
+ * READ COMMITTED on purpose — a lock that waited re-reads the committed row,
+ * which is how a card merged to another job or closed drops out of the set.
+ * Text parameters only; the enum comes back as text (never compare it to an
+ * uncast parameter — the Sep 18 42883 outage was a missing cast).
+ */
+async function lockStartRows(tx: Prisma.TransactionClient, projectId: string, outputId?: string | null): Promise<StartSnap | null> {
+  const [p] = await tx.$queryRaw<StartSnap[]>`
+    SELECT "id", "title", "status"::text AS "status", "statusPinnedAt"
+    FROM "Project" WHERE "id" = ${projectId} FOR NO KEY UPDATE`;
+  if (!p) return null;
+  await tx.$queryRaw`
+    SELECT "id" FROM "DeliverableOutput"
+    WHERE "projectId" = ${projectId} AND ("ownerKey" IS NOT NULL OR "id" = ${outputId ?? ""})
+    ORDER BY "id" FOR NO KEY UPDATE`;
+  await tx.$queryRaw`
+    SELECT "id" FROM "SmartTask"
+    WHERE "projectId" = ${projectId} AND "taskType" IN ('edit_video', 'revision') AND "status" NOT IN ('COMPLETED', 'CANCELLED')
+    ORDER BY "id" FOR NO KEY UPDATE`;
+  return p;
+}
+
+/** Everything the Start rule reads, from ONE client: the transaction's (under
+ *  lockStartRows, the authority) or the plain one (the fast path and the
+ *  job page's bar). Sequential on purpose — it runs inside the switch. */
+export type StartFacts = {
+  exists: boolean;
+  street: string;
+  status: string | null;
+  /** The office pinned the stage (saveEditOverrides) — on BOOKED/SCHEDULED that is Waiting. */
+  pinned: boolean;
+  /** The queue's Waiting hold marker (queueWaiting.ts). Read only on BOOKED/SCHEDULED. */
+  waitingHold: boolean;
+  /** Taken off the Editing Room and not brought back (queueRemoved.ts). */
+  removed: boolean;
+  holders: Set<string>;
+  cardKey: string | null;
+  /** A video was named and it is not on this job. */
+  outputGone: boolean;
+};
+
+async function startFacts(db: Db, snap: StartSnap | null, outputId?: string | null): Promise<StartFacts> {
+  if (!snap) {
+    return { exists: false, street: streetOf(null), status: null, pinned: false, waitingHold: false, removed: false, holders: new Set(), cardKey: null, outputGone: false };
+  }
+  const tx = db === prisma ? undefined : (db as Prisma.TransactionClient);
+  const onWaiting = snap.status === "BOOKED" || snap.status === "SCHEDULED";
+  const { loadWaitingHolds } = await import("@/lib/queueWaiting");
+  const { removalFor, isRemoved } = await import("@/lib/queueRemoved");
+  const holders = (await holdersFor([snap.id], db)).get(snap.id) ?? new Set<string>();
+  const card = await editCardOf(snap.id, db);
+  const waitingHold = onWaiting ? (await loadWaitingHolds([snap.id], db)).has(snap.id) : false;
+  const removed = isRemoved(await removalFor(snap.id, tx));
+  const outputGone = outputId ? !(await db.deliverableOutput.findFirst({ where: { id: outputId, projectId: snap.id }, select: { id: true } })) : false;
+  return {
+    exists: true, street: streetOf(snap.title), status: snap.status, pinned: !!snap.statusPinnedAt,
+    waitingHold, removed, holders, cardKey: card?.assignedKey ?? null, outputGone,
+  };
+}
+
+/** Why a Start can't happen, as a code — the ONE rule. startEditing and
+ *  confirmCurrentWork refuse on it (under lock), the job page's bar greys on
+ *  it (workBarFor), so the page never offers a Start the server refuses.
+ *  `who` null = only the job-level reasons (before the editor is known).
+ *
+ *  Business defaults taken Sep 28 (Jordan to confirm):
+ *   · ON_HOLD — refused for everyone, office included; putting a job On hold
+ *     also pauses whoever is actively editing it (pauseActiveWorkOnHold).
+ *   · REMOVED — taken off the Editing Room: refused until the office brings
+ *     it back, even for an editor who still holds a video revision on it.
+ *   · WAITING — the queue's hold OR the override's pinned Waiting: the editor
+ *     is refused, the office's Start is its "move it on" (it ends the hold).
+ *     A board drag back to Scheduled/Booked sets no hold and stays startable,
+ *     as it always was — only now race-safe.
+ *   · DELIVERED and REVIEW are NOT refused: extra-shoot and taken-back work
+ *     lives on them; holding the job (the card) is the test there. */
+export type StartBlock = "GONE" | "CANCELLED" | "ON_HOLD" | "REMOVED" | "NOT_HOLDER" | "OUTPUT_GONE" | "WAITING";
+
+export function startBlock(f: StartFacts, who: { editorKey: string; office: boolean } | null): StartBlock | null {
+  if (!f.exists) return "GONE";
+  if (f.status === "CANCELLED") return "CANCELLED";
+  if (f.status === "ON_HOLD") return "ON_HOLD";
+  if (f.removed) return "REMOVED";
+  if (!who) return null;
+  if (!f.holders.has(who.editorKey)) return "NOT_HOLDER";
+  if (f.outputGone) return "OUTPUT_GONE";
+  if (!who.office && (f.status === "BOOKED" || f.status === "SCHEDULED") && (f.waitingHold || f.pinned)) return "WAITING";
+  return null;
+}
+
+/** The server's words for a refused Start (the same words as before R01 for
+ *  the reasons that already existed). */
+function startBlockWords(b: StartBlock, f: StartFacts, who: { editorKey: string; office: boolean } | null): string {
+  switch (b) {
+    case "GONE": return "That job no longer exists.";
+    case "CANCELLED": return "That job is cancelled — there is nothing to edit.";
+    case "ON_HOLD": return `${f.street} is on hold — it can't be started until the office takes it off hold.`;
+    case "REMOVED": return `${f.street} was taken off the Editing Room by the office — bring it back before starting it.`;
+    case "NOT_HOLDER":
+      return who?.office
+        ? `${nameOf(who.editorKey)} isn't assigned to ${f.street} — reassign it to them first.`
+        : `${f.street} isn't assigned to you, so you can't start it. Ask the office to hand it over.`;
+    case "OUTPUT_GONE": return "That video isn't on this job any more — refresh the page.";
+    case "WAITING": return `${f.street} is held in Waiting by the office — it can't be started until the footage is in.`;
+  }
+}
+
+/** The office's default editor for a correction: the card's, else the one holder. */
+const defaultEditorOf = (f: Pick<StartFacts, "cardKey" | "holders">): string | null =>
+  f.cardKey || (f.holders.size === 1 ? [...f.holders][0] : null);
+
+/** A deadlock or serialization failure: Postgres rolled the whole switch back,
+ *  so running it once more is safe (no event was written — not a replay). The
+ *  one place it can happen is the multi-row card lock against a writer's
+ *  multi-row UPDATE on a job with two or more open cards. */
+const isLockConflict = (e: unknown) =>
+  e instanceof Prisma.PrismaClientKnownRequestError &&
+  (e.code === "P2034" || (e.code === "P2010" && ["40P01", "40001"].includes(String((e.meta as { code?: unknown } | undefined)?.code ?? ""))));
+
+/** The switch's transaction options: a short wait on a job row a writer holds
+ *  must not become P2028 (Prisma's default is 5 s / 2 s). Precedent:
+ *  deliverableOutputs.ts. */
+const SWITCH_TX = { maxWait: 10_000, timeout: 15_000 } as const;
+
 const isP2002 = (e: unknown, field?: string) =>
   e instanceof Prisma.PrismaClientKnownRequestError &&
   e.code === "P2002" &&
@@ -186,19 +350,20 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
   const requestId = cleanRequestId(input.requestId);
   const { projectId } = input;
 
-  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true, status: true } });
-  if (!project) return { ok: false, message: "That job no longer exists." };
-  if (project.status === "CANCELLED") return { ok: false, message: "That job is cancelled — there is nothing to edit." };
-  const street = streetOf(project.title);
-
-  const card = await editCardOf(projectId);
-  const holders = (await holdersFor([projectId])).get(projectId) ?? new Set<string>();
+  // THE FAST PATH, read without locks (R01): only which editor's desk to lock,
+  // and the refusals that are already certain. Nothing read here decides a
+  // write — the switch below reads it all again under the job's row locks.
+  const pre = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true, status: true, statusPinnedAt: true } });
+  const preFacts = await startFacts(prisma, pre ? { ...pre, status: pre.status as string } : null, input.outputId);
+  const jobBlock = startBlock(preFacts, null);
+  if (jobBlock) return { ok: false, message: startBlockWords(jobBlock, preFacts, null) };
+  const street = preFacts.street;
 
   // WHOSE WORK. An editor starts their own and nobody else's; the office names
   // the editor (defaulting to the card's), and the log says it was the office.
   let editorKey: string | null;
   if (caller.office) {
-    editorKey = input.forEditorKey || card?.assignedKey || (holders.size === 1 ? [...holders][0] : null);
+    editorKey = input.forEditorKey || defaultEditorOf(preFacts);
     if (!editorKey) return { ok: false, message: `Nobody is assigned to edit ${street} — pick the editor first.` };
   } else {
     editorKey = caller.ownKey;
@@ -208,46 +373,52 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
     // read "With the external agency", never "active".
     return { ok: false, message: `${editorMeta(editorKey)?.name ?? "That editor"} has no hub login, so their work can't be marked active — it shows as with them until the cut comes back.` };
   }
-  if (!holders.has(editorKey)) {
-    return caller.office
-      ? { ok: false, message: `${nameOf(editorKey)} isn't assigned to ${street} — reassign it to them first.` }
-      : { ok: false, message: `${street} isn't assigned to you, so you can't start it. Ask the office to hand it over.` };
-  }
-  if (input.outputId) {
-    const out = await prisma.deliverableOutput.findFirst({ where: { id: input.outputId, projectId }, select: { id: true } });
-    if (!out) return { ok: false, message: "That video isn't on this job any more — refresh the page." };
-  }
-
-  // A job the office is holding in Waiting is the office's to move on (Sep 11).
-  // The editor is refused; the office's start is its "move it on", which ends
-  // the hold, the same as its forward click on the pill always has.
-  const onWaiting = project.status === "BOOKED" || project.status === "SCHEDULED";
-  let releaseHoldKey: string | null = null;
-  if (onWaiting) {
-    const { loadWaitingHolds, waitingHoldKey } = await import("@/lib/queueWaiting");
-    const held = (await loadWaitingHolds([projectId])).has(projectId);
-    if (held && !caller.office) {
-      return { ok: false, message: `${street} is held in Waiting by the office — it can't be started until the footage is in.` };
-    }
-    // Released INSIDE the switch transaction below, not here (review fix, Sep
-    // 25): deleted up front, a start that then failed ("nothing changed") had
-    // already dropped the hold, and the next hourly pass was free to move the
-    // job off Waiting on the raws — the very thing the hold exists to stop.
-    if (held) releaseHoldKey = waitingHoldKey(projectId);
-  }
+  const deskKey: string = editorKey;
+  const whoAsks = { editorKey: deskKey, office: caller.office };
+  const fastBlock = startBlock(preFacts, whoAsks);
+  if (fastBlock) return { ok: false, message: startBlockWords(fastBlock, preFacts, whoAsks) };
 
   const onBehalf = caller.office;
-  const who = nameOf(editorKey);
-  let outcome:
+  const who = nameOf(deskKey);
+  type Outcome =
     | { kind: "replay" }
-    | { kind: "noop" }
-    | { kind: "started"; event: "START" | "RESUME"; switchedFrom: { projectId: string; street: string } | null; quietStart: boolean };
-  try {
-    outcome = await prisma.$transaction(async (tx) => {
-      await lockAdvisory(tx, `editor-desk:${editorKey}`);
+    | { kind: "noop"; street: string }
+    | { kind: "refused"; message: string }
+    | { kind: "started"; street: string; event: "START" | "RESUME"; switchedFrom: { projectId: string; street: string } | null; quietStart: boolean };
+  const runSwitch = () =>
+    prisma.$transaction(async (tx): Promise<Outcome> => {
+      await lockAdvisory(tx, `editor-desk:${deskKey}`);
       if (requestId && (await tx.editorWorkEvent.findUnique({ where: { requestId }, select: { id: true } }))) {
         return { kind: "replay" as const };
       }
+      // THE AUTHORITY (R01): lock the job's rows, read the rule's facts again
+      // under those locks, and refuse BEFORE anything is paused, closed or
+      // logged. A cancel, reassign or hold that committed while this click was
+      // in flight is seen here; one still to come waits for this transaction
+      // and closes (or pauses) what it wrote, at the writer.
+      const snap = await lockStartRows(tx, projectId, input.outputId);
+      const facts = await startFacts(tx, snap, input.outputId);
+      const jobNow = startBlock(facts, null);
+      if (jobNow) return { kind: "refused" as const, message: startBlockWords(jobNow, facts, null) };
+      // The office's default was read before the lock. If the card changed
+      // hands since, a Start "for the card's editor" would start somebody the
+      // office did not see on the screen — say so instead of guessing.
+      if (caller.office && !input.forEditorKey && defaultEditorOf(facts) !== deskKey) {
+        return { kind: "refused" as const, message: `${facts.street} was just reassigned — refresh the page and try again.` };
+      }
+      const block = startBlock(facts, whoAsks);
+      if (block) return { kind: "refused" as const, message: startBlockWords(block, facts, whoAsks) };
+      const street = facts.street;
+      // A job the office is holding in Waiting is the office's to move on (Sep
+      // 11): startBlock refused the editor above; the office's start is its
+      // "move it on", which ends the hold — released HERE, inside the switch
+      // (review fix, Sep 25: deleted up front, a start that then failed had
+      // already dropped the hold). A Waiting with no hold (a board drag back
+      // to Scheduled) moves on for anybody holding the job, as it always has.
+      const onWaiting = facts.status === "BOOKED" || facts.status === "SCHEDULED";
+      const { waitingHoldKey } = await import("@/lib/queueWaiting");
+      const releaseHoldKey = onWaiting && facts.waitingHold ? waitingHoldKey(projectId) : null;
+      const editorKey = deskKey;
       const now = new Date();
       const cur = await tx.editorWorkItem.findUnique({ where: { activeFor: editorKey } });
       if (cur && cur.projectId === projectId) {
@@ -256,7 +427,7 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
         if (input.outputId !== undefined && (input.outputId ?? null) !== cur.outputId) {
           await tx.editorWorkItem.update({ where: { id: cur.id }, data: { outputId: input.outputId ?? null } });
         }
-        return { kind: "noop" as const };
+        return { kind: "noop" as const, street };
       }
 
       let switchedFrom: { projectId: string; street: string } | null = null;
@@ -315,8 +486,16 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
       // REVISION keep their words: a revision can be active without the job
       // stopping being a revision (the old pill wrote EDITING over REVISION and
       // the sweep put it straight back).
-      if (project.status === "SHOT" || onWaiting) {
-        await tx.project.update({ where: { id: projectId }, data: { status: "EDITING", statusPinnedAt: null } });
+      // From the status READ UNDER THE LOCK, and conditional on it (R01): the
+      // old write was by id alone, from a snapshot taken before the switch,
+      // and put EDITING over a cancel, a hold or a hand-in that landed in
+      // between. The row lock already holds the status still; the condition
+      // is belt and braces.
+      if (facts.status === "SHOT" || onWaiting) {
+        await tx.project.updateMany({
+          where: { id: projectId, status: facts.status as ProjectStatus },
+          data: { status: "EDITING", statusPinnedAt: null },
+        });
       }
       if (releaseHoldKey) await tx.appSetting.deleteMany({ where: { key: releaseHoldKey } });
       // The card follows the editor's start (OPEN → IN_PROGRESS, as the old
@@ -339,8 +518,19 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
           body: onBehalf ? `${caller.actor.name} ${verb} editing for ${who} (office correction)${tail}.` : `${who} ${verb} editing${tail}.`,
         },
       });
-      return { kind: "started" as const, event, switchedFrom, quietStart };
-    });
+      return { kind: "started" as const, street, event, switchedFrom, quietStart };
+    }, SWITCH_TX);
+  let outcome: Outcome;
+  try {
+    // ONE retry on a deadlock / serialization failure (R01): Postgres rolled
+    // the whole switch back, nothing was written, so the same click is simply
+    // judged again. A second failure is reported like any other.
+    try {
+      outcome = await runSwitch();
+    } catch (e) {
+      if (!isLockConflict(e)) throw e;
+      outcome = await runSwitch();
+    }
   } catch (e) {
     if (isP2002(e, "requestId") && requestId && (await prisma.editorWorkEvent.count({ where: { requestId } }))) {
       return { ok: true, message: "Already recorded.", replay: true };
@@ -351,7 +541,13 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
   }
 
   if (outcome.kind === "replay") return { ok: true, message: "Already recorded.", replay: true };
-  if (outcome.kind === "noop") return { ok: true, message: onBehalf ? `${who} is already on ${street}.` : `You're already on ${street}.` };
+  // Refused under the lock: nothing was paused, closed or logged, and nobody
+  // is told somebody started — the page just needs to catch up.
+  if (outcome.kind === "refused") {
+    await revalidate(projectId);
+    return { ok: false, message: outcome.message };
+  }
+  if (outcome.kind === "noop") return { ok: true, message: onBehalf ? `${who} is already on ${outcome.street}.` : `You're already on ${outcome.street}.` };
 
   // The office hears about a START, not a resume — the same dedupe intent the
   // pill's bell always had ("started editing" is news; picking it back up is not).
@@ -360,7 +556,7 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
       const { notifyInApp } = await import("@/lib/notify");
       await notifyInApp({
         kind: "edit_started",
-        title: onBehalf ? `${caller.actor.name} started ${street} for ${who}` : `${who} started editing ${street}`,
+        title: onBehalf ? `${caller.actor.name} started ${outcome.street} for ${who}` : `${who} started editing ${outcome.street}`,
         href: `/edit/${projectId}`,
         targets: [{ roles: ["OWNER", "ADMIN"] }],
       });
@@ -371,8 +567,8 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
   return {
     ok: true,
     message: onBehalf
-      ? `${who} is now editing ${street} (recorded as your correction).${paused}`
-      : `${outcome.event === "RESUME" ? "Resumed" : "Started"} ${street}.${paused}`,
+      ? `${who} is now editing ${outcome.street} (recorded as your correction).${paused}`
+      : `${outcome.event === "RESUME" ? "Resumed" : "Started"} ${outcome.street}.${paused}`,
   };
 }
 
@@ -531,14 +727,28 @@ function closeScope(opts: { forOutputId?: string | null; startedBefore?: Date | 
 async function closeForEditors(
   projectId: string,
   keys: string[],
-  opts: { reason: CloseReason; actor?: WorkActor; detail?: string | null; forOutputId?: string | null; startedBefore?: Date | null },
+  opts: {
+    reason: CloseReason; actor?: WorkActor; detail?: string | null; forOutputId?: string | null; startedBefore?: Date | null;
+    /** closeGhostWork only (R01, Sep 28): judge "not theirs any more" again
+     *  under the desk locks. A reassign that flips back (Kim → John → Kim)
+     *  must not close the stretch Kim legitimately restarted in between.
+     *  closeActiveWork never sets it — it closes HOLDERS on purpose (a cancel,
+     *  a delivery, a hand-in, a put-back). */
+    onlyGhosts?: boolean;
+  },
 ): Promise<number> {
   return prisma.$transaction(async (tx) => {
     // Sorted, so two closers never take the same two locks in opposite orders.
     for (const k of [...keys].sort()) await lockAdvisory(tx, `editor-desk:${k}`);
+    let scope = keys;
+    if (opts.onlyGhosts) {
+      const holders = (await holdersFor([projectId], tx)).get(projectId) ?? new Set<string>();
+      scope = keys.filter((k) => !holders.has(k));
+      if (scope.length === 0) return 0;
+    }
     const items = await tx.editorWorkItem.findMany({
       where: {
-        projectId, editorKey: { in: keys }, state: { not: WORK_CLOSED },
+        projectId, editorKey: { in: scope }, state: { not: WORK_CLOSED },
         ...closeScope(opts),
       },
       select: { id: true, editorKey: true, projectId: true, outputId: true, state: true },
@@ -553,6 +763,12 @@ async function closeForEditors(
  * calls this too (mintEditTask), so a path that moved work without knowing
  * about this layer is caught within the hour, and the readers below already
  * leave a ghost out of every "who is on it" answer in the meantime.
+ *
+ * Every writer that takes a job away from an editor calls this AFTER its own
+ * write has committed (R01, Sep 28): a Start that committed a moment before
+ * the write is invisible to any read taken earlier, so only a read taken
+ * after the write can close it. The read below is the cheap "anything open?"
+ * — the real "not theirs any more" is judged again under the desk locks.
  */
 export async function closeGhostWork(
   projectId: string,
@@ -564,9 +780,70 @@ export async function closeGhostWork(
     const holders = (await holdersFor([projectId])).get(projectId) ?? new Set<string>();
     const ghosts = [...new Set(open.map((o) => o.editorKey))].filter((k) => !holders.has(k));
     if (ghosts.length === 0) return 0;
-    return await closeForEditors(projectId, ghosts, { reason: opts.reason ?? "REASSIGNED", actor: opts.actor, detail: opts.detail });
+    return await closeForEditors(projectId, ghosts, { reason: opts.reason ?? "REASSIGNED", actor: opts.actor, detail: opts.detail, onlyGhosts: true });
   } catch (e) {
     console.error("[editorWork] ghost close failed", projectId, e);
+    return 0;
+  }
+}
+
+/**
+ * THE HOURLY CATCH-ALL for ghosts (R01, Sep 28). Several paths close a card
+ * without knowing about this layer — the Review Room approval, the per-lane
+ * and straggler closes in reviewCuts, the evidence close, a reply that ends a
+ * revision — and mintEditTask's own ghost close only runs for SHOT / EDITING /
+ * REVIEW jobs that still have no cut, i.e. never for most of the jobs those
+ * paths touch. A ghost holds its editor's one ACTIVE slot, so it must not wait
+ * for a card refresh that is never coming. One pass over the (few) projects
+ * with open work; a legitimate holder's work is never touched. Never throws.
+ */
+export async function closeGhostWorkEverywhere(): Promise<number> {
+  try {
+    const open = await prisma.editorWorkItem.findMany({ where: { state: { not: WORK_CLOSED } }, select: { projectId: true }, distinct: ["projectId"] });
+    let n = 0;
+    for (const o of open) {
+      n += await closeGhostWork(o.projectId, { reason: "UNASSIGNED", detail: "no open card on this job is theirs any more (hourly check)" });
+    }
+    return n;
+  } catch (e) {
+    console.error("[editorWork] ghost sweep failed", e);
+    return 0;
+  }
+}
+
+/**
+ * The job went On hold (R01 default, Sep 28 — Jordan to confirm): whoever is
+ * actively editing it is PAUSED, recorded as the person who put it on hold.
+ * Paused, not closed — the work is still theirs, and they press Resume when
+ * the job comes off hold (a Start is refused while it is on hold). Called
+ * AFTER the hold is written, so a Start that committed just before it is
+ * paused too; one that comes after is refused under its lock. Never throws.
+ */
+export async function pauseActiveWorkOnHold(projectId: string, opts: { actor: WorkActor; detail: string }): Promise<number> {
+  try {
+    const on = await prisma.editorWorkItem.findMany({ where: { projectId, state: WORK_ACTIVE }, select: { editorKey: true } });
+    if (on.length === 0) return 0;
+    const keys = [...new Set(on.map((o) => o.editorKey))].sort();
+    const n = await prisma.$transaction(async (tx) => {
+      for (const k of keys) await lockAdvisory(tx, `editor-desk:${k}`);
+      const items = await tx.editorWorkItem.findMany({ where: { projectId, editorKey: { in: keys }, state: WORK_ACTIVE } });
+      const now = new Date();
+      for (const it of items) {
+        await tx.editorWorkItem.update({ where: { id: it.id }, data: { state: WORK_PAUSED, activeFor: null, pausedAt: now, lastEventAt: now } });
+        await tx.editorWorkEvent.create({
+          data: {
+            itemId: it.id, editorKey: it.editorKey, projectId, outputId: it.outputId, kind: "PAUSE", at: now,
+            ...actorCols(opts.actor, opts.actor.role !== "SYSTEM" && opts.actor.role !== "EDITOR"), reason: opts.detail.slice(0, 200),
+          },
+        });
+        await tx.activity.create({ data: { projectId, type: "SYSTEM", body: `${nameOf(it.editorKey)}'s editing paused — ${opts.detail}.` } });
+      }
+      return items.length;
+    });
+    if (n > 0) await revalidate(projectId);
+    return n;
+  } catch (e) {
+    console.error("[editorWork] on-hold pause failed", projectId, e);
     return 0;
   }
 }
@@ -601,13 +878,32 @@ export async function confirmCurrentWork(input: { projectId: string | null; requ
     const r = await prisma.$transaction(async (tx) => {
       await lockAdvisory(tx, `editor-desk:${editorKey}`);
       if (requestId && (await tx.editorWorkEvent.findUnique({ where: { requestId }, select: { id: true } }))) return "replay" as const;
-      const now = new Date();
+      // THE SECOND ACTIVE WRITER, under the same lock as startEditing (R01,
+      // Sep 28). The claims above were read before this transaction; a cancel
+      // or reassign of the picked job since then used to be written over —
+      // her current job paused, ACTIVE on a job that was no longer hers. Lock
+      // the picked job's rows in the switch's order and judge it again by the
+      // same rule, BEFORE the pause below.
+      let pickedStreet: string | null = null;
+      if (input.projectId) {
+        const snap = await lockStartRows(tx, input.projectId);
+        const facts = await startFacts(tx, snap, null);
+        const me = { editorKey, office: false };
+        const block = startBlock(facts, me);
+        if (block) return { refused: startBlockWords(block, facts, me) };
+        pickedStreet = facts.street;
+      }
       // Re-derive inside the lock: a claim somebody confirmed in another tab is
-      // no longer a claim (it has a row now).
-      const withRows = new Set(
-        (await tx.editorWorkItem.findMany({ where: { projectId: { in: claims.map((c) => c.projectId) } }, select: { projectId: true } })).map((x) => x.projectId),
-      );
-      const live = claims.filter((c) => !withRows.has(c.projectId));
+      // no longer a claim (it has a row now) — and one that stopped being hers
+      // (reassigned, cancelled, moved off In editing) is no longer hers to
+      // mark at all (R01: the claim's own predicate, read through tx, not the
+      // list read before the transaction).
+      const stillClaims = new Set((await unconfirmedClaimsFor(editorKey, tx)).map((c) => c.projectId));
+      if (input.projectId && !stillClaims.has(input.projectId)) {
+        return { refused: `${pickedStreet ?? "That job"} changed since this list loaded — refresh the page.` };
+      }
+      const now = new Date();
+      const live = claims.filter((c) => stillClaims.has(c.projectId));
       if (input.projectId && live.some((c) => c.projectId === input.projectId)) {
         const cur = await tx.editorWorkItem.findUnique({ where: { activeFor: editorKey } });
         if (cur) {
@@ -640,8 +936,13 @@ export async function confirmCurrentWork(input: { projectId: string | null; requ
         });
       }
       return "done" as const;
-    });
+    }, SWITCH_TX);
     if (r === "replay") return { ok: true, message: "Already recorded.", replay: true };
+    if (typeof r === "object") {
+      // Refused under the lock: nothing paused, nothing marked.
+      if (input.projectId) await revalidate(input.projectId);
+      return { ok: false, message: r.refused };
+    }
   } catch (e) {
     if (isP2002(e, "requestId")) return { ok: true, message: "Already recorded.", replay: true };
     if (isP2002(e)) return { ok: false, message: REFRESH_MSG };
@@ -892,7 +1193,7 @@ export async function workBarFor(
   projectId: string,
   viewer: { role: string; realRole: string; editorKey: string | null; impersonating: boolean } | null,
 ): Promise<WorkBar | null> {
-  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, status: true } });
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true, status: true, statusPinnedAt: true } });
   if (!project || project.status === "CANCELLED") return null;
   const { authEnforced } = await import("@/lib/auth/guards");
   const mode: WorkBar["mode"] = !viewer
@@ -901,10 +1202,12 @@ export async function workBarFor(
     : viewer.realRole === "OWNER" || viewer.realRole === "ADMIN" ? "office"
     : viewer.realRole === "EDITOR" && viewer.editorKey && WORK_EDITOR_KEYS.includes(viewer.editorKey) ? "editor"
     : "view";
-  const [work, holders, card, outs] = await Promise.all([
+  // The Start rule's own facts (R01, Sep 28): the bar greys on exactly what
+  // startEditing refuses — On hold, taken off the Editing Room, the office's
+  // Waiting (its hold or its pinned stage), not theirs — never a second copy.
+  const [work, facts, outs] = await Promise.all([
     workStateFor([projectId]),
-    holdersFor([projectId]),
-    editCardOf(projectId),
+    startFacts(prisma, { ...project, status: project.status as string }, null),
     prisma.deliverableOutput.findMany({
       where: { projectId, category: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, waivedAt: null, approvedSubmissionId: null },
       orderBy: [{ deliverableId: "asc" }, { slot: "asc" }],
@@ -912,7 +1215,8 @@ export async function workBarFor(
     }),
   ]);
   const people = work.get(projectId) ?? { active: [], paused: [] };
-  const held = holders.get(projectId) ?? new Set<string>();
+  const held = facts.holders;
+  const card = facts.cardKey ? { assignedKey: facts.cardKey } : null;
   const key = mode === "editor" ? viewer!.editorKey! : null;
   const mineRow = key ? await prisma.editorWorkItem.findUnique({ where: { editorKey_projectId: { editorKey: key, projectId } } }) : null;
   const mineLive = mineRow && mineRow.state !== WORK_CLOSED && (people.active.concat(people.paused).some((p) => p.editorKey === key)) ? mineRow : null;
@@ -924,14 +1228,22 @@ export async function workBarFor(
       elsewhere = { projectId: cur.projectId, street: streetOf(p?.title) };
     }
   }
-  let blocked: string | null = null;
-  if (mode === "editor" && key && !held.has(key)) {
-    const owner = card?.assignedKey ? nameOf(card.assignedKey) : null;
-    blocked = owner ? `Assigned to ${owner} — not yours to start.` : "Not assigned to you yet — the office hands it over.";
-  } else if (mode === "editor" && (project.status === "BOOKED" || project.status === "SCHEDULED")) {
-    const { loadWaitingHolds } = await import("@/lib/queueWaiting");
-    if ((await loadWaitingHolds([projectId])).has(projectId)) blocked = "Held in Waiting by the office — it can't be started until the footage is in.";
-  }
+  // The bar's words for each refusal: shorter than the server's (the street is
+  // the page's own heading), same meaning.
+  const BAR_WORDS: Record<StartBlock, string> = {
+    GONE: "That job no longer exists.",
+    CANCELLED: "That job is cancelled — there is nothing to edit.",
+    ON_HOLD: "On hold — it can't be started until the office takes it off hold.",
+    REMOVED: "Taken off the Editing Room by the office — bring it back before starting it.",
+    NOT_HOLDER: card?.assignedKey ? `Assigned to ${nameOf(card.assignedKey)} — not yours to start.` : "Not assigned to you yet — the office hands it over.",
+    OUTPUT_GONE: "That video isn't on this job any more — refresh the page.",
+    WAITING: "Held in Waiting by the office — it can't be started until the footage is in.",
+  };
+  const barBlock = mode === "editor" && key ? startBlock(facts, { editorKey: key, office: false }) : null;
+  const blocked: string | null = barBlock ? BAR_WORDS[barBlock] : null;
+  // The office's correction is refused on the job-level reasons too (On hold,
+  // taken off the Editing Room) — the office moves the job first.
+  const officeBlocked = mode === "office" && !!startBlock(facts, null);
   const assigneeKey = card?.assignedKey && WORK_EDITOR_KEYS.includes(card.assignedKey) ? card.assignedKey : held.size === 1 ? [...held][0] : null;
   return {
     projectId,
@@ -944,7 +1256,7 @@ export async function workBarFor(
     },
     elsewhere,
     people,
-    canStart: mode === "editor" ? !blocked : mode === "office" ? !!assigneeKey : false,
+    canStart: mode === "editor" ? !blocked : mode === "office" ? !!assigneeKey && !officeBlocked : false,
     blocked,
     assignee: assigneeKey ? { key: assigneeKey, name: nameOf(assigneeKey) } : null,
     outputs: outs.length > 1 ? outs.map((o) => ({ id: o.id, title: o.title?.trim() || `Video ${o.slot}` })) : [],

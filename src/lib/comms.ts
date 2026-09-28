@@ -739,6 +739,16 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       data: { ...data, description, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), flaggedBy: null, flaggedAt: null, status: "OPEN", completedAt: null },
     });
     taskId = existing.id;
+    // A re-raise that ROUTED an open ask to a different editor (the rules or
+    // the pin moved since it was first raised) took the job from whoever held
+    // it: close their started work AFTER this write (R01, Sep 28 2026) — a
+    // Start that landed a moment before it would otherwise stay ACTIVE on a
+    // job that is no longer theirs. Recomputed under the desk lock; closes
+    // nothing when they still hold the job another way. Never throws.
+    if (wasAlreadyOpen && !existing.assignedManually && existing.assignedKey !== data.assignedKey) {
+      const { closeGhostWork } = await import("@/lib/editorWork");
+      await closeGhostWork(project.id, { reason: "REASSIGNED", detail: "the client's revision was routed to another editor" });
+    }
   }
   if (!taskId) return none;
 
@@ -985,6 +995,14 @@ export async function resolveRevision(projectId: string): Promise<void> {
   // actually reaches DELIVERED (projectStatus.ts).
   if (landing === "DELIVERED" || (!landing && project?.status === "DELIVERED")) {
     await closeObsoleteTasks(projectId, "DELIVERED");
+  } else {
+    // A job that does NOT land on Delivered keeps its other cards — but the
+    // revision holder's claim on it ended with the ask (R01, Sep 28 2026):
+    // an editor who held the job only through this revision, and had pressed
+    // Start, must not stay ACTIVE on it. After the close above; recomputed
+    // under the desk lock, so the edit card's editor keeps theirs.
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    await closeGhostWork(projectId, { reason: "UNASSIGNED", detail: "the revision was resolved" });
   }
   // RESOLVED IS NOT SENT (audit WF-03, Sep 18 — Jordan: "Keep the return-to-
   // client action visible after internal approval"). Closing the ask ends OUR
@@ -1178,6 +1196,12 @@ export async function resolveRevisionForTask(
       },
     })
     .catch(() => {}); // the row is already closed — the note is the record, not the work
+  // The job is held, but THIS ask left the open set (the Complete button, a
+  // dismissal, the last checklist tick all come through here): an editor who
+  // held the job only through it is not on it any more (R01, Sep 28 2026).
+  // After the row's own close; recomputed under the desk lock. Never throws.
+  const { closeGhostWork } = await import("@/lib/editorWork");
+  await closeGhostWork(projectId, { reason: "UNASSIGNED", detail: `the revision ${verb}` });
   return { resolved: false, otherOpen };
 }
 

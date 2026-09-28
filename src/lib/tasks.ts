@@ -1652,19 +1652,42 @@ export async function closeObsoleteTasks(
       const { releaseWaitingHold } = await import("@/lib/queueWaiting");
       await releaseWaitingHold(projectId);
     } catch { /* hygiene only — never blocks the close */ }
-    // Nobody is still "editing" a finished or cancelled job (§7.1). Every
-    // delivery and cancel path converges here — the board, the pill, the
-    // override, the sweep, the janitor, Aryeo's cancel — so this one line
-    // closes the editor's active/paused work for all of them, as the hub.
-    // closeActiveWork never throws.
+  }
+  // Nobody is still "editing" a finished or cancelled job (§7.1). Every
+  // delivery and cancel path converges here — the board, the pill, the
+  // override, the sweep, the janitor, Aryeo's cancel — so this one call
+  // closes the editor's active/paused work for all of them, as the hub. …and
+  // the reopened work's clocks are met (A52): the next time this job comes
+  // back it starts a clock of its own, never inherits this one's passed date.
+  // Neither ever throws.
+  //
+  // AFTER THE CARDS CLOSE, NOT BEFORE (R01, Sep 28 2026). This ran first, and
+  // a DELIVERED job is not a refused Start (extra-shoot and taken-back work
+  // lives on delivered jobs) — so an editor who pressed Start in the moment
+  // between this close and the edit card's completion below got an ACTIVE
+  // stretch on a delivered job that nothing would ever close. Closing work
+  // last is the only fence that case has: a Start before the card completes
+  // is closed here; one after it finds nothing of theirs and is refused.
+  // In a `finally`, so a card close that throws still closes the work, as it
+  // did when this ran first.
+  if (projectStatus !== "CANCELLED" && projectStatus !== "DELIVERED") return 0;
+  try {
+    return await closeObsoleteTaskRows(projectId, projectStatus, humanKept, opts);
+  } finally {
     const { closeActiveWork } = await import("@/lib/editorWork");
     await closeActiveWork(projectId, { reason: projectStatus === "DELIVERED" ? "PROJECT_DELIVERED" : "PROJECT_CANCELLED" });
-    // …and the reopened work's clocks are met (A52): the next time this job
-    // comes back it starts a clock of its own, never inherits this one's
-    // passed date. Checks the job really is settled; never throws.
     const { settleReopenedClocks } = await import("@/lib/revisionBrief");
     await settleReopenedClocks(projectId);
   }
+}
+
+/** closeObsoleteTasks' card closes, which must all land BEFORE the work close. */
+async function closeObsoleteTaskRows(
+  projectId: string,
+  projectStatus: "CANCELLED" | "DELIVERED",
+  humanKept: { assignedManually?: boolean },
+  opts: { sweep?: boolean },
+): Promise<number> {
   if (projectStatus === "CANCELLED") {
     const r = await prisma.smartTask.updateMany({
       where: { projectId, status: { notIn: ["COMPLETED", "CANCELLED"] }, ...humanKept },
@@ -1822,7 +1845,7 @@ export async function closeObsoleteTasks(
 // hour from generateTasksForActiveProjects (one indexed query when there is
 // nothing to do); exported so the daily cron can own it instead if preferred.
 // ---------------------------------------------------------------------------
-export async function closeTasksOnInactiveProjects(): Promise<{ delivered: number; cancelled: number; onHold: number; chasesReleased: number }> {
+export async function closeTasksOnInactiveProjects(): Promise<{ delivered: number; cancelled: number; onHold: number; chasesReleased: number; ghostsClosed: number }> {
   const stray = await prisma.smartTask.findMany({
     where: {
       status: { notIn: ["COMPLETED", "CANCELLED"] },
@@ -1858,7 +1881,7 @@ export async function closeTasksOnInactiveProjects(): Promise<{ delivered: numbe
     },
     select: { id: true, projectId: true, project: { select: { status: true } } },
   });
-  const out = { delivered: 0, cancelled: 0, onHold: 0, chasesReleased: 0 };
+  const out = { delivered: 0, cancelled: 0, onHold: 0, chasesReleased: 0, ghostsClosed: 0 };
   const byProject = new Map<string, { status: string; ids: string[] }>();
   for (const t of stray) {
     if (!t.projectId || !t.project) continue;
@@ -1931,6 +1954,16 @@ export async function closeTasksOnInactiveProjects(): Promise<{ delivered: numbe
   // the next sweep re-reads readiness and re-arms a fresh chase if it is still
   // blocked.
   out.chasesReleased = await releaseChasesOffTheEditingLane();
+
+  // WORK NOBODY HOLDS ANY MORE (R01, Sep 28 2026). A card can leave an
+  // editor's hands through a path that knows nothing about the editor-work
+  // layer — the Review Room approval, a lane close in reviewCuts, the
+  // evidence close, a reply that ends a revision — and the only other ghost
+  // close (mintEditTask's) never runs once a job has a cut or is delivered.
+  // A ghost holds its editor's one ACTIVE slot, so it is closed here, once an
+  // hour, whatever closed the card. Holders are never touched. Never throws.
+  const { closeGhostWorkEverywhere } = await import("@/lib/editorWork");
+  out.ghostsClosed = await closeGhostWorkEverywhere();
 
   return out;
 }
@@ -3155,6 +3188,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
   if (existing) {
     if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return;
     const refreshedDue = late && existing.dueAt ? existing.dueAt : dueAt;
+    // Read BEFORE the card update below — so it can only ever decide the
+    // route, never whether to close work (R01, Sep 28: see the close below).
     // STARTED WORK KEEPS ITS EDITOR (§7.1). An editor who pressed Start (or
     // paused) holds open work on this job, and the rules must not route the
     // card out from under them. This used to be done by stamping the card
@@ -3192,8 +3227,19 @@ export async function mintEditTask(projectId: string): Promise<void> {
     // is not any more — close their active/paused work as REASSIGNED now,
     // not an hour from now on the next refresh. The ghost close at the top of
     // this function ran while they still held the card, so it kept them.
-    if ("assignedKey" in data && data.assignedKey !== existing.assignedKey && startedByHolder) {
-      await closeGhostWork(projectId, { reason: "REASSIGNED", detail: `the office picked ${editorName} on the project page` });
+    //
+    // WHENEVER the card changed hands (R01, Sep 28 2026) — no longer only
+    // when startedByHolder said so. That count is read before this update,
+    // and a Start can commit in between (its lock on the card is what this
+    // update then waits for): the old gate saw "nobody started", skipped the
+    // close, and left Kim ACTIVE on a job the card now gave to John. The
+    // close is recomputed under the desk lock, so a card that did not in
+    // fact leave anybody closes nothing.
+    if ("assignedKey" in data && data.assignedKey !== existing.assignedKey) {
+      await closeGhostWork(projectId, {
+        reason: "REASSIGNED",
+        detail: pin.pinned ? `the office picked ${editorName} on the project page` : `routed to ${editorName} by the editor routing rules`,
+      });
     }
     return;
   }

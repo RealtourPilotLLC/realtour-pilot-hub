@@ -25,6 +25,10 @@
 //   §7  A63  submit / reassign / remove / deliver / cancel / put-back / ghost
 //   §8  A58  no automatic path starts or resumes work
 //   §9  A64  every reader agrees; a failed read says so
+//   §S  R01 (Sep 28) the one Start rule: pinned Waiting / On hold / taken
+//            off the Editing Room refused (bar + desk agree), On hold pauses,
+//            the writers that now close behind them, the hourly ghost sweep.
+//            The races themselves: realpg-start-eligibility.ts.
 //
 // THE CLOCK IS PINNED to Tuesday Sep 22 2026, 10:00 ET, and runs forward from
 // there: nothing here may depend on the day this is run (three drills broke on
@@ -733,6 +737,138 @@ async function main() {
     const liveActive = await prisma.project.count({ where: { id: { in: activeIds }, status: { notIn: ["DELIVERED", "CANCELLED"] } } });
     const editingStage = await prisma.project.count({ where: { status: "EDITING" } });
     c.ok("#14 the dial's 'being edited now' is the Working-now count, not the EDITING stage", dials.video.editingNow === liveActive && liveActive !== editingStage, `now ${dials.video.editingNow} · active ${liveActive} · EDITING stage ${editingStage}`);
+  }
+
+  // =========================================================================
+  c.head("§S · R01 (Sep 28): one Start rule, judged under lock — the refusals and the closes behind a write");
+  // =========================================================================
+  // The races themselves need two sessions: scripts/_drill/realpg-start-
+  // eligibility.ts. Here, on PGlite's one session, the RULE: every new
+  // refusal says why, touches nothing, rings nobody — and the job page's bar
+  // and the editor's desk agree with it. Plus the writers that now close work
+  // behind them, and the hourly catch-all.
+  {
+    const vb = (u: { id: string }, key: string) => ({ role: "EDITOR", realRole: "EDITOR", editorKey: key, impersonating: false, id: u.id });
+    const officeView = { role: "OWNER", realRole: "OWNER", editorKey: null, impersonating: false };
+    const onlyActive = async () => (await activeOf("kim"))[0] ?? null;
+    // Kim's current job, so every refusal below can prove it left her alone.
+    await as(kim);
+    const Home = await mkJob({ street: "40 Home Base Rd", status: "SHOT", editor: "kim" });
+    await work.startEditing({ projectId: Home.id, requestId: "r01-home" });
+    const home0 = await onlyActive();
+    const untouched = async () => {
+      const h = await item("kim", Home.id);
+      return h?.state === "ACTIVE" && h.activeSince?.getTime() === home0?.activeSince?.getTime() && (await events({ projectId: Home.id, kind: "AUTO_PAUSE" })) === 0;
+    };
+    const bells0 = await bells();
+
+    // 1 · the office's PINNED Waiting (override dialog) is a hold: the editor
+    // is refused, the desk and the bar agree, the office's Start moves it on.
+    const Pw = await mkJob({ street: "41 Pinned Waiting Rd", status: "SCHEDULED", editor: "kim" });
+    await prisma.project.update({ where: { id: Pw.id }, data: { statusPinnedAt: new Date(Date.now() - DAY), shootDate: new Date(Date.now() - DAY) } });
+    const sPw = await work.startEditing({ projectId: Pw.id, requestId: "r01-kim-Pw" });
+    c.ok("a Waiting the office PINNED (no hold marker) refuses the editor, in the hold's words", !sPw.ok && /held in Waiting by the office/.test(sPw.message), sPw.message);
+    const barPw = await work.workBarFor(Pw.id, vb(kim, "kim"));
+    const rowPw = await rowOf(Pw.id);
+    c.ok("…the job page's bar says the same and offers no Start; the queue row is held, so the desk skips it",
+      barPw?.canStart === false && /^Held in Waiting by the office/.test(barPw.blocked ?? "") && rowPw?.held === true,
+      `bar: ${barPw?.blocked} · row held=${rowPw?.held}`);
+    c.ok("…and her current job is untouched, no bell", (await untouched()) && (await bells()) === bells0);
+    await as(jordan);
+    const oPw = await work.startEditing({ projectId: Pw.id, forEditorKey: "kim", requestId: "r01-office-Pw" });
+    const pwNow = await prisma.project.findUniqueOrThrow({ where: { id: Pw.id }, select: { status: true, statusPinnedAt: true } });
+    c.ok("the office's Start is its \"move it on\": EDITING, the pin cleared", oPw.ok && pwNow.status === "EDITING" && pwNow.statusPinnedAt === null, oPw.message);
+    await as(kim);
+    await work.startEditing({ projectId: Home.id, requestId: "r01-home-back" });
+    const home1 = await onlyActive();
+
+    // 2 · ON HOLD (default: refused for everyone; putting a job on hold
+    // pauses whoever is actively editing it).
+    const Oh = await mkJob({ street: "42 On Hold Ln", status: "SHOT", editor: "kim" });
+    await work.startEditing({ projectId: Oh.id, requestId: "r01-kim-Oh" });
+    await as(jordan);
+    await appActions.moveProjectStatus(Oh.id, "ON_HOLD");
+    const ohItem = await item("kim", Oh.id);
+    c.ok("the board's On hold PAUSES the editor on it (hers to Resume later), recorded as the office, with a timeline line",
+      ohItem?.state === "PAUSED" && (await events({ projectId: Oh.id, kind: "PAUSE", onBehalf: true, actorName: "Jordan Spackman" })) === 1 && (await lines(Oh.id, "Kim's editing paused — Jordan Spackman put the job on hold.")) === 1,
+      `${ohItem?.state}`);
+    const oOh = await work.startEditing({ projectId: Oh.id, forEditorKey: "kim", requestId: "r01-office-Oh" });
+    await as(kim);
+    const kOh = await work.startEditing({ projectId: Oh.id, requestId: "r01-kim-Oh-resume" });
+    const barOh = await work.workBarFor(Oh.id, vb(kim, "kim"));
+    const barOhOffice = await work.workBarFor(Oh.id, officeView);
+    c.ok("a Start on an On-hold job is refused for the editor AND the office", !kOh.ok && !oOh.ok && /is on hold — it can't be started until the office takes it off hold\./.test(kOh.message) && /is on hold/.test(oOh.message), `${kOh.message} / ${oOh.message}`);
+    c.ok("…the bar agrees for both (editor: the words, no Start; office: no correction)", barOh?.canStart === false && /^On hold/.test(barOh.blocked ?? "") && barOhOffice?.canStart === false, barOh?.blocked ?? "");
+    await as(jordan);
+    await appActions.moveProjectStatus(Oh.id, "EDITING");
+    await as(kim);
+    const rOh = await work.startEditing({ projectId: Oh.id, requestId: "r01-kim-Oh-resume-2" });
+    c.ok("off hold, her Resume works (RESUME, the same stretch)", rOh.ok && (await events({ projectId: Oh.id, kind: "RESUME" })) === 1, rOh.message);
+    await work.startEditing({ projectId: Home.id, requestId: "r01-home-back-2" });
+
+    // 3 · TAKEN OFF THE EDITING ROOM (default: refused until brought back) —
+    // even for an editor who still holds a video revision on it.
+    const Rm = await mkJob({ street: "43 Removed Rd", status: "SHOT", editor: "kim" });
+    await prisma.smartTask.create({ data: { taskType: "revision", title: "Video revision — 43 Removed Rd", status: "OPEN", assignedKey: "kim", projectId: Rm.id, clientId: client.id } });
+    await as(jordan);
+    await editing.removeFromEditorQueue(Rm.id, "r01 drill");
+    await as(kim);
+    const home2 = await onlyActive();
+    const sRm = await work.startEditing({ projectId: Rm.id, requestId: "r01-kim-Rm" });
+    const barRm = await work.workBarFor(Rm.id, vb(kim, "kim"));
+    c.ok("a job taken off the Editing Room refuses her Start (she still holds its revision), in the office's words",
+      !sRm.ok && /was taken off the Editing Room by the office — bring it back before starting it\./.test(sRm.message) && (await item("kim", Rm.id)) === null, sRm.message);
+    c.ok("…the bar agrees, and her current job is untouched", barRm?.canStart === false && /^Taken off the Editing Room/.test(barRm.blocked ?? "") && (await onlyActive())?.activeSince?.getTime() === home2?.activeSince?.getTime(), barRm?.blocked ?? "");
+    await as(jordan);
+    await editing.restoreToEditorQueue(Rm.id);
+    await as(kim);
+    const sRm2 = await work.startEditing({ projectId: Rm.id, requestId: "r01-kim-Rm-2" });
+    c.ok("brought back: the same Start is taken", sRm2.ok, sRm2.message);
+    await work.startEditing({ projectId: Home.id, requestId: "r01-home-back-3" });
+    void home1;
+
+    // 4 · the writers that now close work AFTER their own write.
+    // (a) the last checklist tick on an edit card is a Complete.
+    const Ck = await mkJob({ street: "44 Checklist Ct", status: "SHOT", editor: "kim" });
+    await prisma.smartTask.update({ where: { id: Ck.cardId! }, data: { checklist: JSON.stringify([{ label: "Cut it", done: false }]) } });
+    await work.startEditing({ projectId: Ck.id, requestId: "r01-kim-Ck" });
+    await as(jordan);
+    const tick = await appActions.toggleTaskChecklistItem(Ck.cardId!, 0);
+    const ck = await item("kim", Ck.id);
+    c.ok("the edit card's last checklist tick completes it AND closes her stretch (as the Complete button does)", tick.completed && ck?.state === "CLOSED" && ck.closeReason === "REMOVED", `${ck?.state}/${ck?.closeReason}`);
+    // (b) a video revision completed while another ask holds the job: the
+    // revision holder's work closes; the edit card's editor keeps theirs.
+    const Rv = await mkJob({ street: "45 Two Asks Way", status: "REVISION", editor: "john" });
+    const kimAsk = await prisma.smartTask.create({ data: { taskType: "revision", title: "Video revision — 45 Two Asks Way", status: "OPEN", assignedKey: "kim", projectId: Rv.id, clientId: client.id, dedupeKey: `r01-rv-kim-${Rv.id}` }, select: { id: true } });
+    await prisma.smartTask.create({ data: { taskType: "revision", title: "Photo revision — 45 Two Asks Way", status: "OPEN", assignedKey: "kyle", projectId: Rv.id, clientId: client.id, dedupeKey: `r01-rv-kyle-${Rv.id}` } });
+    await prisma.project.update({ where: { id: Rv.id }, data: { revisionRequestedAt: new Date() } });
+    await as(kim);
+    await work.startEditing({ projectId: Rv.id, requestId: "r01-kim-Rv" });
+    await as(john);
+    await work.startEditing({ projectId: Rv.id, requestId: "r01-john-Rv" });
+    await as(jordan);
+    await appActions.setSmartTaskStatus(kimAsk.id, "COMPLETED");
+    const [kRv, jRv] = await Promise.all([item("kim", Rv.id), item("john", Rv.id)]);
+    c.ok("completing her video revision while Kyle's ask still holds the job closes HER stretch (UNASSIGNED); John, on the edit card, keeps his",
+      kRv?.state === "CLOSED" && kRv.closeReason === "UNASSIGNED" && jRv?.state === "ACTIVE" && (await status(Rv.id)) === "REVISION", `kim ${kRv?.state}/${kRv?.closeReason} · john ${jRv?.state}`);
+    // (c) THE HOURLY CATCH-ALL: a card closed by a path that knows nothing of
+    // this layer (the Review Room approval) on a job mintEditTask never
+    // revisits (a cut is in) — the ghost closes; a real holder is untouched.
+    await as(kim);
+    const Gh = await mkJob({ street: "46 Ghost Approval Rd", status: "REVIEW", editor: "kim" });
+    await work.startEditing({ projectId: Gh.id, requestId: "r01-kim-Gh" });
+    await prisma.reviewSubmission.create({ data: { projectId: Gh.id, kind: "video", deliverableId: Gh.deliverableId, slot: 1, round: 1, status: "APPROVED", decidedAt: new Date(), source: "upload", fileName: "gh.mp4", submittedByKey: "kim" } });
+    await prisma.smartTask.update({ where: { id: Gh.cardId! }, data: { status: "COMPLETED", completedAt: new Date() } }); // the approval's own close, nothing else
+    const Keep = await mkJob({ street: "47 Still Hers Rd", status: "SHOT", editor: "john" });
+    await as(john);
+    await work.startEditing({ projectId: Keep.id, requestId: "r01-john-Keep" });
+    const keep0 = await item("john", Keep.id);
+    const janitor = await tasks.closeTasksOnInactiveProjects();
+    const gh = await item("kim", Gh.id);
+    const keep1 = await item("john", Keep.id);
+    c.ok("the hourly janitor closes the ghost on the approved job (UNASSIGNED) — it no longer waits for a card refresh that never comes",
+      janitor.ghostsClosed >= 1 && gh?.state === "CLOSED" && gh.closeReason === "UNASSIGNED", `ghostsClosed=${janitor.ghostsClosed} · ${gh?.state}/${gh?.closeReason}`);
+    c.ok("…and a legitimate holder's ACTIVE stretch is untouched", keep1?.state === "ACTIVE" && keep1.activeSince?.getTime() === keep0?.activeSince?.getTime());
   }
 
   // ---- close ---------------------------------------------------------------

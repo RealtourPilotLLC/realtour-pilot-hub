@@ -314,23 +314,32 @@ async function main() {
     // "started work keeps its editor" rule outranked that pick, so a card the
     // rules routed to Kim stayed hers for good once she had paused on it
     // (batch-2 review, Sep 25). OLD first, on its own job.
-    const pickJob = async (street: string) => {
+    //
+    // R01 (Sep 28 2026): assignMember now runs that refresh ITSELF when the
+    // job has a live card, so the OLD run writes the pin exactly as the
+    // BASE-era assignMember did (Project.editorId + editorManual, nothing
+    // else) — otherwise today's assignMember would move the card before the
+    // old refresh ever ran, and the old line would be testing new code.
+    const pickJob = async (street: string, pin: "old-assignMember" | "assignMember") => {
       const j = await mkJob({ street, status: "SHOT", editor: "kim" });
       await prisma.smartTask.update({ where: { id: j.cardId }, data: { assignedManually: false } });
       await kimStarts(j.id, `kim-${street}`);
       await as(kim);
       await work.pauseEditing({ projectId: j.id, requestId: `kim-${street}-pause` });
       await as(jordan);
-      await appActions.assignMember(j.id, "editor", johnTm.id);
+      if (pin === "assignMember") await appActions.assignMember(j.id, "editor", johnTm.id);
+      else await prisma.project.update({ where: { id: j.id }, data: { editorId: johnTm.id, editorManual: true } });
       return j;
     };
     const oldTasks = (await import(baseline("src/lib/tasks.ts"))) as typeof import("@/lib/tasks");
-    const J8o = await pickJob("8 Project Pick Old Rd");
+    const J8o = await pickJob("8 Project Pick Old Rd", "old-assignMember");
     await oldTasks.mintEditTask(J8o.id);
     c.ok(`old (${BASE}): after the project page picked John on a job Kim had PAUSED, the refresh left the card Kim's and her work open`,
       (await cardOf(J8o.cardId)).assignedKey === "kim" && (await item("kim", J8o.id))?.state === "PAUSED");
     const tasks = await import("@/lib/tasks");
-    const J8 = await pickJob("8 Project Pick Rd");
+    const J8 = await pickJob("8 Project Pick Rd", "assignMember");
+    c.ok("new (R01): the project page's pick moves a live card at once — no waiting for the hourly refresh",
+      (await cardOf(J8.cardId)).assignedKey === "john" && (await item("kim", J8.id))?.state === "CLOSED");
     await tasks.mintEditTask(J8.id);
     const card8 = await prisma.smartTask.findUniqueOrThrow({ where: { id: J8.cardId }, select: { assignedKey: true, assignedManually: true } });
     const kim8 = await item("kim", J8.id);
