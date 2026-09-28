@@ -81,6 +81,18 @@ export const NEVER_SYNTHETIC_CLIENT_IDS: readonly string[] = [
 export const isNeverSyntheticClientId = (id: string | null | undefined): boolean =>
   !!id && NEVER_SYNTHETIC_CLIENT_IDS.includes(id);
 
+/**
+ * A synthetic fixture ROW: the TEST name, and not a never-synthetic id (a real
+ * row renamed "… TEST" is still real, and keeps everything real rows get).
+ *
+ * Read by the Aryeo customer-user syncs (Sep 28 2026), which match hub rows to
+ * Aryeo by email alone: since Bobby TEST moved onto jspackman215@gmail.com —
+ * also the inbox of Jordan's REAL Aryeo customer — an email hit on a fixture
+ * can be a real person's record, so a fixture takes nothing from one.
+ */
+export const isSyntheticClientRow = (c: { id?: string | null; name: string | null | undefined }): boolean =>
+  isTestClientName(c.name) && !isNeverSyntheticClientId(c.id);
+
 /** The address family staff control. Pre-launch, portal people may only be
  *  created on these — a synthetic client with a real person's inbox is not
  *  synthetic. */
@@ -90,7 +102,7 @@ export const isStaffControlledEmail = (email: string | null | undefined): boolea
 
 // ---------------------------------------------------------------------------
 // VERIFIED TEST DESTINATIONS (§16, confirmed by Jordan Sep 21 2026).
-// Everything a test journey sends must land on one of these two. This is
+// Everything a test journey sends must land on one of these. This is
 // narrower than isStaffControlledEmail on purpose: hello@ and james@ are
 // staff-controlled but they are other people's inboxes, and a test run should
 // not put anything in them.
@@ -98,6 +110,81 @@ export const isStaffControlledEmail = (email: string | null | undefined): boolea
 
 export const JORDAN_TEST_EMAIL = "info@realtourpilot.com";
 export const JORDAN_TEST_PHONE_DIGITS = "2155348650";
+
+// ---------------------------------------------------------------------------
+// JORDAN'S TEST INBOXES (Sep 28 2026).
+//
+// WHY. Jordan, Sep 28 2026, about the old fixture: "Bobby TEST Michael TEST was
+// just a test account", then "The email for bobby test is my email so that
+// works. the test email for bobby test can just be my jspackman215@gmail.com so
+// I can see the test emails." Both Gmail inboxes are his own:
+// bobmike0214@gmail.com is the address Bobby TEST (cmtl98xl90008jl04yt5zawnv)
+// and its Aryeo customer already carry, and jspackman215@gmail.com is the one
+// he reads. So a verified EMAIL destination is now exactly this list: the
+// Sep 21 inbox plus those two. Nobody else's Gmail, and no other domain.
+//
+// WHAT DID NOT CHANGE. JORDAN_TEST_EMAIL is still info@ (and stays the default
+// invitee and the name every message quotes first); isStaffControlledEmail is
+// still @realtourpilot.com only (the pre-launch floor for portal people,
+// reminders and script shares); the verified phone and the 267 refusal.
+//
+// WHAT IT OPENS, AND THE ONE THING IT WOULD HAVE OPENED BY ACCIDENT.
+// jspackman215@gmail.com is ALSO the inbox on the real "Jordan Spackman" row
+// (cmqikskt1008u9k9qej9ltjy5, 9 live Projects) and on its Aryeo customer. The
+// row is already refused by id; its Aryeo customer is now refused by id too
+// (NEVER_SYNTHETIC_ARYEO_CUSTOMER_IDS below), because "the Aryeo customer reads
+// as a test inbox" stopped proving the customer is a test one the moment that
+// inbox joined this list.
+//
+// HOW AN ADDRESS FOLDS ONTO AN INBOX (canonicalInbox), decided deliberately:
+//   · "+tag" folds away, as it has since Sep 21 (info+jordantest@ is info@).
+//     Folding a stranger's plus-address only yields the stranger's inbox, which
+//     is not on the list, so this never admits anyone new.
+//   · DOTS fold away on gmail.com ONLY. That is Gmail's own documented rule —
+//     j.spackman215@gmail.com is delivered to jspackman215@gmail.com, and Google
+//     does not let anyone register a dotted variant of an existing account — so
+//     it is the same mailbox, not a lookalike. On realtourpilot.com (Google
+//     Workspace) a dot is part of the address, so i.nfo@ is NOT info@.
+//   · googlemail.com is NOT treated as gmail.com. Jordan gave gmail.com
+//     addresses; the list is what he said, not what Google would also deliver.
+//   · A lookalike (jspackman215@gmail.co, jspackman2150@gmail.com, gmai1.com)
+//     is a different string after folding and is refused.
+// ---------------------------------------------------------------------------
+
+/** The domain whose dots Gmail ignores. Nothing else gets its dots folded. */
+const GMAIL_DOMAIN = "gmail.com";
+
+/** Every verified test EMAIL destination, in canonical form. Add to it only on Jordan's word, with the date. */
+export const JORDAN_TEST_INBOXES: readonly string[] = [
+  JORDAN_TEST_EMAIL, // Sep 21 2026
+  "jspackman215@gmail.com", // Sep 28 2026 — Jordan's own Gmail, the one he reads
+  "bobmike0214@gmail.com", // Sep 28 2026 — Jordan's own Gmail, on Bobby TEST and its Aryeo customer
+];
+
+/** For refusal messages: "info@…, jspackman215@… or bobmike0214@…". */
+export const JORDAN_TEST_INBOXES_TEXT =
+  JORDAN_TEST_INBOXES.length > 1
+    ? `${JORDAN_TEST_INBOXES.slice(0, -1).join(", ")} or ${JORDAN_TEST_INBOXES[JORDAN_TEST_INBOXES.length - 1]}`
+    : JORDAN_TEST_INBOXES.join("");
+
+/**
+ * The Aryeo customers of the NEVER_SYNTHETIC_CLIENT_IDS rows, as measured
+ * read-only on Sep 21 2026 (docs/content-program-checklist.md, "TWO OTHER
+ * 'Jordan Spackman' RECORDS"). A fixture linked to one of these is refused
+ * whatever email the customer reads as: since Sep 28 the first one's email
+ * (jspackman215@gmail.com) is a verified test inbox, and a write "for the
+ * fixture" would land on Jordan's real customer with its real orders.
+ *   2ee9574f-…  cmqikskt1008u9k9qej9ltjy5  jspackman215@gmail.com, 9 live Projects
+ *   1ef935bc-…  cmtl9n46u0001la04skvn78nb  info@realtorpilot.com (misspelled domain)
+ * Retire, never delete — the same rule as the client ids.
+ */
+export const NEVER_SYNTHETIC_ARYEO_CUSTOMER_IDS: readonly string[] = [
+  "2ee9574f-9b8c-4f04-a23d-75fcf46b9660",
+  "1ef935bc-9f89-48ca-b03d-7343ee52c966",
+];
+
+export const isNeverSyntheticAryeoCustomerId = (id: string | null | undefined): boolean =>
+  !!id && NEVER_SYNTHETIC_ARYEO_CUSTOMER_IDS.includes(id.trim().toLowerCase());
 
 /**
  * NOT a test destination, deliberately. 267-827-9038 appears on both real
@@ -116,17 +203,23 @@ const last10 = (phone: string | null | undefined): string => {
  * Fold plus-addressing away: info+jordantest@realtourpilot.com is delivered to
  * info@realtourpilot.com, so it IS a Jordan-controlled destination and the test
  * account can keep its own distinct sign-in address without a second inbox.
+ * On gmail.com only, dots in the local part fold away too (Gmail's own rule —
+ * see JORDAN'S TEST INBOXES above for why that and nothing wider).
  */
 export const canonicalInbox = (email: string | null | undefined): string => {
   const trimmed = (email ?? "").trim().toLowerCase();
   const at = trimmed.lastIndexOf("@");
   if (at <= 0) return trimmed;
-  const local = trimmed.slice(0, at).split("+")[0];
-  return `${local}${trimmed.slice(at)}`;
+  const domain = trimmed.slice(at + 1);
+  const unTagged = trimmed.slice(0, at).split("+")[0];
+  const local = domain === GMAIL_DOMAIN ? unTagged.replace(/\./g, "") : unTagged;
+  return `${local}@${domain}`;
 };
 
+const VERIFIED_INBOXES: ReadonlySet<string> = new Set(JORDAN_TEST_INBOXES.map(canonicalInbox));
+
 export const isVerifiedTestDestinationEmail = (email: string | null | undefined): boolean =>
-  canonicalInbox(email) === JORDAN_TEST_EMAIL;
+  VERIFIED_INBOXES.has(canonicalInbox(email));
 
 export const isVerifiedTestDestinationPhone = (phone: string | null | undefined): boolean =>
   last10(phone) === JORDAN_TEST_PHONE_DIGITS;
@@ -155,7 +248,7 @@ export class NotAVerifiedTestDestinationError extends Error {
   constructor(what: "email" | "phone", value: string | null | undefined) {
     super(
       `Refusing: ${what} "${value ?? "(none)"}" is not one of Jordan's verified test destinations ` +
-        `(${JORDAN_TEST_EMAIL} / ${JORDAN_TEST_PHONE_DIGITS}). Test sends may not reach anyone else.`,
+        `(${what === "email" ? JORDAN_TEST_INBOXES_TEXT : JORDAN_TEST_PHONE_DIGITS}). Test sends may not reach anyone else.`,
     );
     this.name = "NotAVerifiedTestDestinationError";
   }
@@ -182,7 +275,7 @@ export function assertTestClient(client: { id?: string | null; name: string | nu
   if (!isTestClientName(client.name)) throw new NotATestClientError(client.name);
 }
 
-/** Throws unless every supplied destination is one Jordan verified on Sep 21 2026. */
+/** Throws unless every supplied destination is one Jordan verified (Sep 21 2026; his two Gmail inboxes added Sep 28). */
 export function assertTestDestinations(d: { email?: string | null; phone?: string | null }): void {
   if (d.email !== undefined && d.email !== null && d.email !== "" && !isVerifiedTestDestinationEmail(d.email)) {
     throw new NotAVerifiedTestDestinationError("email", d.email);
@@ -277,6 +370,13 @@ export function assertProviderWriteAllowed(a: ProviderWriteAttempt): void {
 // inbox (plus-addressing folded, so info+jordantest@ counts). Pure: the caller
 // reads the Aryeo customer's email (integrations/aryeo.ts hubWritePermit) and
 // hands it in; "could not read it" is passed as null and refuses.
+//
+// Sep 28 2026: "Jordan's verified test inbox" is now any of JORDAN_TEST_INBOXES,
+// and one of those (jspackman215@gmail.com) is also the email on Jordan's REAL
+// Aryeo customer — so the customer is additionally refused by id when it is a
+// never-synthetic row's (NEVER_SYNTHETIC_ARYEO_CUSTOMER_IDS). The two inboxes
+// may differ: Bobby TEST's own email and its Aryeo customer's can be different
+// ones of Jordan's inboxes, and both are still his.
 // ---------------------------------------------------------------------------
 
 export class FixtureIdentityError extends Error {
@@ -294,14 +394,17 @@ export type FixtureIdentityInput = {
   aryeoCustomerEmail: string | null | undefined;
 };
 
-/** Why this TEST row is not provably a fixture, or null when both inboxes are the test inbox. */
+/** Why this TEST row is not provably a fixture, or null when both inboxes are verified test inboxes. */
 export function fixtureIdentityProblem(i: FixtureIdentityInput): string | null {
   if (!isVerifiedTestDestinationEmail(i.clientEmail)) {
-    return `the fixture's own email (${i.clientEmail || "none"}) is not the verified test inbox ${JORDAN_TEST_EMAIL}, so it may be a real client carrying a TEST name`;
+    return `the fixture's own email (${i.clientEmail || "none"}) is not the verified test inbox (${JORDAN_TEST_INBOXES_TEXT}), so it may be a real client carrying a TEST name`;
   }
   if (!i.aryeoCustomerId) return "the fixture has no linked Aryeo customer, so there is no customer the hub could prove is a test one";
+  if (isNeverSyntheticAryeoCustomerId(i.aryeoCustomerId)) {
+    return `the fixture's Aryeo customer ${i.aryeoCustomerId} belongs to a real "Jordan Spackman" row (never-synthetic), so a write for this fixture would reach that real customer's orders`;
+  }
   if (!isVerifiedTestDestinationEmail(i.aryeoCustomerEmail)) {
-    return `the fixture's Aryeo customer ${i.aryeoCustomerId} reads ${i.aryeoCustomerEmail ? `as ${i.aryeoCustomerEmail}` : "back with no email (or could not be read)"}, not the verified test inbox ${JORDAN_TEST_EMAIL}`;
+    return `the fixture's Aryeo customer ${i.aryeoCustomerId} reads ${i.aryeoCustomerEmail ? `as ${i.aryeoCustomerEmail}` : "back with no email (or could not be read)"}, not the verified test inbox (${JORDAN_TEST_INBOXES_TEXT})`;
   }
   return null;
 }

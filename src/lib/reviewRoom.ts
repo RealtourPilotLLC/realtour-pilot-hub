@@ -65,7 +65,14 @@ export type QueueFollowUp = {
   open: number;
   awaitingReReview: number; // FIXED, waiting on the owner to approve
   awaitingReply: number; // threads where a CREATIVE spoke last — the owner owes an answer
+  /** the newest cut these notes sit on — the row opens it (Sep 28); null =
+   *  the notes are not on a cut (photos), so the row opens the project */
+  cutId: string | null;
 };
+
+/** Where a follow-through row goes: the cut with its notes, else the project. */
+export const followUpHref = (f: Pick<QueueFollowUp, "projectId" | "cutId">): string =>
+  f.cutId ? `/review/${f.projectId}?cut=${f.cutId}` : `/projects/${f.projectId}`;
 
 export type ReviewQueue = {
   /** checked (or pre-gate) cuts waiting on a verdict — the only rows anybody can rule on */
@@ -158,6 +165,10 @@ const projectsWithLiveReview = (since: Date) => ({
 
 export async function getReviewQueue(): Promise<ReviewQueue> {
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
+  // Editor-authored notes are context for the reviewer, not owed fixes —
+  // they must not inflate "open notes" badges or the follow-up tallies.
+  // (One filter: the rollup and the follow-through rows' cut links read it.)
+  const liveNoteWhere = { parentId: null, status: { in: ["OPEN", "FIXED"] }, NOT: { authorKey: { startsWith: "editor:" } } };
   const [subs, qcTasks, noteRollup, threadReplies] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: {
@@ -202,9 +213,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     }),
     prisma.mediaNote.groupBy({
       by: ["projectId", "lane", "status"],
-      // Editor-authored notes are context for the reviewer, not owed fixes —
-      // they must not inflate "open notes" badges or the follow-up tallies.
-      where: { parentId: null, status: { in: ["OPEN", "FIXED"] }, NOT: { authorKey: { startsWith: "editor:" } } },
+      where: liveNoteWhere,
       _count: true,
     }),
     // Thread replies on still-live roots — a creative's "which bathroom do you
@@ -338,10 +347,46 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       open: 0,
       awaitingReReview: 0,
       awaitingReply: awaitingReplyByKey.get(key) ?? 0,
+      cutId: null,
     };
     if (r.status === "OPEN") cur.open += r._count;
     else cur.awaitingReReview += r._count;
     followMap.set(key, cur);
+  }
+
+  // WHERE A ROW OPENS (Jordan, Sep 28): the cut its notes are on, not the
+  // project page — the notes live in the Review Room workspace, and the
+  // project page made the desk hunt for them. The newest cut carrying any of
+  // the row's notes (notes key on the cut's assetUrl, or cut:<id> when it has
+  // no link); none (photo notes) → the project page, as before.
+  if (projectIds.length) {
+    const [noteAssets, cuts] = await Promise.all([
+      prisma.mediaNote.findMany({
+        where: { ...liveNoteWhere, projectId: { in: projectIds } },
+        distinct: ["projectId", "lane", "assetUrl"],
+        select: { projectId: true, lane: true, assetUrl: true },
+      }),
+      prisma.reviewSubmission.findMany({
+        // What the workspace can open (getCutWorkspace reads the same set).
+        where: { projectId: { in: projectIds }, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
+        select: { id: true, projectId: true, assetUrl: true, round: true, createdAt: true },
+      }),
+    ]);
+    const cutByAsset = new Map<string, (typeof cuts)[number]>();
+    for (const s of cuts) {
+      if (s.assetUrl) cutByAsset.set(s.assetUrl, s);
+      cutByAsset.set(`cut:${s.id}`, s);
+    }
+    const newest = new Map<string, (typeof cuts)[number]>();
+    for (const n of noteAssets) {
+      const s = cutByAsset.get(n.assetUrl);
+      if (!s || s.projectId !== n.projectId) continue;
+      const lane = (["EDIT", "PHOTOGRAPHER", "EDITOR"].includes(n.lane) ? n.lane : "EDIT") as QueueFollowUp["lane"];
+      const key = `${n.projectId}:${lane}`;
+      const cur = newest.get(key);
+      if (!cur || s.createdAt > cur.createdAt || (+s.createdAt === +cur.createdAt && s.round > cur.round)) newest.set(key, s);
+    }
+    for (const [key, f] of followMap) f.cutId = newest.get(key)?.id ?? null;
   }
 
   return {

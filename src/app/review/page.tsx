@@ -11,7 +11,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
-import { getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
+import { followUpHref, getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
 import { getFixPatterns, getQcStats } from "@/lib/qc";
 import { verdictLine } from "@/lib/reviewAttribution";
 
@@ -256,7 +256,9 @@ export default async function ReviewRoomPage() {
                 return (
                   <li key={`${f.projectId}-${f.lane}`}>
                     <Link
-                      href={`/projects/${f.projectId}`}
+                      // The cut with its notes (Sep 28) — the project page only
+                      // when the notes are not on a cut (photos).
+                      href={followUpHref(f)}
                       className="flex items-center justify-between gap-3 py-2.5 hover:text-brand"
                     >
                       <div className="flex min-w-0 items-center gap-2">

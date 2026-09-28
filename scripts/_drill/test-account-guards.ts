@@ -8,7 +8,8 @@
 // row, and the fourth is only meaningful against the real database:
 //
 //   1. the §16 name is synthetic and the two live look-alikes are not
-//   2. test sends reach only the two destinations Jordan verified on Sep 21
+//   2. test sends reach only the destinations Jordan verified (Sep 21; his two
+//      Gmail inboxes added Sep 28)
 //   3. a test journey cannot create a real billable session, and cannot edit a
 //      real client's appointment
 //   4. the two "Jordan Spackman" rows the guard refuses BY ID are really there,
@@ -73,12 +74,19 @@ async function main() {
   check(`isJordanTestClientName rejects the real name`, g.isJordanTestClientName("Jordan Spackman"), false);
 
   // ---- 2. destinations ---------------------------------------------------
-  console.log("\n2. DESTINATIONS — only what Jordan verified on Sep 21 2026");
+  console.log("\n2. DESTINATIONS — only what Jordan verified (Sep 21 2026; his two Gmail inboxes Sep 28)");
   check(`${g.JORDAN_TEST_EMAIL} is verified`, g.isVerifiedTestDestinationEmail(g.JORDAN_TEST_EMAIL), true);
   check(`info+jordantest@realtourpilot.com folds to the same inbox`, g.isVerifiedTestDestinationEmail("info+jordantest@realtourpilot.com"), true);
   check(`hello@realtourpilot.com is staff-controlled but NOT a test destination`,
     g.isStaffControlledEmail("hello@realtourpilot.com") && !g.isVerifiedTestDestinationEmail("hello@realtourpilot.com"), true);
-  check(`jspackman215@gmail.com is refused`, g.isVerifiedTestDestinationEmail("jspackman215@gmail.com"), false);
+  // Sep 28 2026 (the new law, not a loosening): Jordan named his two Gmail
+  // inboxes as test inboxes — "the test email for bobby test can just be my
+  // jspackman215@gmail.com". Until then this line asserted the opposite.
+  check(`jspackman215@gmail.com is verified (Jordan, Sep 28)`, g.isVerifiedTestDestinationEmail("jspackman215@gmail.com"), true);
+  check(`bobmike0214@gmail.com is verified (Jordan, Sep 28)`, g.isVerifiedTestDestinationEmail("bobmike0214@gmail.com"), true);
+  check(`a stranger's Gmail is refused`, g.isVerifiedTestDestinationEmail("bobby.realperson@gmail.com"), false);
+  check(`lookalikes are refused (gmail.co, jspackman2150@)`,
+    g.isVerifiedTestDestinationEmail("jspackman215@gmail.co") || g.isVerifiedTestDestinationEmail("jspackman2150@gmail.com"), false);
   check(`info@realtorpilot.com (misspelled domain) is refused`, g.isVerifiedTestDestinationEmail("info@realtorpilot.com"), false);
   check(`215-534-8650 is verified in every format`,
     ["2155348650", "+12155348650", "(215) 534-8650", "1-215-534-8650"].every(g.isVerifiedTestDestinationPhone), true);

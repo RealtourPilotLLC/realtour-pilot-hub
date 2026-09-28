@@ -238,6 +238,21 @@ export async function GET(req: NextRequest) {
     const { reconcileReopenedClocks } = await import("@/lib/revisionBrief");
     return reconcileReopenedClocks();
   });
+  // DELIVERED-JOB NOTES CLOSE THEMSELVES (Jordan, Sep 28 2026). Editor-cut and
+  // delivery-fix notes (lanes EDITOR, EDIT — never a photographer's coaching)
+  // still open or awaiting a re-look on a job delivered AFTER they were
+  // written — and last moved before it — are resolved "Closed out: job
+  // delivered", one timeline line per job, but only when the note is on a
+  // Review Room cut whose own history answers it (a newer round, or an
+  // approval, after the note). Photo/gallery notes, post-approval notes and a
+  // person's reopen are left alone (lib/deliveredNotes.ts says why). A linked
+  // revision issue is left as it is (a delivery is not a checked fix). Runs
+  // after `statuses`, so the status it reads is this tick's. A reopened job is
+  // no longer DELIVERED and keeps its notes. No message.
+  await step("deliveredNotes", async () => {
+    const { closeDeliveredJobNotes } = await import("@/lib/deliveredNotes");
+    return closeDeliveredJobNotes({ max: 200 });
+  }, { maxMs: 20_000 });
   // O05: a job whose photos (or video) went in, and whose other half was
   // excused afterwards by a road that did not complete it, has its whole
   // wrap-up stamped here — My Pay and the wrap-up KPI read that stamp. The

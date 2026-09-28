@@ -214,10 +214,10 @@ export async function callBookingScope(a: {
       return { ok: false, reason: e instanceof Error ? e.message : "not a TEST client" };
     }
     if (!t.isVerifiedTestDestinationEmail(row.email)) {
-      return { ok: false, reason: `the fixture's own email (${row.email || "none"}) is not the verified test inbox ${t.JORDAN_TEST_EMAIL}, so it may be a real client carrying a TEST name` };
+      return { ok: false, reason: `the fixture's own email (${row.email || "none"}) is not the verified test inbox (${t.JORDAN_TEST_INBOXES_TEXT}), so it may be a real client carrying a TEST name` };
     }
     if (!t.isVerifiedTestDestinationEmail(a.inviteeEmail)) {
-      return { ok: false, reason: `a fixture's invitee must be the verified test inbox (${t.JORDAN_TEST_EMAIL}); "${a.inviteeEmail ?? "(none)"}" is not` };
+      return { ok: false, reason: `a fixture's invitee must be the verified test inbox (${t.JORDAN_TEST_INBOXES_TEXT}); "${a.inviteeEmail ?? "(none)"}" is not` };
     }
     const d = t.providerWriteDecision({ provider: "other", operation: `calendly.${a.operation}`, client: { id: row.id, name: row.name }, sandbox: true });
     return d.allowed ? { ok: true, scope: "FIXTURE" } : { ok: false, reason: d.reason };

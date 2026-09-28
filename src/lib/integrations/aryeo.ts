@@ -3877,22 +3877,36 @@ export async function writeAryeoCustomerNotes(
 // linked record. Email alone can fill a blank; it can never replace words a
 // human typed. See the adopt rules inline below.
 // ---------------------------------------------------------------------------
-export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
+export async function syncAryeoCustomers(): Promise<{ enriched: number; fixturesSkipped: number }> {
   const { prisma } = await import("@/lib/prisma");
+  const { isSyntheticClientRow } = await import("@/lib/testClients");
   const customers = await Aryeo.customerUsers();
   const byEmail = new Map<string, AryeoCustomerUser>();
   for (const c of customers) if (c.email) byEmail.set(c.email.toLowerCase(), c);
-  if (byEmail.size === 0) return { enriched: 0 };
+  if (byEmail.size === 0) return { enriched: 0, fixturesSkipped: 0 };
 
   const clients = await prisma.client.findMany({
     where: { email: { not: null } },
     select: {
-      id: true, email: true, phone: true, company: true, licenseNumber: true,
+      id: true, name: true, email: true, phone: true, company: true, licenseNumber: true,
       generalNotes: true, aryeoCustomerId: true, notesSyncError: true, avatarUrl: true,
     },
   });
   let enriched = 0;
+  let fixturesSkipped = 0;
   for (const cl of clients) {
+    // A TEST FIXTURE TAKES NOTHING FROM AN EMAIL MATCH (Sep 28 2026). The
+    // match below is by email alone, and a fixture sits on one of Jordan's own
+    // inboxes — since Sep 28 Bobby TEST reads jspackman215@gmail.com, which is
+    // ALSO the inbox of Jordan's REAL Aryeo customer. Matched here, the fixture
+    // took that real customer's headshot (a mirror, rewritten every run) and
+    // filled its blank company and licence from the real record. A fixture's
+    // Aryeo data is not worth that risk: it is left exactly as it is. A real
+    // row renamed "… TEST" is not a fixture (isSyntheticClientRow) and syncs.
+    if (isSyntheticClientRow(cl)) {
+      fixturesSkipped++;
+      continue;
+    }
     const cu = byEmail.get((cl.email ?? "").toLowerCase());
     if (!cu) continue;
     const data: Record<string, string | Date | null> = {};
@@ -3943,7 +3957,7 @@ export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
       enriched++;
     }
   }
-  return { enriched };
+  return { enriched, fixturesSkipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -4307,8 +4321,9 @@ function extractSocial(cu: unknown): { socialClient: boolean; socialPlan: string
   return { socialClient, socialPlan };
 }
 
-export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched: number }> {
+export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched: number; fixturesSkipped: number }> {
   const { prisma } = await import("@/lib/prisma");
+  const { isSyntheticClientRow } = await import("@/lib/testClients");
   const inc = "customer_team_memberships.user.custom_field_entries.custom_field";
   const byEmail = new Map<string, { socialClient: boolean; socialPlan: string | null }>();
   // Every customer-user email the pull saw, social fields or not. REMOVING a
@@ -4337,11 +4352,21 @@ export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched
 
   const clients = await prisma.client.findMany({
     where: { OR: [{ email: { not: null } }, { backupEmail: { not: null } }] },
-    select: { id: true, email: true, backupEmail: true, socialClient: true, socialPlan: true },
+    select: { id: true, name: true, email: true, backupEmail: true, socialClient: true, socialPlan: true },
   });
   let updated = 0;
   let matched = 0;
+  let fixturesSkipped = 0;
   for (const cl of clients) {
+    // A TEST fixture is never flagged, re-planned or unflagged from an email
+    // match (Sep 28 2026) — the same reason as syncAryeoCustomers: its inbox
+    // can be a real customer's too (Bobby TEST on jspackman215@, the inbox of
+    // Jordan's real Aryeo customer), so the social fields read here may be a
+    // real person's, and "present with no social fields" would unflag it.
+    if (isSyntheticClientRow(cl)) {
+      fixturesSkipped++;
+      continue;
+    }
     // A merged client may live under either address in Aryeo.
     const emails = [cl.email, cl.backupEmail].filter(Boolean).map((e) => e!.toLowerCase());
     const v = emails.map((e) => byEmail.get(e)).find(Boolean);
@@ -4367,7 +4392,7 @@ export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched
       updated++;
     }
   }
-  return { updated, matched };
+  return { updated, matched, fixturesSkipped };
 }
 
 // ---------------------------------------------------------------------------

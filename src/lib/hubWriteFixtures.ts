@@ -44,7 +44,7 @@ export async function setHubWriteFixtures(switchKey: string, change: FixtureChan
       if (!c) return { ok: false, message: `No client ${id}. Nothing was changed.`, from, to: from };
       if (t.isNeverSyntheticClientId(c.id)) return { ok: false, message: `"${c.name}" is a real client carrying a TEST name. Nothing was changed.`, from, to: from };
       if (!t.isTestClientName(c.name)) return { ok: false, message: `"${c.name}" is a real client. Real clients are written for only inside an approved pilot. Nothing was changed.`, from, to: from };
-      if (!t.isVerifiedTestDestinationEmail(c.email)) return { ok: false, message: `"${c.name}"'s own email (${c.email || "none"}) is not the verified test inbox ${t.JORDAN_TEST_EMAIL}. Nothing was changed.`, from, to: from };
+      if (!t.isVerifiedTestDestinationEmail(c.email)) return { ok: false, message: `"${c.name}"'s own email (${c.email || "none"}) is not the verified test inbox (${t.JORDAN_TEST_INBOXES_TEXT}). Nothing was changed.`, from, to: from };
       if (cfg.pilot?.clientIds.includes(c.id)) return { ok: false, message: `"${c.name}" is in this switch's pilot. Nothing was changed.`, from, to: from };
     }
   }

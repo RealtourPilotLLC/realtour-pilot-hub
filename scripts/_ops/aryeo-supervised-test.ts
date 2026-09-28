@@ -13,7 +13,8 @@
 //       --fixture <clientId> --address "117 Kyle Lane|West Chester|PA|19382" \
 //       --new-address "42 Oak Street|West Chester|PA|19380"
 //       DRY RUN (the default). Reads only: the fixture, its identity (its own
-//       email AND its Aryeo customer's must be info@realtourpilot.com), both
+//       email AND its Aryeo customer's must be Jordan's verified test inboxes
+//       — testClients.JORDAN_TEST_INBOXES, since Sep 28 his two Gmail too), both
 //       switches' scopes, the Accelerator's price in Aryeo, James's assignment
 //       and his free weekday slots at least 24 hours out. Prints exactly what
 //       --apply would do. Writes nothing anywhere.
@@ -131,7 +132,7 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   } catch (e) {
     return refuse(e instanceof Error ? e.message : "fixture identity not proven");
   }
-  log(`Fixture: ${client.name} (${client.id}) · own email ${client.email} · Aryeo customer ${client.aryeoCustomerId} reads ${customerEmail} ✓ (both the verified test inbox)`);
+  log(`Fixture: ${client.name} (${client.id}) · own email ${client.email} · Aryeo customer ${client.aryeoCustomerId} reads ${customerEmail} ✓ (both verified test inboxes)`);
 
   // ---- 2. the switches: ON, this fixture only, no pilot ---------------------
   const switchProblems: string[] = [];
