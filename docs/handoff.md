@@ -138,11 +138,21 @@ possibly a QuickBooks invoice that must be voided by hand — a money action tha
 stays Jordan's — and (c) must link the new Aryeo customer to the existing TEST
 client rather than let the hourly sync create a duplicate.
 
+**Update (Sep 28):** Jordan confirmed "Bobby TEST Michael TEST" is his test
+account ("you can do whatever you need to with it"). It already has an Aryeo
+customer (`018f10e1-…`, created Apr 2024, type AGENT) with **no orders**
+(Aryeo search for the name and the email: 0; the hub holds only its two TEST
+jobs, neither linked to an Aryeo order). So the sitting uses **Bobby**
+(`cmtl98xl90008jl04yt5zawnv`) instead of creating a customer. Aryeo's public
+API cannot change a customer's email (only create), and an undocumented PATCH
+is not used on a live record — so step 1 is a dashboard edit.
+
 The sitting, in order (about 20 minutes):
-1. Create the Aryeo customer "Jordan Spackman TEST", email
-   `info+jordantest@realtourpilot.com`, and set its id on the TEST client
-   (`cmucrtvy100009kpoprlsryjd`) before the next hourly sync.
-2. Dry run: `aryeo-supervised-test.ts --fixture cmucrtvy100009kpoprlsryjd
+1. Jordan/Kyle in Aryeo: change Bobby TEST Michael TEST's email to
+   `info+bobbytest@realtourpilot.com`. Then the hub side (main session): the
+   same email on the hub client, the unverified phone (…9038) cleared, the old
+   values backed up first.
+2. Dry run: `aryeo-supervised-test.ts --fixture cmtl98xl90008jl04yt5zawnv
    --address "117 Kyle Lane|West Chester|PA|19382" --new-address "42 Oak
    Street|West Chester|PA|19380"` — it refuses unless the Accelerator is $0 in
    Aryeo and the fixture's identity is proven.
@@ -220,9 +230,10 @@ The sitting, in order (about 20 minutes):
   raise **no** "confirm the call's end" task (the rule only asks while it can
   still move a date); John Mark has no Aryeo mapping (editor, not a creative);
   the saved portal terms carry no 48-hour wording, so nothing contradicts 72.
-- **Found:** "Bobby TEST Michael TEST" is a real person's inbox (Gmail) with a
-  real Aryeo customer and TEST in the name. R02 refuses it as a fixture. It
-  should be renamed back or confirmed — Jordan/Kyle.
+- **Found:** "Bobby TEST Michael TEST" carries a Gmail inbox and an Aryeo
+  customer with TEST in the name. R02 refuses it as a fixture. **Resolved Sep
+  28: Jordan confirmed it is his test account** — it becomes the supervised
+  Aryeo test's fixture once its email is moved to the test inbox.
 - **Not proven:** every Aryeo and Calendly write is against faithful fakes.
   The supervised test settles it.
 
