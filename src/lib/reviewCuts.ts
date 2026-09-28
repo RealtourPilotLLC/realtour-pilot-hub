@@ -2389,6 +2389,8 @@ export type VideoCutState = {
   /** open EDITOR-lane notes on the cut (what the editor still has to fix) */
   openNotes: number;
   projectStatus: string;
+  /** when the job was delivered, if it was (Sep 28) */
+  projectDeliveredISO?: string | null;
 };
 
 export type ProjectVideoState = {
@@ -2460,7 +2462,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     prisma.project.findMany({
       where: { id: { in: projectIds } },
       select: {
-        id: true, title: true, status: true, packageName: true, videosFilmed: true, statusEvidence: true,
+        id: true, title: true, status: true, deliveredAt: true, packageName: true, videosFilmed: true, statusEvidence: true,
         videosOwedOverride: true, // the office's batch size (Sep 13)
         client: { select: { name: true, avatarUrl: true } },
         // Same order as cutSlots() — the monthly batch count lands on the FIRST
@@ -2526,6 +2528,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
         submittedByName: r.submittedByName,
         openNotes: (r.assetUrl ? notesByAsset.get(r.assetUrl) : 0) ?? 0,
         projectStatus: p.status,
+        projectDeliveredISO: p.deliveredAt ? p.deliveredAt.toISOString() : null,
       };
     });
     const approved = cuts.filter((c) => c.status === "APPROVED").length;
@@ -2602,6 +2605,12 @@ export async function videoReviewBoard(): Promise<{ waiting: VideoCutState[]; re
   return {
     // A delivered job's still-pending cut is not the owner's work list.
     waiting: all.filter((c) => c.status === "PENDING" && c.projectStatus !== "DELIVERED").sort(byAge),
-    revising: all.filter((c) => c.status === "CHANGES_REQUESTED").sort(byAge),
+    // …and a sent-back cut on a job delivered AFTER the send-back was finished
+    // outside the Room (the same rule as reviewRoom.inWindow; 38 E Gay St,
+    // Sep 28). A job the client reopens after delivery is not DELIVERED.
+    revising: all
+      .filter((c) => c.status === "CHANGES_REQUESTED")
+      .filter((c) => !(c.projectStatus === "DELIVERED" && c.projectDeliveredISO && c.projectDeliveredISO > c.sinceISO))
+      .sort(byAge),
   };
 }
