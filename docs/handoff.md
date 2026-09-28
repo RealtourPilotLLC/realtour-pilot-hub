@@ -13,7 +13,7 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
   **Final report: [`unified-final-report.md`](unified-final-report.md)** (the §13 report and
   the client-launch approval package). What is left is Jordan's: the supervised Aryeo
   sitting, a real-phone pass, the launch stages, deleting the old public video copies.
-- **Deployed:** ⟨FINAL-DEPLOY⟩. Before it: `0950c1c` (Vercel `5d2osiip6`).
+- **Deployed:** `bf2e0b4` (completion `c6b54e3` + docs), Vercel `iqe17q220`, Sep 28 ~4:15 PM ET. Live check: 10 main pages 200, a real job page shows Rush / Waiting on a file / The footage, cut stream 206 (private store). Probe: page build `bf2e0b4`, all 25 program switches OFF, rollout closed. 102 isolated drills green (~7,810 checks). Before it: `0950c1c` (Vercel `5d2osiip6`).
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.

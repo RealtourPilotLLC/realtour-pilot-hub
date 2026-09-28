@@ -78,7 +78,7 @@ needs:
 
 **Release proof and infrastructure**
 - Settings is grouped into 7 sections, and a **readiness panel** shows each switch as configured / connected / enabled / effective, with its blockers.
-- Cron health covers every scheduled job. The evening job now records its runs.
+- Cron health covers every scheduled job. The evening job is fixed to record its runs; its first recorded run is due tonight at 7 PM ET.
 - Backups:
   - they are one consistent snapshot, private (0600), and cover every table;
   - a restore rehearsal on real backups under two engines gave 0 differences.
@@ -135,7 +135,7 @@ needs:
 | Batch 6 + 38 E Gay St | `57a2820`, `81e5fb6` | `15fc7f4` (fojahizaz) |
 | Delivered-notes rule, test inboxes, editor clarity | `ac297e8`, `2694cfe` | `eaee7fa` (mqazwgvmn) |
 | Portal tab fix | `0950c1c` | `0950c1c` (5d2osiip6) |
-| Completion + final remainders | `c6b54e3` (+ docs) | ⟨FINAL-DEPLOY⟩ |
+| Completion + final remainders | `c6b54e3` (+ docs) | `bf2e0b4` (iqe17q220) |
 
 **Schema.** Three additive pushes, each after a full backup:
 - `2528374` — batches 1–4;
@@ -219,7 +219,7 @@ Nothing was dropped or renamed. Production schema = HEAD (`prisma migrate diff`:
 
 ## 5. Automation controls
 
-Read from production at ⟨PROBE-TIME⟩ by the read-only probe.
+Read from production at 4:22 PM ET on Sep 28, after the final deploy, by the read-only probe. The page build is `bf2e0b4`.
 
 **Client-program switches: all 25 OFF.** No row exists for any of them. Pilot lists are empty, and no TEST fixture is armed.
 
