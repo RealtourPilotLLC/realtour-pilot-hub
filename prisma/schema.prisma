@@ -1204,6 +1204,11 @@ model RevisionBrief {
   project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId     String
   taskId        String? // the revision SmartTask this ask belongs to
+  // WHO ASKED (Jordan, Sep 28: "we know who left the review comments and
+  // requested the revision"). Null on rows written before this existed.
+  requestedBy       String? // a person's display name, never an email when a name is known
+  requestedByKind   String? // CLIENT | CLIENT_STAFF (staff on the client's behalf) | OFFICE | EMAIL | TEXT | PHONE | SYSTEM
+  requestedByUserId String? // AppUser / ClientUser id when there is one
   /// WHICH VIDEO THIS ASK IS ABOUT (audit WF-03, Sep 18). Null means the ask
   /// covers the job, or nobody has said yet — per-ITEM scope lives inside
   /// itemsJson, because one ask can name two videos and leave a third alone.
@@ -1579,6 +1584,9 @@ model MediaNote {
   status         String      @default("OPEN") // OPEN | FIXED | RESOLVED
   authorKey      String? // "owner" | "tm:<teamMemberId>" | "editor:<key>"
   authorName     String?
+  authorUserId   String? // the login behind authorName (Sep 28)
+  statusBy       String? // who last resolved or reopened this note
+  statusAt       DateTime?
   // PHOTOGRAPHER-lane notes: whose capture feedback this is (scopes their view).
   photographer   TeamMember? @relation(fields: [photographerId], references: [id])
   photographerId String?
@@ -1677,6 +1685,7 @@ model ReviewSubmission {
   note                     String? // editor's note to the reviewer ("music was client's pick", …)
   decidedAt                DateTime?
   decidedBy                String?
+  decidedByUserId          String? // the login behind decidedBy, so a rename or a shared name can be traced (Sep 28)
   createdAt                DateTime     @default(now())
   updatedAt                DateTime     @updatedAt
   // ---- REMOVE / REASSIGN (Jordan, Sep 16: "the editor should be able to
@@ -3712,6 +3721,9 @@ model ClientDecision {
   submissionId    String // -> ReviewSubmission (immutable cut version)
   projectId       String // -> Project
   videoId         String? // -> ContentVideo
+  // R04 (batch 6): a claim so routing a portal request and the repair sweep
+  // cannot both raise a revision; null = unclaimed (every existing row).
+  routeClaimedAt  DateTime?
   enrollmentId    String
   clientId        String
   round           Int?
