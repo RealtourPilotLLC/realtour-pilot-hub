@@ -89,13 +89,32 @@ export function can(viewer: PortalViewer, permission: PortalPermission): boolean
 }
 
 /** How a write is attributed in words — on the revision brief, the QC row and
- *  the editor's task. Staff are named as themselves, on the client's behalf. */
+ *  the editor's task. Staff are named as themselves, on the client's behalf.
+ *  (Sep 28, attribution) A client person with no name keeps their email: it
+ *  is the one identity they have, and an OWNER seat is not proof the person is
+ *  the client — an assistant can hold one — so the client's name is never
+ *  borrowed for them. A nameless staff login reads as our team rather than a
+ *  bare "Staff"; the Review Room resolves the roster name (clientDecisions). */
 export function actorLabel(viewer: PortalViewer): string {
   const a = viewer.actor;
   const client = viewer.enrollment.clientName || "Client";
-  if (a.kind === "STAFF") return `${a.staffName || "Staff"} (on behalf of ${client})`;
-  if (a.kind === "CLIENT") return a.name || a.email;
+  if (a.kind === "STAFF") return `${a.staffName?.trim() || "RealTour Pilot staff"} (on behalf of ${client})`;
+  if (a.kind === "CLIENT") return a.name?.trim() || a.email;
   return `${client} (portal)`;
+}
+
+/** actorLabel, with a nameless staff login named from the roster first (Sep
+ *  28) — the words a client decision and its revision brief are stamped with,
+ *  so they match what the Review Room prints for the same person's notes.
+ *  Never an email: this label reaches the client's own page. */
+export async function actorLabelResolved(viewer: PortalViewer): Promise<string> {
+  const a = viewer.actor;
+  if (a.kind === "STAFF" && !a.staffName?.trim()) {
+    const u = await prisma.appUser.findUnique({ where: { id: a.staffUserId }, select: { teamMemberId: true } }).catch(() => null);
+    const tm = u?.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } }).catch(() => null) : null;
+    if (tm?.name?.trim()) return `${tm.name.trim()} (on behalf of ${viewer.enrollment.clientName || "Client"})`;
+  }
+  return actorLabel(viewer);
 }
 
 /** The message a refused action returns. Client-safe, and honest about WHY. */

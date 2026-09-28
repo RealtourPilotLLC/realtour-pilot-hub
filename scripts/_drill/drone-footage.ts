@@ -8,8 +8,16 @@
  *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/drone-footage.ts
  *
  * Read-only: it reads the product catalogue and calls the parser. No writes.
+ * STRUCTURALLY read-only since Sep 28 2026 (A02): it reads production, so its
+ * connection is opened with default_transaction_read_only=on and a refused
+ * UPDATE (SQLSTATE 25006) is proven before anything is read. A write that
+ * crept into the parser's path would now fail here instead of landing.
  */
-import { prisma } from "@/lib/prisma";
+import { pinReadOnlyDatabaseUrl, proveReadOnly } from "../_lib/dbGuard";
+
+// Before @/lib/prisma exists (hence the dynamic imports below): Prisma would
+// otherwise construct its client on the writable URL from .env.
+pinReadOnlyDatabaseUrl();
 
 let pass = 0, fail = 0;
 const ok = (label: string, good: boolean, detail = "") => {
@@ -18,6 +26,9 @@ const ok = (label: string, good: boolean, detail = "") => {
 };
 
 async function main() {
+  const { prisma } = await import("@/lib/prisma");
+  await proveReadOnly(prisma);
+  console.log("read-only connection proven (25006)");
   const { loadManualProductMap, orderDeliverables } = await import("@/lib/integrations/aryeo");
   await loadManualProductMap(true);
   const parse = (title: string) =>

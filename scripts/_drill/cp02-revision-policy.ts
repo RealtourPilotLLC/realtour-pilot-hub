@@ -43,9 +43,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
-import { buildContentMonth, type ContentMonthFixture } from "./_fixtures/contentMonth";
+import { reviewWorldKit, type ReviewWorld } from "../_fixtures/reviewWorld";
 
 const PORT = Number(process.env.DRILL_PORT ?? 5503);
 const REPO = path.resolve(__dirname, "../..");
@@ -81,9 +80,7 @@ async function main() {
   const rw = await import("@/lib/reviewWindows");
   const cd = await import("@/lib/clientDecisions");
   const rr = await import("@/app/review/actions");
-  const { ensureOutputsForProject } = await import("@/lib/deliverableOutputs");
   const { endOfBusinessDaysET, addBusinessDayKeysET, addBusinessDaysET, etAt, etDayKey } = await import("@/lib/datetime");
-  const { streamUrlFor } = await import("@/lib/reviewCuts");
   const { evaluateReminders } = await import("@/lib/programReminders");
   const { loadContentTab } = await import("@/app/content/[id]/workspaceData");
   const base = writeBaseCopies();
@@ -99,46 +96,11 @@ async function main() {
   await prisma.teamMember.create({ data: { name: "Kyle Drill", email: "kyle-drill@example.com" } });
   const staffUser = await prisma.appUser.create({ data: { email: "kyle@realtourpilot.com", name: "Kyle Drill", role: "ADMIN", status: "ACTIVE" }, select: { id: true } });
   const HOUR = 3_600_000;
-  let seq = 0;
 
-  type World = { f: ContentMonthFixture; viewer: PortalViewer; staff: PortalViewer; token: PortalViewer; videos: string[] };
-  const world = async (name: string, over: Partial<Parameters<typeof buildContentMonth>[1]> = {}): Promise<World> => {
-    const slug = name.toLowerCase().replace(/[^a-z]+/g, "");
-    const f = await buildContentMonth(prisma as unknown as PrismaClient, {
-      name: `${name} TEST`, package: "Accelerator", videosPerMonth: 4, monthKey: "2026-10",
-      owner: { email: `${slug}@realtourpilot.com`, name }, ...over,
-    });
-    await ensureOutputsForProject(f.projectId!);
-    const videos: string[] = [];
-    for (let slot = 1; slot <= 10; slot++) {
-      const v = await prisma.contentVideo.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthId: f.monthId, monthKey: f.monthKey, projectId: f.projectId, deliverableId: f.deliverableId, slot, status: "EDITING", title: `Video ${slot}` }, select: { id: true } });
-      videos.push(v.id);
-    }
-    const enrollment = { id: f.enrollmentId, clientId: f.clientId, clientName: f.clientName, status: "ACTIVE", videosPerMonth: f.videosPerMonth, sessionsPerMonth: f.sessionsPerMonth };
-    return {
-      f, videos,
-      viewer: { enrollment, actor: { kind: "CLIENT", clientUserId: f.clientUserId!, email: `${slug}@realtourpilot.com`, name, membershipId: f.membershipId!, membershipRole: "OWNER" }, access: "FULL", via: "LOGIN" } as PortalViewer,
-      staff: { enrollment, actor: { kind: "STAFF", staffUserId: staffUser.id, staffName: "Kyle Drill", staffRole: "ADMIN" }, access: "FULL", via: "STAFF" } as PortalViewer,
-      token: { enrollment, actor: { kind: "TOKEN" }, access: "FULL", via: "TOKEN" } as PortalViewer,
-    };
-  };
-  /** A cut the editor handed in: PENDING, playable, on its video. */
-  const mkCut = async (w: World, slot: number, round: number, over: Record<string, unknown> = {}) => {
-    const row = await prisma.reviewSubmission.create({
-      data: { projectId: w.f.projectId!, deliverableId: w.f.deliverableId, slot, round, status: "PENDING", fileName: `${w.f.clientName.split(" ")[0].toLowerCase()}-video${slot}-v${round}.mp4`, source: "upload", submittedByKey: "kim", videoId: w.videos[slot - 1], createdAt: new Date(Date.now() - 1000 + seq++), ...over },
-      select: { id: true },
-    });
-    await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: streamUrlFor(row.id) } });
-    return row.id;
-  };
-  /** Jordan's QC approve in the Review Room — which is the release. */
-  const release = async (id: string) => {
-    const r = await rr.approveCut(id);
-    if (!r.ok) throw new Error(`release ${id}: ${r.message}`);
-    return r;
-  };
-  const note = (w: World, sub: string, body: string) =>
-    prisma.portalComment.create({ data: { submissionId: sub, projectId: w.f.projectId!, enrollmentId: w.f.enrollmentId, timeSec: 12, body, status: "OPEN", clientUserId: w.f.clientUserId }, select: { id: true } });
+  // world / mkCut / release / note live in scripts/_fixtures/reviewWorld.ts
+  // (R04, Sep 28), shared with the real-Postgres race drills.
+  type World = ReviewWorld;
+  const { world, mkCut, release, note } = await reviewWorldKit({ staffUserId: staffUser.id });
   const windowOf = (sub: string) => prisma.contentReviewWindow.findUnique({ where: { submissionId: sub } });
   const setSwitch = async (key: string, enabled: boolean, enabledAt = new Date(Date.now() - HOUR), configJson: string | null = null) => {
     await prisma.programAutomation.upsert({ where: { key }, create: { key, enabled, enabledBy: "drill", enabledAt, configJson }, update: { enabled, enabledAt, configJson } });

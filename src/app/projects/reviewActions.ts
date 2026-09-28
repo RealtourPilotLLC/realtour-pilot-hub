@@ -278,12 +278,27 @@ export async function setMediaNoteStatus(
     return { ok: false, message: (e as Error).message };
   }
 
+  // WHO MOVED IT, AND WHEN (review, Sep 28): the stamps the Review Room's own
+  // toggle writes (setCutNoteStatus). A photographer's "Fixed" on /shoot lists
+  // cut notes too, and without them the Room's status dot kept naming whoever
+  // moved the note before — "Marked fixed by Kyle", at Kyle's time. Roster
+  // name before email (actorName); no login at all is local dev.
+  const me = await getCurrentUser().catch(() => null);
+  const { displayNameFor } = await import("@/lib/actorName");
+  const { LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } = await import("@/lib/reviewAttribution");
+  // A "view as" preview moves nothing in the previewed person's name, auth on
+  // or off (the Room's own rule, gap 20).
+  if (me?.impersonating) return { ok: false, message: PREVIEW_REFUSED };
+  const statusBy = me ? await displayNameFor(me) : LOCAL_DEV_AUTHOR;
+  const at = new Date();
   await prisma.mediaNote.update({
     where: { id: noteId },
     data: {
       status,
+      statusBy,
+      statusAt: at,
       // RESOLVED stamps the approval; reopening clears it; FIXED leaves it be.
-      ...(status === "RESOLVED" ? { resolvedAt: new Date() } : status === "OPEN" ? { resolvedAt: null } : {}),
+      ...(status === "RESOLVED" ? { resolvedAt: at } : status === "OPEN" ? { resolvedAt: null } : {}),
     },
   });
 

@@ -570,7 +570,10 @@ async function main() {
     c.ok("script_auto_share is its own switch, and a missing row is OFF", (AUTOMATION_KEYS as readonly string[]).includes("script_auto_share") && !(await isAutomationEnabled("script_auto_share")));
     c.ok("…with words that say what it does", AUTOMATION_EFFECTS.script_auto_share.title === "Share scripts without my approval" && AUTOMATION_EFFECTS.script_auto_share.reaches === "clients");
     const panel = fs.readFileSync(path.join(REPO, "src/components/settings/ProgramAutomationPanel.tsx"), "utf8");
-    c.ok("settings: the three rows, each with its dependency", ["Draft scripts automatically", "Share scripts without my approval", "Email the client when a script is shared", "has no effect while drafting is off", "emails only what has been shared"].every((s) => panel.toLowerCase().includes(s.toLowerCase())));
+    // Batch-6 review (Sep 28): the old dependency line said auto-share "has no
+    // effect while drafting is off" — false; its sweep still releases clean
+    // drafts that already exist. The panel now says what it really does.
+    c.ok("settings: the three rows, each with its TRUE dependency", ["Draft scripts automatically", "Share scripts without my approval", "Email the client when a script is shared", "still releases clean drafts the hub already wrote", "no new drafts are written while drafting or ai runs is off", "emails only what has been shared"].every((s) => panel.toLowerCase().includes(s.toLowerCase())) && !panel.toLowerCase().includes("has no effect while drafting is off"));
     const MARK = "Quillfeather";
     const G = await buildContentMonth(db, { name: "Release Drill TEST", package: "Accelerator", monthKey: NEXT, owner: { email: "info+releasedrill@realtourpilot.com" }, topics: [{ title: "The pricing myth", selection: "SELECTED" }, { title: "Too long to share", selection: "SELECTED" }, { title: "Two points only", selection: "SELECTED" }, { title: "Jordan gets there first", selection: "SELECTED" }] });
     const gS = await approvedStrategyFor(G.enrollmentId, "Release Drill TEST");

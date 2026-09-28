@@ -10,6 +10,7 @@ import { googleAuthorizeUrl, googleConfigured, gmailSendHealth } from "@/lib/int
 import { slackBotScopes } from "@/lib/integrations/slack";
 import { webhookHealthByProvider, webhookLaneHealth, unresolvedWebhookFailures, webhookErrorCount } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
+import { cronHealthByJob } from "@/lib/cronHealth";
 import { MailboxHealth, type MailboxRow } from "@/components/connections/MailboxHealth";
 import { mailboxReadHealth } from "@/lib/gmailHealth";
 import { WebhookHealthStrip } from "@/components/connections/WebhookHealthStrip";
@@ -40,53 +41,14 @@ function capped<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 
-// Last 5 cron runs per job, for the Sync health panel. Best-effort: the CronRun
-// table is additive and may not be pushed to this database yet — the page must
-// render either way.
+// Last 5 cron runs per job, for the Sync health panel: every job vercel.json
+// schedules, including one that has never recorded a run (lib/cronHealth, A01,
+// Sep 28 2026 — this used to read the 60 newest rows across ALL jobs, and the
+// five-minute jobs pushed the daily ones off the panel within hours).
+// Best-effort: the page must render even when CronRun cannot be read.
 async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }> {
   try {
-    const rows = await prisma.cronRun.findMany({
-      orderBy: { startedAt: "desc" },
-      take: 60,
-      select: { id: true, job: true, startedAt: true, finishedAt: true, ok: true, error: true, summary: true },
-    });
-    const byJob = new Map<string, CronJobHealth>();
-    for (const r of rows) {
-      const entry = byJob.get(r.job) ?? { job: r.job, runs: [] };
-      if (entry.runs.length < 5) {
-        let skipped: string[] = [];
-        let timedOut: string[] = [];
-        let slowest: string | null = null;
-        try {
-          const s = r.summary ? (JSON.parse(r.summary) as { skipped?: string[]; timedOut?: string[]; ms?: Record<string, number> }) : null;
-          if (Array.isArray(s?.skipped)) skipped = s.skipped;
-          if (Array.isArray(s?.timedOut)) timedOut = s.timedOut;
-          // Per-step timings are checkpointed after every step (lib/cron), so
-          // even a hard-killed run says which step was the hog.
-          const ms = s?.ms && typeof s.ms === "object" ? Object.entries(s.ms) : [];
-          if (ms.length) {
-            const [name, t] = ms.reduce((a, b) => (b[1] > a[1] ? b : a));
-            slowest = `${name} ${Math.round(t / 1000)}s`;
-          }
-        } catch { /* unreadable summary */ }
-        // A run whose steps all returned can still have failed at part of its
-        // job: the comms scan reads two mailboxes and says `degraded` when one
-        // of them was not read (§9, Sep 26). That is not green.
-        const degraded = r.job === "gmail" && /\\?"degraded\\?":true/.test(r.summary ?? "");
-        entry.runs.push({
-          id: r.id,
-          at: r.startedAt.toISOString(),
-          // No finishedAt = still running or hard-killed mid-run: unknown, shown grey.
-          ok: r.finishedAt ? r.ok && !degraded : null,
-          error: r.error ?? (degraded ? "degraded — a mailbox was not read (see Mailboxes below)" : null),
-          skipped,
-          timedOut,
-          slowest,
-        });
-      }
-      byJob.set(r.job, entry);
-    }
-    return { crons: [...byJob.values()].sort((a, b) => a.job.localeCompare(b.job)), ready: true };
+    return { crons: await cronHealthByJob(5), ready: true };
   } catch {
     return { crons: [], ready: false };
   }

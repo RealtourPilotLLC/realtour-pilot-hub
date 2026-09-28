@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { Avatar } from "@/components/ui/Avatar";
 import { getPhotographerReviewQueue, type PhotographerCut } from "@/lib/reviewRoom";
+import { verdictLine } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // THE REVIEW ROOM, AS THE PERSON WHO SHOT IT SEES IT (Jordan, Sep 18: "I want
@@ -58,7 +59,8 @@ function CutRow({ c, decided }: { c: PhotographerCut; decided?: boolean }) {
             <span className="truncate">
               {c.clientName}
               {" · "}
-              {decided && c.decidedAt ? `decided ${ago(c.decidedAt)}` : `handed in ${ago(c.createdAt)}`}
+              {/* Who ruled, and when — the same line the desk reads (Sep 28). */}
+              {decided && c.decidedAt ? verdictLine(c.verdict) ?? `decided ${ago(c.decidedAt)}` : `handed in ${ago(c.createdAt)}`}
             </span>
           </div>
         </div>

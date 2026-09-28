@@ -13,6 +13,7 @@ import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
 import { getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
 import { getFixPatterns, getQcStats } from "@/lib/qc";
+import { verdictLine } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
 
@@ -84,7 +85,12 @@ function CutRow({ s, decided, viewerTeamMemberId = null }: { s: QueueSubmission;
               {s.clientName}
               {s.submittedByName ? ` · from ${s.submittedByName}` : ""}
               {" · "}
-              {decided && s.decidedAt ? `decided ${ago(s.decidedAt)}` : `submitted ${ago(s.createdAt)}`}
+              {/* WHO RULED, AND WHEN (Sep 28): "Sent back by James Rivera · Mon,
+                  Sep 28, 2:14 PM", or the client's own send-back on an approved
+                  cut — the row used to say only "decided 2 hours ago". */}
+              {decided && s.decidedAt
+                ? verdictLine(s.verdict) ?? `decided ${ago(s.decidedAt)}`
+                : `submitted ${ago(s.createdAt)}`}
             </span>
           </div>
           {s.note && <div className="mt-1 truncate text-xs italic text-muted-2">“{s.note}”</div>}

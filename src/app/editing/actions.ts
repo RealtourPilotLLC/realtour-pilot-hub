@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { EDITORS, editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
+import { officeQueueReason } from "@/lib/reviewAttribution";
 import { EDIT_PRIORITIES, EDIT_STATUS_LABELS, EDIT_TIERS, type EditOverrideInput, type EditTier } from "@/lib/editOverrideDefaults";
 import {
   OVERRIDE_SELECT,
@@ -19,6 +20,16 @@ import {
   effectiveVideosOwed,
   type OverrideSnapshot,
 } from "@/lib/editOverrides";
+
+/** The name an action signs with — the login's own, then the roster row, then
+ *  the editor, and the email only when there is no name anywhere
+ *  (lib/actorName). `me?.name ?? me?.email` signed "kyle@…" on the timeline
+ *  and the revision task for a login whose name box was left blank, while the
+ *  roster had "Kyle Cabrera" (review, Sep 28). */
+async function signedAs(me: import("@/lib/actorName").NamedLogin | null | undefined, fallback: string): Promise<string> {
+  const { displayNameFor } = await import("@/lib/actorName");
+  return (await displayNameFor(me)) ?? fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Server actions for the editor platform's /editing surface.
@@ -130,7 +141,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   try {
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
-    const by = me?.name ?? me?.email ?? "the office";
+    const by = await signedAs(me, "the office");
     const { closeGhostWork } = await import("@/lib/editorWork");
     await closeGhostWork(projectId, {
       reason: unassign ? "UNASSIGNED" : "REASSIGNED",
@@ -311,6 +322,14 @@ export async function addToEditorQueue(
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
+  // WHO PUT IT BACK (gap 12, Sep 28). The reopen said "The owner queued…"
+  // whoever pressed it, and its clock row said "the office". The signed-in
+  // person's display name now signs the card, the timeline line and the
+  // reopen's clock; a "view as" preview writes nothing, enforced or not.
+  const me = await getCurrentUser().catch(() => null);
+  if (me?.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
+  const { displayNameFor } = await import("@/lib/actorName");
+  const queuedBy = (await displayNameFor(me)) ?? null;
   if (!(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
     return { ok: false, message: "Pick a video editor (Kim or John Mark)." };
   }
@@ -371,7 +390,9 @@ export async function addToEditorQueue(
       await notifyInApp({
         kind,
         title,
-        body: cleanNote ? cleanNote.slice(0, 140) : "Added to your queue from the Editing Room.",
+        body: cleanNote
+          ? `${queuedBy ? `${queuedBy}: ` : ""}${cleanNote}`.slice(0, 140)
+          : `${queuedBy ?? "The office"} added this to your queue from the Editing Room.`,
         href: `/edit/${projectId}`,
         targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
         // No dedupeKey on purpose: every manual add is news, including a re-add.
@@ -404,7 +425,7 @@ export async function addToEditorQueue(
     // card with no re-QC gate.
     try {
       const { reflectRevisionInQc } = await import("@/lib/tasks");
-      await reflectRevisionInQc(projectId, [], revNote);
+      await reflectRevisionInQc(projectId, [], revNote, queuedBy ? { name: queuedBy, userId: me?.id ?? null } : null);
     } catch { /* framing is best-effort — the revision task below is the work item */ }
 
     // One open revision per project — same dedupeKey scheme as comms.ts.
@@ -413,9 +434,14 @@ export async function addToEditorQueue(
     const taskData = {
       taskType: "revision",
       title: `New cut — ${street}`.slice(0, 120),
-      summary: `The owner queued a new edit on this finished job for ${editorName}: “${revNote.slice(0, 220)}”. Cut it, drop it in 05-Final-Video, and send it to review.`,
+      summary: `${queuedBy ?? "The office"} queued a new edit on this finished job for ${editorName}: “${revNote.slice(0, 220)}”. Cut it, drop it in 05-Final-Video, and send it to review.`,
       description: revNote,
-      reasonCreated: "Owner added a finished job back to the Editing Room",
+      // WHO PUT IT BACK is read from this sentence (officeReopenOf) while the
+      // row is still the office's; a client's later ask rewrites it. NOT
+      // flaggedBy: that is "flagged for immediate review" on the presser's and
+      // the editor's home, and it stayed on the row over the client's next ask
+      // (review, Sep 28) — the same reason the edit_video card never sets it.
+      reasonCreated: officeQueueReason(queuedBy),
       source: "manual",
       // No due date (Jordan, Sep 8: "Revisions dont promise anything") — the
       // card reads its age from createdAt; HIGH, URGENT for a VIP/heavy client.
@@ -444,7 +470,7 @@ export async function addToEditorQueue(
       data: {
         projectId,
         type: "SYSTEM",
-        body: `Queued a new cut (as a revision) — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
+        body: `Queued a new cut (as a revision)${queuedBy ? ` by ${queuedBy}` : ""} — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
       },
     });
     await notifyQueued("revision_raised", `New cut — ${street}`);
@@ -546,7 +572,7 @@ export async function saveJobNotes(
   try {
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
-    const who = me?.name?.trim() || me?.email || "the office";
+    const who = await signedAs(me, "the office");
     const lines: string[] = [];
     if (data.notes !== undefined && (data.notes ?? null) !== (p.notes ?? null)) lines.push(`Additional notes updated by ${who}.`);
     if (data.editorBrief !== undefined && (data.editorBrief ?? null) !== (p.editorBrief ?? null)) lines.push(`Shoot brief for the editor updated by ${who}.`);
@@ -611,7 +637,7 @@ export async function saveShootBriefFields(
   try {
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
-    const who = me?.name?.trim() || me?.email || "the photographer";
+    const who = await signedAs(me, "the photographer");
     const lines: string[] = [];
     if (data.editorBrief !== undefined && (data.editorBrief ?? null) !== (prior.editorBrief ?? null)) {
       lines.push(`Shoot brief for the editor updated by ${who}.`);
@@ -838,7 +864,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
     if (heldNow) return { ok: true, message: "Status updated." };
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
-    const actor = me?.name ?? me?.email ?? "The office";
+    const actor = await signedAs(me, "The office");
     try {
       await stampWaitingHold(projectId, actor, me?.email ?? null);
     } catch {
@@ -1149,7 +1175,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
         const me = await getCurrentUser().catch(() => null);
         const office = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
         if (!wantsReview && office) {
-          const actor = me?.name ?? me?.email ?? "The office";
+          const actor = await signedAs(me, "The office");
           const laneIds = lane.map((t) => t.id);
           const sentence = `Closed by the office (${actor}) — delivered outside the Review Room.`;
           const { stampHandledByHand } = await import("@/lib/opsDay");
@@ -1273,7 +1299,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
     const started = editCard?.status === "IN_PROGRESS";
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
-    const actor = me?.name ?? me?.email ?? "The office";
+    const actor = await signedAs(me, "The office");
     {
       await prisma.smartTask.updateMany({
         where: { projectId, taskType: "edit_video", status: "IN_PROGRESS" },
@@ -1436,7 +1462,7 @@ export async function saveReelScript(projectId: string, script: string): Promise
   if ((prior.reelScript ?? "").trim() === text) return { ok: true, message: "No changes." };
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const who = me?.name ?? me?.email ?? "the office";
+  const who = await signedAs(me, "the office");
   const stamp = `Edited in the hub by ${who}`;
   const keptNote = (prior.scriptConfirmNote ?? "").replace(/^Edited in the hub by [^\n]*\n?/, "").trim();
   await prisma.project.update({
@@ -1576,7 +1602,7 @@ export async function saveEditOverrides(
 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const actor = me?.name ?? me?.email ?? "The office";
+  const actor = await signedAs(me, "The office");
   const now = new Date();
 
   // ---- The job as it reads NOW (effective values), for the sentence. ----
@@ -2018,7 +2044,7 @@ export async function escalateRushToJordan(
   if (why.length > 200) return { ok: false, message: "Keep the reason under 200 characters." };
   const me = await getCurrentUser().catch(() => null);
   if (me?.realRole === "OWNER") return { ok: false, message: "You can approve it yourself — save it here." };
-  const actor = me?.name ?? me?.email ?? "The office";
+  const actor = await signedAs(me, "The office");
 
   const { priorityImpact, rushAuthority } = await import("@/lib/editorWorkload");
   const { authEnforced } = await import("@/lib/auth/guards");
@@ -2119,7 +2145,7 @@ export async function recordAssetDependencyAction(input: {
   }
   const me = await getCurrentUser().catch(() => null);
   const { recordAssetDependency } = await import("@/lib/assetDependencies");
-  const r = await recordAssetDependency({ ...input, need: (input.need ?? "").slice(0, 160), by: me?.name ?? me?.email ?? "The office" });
+  const r = await recordAssetDependency({ ...input, need: (input.need ?? "").slice(0, 160), by: await signedAs(me, "The office") });
   if (r.ok) for (const path of [`/edit/${input.projectId}`, `/projects/${input.projectId}`, "/tasks"]) revalidatePath(path);
   return { ok: r.ok, message: r.message };
 }
@@ -2132,7 +2158,7 @@ export async function attachAssetReferenceAction(taskId: string, ref: string): P
   }
   const me = await getCurrentUser().catch(() => null);
   const { attachAssetReference } = await import("@/lib/assetDependencies");
-  const r = await attachAssetReference(taskId, ref, me?.name ?? me?.email ?? "The office");
+  const r = await attachAssetReference(taskId, ref, await signedAs(me, "The office"));
   if (r.ok) for (const path of ["/tasks", "/"]) revalidatePath(path);
   return r;
 }
@@ -2161,7 +2187,7 @@ export async function removeFromEditorQueue(projectId: string, note?: string): P
   }
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const actor = me?.name ?? me?.email ?? "The office";
+  const actor = await signedAs(me, "The office");
 
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true } });
   if (!project) return { ok: false, message: "That job no longer exists." };
@@ -2232,7 +2258,7 @@ export async function restoreToEditorQueue(projectId: string): Promise<{ ok: boo
   }
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const actor = me?.name ?? me?.email ?? "The office";
+  const actor = await signedAs(me, "The office");
 
   const { queueRemovedKey, removalFor, restorable, serialize, RESTORE_WINDOW_DAYS } = await import("@/lib/queueRemoved");
   const rec = await removalFor(projectId);
@@ -2335,7 +2361,7 @@ export async function mergeProjectWork(
 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const actor = me?.name ?? me?.email ?? "The office";
+  const actor = await signedAs(me, "The office");
   const { mergeKey, mergeContext, previewMerge, serializeMerge } = await import("@/lib/projectMerge");
 
   const [from, into] = await Promise.all([
@@ -2504,7 +2530,7 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
   }
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const actor = me?.name ?? me?.email ?? "The office";
+  const actor = await signedAs(me, "The office");
   const { mergeKey, mergeFrom, serializeMerge } = await import("@/lib/projectMerge");
 
   const m = await mergeFrom(fromId);
@@ -2645,7 +2671,7 @@ export async function mergePreview(projectId: string): Promise<{ deliverables: n
 
 async function staffActor(): Promise<{ name: string; userId: string | null }> {
   const me = await getCurrentUser().catch(() => null);
-  return { name: me?.name ?? me?.email ?? "the office", userId: me?.id ?? null };
+  return { name: await signedAs(me, "the office"), userId: me?.id ?? null };
 }
 
 export async function saveVideoBrief(

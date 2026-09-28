@@ -526,6 +526,10 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       await recordClientCommunication({
         clientId,
         clientName,
+        // WHO WROTE (Sep 28): an assistant with her own row is folded onto the
+        // agent above, but she is still the one asking. Null when the number
+        // can't say which person it is — nobody is named rather than the agent.
+        contactName: match.senderName,
         projectId: effProject?.id,
         projectStatus: effProject?.status ?? null,
         propertyAddress: effProject?.title ?? null,
@@ -975,6 +979,9 @@ async function handleTranscript(data: Record<string, unknown>) {
     await recordClientCommunication({
       clientId,
       clientName,
+      // The caller by their own row's name (an assistant is not the agent), or
+      // nobody when the number is shared — see resolveClientByPhones.
+      contactName: match.senderName,
       projectId: project?.id,
       projectStatus: project?.status ?? null,
       propertyAddress: project?.title ?? null,

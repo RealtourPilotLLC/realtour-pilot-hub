@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film, Radar } from "lucide-react";
+import { Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film, Radar, KeyRound, Wallet, Gauge, Plug } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
@@ -26,6 +26,11 @@ import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationP
 import { loadAutomations } from "@/app/settings/programActions";
 import { RemindersPanel } from "@/components/settings/RemindersPanel";
 import { loadRemindersPanelState } from "@/app/settings/reminderActions";
+import { SettingsGroup, settingsGroupsFor, SETTINGS_LAYOUT, type SettingsGroupDef, type SettingsCardKey } from "@/components/settings/SettingsGroup";
+import { SettingsNav } from "@/components/settings/SettingsNav";
+import { ReadinessPanel, IntegrationsReadiness } from "@/components/settings/ReadinessPanel";
+import { readinessReport } from "@/lib/readiness";
+import type { SettingsGroupId } from "@/lib/readiness";
 
 export const dynamic = "force-dynamic";
 // The two provider cards stream (see the <Suspense> boundaries below), so the
@@ -127,11 +132,20 @@ async function CalendlyCard() {
 // without a deploy. First resident: editor auto-routing (who gets standard /
 // premium / personal-branding video work). New rule groups get their own
 // Section here; storage is the generic AppSetting KV (src/lib/settings.ts).
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ check?: string | string[] }> }) {
   await requirePageAccess("settings");
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
+  const isOwner = me ? me.role === "OWNER" : !authEnforced();
+
+  // READINESS (A56). Started here, awaited inside its own <Suspense> by the
+  // panel at the top and by the Integrations group — one report, two readers,
+  // and neither holds up the saved rules below. It is database reads only; the
+  // one live question (can Gmail send?) is asked only when someone presses
+  // "Check Gmail", which comes back as ?check=gmail.
+  const check = (await searchParams).check;
+  const readiness = readinessReport({ live: check === "gmail" }).catch(() => null);
 
   // ONE WAIT, NOT THREE (Sep 20). These used to be three serial awaits —
   // automations, then reminders, then everything else — with no data dependency
@@ -165,6 +179,209 @@ export default async function SettingsPage() {
     commsCoachingSettings().catch(() => null),
   ]);
 
+  // THE CARDS, BY NAME (11-settings-grouping). Each is exactly the card it was
+  // before the grouping, with its own id and anchor where it had one; the only
+  // addition is a data-settings-card name so a drill can prove every card
+  // renders once, inside one group. Where each card goes is decided below, in
+  // one list, so a card cannot be dropped or shown twice by editing a group.
+  const card = (key: SettingsCardKey, node: React.ReactNode, anchor?: string) => (
+    <div key={key} data-settings-card={key} id={anchor} className={anchor ? "scroll-mt-28" : undefined}>{node}</div>
+  );
+  const cards = {
+    "editor-routing": card("editor-routing",
+      <Section icon={Route} title="Editor auto-assignment">
+        <p className="mb-4 text-sm leading-relaxed text-muted">
+          When raws land on a video job, the hub routes the edit automatically.
+          &ldquo;Manual&rdquo; sends the job to the pinned <strong>Needs assigning</strong> pile
+          on Tasks instead, for you or Kyle to hand off. Reassigning any single job in the
+          Editing Room always overrides these rules.
+        </p>
+        <RoutingRulesForm initial={rules} />
+      </Section>),
+
+    "automated-texts": card("automated-texts",
+      <Section icon={MessageSquareText} title="Automated texts">
+        <p className="mb-3 text-[13px] text-muted">
+          Every text the hub sends to a client on its own — what it is, when it goes out, and the switches.
+          Changes take effect on the next hourly run.
+        </p>
+        <AutoTextSettings initial={textRules} />
+      </Section>),
+
+    "text-wording": card("text-wording",
+      <Section icon={MessageSquareText} title="Text wording">
+        <TextTemplateSettings initial={templates} />
+      </Section>),
+
+    turnaround: card("turnaround",
+      <Section icon={Clock} title="Turnaround promises">
+        <TurnaroundSettings initial={turns} />
+      </Section>),
+
+    // The coverage hours (who is "here", and who is on call) live inside this
+    // card; the Team group links to them through this anchor. Jordan's
+    // Notification schedule is in here too (#notification-schedule).
+    "internal-alerts": card("internal-alerts",
+      <Section icon={BellRing} title="Internal alerts">
+        <InternalAlertSettings initial={alerts} />
+      </Section>, "internal-alerts"),
+
+    "team-notifications": card("team-notifications",
+      <Section icon={Users} title="Team notifications" count={notifyRows ? notifyRows.length : undefined}>
+        {notifyRows
+          ? <TeamNotifications rows={notifyRows} />
+          : <p className="text-sm text-muted">The roster could not be read just now — reload to try again. Nothing has changed about who gets notified.</p>}
+      </Section>),
+
+    // END-OF-DAY COMMS COACHING (Jordan, Sep 21). In the Team group because it
+    // is about what a PERSON is shown, not about what the machinery does. The
+    // anchor is what the report at /coaching links back to.
+    coaching: card("coaching",
+      <Section
+        icon={Radar}
+        title="Comms coaching"
+        count={coaching ? (coaching.teamMemberIds.length === 0 ? "nobody yet" : coaching.teamMemberIds.length) : undefined}
+        action={
+          <Link href="/coaching" className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
+            Report <ArrowRight className="size-3" />
+          </Link>
+        }
+      >
+        {coaching
+          ? <CoachingSettings initial={coaching} isOwner={isOwner} />
+          : <p className="text-sm text-muted">The coaching rules could not be read just now — reload to try again. Nobody has been added or removed, and nothing has been sent.</p>}
+      </Section>, "coaching"),
+
+    // Owner's own switch — read here so the card can say how long it has been
+    // on. In the owner-only Financial group (§11: owner-only financial
+    // controls stay protected).
+    "pay-view": card("pay-view",
+      <Section icon={EyeOff} title="Photographer pay view">
+        <PayVisibilitySettings initial={payVisibility} isOwner={isOwner} />
+      </Section>),
+
+    "review-room": card("review-room",
+      <Section icon={Clapperboard} title="Review Room">
+        <ReviewRoomSettings initial={reviewRoom} />
+      </Section>),
+
+    // The 1080p pass, straight after the Review Room because that is where it
+    // starts: approving a cut in there is what sets it off. The anchor is what
+    // the Connections page links to.
+    topaz: card("topaz",
+      <Suspense fallback={<ProviderCardSkeleton icon={Film} title="1080p video pass" note="asking Topaz where the month stands…" />}>
+        <TopazCard initial={topaz} />
+      </Suspense>, "topaz"),
+
+    // CONTENT-PROGRAM AUTOMATIONS (spec §13) — every switch, including the ones
+    // that have never been configured. /content, /content/monitoring and the
+    // monitoring alerts link here.
+    "program-automations": card("program-automations",
+      <Section
+        icon={Zap}
+        title="Content program automations"
+        count={automations ? `${automations.filter((a) => a.enabled).length}/${automations.length} on` : undefined}
+      >
+        {automations
+          ? <ProgramAutomationPanel
+              isOwner={isOwner}
+              rows={automations.map((a) => ({
+                key: a.key, enabled: a.enabled, missing: a.missing, enabledBy: a.enabledBy,
+                enabledAtISO: a.enabledAt?.toISOString() ?? null, lastRunAtISO: a.lastRunAt?.toISOString() ?? null,
+                lastError: a.lastError, lastErrorAtISO: a.lastErrorAt?.toISOString() ?? null,
+              }))}
+            />
+          : <p className="text-sm text-muted">The automation switches could not be read just now — reload to try again. Nothing has been turned on or off.</p>}
+      </Section>, "program-automations"),
+
+    "program-reminders": card("program-reminders",
+      <Section
+        icon={BellRing}
+        title="Program reminders"
+        count={reminders ? (reminders.switch.enabled ? "on" : reminders.switch.missing ? "never configured" : "off") : undefined}
+      >
+        {reminders
+          ? <RemindersPanel state={reminders} />
+          : <p className="text-sm text-muted">The reminder ledger could not be read just now — reload to try again.</p>}
+      </Section>, "program-reminders"),
+
+    calendly: card("calendly",
+      <Suspense fallback={<ProviderCardSkeleton icon={CalendarCheck} title="Calendly & content-program calls" note="asking Calendly for the event types…" />}>
+        <CalendlyCard />
+      </Suspense>, "calendly"),
+
+    "product-categories": card("product-categories",
+      <Section icon={Package} title="Product categories">
+        <p className="mb-3 text-sm leading-relaxed text-muted">
+          Every Aryeo product, mapped by hand to what it actually produces — photo, video
+          or both, its tier, and whether it&rsquo;s shoot work or a post-shoot add-on. A mapped
+          product overrides the automatic parser everywhere (the fix for phantom floor
+          plans and ghost videos).
+        </p>
+        <Link href="/settings/products" className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+          Open the product map <ArrowRight className="size-3.5" />
+        </Link>
+      </Section>),
+  } satisfies Record<SettingsCardKey, React.ReactNode>;
+
+  // Links, not controls: where access and coverage are actually managed.
+  const linkRow = "flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-2 text-sm hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand";
+  const extras: Partial<Record<SettingsGroupId, React.ReactNode>> = {
+    team: (
+      <Section key="people-access" icon={KeyRound} title="People & access">
+        <div className="-mx-2 space-y-0.5">
+          <Link href={isOwner ? "/users?tab=logins" : "/users?tab=team"} className={linkRow}>
+            <span>
+              <span className="font-medium">{isOwner ? "Logins & access" : "The team"}</span>
+              <span className="block text-[12px] text-muted">{isOwner ? "Who can sign in, their role, and what each role can open." : "Who is on the team and how to reach them."}</span>
+            </span>
+            <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
+          </Link>
+          <a href="#internal-alerts" className={linkRow}>
+            <span>
+              <span className="font-medium">Coverage hours & on call</span>
+              <span className="block text-[12px] text-muted">When somebody is here, and who answers urgent alerts outside it. In Internal alerts, below.</span>
+            </span>
+            <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
+          </a>
+        </div>
+      </Section>
+    ),
+    integrations: (
+      <Suspense key="integrations-readiness" fallback={<ProviderCardSkeleton icon={Plug} title="Connections" note="reading the connections…" />}>
+        <IntegrationsReadiness report={readiness} isOwner={isOwner} />
+      </Suspense>
+    ),
+    financial: (
+      <Section key="money-links" icon={Wallet} title="Payroll & bank feeds">
+        <div className="-mx-2 space-y-0.5">
+          <Link href="/sales?tab=payroll" className={linkRow}>
+            <span>
+              <span className="font-medium">Payroll</span>
+              <span className="block text-[12px] text-muted">Each creative&rsquo;s pay by period, mileage and adjustments.</span>
+            </span>
+            <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
+          </Link>
+          <Link href="/connections/banks" className={linkRow}>
+            <span>
+              <span className="font-medium">Bank feeds</span>
+              <span className="block text-[12px] text-muted">The read-only bank and card connections behind Finance.</span>
+            </span>
+            <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
+          </Link>
+        </div>
+      </Section>
+    ),
+  };
+
+  const groups = settingsGroupsFor(isOwner);
+  const render = (g: SettingsGroupDef) => (
+    <SettingsGroup key={g.id} group={g}>
+      {SETTINGS_LAYOUT[g.id].map((k) => cards[k])}
+      {extras[g.id]}
+    </SettingsGroup>
+  );
+
   return (
     <div>
       {/* "Within a minute" is true of the rules themselves (getSetting caches
@@ -177,134 +394,16 @@ export default async function SettingsPage() {
         title="Settings"
         subtitle="The rules the platform runs on — most changes apply within a minute; the automated texts wait for the next hourly run"
       />
-      <div className="mx-auto max-w-3xl space-y-6 p-4 pb-16 sm:p-6">
-        <Section icon={Route} title="Editor auto-assignment">
-          <p className="mb-4 text-sm leading-relaxed text-muted">
-            When raws land on a video job, the hub routes the edit automatically.
-            &ldquo;Manual&rdquo; sends the job to the pinned <strong>Needs assigning</strong> pile
-            on Tasks instead, for you or Kyle to hand off. Reassigning any single job in the
-            Editing Room always overrides these rules.
-          </p>
-          <RoutingRulesForm initial={rules} />
-        </Section>
-
-        <Section icon={MessageSquareText} title="Automated texts">
-          <p className="mb-3 text-[13px] text-muted">
-            Every text the hub sends to a client on its own — what it is, when it goes out, and the switches.
-            Changes take effect on the next hourly run.
-          </p>
-          <AutoTextSettings initial={textRules} />
-        </Section>
-
-        <Section icon={MessageSquareText} title="Text wording">
-          <TextTemplateSettings initial={templates} />
-        </Section>
-
-        <Section icon={Clock} title="Turnaround promises">
-          <TurnaroundSettings initial={turns} />
-        </Section>
-
-        <Section icon={BellRing} title="Internal alerts">
-          <InternalAlertSettings initial={alerts} />
-        </Section>
-
-        <Section icon={Users} title="Team notifications" count={notifyRows ? notifyRows.length : undefined}>
-          {notifyRows
-            ? <TeamNotifications rows={notifyRows} />
-            : <p className="text-sm text-muted">The roster could not be read just now — reload to try again. Nothing has changed about who gets notified.</p>}
-        </Section>
-
-        {/* END-OF-DAY COMMS COACHING (Jordan, Sep 21). Sits beside Team
-            notifications and the pay-view switch because all three are about
-            what a PERSON is shown, not about what the machinery does. The
-            anchor is what the report at /coaching links back to. */}
-        <div id="coaching" className="scroll-mt-6">
-          <Section
-            icon={Radar}
-            title="Comms coaching"
-            count={coaching ? (coaching.teamMemberIds.length === 0 ? "nobody yet" : coaching.teamMemberIds.length) : undefined}
-            action={
-              <Link href="/coaching" className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
-                Report <ArrowRight className="size-3" />
-              </Link>
-            }
-          >
-            {coaching
-              ? <CoachingSettings initial={coaching} isOwner={me ? me.role === "OWNER" : !authEnforced()} />
-              : <p className="text-sm text-muted">The coaching rules could not be read just now — reload to try again. Nobody has been added or removed, and nothing has been sent.</p>}
-          </Section>
+      <div className="mx-auto max-w-3xl space-y-8 p-4 pb-16 sm:p-6">
+        <div className="space-y-4">
+          <SettingsNav groups={groups} />
+          <div id="readiness" className="scroll-mt-28">
+            <Suspense fallback={<ProviderCardSkeleton icon={Gauge} title="Readiness" note="reading every switch…" />}>
+              <ReadinessPanel report={readiness} />
+            </Suspense>
+          </div>
         </div>
-
-        {/* Owner's own switch — read here so the card can say how long it has
-            been on. Placed next to the Review Room because both are about what
-            a creative sees rather than what the machinery does. */}
-        <Section icon={EyeOff} title="Photographer pay view">
-          <PayVisibilitySettings initial={payVisibility} isOwner={me ? me.role === "OWNER" : !authEnforced()} />
-        </Section>
-
-        <Section icon={Clapperboard} title="Review Room">
-          <ReviewRoomSettings initial={reviewRoom} />
-        </Section>
-
-        {/* The 1080p pass, straight after the Review Room because that is where
-            it starts: approving a cut in there is what sets it off. The anchor
-            is what the Connections page links to. */}
-        <div id="topaz" className="scroll-mt-6">
-          <Suspense fallback={<ProviderCardSkeleton icon={Film} title="1080p video pass" note="asking Topaz where the month stands…" />}>
-            <TopazCard initial={topaz} />
-          </Suspense>
-        </div>
-
-        {/* CONTENT-PROGRAM AUTOMATIONS (spec §13) — every switch, including the
-            ones that have never been configured. */}
-        <div id="program-automations" className="scroll-mt-6">
-          <Section
-            icon={Zap}
-            title="Content program automations"
-            count={automations ? `${automations.filter((a) => a.enabled).length}/${automations.length} on` : undefined}
-          >
-            {automations
-              ? <ProgramAutomationPanel
-                  isOwner={me ? me.role === "OWNER" : !authEnforced()}
-                  rows={automations.map((a) => ({
-                    key: a.key, enabled: a.enabled, missing: a.missing, enabledBy: a.enabledBy,
-                    enabledAtISO: a.enabledAt?.toISOString() ?? null, lastRunAtISO: a.lastRunAt?.toISOString() ?? null,
-                    lastError: a.lastError, lastErrorAtISO: a.lastErrorAt?.toISOString() ?? null,
-                  }))}
-                />
-              : <p className="text-sm text-muted">The automation switches could not be read just now — reload to try again. Nothing has been turned on or off.</p>}
-          </Section>
-        </div>
-
-        <div id="program-reminders" className="scroll-mt-6">
-          <Section
-            icon={BellRing}
-            title="Program reminders"
-            count={reminders ? (reminders.switch.enabled ? "on" : reminders.switch.missing ? "never configured" : "off") : undefined}
-          >
-            {reminders
-              ? <RemindersPanel state={reminders} />
-              : <p className="text-sm text-muted">The reminder ledger could not be read just now — reload to try again.</p>}
-          </Section>
-        </div>
-
-        <div id="calendly" className="scroll-mt-6">
-          <Suspense fallback={<ProviderCardSkeleton icon={CalendarCheck} title="Calendly & content-program calls" note="asking Calendly for the event types…" />}>
-            <CalendlyCard />
-          </Suspense>
-        </div>
-
-        <Section icon={Package} title="Product categories">
-          <p className="mb-3 text-sm leading-relaxed text-muted">
-            Every Aryeo product, mapped by hand to what it actually produces — photo, video
-            or both, its tier, and whether it&rsquo;s shoot work or a post-shoot add-on. A mapped
-            product overrides the automatic parser everywhere (the fix for phantom floor
-            plans and ghost videos).
-          </p>
-          <Link href="/settings/products" className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-            Open the product map <ArrowRight className="size-3.5" />
-          </Link>
-        </Section>
+        {groups.map(render)}
         {/* RETIRED Sep 20: the "More settings" card promised that turnaround
             promises, alert thresholds and text templates were "next to move in
             here". All three have shipped on this very page for months — they

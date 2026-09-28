@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { replyCutNote, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote } from "@/lib/reviewRoom";
+import { byLine, statusLine, whenET } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // The EDITOR's receiving end of the Review Room — rendered on their /edit/[id]
@@ -133,6 +134,13 @@ export function EditFeedback({
                     {n.replies.length} repl{n.replies.length === 1 ? "y" : "ies"}
                   </span>
                 )}
+                {/* WHO LEFT IT, AND WHEN (gap 4, Sep 28) — the editor is the
+                    one person who most needs to know whose note it is, and the
+                    list never said. Then who last moved it, and when. */}
+                <span className="mt-0.5 block text-[11px] text-muted-2">
+                  {byLine(n.authorName ?? "The reviewer", n.createdAt)}
+                  {statusLine(n) ? ` · ${statusLine(n)}` : ""}
+                </span>
               </button>
               {canFix && n.status === "OPEN" && n.kind === "fix" && (
                 <button
@@ -153,6 +161,7 @@ export function EditFeedback({
                     <div>
                       <span className="text-xs font-medium text-muted">{r.authorName ?? "Someone"}: </span>
                       <span className="text-foreground/85">{r.body}</span>
+                      <span className="ml-1.5 text-[10px] text-muted-2">{whenET(r.createdAt)}</span>
                     </div>
                   </div>
                 ))}

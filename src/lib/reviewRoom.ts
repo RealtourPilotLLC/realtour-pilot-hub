@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { videoTier } from "@/lib/projectStatus";
 import { isHeldForSelfCheck } from "@/lib/selfCheck";
+import { verdictOf, type Verdict } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // Read layer for the STANDALONE Review Room (/review) — the owner's quality
@@ -34,6 +35,10 @@ export type QueueSubmission = {
   hasAsset: boolean;
   createdAt: string;
   decidedAt: string | null;
+  /** WHO RULED, AND WHEN (Sep 28) — the office's verdict, or the client's
+   *  send-back on a cut the office had approved (reviewAttribution.verdictOf).
+   *  The row used to say "decided 2 hours ago" and nothing else. */
+  verdict: Verdict | null;
   openEditorNotes: number;
   /** §8.1: the ONE person a waiting cut is waiting on (ReviewSubmission.
    *  reviewerTeamMemberId). Null = nobody holds it — "the office". */
@@ -195,7 +200,9 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
         parentId: true,
         authorKey: true,
         createdAt: true,
-        parent: { select: { projectId: true, lane: true } },
+        // photographerId / editorKey: who the thread is ADDRESSED to — see
+        // the per-thread desk test below.
+        parent: { select: { projectId: true, lane: true, photographerId: true, editorKey: true } },
       },
     }),
   ]);
@@ -227,6 +234,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     hasAsset: !!s.assetUrl,
     createdAt: s.createdAt.toISOString(),
     decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
+    verdict: verdictOf(s),
     openEditorNotes: editorOpenByProject.get(s.projectId) ?? 0,
     reviewer: s.reviewerTeamMemberId ? { id: s.reviewerTeamMemberId, name: reviewerNames.get(s.reviewerTeamMemberId) ?? "someone" } : null,
     heldForCheck: isHeldForSelfCheck(s),
@@ -249,18 +257,48 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   const latest = [...latestByCut.values()].filter((s) => inWindow(s, since));
 
   // Unanswered creative replies: per thread, whoever spoke LAST holds the
-  // floor — if that's not the owner, the owner owes an answer. Only live
+  // floor — if that's not the review desk, the desk owes an answer. Only live
   // (non-RESOLVED) roots count; a root's status lives in [OPEN, FIXED] then,
   // so every counted thread already has a follow-up row to hang the chip on.
+  // THE DESK, NOT JORDAN ALONE (gap 19, Sep 28): the test was
+  // `authorKey === "owner"`, so James or Kyle answering left the thread
+  // "unanswered" for good. Any review-desk author key closes it now.
+  const { reviewDeskAuthorKeys } = await import("@/lib/actorName");
+  const deskKeys = await reviewDeskAuthorKeys().catch(() => new Set<string>(["owner"]));
   const lastReplyByRoot = new Map<string, (typeof threadReplies)[number]>();
   for (const r of threadReplies) {
     if (!r.parentId) continue;
     const cur = lastReplyByRoot.get(r.parentId);
     if (!cur || r.createdAt > cur.createdAt) lastReplyByRoot.set(r.parentId, r);
   }
+  // PER THREAD, THE ADDRESSEE IS THE CREATIVE (review, Sep 28). A desk seat
+  // who also shoots — James, an ADMIN — is the one being asked on a
+  // PHOTOGRAPHER-lane note on his own job, and his "Which bathroom do you
+  // mean?" is the question, not the desk's answer. So a reply from the root's
+  // addressee (tm:<photographerId> on a PHOTOGRAPHER root, editor:<key> or
+  // that editor's roster key on an EDITOR root) counts as the creative's even
+  // when the same person holds a review seat; only OTHER desk keys close it.
+  const editorTm = new Map<string, string | null>();
+  {
+    const { editorTeamMemberId } = await import("@/lib/editors");
+    const keys = new Set<string>();
+    for (const r of lastReplyByRoot.values()) if (r.parent?.lane === "EDITOR" && r.parent.editorKey) keys.add(r.parent.editorKey);
+    for (const k of keys) editorTm.set(k, await editorTeamMemberId(k).catch(() => null));
+  }
+  const addresseeKeys = (p: { lane: string; photographerId: string | null; editorKey: string | null }): Set<string> => {
+    const out = new Set<string>();
+    if (p.lane === "PHOTOGRAPHER" && p.photographerId) out.add(`tm:${p.photographerId}`);
+    if (p.lane === "EDITOR" && p.editorKey) {
+      out.add(`editor:${p.editorKey}`);
+      const tm = editorTm.get(p.editorKey);
+      if (tm) out.add(`tm:${tm}`);
+    }
+    return out;
+  };
   const awaitingReplyByKey = new Map<string, number>(); // "<projectId>:<lane>" → count
   for (const r of lastReplyByRoot.values()) {
-    if (!r.parent || r.authorKey === "owner") continue;
+    if (!r.parent) continue;
+    if (r.authorKey && deskKeys.has(r.authorKey) && !addresseeKeys(r.parent).has(r.authorKey)) continue;
     const lane = (["EDIT", "PHOTOGRAPHER", "EDITOR"].includes(r.parent.lane) ? r.parent.lane : "EDIT") as QueueFollowUp["lane"];
     const key = `${r.parent.projectId}:${lane}`;
     awaitingReplyByKey.set(key, (awaitingReplyByKey.get(key) ?? 0) + 1);
@@ -343,6 +381,8 @@ export type PhotographerCut = {
   hasAsset: boolean;
   createdAt: string;
   decidedAt: string | null;
+  /** Who ruled, and when (Sep 28) — a photographer reads the same line the desk does. */
+  verdict: Verdict | null;
   /** Capture notes on this cut addressed to THEM, still open — the thing they
    *  actually owe an answer on. */
   myOpenNotes: number;
@@ -429,6 +469,7 @@ export async function getPhotographerReviewQueue(memberId: string): Promise<Phot
       hasAsset: !!s.assetUrl,
       createdAt: s.createdAt.toISOString(),
       decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
+      verdict: verdictOf(s),
       myOpenNotes: tally.notes,
       myOpenAsks: tally.asks,
     };
@@ -456,6 +497,17 @@ export type CutSubmission = {
   createdAt: string;
   decidedAt: string | null;
   decidedBy: string | null;
+  /** The CLIENT's send-back on a cut the office approved (clientDecisions),
+   *  which leaves decidedAt/By as the office's approval — gap 1, Sep 28. */
+  clientRequestedAt: string | null;
+  clientRequestedBy: string | null;
+  /** Whose verdict this round carries, and when — the one reading of the four
+   *  fields above (reviewAttribution.verdictOf). */
+  verdict: Verdict | null;
+  /** The last time somebody other than the chain took this round — "covered
+   *  by Kyle", "taken by James", "handed on by Jordan" — from the reviewer
+   *  events (§8.1). Office lens only; null when nobody did. */
+  reviewerMove: { words: string; by: string; atISO: string } | null;
   // internal-upload flow (Sep 1 2026)
   deliverableId: string | null;
   slot: number;
@@ -483,6 +535,9 @@ export type CutNote = {
   status: string;
   authorName: string | null;
   createdAt: string;
+  /** Who last resolved, reopened or marked it fixed, and when (Sep 28). */
+  statusBy: string | null;
+  statusAt: string | null;
   /** An EDITOR-lane note the PHOTOGRAPHER asked for (askCutChange, Sep 18) —
    *  an EDITOR row stamped with a photographerId, a pairing nothing else in
    *  the schema writes. Every surface that shows cut notes needs to say so:
@@ -534,6 +589,8 @@ export async function getEditorFeedback(projectId: string, editorKey: string | n
     status: n.status,
     authorName: n.authorName,
     createdAt: n.createdAt.toISOString(),
+    statusBy: n.statusBy,
+    statusAt: n.statusAt ? n.statusAt.toISOString() : null,
     ask: n.lane === "EDITOR" && !!n.photographerId,
     replies: n.replies.map((r) => ({
       id: r.id,
@@ -598,6 +655,10 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
     createdAt: s.createdAt.toISOString(),
     decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
     decidedBy: s.decidedBy,
+    clientRequestedAt: s.clientRequestedAt ? s.clientRequestedAt.toISOString() : null,
+    clientRequestedBy: s.clientRequestedBy,
+    verdict: verdictOf(s),
+    reviewerMove: null, // filled below for the office lens
     deliverableId: s.deliverableId,
     slot: s.slot,
     source: s.source,
@@ -652,6 +713,27 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
   // are withheld rather than blanked at the component, so they never travel.
   const officeOnly = lens.kind === "office";
 
+  // COVER / CLAIM, MADE VISIBLE (gap 15, Sep 28). recordRulingReviewer and the
+  // take / hand-on doors write a CutReviewerEvent, and the only place it was
+  // ever read was one timeline sentence — the Room showed a "covering" badge
+  // with no name and no time. The newest person-made move on each round:
+  // SUBMITTED (the chain's own pick) and the hub's automatic moves are not a
+  // person covering anything.
+  if (officeOnly && submissions.length) {
+    const WORDS: Record<string, string> = { COVER: "Covered", CLAIM: "Taken", MANUAL: "Handed on" };
+    const events = await prisma.cutReviewerEvent
+      .findMany({
+        where: { submissionId: { in: submissions.map((s) => s.id) }, reason: { in: Object.keys(WORDS) } },
+        orderBy: { at: "desc" },
+        select: { submissionId: true, reason: true, actorName: true, at: true },
+      })
+      .catch(() => []);
+    for (const s of submissions) {
+      const e = events.find((x) => x.submissionId === s.id);
+      if (e) s.reviewerMove = { words: WORDS[e.reason] ?? "Moved", by: e.actorName, atISO: e.at.toISOString() };
+    }
+  }
+
   return {
     projectId: project.id,
     street: streetOf(project.title),
@@ -679,6 +761,8 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
       status: n.status,
       authorName: n.authorName,
       createdAt: n.createdAt.toISOString(),
+      statusBy: n.statusBy,
+      statusAt: n.statusAt ? n.statusAt.toISOString() : null,
       ask: n.lane === "EDITOR" && !!n.photographerId,
       replies: n.replies.map((r) => ({
         id: r.id,

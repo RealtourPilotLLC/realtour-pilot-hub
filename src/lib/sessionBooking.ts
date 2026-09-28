@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import type { ProgramBookingAttempt, ProgramSessionPlan, ProgramSessionRequest } from "@prisma/client";
+import type { Prisma, ProgramBookingAttempt, ProgramSessionPlan, ProgramSessionRequest } from "@prisma/client";
 import {
   AryeoBooking, AryeoError, bookableProviderIdsFor, classifyAryeoWriteError, hubWritePermit, teamMemberIdByUserId,
   type AryeoBookedAppointment, type HubWriteDecision, type HubWritePermit,
@@ -175,6 +175,29 @@ async function setRequest(id: string, data: Parameters<typeof prisma.programSess
 }
 async function setAttempt(id: string, data: Parameters<typeof prisma.programBookingAttempt.update>[0]["data"]) {
   return prisma.programBookingAttempt.update({ where: { id }, data });
+}
+
+/**
+ * Record what a provider write answered — only if the attempt still says we
+ * were waiting on it (R04, Sep 28 2026). A worker whose lease ran out while
+ * Aryeo held its call (a frozen process: the write times out in 20 s, the lease
+ * is 5 min) comes back to an attempt the next worker has already settled — by
+ * the marker scan, or by reading the appointment on the order. Its answer names
+ * the same order or appointment, but writing it unconditionally dragged a
+ * CONFIRMED attempt back to ORDER_CREATED/APPT_CREATED under a confirmed
+ * request, and it was only put right if this late worker's own readback then
+ * succeeded. null = someone else has moved it on; leave it to them.
+ */
+async function landAttempt(id: string, sent: "ORDER_SENT" | "APPT_SENT", data: Prisma.ProgramBookingAttemptUpdateManyMutationInput): Promise<ProgramBookingAttempt | null> {
+  const r = await prisma.programBookingAttempt.updateMany({ where: { id, state: sent }, data });
+  return r.count === 1 ? prisma.programBookingAttempt.findUnique({ where: { id } }) : null;
+}
+
+/** The failure-side twin of landAttempt: has the attempt left the *_SENT state
+ *  this worker put it in? (Only another worker moves it while the call is out.) */
+async function movedOn(id: string, sent: "ORDER_SENT" | "APPT_SENT"): Promise<boolean> {
+  const a = await prisma.programBookingAttempt.findUnique({ where: { id }, select: { state: true } });
+  return !a || a.state !== sent;
 }
 
 /** Still the client's live ask? Re-read before every write: a cancel or a staff
@@ -588,9 +611,14 @@ async function drive(ctx: Ctx): Promise<BookOutcome> {
   await setRequest(r.id, { bookingState: "RUNNING" });
   try {
     const order = await AryeoBooking.createOrder(p.permit, { customer_id: ctx.client.aryeoCustomerId!, address_id: attempt.aryeoAddressId!, variantId: product.variantId, internal_notes: notes });
-    attempt = await setAttempt(attempt.id, { state: "ORDER_CREATED", aryeoOrderId: order.id, responseJson: JSON.stringify({ order }), nextCheckAt: null });
+    const landed = await landAttempt(attempt.id, "ORDER_SENT", { state: "ORDER_CREATED", aryeoOrderId: order.id, responseJson: JSON.stringify({ order }), nextCheckAt: null });
+    if (!landed) return out(r.id, "pending", `order ${order.id} came back after another worker had taken this booking over; that worker settles it`);
+    attempt = landed;
     await setRequest(r.id, { aryeoOrderId: order.id, bookingState: "ORDER_CREATED", lastError: null, lastErrorAt: null });
   } catch (e) {
+    // The same late worker, woken by a timeout instead of an answer: every
+    // branch below writes over the attempt, so none may run once it moved on.
+    if (await movedOn(attempt.id, "ORDER_SENT")) return out(r.id, "pending", "the order call failed after another worker had taken this booking over; that worker settles it");
     const kind = classifyAryeoWriteError(e);
     const msg = e instanceof Error ? e.message : String(e);
     if (kind === "UNKNOWN") {
@@ -793,10 +821,13 @@ async function appointmentStep(ctx: Ctx, attempt: ProgramBookingAttempt, beforeS
   await setRequest(r.id, { bookingState: "APPT_PENDING" });
   try {
     const appt = await AryeoBooking.storeAppointment(p.permit, { order_id: orderId, start, end, teamMemberId: r.creativeTeamMemberId!, itemIds, notifyCompany: ctx.cfg.notifyCompany !== false });
-    attempt = await setAttempt(attempt.id, { state: "APPT_CREATED", aryeoAppointmentId: appt.id, nextCheckAt: null });
+    const landed = await landAttempt(attempt.id, "APPT_SENT", { state: "APPT_CREATED", aryeoAppointmentId: appt.id, nextCheckAt: null });
+    if (!landed) return out(r.id, "pending", `appointment ${appt.id} came back after another worker had taken this booking over; that worker settles it`);
+    attempt = landed;
     await setRequest(r.id, { aryeoAppointmentId: appt.id });
     return readbackAndConfirm(ctx, attempt, appt.id);
   } catch (e) {
+    if (await movedOn(attempt.id, "APPT_SENT")) return out(r.id, "pending", "the appointment call failed after another worker had taken this booking over; that worker settles it");
     const kind = classifyAryeoWriteError(e);
     const msg = e instanceof Error ? e.message : String(e);
     if (kind === "UNKNOWN") {

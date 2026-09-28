@@ -58,6 +58,8 @@ import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel, isMonthlyContentJob, videoTypeLabel } from "@/lib/pipeline";
 import { stripMoneySentences } from "@/lib/text";
 import { prisma } from "@/lib/prisma";
+// Who ruled on each version, and when (Review Room attribution, Sep 28).
+import { officeReopenOf, verdictLine, verdictOf } from "@/lib/reviewAttribution";
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
 
@@ -161,7 +163,10 @@ export default async function EditBriefPage({
       // decidedBy: who sent the cut back, named on the revision block (Sep 16).
       // sourceWidth/Height: what the version actually was (Sep 16, the 1080p
       // export spec) — printed on its Send-to-Review row.
-      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, decidedBy: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true, sourceWidth: true, sourceHeight: true },
+      // clientRequestedAt/By (Sep 28, gap 1): a client's send-back on an
+      // approved cut keeps the office's decidedAt/By — without these the
+      // revision block named the approver as the sender.
+      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, decidedBy: true, clientRequestedAt: true, clientRequestedBy: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true, sourceWidth: true, sourceHeight: true },
     }),
   ]);
   if (!project) notFound();
@@ -356,10 +361,43 @@ export default async function EditBriefPage({
   // is the only way the two cannot drift apart again.
   const videoRevisionTasks = await prisma.smartTask.findMany({
     where: videoLaneRevisionWhere(id),
-    select: { id: true, createdAt: true, summary: true, description: true },
+    select: { id: true, createdAt: true, summary: true, description: true, contactName: true, source: true, title: true, reasonCreated: true },
     orderBy: { createdAt: "asc" },
   });
+  // THE OFFICE'S OWN REOPEN (the Editing Room's "New cut" queue-add) is not a
+  // client's ask — the pill and the tracker say who put it back instead
+  // (review, Sep 28). Read from the row's own sentence while it is still the
+  // office's; a client's later ask rewrites it.
+  const officeReopens = videoRevisionTasks.map((t) => ({ t, office: officeReopenOf(t) }));
+  const clientRevisionTasks = officeReopens.filter((x) => !x.office).map((x) => x.t);
+  // WHO ASKED (gap 11, Sep 28): the requesters recorded on the clients' asks'
+  // work orders, in the order they asked, each once — the office's own reopen
+  // rows are not an ask — then whoever in the office put it back. A task whose
+  // briefs predate the column falls back to its own person (contactName).
+  const revisionAskedBy = await (async () => {
+    if (videoRevisionTasks.length === 0) return null;
+    const { requesterWords } = await import("@/lib/reviewAttribution");
+    const briefs = clientRevisionTasks.length
+      ? await prisma.revisionBrief
+          .findMany({
+            where: { taskId: { in: clientRevisionTasks.map((t) => t.id) }, requestedBy: { not: null }, source: { not: "office" } },
+            orderBy: { createdAt: "asc" },
+            select: { requestedBy: true, requestedByKind: true },
+          })
+          .catch(() => [])
+      : [];
+    const names = briefs.map((b) => requesterWords(b.requestedByKind, b.requestedBy)).filter((x): x is string => !!x);
+    const fallback = clientRevisionTasks.map((t) => t.contactName).filter((x): x is string => !!x);
+    const office = officeReopens
+      .map((x) => (x.office ? requesterWords("OFFICE", x.office.by) ?? "the office" : null))
+      .filter((x): x is string => !!x);
+    const all = [...new Set([...(names.length ? names : fallback), ...office])];
+    return all.length ? all.join(", ") : null;
+  })();
   const revisionOpen = videoRevisionTasks.length > 0;
+  // Every open ask on the video lane is the office's reopen: the approved
+  // cut's pill says who reopened it, not "client asked for changes".
+  const officeReopen = revisionOpen && clientRevisionTasks.length === 0 ? officeReopens[officeReopens.length - 1]?.office ?? null : null;
   let rawsLanded = false;
   let folderCounts = { raw: 0, final: 0, stale: false };
   try {
@@ -576,6 +614,8 @@ export default async function EditBriefPage({
     note: editorMessage(s.note),
     createdAtISO: s.createdAt.toISOString(),
     decidedAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
+    // Who ruled on it, and when (Sep 28) — the client's send-back as the client's.
+    verdictLine: verdictLine(verdictOf(s)),
     // Name the cut and link to it — sixteen "Round 1" lines are unreadable,
     // and a round the editor can click is one they can act on (Sep 16).
     cutLabel: slotLabelOf(s),
@@ -595,11 +635,16 @@ export default async function EditBriefPage({
     fileName: s.fileName,
     sentBackAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
     sentBackBy: s.decidedBy,
+    // GAP 1 (Sep 28): whose send-back this is. A client's request on a cut the
+    // office approved left decidedAt/By as the APPROVAL, so the two fields
+    // above said "sent back <approval time> by <the approver>".
+    verdict: verdictOf(s),
     notes: notesFor(s).map((n) => ({
       id: n.id,
       timeSec: n.timeSec,
       body: n.body,
       authorName: n.authorName,
+      createdAtISO: n.createdAt,
       status: n.status,
       kind: n.kind,
     })),
@@ -706,7 +751,7 @@ export default async function EditBriefPage({
       // name itself stays as it is (the approved file is named by it).
       label: sl.topicTitle ? `${sl.label} · ${sl.topicTitle}` : sl.label,
       latest: latest
-        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note, sourceWidth: latest.sourceWidth, sourceHeight: latest.sourceHeight, held: quality.held.some((h) => h.submissionId === latest.id) }
+        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note, sourceWidth: latest.sourceWidth, sourceHeight: latest.sourceHeight, held: quality.held.some((h) => h.submissionId === latest.id), verdict: verdictOf(latest) }
         : null,
       openNotes,
     };
@@ -848,6 +893,7 @@ export default async function EditBriefPage({
             // repeating the raw paragraph here would be the wall of text twice.
             revisionAsks={briefs.length > 0 ? [] : revisionAsks}
             revisionAtISO={revisionAtISO}
+            revisionAskedBy={revisionAskedBy}
             // "It should go directly to the cut that needs a revision"
             // (Jordan, Sep 16) — the status line and the ask both land on it.
             revisionHref={revisionHref}
@@ -1412,6 +1458,7 @@ export default async function EditBriefPage({
               // videoLaneRevisionWhere, the same question the server asks, so
               // the panel and startCutUpload can no longer disagree about it.
               revisionOpen={revisionOpen}
+              officeReopen={officeReopen}
               cuts={shownCutRows}
             />
             {hiddenSlots >= 3 && (
@@ -1463,6 +1510,7 @@ export default async function EditBriefPage({
                 canFix={!isOwnerAdmin}
                 viewerName={viewer?.name}
                 player={s.id === playerSubId}
+                verdict={verdictOf(s)}
               />
             ))}
             {/* Review-Room notes that aren't on the active cut (renders nothing
@@ -1654,7 +1702,12 @@ async function moveReopenedDueForm(form: FormData): Promise<void> {
   const { etAt } = await import("@/lib/datetime");
   const dueAt = etAt(m![1], Number(m![2]), Number(m![3]));
   const me = await getCurrentUser().catch(() => null);
+  // A preview dates nothing, enforced or not (Sep 28, gap 20).
+  if (me?.impersonating) back("due-denied");
   const { moveReopenedDue } = await import("@/lib/revisionBrief");
-  const r = await moveReopenedDue({ projectId, dueAt, by: me?.name?.trim() || me?.email || "The office" }).catch(() => ({ ok: false }));
+  // The display name — roster before email (Sep 28).
+  const { displayNameFor } = await import("@/lib/actorName");
+  const by = (await displayNameFor(me)) || "The office";
+  const r = await moveReopenedDue({ projectId, dueAt, by }).catch(() => ({ ok: false }));
   back(r.ok ? "due-moved" : "due-error");
 }

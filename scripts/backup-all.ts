@@ -11,72 +11,76 @@
 // default_transaction_read_only=on and the script proves it with a refused
 // UPDATE (SQLSTATE 25006) before it reads a single row.
 //
+// Sep 28 2026 (A02-backup-coverage), format rtp-backup-all/2:
+//   - ONE SNAPSHOT. The whole export runs in a single repeatable-read
+//     transaction (scripts/_lib/exportAll.ts), not minutes of separate reads.
+//   - The file says what produced it: commit, schemaHash (same rule as the
+//     program backup), Prisma and Postgres versions, and per-model id hashes
+//     the restore rehearsal compares against.
+//   - Mode 0600. The Sep 22-25 files were world-readable and hold client data.
+//   - A table in the database that no model maps is listed in the header.
+//   - Written one row per line, never as one giant string (the 213 MB file
+//     was within 2.4x of V8's string ceiling), and only renamed into place
+//     when complete: a failed backup leaves no file behind.
+//
 // Usage: npx tsx scripts/backup-all.ts <output.json>   (write it OUTSIDE the repo)
 // Neon point-in-time restore remains the primary recovery path; this is the
-// row-level copy that needs nothing but the Prisma client.
+// row-level copy that needs nothing but the Prisma client. Prove it restores
+// with: npx tsx scripts/restore-rehearsal.ts <output.json>
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";
+import { pinReadOnlyDatabaseUrl, proveReadOnly } from "./_lib/dbGuard";
+import { REPO, currentSchemaText, headCommit, schemaHashOf, writeBackupFile } from "./_lib/backupFormat";
 
 const OUT = process.argv[2];
 if (!OUT) { console.error("usage: npx tsx scripts/backup-all.ts <output.json>"); process.exit(2); }
-if (path.resolve(OUT).startsWith(path.resolve(__dirname, ".."))) { console.error("refusing to write a backup inside the repo"); process.exit(2); }
-
-{
-  let url = process.env.DATABASE_URL ?? "";
-  if (!url) {
-    const m = fs.readFileSync(path.resolve(__dirname, "../.env"), "utf8").match(/^\s*DATABASE_URL\s*=\s*(.*)$/m);
-    if (m) url = m[1].trim().replace(/^["']|["']$/g, "");
-  }
-  if (!url) throw new Error("DATABASE_URL not found");
-  const u = new URL(url);
-  const existing = u.searchParams.get("options");
-  u.searchParams.set("options", [existing, "-c default_transaction_read_only=on"].filter(Boolean).join(" "));
-  process.env.DATABASE_URL = u.toString();
-}
+if (path.resolve(OUT).startsWith(REPO + path.sep)) { console.error("refusing to write a backup inside the repo"); process.exit(2); }
+if (fs.existsSync(OUT)) { console.error(`refusing to overwrite ${OUT} — choose a new name`); process.exit(2); }
 
 async function main() {
+  // Before anything can construct a Prisma client (Prisma would load .env).
+  pinReadOnlyDatabaseUrl();
   const { Prisma, PrismaClient } = await import("@prisma/client");
+  const { allModels, snapshotExport } = await import("./_lib/exportAll");
   const prisma = new PrismaClient();
   try {
-    await prisma.$executeRawUnsafe(`UPDATE "Client" SET "name" = "name" WHERE false`);
-    throw new Error("GUARD FAILED — the connection accepted a write");
-  } catch (e) {
-    if (!/25006|read-only/i.test(String(e))) throw e;
-  }
-  console.log("read-only connection proven (25006)");
+    await proveReadOnly(prisma);
+    console.log("read-only connection proven (25006)");
 
-  const models = Prisma.dmmf.datamodel.models;
-  const out: Record<string, unknown[]> = {};
-  const counts: Record<string, number> = {};
-  let failures = 0;
-  for (const m of models) {
-    const delegate = (prisma as unknown as Record<string, { findMany: (a: unknown) => Promise<unknown[]> }>)[m.name.charAt(0).toLowerCase() + m.name.slice(1)];
-    try {
-      const hasId = m.fields.some((f) => f.name === "id" && f.isId);
-      const rows: unknown[] = [];
-      if (hasId) {
-        let cursor: string | undefined;
-        for (;;) {
-          const page = await delegate.findMany({ take: 2000, orderBy: { id: "asc" }, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
-          rows.push(...page);
-          if (page.length < 2000) break;
-          cursor = (page[page.length - 1] as { id: string }).id;
-        }
-      } else {
-        rows.push(...(await delegate.findMany({})));
-      }
-      out[m.name] = rows;
-      counts[m.name] = rows.length;
-    } catch (e) {
-      failures++;
-      console.error(`FAILED ${m.name}: ${String(e).slice(0, 200)}`);
+    const models = allModels();
+    const snap = await snapshotExport(prisma, models);
+    let schemaHash = "unknown";
+    try { schemaHash = schemaHashOf(currentSchemaText()); } catch { /* not in a checkout */ }
+    const { bytes } = writeBackupFile(OUT, {
+      takenAt: snap.takenAt,
+      commit: headCommit() ?? "unknown",
+      schemaHash,
+      prismaVersion: Prisma.prismaVersion.client,
+      serverVersion: snap.serverVersion,
+      snapshot: "repeatable-read",
+      models: models.length,
+      counts: snap.counts,
+      idHash: snap.idHash,
+      unmappedTables: snap.unmappedTables,
+    }, snap.data);
+
+    const total = Object.values(snap.counts).reduce((a, b) => a + b, 0);
+    console.log(`${Object.keys(snap.counts).length}/${models.length} models, ${total} rows, one snapshot at ${snap.takenAt} → ${OUT} (${(bytes / 1e6).toFixed(1)} MB, mode 600)`);
+    console.log(`Postgres ${snap.serverVersion} · Prisma ${Prisma.prismaVersion.client} · schema ${schemaHash}`);
+    if (snap.unmappedTables.length) {
+      console.log(`WARN tables no Prisma model maps (NOT in this file): ${snap.unmappedTables.map((t) => `${t.table} (${t.rows ?? "?"} rows)`).join(", ")}`);
     }
+  } finally {
+    await prisma.$disconnect();
   }
-  fs.writeFileSync(OUT, JSON.stringify({ takenAt: new Date().toISOString(), models: models.length, counts, data: out }, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
-  console.log(`${Object.keys(counts).length}/${models.length} models, ${total} rows → ${OUT} (${(fs.statSync(OUT).size / 1e6).toFixed(1)} MB)`);
-  await prisma.$disconnect();
-  if (failures) process.exit(1);
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  // Nothing was written: writeBackupFile renames into place only on success.
+  // Prisma's messages open with a blank line and an "Invalid … invocation"
+  // banner; the cause is the first line after them.
+  const lines = String((e as Error)?.message ?? e).split("\n").map((l) => l.trim()).filter(Boolean);
+  const cause = lines.find((l) => !/^(Invalid|→|\d+ |at\s)/.test(l)) ?? lines[0] ?? "unknown error";
+  console.error(`BACKUP FAILED — no file written: ${cause.slice(0, 300)}`);
+  process.exit(1);
+});

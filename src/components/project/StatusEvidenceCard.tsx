@@ -7,6 +7,7 @@ import { RecheckStatusButton } from "@/components/project/RecheckStatusButton";
 import { ink } from "@/components/ui/Badge";
 import { formatDistanceToNow } from "date-fns";
 import type { ProjectStatus } from "@prisma/client";
+import { revisionAskerLabel } from "@/lib/reviewAttribution";
 
 export type DropboxLink = { label: string; url: string };
 
@@ -125,7 +126,7 @@ async function statusContext(
     const { outstandingPromise } = await import("@/lib/deliveryBoard");
     const { turnaroundRules } = await import("@/lib/settings");
     const { OWED_DELIVERABLE_WHERE } = await import("@/lib/tasks");
-    const [project, bounce, brief, turnarounds] = await Promise.all([
+    const [project, bounces, briefs, turnarounds] = await Promise.all([
       prisma.project.findUnique({
         where: { id: projectId },
         select: {
@@ -162,21 +163,25 @@ async function statusContext(
         },
       }),
       isRevision
-        ? prisma.reviewSubmission.findFirst({
+        ? prisma.reviewSubmission.findMany({
             // A WITHDRAWN bounce is a round somebody took back — it must never
-            // put a name on a live ask (review, Sep 16).
+            // put a name on a live ask (review, Sep 16). A few rows, not one:
+            // a client's send-back on an approved cut keeps the office's
+            // decidedAt (gap 1), so the newest by decidedAt is not the newest ask.
             where: { projectId, status: "CHANGES_REQUESTED", withdrawnAt: null },
             orderBy: { decidedAt: "desc" },
-            select: { decidedAt: true, decidedBy: true },
+            take: 5,
+            select: { status: true, decidedAt: true, decidedBy: true, clientRequestedAt: true, clientRequestedBy: true },
           })
-        : null,
+        : [],
       isRevision
-        ? prisma.revisionBrief.findFirst({
+        ? prisma.revisionBrief.findMany({
             where: { projectId },
             orderBy: { createdAt: "desc" },
-            select: { source: true, createdAt: true },
+            take: 10,
+            select: { source: true, createdAt: true, requestedBy: true, requestedByKind: true },
           })
-        : null,
+        : [],
       turnaroundRules().catch(() => undefined),
     ]);
     const base = {
@@ -196,28 +201,12 @@ async function statusContext(
     // With NO stamp there is nothing to match against, so nothing matches — an
     // ancient Review Room bounce on a status-only REVISION used to be printed
     // as today's requester (review, Sep 16).
-    const near = (at: Date | null | undefined) =>
-      !!at && !!askedAt && Math.abs(at.getTime() - askedAt.getTime()) < 2 * 3_600_000;
-    const hit = [
-      bounce?.decidedAt && near(bounce.decidedAt)
-        ? { at: bounce.decidedAt, source: "review_room", by: bounce.decidedBy }
-        : null,
-      brief?.createdAt && near(brief.createdAt)
-        ? { at: brief.createdAt, source: brief.source, by: null as string | null }
-        : null,
-    ]
-      .filter((c): c is { at: Date; source: string; by: string | null } => c !== null)
-      .sort((a, b) => b.at.getTime() - a.at.getTime())[0];
-
-    const client = project?.client?.name?.trim() || null;
-    if (!hit) return { ...base, who: { label: "Changes requested", known: false, lookupFailed: false, afterDelivery } };
-    if (hit.source === "review_room") {
-      return { ...base, who: { label: `${hit.by?.trim() || "The office"} asked for changes in the Review Room`, known: true, lookupFailed: false, afterDelivery } };
-    }
-    if (hit.source === "openphone" || hit.source === "gmail") {
-      return { ...base, who: { label: `${client || "The client"} asked for changes`, known: true, lookupFailed: false, afterDelivery } };
-    }
-    return { ...base, who: { label: "Changes requested in the hub", known: true, lookupFailed: false, afterDelivery } };
+    // WHO, BY THE REVIEW ROOM'S RULES (review, Sep 28): the pure reading in
+    // lib/reviewAttribution (revisionAskerLabel), so the drill tests the same
+    // words this card prints. A two-hour window either side of the stamp.
+    const label = revisionAskerLabel({ askedAt, client: project?.client?.name?.trim() || null, bounces: bounces ?? [], briefs: briefs ?? [] });
+    if (!label) return { ...base, who: { label: "Changes requested", known: false, lookupFailed: false, afterDelivery } };
+    return { ...base, who: { label, known: true, lookupFailed: false, afterDelivery } };
   } catch {
     // The card still renders — but a lost name is said out loud rather than
     // silently becoming the anonymous "Changes requested" (review, Sep 16).

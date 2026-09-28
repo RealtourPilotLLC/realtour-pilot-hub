@@ -1,5 +1,6 @@
 import { Activity, AlertTriangle, ShieldOff } from "lucide-react";
 import { etDateTime } from "@/lib/datetime";
+import { cadenceLabel, type CronJobHealth } from "@/lib/cronHealth";
 
 // "Sync health" panel for the (owner-only) Connections page: the last few runs
 // of each cron job (red/green), per-provider webhook rejected/error counts for
@@ -7,11 +8,10 @@ import { etDateTime } from "@/lib/datetime";
 // events. Before this, a dead sync or 13 days of bounced webhooks looked
 // identical to a healthy system on every screen (audit cracks #7/#8).
 
-export type CronJobHealth = {
-  job: string;
-  // Newest first. `ok:null` = still running / hard-killed mid-run.
-  runs: { id: string; at: string; ok: boolean | null; error: string | null; skipped: string[]; timedOut: string[]; slowest: string | null }[];
-};
+// One row per job vercel.json schedules (plus any job that recorded runs but is
+// no longer scheduled), built in lib/cronHealth so the readiness report and
+// the config probe read the same thing. Re-exported for existing importers.
+export type { CronJobHealth };
 
 /** The full Aryeo order reconcile is resumable across daily runs; this is its
  *  cursor, so "did the safety net ever finish?" is a date, not a guess. */
@@ -69,19 +69,28 @@ export function SyncHealth({
           </p>
         )}
         {crons.map((c) => {
-          const latest = c.runs[0];
-          const healthy = latest?.ok === true;
+          // The newest firing that DID something (or failed) — a no-op DST
+          // twin is only a dot (lib/cronHealth, review Sep 28).
+          const latest = c.lastActing ?? c.runs[0];
+          const healthy = latest?.ok === true && !c.stale;
           return (
             <div key={c.job} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-surface-2/50 px-3 py-2">
               <span className="text-sm font-medium">{c.job}</span>
+              <span className="text-[11px] text-muted-2">{c.expected ? cadenceLabel(c) : "not scheduled any more"}</span>
               <span className="inline-flex items-center gap-1">
                 {c.runs.map((r) => <Dot key={r.id} ok={r.ok} />)}
               </span>
+              {/* A scheduled job with no row at all used to be simply absent,
+                  which read as healthy. Say it. */}
+              {c.neverRecorded && (
+                <span className="text-[11px] font-medium text-danger">never recorded a run</span>
+              )}
               {latest && (
                 <span className={`text-[11px] ${healthy ? "text-muted" : "font-medium text-danger"}`}>
-                  last run {etDateTime(new Date(latest.at))}
+                  {c.stale && "stale: "}last run {etDateTime(new Date(latest.at))}
                   {latest.ok === false && (latest.error ? ` — ${latest.error.slice(0, 120)}` : latest.skipped.length ? ` — skipped: ${latest.skipped.join(", ")}` : latest.timedOut.length ? ` — timed out: ${latest.timedOut.join(", ")}` : " — degraded")}
                   {latest.ok === null && " — didn't finish"}
+                  {c.stale && ` — it should run ${cadenceLabel(c)}`}
                   {latest.slowest && <span className="text-muted-2"> · slowest: {latest.slowest}</span>}
                 </span>
               )}
@@ -99,7 +108,7 @@ export function SyncHealth({
             )}
           </p>
         )}
-        {cronLogReady && crons.length === 0 && (
+        {cronLogReady && crons.length > 0 && crons.every((c) => c.neverRecorded) && (
           <p className="text-xs text-muted-2">No cron runs recorded yet — the next hourly sync will show up here.</p>
         )}
       </div>

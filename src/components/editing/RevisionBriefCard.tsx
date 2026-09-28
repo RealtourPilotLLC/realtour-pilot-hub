@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { setBriefItemDone, reanalyzeBrief } from "@/app/edit/revisionActions";
 import type { BriefView } from "@/lib/revisionBrief";
+import { byLine, requesterLine, verdictLine, type Verdict } from "@/lib/reviewAttribution";
 
 // Every change asked for on this job, in one card — and both kinds of ask
 // reach it now (Jordan, Sep 16, on Sharra Mercer's 16-video job: "the revision
@@ -67,6 +68,10 @@ const SOURCE_LABEL: Record<string, string> = {
   slack: "From Slack",
   manual: "Added by hand",
   review_room: "From the review notes",
+  // Sep 28: three sources that reached this card as "From portal" / "From
+  // office" / nothing sensible.
+  portal: "From the client portal",
+  office: "Put back by the office",
 };
 
 const fmtWhen = (iso: string) =>
@@ -93,11 +98,18 @@ export type BouncedCutView = {
   /** When it was sent back, and by whom (ReviewSubmission.decidedAt/decidedBy). */
   sentBackAtISO: string | null;
   sentBackBy: string | null;
+  /** WHOSE SEND-BACK THIS IS (gap 1, Sep 28). A client's change request on a
+   *  cut the office approved leaves decidedAt/By as the office's APPROVAL, so
+   *  the two fields above named the approver, at the approval's time, as the
+   *  person who sent it back. The verdict reads the client's own stamp. */
+  verdict?: Verdict | null;
   notes: {
     id: string;
     timeSec: number | null;
     body: string;
     authorName: string | null;
+    /** when it was written (Sep 28) */
+    createdAtISO?: string | null;
     status: string; // OPEN | FIXED | RESOLVED
     kind: string; // fix | note
   }[];
@@ -181,8 +193,12 @@ function BouncedCut({ cut }: { cut: BouncedCutView }) {
           </span>
           <span className="truncate text-[11px] text-muted">
             {cut.round > 1 ? `round ${cut.round} · ` : ""}
-            {cut.sentBackAtISO ? `sent back ${fmtWhen(cut.sentBackAtISO)}` : "sent back"}
-            {cut.sentBackBy ? ` by ${cut.sentBackBy}` : ""}
+            {verdictLine(cut.verdict) ?? (
+              <>
+                {cut.sentBackAtISO ? `sent back ${fmtWhen(cut.sentBackAtISO)}` : "sent back"}
+                {cut.sentBackBy ? ` by ${cut.sentBackBy}` : ""}
+              </>
+            )}
           </span>
         </a>
         <a
@@ -221,7 +237,7 @@ function BouncedCut({ cut }: { cut: BouncedCutView }) {
                         {n.body}
                       </span>
                       <span className="mt-0.5 block text-[10px] text-muted-2">
-                        {n.authorName ?? "The reviewer"}
+                        {byLine(n.authorName ?? "The reviewer", n.createdAtISO ?? null)}
                         {n.status === "FIXED" && <span className="ml-1.5 font-semibold text-success">Fixed — awaiting re-review</span>}
                         {n.status === "RESOLVED" && <span className="ml-1.5 font-semibold text-muted">Approved</span>}
                       </span>
@@ -232,7 +248,9 @@ function BouncedCut({ cut }: { cut: BouncedCutView }) {
             </ul>
           ) : (
             <p className="px-3 py-2 text-[12px] text-muted">
-              No timestamped notes on this one — the reason it came back is in the round history and the project chat.
+              {cut.verdict?.source === "client"
+                ? "The client sent this one back from their portal. Their notes are in their work order on this page."
+                : "No timestamped notes on this one — the reason it came back is in the round history and the project chat."}
             </p>
           )}
           {openCount > 0 && (
@@ -514,6 +532,12 @@ function OneBrief({
         <span className={cn("min-w-0 flex-1 truncate text-[13px] font-medium", allDone ? "text-muted" : "text-foreground")}>
           {line}
         </span>
+        {/* Whose ask it is, even with the card shut (Sep 28). */}
+        {brief.requestedBy && (
+          <span className="hidden max-w-48 shrink-0 truncate text-[11px] text-muted sm:inline" title={brief.requestedBy}>
+            {brief.requestedBy}
+          </span>
+        )}
         {saving > 0 && <Loader2 className="size-3 shrink-0 animate-spin text-muted-2" />}
         {total > 0 && (
           <span
@@ -539,7 +563,10 @@ function OneBrief({
       {open && (
         <div className="space-y-2 border-t border-border px-3 py-2.5">
           <p className="text-[11px] text-muted-2">
-            {sourceLabel} · {fmtWhen(brief.createdAtISO)}
+            {/* WHO ASKED (gap 10, Sep 28): the requester on the row — the
+                client, their teammate, our staff on their behalf, the email or
+                text sender, or the person here who put the work back. */}
+            {sourceLabel} · {requesterLine({ requestedBy: brief.requestedBy, requestedByKind: brief.requestedByKind, at: brief.createdAtISO }) ?? fmtWhen(brief.createdAtISO)}
             {rounds > 1 && ` · round ${round} of ${rounds}`}
           </p>
           {/* The full headline — the header line above truncates it. */}

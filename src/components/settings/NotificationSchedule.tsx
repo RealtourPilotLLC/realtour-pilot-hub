@@ -55,8 +55,10 @@ export function NotificationSchedule() {
     loadNotifySchedules().then(setData).catch(() => setFailed(true));
   }, []);
 
+  // #notification-schedule: a link to Jordan's schedule lands on this block
+  // inside Internal alerts (Settings → Communication), not the top of the card.
   return (
-    <div className="rounded-lg border border-border p-3">
+    <div id="notification-schedule" className="scroll-mt-28 rounded-lg border border-border p-3">
       <p className="text-sm font-semibold">Notification schedule — quiet time, per person</p>
       <p className="text-[13px] text-muted">
         Inside someone&rsquo;s quiet time the bell in the hub still rings at once. Their texts and Slack messages wait, and

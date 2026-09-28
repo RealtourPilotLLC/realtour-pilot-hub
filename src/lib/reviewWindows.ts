@@ -530,6 +530,8 @@ async function handToOffice(w: ContentReviewWindow, holds: Hold[], now: Date): P
     where: { id: w.id, expiryClaimedAt: now },
     data: { expiryOutcome: holds.length === 1 && holds[0].code === "AUTO_OFF" ? "MANUAL" : `HELD:${holds.map((h) => h.code).join(",")}`, expiryTaskId: taskId },
   });
+  // A decision that landed between the check above and the card (R04).
+  if (taskId) await settleExpiryTask(w.id);
   return "office";
 }
 
@@ -544,7 +546,7 @@ async function autoApprove(w: ContentReviewWindow, now: Date, p: RevisionPolicy)
   // A throw is a failure like any other: the window is given back below, or it
   // would sit AUTO_APPROVED with no approval behind it, where the sweep (OPEN
   // only) never looks again.
-  const r: { ok: true; decisionId: string } | { ok: false; message: string } = cut
+  const r: { ok: true; decisionId: string; duplicate?: boolean } | { ok: false; message: string } = cut
     ? await recordClientApproval({
         enrollmentId: w.enrollmentId, clientId: w.clientId, cut,
         // No person: the label says what happened, and isMine() never reads it as "you".
@@ -553,7 +555,7 @@ async function autoApprove(w: ContentReviewWindow, now: Date, p: RevisionPolicy)
       }).catch((e: unknown) => ({ ok: false as const, message: e instanceof Error ? e.message.slice(0, 200) : String(e) }))
     : { ok: false, message: "the cut no longer exists" };
   if (!r.ok) {
-    await claimWindow(w.id, ["AUTO_APPROVED"], "OPEN", {}, { closedAt: null, closedReason: null });
+    await claimWindow(w.id, ["AUTO_APPROVED"], "OPEN", { expiryClaimedAt: now }, { closedAt: null, closedReason: null });
     return handToOffice(w, [{ code: "APPROVAL_FAILED", why: `the automatic approval did not save (${r.message})` }], now);
   }
   const evidence = {
@@ -561,7 +563,21 @@ async function autoApprove(w: ContentReviewWindow, now: Date, p: RevisionPolicy)
     clientNotifiedAt: w.clientNotifiedAt?.toISOString() ?? null, firstViewedAt: w.firstViewedAt?.toISOString() ?? null, holds: [],
     policy: { includedRounds: p.includedRounds, reviewBusinessDays: w.businessDays, testClientsOnly: p.autoApprove.testClientsOnly, policyEnabledAt: p.enabledAt?.toISOString() ?? null, autoEnabledAt: p.autoApprove.enabledAt?.toISOString() ?? null },
   };
-  await prisma.contentReviewWindow.update({ where: { id: w.id }, data: { decisionId: r.decisionId, closeEvidenceJson: JSON.stringify(evidence), expiryOutcome: "AUTO_APPROVED" } });
+  // THE CLAIM HOLDS TO THE LAST WRITE (R04, Sep 28 2026). Between the claim
+  // above and this pointer, two callers can take the window: a client's press
+  // (approveCut reads "AUTO_APPROVED, no approval yet" as a writer that died,
+  // and takes it over) and a staff reopen (it takes AUTO_APPROVED straight to
+  // CHANGES_REQUESTED). The pointer used to be written regardless: on real
+  // Postgres (scripts/_drill/realpg-revision-expiry.ts) that left an APPROVED
+  // window stamped AUTO_APPROVED with "approved automatically" on the timeline
+  // for the client's own press, and a reopened window pointing at this
+  // approval with the staff request ALSO live. So it is written only while
+  // the window is still this sweep's; otherwise the new owner decides.
+  const pinned = await prisma.contentReviewWindow.updateMany({
+    where: { id: w.id, state: "AUTO_APPROVED", expiryClaimedAt: now },
+    data: { decisionId: r.decisionId, closeEvidenceJson: JSON.stringify(evidence), expiryOutcome: "AUTO_APPROVED" },
+  });
+  if (pinned.count === 0 && !(await settleTakenAutoApproval(w, cut?.videoId ?? null, r, now, JSON.stringify(evidence)))) return "lost";
   const videoLabel = cut ? await videoLabelOf(cut) : "the video";
   await prisma.activity.create({ data: { projectId: w.projectId, type: "SYSTEM", body: `Client review window closed ${label} with no answer — version ${w.round} of ${videoLabel} was approved automatically.`.slice(0, 500) } }).catch(() => {});
   try {
@@ -577,6 +593,62 @@ async function autoApprove(w: ContentReviewWindow, now: Date, p: RevisionPolicy)
     });
   } catch { /* the decision is the record; the bell is a courtesy */ }
   return "approved";
+}
+
+/**
+ * The window left AUTO_APPROVED while autoApprove was writing its approval
+ * (see "THE CLAIM HOLDS" above). true = the automatic approval stands after
+ * all, with the window saying so; false = it does not, and nothing may claim
+ * it did (no Activity, no bell).
+ *   · The row on record is someone else's (the client's press wrote first —
+ *     one row per cut, by the dedupe key): theirs stands.
+ *   · The row is this sweep's and a press took the window over (APPROVED):
+ *     the approval on record IS the automatic one, so the window is claimed
+ *     back to AUTO_APPROVED (the press's own pointer write then finds it gone).
+ *   · Anything else — a staff reopen (CHANGES_REQUESTED), the repair giving a
+ *     stalled claim back (OPEN), a newer version, a removed cut: this approval
+ *     never stood. It is superseded (by the live request, when there is one)
+ *     and the two approval caches let go of it.
+ */
+async function settleTakenAutoApproval(w: ContentReviewWindow, videoId: string | null, r: { decisionId: string; duplicate?: boolean }, now: Date, evidence: string): Promise<boolean> {
+  if (r.duplicate) return false;
+  const cur = await prisma.contentReviewWindow.findUnique({ where: { id: w.id }, select: { state: true } });
+  if (cur?.state === "APPROVED") {
+    const back = await claimWindow(w.id, ["APPROVED"], "AUTO_APPROVED", { OR: [{ decisionId: null }, { decisionId: r.decisionId }] }, {
+      decisionId: r.decisionId, closedAt: now, closedReason: "AUTO_EXPIRY", closeEvidenceJson: evidence, expiryOutcome: "AUTO_APPROVED", expiryClaimedAt: now,
+    });
+    if (back) return true;
+  }
+  const req = await prisma.clientDecision.findFirst({
+    where: { submissionId: w.submissionId, decision: "REQUEST_CHANGES", receiptState: { not: "SUPERSEDED" } },
+    orderBy: { decidedAt: "desc" }, select: { id: true },
+  });
+  await prisma.clientDecision.updateMany({ where: { id: r.decisionId, receiptState: { not: "SUPERSEDED" } }, data: { receiptState: "SUPERSEDED", dedupeKey: null, supersededById: req?.id ?? null } });
+  await prisma.reviewSubmission.updateMany({ where: { id: w.submissionId, clientApprovedDecisionId: r.decisionId }, data: { clientApprovedDecisionId: null } });
+  if (videoId) {
+    await prisma.contentVideo.updateMany({ where: { id: videoId, approvedSubmissionId: w.submissionId }, data: { approvedSubmissionId: null, ...(cur?.state === "CHANGES_REQUESTED" ? { status: "EDITING" } : {}) } });
+  }
+  return false;
+}
+
+/**
+ * The office was handed a window ("review window closed, no answer") and then
+ * the window WAS answered: a request stamped before the deadline that landed
+ * after the sweep (R04, measured 10 of 10 on real Postgres), or a late approval
+ * — always accepted — hours later. The card is no longer true, so it is closed.
+ * Called by whoever decides a window, and by handToOffice after it files the
+ * card (a decision that landed in between). Keyed by the card's dedupe key, so
+ * it needs no pointer that may not be written yet. Never throws.
+ */
+export async function settleExpiryTask(windowId: string): Promise<void> {
+  try {
+    const w = await prisma.contentReviewWindow.findUnique({ where: { id: windowId }, select: { state: true } });
+    if (!w || w.state === "OPEN") return;
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: `review-expired:${windowId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  } catch { /* the decision stands; the card is the office's to close by hand */ }
 }
 
 // ---- repair --------------------------------------------------------------------

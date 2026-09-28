@@ -100,11 +100,13 @@ export function HubWriteScopePanel({ isOwner }: { isOwner: boolean }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  if (error) return <p className="text-[13px] text-muted">{error}</p>;
-  if (!data) return <p className="text-[13px] text-muted">Reading who the hub may write for…</p>;
+  // The anchor is on every state, not only the loaded one: the switches above
+  // link here, and before this the link went nowhere until the read finished.
+  if (error) return <p id="hub-write-scopes" className="scroll-mt-28 text-[13px] text-muted">{error}</p>;
+  if (!data) return <p id="hub-write-scopes" className="scroll-mt-28 text-[13px] text-muted">Reading who the hub may write for…</p>;
 
   return (
-    <div id="hub-write-scopes" className="scroll-mt-20 space-y-3">
+    <div id="hub-write-scopes" className="scroll-mt-28 space-y-3">
       <div className="flex items-start gap-2 text-[13px] text-muted">
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-2" />
         <p>

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, topicForEnrollment, openMonthForEnrollment, type PortalViewer } from "@/lib/portal";
 import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/portalAccess";
-import { approveCut, requestChangesOnCut, replyToComment, setCommentResolved, isMine, type OpenNotesChoice } from "@/lib/clientDecisions";
+import { approveCut, requestChangesOnCut, replyToComment, setCommentResolved, isMine, recordLinkComment, type OpenNotesChoice } from "@/lib/clientDecisions";
 import { setPostedByClient, saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
 import { contentHref } from "@/lib/contentNav"; // UI-02: the one builder of staff client-file links
@@ -155,6 +155,11 @@ export async function portalAddComment(auth: PortalAuth, submissionId: string, t
     data: { submissionId, projectId: sub.projectId, enrollmentId: enrollment.id, timeSec: t, body: clip(text, 1000), ...stamp(v) },
     select: { id: true },
   });
+  // Which browser on the emailed link wrote it (gap 21) — the same tag a reply
+  // and the overall note get, so one person keeps one label in the Review
+  // Room and two people sharing the link stay two. A no-op for a signed-in
+  // person or staff, whose login is already on the row.
+  await recordLinkComment(v, created.id);
   await ownerBell(
     "portal_comment",
     `Video notes coming in — ${enrollment.clientName || "a client"}`,

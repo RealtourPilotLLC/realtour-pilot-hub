@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, sha256, type AiRunKind } from "@/lib/aiRuns";
+import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, claimRunWrite, sha256, type AiRunKind } from "@/lib/aiRuns";
 import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText, parseStoredSections, deriveStrategyVersion } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
@@ -248,6 +248,9 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
     // monthId null = the bank-level script (IS NULL), never "any month's script".
     const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
     if (existing && o.onlyIfUnscripted) throw new AlreadyDraftedError(`"${row.title}"`);
+    // Still this run's to write? A caller that froze past its lease may have
+    // been replaced by one that drafted this very script (claimRunWrite).
+    await claimRunWrite(run.runId);
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: row.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: "INTERNAL_REVIEW",
       callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: { ok: validation.ok, findings: validation.findings }, gaps,
@@ -283,6 +286,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
     if (!parts.title) parts.title = a.topic.title;
     const existing = await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } });
     if (existing && opts.onlyIfUnscripted) throw new AlreadyDraftedError(`"${a.topic.title}"`);
+    await claimRunWrite(run.runId); // still this run's to write (see generateScriptForTopic)
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: a.enrollmentId, monthId: a.monthId, topicId: a.topic.id, parts, source: "AI", createdBy: requestedBy, status: "DRAFT",
       basedOnVersionId: existing?.currentVersionId ?? null, interviewId, answerIds: a.answerIds, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId,
@@ -867,6 +871,7 @@ export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?
     }
     const unaddressed = Array.isArray(run.output.unaddressed) ? run.output.unaddressed.filter((x) => typeof x === "string" && x.trim()) : [];
     const summary = typeof run.output.summary === "string" && run.output.summary.trim() ? run.output.summary.trim() : "changes from the feedback";
+    await claimRunWrite(run.runId); // still this run's to write (see generateScriptForTopic)
     const r = await deriveStrategyVersion({ baseId: base.id, replace, by, sourceKind: "ai", aiRunId: run.runId, changeSummary: `Revised with feedback${proposals.length ? ` (${proposals.length} client suggestion${proposals.length === 1 ? "" : "s"} folded in)` : ""}: ${summary}` });
     let proposalsFolded = 0;
     if (r.versionId !== base.id && proposals.length) {

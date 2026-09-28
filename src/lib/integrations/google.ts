@@ -1119,6 +1119,16 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           const cid = contactClientByEmail.get(email);
           if (cid) senderClient = clients.find((c) => c.id === cid);
         }
+        // WHO WROTE, by name (Sep 28): the From display name when there is one
+        // — parseFrom hands a bare address back AS the name, and an address is
+        // not a name — else the client row that owns this exact address, BEFORE
+        // the assistant→agent fold (she is still herself), and the address
+        // itself only when no name exists. A client's own "sarah@x.com" read
+        // "Asked by sarah@x.com" to editors while her name sat on the row. (A
+        // synced contact's address is not proof of whose row it is, so it
+        // doesn't lend a name.)
+        const displayName = name && name.toLowerCase() !== email && !name.includes("@") ? name : null;
+        const writerName = displayName ?? clientByEmail.get(email)?.name ?? (email || null);
         if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
 
         // Drop marketing / invoices / automated / vendor mail — but ONLY for senders
@@ -1238,6 +1248,9 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
                 // Carry the thread so the revision's email-ack path can reply
                 // in-thread (a NULL sourceDetail makes sendEmailReply reject).
                 threadRef,
+                // The person who wrote, not the account it folded to (an
+                // assistant, or a coordinator on another agent's listing).
+                requestedBy: { name: writerName, kind: "EMAIL" },
               });
               return raised ? 1 : 0;
             }
@@ -1251,8 +1264,8 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
             clientName: resolvedClientName || name,
             // The real person who wrote in. When their email folded to an agent's
             // account (assistant → agent), this keeps the human on the task instead
-            // of showing the agent who never sent anything.
-            contactName: name || null,
+            // of showing the agent who never sent anything. By NAME — see writerName.
+            contactName: writerName,
             projectId: project?.id,
             projectStatus: project?.status ?? null,
             propertyAddress: project?.title ?? null,

@@ -16,11 +16,26 @@
 // the backup FILE you hand it.
 //
 // Usage: npx tsx scripts/recovery-drill.ts <backup.json> [--port 5433]
+//
+// Sep 28 2026 (A02): reads the file through the shared reader, so a whole-hub
+// backup-all file (`data`) works as well as a program backup (`tables`); the
+// scenario subsets it writes hold production rows, so they are 0600, in a
+// private (0700) temporary directory — not beside the backup, where a failed
+// run left them for the probe to read as "the newest backup" — and removed on
+// EVERY exit: pass, fail, throw or Ctrl+C (review, Sep 28; it used to be
+// scenario 3's finally, so a failure in 1 or 2 left client rows in ~ for good).
+// The WHOLE-hub rehearsal — every model,
+// row-for-row round trip, every foreign key — is scripts/restore-rehearsal.ts;
+// this drill keeps the two scenarios only a real restore command can show: a
+// missing parent refused under --strict, and parents-then-children recovering.
 import { PGlite } from "@electric-sql/pglite";
-import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { DrillSocketServer } from "./_drill/_harness";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { readFileSync, writeFileSync, unlinkSync } from "fs";
+import { writeFileSync, mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { basename, join } from "path";
+import { readBackup } from "./_lib/backupFormat";
 
 const exec = promisify(execFile);
 
@@ -31,7 +46,26 @@ if (!file) { console.error("usage: npx tsx scripts/recovery-drill.ts <backup.jso
 
 type Dump = { takenAt: string; commit?: string; schemaHash?: string; tables: Record<string, Record<string, unknown>[]> };
 
+/** Either backup shape, as the restore reads it: header fields plus `tables`. */
+async function loadDump(path: string): Promise<Dump> {
+  const { header, data } = await readBackup(path);
+  return { takenAt: header.takenAt, commit: header.commit, schemaHash: header.schemaHash, tables: data };
+}
+
 const step = (t: string) => console.log(`\n── ${t}`);
+
+// THE SUBSETS' HOME, and the one cleanup every exit path runs. mkdtemp makes
+// the directory 0700; each file is 0600 as well. `exit` handlers must be
+// synchronous, so this is rmSync; a signal is turned into an exit so the
+// handler runs for Ctrl+C too.
+let subsetDir: string | null = null;
+const removeSubsets = () => {
+  if (!subsetDir) return;
+  try { rmSync(subsetDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  subsetDir = null;
+};
+process.on("exit", removeSubsets);
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => process.exit(130));
 
 /**
  * A fresh PostgreSQL with the current schema on it and nothing else.
@@ -50,7 +84,12 @@ async function freshDatabase(port: number) {
   // here and asserted before anything runs.
   if (!url.includes("127.0.0.1")) throw new Error("refusing to run: the drill's DATABASE_URL is not loopback");
   const db = await PGlite.create();
-  const server = new PGLiteSocketServer({ db, port, host: "127.0.0.1", maxConnections: 20 });
+  // The harness's server, not the stock one (Sep 28): on the stock server the
+  // first failed statement — here the restore's own FK miss on an assistant
+  // listed before its agent, the very thing the retry passes exist for —
+  // closed the connection, and every retry after it failed with "Server has
+  // closed the connection" (scripts/_drill/_harness.ts explains the wire bug).
+  const server = new DrillSocketServer({ db, port, host: "127.0.0.1", maxConnections: 20 });
   await server.start();
   // ASYNC, NOT SYNC: the socket server lives in THIS process, so a synchronous
   // child-process call blocks the event loop and the server can never answer
@@ -72,19 +111,18 @@ async function freshDatabase(port: number) {
 const failureLines = (out: string) => out.split("\n").filter((l) => /^\s{2,}\S+\s+[A-Za-z0-9_-]{8,}:\s/.test(l));
 
 async function main() {
-  const dump = JSON.parse(readFileSync(file, "utf8")) as Dump;
+  const dump = await loadDump(file);
   const models = Object.keys(dump.tables);
   const rows = Object.values(dump.tables).reduce((a, b) => a + b.length, 0);
   console.log(`backup ${file}`);
   console.log(`taken ${dump.takenAt}${dump.commit ? ` at ${dump.commit.slice(0, 8)}` : ""} · ${models.length} models · ${rows} rows`);
 
-  const tmpFiles: string[] = [];
   const writeSubset = (name: string, only: string[]): string => {
-    const path = `${file}.${name}.json`;
+    subsetDir ??= mkdtempSync(join(tmpdir(), "rtp-recovery-drill-"));
+    const path = join(subsetDir, `${basename(file)}.${name}.json`);
     const tables: Dump["tables"] = {};
     for (const t of only) tables[t] = dump.tables[t] ?? [];
-    writeFileSync(path, JSON.stringify({ ...dump, tables }));
-    tmpFiles.push(path);
+    writeFileSync(path, JSON.stringify({ ...dump, tables }), { mode: 0o600 });
     return path;
   };
 
@@ -187,7 +225,7 @@ async function main() {
     if (selfRef.rows[0].n !== 0) throw new Error("self-referencing client rows did not resolve");
   } finally {
     await three.stop();
-    for (const f of tmpFiles) { try { unlinkSync(f); } catch { /* already gone */ } }
+    removeSubsets();
   }
 
   console.log("\n────────────────────────────────────────────────────────────");

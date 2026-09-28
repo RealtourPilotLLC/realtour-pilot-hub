@@ -14,6 +14,7 @@ import { CutTakeBack, CutTakeBackFlags } from "@/components/review/CutTakeBack";
 import type { CutTakeBackInfo } from "@/components/review/types";
 import { SelfCheckDialog, type SelfCheckContextView } from "@/components/editing/SelfCheckDialog";
 import type { SelfCheckInput } from "@/lib/selfCheck";
+import { firstName, verdictLine, type Verdict } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // "Upload version N" — the editor's way into the Review Room (Jordan, Sep 1:
@@ -73,6 +74,8 @@ export type CutRow = {
     /** §8.2: uploaded but waiting on the send-for-review check — not in
      *  front of the reviewer yet. */
     held?: boolean;
+    /** Who ruled on it, and when (Sep 28) — named on the pill. */
+    verdict?: Verdict | null;
   } | null;
   openNotes: number;
   /**
@@ -148,22 +151,37 @@ function readDimensions(file: File): Promise<{ width: number; height: number } |
 const AUTO_NOTE = /^Cut detected in the Dropbox Final folder/i;
 const editorMessage = (n: string | null | undefined) => (n && !AUTO_NOTE.test(n) ? n : null);
 
-function StatusPill({ latest, reopened }: { latest: CutRow["latest"]; reopened?: boolean }) {
+function StatusPill({ latest, reopened, officeReopen }: { latest: CutRow["latest"]; reopened?: boolean; officeReopen?: { by: string | null } | null }) {
   if (!latest) return <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted">Not uploaded yet</span>;
   if (latest.status === "APPROVED" && reopened) {
     // The client asked for changes after this version was approved — the
-    // slot takes the corrected cut as the next version (Sep 8).
-    return <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger"><Undo2 className="size-3" /> v{latest.round} approved · client asked for changes</span>;
+    // slot takes the corrected cut as the next version (Sep 8). Unless it was
+    // the OFFICE that put the job back (the queue-add): then it says who, not
+    // "client" (review, Sep 28).
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">
+        <Undo2 className="size-3" /> v{latest.round} approved · {officeReopen ? `reopened by ${firstName(officeReopen.by) ?? "the office"}` : "client asked for changes"}
+      </span>
+    );
   }
+  // WHO, on the pill (Sep 28): the first name fits; the whole line and the
+  // time are on the hover.
+  const v = latest.verdict ?? null;
+  const who = v?.source === "office" ? firstName(v.by) : null;
   if (latest.status === "APPROVED") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
-        <CheckCircle2 className="size-3" /> Approved{latest.completedAt ? " · in Dropbox" : " · copying to Dropbox"}
+      <span title={verdictLine(v) ?? undefined} className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
+        <CheckCircle2 className="size-3" /> Approved{who ? ` by ${who}` : ""}{latest.completedAt ? " · in Dropbox" : " · copying to Dropbox"}
       </span>
     );
   }
   if (latest.status === "CHANGES_REQUESTED") {
-    return <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger"><Undo2 className="size-3" /> Changes requested on v{latest.round}</span>;
+    return (
+      <span title={verdictLine(v) ?? undefined} className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">
+        <Undo2 className="size-3" />{" "}
+        {v?.source === "client" ? `The client asked for changes on v${latest.round}` : `Changes requested on v${latest.round}${who ? ` by ${who}` : ""}`}
+      </span>
+    );
   }
   // Withdrawn (rows from the afternoon of Sep 16 only — a take-back deletes
   // the version now). Nothing is in front of the reviewer, and v{round} is
@@ -308,9 +326,12 @@ function CutMessage({
 // uploading for an editor or a vendor; the dialog says so and the server
 // records it.
 export function CutUploader({
-  projectId, cuts, canUpload, revisionOpen = false, canOverrideExport = false, checks = {}, onBehalfOf = null,
+  projectId, cuts, canUpload, revisionOpen = false, officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null,
 }: {
-  projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean; canOverrideExport?: boolean;
+  projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean;
+  /** Every open video-lane ask is the office's reopen (officeReopenOf). */
+  officeReopen?: { by: string | null } | null;
+  canOverrideExport?: boolean;
   checks?: Record<string, SelfCheckContextView>; onBehalfOf?: string | null;
 }) {
   const router = useRouter();
@@ -610,7 +631,7 @@ export function CutUploader({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{c.label}</span>
-                  <StatusPill latest={c.latest} reopened={reopened} />
+                  <StatusPill latest={c.latest} reopened={reopened} officeReopen={officeReopen} />
                   {c.openNotes > 0 && (
                     <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">{c.openNotes} note{c.openNotes === 1 ? "" : "s"} to fix</span>
                   )}

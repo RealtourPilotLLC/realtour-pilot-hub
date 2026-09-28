@@ -32,6 +32,20 @@ export class QuotaExceededError extends Error {
     this.name = "QuotaExceededError";
   }
 }
+/**
+ * The model answered after this run's lease had run out and another caller had
+ * already marked it FAILED and started its own (R04, Sep 28 2026). The answer
+ * and its cost are kept on the FAILED row; nothing is applied from it.
+ */
+export class LeaseLostError extends Error {
+  constructor(msg = "This AI run finished after its 10-minute lease ran out and another run took its place. Its output is kept on the run and was not used.") {
+    super(msg);
+    this.name = "LeaseLostError";
+  }
+}
+
+/** How long a run (and, with holdDedupeKey, the write after it) holds its key. */
+const LEASE_MS = 10 * 60_000;
 
 export type AiRunKind =
   | "call_analysis" | "fact_extract" | "strategy_draft" | "topic_bank" | "topic_refresh" | "recommendation"
@@ -161,7 +175,7 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     attempts: 1,
     requestedBy: opts.requestedBy,
     startedAt: now,
-    leaseUntil: new Date(now.getTime() + 10 * 60_000),
+    leaseUntil: new Date(now.getTime() + LEASE_MS),
     leaseBy: opts.requestedBy,
   };
   try {
@@ -177,24 +191,66 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     const { result, usage, model } = await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model });
     const output = opts.parse ? opts.parse(result) : result;
     const costCents = estimateCostCents(model, usage);
-    await prisma.programAiRun.update({
-      where: { id: runId },
+    const outputJson = JSON.stringify(output).slice(0, 200_000);
+    // FENCED ON RUNNING (R04, Sep 28 2026). A run that outlived its lease was
+    // marked FAILED above by the next caller, which freed the dedupe key and
+    // paid for its own run. An unconditional write here flipped that FAILED
+    // row back to SUCCEEDED, and the caller went on to apply this late output:
+    // a second version on a script another run had already drafted.
+    const done = await prisma.programAiRun.updateMany({
+      where: { id: runId, status: "RUNNING" },
       data: {
         status: "SUCCEEDED", finishedAt: new Date(), model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costCents,
-        outputJson: JSON.stringify(output).slice(0, 200_000),
+        outputJson,
         // The dedupe key only needs to hold while the run is active — or, with
-        // holdDedupeKey, until the caller has written the output.
-        ...(opts.holdDedupeKey ? {} : { dedupeKey: null, leaseUntil: null, leaseBy: null }),
+        // holdDedupeKey, until the caller has written the output. That write
+        // gets a fresh lease from the moment the model answered: counted from
+        // the run's start, a slow answer left seconds for it (see claimRunWrite).
+        ...(opts.holdDedupeKey ? { leaseUntil: new Date(Date.now() + LEASE_MS) } : { dedupeKey: null, leaseUntil: null, leaseBy: null }),
       },
     });
+    if (done.count === 0) {
+      // Keep what it cost and what it said on the FAILED row, then stop.
+      await prisma.programAiRun.updateMany({
+        where: { id: runId, status: "FAILED" },
+        data: { model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costCents, outputJson, error: "Completed after its lease expired — output kept here, not applied." },
+      }).catch(() => {});
+      throw new LeaseLostError();
+    }
     return { runId, output, usage, model, costCents };
   } catch (e) {
+    // The row already says what happened; the FAILED write below would only
+    // overwrite that with this error's text.
+    if (e instanceof LeaseLostError) throw e;
     const msg = e instanceof Error ? e.message : String(e);
     await prisma.programAiRun.update({
       where: { id: runId },
       data: { status: "FAILED", error: msg.slice(0, 2000), errorAt: new Date(), finishedAt: new Date(), leaseUntil: null, leaseBy: null, dedupeKey: null },
     }).catch(() => {});
     throw e;
+  }
+}
+
+/**
+ * THE WRITE IS FENCED TOO (review, Sep 28). R04 fenced RUNNING → SUCCEEDED,
+ * but a holdDedupeKey run sits SUCCEEDED, key held, until its caller writes
+ * the output — and a caller that froze in that gap past the lease had its key
+ * freed by the next caller's cleanup (runAiJson, above), which then drafted
+ * the script itself. The frozen caller woke, found that script and added a
+ * SECOND version to it: one script, two versions, both runs SUCCEEDED. Call
+ * this right before writing a holdDedupeKey run's output: it proves the run
+ * still holds its lease (the cleanup nulls leaseUntil when it frees a key) and
+ * extends it for the write, or throws LeaseLostError — which the owed-script
+ * sweep already counts as a lost race. The output stays on the run row.
+ */
+export async function claimRunWrite(runId: string): Promise<void> {
+  const now = new Date();
+  const r = await prisma.programAiRun.updateMany({
+    where: { id: runId, status: "SUCCEEDED", leaseUntil: { gt: now } },
+    data: { leaseUntil: new Date(now.getTime() + LEASE_MS) },
+  });
+  if (r.count === 0) {
+    throw new LeaseLostError("This AI run's output was ready, but its lease ran out before it was written and another run could have taken its place. Its output is kept on the run and was not used.");
   }
 }
 

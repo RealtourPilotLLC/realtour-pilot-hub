@@ -304,7 +304,9 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
       const msg = e instanceof Error ? e.message : String(e);
       // Losing the dedupe race is not a failure — somebody else is drafting it.
       // So is finding it drafted by the other run since this list was read.
-      const raced = /already (running|in progress|drafted)|Unique constraint|dedupe/i.test(msg);
+      // A run that outlived its lease (LeaseLostError, R04) lost the same race
+      // from the other side: the run that replaced it does the drafting.
+      const raced = /already (running|in progress|drafted)|Unique constraint|dedupe/i.test(msg) || (e instanceof Error && e.name === "LeaseLostError");
       // NEITHER IS A CLOSED SWITCH. `ai_runs` off is Jordan's stop button, and
       // the whole point of a stop button is that pressing it is not an incident.
       // Counted as a failure it became one: every hourly tick stamped lastError

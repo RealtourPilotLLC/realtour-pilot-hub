@@ -57,9 +57,11 @@ function ScriptReleaseSummary({ rows }: { rows: AutomationUi[] }) {
     {
       label: "Share scripts without my approval",
       key: "script_auto_share",
-      state: autoShare && drafting && ai ? "on" : autoShare ? "on, but blocked" : "off",
+      // Not "blocked" by drafting (review, Sep 28): the sweep releases drafts
+      // that already exist whatever drafting and AI runs are set to.
+      state: autoShare ? "on" : "off",
       note: autoShare && !(drafting && ai)
-        ? "Has no effect while drafting is off: it only shares scripts the hub drafted on its own."
+        ? "Still releases clean drafts the hub already wrote, after the two-hour hold. No new drafts are written while drafting or AI runs is off."
         : autoShare ? "Clean automatic drafts are approved and released after a two-hour hold (TEST clients only until launch)." : "You approve every script before a client sees it.",
     },
     {
@@ -95,8 +97,11 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
   const on = rows.filter((r) => r.enabled).length;
   const never = rows.filter((r) => r.missing).length;
 
+  // No id here: the page's wrapper carries #program-automations (the anchor
+  // /content and /content/monitoring link to), and a second copy of the same
+  // id made the page's HTML invalid (11-settings-grouping, Sep 28).
   return (
-    <div id="program-automations" className="scroll-mt-20 space-y-3">
+    <div className="space-y-3">
       <p className="text-[13px] text-muted">
         {on === 0
           ? <>Nothing on the content program runs by itself. <span className="font-medium text-foreground">{never} of {rows.length}</span> have never been configured at all — no row exists for them, which is the same as off and is shown as such.</>
@@ -109,6 +114,12 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
         {rows.map((r) => {
           const e = AUTOMATION_EFFECTS[r.key as keyof typeof AUTOMATION_EFFECTS];
           const isConfirming = confirming === r.key;
+          // A switch that is on while a switch it depends on is off does
+          // nothing (§11: never make a switch look effective when another gate
+          // stops it). Only switch-on-switch dependencies are knowable here;
+          // connections, config and scope are judged in Readiness at the top.
+          const offDeps = (e?.requires?.switches ?? []).filter((d) => !rows.find((x) => x.key === d)?.enabled);
+          const blockedBySwitch = r.enabled && offDeps.length > 0;
           return (
             <div key={r.key} className="px-3 py-3 sm:px-4">
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -119,8 +130,8 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
                 <code className="rounded bg-surface-2 px-1 text-[10px] text-muted-2">{r.key}</code>
                 {e?.reaches === "clients" && <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">reaches real clients</span>}
                 <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                  r.enabled ? "bg-success/15 text-success" : r.missing ? "bg-surface-2 text-muted-2" : "bg-surface-2 text-muted")}>
-                  {r.enabled ? "on" : r.missing ? "never configured" : "off"}
+                  blockedBySwitch ? "bg-warning/15 text-warning" : r.enabled ? "bg-success/15 text-success" : r.missing ? "bg-surface-2 text-muted-2" : "bg-surface-2 text-muted")}>
+                  {blockedBySwitch ? "on, but blocked" : r.enabled ? "on" : r.missing ? "never configured" : "off"}
                 </span>
                 {isOwner && (
                   <button
@@ -144,9 +155,17 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
                     : <>configured but off{r.enabledAtISO ? ` · was last turned on ${when(r.enabledAtISO)}` : ""}</>}
                 {r.lastRunAtISO && <> · <Clock className="inline size-3" /> last ran {when(r.lastRunAtISO)}</>}
               </p>
-              {r.lastError && (
+              {blockedBySwitch && (
                 <p className="mt-0.5 text-[12px] text-warning">
-                  <AlertTriangle className="mr-1 inline size-3" />last run failed {when(r.lastErrorAtISO)}: {r.lastError.slice(0, 200)}
+                  <AlertTriangle className="mr-1 inline size-3" />Has no effect until {offDeps.map((d) => `“${AUTOMATION_EFFECTS[d].title}”`).join(" and ")} {offDeps.length > 1 ? "are" : "is"} on as well.
+                  {" "}Connections, settings and scope are checked in <a href="#readiness" className="font-medium text-brand hover:underline">Readiness</a> at the top.
+                </p>
+              )}
+              {/* A switch that is off is not failing: its last error is history,
+                  said in grey, not an amber fault (the Sep 23 regression). */}
+              {r.lastError && (
+                <p className={cn("mt-0.5 text-[12px]", r.enabled ? "text-warning" : "text-muted-2")}>
+                  <AlertTriangle className="mr-1 inline size-3" />{r.enabled ? "last run failed" : "before it was turned off, its last run failed"} {when(r.lastErrorAtISO)}: {r.lastError.slice(0, 200)}
                 </p>
               )}
               {e?.blocked && <p className="mt-0.5 text-[12px] text-muted-2"><ShieldAlert className="mr-1 inline size-3" />{e.blocked}</p>}

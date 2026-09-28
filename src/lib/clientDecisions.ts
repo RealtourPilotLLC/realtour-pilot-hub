@@ -1,17 +1,23 @@
 import "server-only";
+import { randomBytes } from "node:crypto";
+// Static, not `await import`: the link-visitor cookie (recordLinkComment) must
+// be the same module a drill's stub replaces; outside a request cookies()
+// throws and the caller's catch keeps the note (Sep 28).
+import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { cutIdentityHash } from "@/lib/cutTranscripts";
 import { cutChainOf, stableCutIdentity } from "@/lib/cutEntitlement";
 import { submissionForEnrollment, type PortalViewer } from "@/lib/portal";
-import { actorLabel } from "@/lib/portalAccess";
+import { actorLabel, actorLabelResolved } from "@/lib/portalAccess";
 import { cutReleasedAt } from "@/lib/contentVideos";
 import { slotKeyOf } from "@/lib/reviewCuts";
 import {
-  claimWindow, deadlineLabel, enforced, ensureWindow, extraRoundAckText, mayAcknowledgeFee, outputIdFor, revisionPolicy, roundsUsed, videoKeyOf, videoLabelOf,
+  claimWindow, deadlineLabel, enforced, ensureWindow, extraRoundAckText, mayAcknowledgeFee, outputIdFor, revisionPolicy, roundsUsed, settleExpiryTask, videoKeyOf, videoLabelOf,
   EXTRA_ROUND_ROUTES_IMMEDIATELY, URGENT_CONTACT, type ReviewPanel,
 } from "@/lib/reviewWindows";
 import { clip } from "@/lib/text";
 import { TEXT_KYLE } from "@/lib/portalWords";
+import { attributeLines, type Requester } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // CLIENT DECISIONS (spec §8, Sep 17 2026). The client's verdict on ONE
@@ -133,13 +139,173 @@ async function authorNames(rows: { clientUserId: string | null; staffUserId: str
   const sids = [...new Set(rows.map((r) => r.staffUserId).filter((x): x is string => !!x))];
   const [cs, ss] = await Promise.all([
     cids.length ? prisma.clientUser.findMany({ where: { id: { in: cids } }, select: { id: true, name: true, email: true } }) : [],
-    sids.length ? prisma.appUser.findMany({ where: { id: { in: sids } }, select: { id: true, name: true } }) : [],
+    sids.length ? prisma.appUser.findMany({ where: { id: { in: sids } }, select: { id: true, name: true, teamMemberId: true } }) : [],
   ]);
+  const tmIds = [...new Set(ss.map((s) => (s.name ? null : s.teamMemberId)).filter((x): x is string => !!x))];
+  const roster = new Map(
+    (tmIds.length ? await prisma.teamMember.findMany({ where: { id: { in: tmIds } }, select: { id: true, name: true } }) : []).map((t) => [t.id, t.name]),
+  );
   return {
+    // A client person with no name is their email — the one identity they
+    // have; an OWNER seat is not proof the person IS the client (an assistant
+    // can hold one), so the client's own name is never borrowed for them.
     client: new Map(cs.map((c) => [c.id, c.name || c.email])),
-    staff: new Map(ss.map((s) => [s.id, s.name || "RealTour Pilot"])),
+    // Our own staff: the login's name, else their roster row's (Sep 28) —
+    // never an email on a page the client reads.
+    staff: new Map(ss.map((s) => [s.id, s.name || (s.teamMemberId ? roster.get(s.teamMemberId) : null) || "RealTour Pilot"])),
   };
 }
+
+/**
+ * How a portal note's author reads to STAFF — the Review Room and the editor's
+ * work order (Sep 28). The same three shapes actorLabel writes on a decision,
+ * so a line can be compared with whoever pressed Submit: a client person by
+ * name, our staff "on behalf of" the client, and the emailed link as the link
+ * — with which visitor, when one was recorded (gap 21, recordLinkComment).
+ */
+function staffViewLabel(
+  r: { clientUserId: string | null; staffUserId: string | null },
+  names: { client: Map<string, string>; staff: Map<string, string> },
+  clientName: string,
+  visitor?: number | null,
+): string {
+  if (r.staffUserId) return `${names.staff.get(r.staffUserId) ?? "RealTour Pilot staff"} (on behalf of ${clientName})`;
+  if (r.clientUserId) return names.client.get(r.clientUserId) ?? clientName;
+  return `${clientName} (portal)${visitor ? `, link visitor ${visitor}` : ""}`;
+}
+
+// ---- the emailed link's visitors (gap 21, Sep 28) ---------------------------
+//
+// The legacy link carries no person, so every note written through it read
+// "<Client> (portal)" — two people sharing the link were one author. No column
+// can hold a name without a schema change, so this records the VISIT instead:
+// a random id in a first-party cookie on the link's browser (nothing the
+// client sees, nothing they are asked), written as a PortalVisit beside each
+// note. Staff then read "link visitor 1" and "link visitor 2" — different
+// browsers, told apart; still not a name, and never claimed to be one.
+const LINK_VISITOR_COOKIE = "rtp_lv";
+const LINK_VISITOR_RE = /^[A-Za-z0-9_-]{8,32}$/;
+const COMMENT_VISIT_PATH = "/portal/comment/";
+
+/** Record which link browser wrote this note. Link viewers only; never throws
+ *  (the note is saved either way). Call from a server action — the cookie is
+ *  set on the response when the browser has none yet. */
+export async function recordLinkComment(viewer: PortalViewer, commentId: string): Promise<void> {
+  if (viewer.actor.kind !== "TOKEN" || !commentId) return;
+  try {
+    const jar = await cookies();
+    let visitor = jar.get(LINK_VISITOR_COOKIE)?.value ?? "";
+    if (!LINK_VISITOR_RE.test(visitor)) {
+      visitor = randomBytes(9).toString("base64url");
+      jar.set(LINK_VISITOR_COOKIE, visitor, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 365 * 86_400, path: "/" });
+    }
+    await prisma.portalVisit.create({ data: { enrollmentId: viewer.enrollment.id, via: "TOKEN", path: `${COMMENT_VISIT_PATH}${commentId}?lv=${visitor}` } });
+  } catch { /* who wrote it is extra; the note stands */ }
+}
+
+/** comment id → the link visitor's number on its enrollment (1, 2, … in the
+ *  order the browsers first wrote). Only link-written notes appear. */
+async function linkVisitorsFor(enrollmentIds: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!enrollmentIds.length) return out;
+  const visits = await prisma.portalVisit
+    .findMany({
+      where: { enrollmentId: { in: [...new Set(enrollmentIds)] }, via: "TOKEN", path: { startsWith: COMMENT_VISIT_PATH } },
+      orderBy: { createdAt: "asc" },
+      select: { enrollmentId: true, path: true },
+    })
+    .catch(() => []);
+  const order = new Map<string, Map<string, number>>();
+  for (const v of visits) {
+    const m = /^\/portal\/comment\/([^?]+)\?lv=([A-Za-z0-9_-]+)$/.exec(v.path);
+    if (!m) continue;
+    const seen = order.get(v.enrollmentId) ?? new Map<string, number>();
+    if (!seen.has(m[2])) seen.set(m[2], seen.size + 1);
+    order.set(v.enrollmentId, seen);
+    out.set(m[1], seen.get(m[2])!);
+  }
+  return out;
+}
+
+/** One portal note as STAFF read it (the Review Room's "Client's notes"). */
+export type StaffClientNote = {
+  id: string;
+  submissionId: string;
+  timeSec: number | null;
+  body: string;
+  status: string; // OPEN | SENT | RESOLVED
+  createdAtISO: string;
+  author: string;
+  /** our staff wrote it through the client's portal, on their behalf */
+  onBehalf: boolean;
+  /** written through the emailed link — no sign-in, so no person on record */
+  viaLink: boolean;
+  resolvedAtISO: string | null;
+  resolvedBy: string | null;
+  replies: StaffClientNote[];
+};
+
+/**
+ * The client's notes on a job's cuts, for the Review Room (gap 8, Sep 28). The
+ * box used to print the words and one of two words beside them — "new" (for an
+ * OPEN note AND for a resolved one) or "sent to editor" — with no author, no
+ * date, replies flattened in as if they were notes, and every cut mixed. Now:
+ * the newest `take` notes with their replies under them, each with its author
+ * (staff on the client's behalf marked as such) and its time, grouped by cut.
+ */
+export async function clientNotesForReviewRoom(projectId: string, take = 30): Promise<{ submissionId: string; notes: StaffClientNote[] }[]> {
+  const roots = (
+    await prisma.portalComment.findMany({ where: { projectId, parentId: null }, orderBy: { createdAt: "desc" }, take })
+  ).reverse();
+  if (!roots.length) return [];
+  const replies = await prisma.portalComment.findMany({ where: { parentId: { in: roots.map((r) => r.id) } }, orderBy: { createdAt: "asc" } });
+  const all = [...roots, ...replies];
+  const [names, visitors, project] = await Promise.all([
+    authorNames(all),
+    linkVisitorsFor(all.map((r) => r.enrollmentId)),
+    prisma.project.findUnique({ where: { id: projectId }, select: { client: { select: { name: true } } } }),
+  ]);
+  const clientName = project?.client?.name || "The client";
+  const view = (r: (typeof all)[number]): StaffClientNote => ({
+    id: r.id, submissionId: r.submissionId, timeSec: r.timeSec, body: r.body, status: r.status, createdAtISO: r.createdAt.toISOString(),
+    author: staffViewLabel(r, names, clientName, visitors.get(r.id) ?? null),
+    onBehalf: !!r.staffUserId, viaLink: !r.staffUserId && !r.clientUserId,
+    resolvedAtISO: r.resolvedAt?.toISOString() ?? null, resolvedBy: r.resolvedBy, replies: [],
+  });
+  const byId = new Map(roots.map((r) => [r.id, view(r)]));
+  for (const r of replies) byId.get(r.parentId!)?.replies.push(view(r));
+  const groups = new Map<string, StaffClientNote[]>();
+  for (const r of roots) groups.set(r.submissionId, [...(groups.get(r.submissionId) ?? []), byId.get(r.id)!]);
+  return [...groups.entries()].map(([submissionId, notes]) => ({ submissionId, notes }));
+}
+
+/**
+ * The notes a request carries, as work-order lines each naming its author when
+ * they are not all the sender's (gap 9, Sep 28). The brief used to credit every
+ * line to whoever pressed Submit — "requested … by Sarah" over her assistant's
+ * notes and her own alike.
+ */
+async function attributedNoteLines(noteIds: string[], lead: string, enrollmentClientName: string | null): Promise<string[]> {
+  if (!noteIds.length) return [];
+  const notes = await prisma.portalComment.findMany({
+    where: { id: { in: noteIds } },
+    orderBy: [{ timeSec: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
+    select: { id: true, timeSec: true, body: true, clientUserId: true, staffUserId: true, enrollmentId: true },
+  });
+  const [names, visitors] = await Promise.all([authorNames(notes), linkVisitorsFor(notes.map((n) => n.enrollmentId))]);
+  const clientName = enrollmentClientName || "Client";
+  return attributeLines(
+    notes.map((n) => ({ text: `${fmtT(n.timeSec)}${n.body}`, author: staffViewLabel(n, names, clientName, visitors.get(n.id) ?? null) })),
+    lead,
+  );
+}
+
+/** The decision's person as a revision's requester (RevisionBrief.requestedBy*). */
+const requesterOfDecision = (d: { actorLabel: string; clientUserId: string | null; staffUserId: string | null }): Requester => ({
+  name: d.actorLabel,
+  kind: d.staffUserId ? "CLIENT_STAFF" : "CLIENT",
+  userId: d.clientUserId ?? d.staffUserId ?? null,
+});
 
 /**
  * Is this row the viewer's own? Exported because the WRITE layer needs the very
@@ -397,7 +563,7 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
   try {
     r = await recordClientApproval({
       enrollmentId: viewer.enrollment.id, clientId: viewer.enrollment.clientId, cut: full,
-      actor: { ...stamp(viewer), actorLabel: actorLabel(viewer), membershipRole: roleOf(viewer), resolvedByKind: staff ? "STAFF" : "CLIENT" },
+      actor: { ...stamp(viewer), actorLabel: await actorLabelResolved(viewer), membershipRole: roleOf(viewer), resolvedByKind: staff ? "STAFF" : "CLIENT" },
       openCommentIds: open.map((c) => c.id), choice, basis: staff ? "STAFF" : "CLIENT", windowId: w?.id ?? null,
     });
   } catch (e) {
@@ -416,9 +582,11 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     // The repair released the window while this approval stalled: the approval
     // is on record, so the window follows it.
     if (pinned.count === 0) await claimWindow(w.id, ["OPEN"], "APPROVED", {}, { decisionId: r.decisionId, closedAt: now, closedReason: staff ? "STAFF" : "CLIENT" }).catch(() => false);
+    // A late approval (always accepted) answers the office's "no answer" card (R04).
+    await settleExpiryTask(w.id);
   }
   if (overridden !== null) {
-    await setAsideRequest(overridden || null, r.decisionId, actorLabel(viewer), submissionId, full.projectId);
+    await setAsideRequest(overridden || null, r.decisionId, await actorLabelResolved(viewer), submissionId, full.projectId);
     // The client's request had flipped the cut out of APPROVED; it stands again.
     await prisma.reviewSubmission.updateMany({ where: { id: submissionId, status: "CHANGES_REQUESTED", clientRequestedAt: { not: null } }, data: { status: "APPROVED" } }).catch(() => {});
   }
@@ -584,7 +752,9 @@ export async function requestChangesOnCut(
   if (!w) return { ok: false, message: `That version isn't open for review — ${TEXT_KYLE} and we'll sort it out.` };
   const policy = await revisionPolicy();
   const overall = clip((generalNote ?? "").trim(), 1000);
-  const by = actorLabel(viewer);
+  // Roster name for a nameless staff login (Sep 28): the request, its brief and
+  // the Review Room's line for the same person's notes all read one name.
+  const by = await actorLabelResolved(viewer);
   const now = new Date();
   const ctx = { viewer, submissionId, full, projectTitle: sub.project?.title ?? null, overall, requestKey, by };
 
@@ -727,6 +897,9 @@ export async function requestChangesOnCut(
     await giveBack(decision.id);
     return { ok: false, message: `That didn't send — try again in a moment, or ${TEXT_KYLE}.` };
   }
+  // A request stamped before the deadline can land after the sweep handed the
+  // window to the office: its "no answer" card is answered (R04).
+  await settleExpiryTask(w.id);
 
   // Only now, with the request on record, does a staff reopen set the
   // client's approval aside — pointing at the request that replaced it, so
@@ -744,7 +917,10 @@ export async function requestChangesOnCut(
   // raced this one cannot send the same note twice — then the editor.
   const claimed = await claimNotes(submissionId, viewer.enrollment.id, decision.id);
   await prisma.clientDecision.update({ where: { id: decision.id }, data: { commentIdsJson: claimed.length ? JSON.stringify(claimed) : null } }).catch(() => {});
-  if (overall) await prisma.portalComment.create({ data: { submissionId, projectId: full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: overall, status: "SENT", decisionId: decision.id, ...stamp(viewer) } }).catch(() => {});
+  if (overall) {
+    const made = await prisma.portalComment.create({ data: { submissionId, projectId: full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: overall, status: "SENT", decisionId: decision.id, ...stamp(viewer) }, select: { id: true } }).catch(() => null);
+    if (made) await recordLinkComment(viewer, made.id);
+  }
   let routed = false;
   try {
     routed = !!(await routePortalRequest(decision.id));
@@ -817,7 +993,10 @@ async function addToOpenRequest(ctx: RequestCtx, windowId: string): Promise<Requ
   if (!w.decisionId) {
     // Still mid-flight: leave everything OPEN — the winner's claim, or the
     // cron repair, carries it.
-    if (ctx.overall) await prisma.portalComment.create({ data: { submissionId, projectId: ctx.full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: ctx.overall, status: "OPEN", ...stamp(viewer) } }).catch(() => {});
+    if (ctx.overall) {
+      const made = await prisma.portalComment.create({ data: { submissionId, projectId: ctx.full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: ctx.overall, status: "OPEN", ...stamp(viewer) }, select: { id: true } }).catch(() => null);
+      if (made) await recordLinkComment(viewer, made.id);
+    }
     return { ok: true, decisionId: null, duplicate: true, message: "Received — it goes with your request." };
   }
   const d = await prisma.clientDecision.findUnique({ where: { id: w.decisionId } });
@@ -838,20 +1017,36 @@ async function addToOpenRequest(ctx: RequestCtx, windowId: string): Promise<Requ
     }
   }
   const claimed = await claimNotes(submissionId, viewer.enrollment.id, d.id);
-  if (ctx.overall) await prisma.portalComment.create({ data: { submissionId, projectId: ctx.full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: ctx.overall, status: "SENT", decisionId: d.id, ...stamp(viewer) } }).catch(() => {});
+  if (ctx.overall) {
+    const made = await prisma.portalComment.create({ data: { submissionId, projectId: ctx.full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: ctx.overall, status: "SENT", decisionId: d.id, ...stamp(viewer) }, select: { id: true } }).catch(() => null);
+    if (made) await recordLinkComment(viewer, made.id);
+  }
   if (!claimed.length && !ctx.overall) return { ok: true, decisionId: d.id, duplicate: true, message: "We already have your request for this version." };
-  await raiseAddendum(d, claimed, ctx.overall || null, ctx.by, ctx.requestKey);
+  // The addendum's own sender is its requester — not whoever opened the round.
+  const a = viewer.actor;
+  await raiseAddendum(d, claimed, ctx.overall || null, ctx.by, ctx.requestKey, {
+    name: ctx.by,
+    kind: a.kind === "STAFF" ? "CLIENT_STAFF" : "CLIENT",
+    userId: a.kind === "CLIENT" ? a.clientUserId : a.kind === "STAFF" ? a.staffUserId : null,
+  });
   return { ok: true, decisionId: d.id, duplicate: true, message: "Added to your open request — your editor has been notified." };
 }
 
-async function raiseAddendum(d: { id: string; projectId: string; submissionId: string; clientId: string; revisionBriefId: string | null }, noteIds: string[], overall: string | null, by: string, requestKey: string | null): Promise<void> {
-  const notes = noteIds.length ? await prisma.portalComment.findMany({ where: { id: { in: noteIds } }, orderBy: [{ timeSec: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }], select: { timeSec: true, body: true } }) : [];
-  const lines = [...notes.map((n) => `${fmtT(n.timeSec)}${n.body}`), ...(overall ? [overall] : [])];
+async function raiseAddendum(
+  d: { id: string; projectId: string; submissionId: string; clientId: string; revisionBriefId: string | null; actorLabel: string; clientUserId: string | null; staffUserId: string | null },
+  noteIds: string[],
+  overall: string | null,
+  by: string,
+  requestKey: string | null,
+  requester?: Requester | null,
+): Promise<void> {
+  const client = await prisma.client.findUnique({ where: { id: d.clientId }, select: { name: true } });
+  // Each note names its author when they are not all the sender's (gap 9).
+  const lines = [...(await attributedNoteLines(noteIds, by, client?.name ?? null)), ...(overall ? [overall] : [])];
   if (!lines.length) return;
-  const [cut, round, client, project] = await Promise.all([
+  const [cut, round, project] = await Promise.all([
     prisma.reviewSubmission.findUnique({ where: { id: d.submissionId }, select: { projectId: true, deliverableId: true, slot: true, fileName: true, round: true } }),
     prisma.contentRevisionRound.findUnique({ where: { decisionId: d.id }, select: { id: true, outputId: true } }),
-    prisma.client.findUnique({ where: { id: d.clientId }, select: { name: true } }),
     prisma.project.findUnique({ where: { id: d.projectId }, select: { title: true } }),
   ]);
   if (!cut) return;
@@ -863,6 +1058,7 @@ async function raiseAddendum(d: { id: string; projectId: string; submissionId: s
     note: `Additional notes from the client portal by ${by} on ${label} (v${cut.round}):\n${lines.map((l) => `• ${l}`).join("\n")}`,
     pin: { submissionId: d.submissionId, outputId: round?.outputId ?? (await outputIdFor(cut)), cutKey: cut.deliverableId ? slotKeyOf(cut.deliverableId, cut.slot) : null, decisionId: d.id, roundId: round?.id ?? null, videoLabel: label },
     addendum: { n, requestKey },
+    requestedBy: requester ?? requesterOfDecision(d),
   });
   // Back to "with your editor" — unless the original request itself never got
   // there, which the repair still owes (it looks for RECEIVED).
@@ -899,30 +1095,63 @@ export async function routePortalRequest(decisionId: string): Promise<{ taskId: 
   if (!cut) return null;
   let ids: string[] = [];
   try { ids = d.commentIdsJson ? (JSON.parse(d.commentIdsJson) as string[]) : []; } catch { /* no notes recorded */ }
-  const notes = ids.length
-    ? await prisma.portalComment.findMany({ where: { id: { in: ids } }, orderBy: [{ timeSec: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }], select: { timeSec: true, body: true } })
-    : [];
-  const lines = [...notes.map((n) => `${fmtT(n.timeSec)}${n.body}`), ...(d.note ? [d.note] : [])];
+  const client = await prisma.client.findUnique({ where: { id: d.clientId }, select: { name: true } });
+  // Each bullet names its author when they are not all the sender's (gap 9).
+  const lines = [...(await attributedNoteLines(ids, d.actorLabel, client?.name ?? null)), ...(d.note ? [d.note] : [])];
   if (!lines.length) {
     // Every note it saw was claimed by a submit that raced it and went to the
     // editor as an addendum on this very request: that brief IS its routing.
     const addendum = await prisma.revisionBrief.findFirst({ where: { decisionId }, orderBy: { createdAt: "asc" }, select: { id: true, taskId: true } });
     return addendum ? link(addendum.taskId, addendum.id) : null;
   }
-  const label = await videoLabelOf(cut);
-  const street = cut.project?.title?.split(",")[0] ?? null;
-  // The compiled note is the client's words and nothing else — in particular
-  // NEVER the fee (the $50 lives on the round and the office's card only).
-  const compiled = `Video revision requested from the client portal by ${d.actorLabel}${street ? ` on ${street}` : ""}, ${label}${cut.fileName ? ` (cut: ${cut.fileName}, v${cut.round})` : ""}:\n${lines.map((l) => `• ${l}`).join("\n")}`;
-  const client = await prisma.client.findUnique({ where: { id: d.clientId }, select: { name: true } });
-  const { raiseRevisionDetailed } = await import("@/lib/comms");
-  const r = await raiseRevisionDetailed({
-    projectId: d.projectId, clientId: d.clientId, clientName: client?.name ?? null, propertyAddress: cut.project?.title ?? null, note: compiled, source: "portal",
-    pin: { submissionId: d.submissionId, outputId: round?.outputId ?? (await outputIdFor(cut)), cutKey: cut.deliverableId ? slotKeyOf(cut.deliverableId, cut.slot) : null, decisionId, roundId: round?.id ?? null, videoLabel: label },
+  // ONE ROUTER AT A TIME (R04, Sep 28 2026). The submit and the cron repair can
+  // both get here for one request: the repair takes any request still RECEIVED
+  // two minutes on, and a slow inline route is exactly that. Both passed the
+  // "prior brief" check above before either had written one — on real Postgres
+  // (scripts/_drill/realpg-extra-round-fee.ts §3) that was two briefs and two
+  // timeline lines for one ask. So the raise is claimed first; the loser
+  // returns the link if the winner has made it, else null ("on its way"). A
+  // claim older than ROUTE_CLAIM_MS is a router that died, and is taken over.
+  const claimedAt = new Date();
+  const claim = await prisma.clientDecision.updateMany({
+    where: { id: decisionId, revisionBriefId: null, OR: [{ routeClaimedAt: null }, { routeClaimedAt: { lt: new Date(claimedAt.getTime() - ROUTE_CLAIM_MS) } }] },
+    data: { routeClaimedAt: claimedAt },
   });
-  if (!r.ok) throw new Error("the revision could not be raised");
+  if (claim.count === 0) {
+    const cur = await prisma.clientDecision.findUnique({ where: { id: decisionId }, select: { revisionTaskId: true, revisionBriefId: true } });
+    return cur?.revisionBriefId ? { taskId: cur.revisionTaskId, briefId: cur.revisionBriefId } : null;
+  }
+  // A router that fails gives its claim back, so the repair's retry is not
+  // made to wait out a claim nobody holds.
+  const letGo = () => prisma.clientDecision.updateMany({ where: { id: decisionId, routeClaimedAt: claimedAt }, data: { routeClaimedAt: null } }).catch(() => {});
+  let r: Awaited<ReturnType<typeof import("@/lib/comms").raiseRevisionDetailed>>;
+  try {
+    const label = await videoLabelOf(cut);
+    const street = cut.project?.title?.split(",")[0] ?? null;
+    // The compiled note is the client's words and nothing else — in particular
+    // NEVER the fee (the $50 lives on the round and the office's card only).
+    const compiled = `Video revision requested from the client portal by ${d.actorLabel}${street ? ` on ${street}` : ""}, ${label}${cut.fileName ? ` (cut: ${cut.fileName}, v${cut.round})` : ""}:\n${lines.map((l) => `• ${l}`).join("\n")}`;
+    const { raiseRevisionDetailed } = await import("@/lib/comms");
+    r = await raiseRevisionDetailed({
+      projectId: d.projectId, clientId: d.clientId, clientName: client?.name ?? null, propertyAddress: cut.project?.title ?? null, note: compiled, source: "portal",
+      pin: { submissionId: d.submissionId, outputId: round?.outputId ?? (await outputIdFor(cut)), cutKey: cut.deliverableId ? slotKeyOf(cut.deliverableId, cut.slot) : null, decisionId, roundId: round?.id ?? null, videoLabel: label },
+      // The decision's person — the client, or our staff on their behalf (gap 10).
+      requestedBy: requesterOfDecision(d),
+    });
+  } catch (e) {
+    await letGo();
+    throw e;
+  }
+  if (!r.ok) {
+    await letGo();
+    throw new Error("the revision could not be raised");
+  }
   return link(r.taskId, r.briefId);
 }
+
+/** How long a routing claim holds before it counts as a router that died.
+ *  Two minutes: the repair's own "still RECEIVED" wait (repairPortalRevisionRequests). */
+const ROUTE_CLAIM_MS = 2 * 60_000;
 
 /** The office's card for an extra round: charge or waive. OWNER/ADMIN bell,
  *  Kyle's queue — never an editor surface, and nothing is charged. */
@@ -985,7 +1214,8 @@ export async function repairPortalRevisionRequests(opts: { now?: Date; max?: num
   const max = opts.max ?? 50;
   let routed = 0, addenda = 0, released = 0;
   const stuck = await prisma.clientDecision.findMany({
-    where: { decision: "REQUEST_CHANGES", receiptState: "RECEIVED", revisionBriefId: null, windowId: { not: null }, decidedAt: { lt: cutoff } },
+    // A request whose router still holds a fresh claim is being routed now (R04).
+    where: { decision: "REQUEST_CHANGES", receiptState: "RECEIVED", revisionBriefId: null, windowId: { not: null }, decidedAt: { lt: cutoff }, OR: [{ routeClaimedAt: null }, { routeClaimedAt: { lt: cutoff } }] },
     orderBy: { decidedAt: "asc" }, take: max, select: { id: true },
   });
   for (const s of stuck) {
@@ -1056,5 +1286,6 @@ export async function replyToComment(viewer: PortalViewer, parentId: string, bod
     data: { submissionId: parent.submissionId, projectId: parent.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: text, status: "SENT", parentId: parent.parentId ?? parent.id, ...stamp(viewer) },
     select: { id: true },
   });
+  await recordLinkComment(viewer, created.id);
   return { ok: true, message: "Replied.", id: created.id };
 }

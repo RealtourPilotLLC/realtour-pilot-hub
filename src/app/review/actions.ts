@@ -12,6 +12,9 @@ import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 import { advisoryKeyPair } from "@/lib/dbLocks";
+// Who wrote / ruled, in one vocabulary (Review Room attribution, Sep 28).
+import { attributeLines, LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
+import { displayNameFor } from "@/lib/actorName";
 // The 1080p export spec, from the one file that owns it (lib/videoStyles).
 import { exportRefusalMessage, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
 // Type-only (erased at build): the shape the withdraw/move controls render.
@@ -88,27 +91,60 @@ function afterSafe(fn: () => Promise<void>): void {
 // themselves still counts as a self-tag, and a second owner login tagging
 // "@Jordan" reaches Jordan. Only the sessionless dev fallback leaves it
 // undefined and lets the "owner" key stand in for his row.
-async function sessionAuthor(): Promise<{ authorKey: string; authorTmId?: string | null; authorName: string | null }> {
+//
+// Sep 28 (attribution): the name is the person's DISPLAY name — the login's,
+// else their roster row's, else their editor's — and an email only when there
+// is no name anywhere (it used to be `u.name ?? u.email`, so a blank name box
+// signed every note with an address). The login id rides beside it
+// (MediaNote.authorUserId / ReviewSubmission.decidedByUserId), so a rename or
+// two people sharing a first name can still be traced. Signed out — local dev
+// only — is ONE fallback name, not "Jordan": a note nobody wrote must not read
+// as his.
+async function sessionAuthor(): Promise<{ authorKey: string; authorTmId?: string | null; authorName: string | null; authorUserId: string | null }> {
   const u = await getCurrentUser().catch(() => null);
-  if (!u) return { authorKey: "owner", authorName: "Jordan" };
-  const name = u.name ?? u.email;
+  if (!u) return { authorKey: "owner", authorName: LOCAL_DEV_AUTHOR, authorUserId: null };
+  const name = await displayNameFor(u);
+  const authorUserId = u.id;
   const { authorTeamMemberId } = await import("@/lib/mentions");
   const authorTmId = await authorTeamMemberId(u);
-  if (u.role === "OWNER") return { authorKey: "owner", authorTmId, authorName: name };
+  if (u.role === "OWNER") return { authorKey: "owner", authorTmId, authorName: name, authorUserId };
   // An EDITOR is keyed editor:<key> FIRST — tm:<id> winning meant editor-
   // authored notes dodged every "authored by the editor" filter and their
   // submissions were credited to a tm: identity (Aug 18 audit).
-  if (u.role === "EDITOR" && u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name };
-  if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorTmId, authorName: name };
-  if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name };
+  if (u.role === "EDITOR" && u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name, authorUserId };
+  if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorTmId, authorName: name, authorUserId };
+  if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name, authorUserId };
   if (u.role === "PHOTOGRAPHER") {
     try {
       const { photographerMemberId } = await import("@/lib/shoot");
       const mid = await photographerMemberId(u);
-      if (mid) return { authorKey: `tm:${mid}`, authorTmId: authorTmId ?? mid, authorName: name };
+      if (mid) return { authorKey: `tm:${mid}`, authorTmId: authorTmId ?? mid, authorName: name, authorUserId };
     } catch { /* fall through to the neutral key */ }
   }
-  return { authorKey: `user:${u.id}`, authorTmId, authorName: name };
+  return { authorKey: `user:${u.id}`, authorTmId, authorName: name, authorUserId };
+}
+
+/** A verdict's line on the job's timeline, with the person's roster row as its
+ *  author when they have one (gap 7, Sep 28). The author is a foreign key: a
+ *  login linked to a roster row that has since gone must not cost the verdict
+ *  its timeline line, so a refused author writes the line without one. */
+async function timelineLine(projectId: string, body: string, authorTmId: string | null): Promise<void> {
+  const data = { projectId, type: "SYSTEM" as const, body };
+  if (authorTmId) {
+    const ok = await prisma.activity.create({ data: { ...data, authorId: authorTmId } }).then(() => true, () => false);
+    if (ok) return;
+  }
+  await prisma.activity.create({ data });
+}
+
+// "VIEW AS" WRITES NOTHING, WITH OR WITHOUT ENFORCEMENT (gap 20, Sep 28). The
+// guards return early when auth is off (local dev), BEFORE their preview
+// check — so a previewing owner's note, verdict or reply was written under the
+// previewed person's name. Every write in this file asks this first; with
+// enforcement on the guards already refuse and this is a second, cheaper no.
+async function previewRefusal(): Promise<{ ok: false; message: string } | null> {
+  const u = await getCurrentUser().catch(() => null);
+  return u?.impersonating ? { ok: false, message: PREVIEW_REFUSED } : null;
 }
 
 // Which editor a project's video work routes to — prefer who actually
@@ -201,6 +237,7 @@ export async function submitCutForReview(
   selfCheck?: import("@/lib/selfCheck").SelfCheckInput | null,
   opts?: { submissionId?: string | null },
 ): Promise<{ ok: boolean; message: string; needsSelfCheck?: boolean; candidate?: SelfCheckCandidate }> {
+  { const refused = await previewRefusal(); if (refused) return refused; }
   // Scope to the SUBMITTING editor's own task: authorizing off the oldest open
   // task regardless of assignee let one editor's submit close ANOTHER editor's
   // work item (audit). Owner/admin submit-on-behalf keeps the wide net.
@@ -446,8 +483,9 @@ export async function submitCutForReview(
     await closeActiveWork(projectId, {
       editorKey: myEditorKey ?? editorKey,
       reason: "SUBMITTED",
-      actor: { userId: me?.id ?? null, name: me?.name ?? me?.email ?? authorName ?? "The office", role: office ? (me?.realRole === "ADMIN" ? "ADMIN" : "OWNER") : "EDITOR" },
-      detail: office ? `cut sent to review by ${me?.name ?? me?.email ?? "the office"}` : "cut submitted",
+      // The display name sessionAuthor resolved (roster before email, Sep 28).
+      actor: { userId: me?.id ?? null, name: authorName ?? "The office", role: office ? (me?.realRole === "ADMIN" ? "ADMIN" : "OWNER") : "EDITOR" },
+      detail: office ? `cut sent to review by ${authorName ?? "the office"}` : "cut submitted",
     });
   }
 
@@ -544,6 +582,7 @@ export async function addCutNote(input: {
   kind: "fix" | "coaching";
   timeSec: number | null;
 }): Promise<{ ok: boolean; message?: string }> {
+  { const refused = await previewRefusal(); if (refused) return refused; }
   try {
     // The review desk: owner/admin, or a named review seat (§8.1, Sep 25).
     await requireCutReviewer();
@@ -607,7 +646,7 @@ export async function addCutNote(input: {
       photographerId = appt?.assignedToId ?? null;
     }
   }
-  const { authorKey, authorTmId, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName, authorUserId } = await sessionAuthor();
 
   const note = await prisma.mediaNote.create({
     data: {
@@ -623,6 +662,7 @@ export async function addCutNote(input: {
       status: "OPEN",
       authorKey,
       authorName,
+      authorUserId,
       editorKey,
       photographerId,
     },
@@ -719,7 +759,7 @@ export async function askCutChange(input: {
   // made — and the reply guard above (root.photographerId === mid) handed them
   // the answer too.
   const photographerId = me.teamMemberId;
-  const { authorKey, authorTmId, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName, authorUserId } = await sessionAuthor();
 
   const note = await prisma.mediaNote.create({
     data: {
@@ -733,6 +773,7 @@ export async function askCutChange(input: {
       status: "OPEN",
       authorKey,
       authorName,
+      authorUserId,
       editorKey,
       photographerId,
     },
@@ -797,6 +838,7 @@ export async function askCutChange(input: {
 // Threaded reply on a cut note — owner/admin, or the editor/photographer the
 // root note is addressed to.
 export async function replyCutNote(noteId: string, body: string): Promise<{ ok: boolean; message?: string }> {
+  { const refused = await previewRefusal(); if (refused) return refused; }
   const text = (body ?? "").trim();
   if (!text) return { ok: false, message: "Write a reply first." };
   const note = await prisma.mediaNote.findUnique({ where: { id: noteId } });
@@ -810,7 +852,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
-  const { authorKey, authorTmId, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName, authorUserId } = await sessionAuthor();
   const reply = await prisma.mediaNote.create({
     data: {
       projectId: root.projectId,
@@ -823,6 +865,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       status: "OPEN",
       authorKey,
       authorName,
+      authorUserId,
       editorKey: root.editorKey,
       photographerId: root.photographerId,
       parentId: root.id,
@@ -881,6 +924,7 @@ export async function setCutNoteStatus(
   status: "OPEN" | "FIXED" | "RESOLVED",
 ): Promise<{ ok: boolean; message?: string }> {
   if (status !== "OPEN" && status !== "FIXED" && status !== "RESOLVED") return { ok: false, message: "Bad status." };
+  { const refused = await previewRefusal(); if (refused) return refused; }
   const note = await prisma.mediaNote.findUnique({ where: { id: noteId } });
   if (!note) return { ok: false, message: "That note no longer exists." };
   if (note.parentId) return { ok: false, message: "Replies don't have a status." };
@@ -890,18 +934,24 @@ export async function setCutNoteStatus(
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
+  // WHO MOVED IT, AND WHEN (gap 18, Sep 28). Only resolvedAt existed, and only
+  // for RESOLVED: "who resolved this?" had no answer outside the issue history.
+  // statusBy/statusAt say it for every move — resolved, reopened, marked fixed.
+  const { authorName } = await sessionAuthor();
+  const at = new Date();
   await prisma.mediaNote.update({
     where: { id: noteId },
     data: {
       status,
-      ...(status === "RESOLVED" ? { resolvedAt: new Date() } : status === "OPEN" ? { resolvedAt: null } : {}),
+      statusBy: authorName,
+      statusAt: at,
+      ...(status === "RESOLVED" ? { resolvedAt: at } : status === "OPEN" ? { resolvedAt: null } : {}),
     },
   });
   // The legacy toggle writes the same issue state the self-check does (§8.3):
   // FIXED = the editor says addressed, RESOLVED = the desk verified it.
   {
     const { mirrorNoteStatus } = await import("@/lib/revisionIssues");
-    const { authorName } = await sessionAuthor();
     await mirrorNoteStatus(noteId, status, { name: authorName ?? "Hub" });
   }
   refresh(note.projectId);
@@ -914,6 +964,7 @@ export async function setCutNoteStatus(
 // plain Approve button) = every fix the editor marked done on this cut is
 // verified by the approval, which is what the list pre-ticks anyway.
 export async function approveCut(submissionId: string, opts?: { verifyIssueIds?: string[] | null }): Promise<{ ok: boolean; message: string }> {
+  { const refused = await previewRefusal(); if (refused) return refused; }
   try {
     // Owner/admin as always, or a named review seat (§8.1, Sep 25): James's
     // approval must work on THIS action, not hang on the broad ADMIN role.
@@ -986,7 +1037,8 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   const issueGate = await approvalGate(submission, { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, verifyIssueIds: opts?.verifyIssueIds ?? null });
   if (!issueGate.ok) return { ok: false, message: issueGate.message };
 
-  const { authorName } = await sessionAuthor();
+  const { authorName, authorUserId } = await sessionAuthor();
+  const ruler = await rulerOf();
   const decidedAt = new Date();
   // COMPARE-AND-SET on the status this request read, the shape reassignCut has
   // used since Sep 16 (:2282, "two presses must not both run the source-job
@@ -999,7 +1051,8 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // this is the part that has to hold when the presses overlap.)
   const won = await prisma.reviewSubmission.updateMany({
     where: { id: submissionId, status: submission.status },
-    data: { status: "APPROVED", decidedAt, decidedBy: authorName },
+    // decidedByUserId (Sep 28): the login behind the name, on every verdict.
+    data: { status: "APPROVED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId },
   });
   if (won.count === 0) {
     return {
@@ -1012,15 +1065,16 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // verdict won its row — never a second approval anybody has to give.
   {
     const { recordRulingReviewer } = await import("@/lib/reviewerAssignment");
-    await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "approved", ruler: await rulerOf() });
+    await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "approved", ruler });
   }
   // The fixes on this version, verified by the one who approved it (§8.3).
   // After the verdict won its row, so a lost race verifies nothing.
   await issueGate.apply({ name: authorName ?? "Reviewer" }).catch(() => ({ verified: 0 }));
   const street = streetOf(submission.project?.title);
-  await prisma.activity.create({
-    data: { projectId: submission.projectId, type: "SYSTEM", body: `Cut approved in review (round ${submission.round}).` },
-  });
+  // The timeline names the person (gap 7, Sep 28) — and carries their roster
+  // row as the line's author when they have one, so the job's history can be
+  // read by person as well as by sentence.
+  await timelineLine(submission.projectId, `Cut approved in review (round ${submission.round})${authorName ? ` by ${authorName}` : ""}.`, ruler?.teamMemberId ?? null);
 
   // QC passed → the cut joins the client's portal library the same moment
   // (content-program jobs only; best-effort — approval never fails over it).
@@ -1169,13 +1223,15 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
     const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
     const shooter = await photographerNotifyTarget(submission.projectId, {
       href: `/review/${submission.projectId}?cut=${submissionId}`,
-      slackDm: `✅ Approved — the cut from your shoot at ${street} passed review.`,
+      slackDm: `✅ Approved — the cut from your shoot at ${street} passed review${authorName ? ` (${authorName})` : ""}.`,
     }).catch(() => null);
     if (shooter) targets.push(shooter);
+    // The bell says who approved it (Sep 28) — the row's own time is the when.
+    const approvedBy = authorName ? `Approved by ${authorName}. ` : "";
     await notifyInApp({
       kind: "review_approved",
       title: `Cut approved — ${street}${submission.fileName ? ` (${submission.fileName})` : ""}`,
-      body: inFlight > 0 ? `${inFlight} more video${inFlight === 1 ? "" : "s"} still in review — not ready to deliver yet.` : "Ready to deliver.",
+      body: approvedBy + (inFlight > 0 ? `${inFlight} more video${inFlight === 1 ? "" : "s"} still in review — not ready to deliver yet.` : "Ready to deliver."),
       href: `/projects/${submission.projectId}`,
       targets,
       dedupeKey: `review-approved-${submissionId}`,
@@ -1208,6 +1264,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
 // reviewer says are NOT done — they go back REOPENED, stamped missed in this
 // version. Absent (the plain button), no fix is judged either way.
 export async function requestCutChanges(submissionId: string, opts?: { notFixedIssueIds?: string[] | null }): Promise<{ ok: boolean; message: string }> {
+  { const refused = await previewRefusal(); if (refused) return refused; }
   try {
     await requireCutReviewer(); // same desk as approveCut (§8.1)
   } catch (e) {
@@ -1288,7 +1345,17 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
   const s = open.length === 1 ? "" : "s";
   const fmtT = (t: number | null) =>
     t == null ? "" : `[${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}] `;
-  const lines = open.map((n) => `• ${fmtT(n.timeSec)}${n.body.trim()}`);
+  // WHOSE NOTES THESE ARE (gap 6, Sep 28). The bundle used to be bare bullets
+  // under "sent back from the Review Room", so a photographer's ask and
+  // another reviewer's note read as the sender's own. The header names who
+  // sent it back and when; a line written by anybody else carries its author.
+  const { authorName, authorUserId } = await sessionAuthor();
+  const ruler = await rulerOf();
+  const decidedAt = new Date();
+  const lines = attributeLines(
+    open.map((n) => ({ text: `• ${fmtT(n.timeSec)}${n.body.trim()}`, author: n.authorName })),
+    authorName,
+  );
   // The round is on the edit card. The card keeps whoever holds it (the
   // assignedManually invariant); a job that never had one is minted through
   // the routing/pin rules, exactly like a first cut.
@@ -1305,6 +1372,11 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
     round: submission.round + 1,
     notes: lines,
     reason: `sent back from the Review Room${which ? ` on ${which}` : ""} (version ${submission.round})`,
+    // The header names the sender and the moment (" · by James Rivera, Mon…").
+    by: authorName ? { name: authorName, userId: authorUserId, at: decidedAt } : null,
+    // So a retry by another reviewer, whose bullets carry the authors this
+    // press left bare, is still the same round (review, Sep 28).
+    noteAuthors: open.map((n) => n.authorName),
   });
   if (!card) {
     // No video deliverable on the job — nothing to hang a round on. Say so
@@ -1328,7 +1400,6 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
       editorKey = maker;
     }
   }
-  const { authorName } = await sessionAuthor();
   // COMPARE-AND-SET, same as approveCut's (Sep 20). The refusal above is a
   // read-then-write, so an Approve whose request overlaps this one clears it
   // too, and the un-approval it was written to stop happens anyway. Keyed on
@@ -1357,7 +1428,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
     where: { id: submissionId, status: submission.status },
     // A copied-to-Dropbox cut that gets bounced is no longer complete; the
     // next approved version moves the old file aside (startDropboxCopy).
-    data: { status: "CHANGES_REQUESTED", decidedAt: new Date(), decidedBy: authorName, completedAt: null },
+    data: { status: "CHANGES_REQUESTED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId, completedAt: null },
   });
   if (claimed.count === 0) {
     // The row may also have been REMOVED under us (removeCut), in which case
@@ -1385,7 +1456,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
   // Whoever sent it back is its reviewer of record (§8.1 — see approveCut).
   {
     const { recordRulingReviewer } = await import("@/lib/reviewerAssignment");
-    await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "sent back", ruler: await rulerOf() });
+    await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "sent back", ruler });
   }
   // The notes become issues on THIS version; fixes named as not done go back;
   // earlier asks the editor did not fix are stamped missed here (§8.3). Only
@@ -1432,13 +1503,11 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
       data: { status: "REVISION", revisionRequestedAt: new Date(), statusPinnedAt: null },
     });
   }
-  await prisma.activity.create({
-    data: {
-      projectId: submission.projectId,
-      type: "SYSTEM",
-      body: `Changes requested on the round-${submission.round} cut (${open.length} note${s}).`,
-    },
-  });
+  await timelineLine(
+    submission.projectId,
+    `Changes requested on the round-${submission.round} cut (${open.length} note${s})${authorName ? ` by ${authorName}` : ""}.`,
+    ruler?.teamMemberId ?? null,
+  );
 
   try {
     // Kim/Remar see their own editor:<key> row; a Luma/vendor key has no login
@@ -1452,7 +1521,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
     const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
     const shooter = await photographerNotifyTarget(submission.projectId, {
       href: `/review/${submission.projectId}?cut=${submissionId}`,
-      slackDm: `↩︎ Changes requested on the cut from your shoot at ${street} — ${open.length} note${s}.`,
+      slackDm: `↩︎ Changes requested on the cut from your shoot at ${street}${authorName ? ` by ${authorName}` : ""} — ${open.length} note${s}.`,
     }).catch(() => null);
     const changeTargets: NotifyTarget[] = isTeamEditor
       ? [
@@ -1461,6 +1530,8 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
         ]
       : [{ roles: ["ADMIN"] }];
     if (shooter) changeTargets.push(shooter);
+    // The bell names the sender (gap 6): an editor, or Kyle relaying to a
+    // vendor, is told whose notes these are, not just how many.
     await notifyInApp({
       kind: "review_changes",
       title: isTeamEditor
@@ -1468,7 +1539,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
         : editorKey
           ? `Relay cut changes to ${editorMeta(editorKey)?.name ?? editorKey} — ${street}`
           : `Cut changes need an editor — ${street}`,
-      body: `${open.length} note${s}: ${open[0].body}`.slice(0, 140),
+      body: `${authorName ? `${authorName} sent back ` : ""}${open.length} note${s}: ${open[0].body}`.slice(0, 140),
       href: `/edit/${submission.projectId}`,
       // ADMIN always rides along: an editor:<key> row reaches NOBODY when that
       // editor has no login (Kim today), so a bounce could vanish silently —
@@ -1556,7 +1627,7 @@ async function uploadAuthor(
   replacing?: { deliverableId: string; slot: number } | null,
 ): Promise<{ ok: true; key: string | null; name: string | null; role: string } | { ok: false; message: string }> {
   const me = await getCurrentUser().catch(() => null);
-  if (!me && !authEnforced()) return { ok: true, key: null, name: "Local dev", role: "OWNER" }; // same rule as requireRole
+  if (!me && !authEnforced()) return { ok: true, key: null, name: LOCAL_DEV_AUTHOR, role: "OWNER" }; // same rule as requireRole
   if (!me) return { ok: false, message: "Sign in to upload a cut." };
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to upload." };
   if (!["OWNER", "ADMIN", "EDITOR"].includes(me.role)) return { ok: false, message: "Only editors, admins and the owner can upload cuts." };
@@ -1575,7 +1646,8 @@ async function uploadAuthor(
       return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
     }
   }
-  return { ok: true, key, name: me.name ?? me.email ?? null, role: me.role };
+  // The display name, roster before email (Sep 28) — it signs the version.
+  return { ok: true, key, name: (await displayNameFor(me)) ?? null, role: me.role };
 }
 
 /**
@@ -2022,7 +2094,7 @@ async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { o
   const me = await getCurrentUser().catch(() => null);
   if (!me) {
     // Same rule as every other guard: local dev with auth off acts as the desk.
-    if (!authEnforced()) return { ok: true, actor: { office: true, owner: true, keys: new Set(), name: "Local dev" } };
+    if (!authEnforced()) return { ok: true, actor: { office: true, owner: true, keys: new Set(), name: LOCAL_DEV_AUTHOR } };
     return { ok: false, message: "Sign in to take a cut back." };
   }
   // "View as" is read-only platform-wide — a previewing owner must not withdraw
@@ -2040,7 +2112,7 @@ async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { o
     if (tm?.name) keys.add(slugForName(tm.name));
   }
   keys.delete("");
-  return { ok: true, actor: { office, owner: me.realRole === "OWNER", keys, name: me.name ?? me.email ?? "Someone" } };
+  return { ok: true, actor: { office, owner: me.realRole === "OWNER", keys, name: (await displayNameFor(me)) ?? "Someone" } };
 }
 
 /** The refusals, in plain words (Jordan's rule 4). Null = go ahead.
@@ -2975,7 +3047,7 @@ export async function markTopazDeliveredAction(jobId: string): Promise<{ ok: boo
   }
   const { markTopazDelivered } = await import("@/lib/topazJobs");
   const me = await getCurrentUser().catch(() => null);
-  const r = await markTopazDelivered(jobId, me?.name ?? me?.email ?? null);
+  const r = await markTopazDelivered(jobId, await displayNameFor(me));
   revalidatePath("/tasks");
   revalidatePath("/review");
   return r;
@@ -2991,7 +3063,7 @@ export async function cancelTopazJobAction(jobId: string): Promise<{ ok: boolean
   }
   const { cancelTopazJob } = await import("@/lib/topazJobs");
   const me = await getCurrentUser().catch(() => null);
-  const r = await cancelTopazJob(jobId, me?.name ?? me?.email ?? null);
+  const r = await cancelTopazJob(jobId, await displayNameFor(me));
   revalidatePath("/connections");
   revalidatePath("/review");
   return r;
@@ -3057,7 +3129,7 @@ export async function resolveHeldRenderAction(
   if (choice !== "use-original" && choice !== "accept-processed") return { ok: false, message: "Choose the original or the 1080p file." };
   const me = await getCurrentUser().catch(() => null);
   const { resolveHeldTopazJob } = await import("@/lib/topazJobs");
-  const r = await resolveHeldTopazJob(jobId, choice, me?.name ?? me?.email ?? null, {
+  const r = await resolveHeldTopazJob(jobId, choice, await displayNameFor(me), {
     attest: typeof attest === "string" ? attest : null,
     why: typeof why === "string" ? why : null,
   });
@@ -3079,7 +3151,7 @@ export async function recheckHeldRenderAction(jobId: string): Promise<{ ok: bool
   if (typeof jobId !== "string" || !jobId) return { ok: false, message: "Which render?" };
   const me = await getCurrentUser().catch(() => null);
   const { recheckHeldTopazJob } = await import("@/lib/topazJobs");
-  const r = await recheckHeldTopazJob(jobId, me?.name ?? me?.email ?? null);
+  const r = await recheckHeldTopazJob(jobId, await displayNameFor(me));
   revalidatePath("/");
   revalidatePath("/ops");
   revalidatePath("/review");
@@ -3104,20 +3176,23 @@ async function reviewDeskActor(): Promise<{ ok: true; actor: ReviewDeskActor; of
   }
   const me = await getCurrentUser().catch(() => null);
   // Local dev with auth off acts as the desk, like every guard in this file.
-  if (!me) return { ok: true, actor: { teamMemberId: null, name: "Local dev", userId: null }, office: true };
+  if (!me) return { ok: true, actor: { teamMemberId: null, name: LOCAL_DEV_AUTHOR, userId: null }, office: true };
+  // A preview takes and hands on nothing, enforced or not (gap 20).
+  if (me.impersonating) return { ok: false, message: PREVIEW_REFUSED };
   return {
     ok: true,
-    actor: { teamMemberId: me.teamMemberId, name: me.name ?? me.email, userId: me.id },
+    actor: { teamMemberId: me.teamMemberId, name: (await displayNameFor(me)) ?? me.email, userId: me.id },
     office: me.realRole === "OWNER" || me.realRole === "ADMIN",
   };
 }
 
 /** Who pressed a verdict, for the reviewer-of-record line. The session read
- *  requireCutReviewer already made (cached per request); null in local dev. */
+ *  requireCutReviewer already made (cached per request); null in local dev.
+ *  The display name, roster before email (Sep 28). */
 async function rulerOf(): Promise<{ teamMemberId: string | null; name: string; userId: string | null } | null> {
   const me = await getCurrentUser().catch(() => null);
   if (!me || me.impersonating) return null;
-  return { teamMemberId: me.teamMemberId, name: me.name ?? me.email, userId: me.id };
+  return { teamMemberId: me.teamMemberId, name: (await displayNameFor(me)) ?? me.email, userId: me.id };
 }
 
 async function refreshCutPages(submissionId: string): Promise<void> {

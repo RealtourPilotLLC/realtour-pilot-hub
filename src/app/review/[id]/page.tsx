@@ -17,6 +17,7 @@ import { BackLink } from "@/components/ui/BackLink";
 // §8.1: the one person each waiting cut is waiting on, and the take / cover /
 // hand-on doors — the same strip /edit/<id> carries, here where review happens.
 import { ReviewerStrip } from "@/components/review/ReviewerStrip";
+import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
 
@@ -63,15 +64,15 @@ export default async function CutReviewPage({
   // editor brief, the reel recipe and every lane that is not their own never
   // leave the server (audit finding 4, Sep 17).
   const w = await getCutWorkspace(id, cut ?? null, shotThis && me?.teamMemberId ? { kind: "photographer", memberId: me.teamMemberId } : { kind: "office" });
-  // Portal notes across this job's cuts, newest last.
-  // Newest 30, shown oldest-first (desc+take keeps the LATEST notes when a
-  // chatty client passes thirty — asc+take silently dropped the new ones).
-  const clientNotes = shotThis ? [] : (await prisma.portalComment.findMany({
-    where: { projectId: id },
-    orderBy: { createdAt: "desc" },
-    take: 30,
-    select: { id: true, timeSec: true, body: true, status: true },
-  }).catch(() => [])).reverse();
+  // Portal notes across this job's cuts, newest 30 shown oldest-first (desc+take
+  // keeps the LATEST notes when a chatty client passes thirty — asc+take
+  // silently dropped the new ones). Since Sep 28 (gap 8) each note says who
+  // wrote it — staff on the client's behalf marked as such — and when, its
+  // replies sit under it, and the notes are grouped by the cut they are on.
+  const clientNoteGroups = shotThis
+    ? []
+    : await import("@/lib/clientDecisions").then((m) => m.clientNotesForReviewRoom(id, 30)).catch(() => []);
+  const clientNoteCount = clientNoteGroups.reduce((n, g) => n + g.notes.length, 0);
   // The client's own words to the office are not the photographer's to read.
   if (!w) notFound();
 
@@ -133,9 +134,36 @@ export default async function CutReviewPage({
     ? await prisma.smartTask.findFirst({
         where: videoLaneRevisionWhere(w.projectId),
         orderBy: { createdAt: "desc" },
-        select: { status: true, description: true, summary: true, createdAt: true, assignedKey: true },
+        select: { id: true, status: true, description: true, summary: true, createdAt: true, assignedKey: true, contactName: true, source: true, title: true, reasonCreated: true },
       }).catch(() => null)
     : null;
+  // WHO ASKED (gap 11, Sep 28): the office's own reopen (the Editing Room's
+  // queue-add) names whoever pressed it — while the row is still theirs; a
+  // client's later ask rewrites it (officeReopenOf). Otherwise the newest brief
+  // on that revision names its requester (RevisionBrief.requestedBy) — the
+  // client, their teammate, our staff on their behalf, the email or text
+  // sender — else the task's own person (contactName). Nothing is guessed — an
+  // older ask with neither says nothing, as it always did.
+  const officeReopen = officeReopenOf(clientAsk);
+  const askBrief = clientAsk && !officeReopen
+    ? await prisma.revisionBrief.findFirst({
+        where: { taskId: clientAsk.id, requestedBy: { not: null } },
+        orderBy: { createdAt: "desc" },
+        select: { requestedBy: true, requestedByKind: true, createdAt: true },
+      }).catch(() => null)
+    : null;
+  const askedByLine = officeReopen
+    ? officeReopenLine(officeReopen)
+    : askBrief
+      ? requesterLine({ requestedBy: askBrief.requestedBy, requestedByKind: askBrief.requestedByKind, at: askBrief.createdAt })
+      : clientAsk?.contactName
+        ? `Asked by ${clientAsk.contactName} · ${whenET(clientAsk.createdAt)}`
+        : null;
+  // Which cut each client note is on, in the Room's own words.
+  const cutNameOf = (submissionId: string) => {
+    const s = w.submissions.find((x) => x.id === submissionId);
+    return s ? `${slotLabel(s) ?? s.fileName ?? "A cut"} · version ${s.round}` : "An earlier cut";
+  };
 
   return (
     <div>
@@ -239,9 +267,15 @@ export default async function CutReviewPage({
               {clientAsk && active.status !== "APPROVED" && (
                 <div className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm">
                   <p className="font-semibold text-foreground">
-                    {clientAsk.status === "IN_PROGRESS" ? "Corrected cut for a client revision" : "A client revision is open on this job"}
-                    <span className="font-normal text-muted"> · asked {formatDistanceToNow(new Date(clientAsk.createdAt), { addSuffix: true })}</span>
+                    {/* The office's reopen is not the client's ask (review, Sep 28):
+                        the heading used to say "client" right above "Put back by
+                        Kyle Cabrera (the office)". */}
+                    {officeReopen
+                      ? clientAsk.status === "IN_PROGRESS" ? "Corrected cut for work the office reopened" : "The office reopened this job for a new cut"
+                      : clientAsk.status === "IN_PROGRESS" ? "Corrected cut for a client revision" : "A client revision is open on this job"}
+                    <span className="font-normal text-muted"> · {officeReopen ? "reopened" : "asked"} {formatDistanceToNow(new Date(clientAsk.createdAt), { addSuffix: true })}</span>
                   </p>
+                  {askedByLine && <p className="text-xs text-muted">{askedByLine}</p>}
                   {(clientAsk.description ?? clientAsk.summary) && (
                     <p className="mt-1 whitespace-pre-wrap text-foreground/85">{(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
                   )}
@@ -279,14 +313,9 @@ export default async function CutReviewPage({
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                     <span className="font-medium">Version {s.round}</span>
                     <span className="text-xs text-muted">
-                      {s.status === "APPROVED"
-                        ? "approved"
-                        : s.status === "CHANGES_REQUESTED"
-                          ? "changes requested"
-                          : s.status === "WITHDRAWN"
-                            ? "withdrawn"
-                            : "superseded"}
-                      {s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}
+                      {/* Who ruled on it, and when (Sep 28) — or what became of it. */}
+                      {verdictLine(s.verdict) ??
+                        `${s.status === "WITHDRAWN" ? "withdrawn" : "superseded"}${s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}`}
                     </span>
                     {s.assetUrl && (
                       <a href={s.assetUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand hover:underline">
@@ -355,21 +384,47 @@ export default async function CutReviewPage({
           {/* The client's own portal notes on this job's cuts (interactive
               layer, Aug 28) — read-only context while judging the next round;
               SENT ones already became the revision work order. */}
-          {clientNotes.length > 0 && (
-            <Section icon={MessageSquareQuote} title="Client's notes" count={clientNotes.length}>
-              <ul className="space-y-1.5">
-                {clientNotes.map((n) => (
-                  <li key={n.id} className="flex items-start gap-2 text-sm">
-                    {n.timeSec != null && (
-                      <span className="mt-0.5 shrink-0 rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">
-                        {Math.floor(n.timeSec / 60)}:{String(Math.floor(n.timeSec % 60)).padStart(2, "0")}
-                      </span>
+          {clientNoteCount > 0 && (
+            <Section icon={MessageSquareQuote} title="Client's notes" count={clientNoteCount}>
+              <div className="space-y-3">
+                {clientNoteGroups.map((g) => (
+                  <div key={g.submissionId}>
+                    {clientNoteGroups.length > 1 && (
+                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">{cutNameOf(g.submissionId)}</p>
                     )}
-                    <span className="min-w-0 flex-1 text-foreground/85">{n.body}</span>
-                    <span className="shrink-0 text-[10px] text-muted-2">{n.status === "SENT" ? "sent to editor" : "new"}</span>
-                  </li>
+                    <ul className="space-y-2">
+                      {g.notes.map((n) => (
+                        <li key={n.id} className="text-sm">
+                          <div className="flex items-start gap-2">
+                            {n.timeSec != null && (
+                              <span className="mt-0.5 shrink-0 rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">
+                                {Math.floor(n.timeSec / 60)}:{String(Math.floor(n.timeSec % 60)).padStart(2, "0")}
+                              </span>
+                            )}
+                            <span className="min-w-0 flex-1 text-foreground/85">{n.body}</span>
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-muted-2">
+                            {byLine(n.author, n.createdAtISO)}
+                            {" · "}
+                            {/* Keyed on the resolve stamp, like the portal (review, Sep 28). */}
+                            {clientNoteStatusWords(n)}
+                          </p>
+                          {n.replies.length > 0 && (
+                            <ul className="mt-1 space-y-1 border-l-2 border-border pl-3">
+                              {n.replies.map((r) => (
+                                <li key={r.id} className="text-[13px]">
+                                  <span className="text-foreground/80">{r.body}</span>
+                                  <span className="ml-1.5 text-[11px] text-muted-2">{byLine(r.author, r.createdAtISO)}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ))}
-              </ul>
+              </div>
             </Section>
           )}
         </div>

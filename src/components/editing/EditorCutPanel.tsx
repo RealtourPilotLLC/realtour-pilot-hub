@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { addCutNote } from "@/app/review/actions";
 import type { CutNote } from "@/lib/reviewRoom";
+import { verdictLine, type Verdict } from "@/lib/reviewAttribution";
 
 const fmtClock = (sec: number) => {
   const s = Math.max(0, Math.floor(sec));
@@ -52,6 +53,7 @@ export function EditorCutPanel({
   canFix,
   viewerName,
   player = true,
+  verdict = null,
 }: {
   projectId: string;
   submissionId: string;
@@ -77,6 +79,8 @@ export function EditorCutPanel({
    *  fetch four sets of metadata (Sep 16 review). The others still carry their
    *  anchor and their notes, with one click to open and play. */
   player?: boolean;
+  /** Who ruled on this version, and when (Sep 28) — the badge said only what. */
+  verdict?: Verdict | null;
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -143,6 +147,7 @@ export function EditorCutPanel({
         </h2>
         {cutLabel && <span className="truncate text-xs text-muted">{cutLabel}</span>}
         <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", meta.cls)}>{meta.label}</span>
+        {verdictLine(verdict) && <span className="text-[11px] text-muted">{verdictLine(verdict)}</span>}
         {fileName && <span className={cn("truncate text-xs text-muted-2", withdrawn && "line-through")}>{fileName}</span>}
       </div>
 

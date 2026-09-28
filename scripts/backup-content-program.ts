@@ -22,21 +22,26 @@
 // Usage: npx tsx scripts/backup-content-program.ts <output.json>
 // Output goes OUTSIDE the repo (it holds real client strategies and scripts).
 // Never seeds, never resets, never writes to the database.
-import { PrismaClient } from "@prisma/client";
-import { writeFileSync, statSync, readFileSync } from "fs";
+//
+// SEP 28 2026 (A02-backup-coverage). The hand list had fallen behind again:
+// ContentReviewWindow, ContentRevisionRound, ContentFilmingReport and
+// ContentTopicFolder (batches B-D) and the four scheduling models of Sep 26
+// were program tables this file did not hold — exactly the "hard-coded
+// count" failure the Sep 17 audit fixed once already. So every model in the
+// schema must now be named in ONE of two lists below: the program's, or the
+// operational core's (which backup-all.ts covers). A model in neither stops
+// the backup before it connects, naming it; the next person to add a model
+// has to decide where it belongs. The connection is read-only and proven so
+// (SQLSTATE 25006), and the file is written 0600.
+import { writeFileSync, statSync, readFileSync, chmodSync } from "fs";
 import { createHash } from "crypto";
 import { execSync } from "child_process";
-
-const p = new PrismaClient();
-const OUT = process.argv[2];
-if (!OUT) {
-  console.error("usage: npx tsx scripts/backup-content-program.ts <output.json>");
-  process.exit(2);
-}
+import { Prisma } from "@prisma/client";
+import { pinReadOnlyDatabaseUrl, proveReadOnly } from "./_lib/dbGuard";
 
 // Every model the program owns, in dependency order (parents first) so a
 // restore can walk the file top to bottom without dangling a required parent.
-const MODELS = [
+export const MODELS = [
   // The people and the accounts they sign in with.
   "Client", "ClientUser", "ClientMembership", "ClientEmailAlias", "AgentProfile",
   // Enrollment and the shape of a program.
@@ -69,14 +74,80 @@ const MODELS = [
   // program conversation with its read markers.
   "ClientBrandChange", "ProgramBookingAttempt", "ProgramSessionAddress", "ContentVideoCorrection",
   "ProgramMessage", "ProgramMessageRead",
+  // Review windows, the per-video revision ledger, filming reports and topic
+  // folders (CP-02/03/09), then the Sep 26 scheduling models: the exact-address
+  // plan, creative holds, reassessments and portal-booked calls.
+  "ContentReviewWindow", "ContentRevisionRound", "ContentFilmingReport", "ContentTopicFolder",
+  "ProgramSessionPlan", "ProgramCreativeHold", "ProgramSessionReassessment", "ProgramCallBooking",
 ] as const;
+
+/**
+ * Everything else in the schema: the operational core (jobs, cuts, pay,
+ * money, comms, the platform's own machinery). NOT in this file; backup-all.ts
+ * holds every model. Listed so that "not in the program backup" is a decision
+ * somebody made, not an omission nobody saw.
+ */
+export const OPERATIONAL_CORE = [
+  // People, jobs and what they owe.
+  "TeamMember", "Appointment", "Contact", "Project", "Deliverable", "DeliverableOutput", "UploadedFile",
+  "ChecklistItem", "Activity", "OrderItem", "Product", "SmartTask", "ProjectMessage", "ThreadRead",
+  // Review, QC, revisions and the editors' work.
+  "ImageFlag", "MediaNote", "ReviewSubmission", "MediaVerdict", "QcRecord", "TopazJob",
+  "EditorWorkItem", "EditorWorkEvent", "CutReviewerEvent", "CutSelfCheck", "RevisionIssue", "RevisionIssueEvent",
+  "UploadDraft", "ProductionGap", "EditorDispatch", "CapacityException", "PhotoEditBatch", "ReworkCost",
+  // Pay and money.
+  "PayrollEntry", "Expense", "CashSnapshot", "StripeTransaction", "JobPayOverride", "PayoutAdjustment",
+  "QboTransaction", "BonusPeriod", "BonusAward", "MileageDay", "SavingsItem", "PlaidItem", "PlaidAccount",
+  "PlaidTransaction", "FinanceReport", "BudgetTarget", "MarginSnapshot", "GrowthPlan", "VendorBalanceReading",
+  // Knowledge, training and the owner's own tools.
+  "Resource", "Sop", "TrainingLesson", "KnowledgeItem", "HubChat", "HubMessage", "HubDocument",
+  "OwnerTodo", "OwnerMeeting", "Feedback", "PlatformFeedback",
+  // Platform machinery: sign-in, settings, integrations, logs, messaging rails.
+  "AppUser", "AppSetting", "Connection", "WebhookEvent", "CronRun", "UsageEvent", "AuditLog",
+  "Notification", "NotificationDelivery", "OutboxMessage", "PendingSms", "CommLog",
+] as const;
+
+/** Schema models in neither list, and listed names the schema does not have. */
+export function unclassifiedModels(schemaModels: readonly string[]): { unlisted: string[]; unknown: string[]; both: string[] } {
+  const program = new Set<string>(MODELS);
+  const core = new Set<string>(OPERATIONAL_CORE);
+  const inSchema = new Set(schemaModels);
+  return {
+    unlisted: schemaModels.filter((m) => !program.has(m) && !core.has(m)),
+    unknown: [...program, ...core].filter((m) => !inSchema.has(m)),
+    both: [...program].filter((m) => core.has(m)),
+  };
+}
 
 const delegateName = (model: string) => model.charAt(0).toLowerCase() + model.slice(1);
 
-async function main() {
+async function main(OUT: string) {
+  const schemaModels = Prisma.dmmf.datamodel.models.map((m) => m.name);
+  const cls = unclassifiedModels(schemaModels);
+  if (cls.unlisted.length || cls.unknown.length || cls.both.length) {
+    console.error("BACKUP REFUSED — the model lists no longer match the schema. Nothing was read or written.");
+    if (cls.unlisted.length) console.error(`  in the schema but in neither list (add each to MODELS or OPERATIONAL_CORE): ${cls.unlisted.join(", ")}`);
+    if (cls.unknown.length) console.error(`  listed but not in the schema (renamed or removed?): ${cls.unknown.join(", ")}`);
+    if (cls.both.length) console.error(`  in both lists: ${cls.both.join(", ")}`);
+    process.exit(1);
+  }
+
+  pinReadOnlyDatabaseUrl();
+  const { PrismaClient } = await import("@prisma/client");
+  const p = new PrismaClient();
+  try {
+    await proveReadOnly(p);
+    console.log("read-only connection proven (25006)");
+    await dumpTo(p, OUT);
+  } finally {
+    await p.$disconnect();
+  }
+}
+
+async function dumpTo(p: unknown, OUT: string) {
   const dump: Record<string, unknown[]> = {};
   const failures: string[] = [];
-  const client = p as unknown as Record<string, { findMany?: () => Promise<unknown[]> }>;
+  const client = p as Record<string, { findMany?: () => Promise<unknown[]> }>;
 
   for (const model of MODELS) {
     const d = client[delegateName(model)];
@@ -117,8 +188,17 @@ async function main() {
     models: MODELS,
     rows,
     tables: dump,
-  }, null, 1));
+  }, null, 1), { mode: 0o600 });
+  chmodSync(OUT, 0o600); // `mode` only applies when the file is created
   console.log(`\n${MODELS.length} models, ${rows} rows`);
-  console.log(`wrote ${OUT} (${(statSync(OUT).size / 1048576).toFixed(2)} MB) · commit ${commit.slice(0, 8)} · schema ${schemaHash}`);
+  console.log(`wrote ${OUT} (${(statSync(OUT).size / 1048576).toFixed(2)} MB, mode 600) · commit ${commit.slice(0, 8)} · schema ${schemaHash}`);
 }
-main().finally(() => p.$disconnect());
+
+if (require.main === module) {
+  const OUT = process.argv[2];
+  if (!OUT) {
+    console.error("usage: npx tsx scripts/backup-content-program.ts <output.json>");
+    process.exit(2);
+  }
+  main(OUT).catch((e) => { console.error(String((e as Error)?.message ?? e).split("\n")[0]); process.exit(1); });
+}

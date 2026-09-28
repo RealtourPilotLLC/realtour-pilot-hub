@@ -13,7 +13,8 @@
 // STRUCTURALLY READ-ONLY. The connection is opened with
 // default_transaction_read_only=on and a refused UPDATE (SQLSTATE 25006) is
 // proven before anything is read. Every outbound network call is refused
-// too: this probe reads the hub's own record of its providers (connections,
+// too (one exception since Sep 28: GET /api/cron/version on the hub itself,
+// below): this probe reads the hub's own record of its providers (connections,
 // cron results, webhook logs); it asks no provider anything. The GET-only
 // provider mode the design describes is deliberately not here — it needs its
 // own authorisation.
@@ -21,79 +22,217 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { pinReadOnlyDatabaseUrl, proveReadOnly, readDatabaseUrl, redactUrls } from "../_lib/dbGuard";
+import { backupFacts } from "../_lib/backupFormat";
+import type { CronJobHealth } from "../../src/lib/cronHealth";
+import type { ReadinessReport, ReadinessRow } from "../../src/lib/readiness";
 
-const ENV = path.resolve(__dirname, "../../.env");
-function readOnlyUrl(): string {
-  let url = process.env.DATABASE_URL ?? "";
-  if (!url) {
-    const m = fs.readFileSync(ENV, "utf8").match(/^\s*DATABASE_URL\s*=\s*(.*)$/m);
-    if (m) url = m[1].trim().replace(/^["']|["']$/g, "");
-  }
-  if (!url) throw new Error("DATABASE_URL not found");
-  const u = new URL(url);
-  const existing = u.searchParams.get("options");
-  u.searchParams.set("options", [existing, "-c default_transaction_read_only=on"].filter(Boolean).join(" "));
-  return u.toString();
-}
-const RO_URL = readOnlyUrl();
-process.env.DATABASE_URL = RO_URL;
+// Sep 28 2026 (A01). What the probe adds, all read-only:
+//   - BACKUPS by header, never by loading them: the newest file's model set
+//     against the schema it came from and today's, whether the schema moved
+//     after it, whether a restore rehearsal is recorded for it, and every
+//     file's mode (scripts/_lib/backupFormat.backupFacts);
+//   - the Postgres SERVER VERSION, which pins the embedded Postgres the race
+//     drills run on;
+//   - the PAGE BUILD, from GET /api/cron/version on the live hub (bearer
+//     CRON_SECRET), reported apart from the build the last hourly run
+//     stamped, which can lag a deploy by up to an hour. That one URL is the
+//     only outbound call the fence lets through; --offline refuses it too;
+//   - CRON HEALTH from lib/cronHealth, the function /connections and the
+//     readiness report read: every job vercel.json schedules, with "never
+//     recorded" and "stale" said out loud;
+//   - the READINESS report (A56, src/lib/readiness.ts) in place of the
+//     switch loop, so the probe and /settings print one report.
+// Nothing runs at import: the drill imports the pure helpers below.
 
-// No provider is contacted from here, by anything this file imports.
-globalThis.fetch = (async (input: unknown) => {
-  throw new Error(`OUTBOUND BLOCKED BY PROBE: ${typeof input === "string" ? input : "(request)"}`);
-}) as typeof fetch;
+export const VERSION_URL = "https://hub.realtourpilot.com/api/cron/version";
+const REPO = path.resolve(__dirname, "../..");
 
 type Label = "IMPLEMENTED" | "CONFIGURED" | "TESTED" | "ENABLED" | "BLOCKED" | "UNKNOWN" | "OK" | "WARN";
-const rows: { area: string; fact: string; labels: Label[]; evidence: string }[] = [];
-const say = (area: string, fact: string, labels: Label[], evidence: string) => rows.push({ area, fact, labels, evidence });
-const ago = (d: Date | null | undefined) => (d ? `${Math.round((Date.now() - d.getTime()) / 36e5)}h ago` : "never");
+export type Fact = { area: string; fact: string; labels: Label[]; evidence: string };
+const ago = (d: Date | null | undefined, now = Date.now()) => (d ? `${Math.round((now - d.getTime()) / 36e5)}h ago` : "never");
+
+/** The page build and the last hourly run's build, as two facts. */
+export function liveBuildFacts(
+  page: { deploy: string | null } | { error: string } | null,
+  lastSync: { deploy: string | null; startedAt: Date } | null,
+  head: string | null,
+  now = new Date(),
+): Fact[] {
+  const out: Fact[] = [];
+  if (!page) {
+    out.push({ area: "deploy", fact: "page build (serving now)", labels: ["UNKNOWN"], evidence: "not asked (--offline)" });
+  } else if ("error" in page) {
+    out.push({ area: "deploy", fact: "page build (serving now)", labels: ["UNKNOWN"], evidence: `GET ${VERSION_URL}: ${page.error}` });
+  } else {
+    const differs = !!page.deploy && !!head && page.deploy !== head;
+    out.push({
+      area: "deploy", fact: "page build (serving now)",
+      labels: page.deploy ? [differs ? "WARN" : "OK"] : ["UNKNOWN"],
+      evidence: page.deploy ? `${page.deploy}${head ? ` · this checkout's HEAD ${head}${differs ? " — DIFFERENT" : " — same"}` : ""}` : "the live build carries no commit stamp (deploy with --env HUB_COMMIT_SHA=$(git rev-parse HEAD))",
+    });
+  }
+  const behind = !!lastSync?.deploy && !!head && lastSync.deploy !== head;
+  out.push({
+    area: "deploy", fact: "last hourly run build",
+    labels: lastSync?.deploy ? [behind ? "WARN" : "OK"] : ["UNKNOWN"],
+    evidence: lastSync?.deploy
+      ? `${lastSync.deploy} (run ${ago(lastSync.startedAt, now.getTime())})${head ? ` · HEAD ${head}${behind ? " — DIFFERENT" : " — same"}` : ""}`
+      : "no deploy stamp on the last hourly run (deploy with --env HUB_COMMIT_SHA=$(git rev-parse HEAD); cron.ts records it)",
+  });
+  return out;
+}
+
+/** One fact per scheduled (or once-recorded) cron job, from lib/cronHealth. */
+export function cronFacts(crons: CronJobHealth[], now = new Date()): Fact[] {
+  return crons.map((c) => {
+    const finished = c.runs.filter((r) => r.ok !== null);
+    const good = finished.filter((r) => r.ok).length;
+    const bad = c.neverRecorded || c.stale || c.lastOk === false;
+    return {
+      area: "cron",
+      fact: `${c.job}${c.expected ? "" : " (not scheduled)"}`,
+      labels: bad ? ["WARN"] : c.lastOk === null ? ["UNKNOWN"] : ["OK"],
+      evidence: c.neverRecorded
+        ? `NEVER RECORDED a run · scheduled ${c.path}`
+        : `last run ${ago(c.lastRunAt ? new Date(c.lastRunAt) : null, now.getTime())}${c.stale ? " — STALE" : ""} · ${good}/${finished.length} of the last ${c.runs.length} ok${c.lastOk === null ? " · newest has not finished" : ""}${(c.lastActing ?? c.runs[0])?.error ? ` · ${(c.lastActing ?? c.runs[0])!.error!.slice(0, 80)}` : ""}`,
+    };
+  });
+}
+
+/**
+ * One fact per readiness row (A56, src/lib/readiness.ts), in the report's
+ * order, then the rollout gate. The evidence is the report's own
+ * readinessLine, so the probe and the /settings panel word a row the same way;
+ * the labels keep the probe's vocabulary (a switch that is on but not
+ * effective is BLOCKED, never ENABLED alone).
+ */
+export function readinessFacts(report: ReadinessReport, line: (r: ReadinessRow) => string): Fact[] {
+  const out: Fact[] = report.rows.map((r) => {
+    const labels: Label[] = ["IMPLEMENTED"];
+    if (r.configured.ok) labels.push("CONFIGURED");
+    if (r.enabled.ok) labels.push("ENABLED");
+    if (r.enabled.ok && !r.effective.ok) labels.push("BLOCKED");
+    if (r.healthy.ok === false) labels.push("WARN");
+    return { area: "switch", fact: r.key, labels, evidence: `${line(r)} · reaches ${r.recipients}` };
+  });
+  out.push({
+    area: "switch", fact: "real-client rollout is closed",
+    labels: report.rolloutClosed.ok ? ["OK"] : ["WARN"],
+    evidence: report.rolloutClosed.ok
+      ? `no client-facing automation is effective for a real client${report.rolloutClosed.armed.length ? ` · armed but held by a missing dependency: ${report.rolloutClosed.armed.join(", ")}` : ""}`
+      : `OPEN via ${report.rolloutClosed.openers.join(", ")}`,
+  });
+  return out;
+}
+
+/** The schema fact when `prisma migrate diff --exit-code` did not exit 0.
+ *  Exit 2 is "a difference"; anything else is "could not compare", told by
+ *  its exit status and the first line of stderr with any credentials
+ *  scrubbed — never String(e), whose "Command failed: …" quotes the whole
+ *  command line (review, Sep 28). Pure: the drill feeds it a fake failure. */
+export function migrateDiffFailure(e: unknown): [Label[], string] {
+  const err = e as { status?: number | null; stderr?: Buffer | string | null; code?: string };
+  if (err?.status === 2) return [["WARN"], "prisma migrate diff reports a difference — run it by hand to see which"];
+  const stderr = err?.stderr ? String(err.stderr) : "";
+  const first = stderr.split("\n").map((l) => l.trim()).find((l) => l && !/^warn\b|prisma-config|pris\.ly/i.test(l)) ?? "";
+  const why = err?.code === "ENOENT" ? "npx was not found" : first ? redactUrls(first).slice(0, 160) : "no message";
+  return [["UNKNOWN"], `could not compare (exit ${err?.status ?? "?"}): ${why}`];
+}
+
+/** CRON_SECRET from the environment or .env; never printed. */
+function cronSecret(): string {
+  if (process.env.CRON_SECRET) return process.env.CRON_SECRET;
+  try {
+    const m = fs.readFileSync(path.join(REPO, ".env"), "utf8").match(/^\s*CRON_SECRET\s*=\s*(.*)$/m);
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : "";
+  } catch { return ""; }
+}
 
 async function main() {
-  const { prisma } = await import("../../src/lib/prisma");
-  try {
-    await prisma.$executeRawUnsafe(`UPDATE "Client" SET "name" = "name" WHERE false`);
-    throw new Error("GUARD FAILED — the connection accepted a write");
-  } catch (e) {
-    if (!/25006|read-only/i.test(String(e))) throw e;
-  }
-  console.log("read-only connection proven (25006); outbound network refused\n");
+  const offline = process.argv.includes("--offline");
+  if (!readDatabaseUrl()) throw new Error("DATABASE_URL not found");
+  const RO_URL = pinReadOnlyDatabaseUrl();
 
-  // F1 — deployed commit, as the hourly cron recorded it.
-  const lastSync = await prisma.cronRun.findFirst({ where: { job: "sync" }, orderBy: { startedAt: "desc" } });
-  let deploy: string | null = null;
-  try { deploy = (JSON.parse(lastSync?.summary ?? "{}") as { deploy?: string }).deploy ?? null; } catch { /* unreadable */ }
-  // cron.ts stamps out.deploy (first 12 of VERCEL_GIT_COMMIT_SHA, else the
-  // HUB_COMMIT_SHA a CLI deploy passes). Compared with this checkout's HEAD so
-  // "production is behind" is a fact on the page, not a guess.
+  // Only the hub's own version endpoint may be reached, and only by URL
+  // equality. Every provider stays unasked.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as { url?: string })?.url ?? "(request)";
+    if (!offline && url === VERSION_URL) return realFetch(url, init);
+    throw new Error(`OUTBOUND BLOCKED BY PROBE: ${url}`);
+  }) as typeof fetch;
+
+  const rows: Fact[] = [];
+  const say = (area: string, fact: string, labels: Label[], evidence: string) => rows.push({ area, fact, labels, evidence });
+
+  const { prisma } = await import("../../src/lib/prisma");
+  await proveReadOnly(prisma);
+  console.log(`read-only connection proven (25006); outbound network refused${offline ? "" : ` except GET ${VERSION_URL}`}\n`);
+
+  // F1 — the build serving pages now, and the build the last hourly run
+  // stamped (cron.ts records out.deploy: first 12 of VERCEL_GIT_COMMIT_SHA,
+  // else the HUB_COMMIT_SHA a CLI deploy passes). Compared with this
+  // checkout's HEAD so "production is behind" is a fact, not a guess.
+  const { lastRunDeploy } = await import("../../src/lib/cron");
+  const lastSync = await lastRunDeploy("sync");
   let head: string | null = null;
-  try { head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" }).trim().slice(0, 12); } catch { /* not a checkout */ }
-  const behind = !!deploy && !!head && deploy !== head;
-  say("deploy", "commit the live hub is running", deploy ? [behind ? "WARN" : "OK"] : ["UNKNOWN"],
-    deploy ? `${deploy} (last hourly run ${ago(lastSync?.startedAt)})${head ? ` · this checkout's HEAD ${head}${behind ? " — DIFFERENT" : " — same"}` : ""}` : "no deploy stamp on the last hourly run (deploy with --env HUB_COMMIT_SHA=$(git rev-parse HEAD); cron.ts records it)");
+  try { head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO, encoding: "utf8" }).trim().slice(0, 12); } catch { /* not a checkout */ }
+  let page: { deploy: string | null } | { error: string } | null = null;
+  if (!offline) {
+    const secret = cronSecret();
+    try {
+      const res = await fetch(VERSION_URL, { headers: secret ? { authorization: `Bearer ${secret}` } : {}, signal: AbortSignal.timeout(10_000) });
+      page = res.ok ? ((await res.json()) as { deploy: string | null }) : { error: `HTTP ${res.status}${res.status === 404 ? " (this build predates the endpoint)" : res.status === 401 ? " (CRON_SECRET here does not match)" : ""}` };
+    } catch (e) {
+      page = { error: String((e as Error).message ?? e).slice(0, 120) };
+    }
+  }
+  for (const f of liveBuildFacts(page, lastSync, head)) rows.push(f);
 
   // F2 — does production's schema match HEAD? migrate diff only inspects.
+  // THE PASSWORD NEVER GOES IN ARGV (review, Sep 28). `--from-url <RO_URL>`
+  // put the connection string on the command line, where `ps` can read it,
+  // and on any exit other than 2 the evidence printed String(e) — which is
+  // "Command failed: npx prisma migrate diff --from-url postgresql://user:
+  // <password>@…", the production password on a line people paste. The
+  // schema's own datasource reads DATABASE_URL from the environment instead
+  // (set to the read-only URL here; the CLI's .env loading never overrides a
+  // variable already set), and a failure reports its exit status and a
+  // credential-scrubbed first line of stderr, never the error object.
+  const schemaFile = path.resolve(__dirname, "../../prisma/schema.prisma");
   try {
-    execFileSync("npx", ["prisma", "migrate", "diff", "--from-url", RO_URL, "--to-schema-datamodel", path.resolve(__dirname, "../../prisma/schema.prisma"), "--exit-code"], { stdio: "pipe", env: { ...process.env, DATABASE_URL: RO_URL } });
+    execFileSync("npx", ["prisma", "migrate", "diff", "--from-schema-datasource", schemaFile, "--to-schema-datamodel", schemaFile, "--exit-code"], { stdio: "pipe", env: { ...process.env, DATABASE_URL: RO_URL } });
     say("schema", "production schema matches HEAD", ["OK"], "prisma migrate diff: no difference");
   } catch (e) {
-    const status = (e as { status?: number }).status;
-    say("schema", "production schema matches HEAD", status === 2 ? ["WARN"] : ["UNKNOWN"], status === 2 ? "prisma migrate diff reports a difference — run it by hand to see which" : `could not compare: ${String(e).slice(0, 120)}`);
+    say("schema", "production schema matches HEAD", ...migrateDiffFailure(e));
   }
 
-  // F3 — backups on this machine.
-  const home = process.env.HOME ?? "";
-  const backups = fs.existsSync(home) ? fs.readdirSync(home).filter((f) => /^rtp-backup-.*\.json$/.test(f)).map((f) => ({ f, t: fs.statSync(path.join(home, f)).mtime })).sort((a, b) => b.t.getTime() - a.t.getTime()) : [];
-  const models = (await import("@prisma/client")).Prisma.dmmf.datamodel.models.length;
-  say("backup", "newest row-level backup", backups.length ? ["OK"] : ["WARN"], backups.length ? `${backups[0].f} (${ago(backups[0].t)}); schema has ${models} models` : "none found in $HOME");
+  // F2b — the Postgres server version. The race drills' embedded Postgres is
+  // pinned in tools/realpg/package.json; a different MAJOR here means those
+  // drills no longer run on the engine production runs.
+  const [{ v: serverVersion }] = await prisma.$queryRawUnsafe<{ v: string }[]>(`SELECT current_setting('server_version') AS v`);
+  let pinned: string | null = null;
+  try { pinned = (JSON.parse(fs.readFileSync(path.join(REPO, "tools/realpg/package.json"), "utf8")) as { dependencies?: Record<string, string> }).dependencies?.["embedded-postgres"] ?? null; } catch { /* not installed */ }
+  const major = (v: string | null) => (v ? /^(\d+)/.exec(v)?.[1] ?? null : null);
+  say("schema", "Postgres server version", pinned && major(pinned) !== major(serverVersion) ? ["WARN"] : ["OK"],
+    `${serverVersion}${pinned ? ` · drill engine pinned to ${pinned}${major(pinned) !== major(serverVersion) ? " — DIFFERENT MAJOR" : ""}` : " · no embedded Postgres pinned in tools/realpg"}`);
 
-  // F4 — every automation switch. A missing row is OFF.
-  const { AUTOMATION_KEYS } = await import("../../src/lib/programAutomation");
+  // F3 — backups on this machine, by header only (never loaded).
+  const models = (await import("@prisma/client")).Prisma.dmmf.datamodel.models.map((m) => m.name);
+  for (const f of backupFacts(process.env.HOME ?? "", models)) say("backup", f.fact, f.labels, f.evidence);
+
+  // F4 — every automation switch, as the readiness report (A56) sees it:
+  // configured, connected, enabled, effective and healthy apart. The same
+  // report /settings renders, so the probe and the panel cannot drift. Built
+  // with live:false: it asks Google nothing.
   const switches = await prisma.programAutomation.findMany();
   const byKey = new Map(switches.map((s) => [s.key, s]));
-  for (const key of AUTOMATION_KEYS) {
-    const s = byKey.get(key);
-    say("switch", key, ["IMPLEMENTED", ...(s ? (["CONFIGURED"] as Label[]) : []), ...(s?.enabled ? (["ENABLED"] as Label[]) : [])],
-      s ? `${s.enabled ? "ON" : "off"} · by ${s.enabledBy ?? "-"} · last run ${ago(s.lastRunAt)}${s.lastError ? ` · last error: ${s.lastError.slice(0, 80)}` : ""}` : "no row → OFF");
+  const { readinessReport, readinessLine } = await import("../../src/lib/readiness");
+  try {
+    for (const f of readinessFacts(await readinessReport({ live: false }), readinessLine)) rows.push(f);
+  } catch (e) {
+    say("switch", "readiness report", ["UNKNOWN"], `could not be built read-only: ${String((e as Error).message ?? e).slice(0, 120)}`);
   }
 
   // F4b — R02/A26: WHO each provider-write switch may write for. A switch that
@@ -154,14 +293,10 @@ async function main() {
   const lags = signups.filter((s) => s.status === "ACTIVATED").map((s) => (s.createdAt.getTime() - s.paidAt.getTime()) / 6e4);
   say("stripe", "paid-checkout activation", signups.length ? ["OK"] : ["UNKNOWN"], signups.length ? `${signups.length} recent signups; statuses ${[...new Set(signups.map((s) => s.status))].join("/")}; paid→claimed ${lags.length ? `median ${Math.round(lags.sort((a, b) => a - b)[Math.floor(lags.length / 2)])} min` : "n/a"}; via ${[...new Set(signups.map((s) => s.activatedVia ?? "poll(pre-CP-14)"))].join("/")}` : "no signups on file");
 
-  // F9/F10 — Aryeo reconciliation and cron health, last 48 hourly runs.
-  const runs = await prisma.cronRun.findMany({ where: { startedAt: { gte: new Date(Date.now() - 48 * 36e5) } }, orderBy: { startedAt: "desc" } });
-  for (const job of ["sync", "reconcile", "gmail", "daily", "evening"]) {
-    const js = runs.filter((r) => r.job === job);
-    const unfinished = js.filter((r) => !r.finishedAt && Date.now() - r.startedAt.getTime() > 10 * 6e4).length;
-    const failed = js.filter((r) => r.finishedAt && !r.ok).length;
-    say("cron", `${job}: last 48h`, js.length ? (unfinished || failed ? ["WARN"] : ["OK"]) : ["UNKNOWN"], `${js.length} runs · ${failed} not ok · ${unfinished} never finished · last ${ago(js[0]?.startedAt)}`);
-  }
+  // F9/F10 — cron health: every job vercel.json schedules, from the same
+  // function /connections and the readiness report read (lib/cronHealth).
+  const { cronHealthByJob } = await import("../../src/lib/cronHealth");
+  for (const f of cronFacts(await cronHealthByJob(10))) rows.push(f);
   const hooks = await prisma.webhookEvent.groupBy({ by: ["provider", "status"], where: { createdAt: { gte: new Date(Date.now() - 7 * 864e5) } }, _count: true });
   say("webhooks", "last 7 days by provider/status", ["OK"], hooks.map((h) => `${h.provider}/${h.status}:${h._count}`).join(" "));
 
@@ -203,4 +338,4 @@ async function main() {
   await prisma.$disconnect();
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });

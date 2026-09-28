@@ -44,10 +44,38 @@
 //     filter were not there (no duration → 422, as the spec says).
 //   · PUT /appointments/:id/schedule (the Aryeo-decides adapter's write).
 //   · seedNeighbour(): another client's appointment at a map point.
+//
+// R04 (Sep 28 2026), for the real-Postgres race drills:
+//   · fake.script(key, { hold, commit }) — hold the request until `hold`
+//     settles (a promise, or a function called on arrival so each racer can
+//     meet a barrier). "before-hold" commits the write first and answers after
+//     (the provider did it, the caller has not heard); "after-hold" (the
+//     default) waits and then commits. Reads may be held too, and may be given
+//     a { status } — a read never commits anything.
+//   · seedOrder() also takes the customer, the line items and a listing, so
+//     GET /orders/:id answers in the shape syncAryeoOrders imports.
+//   · serveOverLoopback() — this fake as an HTTP server on 127.0.0.1, so a
+//     child process reaches the SAME state: the child fences its fetch with
+//     aryeoOverLoopback(port), which rewrites https://api.aryeo.com/v1/* to it.
 // ---------------------------------------------------------------------------
 
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+
 export type FakeWrite = { method: string; path: string; body: unknown; committed: boolean };
-type Behaviour = { status: number; message?: string } | "abort-after-commit" | "abort-before-commit" | "shift-start-30" | "move-order-address" | "add-fee-on-store";
+/** R04: hold the request here until `hold` settles. A function is called when
+ *  the request ARRIVES (so a racer can meet a barrier, or tell the drill it is
+ *  inside the call); a promise is simply awaited. */
+export type HoldBehaviour = {
+  hold: Promise<unknown> | (() => Promise<unknown>);
+  commit?: "before-hold" | "after-hold";
+  /** "abort": once the hold ends the caller gets a timeout, not the answer
+   *  (with "before-hold", the write has still committed). */
+  answer?: "abort";
+};
+type Behaviour = { status: number; message?: string } | HoldBehaviour | "abort-after-commit" | "abort-before-commit" | "shift-start-30" | "move-order-address" | "add-fee-on-store";
+const isHold = (b: Behaviour | null): b is HoldBehaviour => !!b && typeof b === "object" && "hold" in b;
+const isStatus = (b: Behaviour | null): b is { status: number; message?: string } => !!b && typeof b === "object" && "status" in b;
 
 type Address = {
   id: string; street_number: string | null; street_name: string | null; unit_number: string | null; city: string | null;
@@ -55,8 +83,9 @@ type Address = {
   unparsed_address: string | null;
 };
 type Order = {
-  id: string; number: number; title: string; internal_notes: string | null; customer: { id: string; name: string }; addressId: string | null;
-  items: { id: string; title: string; variant_id: string; is_canceled: boolean; amount: number }[]; appointmentIds: string[]; created_at: string;
+  id: string; number: number; title: string; internal_notes: string | null;
+  customer: { id: string; name: string; email?: string | null; phone?: string | null; office_name?: string | null }; addressId: string | null;
+  items: { id: string; title: string; variant_id: string; is_canceled: boolean; amount: number; quantity?: number }[]; appointmentIds: string[]; created_at: string;
   order_status: string; fulfillment_status: string; payment_status: string; listingId: string | null;
   total: number; balance: number;
 };
@@ -123,9 +152,9 @@ export function createFakeAryeo(opts: {
     object: "ORDER", id: o.id, number: o.number, identifier: `Order #${o.number}`, title: o.title, internal_notes: o.internal_notes,
     order_status: o.order_status, fulfillment_status: o.fulfillment_status, payment_status: o.payment_status, currency: "USD",
     total_amount: o.total, balance_amount: o.balance, created_at: o.created_at,
-    customer: { id: o.customer.id, name: o.customer.name, email: null },
+    customer: { id: o.customer.id, name: o.customer.name, email: o.customer.email ?? null, phone: o.customer.phone ?? null, office_name: o.customer.office_name ?? null },
     address: o.addressId ? addressOut(addresses.get(o.addressId)!) : null,
-    items: o.items.map((i) => ({ id: i.id, title: i.title, quantity: 1, is_canceled: i.is_canceled, amount: i.amount })),
+    items: o.items.map((i) => ({ id: i.id, title: i.title, quantity: i.quantity ?? 1, is_canceled: i.is_canceled, amount: i.amount })),
     appointments: o.appointmentIds.map((id) => apptOut(appts.get(id)!)),
     listing: o.listingId ? { id: o.listingId } : null,
   });
@@ -150,23 +179,50 @@ export function createFakeAryeo(opts: {
     return out;
   }
 
+  // "POST /orders", "PATCH /addresses/:id", "PUT /appointments/:id/cancel" — ids folded.
+  const WORDS = new Set(["addresses", "orders", "appointments", "store", "cancel", "reschedule", "schedule", "availability", "scheduling", "available-timeslots", "available-dates", "products", "company-team-members", "customers"]);
+  const keyOf = (method: string, path: string) => `${method} /${path.split("/").filter(Boolean).map((x) => (WORDS.has(x) ? x : ":id")).join("/")}`;
+
   async function handle(url: string, init?: RequestInit): Promise<Response | null> {
     if (!url.startsWith(BASE)) return null;
+    const method = (init?.method ?? "GET").toUpperCase();
+    const key = keyOf(method, new URL(url).pathname.replace(/^\/v1/, ""));
+    // A write consumes its script as it always did. A read consumes one only
+    // when a hold or a status is next in its queue (R04) — before R04 reads
+    // were never scripted, and nothing scripts anything else for a read.
+    const head = scripts.get(key)?.[0] ?? null;
+    const scripted = method !== "GET" || isHold(head) || isStatus(head) ? next(key) : null;
+    if (isHold(scripted)) {
+      const wait = () => (typeof scripted.hold === "function" ? scripted.hold() : scripted.hold);
+      if (method !== "GET" && scripted.commit === "before-hold") {
+        // The provider commits now; the caller hears only once the hold ends.
+        const res = await respond(url, init, null);
+        await wait();
+        if (scripted.answer === "abort") throw abortError();
+        return res;
+      }
+      await wait();
+      if (scripted.answer === "abort") throw abortError();
+      return respond(url, init, null);
+    }
+    return respond(url, init, scripted);
+  }
+
+  async function respond(url: string, init: RequestInit | undefined, scripted: Behaviour | null): Promise<Response | null> {
     const u = new URL(url);
     const path = u.pathname.replace(/^\/v1/, "");
     const method = (init?.method ?? "GET").toUpperCase();
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const q = u.searchParams;
     const seg = path.split("/").filter(Boolean);
-    // "POST /orders", "PATCH /addresses/:id", "PUT /appointments/:id/cancel" — ids folded.
-    const WORDS = new Set(["addresses", "orders", "appointments", "store", "cancel", "reschedule", "schedule", "availability", "scheduling", "available-timeslots", "available-dates", "products", "company-team-members", "customers"]);
-    const key = `${method} /${seg.map((x) => (WORDS.has(x) ? x : ":id")).join("/")}`;
     if (method === "GET") reads.push(`${path}?${q.toString()}`);
 
     // Scripted failures that happen BEFORE anything commits.
-    const scripted = method !== "GET" ? next(key) : null;
     if (scripted === "abort-before-commit") { writes.push({ method, path, body, committed: false }); throw abortError(); }
-    if (scripted && typeof scripted === "object") { writes.push({ method, path, body, committed: false }); return json(scripted.status, { status: "error", message: scripted.message ?? `scripted ${scripted.status}` }); }
+    if (isStatus(scripted)) {
+      if (method !== "GET") writes.push({ method, path, body, committed: false });
+      return json(scripted.status, { status: "error", message: scripted.message ?? `scripted ${scripted.status}` });
+    }
     const commitThen = (res: Response): Response => {
       writes.push({ method, path, body, committed: true });
       if (scripted === "abort-after-commit") throw abortError();
@@ -328,6 +384,9 @@ export function createFakeAryeo(opts: {
     appts,
     taken,
     script: (key: string, b: Behaviour) => { scripts.set(key, [...(scripts.get(key) ?? []), b]); },
+    /** R04: drop what is still scripted for a key; returns how many were never
+     *  reached (a drill's proof that a caller stopped before that call). */
+    clearScripts: (key: string): number => { const left = scripts.get(key)?.length ?? 0; scripts.delete(key); return left; },
     /** R03: the next orders carry this money (a price the catalogue does not show); null = the catalogue's. */
     setOrderMoney: (m: { total: number; balance: number } | null) => { forcedMoney = m; },
     /** W02: another client's appointment for a creative, at a map point (its own order and address). */
@@ -347,18 +406,67 @@ export function createFakeAryeo(opts: {
     /** Committed writes to one endpoint key ("POST /orders", "PATCH /addresses/<id>"…). */
     count: (method: string, pathPrefix: string, committedOnly = false) =>
       writes.filter((w) => w.method === method && w.path.startsWith(pathPrefix) && (!committedOnly || w.committed)).length,
-    /** Seed an existing, hand-booked order (CP-05's fixture). */
-    seedOrder: (o: { id: string; number: number; customerId: string; address: Omit<Address, "id"> & { id: string }; appointments: { id: string; start_at: string; end_at: string; tmIds: string[]; status?: string }[]; listingId?: string | null }) => {
+    /** Seed an existing, hand-booked order (CP-05's fixture). R04: `customer`
+     *  and `items` make it an order syncAryeoOrders can import (a new agent,
+     *  the lines that become deliverables); left out, it is what it always was. */
+    seedOrder: (o: {
+      id: string; number: number; customerId: string; address: Omit<Address, "id"> & { id: string };
+      appointments: { id: string; start_at: string; end_at: string; tmIds: string[]; status?: string }[]; listingId?: string | null;
+      customer?: { name?: string; email?: string | null; phone?: string | null; office_name?: string | null };
+      items?: { title: string; quantity?: number; amount?: number }[];
+    }) => {
       addresses.set(o.address.id, { ...o.address });
+      const items = o.items
+        ? o.items.map((i) => ({ id: uuid(), title: i.title, variant_id: "seeded", is_canceled: false, amount: i.amount ?? 0, quantity: i.quantity ?? 1 }))
+        : [{ id: uuid(), title: "Video Accelerator", variant_id: "seeded", is_canceled: false, amount: 0 }];
       orders.set(o.id, {
-        id: o.id, number: o.number, title: `Order #${o.number}`, internal_notes: null, customer: { id: o.customerId, name: "Drill customer" }, addressId: o.address.id,
-        items: [{ id: uuid(), title: "Video Accelerator", variant_id: "seeded", is_canceled: false, amount: 0 }], appointmentIds: o.appointments.map((a) => a.id),
+        id: o.id, number: o.number, title: `Order #${o.number}`, internal_notes: null,
+        customer: { id: o.customerId, name: o.customer?.name ?? "Drill customer", email: o.customer?.email ?? null, phone: o.customer?.phone ?? null, office_name: o.customer?.office_name ?? null },
+        addressId: o.address.id,
+        items, appointmentIds: o.appointments.map((a) => a.id),
         created_at: new Date(Date.now() - 864e5).toISOString(), order_status: "OPEN", fulfillment_status: "UNFULFILLED", payment_status: "PAID", listingId: o.listingId ?? null,
         total: 0, balance: 0,
       });
       for (const a of o.appointments) appts.set(a.id, { id: a.id, status: a.status ?? "SCHEDULED", start_at: a.start_at, end_at: a.end_at, orderId: o.id, tmIds: a.tmIds, updated_at: new Date().toISOString() });
     },
+    /** R04: this fake over HTTP on 127.0.0.1 (a free port), so child processes
+     *  share its state. A scripted abort drops the connection, which is what
+     *  the caller sees when a request times out. */
+    serveOverLoopback: () =>
+      new Promise<{ port: number; stop: () => Promise<void> }>((resolve, reject) => {
+        const server = http.createServer((req, res) => {
+          const chunks: Buffer[] = [];
+          req.on("data", (c: Buffer) => chunks.push(c));
+          req.on("end", () => {
+            const body = chunks.length ? Buffer.concat(chunks).toString("utf8") : undefined;
+            handle(`https://api.aryeo.com${req.url ?? "/"}`, { method: req.method, body })
+              .then(async (out) => {
+                const r = out ?? json(404, { status: "error", message: "not the fake Aryeo" });
+                res.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "application/json" });
+                res.end(await r.text());
+              })
+              .catch(() => req.socket.destroy());
+          });
+        });
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          const port = (server.address() as AddressInfo).port;
+          resolve({
+            port,
+            stop: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+          });
+        });
+      }),
   };
 }
 
 export type FakeAryeo = ReturnType<typeof createFakeAryeo>;
+
+/**
+ * R04: the `allow` for a CHILD process's fenceFetch — Aryeo's URLs go to the
+ * parent's fake over loopback (serveOverLoopback), through the real fetch;
+ * everything else falls through to the block.
+ */
+export function aryeoOverLoopback(port: number): (url: string, init?: RequestInit) => Promise<Response> | null {
+  return (url, init) => (url.startsWith(BASE) ? fetch(`http://127.0.0.1:${port}${url.slice("https://api.aryeo.com".length)}`, init) : null);
+}

@@ -183,9 +183,13 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
   try {
     const brief = await prisma.revisionBrief.findUnique({
       where: { id: briefId },
-      select: { id: true, projectId: true, taskId: true, submissionId: true, outputId: true, roundId: true, source: true, sourceDetail: true, originalText: true, itemsJson: true, analyzedAt: true, createdAt: true },
+      select: { id: true, projectId: true, taskId: true, submissionId: true, outputId: true, roundId: true, source: true, sourceDetail: true, originalText: true, itemsJson: true, analyzedAt: true, createdAt: true, requestedBy: true },
     });
     if (!brief || !(await briefIsVideoLane(brief))) return 0;
+    // WHO RAISED IT (gap 13, Sep 28): the person on the work order — the
+    // client, their teammate, our staff on their behalf, the email sender —
+    // not the word "Client" on every item of every brief.
+    const raisedBy = brief.requestedBy?.trim().slice(0, 120) || "Client";
     let items: BriefItemShape[] = [];
     try { items = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: BriefItemShape[] }).items ?? []) : []; } catch { items = []; }
     // No items has two meanings. Never analysed (a short ask, or the model
@@ -237,7 +241,7 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
             sourceId: w.sourceId,
             sourceChannel: brief.source,
             sourceDetail: brief.sourceDetail,
-            raisedByName: "Client",
+            raisedByName: raisedBy,
             originalText: text.slice(0, 4000),
             summary: w.item.ask ? w.item.ask.slice(0, 300) : null,
             category: (ISSUE_CATEGORIES as readonly string[]).includes(w.item.area ?? "") ? (w.item.area as string) : "Other",
@@ -251,7 +255,7 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
           select: { id: true },
         });
         made++;
-        await event(prisma, row.id, "RAISED", { name: "Client" }, { submissionId: latest?.id ?? null, note: brief.source });
+        await event(prisma, row.id, "RAISED", { name: raisedBy }, { submissionId: latest?.id ?? null, note: brief.source });
       } catch (e) {
         if ((e as { code?: string })?.code !== "P2002") throw e;
       }

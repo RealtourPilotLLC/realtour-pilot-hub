@@ -23,6 +23,11 @@ export type RoundRow = {
   note: string | null;
   createdAtISO: string;
   decidedAtISO: string | null;
+  /** WHO RULED ON IT, AND WHEN (Sep 28) — "Sent back by James Rivera · Mon,
+      Sep 28, 2:14 PM", or the client's send-back on an approved cut
+      (reviewAttribution.verdictLine). decidedAtISO was passed here and never
+      printed; decidedBy was dropped before it arrived. */
+  verdictLine?: string | null;
   /** Which cut this round belongs to — the cutSlots() label ("Personal
       Branding Reel — Video 2 of 4"). Four "Round 1" lines on an Accelerator
       job are unreadable without it; optional so a legacy folder row (no
@@ -168,6 +173,7 @@ export function EditTracker({
   editProduct,
   revisionAsks,
   revisionAtISO,
+  revisionAskedBy,
   revisionHref,
   showSubmitAnchor,
   overridden,
@@ -202,6 +208,10 @@ export function EditTracker({
   /** The client's revision asks, newest LAST (already money-scrubbed for creative viewers). */
   revisionAsks: string[];
   revisionAtISO: string | null;
+  /** WHO ASKED (gap 11, Sep 28): the requesters on those asks' work orders —
+      "Olivia Chen, by email", "Jordan Spackman (on behalf of Sarah Smith)" —
+      joined; null when none was recorded (asks from before Sep 28). */
+  revisionAskedBy?: string | null;
   /** The cut that needs the changes — "#cut-<id>" (Jordan, Sep 16: "When I
       click the revisions, it goes down to the cuts. It should go directly to
       the cut that needs a revision"). Every revision-shaped thing on this
@@ -351,6 +361,7 @@ export function EditTracker({
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-warning">
             <RefreshCw className="size-3.5" /> Revision request{revisionAsks.length > 1 ? "s" : ""}
             {revisionAtISO && <span className="font-normal normal-case text-muted-2">· {etDateTime(revisionAtISO)}</span>}
+            {revisionAskedBy && <span className="font-normal normal-case text-muted-2">· asked by {revisionAskedBy}</span>}
             {/* Same rule as the status line: a revision names its cut. */}
             {revisionHref && (
               <a href={revisionHref} className="ml-auto inline-flex items-center gap-1 normal-case text-danger hover:underline">
@@ -407,6 +418,7 @@ export function EditTracker({
                     </span>
                   </a>
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.cls}`}>{chip.text}</span>
+                  {r.verdictLine && <span className="text-xs text-muted-2">{r.verdictLine}</span>}
                   {r.note && <span className="w-full pl-0.5 text-xs italic text-muted">“{r.note}”</span>}
                 </li>
               );

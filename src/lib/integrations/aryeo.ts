@@ -2243,26 +2243,46 @@ export async function syncAryeoOrders(
         console.warn("[aryeo] order arrived with no customer — filed under the placeholder client", ph.id);
         return ph.id;
       }
-      const created = await prisma.client.create({
-        data: {
-          name: customerName(cust),
-          email: cust?.email ?? null,
-          phone: cust?.phone ?? null,
-          company: cust?.office_name ?? null,
-          licenseNumber: cust?.license_number ?? null,
-          // The customer note comes FROM Aryeo, so the mirror is in sync the
-          // moment the row is created — stamp it, or the client card would warn
-          // about a note it just received.
-          generalNotes: cust?.internal_notes ?? null,
-          notesSyncedAt: cust?.internal_notes ? new Date() : null,
-          aryeoCustomerId: cust?.id ?? null,
-          // A client who first reaches us by placing an order is still a new
-          // client: card, brief and welcome all key off this stamp.
-          firstSeenAt: new Date(),
-          firstSeenVia: "order",
-          avatarUrl: cust?.avatar_url ?? null,
-        },
-      });
+      let created;
+      try {
+        created = await prisma.client.create({
+          data: {
+            name: customerName(cust),
+            email: cust?.email ?? null,
+            phone: cust?.phone ?? null,
+            company: cust?.office_name ?? null,
+            licenseNumber: cust?.license_number ?? null,
+            // The customer note comes FROM Aryeo, so the mirror is in sync the
+            // moment the row is created — stamp it, or the client card would warn
+            // about a note it just received.
+            generalNotes: cust?.internal_notes ?? null,
+            notesSyncedAt: cust?.internal_notes ? new Date() : null,
+            aryeoCustomerId: cust?.id ?? null,
+            // A client who first reaches us by placing an order is still a new
+            // client: card, brief and welcome all key off this stamp.
+            firstSeenAt: new Date(),
+            firstSeenVia: "order",
+            avatarUrl: cust?.avatar_url ?? null,
+          },
+        });
+      } catch (e) {
+        // A RACE, NOT A FAULT (R04, Sep 28 2026). A new agent's first order
+        // arrives as a burst — ORDER_CREATED and its sibling events, the
+        // booking adapter's own read — and each runs this import at once. They
+        // all preloaded the client list before any of them wrote, so they all
+        // reach this create; the unique Aryeo customer id lets one through and
+        // the rest threw P2002, which failed their whole sync and marked the
+        // Aryeo connection as errored over a client that now exists. Take the
+        // winner's row (it has greeted them; this caller does not).
+        const winner = (e as { code?: string } | null)?.code === "P2002" && cust?.id
+          ? await prisma.client.findUnique({ where: { aryeoCustomerId: cust.id }, select: { id: true } })
+          : null;
+        if (!winner) throw e;
+        clientByAryeoId.set(cust!.id!, winner.id);
+        hasAryeoId.add(winner.id);
+        if (cust?.email) clientByEmail.set(cust.email.toLowerCase(), winner.id);
+        return winner.id;
+      }
       clientsCreated++;
       try {
         const { greetNewClient } = await import("@/lib/newClients");
@@ -2630,8 +2650,18 @@ export async function syncAryeoOrders(
               create: { type: "SYSTEM", body: `Imported from Aryeo (order #${order.number ?? order.id}).` },
             },
           },
+        }).catch(async (e: unknown) => {
+          // Another import of this same order committed first (the burst
+          // above). Its project stands, with everything below done by it:
+          // this pass has nothing to add, and a P2002 is not an Aryeo error.
+          const won = (e as { code?: string } | null)?.code === "P2002"
+            ? await prisma.project.findUnique({ where: { aryeoOrderId: order.id! }, select: { id: true } })
+            : null;
+          if (!won) throw e;
+          return null;
         });
         seenOrders.add(order.id);
+        if (!createdProject) continue;
         imported++;
         // EVERY OWED VIDEO GETS ITS ROW AT BOOKING (audit R06, Sep 18).
         //

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendEveningUploadDigests, sendNightlyUploadNags } from "@/lib/uploadDigest";
 import { COMMS_COACHING_ET_HOUR } from "@/lib/commsCoaching";
+import { cronBudget } from "@/lib/cron";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,45 +24,79 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // EVERY FIRING IS RECORDED (A01-cron-health, Sep 28 2026). This was the one
+  // scheduled route that never passed a job name to cronBudget, so it wrote no
+  // CronRun and Sync health could not tell "ran fine" from "never ran". Now
+  // each firing is a row, including the DST twin that is not the Eastern hour:
+  // that one finishes ok with an `idle` note, NOT a `skipped` entry, because
+  // cron.ts reads `skipped` as a budget failure and would page about it twice
+  // a day. The HTTP statuses are exactly what they were. The twin fires an
+  // hour AFTER the acting firing all through EDT, so lib/cronHealth reads a
+  // firing that did nothing as a dot, never as the job's last run — else a
+  // failed 7 PM digest read green by 8 (review, Sep 28).
+  const startedAt = Date.now();
+  const { step, out, finish } = cronBudget(100_000, startedAt, "evening"); // ~20s headroom under maxDuration
   const etHour = Number(
-    new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }),
+    new Date(startedAt).toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }),
   );
   const { internalAlertRules } = await import("@/lib/settings");
   const alerts = await internalAlertRules();
+
+  // A quiet day is a 200; sending NOTHING while there was work (or the whole
+  // run threw) must show RED on the cron dashboard, not green. The step throws
+  // on that total failure so the CronRun row carries it too; the result is
+  // kept aside so the body still says what the sender reported.
+  type SendResult = { sent: number; skipped: number; notes: string[]; held?: string[] };
+  const isTotalFailure = (r: SendResult, quiet: string) => r.sent === 0 && r.notes.length > 0 && r.notes[0] !== quiet;
+  const runSend = async (name: "digests" | "nags", send: () => Promise<SendResult>, quiet: string, fallback: string) => {
+    const box: { result?: SendResult } = {};
+    await step(name, async () => {
+      const result = (box.result = await send());
+      if (isTotalFailure(result, quiet)) throw new Error(`sent nothing: ${result.notes[0]}`);
+      return result;
+    });
+    const timedOut = Array.isArray(out.timedOut) && (out.timedOut as string[]).includes(name);
+    const r = box.result ?? { sent: 0, skipped: 0, notes: [String(out[`${name}Error`] ?? (timedOut ? `${fallback}: timed out` : fallback))] };
+    return { r, totalFailure: isTotalFailure(r, quiet) };
+  };
+
+  // THE DIGEST OR THE CHASER FIRST, THEN COACHING (review, Sep 28). Both are
+  // steps of one 100-second budget, and coaching ran first: one slow model
+  // call (it audits up to five people, one SMART call each, with retries)
+  // could spend the budget, and the 7 PM digest was then SKIPPED outright or
+  // squeezed to five seconds. Coaching is the best-effort one, so it takes
+  // what is left; the digest never waits on it.
+  let sent: { key: "digests" | "nags"; r: SendResult; totalFailure: boolean } | null = null;
+  if (alerts.uploadReminder.enabled && etHour === alerts.uploadReminder.hour) {
+    const { r, totalFailure } = await runSend("digests", sendEveningUploadDigests, "no shoots today", "digest failed");
+    sent = { key: "digests", r, totalFailure };
+  } else if (alerts.uploadChaser.enabled && etHour === alerts.uploadChaser.hour) {
+    const { r, totalFailure } = await runSend("nags", sendNightlyUploadNags, "nothing unsubmitted today", "nag failed");
+    sent = { key: "nags", r, totalFailure };
+  }
 
   // END-OF-DAY COMMS COACHING (Jordan, Sep 21 2026: "I think we should do this
   // daily at the end of the day"). It runs at 7 PM ET on its OWN hour, not on
   // the upload-reminder switch: that switch is about photographers' raws and
   // Jordan can turn it off tomorrow without meaning to stop auditing the text
-  // line. Placed above the digest branch because that branch returns, and both
-  // things happen at the same hour.
+  // line.
   //
-  // WHOLLY BEST-EFFORT. The digest and the 10 PM chaser ride this route; a
-  // coaching failure is reported in the body and never in the status code, and
-  // never stops a step that matters more. Its own per-day AppSetting marker
-  // makes the DST-pair second firing a no-op.
-  const coaching =
-    etHour === COMMS_COACHING_ET_HOUR
-      ? await (await import("@/lib/commsCoaching"))
-          .runDailyCommsCoaching()
-          .catch((e) => ({ error: e instanceof Error ? e.message : "coaching failed" }))
-      : undefined;
+  // WHOLLY BEST-EFFORT. A coaching failure is reported in the body and never
+  // in the status code, and it runs after the step that matters more. Its own
+  // per-day AppSetting marker makes the DST-pair second firing a no-op. (As a
+  // step, a throw also marks the run not-ok on Sync health, which is where it
+  // should show.)
+  if (etHour === COMMS_COACHING_ET_HOUR) {
+    await step("coaching", async () => (await import("@/lib/commsCoaching")).runDailyCommsCoaching());
+  }
+  const coaching = out.coachingError ? { error: String(out.coachingError) } : out.coaching;
 
-  if (alerts.uploadReminder.enabled && etHour === alerts.uploadReminder.hour) {
-    const digests = await sendEveningUploadDigests().catch((e) => ({
-      sent: 0, skipped: 0, notes: [e instanceof Error ? e.message : "digest failed"],
-    }));
-    // A quiet day is a 200; sending NOTHING while there was work (or the whole
-    // run threw) must show RED on the cron dashboard, not green.
-    const totalFailure = digests.sent === 0 && digests.notes.length > 0 && digests.notes[0] !== "no shoots today";
-    return NextResponse.json({ digests, coaching }, { status: totalFailure ? 500 : 200 });
+  if (sent) {
+    await finish();
+    return NextResponse.json({ [sent.key]: sent.r, coaching }, { status: sent.totalFailure ? 500 : 200 });
   }
-  if (alerts.uploadChaser.enabled && etHour === alerts.uploadChaser.hour) {
-    const nags = await sendNightlyUploadNags().catch((e) => ({
-      sent: 0, skipped: 0, notes: [e instanceof Error ? e.message : "nag failed"],
-    }));
-    const totalFailure = nags.sent === 0 && nags.notes.length > 0 && nags.notes[0] !== "nothing unsubmitted today";
-    return NextResponse.json({ nags, coaching }, { status: totalFailure ? 500 : 200 });
-  }
-  return NextResponse.json({ coaching, skipped: true, reason: `ET hour is ${etHour}; reminder at ${alerts.uploadReminder.hour}, chaser at ${alerts.uploadChaser.hour} (Settings → Internal alerts)` });
+  const reason = `ET hour is ${etHour}; reminder at ${alerts.uploadReminder.hour}, chaser at ${alerts.uploadChaser.hour} (Settings → Internal alerts)`;
+  out.idle = reason;
+  await finish();
+  return NextResponse.json({ coaching, skipped: true, reason });
 }

@@ -139,10 +139,13 @@ export async function mostRecentDeliveredIsh(clientId: string): Promise<
 // project. If the client is a folded team assistant (parentClientId set — e.g.
 // Kelly on Jamie's team), hop to the agent so the order/task/activity lands on
 // the agent (that's where the projects live). Otherwise it's the client themselves.
-async function effectiveClientWithProject(clientId: string): Promise<{
+// `identified`: the signal pointed at this ONE row, so its own name is the
+// person who wrote in (senderName) — see resolveClientByPhones.
+async function effectiveClientWithProject(clientId: string, identified = false): Promise<{
   clientId: string;
   clientName: string;
   project: { id: string; title: string; status: string } | null;
+  senderName: string | null;
 } | null> {
   const c = await prisma.client.findUnique({
     where: { id: clientId },
@@ -156,17 +159,24 @@ async function effectiveClientWithProject(clientId: string): Promise<{
     if (parent) targetName = parent.name;
   }
   const project = await mostRelevantProject(targetId);
-  return { clientId: targetId, clientName: targetName, project };
+  return { clientId: targetId, clientName: targetName, project, senderName: identified ? c.name : null };
 }
 
 // Resolve an inbound set of phone numbers to a client id, checking both client
 // records and synced contacts (which carry alternate numbers). Returns the
 // client id + their most recent project, or null. Folds team assistants to
 // their agent so comms route to where the orders are.
+//
+// senderName (Sep 28): WHO wrote in, by the matched row's OWN name — an
+// assistant folded onto the agent is still herself, not the agent. Only when
+// the phone pointed at exactly one client row: a number two rows share (or a
+// synced contact's alternate number) cannot say which person is typing, so it
+// is null and nobody is named rather than guessing the account holder.
 export async function resolveClientByPhones(phones: string[]): Promise<{
   clientId: string;
   clientName: string;
   project: { id: string; title: string; status: string } | null;
+  senderName: string | null;
 } | null> {
   const keys = new Set(phones.map((p) => phoneKey(p)).filter((k) => k.length === 10));
   if (keys.size === 0) return null;
@@ -199,7 +209,7 @@ export async function resolveClientByPhones(phones: string[]): Promise<{
   });
   const matches = clientCandidates.filter((c) => keys.has(phoneKey(c.phone)));
   const hit = rankClientRows(matches)[0];
-  if (hit) return effectiveClientWithProject(hit.id);
+  if (hit) return effectiveClientWithProject(hit.id, matches.length === 1);
 
   // 2) Fall back to a synced contact's alternate number linked to a client —
   // again collecting all matches before ranking.

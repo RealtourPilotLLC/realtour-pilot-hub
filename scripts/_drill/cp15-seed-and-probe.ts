@@ -36,13 +36,20 @@
 //      of both months carries its topic as its title, A–D are FILMED, the
 //      office's Sessions view counts 4 confirmed, and last month's delivered
 //      videos have a released script for the caption assistant.
+//   8. The config probe's A01 facts (Sep 28 2026), without a production
+//      connection: a backup whose header lacks a model is a WARN naming it;
+//      a world-readable backup is a WARN naming the file; a recorded
+//      rehearsal is read back; GET /api/cron/version is 401 without the cron
+//      bearer and {deploy} with it; the page build and the last hourly run's
+//      build are two facts; a never-recorded cron is a WARN; the switch facts
+//      are the readiness report's rows. Importing the probe runs nothing.
 //   6. Cross-screen agreement on every seeded month: portalTopics,
 //      portalPlanning, portalScheduleMonths, portalVideoList,
 //      programCountsByMonth, monthProgress and programOverview give the same
 //      selected / scripted / approved / sessions / delivered numbers, and each
 //      interview's stage matches its script's state.
 //
-// ISOLATION. _harness.ts: PGlite on 127.0.0.1:5531 (DRILL_PORT overrides),
+// ISOLATION. _harness.ts: PGlite on 127.0.0.1:5868 (DRILL_PORT overrides),
 // every .env secret blanked, fetch AND raw sockets fenced to loopback; the
 // only answered hosts are Google's token and Gmail send endpoints, faked in
 // section 1. No provider is reached and no message is sent.
@@ -50,7 +57,7 @@
 import { Prisma } from "@prisma/client";
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, quietPrismaErrors } from "./_harness";
 
-const PORT = Number(process.env.DRILL_PORT ?? 5531);
+const PORT = Number(process.env.DRILL_PORT ?? 5868); // 5531 until Sep 28 (batch 6 port plan)
 installNextStubs();
 
 // Section 1 answers Google's two endpoints itself, so the drill can see WHICH
@@ -422,6 +429,111 @@ async function main() {
       c.ok(`${who}: C's interview says "preparing" — its script is drafted and not shared`, ivC?.script.stage === "preparing" && !!cScript && !cScript.shared, `${ivC?.script.stage} / shared ${cScript?.shared}`);
       c.ok(`${who}: D's interview says "none" — no script exists`, ivD?.script.stage === "none" && !onMonth.find((t) => t.id === s.topics.D)?.script, `${ivD?.script.stage}`);
     }
+  }
+
+  // =========================================================================
+  c.head("8 · the config probe's A01 facts (no production connection)");
+  // =========================================================================
+  {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const envBefore = process.env.DATABASE_URL;
+    const fetchBefore = globalThis.fetch;
+    const probe = await import("../_recon/cp15-config-probe");
+    c.ok("importing the probe runs nothing: DATABASE_URL and fetch untouched", process.env.DATABASE_URL === envBefore && globalThis.fetch === fetchBefore);
+
+    const bf = await import("../_lib/backupFormat");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rtp-cp15-"));
+    try {
+      const all = Prisma.dmmf.datamodel.models.map((m) => m.name);
+      const counts = Object.fromEntries(all.map((m) => [m, 0]));
+      const older = path.join(dir, "rtp-backup-2026-09-27-older.json");
+      bf.writeBackupFile(older, { takenAt: "2026-09-27T12:00:00.000Z", schemaHash: bf.schemaHashOf(bf.currentSchemaText()), models: all.length, counts }, {});
+      fs.chmodSync(older, 0o644); // the Sep 22-25 files were written like this
+      const { ContentReviewWindow: _gone, ...short } = counts;
+      void _gone;
+      const newest = path.join(dir, "rtp-backup-2026-09-28-newest.json");
+      bf.writeBackupFile(newest, { takenAt: new Date().toISOString(), schemaHash: bf.schemaHashOf(bf.currentSchemaText()), models: all.length - 1, counts: short }, {});
+      fs.utimesSync(older, new Date("2026-09-27T12:00:00Z"), new Date("2026-09-27T12:00:00Z"));
+      let facts = bf.backupFacts(dir, all);
+      const f = (name: string) => facts.find((x) => x.fact === name);
+      c.ok("the newest backup is read by its header", /rtp-backup-2026-09-28-newest\.json/.test(f("newest row-level backup")?.evidence ?? "") && /143 models in the header · schema has 144/.test(f("newest row-level backup")?.evidence ?? ""), f("newest row-level backup")?.evidence);
+      c.ok("a header missing one model: WARN, naming it", f("backup covers its schema's models")?.labels.includes("WARN") === true && /MISSING from the file: ContentReviewWindow/.test(f("backup covers its schema's models")?.evidence ?? ""), f("backup covers its schema's models")?.evidence);
+      c.ok("a world-readable backup: WARN, naming the file and its mode", f("backup files are private (0600)")?.labels.includes("WARN") === true && /rtp-backup-2026-09-27-older\.json \(644\)/.test(f("backup files are private (0600)")?.evidence ?? ""));
+      c.ok("no rehearsal recorded: WARN, with the command", f("restore rehearsal for the newest backup")?.labels.includes("WARN") === true && /restore-rehearsal\.ts/.test(f("restore rehearsal for the newest backup")?.evidence ?? ""));
+      fs.writeFileSync(bf.evidencePathFor(newest), JSON.stringify({ verdict: "PASS", engine: "postgres", finishedAt: "2026-09-28T16:00:00.000Z", failures: 0 }), { mode: 0o600 });
+      fs.chmodSync(older, 0o600);
+      facts = bf.backupFacts(dir, all);
+      c.ok("a recorded rehearsal is read back (and its evidence file is not taken for a backup)", f("restore rehearsal for the newest backup")?.labels.join() === "OK" && /rehearsal PASS on postgres/.test(f("restore rehearsal for the newest backup")?.evidence ?? "") && /all 2 are 0600/.test(f("backup files are private (0600)")?.evidence ?? ""));
+
+      // THE NEWEST WHOLE-HUB BACKUP, NOT THE NEWEST FILE (review, Sep 28): a
+      // targeted snapshot (a few rows kept before a one-off fix — no data or
+      // tables key), a program backup (`tables`, a subset by design) and a
+      // recovery drill's leftover subset all share the rtp-backup-*.json
+      // prefix and were newer by mtime. With the full backup fixed above:
+      const later = (f2: string, mins: number) => { const t = new Date(Date.now() + mins * 60_000); fs.utimesSync(f2, t, t); };
+      const snapshot = path.join(dir, "rtp-backup-2026-09-28-delivered-job-notes.json");
+      fs.writeFileSync(snapshot, JSON.stringify({ takenAt: new Date().toISOString(), count: 0, rows: [] }), { mode: 0o600 });
+      later(snapshot, 1);
+      const programFile = path.join(dir, "rtp-backup-2026-09-28-program.json");
+      fs.writeFileSync(programFile, JSON.stringify({ takenAt: new Date().toISOString(), models: ["ContentEnrollment"], tables: { ContentEnrollment: [] } }), { mode: 0o600 });
+      later(programFile, 2);
+      const subset = `${newest}.children-only.json`;
+      fs.writeFileSync(subset, JSON.stringify({ takenAt: new Date().toISOString(), tables: { ContentEnrollment: [] } }), { mode: 0o600 });
+      later(subset, 3);
+      facts = bf.backupFacts(dir, all);
+      c.ok("22 · newer non-backup files do not displace the whole-hub backup: its coverage, schema and rehearsal facts are still reported", /rtp-backup-2026-09-28-newest\.json/.test(f("newest row-level backup")?.evidence ?? "") && f("newest row-level backup")?.labels.join() === "OK" && f("restore rehearsal for the newest backup")?.labels.join() === "OK" && /MISSING from the file: ContentReviewWindow$/.test(f("backup covers its schema's models")?.evidence ?? ""), f("newest row-level backup")?.evidence);
+      const passed = f("newer rtp-backup files that are not whole-hub backups")?.evidence ?? "";
+      c.ok("…and each file passed over is named for what it is", /3: /.test(passed) && /children-only\.json \(a recovery-drill subset\)/.test(passed) && /program\.json \(a program backup, not the whole hub\)/.test(passed) && /delivered-job-notes\.json \(a targeted snapshot, not a backup file\)/.test(passed), passed);
+      c.ok("…while the mode check still covers every file", /all 5 are 0600/.test(f("backup files are private (0600)")?.evidence ?? ""), f("backup files are private (0600)")?.evidence);
+      fs.rmSync(newest); fs.rmSync(older);
+      facts = bf.backupFacts(dir, all);
+      c.ok("…with no whole-hub backup at all: a WARN that says so, not a coverage fact about a snapshot", f("newest row-level backup")?.labels.join() === "WARN" && /no whole-hub backup/.test(f("newest row-level backup")?.evidence ?? "") && !f("backup covers its schema's models"), f("newest row-level backup")?.evidence);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    const { NextRequest } = await import("next/server");
+    const version = await import("@/app/api/cron/version/route");
+    const noBearer = await version.GET(new NextRequest("http://127.0.0.1/api/cron/version"));
+    c.ok("GET /api/cron/version without the cron bearer: 401", noBearer.status === 401);
+    process.env.HUB_COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567";
+    const ok = await version.GET(new NextRequest("http://127.0.0.1/api/cron/version", { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }));
+    const okBody = (await ok.json()) as Record<string, unknown>;
+    delete process.env.HUB_COMMIT_SHA;
+    c.ok("…with it: 200 and the build's 12-character stamp, nothing else", ok.status === 200 && okBody.deploy === "0123456789ab" && Object.keys(okBody).join() === "deploy" && ok.headers.get("cache-control") === "no-store");
+
+    const live = probe.liveBuildFacts({ deploy: "0123456789ab" }, { deploy: "ba9876543210", startedAt: new Date(Date.now() - 3600_000) }, "0123456789ab");
+    c.ok("the probe reports the page build and the last hourly run's build as two facts", live.length === 2 && live[0].fact === "page build (serving now)" && live[0].labels.join() === "OK" && live[1].fact === "last hourly run build" && live[1].labels.join() === "WARN" && /DIFFERENT/.test(live[1].evidence));
+    const miss = probe.liveBuildFacts({ error: "HTTP 404 (this build predates the endpoint)" }, null, "0123456789ab");
+    c.ok("…an older build without the endpoint is UNKNOWN, said plainly", miss[0].labels.join() === "UNKNOWN" && /predates the endpoint/.test(miss[0].evidence));
+
+    const { cronHealthByJob } = await import("@/lib/cronHealth");
+    const cf = probe.cronFacts(await cronHealthByJob(10));
+    c.ok("cron facts: every scheduled job, and one that never recorded is a WARN", cf.some((x) => x.fact === "evening" && x.labels.includes("WARN") && /NEVER RECORDED/.test(x.evidence)) && ["gmail", "topaz", "sync", "reconcile", "daily", "daily-clients", "daily-reconcile", "evening"].every((j) => cf.some((x) => x.fact === j)));
+
+    // 21 · THE PASSWORD NEVER REACHES ARGV OR THE REPORT (review, Sep 28).
+    // execFileSync's error quotes the whole command line, so `could not
+    // compare: ${String(e)}` printed "…--from-url postgresql://user:<password>@…".
+    const pw = ["npg", "FAKEpw0123AB"].join("_");
+    const fakeUrl = `postgresql://neondb_owner:${pw}@127.0.0.1:1/neondb?options=-c%20default_transaction_read_only%3Don`;
+    const fakeFail = Object.assign(new Error(`Command failed: npx prisma migrate diff --from-url ${fakeUrl} --to-schema-datamodel x --exit-code`), {
+      status: 1,
+      stderr: Buffer.from(`warn The configuration property package.json#prisma is deprecated\nError: P1001: Can't reach database server at ${fakeUrl}\n`),
+    });
+    const oldEvidence = `could not compare: ${String(fakeFail).slice(0, 120)}`;
+    c.ok("21 · OLD evidence (String(e)) carried the password", oldEvidence.includes(pw));
+    const [labels21, ev21] = probe.migrateDiffFailure(fakeFail);
+    c.ok("NEW: UNKNOWN, the exit status and a scrubbed first line of stderr — no password anywhere", labels21.join() === "UNKNOWN" && !ev21.includes(pw) && /exit 1/.test(ev21) && /P1001/.test(ev21) && /postgresql:\/\/\*\*\*@127\.0\.0\.1/.test(ev21), ev21);
+    c.ok("…a real difference (exit 2) is still a WARN; a missing npx says so", probe.migrateDiffFailure({ status: 2 })[0].join() === "WARN" && /npx was not found/.test(probe.migrateDiffFailure({ code: "ENOENT", status: null })[1]));
+    const probeSrc = fs.readFileSync(path.join(path.resolve(__dirname, "../.."), "scripts/_recon/cp15-config-probe.ts"), "utf8");
+    c.ok("…and the diff reads the URL from the environment: no --from-url on its command line", /"--from-schema-datasource", schemaFile/.test(probeSrc) && !/"--from-url"/.test(probeSrc) && !/String\(e\)\.slice\(0, 120\)/.test(probeSrc));
+
+    const R = await import("@/lib/readiness");
+    const rep = await R.readinessReport({ live: false });
+    const sw = probe.readinessFacts(rep, R.readinessLine);
+    c.ok("the switch facts are the readiness report's rows, same keys, same order, plus the rollout gate", sw.length === rep.rows.length + 1 && rep.rows.every((r, i) => sw[i].fact === r.key));
   }
 
   // =========================================================================

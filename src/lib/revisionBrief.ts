@@ -8,6 +8,7 @@ import { lockAdvisory } from "@/lib/dbLocks";
 // Types only — the reopened-clock READER is deliveryBoard.ts, loaded
 // dynamically below so this module's import graph does not change.
 import type { DueSource, ReopenedClock } from "@/lib/deliveryBoard";
+import { isRequesterKind, type Requester } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // THE REVISION WORK ORDER.
@@ -411,6 +412,10 @@ export async function createRevisionBrief(opts: {
    *  its pinned items are the work order, and a client re-sending notes must
    *  not be able to buy a model call per submit. */
   skipAnalysis?: boolean;
+  /** WHO ASKED (Sep 28): the portal person (or staff on their behalf), the
+   *  email / text sender, the caller — written on the row so every surface
+   *  that shows the work order can say whose it is. */
+  requestedBy?: Requester | null;
 }): Promise<string | null> {
   const text = (opts.text ?? "").trim();
   if (!text) return null;
@@ -436,6 +441,7 @@ export async function createRevisionBrief(opts: {
         originalText: text,
         twoSided: !!opts.twoSided,
         createdAt: at,
+        ...requesterColumns(opts.requestedBy),
         ...(clock ?? {}),
         ...(pin
           ? {
@@ -462,6 +468,14 @@ export async function createRevisionBrief(opts: {
   }
   await analyzeBrief(brief.id, { ...opts, pin });
   return brief.id;
+}
+
+/** The three requester columns, from a Requester (or nothing on a row written
+ *  by a caller that does not know). A kind this build does not know is not
+ *  written — the column is a vocabulary, not free text. */
+function requesterColumns(r: Requester | null | undefined): { requestedBy?: string | null; requestedByKind?: string; requestedByUserId?: string | null } {
+  if (!r || !isRequesterKind(r.kind)) return {};
+  return { requestedBy: r.name?.trim().slice(0, 200) || null, requestedByKind: r.kind, requestedByUserId: r.userId ?? null };
 }
 
 /** The work order's items as revision issues (§8.3) — one per item × video it
@@ -656,6 +670,9 @@ export type BriefView = {
   /** slot key → the video's name, so an item scoped to a cut can print
    *  "Video 2 of 4" instead of a cuid the editor has never seen. */
   cutNames: Record<string, string>;
+  /** Who asked, and how (Sep 28) — null on rows from before anyone was recorded. */
+  requestedBy: string | null;
+  requestedByKind: string | null;
 };
 
 /**
@@ -710,6 +727,8 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
       questions: (parsed.questions ?? []).map((s) => clean(s)).filter((s): s is string => !!s),
       done,
       cutNames,
+      requestedBy: r.requestedBy ?? null,
+      requestedByKind: r.requestedByKind ?? null,
     };
   });
 }
@@ -844,7 +863,11 @@ export type StampResult = { stamped: boolean; reason: string; briefId?: string; 
  */
 export async function stampReopenedClock(
   projectId: string,
-  opts: { at?: Date; why: string; by?: string | null },
+  // `by` is a PERSON's display name when a person put the work back (the
+  // queue-add, a Review Room send-back, the Revisions pill) — the row then
+  // names them as its requester (OFFICE) and the words say "Reopened by
+  // Kyle"; absent or "hub", it is the hub's own (SYSTEM). Sep 28.
+  opts: { at?: Date; why: string; by?: string | null; byUserId?: string | null },
 ): Promise<StampResult> {
   const at = opts.at ?? new Date();
   try {
@@ -881,6 +904,7 @@ export async function stampReopenedClock(
       if (open.length > 0) return { stamped: false, reason: "already dated" };
       const dueAt = sameDayDue(at);
       const why = opts.why.trim().replace(/\.$/, "") || "reopened";
+      const person = opts.by?.trim() && opts.by.trim() !== HUB ? opts.by.trim() : null;
       const row = await tx.revisionBrief.create({
         data: {
           projectId,
@@ -891,8 +915,9 @@ export async function stampReopenedClock(
           source: "office",
           sourceDetail: `reopen:${at.toISOString()}`,
           // Said as the office's, in words a client-profile reader cannot
-          // mistake for the client's own.
-          originalText: `Reopened by the office, not a client request: ${why}.`,
+          // mistake for the client's own — and, since Sep 28, naming the
+          // person who did it when a person did.
+          originalText: `Reopened by ${person ?? "the office"}, not a client request: ${why}.`,
           headline: `Reopened work, due ${etDateTime(dueAt)}`,
           analyzedAt: at,
           targetAt: null,
@@ -900,6 +925,7 @@ export async function stampReopenedClock(
           dueSource: "REOPENED_SAME_DAY",
           dueSetBy: opts.by?.trim() || HUB,
           dueSetAt: at,
+          ...requesterColumns(person ? { name: person, kind: "OFFICE", userId: opts.byUserId ?? null } : { name: null, kind: "SYSTEM" }),
         },
         select: { id: true },
       });
@@ -981,6 +1007,9 @@ export async function moveReopenedDue(opts: { projectId: string; dueAt: Date; by
           originalText: `Reopened by the office, not a client request: due date set by ${by}.`,
           headline: `Reopened work, due ${etDateTime(opts.dueAt)}`,
           analyzedAt: now,
+          // NO REQUESTER (review, Sep 28): the person here only DATED the
+          // work — dueSetBy says so — and someone else reopened it. Named as
+          // the requester, the card read "Put back by <the dater>".
           ...moved,
         },
       });

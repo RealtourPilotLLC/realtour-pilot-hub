@@ -1505,7 +1505,16 @@ export async function recordQcCompletion(opts: {
 // `reason` = the revision summary; when present we stamp the project's latest
 // QcRecord with reopenedByRevisionAt + revisionReason — that bounce IS the QC-miss
 // event, and it's what the owner dial reads to compute the real miss rate.
-export async function reflectRevisionInQc(projectId: string, categories: string[], reason?: string | null): Promise<void> {
+// `by` (Sep 28, Review Room attribution): the person who put the work back, when
+// a person did — the office's queue-add names them on the reopen's clock row
+// (RevisionBrief.requestedBy) instead of "the office". A client's ask passes
+// nothing: its own brief already names the client, and this stamp is a no-op.
+export async function reflectRevisionInQc(
+  projectId: string,
+  categories: string[],
+  reason?: string | null,
+  by?: { name: string; userId?: string | null } | null,
+): Promise<void> {
   // Stamp the latest QC pass as reopened-by-revision (best-effort, before the
   // reopen below re-opens the task). If QC never ran (no record) this no-ops.
   try {
@@ -1528,7 +1537,10 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
   // never delivered. Never throws.
   {
     const { stampReopenedClock } = await import("@/lib/revisionBrief");
-    await stampReopenedClock(projectId, { why: reason?.trim() ? `a new round on the finished job: ${clip(reason.trim(), 160)}` : "a new round on the finished job" });
+    await stampReopenedClock(projectId, {
+      why: reason?.trim() ? `a new round on the finished job: ${clip(reason.trim(), 160)}` : "a new round on the finished job",
+      ...(by?.name ? { by: by.name, byUserId: by.userId ?? null } : {}),
+    });
   }
   const existing = await prisma.smartTask.findFirst({
     where: { projectId, taskType: "media_qa" },
@@ -3265,6 +3277,22 @@ export async function addRoundToEditCard(
     notes: string[];
     /** where the round came from, e.g. "sent back from the Review Room" */
     reason: string;
+    /**
+     * WHO SENT IT BACK, AND WHEN (Review Room attribution, Sep 28). The round's
+     * header names them — "Round 2 — sent back from the Review Room … · by
+     * James Rivera, Mon, Sep 28, 2:14 PM" — so the one brief the editor works
+     * from says whose round it is. Left out, the signed-in person is used: the
+     * queue pill's "Revisions" flip reaches here from a server action whose
+     * presser is exactly that person, and a cron (no session) names nobody.
+     * null = name nobody.
+     */
+    by?: { name: string; userId?: string | null; at?: Date } | null;
+    /** The notes' own authors, whose names may end a bullet (" — Kyle
+     *  Cabrera", reviewAttribution.attributeLines). Set aside for the
+     *  idempotency test like the header's attribution: whether a line carries
+     *  its author depends on WHO presses (bare when every note is the
+     *  presser's own), so Kyle's round and James's retry of it differed. */
+    noteAuthors?: (string | null | undefined)[];
   },
 ): Promise<{ taskId: string; assignedKey: string | null; assignedManually: boolean } | null> {
   const key = `edit-video-${projectId}`;
@@ -3276,10 +3304,32 @@ export async function addRoundToEditCard(
     card = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   }
   if (!card) return null; // no video deliverable → nothing to hang a round on
+  const by = opts.by !== undefined ? opts.by : await roundSenderFromSession();
+  const at = by?.at ?? new Date();
   const n = opts.notes.length;
-  const header = `Round ${opts.round} — ${opts.reason}`;
-  const block = [header, ...opts.notes.map((x) => (x.trim().startsWith("•") ? x.trim() : `• ${x.trim()}`))].join("\n");
-  const summary = `Round ${opts.round} — ${n} note${n === 1 ? "" : "s"} to fix (${opts.reason}). The notes are below and on the cut at /edit/${projectId}; fix them and upload the next version.`.slice(0, 500);
+  const core = `Round ${opts.round} — ${opts.reason}`;
+  const header = by?.name ? `${core} · by ${by.name}, ${etDateTime(at)}` : core;
+  const bullets = opts.notes.map((x) => (x.trim().startsWith("•") ? x.trim() : `• ${x.trim()}`));
+  const block = [header, ...bullets].join("\n");
+  // Idempotency is judged WITHOUT the attribution: the same round's same notes
+  // pressed twice (a retry, or two reviewers racing — the loser's round stays
+  // on the card by design) must not append twice because the minute or the
+  // presser differs — nor because the bullets carry authors on one press and
+  // not the other (noteAuthors).
+  const suffixes = [...new Set((opts.noteAuthors ?? []).map((a) => (a ?? "").trim()).filter(Boolean))].map((a) => ` — ${a}`);
+  const bare = (text: string) =>
+    suffixes.length === 0
+      ? text
+      : text
+          .split("\n")
+          .map((l) => {
+            if (!l.startsWith("•")) return l;
+            const hit = suffixes.find((x) => l.endsWith(x));
+            return hit ? l.slice(0, -hit.length) : l;
+          })
+          .join("\n");
+  const coreBlock = bare([core, ...bullets].join("\n"));
+  const summary = `Round ${opts.round} — ${n} note${n === 1 ? "" : "s"} to fix (${opts.reason}${by?.name ? `, by ${by.name}` : ""}). The notes are below and on the cut at /edit/${projectId}; fix them and upload the next version.`.slice(0, 500);
   // Due: the same SLA−12h rule as a first cut, off the job's video deliverable
   // — unless the office set the due / priority on the job (Sep 13), which a
   // round refresh must not undo any more than the hourly one may.
@@ -3305,7 +3355,8 @@ export async function addRoundToEditCard(
   let reopenedAt: Date | null | undefined;
   {
     const { stampReopenedClock } = await import("@/lib/revisionBrief");
-    const s = await stampReopenedClock(projectId, { why: opts.reason });
+    // The reopen's clock row names whoever sent it back (Sep 28), not "the office".
+    const s = await stampReopenedClock(projectId, { why: opts.reason, ...(by?.name ? { by: by.name, byUserId: by.userId ?? null } : {}) });
     if (s.reason !== "not reopened work" && s.reason !== "no such job") {
       const { reopenedClocksFor, reopenedDueFor, dueSetTimesFor } = await import("@/lib/deliveryBoard");
       const pr = await prisma.project.findUnique({ where: { id: projectId }, select: { dueOverrideAt: true, overrideAt: true, deliveredAt: true } });
@@ -3344,7 +3395,10 @@ export async function addRoundToEditCard(
     // stale one this whole block exists to stop being written back.
     const fresh = await tx.smartTask.findUnique({ where: { id: card!.id }, select: { description: true } });
     let description = fresh?.description ?? "";
-    if (!description.includes(block)) description = description ? `${description}\n\n${block}` : block;
+    // A round header's attribution (" · by <name>, <when>") is set aside for
+    // the comparison — see coreBlock above.
+    const unattributed = bare(description.replace(/^(Round \d+ — .*?) · by [^\n]*$/gm, "$1"));
+    if (!unattributed.includes(coreBlock)) description = description ? `${description}\n\n${block}` : block;
     if (description.length > 4000) description = "…" + description.slice(-4000);
     await tx.smartTask.update({
       where: { id: card!.id },
@@ -3359,6 +3413,19 @@ export async function addRoundToEditCard(
     });
   });
   return { taskId: card.id, assignedKey: card.assignedKey, assignedManually: card.assignedManually };
+}
+
+/** Who pressed the button that is adding this round, when the caller did not
+ *  say — the session of the server action it runs in. Null outside a request
+ *  (a cron, a script) and for a "view as" preview, which writes nothing in
+ *  anyone's name. Display name: roster before email (lib/actorName). */
+async function roundSenderFromSession(): Promise<{ name: string; userId: string | null; at?: Date } | null> {
+  try {
+    const { signedInActor } = await import("@/lib/sessionActor");
+    return await signedInActor();
+  } catch {
+    return null; // no request scope
+  }
 }
 
 /** The editor handed in a version of a cut (portal upload or the Final-folder

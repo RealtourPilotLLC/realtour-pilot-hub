@@ -6,6 +6,7 @@ import { routeCommTask } from "@/lib/brain";
 import type { NotifyTarget } from "@/lib/notify";
 import { clip } from "@/lib/text";
 import { REVISION_FLAG_PREFIX } from "@/lib/debrief";
+import { sameName, type Requester, type RequesterKind } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
 // Communications cross-check for the smart-status engine.
@@ -235,8 +236,12 @@ export async function recordClientCommunication(opts: {
   // questions ("what kind of colours?") are what make the client's answers
   // ("big chunky glitter") legible as instructions.
   fullText?: string | null;
-  // The real human who sent this, when different from the folded account client
-  // (e.g. an assistant emailing on the agent's behalf). Shown as the task person.
+  // The real human who sent this (e.g. an assistant emailing on the agent's
+  // behalf). Shown as the task person when different from the folded account
+  // client, and names the asker on a revision. Since Sep 28 every caller passes
+  // it — the client's own name when it IS the client — and null means the
+  // caller could not tell who wrote, so nobody is named (never the account
+  // holder by default).
   contactName?: string | null;
   // The CommLog row this message was logged as, when the caller has it — the
   // "Open the conversation" link on a /quality row (Feedback.sourceRef).
@@ -431,6 +436,15 @@ export async function recordClientCommunication(opts: {
         source: opts.source ?? "comms",
         threadRef: opts.threadRef,
         fullText: opts.fullText ?? null,
+        // WHO ASKED (Sep 28): the real sender — an assistant writing on the
+        // agent's account is named as themselves — and the channel they used.
+        // No sender from the caller → nobody named: clientName is the account
+        // the message FOLDED to, and naming it put the agent on an assistant's
+        // ask (review, Sep 28).
+        requestedBy: {
+          name: opts.contactName?.trim() || null,
+          kind: opts.kind === "email" ? "EMAIL" : opts.kind === "text" ? "TEXT" : "PHONE",
+        },
       });
     } else {
       // In-flight job: capture the ask as a special request, no status churn.
@@ -500,7 +514,22 @@ export type RaiseRevisionOpts = {
   /** The whole conversation, when `note` is only the client's half of it. */
   fullText?: string | null;
   qcCategories?: string[]; // QC labels to reopen for re-QC, e.g. ["Reel"]
+  /** WHO ASKED (Review Room attribution, Sep 28). Written on the brief
+   *  (RevisionBrief.requestedBy*), named on the bells and the timeline line,
+   *  and the task's person when it is not the account client. Left out, the
+   *  kind comes from the source and NOBODY is named — the account client is
+   *  not assumed to be the one who wrote. */
+  requestedBy?: Requester | null;
 };
+
+/** The channel a revision's source implies, for a caller that did not say. */
+function requesterKindOfSource(source: string): RequesterKind {
+  const s = (source || "").toLowerCase();
+  if (s === "portal") return "CLIENT";
+  if (s.includes("gmail") || s.includes("email")) return "EMAIL";
+  if (s.includes("call") || s.includes("voicemail") || s.includes("phone")) return "PHONE";
+  return "TEXT"; // openphone / comms: the scans that call without a sender read texts
+}
 
 /** THE EXACT CUT a portal ask is about (CP-03). The portal knows it, so the
  *  brief is pinned to it instead of asking a model to guess which video. */
@@ -526,6 +555,11 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   addendum?: { n: number; requestKey?: string | null };
 }): Promise<{ ok: boolean; taskId: string | null; briefId: string | null; wasAlreadyOpen: boolean }> {
   const none = { ok: false, taskId: null, briefId: null, wasAlreadyOpen: false };
+  // A caller that names nobody names nobody: clientName is the ACCOUNT, and an
+  // assistant's or a coordinator's ask read "Asked by <the agent>" (review,
+  // Sep 28). The channel still comes from the source.
+  const requester: Requester = opts.requestedBy ?? { name: null, kind: requesterKindOfSource(opts.source) };
+  const askedBy = requester.name?.trim() || null;
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
     select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, statusPinnedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
@@ -606,7 +640,8 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     data: {
       projectId: project.id,
       type: "FLAG",
-      body: `${REVISION_FLAG_PREFIX}${opts.source}): ${note}`,
+      // Still starts with REVISION_FLAG_PREFIX — the field-flag filters key off it.
+      body: `${REVISION_FLAG_PREFIX}${opts.source}${askedBy ? `, ${askedBy}` : ""}): ${note}`,
     },
   });
 
@@ -657,6 +692,15 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     ownerId: kyle?.id ?? null,
     assignedKey,
     dedupeKey: key,
+    // The person on the card when it is not the account client (an assistant,
+    // a teammate on the portal): the same column the reply tasks use, with the
+    // same rule — null when the sender IS the client. Staff acting for the
+    // client and the office are not "the person who wrote in" (Sep 28).
+    contactName:
+      askedBy && (requester.kind === "CLIENT" || requester.kind === "EMAIL" || requester.kind === "TEXT" || requester.kind === "PHONE") &&
+      !sameName(askedBy, opts.clientName)
+        ? askedBy.slice(0, 120)
+        : null,
   };
   // THE CREATE CANNOT RACE ITSELF (CP-03). findUnique-then-create let two
   // first asks on one job — four portal videos submitted back to back — both
@@ -687,8 +731,12 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     await prisma.smartTask.update({
       where: { id: existing.id },
       // A hand-picked editor (owner reassign / manual queue-add) survives a
-      // re-raise — only the automatic routing suggestion gets overwritten.
-      data: { ...data, description, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), status: "OPEN", completedAt: null },
+      // re-raise — only the automatic routing suggestion gets overwritten. A
+      // flag does not: flaggedBy/At is a person's "look at this now" on the
+      // row as it was, and a client's ask landing on it later read "Flagged by
+      // Jordan … for immediate review" on Kyle's home, dated weeks back
+      // (review, Sep 28).
+      data: { ...data, description, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), flaggedBy: null, flaggedAt: null, status: "OPEN", completedAt: null },
     });
     taskId = existing.id;
   }
@@ -726,6 +774,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       deliverables: project.deliverables.map((d) => d.label || d.type).filter(Boolean),
       pin: opts.pin ? { submissionId: opts.pin.submissionId, outputId: opts.pin.outputId, cutKey: opts.pin.cutKey, decisionId: opts.pin.decisionId, roundId: opts.pin.roundId, label: opts.pin.videoLabel } : undefined,
       skipAnalysis: !!opts.addendum,
+      requestedBy: requester,
     });
   } catch { /* the revision itself already landed */ }
 
@@ -751,7 +800,8 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       await notifyInApp({
         kind: opts.addendum ? "revision_addendum" : "revision_raised",
         title: `${opts.addendum ? "More notes" : "Revision"} — ${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`,
-        body: clip(taskNote, 140),
+        // Who asked, in front of what they asked (Sep 28).
+        body: clip(askedBy ? `${askedBy}: ${taskNote}` : taskNote, 140),
         href: `/projects/${project.id}`,
         targets,
         dedupeKey: opts.addendum ? `portal-addendum-${opts.pin.decisionId}-${opts.addendum.n}` : `portal-round-${opts.pin.roundId ?? opts.pin.decisionId}`,
@@ -787,7 +837,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       await notifyInApp({
         kind: "revision_raised",
         title: `Revision — ${project.title.split(",")[0].trim()}`,
-        body: clip(taskNote, 140),
+        body: clip(askedBy ? `${askedBy}: ${taskNote}` : taskNote, 140),
         href: `/projects/${project.id}`,
         targets,
         // Day-suffixed: the revision TASK id is stable per project (deduped),

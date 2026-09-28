@@ -2,11 +2,22 @@
  * READ-ONLY. What the Ready-to-send card actually renders on live data today,
  * and whether the download stamp has ever been written. SELECTs only — nothing
  * in this file writes, and it must stay that way.
+ *
+ * STRUCTURALLY read-only since Sep 28 2026 (A02): the connection is opened
+ * with default_transaction_read_only=on and a refused UPDATE (SQLSTATE 25006)
+ * is proven before anything is read, so "must stay that way" is enforced by
+ * the database rather than by this comment.
  */
-import { readyToSend } from "@/lib/readyToSend";
-import { prisma } from "@/lib/prisma";
+import { pinReadOnlyDatabaseUrl, proveReadOnly } from "../_lib/dbGuard";
+
+// Before @/lib/prisma exists (hence the dynamic imports below).
+pinReadOnlyDatabaseUrl();
 
 async function main() {
+  const { prisma } = await import("@/lib/prisma");
+  await proveReadOnly(prisma);
+  console.log("read-only connection proven (25006)");
+  const { readyToSend } = await import("@/lib/readyToSend");
   const board = await readyToSend();
   console.log(`Ready to send: ${board.ready.length} · still rendering: ${board.rendering.length}\n`);
   for (const v of board.ready) {

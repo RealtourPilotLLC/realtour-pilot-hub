@@ -30,6 +30,7 @@ import {
   statusPinned,
 } from "@/lib/editOverrides";
 import type { QueueRow } from "@/components/editing/SimpleQueue";
+import { officeReopenLine, officeReopenOf, requesterLine, verdictLine, verdictOf, whenET, type Verdict } from "@/lib/reviewAttribution";
 
 // The Editor Queue's row builder, extracted from /editing so the message
 // center (/editing/messages) can reuse the exact same job set and the same
@@ -196,7 +197,7 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
       // got round to it yet", it is the owner deliberately taking the job off
       // the bench (see UNPINNED below). summary: a "Round N — …" edit card is
       // the video lane's redo signal (see ROUND ON THE CARD below).
-      select: { projectId: true, assignedKey: true, taskType: true, assignedManually: true, summary: true },
+      select: { id: true, projectId: true, assignedKey: true, taskType: true, assignedManually: true, summary: true, contactName: true, source: true, title: true, reasonCreated: true, createdAt: true, updatedAt: true },
     }),
     // The Slack messages column → the job's own chat. Revisions live THERE now,
     // not in channel dumps.
@@ -216,7 +217,8 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
         status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"] },
       },
       orderBy: { round: "asc" },
-      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true, selfCheckId: true, selfCheckedAt: true },
+      // decided*/clientRequested*: who sent a bounced cut back (Sep 28).
+      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true, selfCheckId: true, selfCheckedAt: true, decidedAt: true, decidedBy: true, clientRequestedAt: true, clientRequestedBy: true },
     }),
     // WHO IS ON IT RIGHT NOW (§7.1) — the editor's own Start/Pause, not the
     // status. In-flight rows only: an upcoming shoot has nothing to start and
@@ -278,11 +280,11 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
   // reviewer — nobody can rule on it — so it is tallied as `checking`, the
   // editor's move, the same way videoStatesFor and the Review Room skip it.
   type CutTally = { total: number; waiting: number; checking: number; revising: number; approved: number };
-  const latestCut = new Map<string, { projectId: string; round: number; status: string; held: boolean }>();
+  const latestCut = new Map<string, { projectId: string; round: number; status: string; held: boolean; verdict: Verdict | null }>();
   for (const s of cutRows) {
     const key = `${s.projectId}|${cutKeyOf(s)}`;
     const cur = latestCut.get(key);
-    if (!cur || s.round > cur.round) latestCut.set(key, { projectId: s.projectId, round: s.round, status: s.status, held: isHeldForSelfCheck(s) });
+    if (!cur || s.round > cur.round) latestCut.set(key, { projectId: s.projectId, round: s.round, status: s.status, held: isHeldForSelfCheck(s), verdict: verdictOf(s) });
   }
   const cutTally = new Map<string, CutTally>();
   for (const c of latestCut.values()) {
@@ -293,6 +295,49 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
     else if (c.status === "CHANGES_REQUESTED") t.revising++;
     else if (c.status === "APPROVED") t.approved++;
     cutTally.set(c.projectId, t);
+  }
+
+  // WHO SENT IT BACK (Review Room attribution, Sep 28). A row on "Revisions"
+  // said so and nothing else; the line under the pill now names the newest
+  // ask and when: a bounced cut's verdict (the office's, or the client's own
+  // send-back on an approved cut — reviewAttribution.verdictOf), or the person
+  // on the newest video-lane revision's work order. One read of the briefs for
+  // the open revision tasks; the cut verdicts are already in hand.
+  const askLine = new Map<string, { at: number; line: string }>();
+  const offerAsk = (projectId: string, at: number, line: string | null) => {
+    if (!line) return;
+    const cur = askLine.get(projectId);
+    if (!cur || at > cur.at) askLine.set(projectId, { at, line });
+  };
+  for (const c of latestCut.values()) {
+    if (c.status === "CHANGES_REQUESTED" && c.verdict) offerAsk(c.projectId, c.verdict.atISO ? Date.parse(c.verdict.atISO) : 0, verdictLine(c.verdict));
+  }
+  {
+    const revTasks = openTasks.filter((t) => t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)));
+    // The office's own reopen (the queue-add) is the row's newest word while
+    // it is still theirs — a client's later ask rewrites it — so it is offered
+    // at the row's last write, ahead of any older brief the reused row still
+    // carries. Named from the queue-add's own sentence (officeReopenOf), never
+    // flaggedBy (review, Sep 28).
+    const clientTasks = revTasks.filter((t) => !officeReopenOf(t));
+    for (const t of revTasks) {
+      const office = officeReopenOf(t);
+      if (office && t.projectId) offerAsk(t.projectId, t.updatedAt.getTime(), officeReopenLine(office));
+    }
+    const briefs = clientTasks.length
+      ? await prisma.revisionBrief
+          .findMany({
+            where: { taskId: { in: clientTasks.map((t) => t.id) }, requestedBy: { not: null } },
+            select: { projectId: true, requestedBy: true, requestedByKind: true, createdAt: true },
+          })
+          .catch(() => [])
+      : [];
+    for (const b of briefs) offerAsk(b.projectId, b.createdAt.getTime(), requesterLine({ requestedBy: b.requestedBy, requestedByKind: b.requestedByKind, at: b.createdAt }));
+    // No brief naming anyone: the task's own person (contactName). Nothing is guessed.
+    for (const t of clientTasks) {
+      if (!t.projectId || askLine.has(t.projectId)) continue;
+      if (t.contactName) offerAsk(t.projectId, t.createdAt.getTime(), `Asked by ${t.contactName} · ${whenET(t.createdAt)}`);
+    }
   }
 
   // The hub's real origin for the row's Copy-link button. Built here, on the
@@ -543,8 +588,13 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
       // the photographer's upload-page submit moves it on. A marker on a job
       // that is no longer on Waiting is stale and does not count.
       held: heldSet.has(p.id) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
-      // "1 ready for review · 3 more to edit" — null on a one-video job.
-      videoBreakdown,
+      // "1 ready for review · 3 more to edit" — null on a one-video job. On a
+      // row reading Revisions it also names who asked and when (Sep 28).
+      videoBreakdown: (() => {
+        const label = upcoming && !pinned ? "Waiting" : reopened ? EXTRA_SHOOT_STATUS : wl.label;
+        const ask = label === "Revisions" ? askLine.get(p.id)?.line ?? null : null;
+        return [videoBreakdown, ask].filter(Boolean).join(" · ") || null;
+      })(),
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       // The key behind the name, for the row's reassign select. Same truth
       // ladder as the display: open task → Project.editor → routing rules.

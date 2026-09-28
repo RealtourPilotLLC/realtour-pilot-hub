@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { addCutNote, approveCut, askCutChange, replyCutNote, requestCutChanges, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
+import { byLine, statusLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
 import type { CutTakeBackInfo } from "./types";
 import { fmtClock, parseClock } from "./types";
@@ -222,14 +223,19 @@ export function CutReviewPanel({
             <Undo2 className="size-4" /> Withdrawn — waiting on the next version
           </span>
         ) : decided ? (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium",
-              submission.status === "APPROVED" ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
-            )}
-          >
-            {submission.status === "APPROVED" ? <ThumbsUp className="size-4" /> : <Undo2 className="size-4" />}
-            {submission.status === "APPROVED" ? "Approved" : `Changes requested — waiting on ${editorLabel}`}
+          <span className="flex flex-col items-end gap-0.5">
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium",
+                submission.status === "APPROVED" ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
+              )}
+            >
+              {submission.status === "APPROVED" ? <ThumbsUp className="size-4" /> : <Undo2 className="size-4" />}
+              {submission.status === "APPROVED" ? "Approved" : `Changes requested — waiting on ${editorLabel}`}
+            </span>
+            {/* WHO RULED, AND WHEN (Sep 28) — the badge said what, never who. A
+                client's send-back on an approved cut says it was the client. */}
+            {verdictLine(submission.verdict) && <span className="text-[11px] text-muted">{verdictLine(submission.verdict)}</span>}
           </span>
         ) : heldForCheck ? (
           <span className="text-xs text-muted">Waiting on {editorLabel}&rsquo;s check — nothing to rule on yet.</span>
@@ -259,6 +265,13 @@ export function CutReviewPanel({
           </>
         )}
       </div>
+      {/* Somebody other than the chain took this version (gap 15) — say who
+          and when, not just "covering". */}
+      {canDecide && submission.reviewerMove && (
+        <p className="text-[11px] text-muted-2">
+          {submission.reviewerMove.words} by {byLine(submission.reviewerMove.by, submission.reviewerMove.atISO)}
+        </p>
+      )}
       {/* The fixes this version's check claimed — the reviewer's one chance to
           say "not actually fixed" (§8.3). Only while there is a verdict to give. */}
       {canDecide && !decided && !heldForCheck && fixesToCheck.length > 0 && (
@@ -393,7 +406,10 @@ export function CutReviewPanel({
                 ) : (
                   <span className="mt-0.5 shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-2">—:—</span>
                 )}
-                <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_DOT[n.status] ?? "bg-brand")} />
+                <span
+                  className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_DOT[n.status] ?? "bg-brand")}
+                  title={statusLine(n) ?? undefined}
+                />
                 {n.lane === "PHOTOGRAPHER" ? (
                   <Camera className="mt-1 size-3.5 shrink-0 text-sky-500" />
                 ) : (
@@ -418,6 +434,13 @@ export function CutReviewPanel({
                       <Camera className="size-3" /> asked by {n.authorName ?? "the photographer"}
                     </span>
                   )}
+                  {/* WHO LEFT IT, AND WHEN (Jordan, Sep 28: "we know who left
+                      the review comments"). The name was stored on every note
+                      and shown on none of them here. Then who last moved it. */}
+                  <span className="mt-0.5 block text-[11px] text-muted-2">
+                    {byLine(n.authorName ?? "Someone", n.createdAt)}
+                    {statusLine(n) ? ` · ${statusLine(n)}` : ""}
+                  </span>
                 </button>
                 {/* Resolve / reopen are the office's (setCutNoteStatus keeps
                     OPEN and RESOLVED behind requireAdmin). Rendering them to a
@@ -453,6 +476,8 @@ export function CutReviewPanel({
                       <div>
                         <span className="text-xs font-medium text-muted">{r.authorName ?? "Someone"}: </span>
                         <span className="text-foreground/85">{r.body}</span>
+                        {/* Replies carry their time too (gap 3). */}
+                        <span className="ml-1.5 text-[10px] text-muted-2">{whenET(r.createdAt)}</span>
                       </div>
                     </div>
                   ))}
