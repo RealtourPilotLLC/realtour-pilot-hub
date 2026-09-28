@@ -3217,6 +3217,7 @@ export async function reconcileDeliverablesToOrder(
     } catch { /* due refresh is best-effort */ }
     // A retired video takes its chases with it. edit_video only when nobody
     // hand-assigned it (the assignedManually invariant every engine respects).
+    let closeVideoWork = false;
     if (out.retired.length > 0) {
       // Counted the same way the rows were read (Sep 20 2026, audit F01). A
       // survivor is owed the videos the merge brought it — they sit on its own
@@ -3248,13 +3249,14 @@ export async function reconcileDeliverablesToOrder(
         }).catch(() => {});
         // No video owed = nobody is editing one (R01, Sep 28 2026): the edit
         // card just went, and an editor's started stretch goes after it — on
-        // this job AND on the merge survivor the card lived on. After the
-        // write, so a Start that landed a moment before it is closed too.
-        // closeGhostWork never throws; a holder of other work keeps theirs.
-        const { closeGhostWork } = await import("@/lib/editorWork");
-        for (const pid of new Set([projectId, rowHome])) {
-          await closeGhostWork(pid, { reason: "REMOVED", detail: "the video was removed from the Aryeo order" });
-        }
+        // this job AND on the merge survivor the card lived on. Run BELOW,
+        // after the per-video rows are retired (review fix, Sep 28): the close
+        // keeps anyone who still holds the job, and the owner of a video row
+        // counts as a holder until that row is stamped removed — which
+        // ensureOutputsSafely does. Closed before it, an editor holding the
+        // removed video by ownership survived. (Dormant today: nothing writes
+        // ownerKey yet — deliverableOutputs.ts. The order is right anyway.)
+        closeVideoWork = true;
       }
     }
     // THE ORDER MOVED, SO THE PER-VIDEO ROWS MOVE (audit R06, Sep 18).
@@ -3276,6 +3278,16 @@ export async function reconcileDeliverablesToOrder(
     // and leave the survivor's new slot unmaterialised.
     const ensured = await ensureOutputsSafely(rowHome, `aryeo-reconcile#${orderNo}`);
     if (!ensured.ok) out.outputsError = ensured.error;
+    // After the card cancel AND the rows' retirement (see closeVideoWork
+    // above). A Start that landed before either is closed here; one after
+    // finds no card and no live video row of theirs and is refused.
+    // closeGhostWork never throws; a holder of other work keeps theirs.
+    if (closeVideoWork) {
+      const { closeGhostWork } = await import("@/lib/editorWork");
+      for (const pid of new Set([projectId, rowHome])) {
+        await closeGhostWork(pid, { reason: "REMOVED", detail: "the video was removed from the Aryeo order" });
+      }
+    }
   }
   return out;
 }

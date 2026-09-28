@@ -1688,11 +1688,17 @@ async function closeObsoleteTaskRows(
   humanKept: { assignedManually?: boolean },
   opts: { sweep?: boolean },
 ): Promise<number> {
+  // The two multi-card closes below run in the Start's lock order (review
+  // fix, Sep 28 2026 — editorWork.underJobLock): each updates the job's edit
+  // card AND its revisions in one statement, and against a Start's ordered
+  // card lock on a two-card job that deadlocked; when Postgres picked the
+  // close as the victim, a cancelled or delivered job kept its open cards.
+  const { underJobLock } = await import("@/lib/editorWork");
   if (projectStatus === "CANCELLED") {
-    const r = await prisma.smartTask.updateMany({
+    const r = await underJobLock(projectId, (tx) => tx.smartTask.updateMany({
       where: { projectId, status: { notIn: ["COMPLETED", "CANCELLED"] }, ...humanKept },
       data: { status: "CANCELLED" },
-    });
+    }), "the cancelled job's card close");
     return r.count;
   }
   if (projectStatus === "DELIVERED") {
@@ -1746,7 +1752,7 @@ async function closeObsoleteTaskRows(
         }
       }
     } catch { /* receipts never block the close */ }
-    const r = await prisma.smartTask.updateMany({
+    const r = await underJobLock(projectId, (tx) => tx.smartTask.updateMany({
       where: {
         projectId,
         taskType: { in: DELIVERED_CLOSE_TYPES },
@@ -1754,7 +1760,7 @@ async function closeObsoleteTaskRows(
         ...humanKept,
       },
       data: { status: "COMPLETED", completedAt: new Date() },
-    });
+    }), "the delivered job's card close");
     // EVERY system watchdog to-do on this job is moot once the gallery shipped —
     // the cull nudge, "Find the raw video", "No raws uploaded" (audit Aug 25:
     // 8 of 11 open watchdogs sat on already-DELIVERED jobs for up to 16 days,
@@ -3200,19 +3206,22 @@ export async function mintEditTask(projectId: string): Promise<void> {
       !existing.assignedManually && existing.assignedKey
         ? (await prisma.editorWorkItem.count({ where: { projectId, editorKey: existing.assignedKey, state: { not: "CLOSED" } } }).catch(() => 0)) > 0
         : false;
-    const data = {
-      // A human's editor choice (reassign / manual queue-add) outlives every
-      // automatic refresh — only route when nobody picked by hand. And the
-      // auto-router may IMPROVE a route but never STRIP one: a null route
-      // (personal branding) must not un-assign work someone already owns.
-      // A project-level pin (editorManual) is a human pick too — carry it
-      // onto the task as assignedManually so every downstream engine sees it.
-      // Started work outranks the RULES, never the office: the project page's
-      // editor pick (assignMember) only writes the pin and relies on this
-      // refresh to move the card, so letting startedByHolder win here kept a
-      // paused Kim on the card for good while the project said John (batch-2
-      // review, Sep 25 2026). Her work is closed as reassigned just below.
-      ...(existing.assignedManually || (startedByHolder && !pin.pinned) || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
+    // A human's editor choice (reassign / manual queue-add) outlives every
+    // automatic refresh — only route when nobody picked by hand. And the
+    // auto-router may IMPROVE a route but never STRIP one: a null route
+    // (personal branding) must not un-assign work someone already owns.
+    // A project-level pin (editorManual) is a human pick too — carry it
+    // onto the task as assignedManually so every downstream engine sees it.
+    // Started work outranks the RULES, never the office: the project page's
+    // editor pick (assignMember) wrote only the pin and relied on this
+    // refresh to move the card, so letting startedByHolder win here kept a
+    // paused Kim on the card for good while the project said John (batch-2
+    // review, Sep 25 2026). Her work is closed as reassigned just below.
+    // (assignMember moves the live card itself since Sep 28; this is the
+    // backstop for a pin written any other way.)
+    const route: { assignedKey?: string; assignedManually?: boolean } =
+      existing.assignedManually || (startedByHolder && !pin.pinned) || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) };
+    const refresh = {
       dueAt: refreshedDue,
       priority: priorityFor(refreshedDue),
       // A bounce writes "Round N — …" here (addRoundToEditCard, Sep 8): that
@@ -3220,9 +3229,41 @@ export async function mintEditTask(projectId: string): Promise<void> {
       // until the card closes. Only the plain first-cut summary is rewritten.
       summary: EDIT_ROUND_SUMMARY.test(existing.summary ?? "") ? existing.summary : summary.slice(0, 500),
     };
+    const data = { ...route, ...refresh };
     // Diff-before-write: an unchanged card is not touched (see changedKeys).
     if (changedKeys(existing, data).length === 0) return;
-    await prisma.smartTask.update({ where: { id: existing.id }, data });
+    if (route.assignedKey === undefined || route.assignedKey === existing.assignedKey) {
+      await prisma.smartTask.update({ where: { id: existing.id }, data });
+      return;
+    }
+    // THE ROUTE IS DECIDED UNDER THE JOB'S LOCK (review fix, Sep 28 2026).
+    // `startedByHolder` above was counted before this write, and a Start can
+    // commit in between: on a card only the RULES were moving, the update
+    // then went ahead and the close below took Kim's fresh Start as
+    // REASSIGNED — the hourly rules beating an editor who had just pressed
+    // Start, against "started work outranks the rules". Now the move runs in
+    // the Start's lock order (underJobLock: the Project row first) and asks
+    // again under it: a card somebody hand-picked or moved meanwhile is left
+    // where they put it, and on an unpinned card a holder who now has open
+    // work keeps it. The office's pin still moves it (and closes her below).
+    // Only the route waits on the lock; a refresh that routes nothing never
+    // takes it.
+    const { underJobLock } = await import("@/lib/editorWork");
+    const moved = await underJobLock(projectId, async (tx) => {
+      const cur = await tx.smartTask.findUnique({ where: { id: existing.id }, select: { assignedKey: true, assignedManually: true, status: true } });
+      if (!cur || cur.status === "COMPLETED" || cur.status === "CANCELLED") return false;
+      const keep =
+        cur.assignedManually ||
+        cur.assignedKey !== existing.assignedKey ||
+        (!pin.pinned && !!cur.assignedKey &&
+          (await tx.editorWorkItem.count({ where: { projectId, editorKey: cur.assignedKey, state: { not: "CLOSED" } } })) > 0);
+      // Kept: only the refresh, and only if it changes anything (the same
+      // diff-before-write as above — a no-op write still moves updatedAt).
+      if (!keep) await tx.smartTask.update({ where: { id: existing.id }, data });
+      else if (changedKeys(existing, refresh).length) await tx.smartTask.update({ where: { id: existing.id }, data: refresh });
+      return !keep;
+    }, "the edit card's route");
+    if (!moved) return;
     // The card changed hands on the office's pick: whoever was on it (§7.1)
     // is not any more — close their active/paused work as REASSIGNED now,
     // not an hour from now on the next refresh. The ghost close at the top of
@@ -3235,12 +3276,10 @@ export async function mintEditTask(projectId: string): Promise<void> {
     // close, and left Kim ACTIVE on a job the card now gave to John. The
     // close is recomputed under the desk lock, so a card that did not in
     // fact leave anybody closes nothing.
-    if ("assignedKey" in data && data.assignedKey !== existing.assignedKey) {
-      await closeGhostWork(projectId, {
-        reason: "REASSIGNED",
-        detail: pin.pinned ? `the office picked ${editorName} on the project page` : `routed to ${editorName} by the editor routing rules`,
-      });
-    }
+    await closeGhostWork(projectId, {
+      reason: "REASSIGNED",
+      detail: pin.pinned ? `the office picked ${editorName} on the project page` : `routed to ${editorName} by the editor routing rules`,
+    });
     return;
   }
   await prisma.smartTask.create({
@@ -3273,6 +3312,46 @@ export async function mintEditTask(projectId: string): Promise<void> {
       dedupeKey: key,
     },
   });
+}
+
+/**
+ * THE OFFICE'S EDITOR PICK MOVES THE LIVE VIDEO WORK — the edit card and the
+ * video-lane revisions — onto `key` (null = nobody), pinned (assignedManually)
+ * because a person chose it. One writer for the two doors the office picks
+ * through: the Editing Room's reassign (setEditVideoEditor) and the project
+ * page's editor pick (assignMember).
+ *
+ * WHY THE PROJECT PAGE NEEDED IT (review fix, Sep 28 2026). assignMember only
+ * wrote the pin and called mintEditTask, whose route rule never moves a card
+ * a human hand-assigned (addToEditorQueue, a reassign, Ask the Hub, the
+ * override's reopen and the first pinned pick itself all set that flag). So
+ * picking John on the project page of a job Kim held by hand left the card
+ * Kim's, Kim ACTIVE with a live Start button, and John refused "isn't assigned
+ * to you" — while the page said John Mark. The pick is the office's word and
+ * beats an older hand assignment, exactly as the reassign does.
+ *
+ * In the Start's lock order (editorWork.underJobLock) because it updates two
+ * or more of the cards a Start locks in one statement — the deadlock the
+ * review forced. The caller closes whoever lost the job (closeGhostWork)
+ * AFTER this returns. Returns how many cards it moved.
+ */
+export async function moveLiveVideoWork(projectId: string, key: string | null): Promise<number> {
+  const { underJobLock } = await import("@/lib/editorWork");
+  const { VIDEO_LANE_KEYS } = await import("@/lib/editors");
+  const r = await underJobLock(projectId, (tx) => tx.smartTask.updateMany({
+    where: {
+      projectId,
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      // Scoped on purpose — a mixed job's photo-retouch revision is Kyle's and
+      // must not be hijacked onto a video editor.
+      OR: [{ taskType: "edit_video" }, { taskType: "revision", assignedKey: { in: VIDEO_LANE_KEYS } }],
+    },
+    // assignedManually either way — including on the unassign, where it is the
+    // whole point: a null key WITHOUT the flag is just "not routed yet" and
+    // mintEditTask would fill it back in on the next sweep.
+    data: { assignedKey: key, assignedManually: true },
+  }), "the office's editor pick");
+  return r.count;
 }
 
 // ---------------------------------------------------------------------------
@@ -3458,6 +3537,14 @@ export async function addRoundToEditCard(
       },
     });
   });
+  // A round is video work put back on the job: if the office had taken it
+  // off the Editing Room, it is back on it now — or the card just reopened
+  // would sit on a hidden row whose Start is refused (review fix, Sep 28
+  // 2026; queueRemoved.endRemoval). A no-op read on every other job.
+  {
+    const { endRemoval } = await import("@/lib/queueRemoved");
+    await endRemoval(projectId, { by: by?.name ?? null, how: "a cut was sent back for another round" });
+  }
   return { taskId: card.id, assignedKey: card.assignedKey, assignedManually: card.assignedManually };
 }
 

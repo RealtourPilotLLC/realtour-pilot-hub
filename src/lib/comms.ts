@@ -752,6 +752,19 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   }
   if (!taskId) return none;
 
+  // A CLIENT'S VIDEO ASK BRINGS THE JOB BACK TO THE EDITING ROOM (review fix,
+  // Sep 28 2026 — Jordan to confirm). If the office had taken the job off it,
+  // the ask would land on a row the Editing Room hides, and the editor it
+  // routes to could not press Start ("taken off the Editing Room — bring it
+  // back first"): the client waiting on work nobody can see or record. The
+  // removal ends, on the record (queueRemoved.endRemoval — the marker stays,
+  // with how it came back). Video asks only: a photo ask is Kyle's and never
+  // on the Editing Room. A no-op read on every job that was never removed.
+  if (primaryIsVideoWork) {
+    const { endRemoval } = await import("@/lib/queueRemoved");
+    await endRemoval(project.id, { by: askedBy ?? null, how: "the client asked for changes to the video" });
+  }
+
   // THE WORK ORDER. The task description above is a clipped paragraph by
   // necessity (it has to fit a task card); the brief keeps the client's ask
   // WHOLE and splits it into items the editor can actually work through. When
@@ -959,26 +972,36 @@ export async function resolveRevision(projectId: string): Promise<void> {
       : project?.status === "REVIEW" && project.deliveredAt && !cutWaiting
         ? ("DELIVERED" as RevisionLanding)
         : null;
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      revisionRequestedAt: null,
-      revisionNote: null,
-      // The landing is a human status write (the approval, the task's
-      // Complete, the project-page button), and a human write ends the
-      // office's status pin (Sep 13, editOverrides.ts).
-      ...(landing ? { status: landing, statusPinnedAt: null } : {}),
-      // deliveredAt is NEVER written here. Resolving a revision is not a
-      // delivery: a job that was delivered keeps the date it actually shipped
-      // on, and a job that never shipped must not acquire one. The real stamp
-      // happens where delivery happens (the status sweep's first arrival at
-      // DELIVERED, the pipeline board, the editor queue).
-    },
-  });
-  await prisma.smartTask.updateMany({
-    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
+  // ONE TRANSACTION, THE JOB'S ROW FIRST (review fix, Sep 28 2026). The stage
+  // write and the asks' close used to be two separate commits, and the close
+  // updates every open ask in one statement — against a Start's ordered card
+  // lock on a job with two asks open, that could deadlock, and a close that
+  // lost left the job moved off Revisions with its asks still open. Now the
+  // Project row is taken first (editorWork.underJobLock, the Start's order)
+  // and both land together or neither does.
+  const { underJobLock } = await import("@/lib/editorWork");
+  await underJobLock(projectId, async (tx) => {
+    await tx.project.update({
+      where: { id: projectId },
+      data: {
+        revisionRequestedAt: null,
+        revisionNote: null,
+        // The landing is a human status write (the approval, the task's
+        // Complete, the project-page button), and a human write ends the
+        // office's status pin (Sep 13, editOverrides.ts).
+        ...(landing ? { status: landing, statusPinnedAt: null } : {}),
+        // deliveredAt is NEVER written here. Resolving a revision is not a
+        // delivery: a job that was delivered keeps the date it actually shipped
+        // on, and a job that never shipped must not acquire one. The real stamp
+        // happens where delivery happens (the status sweep's first arrival at
+        // DELIVERED, the pipeline board, the editor queue).
+      },
+    });
+    await tx.smartTask.updateMany({
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  }, "the revision's resolve");
   // The job is delivered again → its re-QC / delivery tasks are done too. The
   // revision flow reopened the QC task (reflectRevisionInQc), but nothing could
   // ever close it: the task sync skips REVISION jobs and this function only

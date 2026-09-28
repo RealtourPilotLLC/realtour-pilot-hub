@@ -29,6 +29,11 @@
 //            off the Editing Room refused (bar + desk agree), On hold pauses,
 //            the writers that now close behind them, the hourly ghost sweep.
 //            The races themselves: realpg-start-eligibility.ts.
+//   §T  the Sep 28 review of R01: a removal ENDS when video work comes back
+//            by another door (re-add after the 7 days, re-add for John,
+//            a round sent back, the override's back-to-work), and the
+//            restore never overwrites a card that changed since — each
+//            against the R01 build the review read (b222dde).
 //
 // THE CLOCK IS PINNED to Tuesday Sep 22 2026, 10:00 ET, and runs forward from
 // there: nothing here may depend on the day this is run (three drills broke on
@@ -42,6 +47,7 @@
 // is printed as NOT PROVABLE HERE.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import Module from "node:module";
@@ -542,7 +548,14 @@ async function main() {
   await tryRun("mintEditTask", () => tasks.mintEditTask(T2.id));
   await tryRun("syncProjectStatuses", async () => (await import("@/lib/projectStatus")).syncProjectStatuses({ projectId: T1.id }));
   await tryRun("setEditVideoEditor", () => editing.setEditVideoEditor(T2.id, "kim"));
-  await tryRun("assignMember(editor)", () => appActions.assignMember(T1.id, "editor", johnTm.id));
+  // The project page's pick of the editor who already HOLDS the card (Sep 28
+  // review fix): since the fix, a pick of somebody else moves the live card
+  // to them — which takes T1 away from Kim and makes her Start below a
+  // refusal for the right reason. This section asks only that no path
+  // STARTS anyone, so the pick names Kim: the whole move-and-close path
+  // still runs (tasks.moveLiveVideoWork + closeGhostWork) and must start
+  // nobody. The move to somebody else is b1-remainders §9.
+  await tryRun("assignMember(editor)", () => appActions.assignMember(T1.id, "editor", kimTm.id));
   await tryRun("correctedCutWithdrawn", () => reviewCuts.correctedCutWithdrawn(T3.id));
   await tryRun("saveEditOverrides(In editing)", () => editing.saveEditOverrides(T1.id, { status: "In editing" } as never));
   await tryRun("moveProjectStatus(EDITING)", () => appActions.moveProjectStatus(T2.id, "EDITING"));
@@ -869,6 +882,150 @@ async function main() {
     c.ok("the hourly janitor closes the ghost on the approved job (UNASSIGNED) — it no longer waits for a card refresh that never comes",
       janitor.ghostsClosed >= 1 && gh?.state === "CLOSED" && gh.closeReason === "UNASSIGNED", `ghostsClosed=${janitor.ghostsClosed} · ${gh?.state}/${gh?.closeReason}`);
     c.ok("…and a legitimate holder's ACTIVE stretch is untouched", keep1?.state === "ACTIVE" && keep1.activeSince?.getTime() === keep0?.activeSince?.getTime());
+  }
+
+  // =========================================================================
+  c.head("§T · Sep 28 review of R01: a job taken off the Editing Room comes back by every door that puts video work on it");
+  // =========================================================================
+  // The review: the REMOVED refusal met a marker only the restore button ever
+  // cleared. Remove, wait past the 7-day undo, re-add ("Add it to the queue
+  // again", in the restore's own words) — the card OPEN for Kim, her Start
+  // refused, the office's too, a second restore refused: no way out. Inside
+  // the 7 days, re-add for John, then follow the words and restore — the
+  // card went back to Kim. Each case runs on the R01 build as the review read
+  // it (PREV, copied from git into a temp directory) and on today's code.
+  {
+    const PREV = "b222dde";
+    const prevDir = fs.mkdtempSync(path.join(os.tmpdir(), "b1-prev-"));
+    fs.symlinkSync(path.join(REPO, "node_modules"), path.join(prevDir, "node_modules"));
+    const prevCopy = (rel: string): string => {
+      const src = execFileSync("git", ["show", `${PREV}:${rel}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
+      const from = path.dirname(path.join(REPO, rel));
+      const pointed = src.replace(/((?:from|import)\s*\(?\s*)(["'])(@\/|\.\.?\/)([^"']+)\2/g, (_m, pre: string, q: string, head: string, rest: string) =>
+        `${pre}${q}${head === "@/" ? path.join(REPO, "src", rest) : path.resolve(from, head + rest)}${q}`);
+      const out = path.join(prevDir, rel.replace(/[/[\]]/g, "_"));
+      fs.writeFileSync(out, pointed);
+      return out;
+    };
+    try {
+      const prevEditing = (await import(prevCopy("src/app/editing/actions.ts"))) as typeof editing;
+      const prevTasks = (await import(prevCopy("src/lib/tasks.ts"))) as typeof tasks;
+      const { queueRemovedKey, removalFor, serialize, isRemoved } = await import("@/lib/queueRemoved");
+      const officeView = { role: "OWNER", realRole: "OWNER", editorKey: null, impersonating: false };
+      const TAKEN_OFF = /was taken off the Editing Room by the office — bring it back before starting it\./;
+      const startAs = async (u: U, projectId: string, rid: string) => { await as(u); const r = await work.startEditing({ projectId, requestId: rid }); await as(jordan); return r; };
+      const age = async (projectId: string, days: number) => {
+        const r = (await removalFor(projectId))!;
+        await prisma.appSetting.update({ where: { key: queueRemovedKey(projectId) }, data: { value: serialize({ by: r.by, at: new Date(r.at.getTime() - days * DAY), note: r.note, task: r.task, restoredAt: null, restoredBy: null }) } });
+      };
+      await as(jordan);
+
+      // 1 · past the 7-day undo: remove, restore refused, re-add for Kim.
+      const pastUndo = async (ed: typeof editing, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "SHOT", editor: "kim" });
+        await ed.removeFromEditorQueue(j.id, "drill: not needed");
+        await age(j.id, 8);
+        const restore1 = await ed.restoreToEditorQueue(j.id);
+        const add = await ed.addToEditorQueue(j.id, "kim");
+        const card = await prisma.smartTask.findUniqueOrThrow({ where: { id: j.cardId! }, select: { status: true, assignedKey: true } });
+        const s = await startAs(kim, j.id, `t1-kim-${tag}`);
+        const bar = await work.workBarFor(j.id, officeView);
+        const restore2 = await ed.restoreToEditorQueue(j.id);
+        return { j, restore1, add, card, s, bar, restore2, marker: await removalFor(j.id), row: await rowOf(j.id) };
+      };
+      const o1 = await pastUndo(prevEditing, "71 Past Undo Old Rd", "old");
+      c.ok(`old (${PREV}): re-added after the 7 days, the card is OPEN and Kim's, yet her Start is refused "bring it back", the office's bar has no Start, and a second restore is refused — no way out`,
+        !o1.restore1.ok && o1.add.ok && o1.card.status === "OPEN" && o1.card.assignedKey === "kim" && !o1.s.ok && TAKEN_OFF.test(o1.s.message) && o1.bar?.canStart === false && !o1.restore2.ok && isRemoved(o1.marker),
+        `restore1: ${o1.restore1.message} · add: ${o1.add.message} · kim: ${o1.s.message} · office bar canStart=${o1.bar?.canStart} · restore2: ${o1.restore2.message}`);
+      const n1 = await pastUndo(editing, "71 Past Undo Rd", "new");
+      c.ok("new: the re-add ENDS the removal — the marker is kept as the record, stamped with who brought it back and how",
+        n1.add.ok && !isRemoved(n1.marker) && !!n1.marker?.restoredAt && n1.marker.restoredBy === "Jordan Spackman" && /added to the Editing Room again for Kim/.test(n1.marker.restoredHow ?? "") && (await lines(n1.j.id, "Back on the Editing Room — added to the Editing Room again")) === 1,
+        `${n1.marker?.restoredBy} · ${n1.marker?.restoredHow}`);
+      c.ok("…the queue shows the row again and Kim's Start is taken", !!n1.row && n1.s.ok, `row=${!!n1.row} · ${n1.s.message}`);
+      c.ok("…and the restore now says there is nothing to bring back (it can't undo the re-add)", !n1.restore2.ok && /isn't off the Editing Room/.test(n1.restore2.message), n1.restore2.message);
+
+      // 2 · inside the 7 days: remove, re-add for John, then follow the words and restore.
+      const reAddJohn = async (ed: typeof editing, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "SHOT", editor: "kim" });
+        await ed.removeFromEditorQueue(j.id, "drill");
+        const add = await ed.addToEditorQueue(j.id, "john");
+        const js = await startAs(john, j.id, `t2-john-${tag}`);
+        const restore = await ed.restoreToEditorQueue(j.id);
+        return { add, js, restore, card: await prisma.smartTask.findUniqueOrThrow({ where: { id: j.cardId! }, select: { status: true, assignedKey: true } }) };
+      };
+      const o2 = await reAddJohn(prevEditing, "72 Re Add John Old Rd", "old");
+      c.ok(`old (${PREV}): re-added for John inside the 7 days — John's Start refused "bring it back", and the restore then handed the card back to KIM from the record`,
+        o2.add.ok && !o2.js.ok && TAKEN_OFF.test(o2.js.message) && o2.restore.ok && o2.card.assignedKey === "kim",
+        `john: ${o2.js.message} · restore: ${o2.restore.message} · card ${o2.card.assignedKey}`);
+      const n2 = await reAddJohn(editing, "72 Re Add John Rd", "new");
+      c.ok("new: John's Start is taken, the restore has nothing to undo, and the card stays John's",
+        n2.add.ok && n2.js.ok && !n2.restore.ok && n2.card.assignedKey === "john" && n2.card.status !== "CANCELLED",
+        `john: ${n2.js.message} · restore: ${n2.restore.message} · card ${n2.card.assignedKey}/${n2.card.status}`);
+
+      // 3 · THE RESTORE'S OWN GUARD, with the re-add's fix out of the way: a
+      // card that changed after the removal by a door that does not end it
+      // (a drill write standing in for any such path) is left standing.
+      const cardMoved = async (ed: typeof editing, street: string) => {
+        const j = await mkJob({ street, status: "SHOT", editor: "kim" });
+        await ed.removeFromEditorQueue(j.id, "drill");
+        await prisma.smartTask.update({ where: { id: j.cardId! }, data: { status: "OPEN", completedAt: null, assignedKey: "john", assignedManually: true } });
+        const restore = await ed.restoreToEditorQueue(j.id);
+        return { restore, card: await prisma.smartTask.findUniqueOrThrow({ where: { id: j.cardId! }, select: { status: true, assignedKey: true } }), marker: await removalFor(j.id) };
+      };
+      const o3 = await cardMoved(prevEditing, "73 Card Moved Old Rd");
+      c.ok(`old (${PREV}): the restore wrote the removal's record over a card that had since gone to John — back to Kim`, o3.restore.ok && o3.card.assignedKey === "kim", `${o3.restore.message} · card ${o3.card.assignedKey}`);
+      const n3 = await cardMoved(editing, "73 Card Moved Rd");
+      c.ok("new: the restore brings the job back but leaves the changed card John's, and says so",
+        n3.restore.ok && n3.card.assignedKey === "john" && n3.card.status === "OPEN" && !isRemoved(n3.marker) && /changed after it was taken off \(it's John Mark's now\), so it was left as it is/.test(n3.restore.message),
+        `${n3.restore.message} · card ${n3.card.assignedKey}/${n3.card.status}`);
+      const n3b = await (async () => {
+        const j = await mkJob({ street: "74 Untouched Restore Rd", status: "SHOT", editor: "kim" });
+        await editing.removeFromEditorQueue(j.id, "drill");
+        const r = await editing.restoreToEditorQueue(j.id);
+        return { r, card: await prisma.smartTask.findUniqueOrThrow({ where: { id: j.cardId! }, select: { status: true, assignedKey: true, assignedManually: true } }) };
+      })();
+      c.ok("…and an untouched card is still restored byte for byte (status, editor, the hand-pick flag)", n3b.r.ok && n3b.card.status === "OPEN" && n3b.card.assignedKey === "kim" && n3b.card.assignedManually, `${n3b.r.message} · ${JSON.stringify(n3b.card)}`);
+
+      // 4 · a cut sent back for another round (the Review Room / the pill's Revisions).
+      const roundBack = async (t: typeof tasks, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "REVIEW", editor: "kim" });
+        await editing.removeFromEditorQueue(j.id, "drill");
+        await t.addRoundToEditCard(j.id, { round: 2, notes: ["Trim the first three seconds"], reason: "sent back from the Review Room", by: { name: "James Rivera" } });
+        const s = await startAs(kim, j.id, `t4-kim-${tag}`);
+        return { s, marker: await removalFor(j.id), card: await prisma.smartTask.findUniqueOrThrow({ where: { id: j.cardId! }, select: { status: true } }) };
+      };
+      const o4 = await roundBack(prevTasks, "75 Round Back Old Rd", "old");
+      c.ok(`old (${PREV}): a round sent back reopened the card on a removed job — hidden row, Start refused`, o4.card.status === "OPEN" && !o4.s.ok && TAKEN_OFF.test(o4.s.message) && isRemoved(o4.marker), o4.s.message);
+      const n4 = await roundBack(tasks, "75 Round Back Rd", "new");
+      c.ok("new: the round brings the job back (how: a cut was sent back), and Kim's Start is taken",
+        // IN_PROGRESS: her Start moved the reopened card on, as a Start does.
+        n4.card.status === "IN_PROGRESS" && n4.s.ok && !isRemoved(n4.marker) && n4.marker?.restoredBy === "James Rivera" && /sent back for another round/.test(n4.marker?.restoredHow ?? ""),
+        `${n4.s.message} · ${n4.marker?.restoredBy} · ${n4.marker?.restoredHow}`);
+
+      // 5 · the override moving a delivered job back to work.
+      const overrideBack = async (ed: typeof editing, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "DELIVERED", editor: "kim" });
+        await prisma.smartTask.update({ where: { id: j.cardId! }, data: { status: "COMPLETED", completedAt: new Date() } });
+        await prisma.project.update({ where: { id: j.id }, data: { deliveredAt: new Date(Date.now() - DAY) } });
+        await ed.removeFromEditorQueue(j.id, "drill");
+        const o = await ed.saveEditOverrides(j.id, { status: "Ready for editing" } as never);
+        const s = await startAs(kim, j.id, `t5-kim-${tag}`);
+        return { o, s, marker: await removalFor(j.id) };
+      };
+      const o5 = await overrideBack(prevEditing, "76 Back To Work Old Rd", "old");
+      c.ok(`old (${PREV}): the override reopened a removed delivered job's card — the Start still refused`, o5.o.ok && !o5.s.ok && TAKEN_OFF.test(o5.s.message) && isRemoved(o5.marker), `${o5.o.message} · ${o5.s.message}`);
+      const n5 = await overrideBack(editing, "76 Back To Work Rd", "new");
+      c.ok("new: back to work is back on the Editing Room — the removal ended, Kim's Start taken", n5.o.ok && n5.s.ok && !isRemoved(n5.marker) && /override/.test(n5.marker?.restoredHow ?? ""), `${n5.o.message} · ${n5.s.message} · ${n5.marker?.restoredHow}`);
+
+      // 6 · and the ordinary queue-add on a job that was never removed writes
+      // no marker and no line (endRemoval is a no-op read there).
+      const Plain = await mkJob({ street: "77 Never Removed Rd", status: "SHOT", editor: "kim" });
+      await editing.addToEditorQueue(Plain.id, "kim");
+      c.ok("a queue-add on a job never taken off writes no removal marker and no \"Back on the Editing Room\" line",
+        (await removalFor(Plain.id)) === null && (await lines(Plain.id, "Back on the Editing Room")) === 0);
+    } finally {
+      fs.rmSync(prevDir, { recursive: true, force: true });
+    }
   }
 
   // ---- close ---------------------------------------------------------------

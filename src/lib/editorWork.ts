@@ -267,8 +267,14 @@ async function startFacts(db: Db, snap: StartSnap | null, outputId?: string | nu
  *  Business defaults taken Sep 28 (Jordan to confirm):
  *   · ON_HOLD — refused for everyone, office included; putting a job On hold
  *     also pauses whoever is actively editing it (pauseActiveWorkOnHold).
- *   · REMOVED — taken off the Editing Room: refused until the office brings
- *     it back, even for an editor who still holds a video revision on it.
+ *   · REMOVED — taken off the Editing Room: refused until the job comes
+ *     back, even for an editor who still holds a video revision on it. It
+ *     comes back by the restore (7 days), and — review fix, Sep 28 — by every
+ *     door that puts video work on it again: "Add a job to the queue" (the
+ *     door the restore's own refusal points to), a client's video revision,
+ *     a cut sent back for another round, the override moving a delivered job
+ *     back to work (queueRemoved.endRemoval). Before that fix the marker never
+ *     cleared, so a job re-added after the 7 days could never be started.
  *   · WAITING — the queue's hold OR the override's pinned Waiting: the editor
  *     is refused, the office's Start is its "move it on" (it ends the hold).
  *     A board drag back to Scheduled/Booked sets no hold and stays startable,
@@ -310,18 +316,82 @@ function startBlockWords(b: StartBlock, f: StartFacts, who: { editorKey: string;
 const defaultEditorOf = (f: Pick<StartFacts, "cardKey" | "holders">): string | null =>
   f.cardKey || (f.holders.size === 1 ? [...f.holders][0] : null);
 
-/** A deadlock or serialization failure: Postgres rolled the whole switch back,
- *  so running it once more is safe (no event was written — not a replay). The
- *  one place it can happen is the multi-row card lock against a writer's
- *  multi-row UPDATE on a job with two or more open cards. */
-const isLockConflict = (e: unknown) =>
-  e instanceof Prisma.PrismaClientKnownRequestError &&
-  (e.code === "P2034" || (e.code === "P2010" && ["40P01", "40001"].includes(String((e.meta as { code?: unknown } | undefined)?.code ?? ""))));
+/** A deadlock or serialization failure: Postgres rolled the whole transaction
+ *  back, so running it once more is safe (no event was written — not a
+ *  replay). Where it can happen: the Start's multi-row card lock against a
+ *  writer's multi-row UPDATE on a job with two or more open cards, when that
+ *  writer does not take the job's row first (underJobLock below is how the
+ *  writers that matter now do). Exported for those writers.
+ *
+ *  THREE SHAPES, not one (review fix, Sep 28 2026). A raw query that loses
+ *  reports P2010 with the SQLSTATE in meta.code; an interactive transaction
+ *  can report P2034; but a MODEL query (an updateMany) that loses comes back
+ *  as Prisma's unmapped ConnectorError — no P-code at all, the SQLSTATE only
+ *  in the message. The review watched setEditVideoEditor throw exactly that
+ *  one, which the first version of this test did not recognise. */
+export const isLockConflict = (e: unknown): boolean => {
+  if (e instanceof Prisma.PrismaClientKnownRequestError) {
+    if (e.code === "P2034") return true;
+    if (["40P01", "40001"].includes(String((e.meta as { code?: unknown } | undefined)?.code ?? ""))) return true;
+  }
+  const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+  return /\b40P01\b|\b40001\b|deadlock detected|could not serialize access/i.test(msg);
+};
 
 /** The switch's transaction options: a short wait on a job row a writer holds
  *  must not become P2028 (Prisma's default is 5 s / 2 s). Precedent:
- *  deliverableOutputs.ts. */
+ *  deliverableOutputs.ts. The writers that take the job's row (underJobLock)
+ *  use the same numbers, for the same reason from the other side. */
 const SWITCH_TX = { maxWait: 10_000, timeout: 15_000 } as const;
+
+/**
+ * A WRITER'S CARD UPDATE, IN THE START'S LOCK ORDER (R01 review fix, Sep 28
+ * 2026).
+ *
+ * The Start locks the job's Project row, then its open edit / video-revision
+ * cards ORDER BY id (lockStartRows). A writer that updates two or more of
+ * those cards in ONE statement locks them in whatever order the scan meets
+ * them — so on a job with an edit card and a video revision, each side could
+ * end up holding the card the other needed. The review forced it with a
+ * third session holding the revision: 8 deadlocks in 8 runs, and in 2 of them
+ * Postgres aborted the WRITER — setEditVideoEditor threw, the card stayed
+ * Kim's and the office's reassign simply failed. The same shape sat under
+ * resolveRevision (its asks left open on a job already moved off Revisions),
+ * the delivered / cancelled card close and the board's Delivered.
+ *
+ * The fix is the order, not the retry: the writer takes the job's Project
+ * row FOR NO KEY UPDATE first, in the same transaction as its card update. A
+ * Start already past that row makes the writer wait there holding nothing
+ * the Start needs; a writer already past it makes the Start wait at its very
+ * first row lock. Either way one of them finishes before the other touches a
+ * card, and the writer's close-after-write (closeGhostWork and friends) then
+ * sees the Start that won. Order: Project → SmartTask, the same prefix as the
+ * switch (desk → Project → DeliverableOutput → SmartTask); never take a desk
+ * lock inside `write`.
+ *
+ * `write` must use `tx` for everything: a query on the global client inside
+ * it would wait on this transaction's own row lock. One retry on a lock
+ * conflict, as the switch has — a backstop for a writer this order does not
+ * yet cover. Throws what the second attempt throws.
+ */
+export async function underJobLock<T>(
+  projectId: string,
+  write: (tx: Prisma.TransactionClient) => Promise<T>,
+  what = "a card update",
+): Promise<T> {
+  const run = () =>
+    prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR NO KEY UPDATE`;
+      return write(tx);
+    }, SWITCH_TX);
+  try {
+    return await run();
+  } catch (e) {
+    if (!isLockConflict(e)) throw e;
+    console.warn(`[editorWork] lock conflict on ${what} for ${projectId} — running it once more`);
+    return run();
+  }
+}
 
 const isP2002 = (e: unknown, field?: string) =>
   e instanceof Prisma.PrismaClientKnownRequestError &&
@@ -529,6 +599,10 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
       outcome = await runSwitch();
     } catch (e) {
       if (!isLockConflict(e)) throw e;
+      // Said out loud (Sep 28 review fix): a retry is rare and silent is how
+      // the review's deadlocks went unseen. A warning, not an error — the
+      // click still lands.
+      console.warn(`[editorWork] lock conflict on a Start for ${projectId} — judging it once more`);
       outcome = await runSwitch();
     }
   } catch (e) {
@@ -875,7 +949,7 @@ export async function confirmCurrentWork(input: { projectId: string | null; requ
   if (claims.length === 0) return { ok: true, message: "Nothing to confirm." };
   const who = nameOf(editorKey);
   try {
-    const r = await prisma.$transaction(async (tx) => {
+    const runConfirm = () => prisma.$transaction(async (tx) => {
       await lockAdvisory(tx, `editor-desk:${editorKey}`);
       if (requestId && (await tx.editorWorkEvent.findUnique({ where: { requestId }, select: { id: true } }))) return "replay" as const;
       // THE SECOND ACTIVE WRITER, under the same lock as startEditing (R01,
@@ -937,6 +1011,17 @@ export async function confirmCurrentWork(input: { projectId: string | null; requ
       }
       return "done" as const;
     }, SWITCH_TX);
+    // The switch's one retry, here too (review fix, Sep 28 2026): this takes
+    // the same multi-row card lock as a Start, so it can lose the same
+    // deadlock — and it rolled back whole, so judging it again is safe.
+    let r: Awaited<ReturnType<typeof runConfirm>>;
+    try {
+      r = await runConfirm();
+    } catch (e) {
+      if (!isLockConflict(e)) throw e;
+      console.warn(`[editorWork] lock conflict on a confirm for ${editorKey} — judging it once more`);
+      r = await runConfirm();
+    }
     if (r === "replay") return { ok: true, message: "Already recorded.", replay: true };
     if (typeof r === "object") {
       // Refused under the lock: nothing paused, nothing marked.

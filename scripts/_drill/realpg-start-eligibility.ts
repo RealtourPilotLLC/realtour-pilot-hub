@@ -43,6 +43,19 @@
 //   §8 confirmCurrentWork (the other ACTIVE writer) against cancel/reassign
 //   §9 taken off the Editing Room — a job held only through a video revision
 //   §10 Ask the Hub's assign_task / complete_task
+//   §4b (review fix, Sep 28) the RULES' route (no office pin) against a Start
+//      landing inside the hourly refresh: started work outranks the rules
+//   §12 (review fix, Sep 28) TWO open cards: a third session holds the card
+//      the Start locks first, the Start and a multi-card writer queue behind
+//      it — the ordered card lock against the writer's heap-order UPDATE
+//      deadlocked every time in the review. OLD = the R01 build the review
+//      read (b222dde); NEW = the writers take the job's row first
+//      (editorWork.underJobLock). setEditVideoEditor, Aryeo's cancel
+//      (closeObsoleteTasks), resolveRevision, the board's Delivered.
+//      §12e the backstop retries, deterministically: a drill trigger raises
+//      the deadlock's SQLSTATE once inside the one-time confirm, the
+//      reassign and resolveRevision — OLD loses the click (or leaves the
+//      job off Revisions with its asks open), NEW runs it once more.
 //
 // ISOLATION: a disposable real Postgres on 127.0.0.1:${DRILL_PORT ?? 6250};
 // every .env secret blanked and fetch AND raw sockets fenced in both processes;
@@ -58,6 +71,11 @@ const PORT = Number(process.env.DRILL_PORT ?? 6250);
 const REPO = path.resolve(__dirname, "../..");
 /** Pinned: the tree the review read. Never HEAD. */
 const BASE = "1075a5b";
+/** The R01 build the Sep 28 review of R01 read (§4b, §12). Never HEAD. */
+const PREV = "b222dde";
+/** NEW runs per §12 scenario and ordering; OLD runs (each must deadlock). */
+const TWO_CARD_RUNS = Math.max(1, Number(process.env.TWO_CARD_ITERATIONS ?? 5));
+const TWO_CARD_OLD = Math.max(1, Number(process.env.TWO_CARD_OLD ?? 2));
 /** Unforced race iterations (§6), and NEW runs per forced scenario and ordering. */
 const RACES = Math.max(1, Number(process.env.RACE_ITERATIONS ?? 20));
 const FORCED = Math.max(1, Number(process.env.FORCED_ITERATIONS ?? RACES));
@@ -73,13 +91,13 @@ const has = (key: string) => (m: unknown) => !!m && typeof m === "object" && key
 /** A door the drill opens: `wait` blocks until `open()` is called. */
 const door = () => { let open!: () => void; const wait = new Promise<void>((r) => { open = r; }); return { wait, open }; };
 
-/** A file from BASE, its `@/` and relative imports pointed at this tree. */
-function oldCopy(rel: string, dir: string): string {
-  const src = execFileSync("git", ["show", `${BASE}:${rel}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
+/** A file from BASE (or `rev`), its `@/` and relative imports pointed at this tree. */
+function oldCopy(rel: string, dir: string, rev: string = BASE): string {
+  const src = execFileSync("git", ["show", `${rev}:${rel}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
   const from = path.dirname(path.join(REPO, rel));
   const pointed = src.replace(/((?:from|import)\s*\(?\s*)(["'])(@\/|\.\.?\/)([^"']+)\2/g, (_m, pre: string, q: string, head: string, rest: string) =>
     `${pre}${q}${head === "@/" ? path.join(REPO, "src", rest) : path.resolve(from, head + rest)}${q}`);
-  const file = path.join(dir, path.basename(rel).replace(/\.ts$/, ".base.ts"));
+  const file = path.join(dir, `${rev}-${rel.replace(/[/[\]]/g, "_")}`.replace(/\.ts$/, ".base.ts"));
   fs.writeFileSync(file, pointed);
   return file;
 }
@@ -144,7 +162,8 @@ const whereOf = (args: unknown) => ((args as { where?: Record<string, unknown> }
 type U = { id: string; email: string; name: string | null; role: string };
 type Cmd = {
   run: number;
-  version: "old" | "new";
+  /** old = BASE (1075a5b); prev = PREV (b222dde, the build the Sep 28 review read); new = this tree. */
+  version: "old" | "prev" | "new";
   fn: "start" | "confirm";
   as: "kim" | "jordan";
   projectId: string;
@@ -154,7 +173,7 @@ type Cmd = {
   armFirst?: boolean;
   lagMs?: number;
 };
-type Res = { run: number; ok: boolean; message: string; errors: string[] };
+type Res = { run: number; ok: boolean; message: string; errors: string[]; warnings: string[] };
 
 // ===========================================================================
 // THE CHILD: Kim's (or the office's) browser — one Start per command.
@@ -166,6 +185,14 @@ async function childMain(role: string) {
   // What the switch itself reports failing (a P2028, a 40P01, a P2002) — the
   // NEW runs must show none of it.
   const errs: string[] = [];
+  // …and the switch's one retry after a lock conflict (§12): a warning, not
+  // an error, but the evidence that Postgres threw a Start away.
+  const warns: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => {
+    if (typeof a[0] === "string" && a[0].startsWith("[editorWork]")) warns.push(a[0]);
+    realWarn(...a);
+  };
   const realErr = console.error;
   console.error = (...a: unknown[]) => {
     if (typeof a[0] === "string" && a[0].startsWith("[editorWork]")) {
@@ -174,10 +201,11 @@ async function childMain(role: string) {
     }
     realErr(...a);
   };
-  const init = await ctx.waitFor<{ oldPath: string; users: Record<string, U> }>(has("oldPath"), 180_000);
+  const init = await ctx.waitFor<{ oldPath: string; prevPath: string; users: Record<string, U> }>(has("oldPath"), 180_000);
   const { setSession } = await import("@/lib/auth/session");
   const workNew = await import("@/lib/editorWork");
   const workOld = (await import(init.oldPath)) as typeof workNew;
+  const workPrev = (await import(init.prevPath)) as typeof workNew;
   await ctx.send({ ready: true, pid: process.pid });
   for (let k = 1; ; k++) {
     const m = await ctx.waitFor<Cmd | { exit: true }>((x) => !!x && typeof x === "object" && ((x as Cmd).run === k || "exit" in (x as object)), 900_000);
@@ -189,8 +217,9 @@ async function childMain(role: string) {
       await ctx.waitFor((x) => (x as { go?: number } | null)?.go === k, 60_000);
       if (m.lagMs) await sleep(m.lagMs);
     }
-    const w = m.version === "old" ? workOld : workNew;
+    const w = m.version === "old" ? workOld : m.version === "prev" ? workPrev : workNew;
     errs.length = 0;
+    warns.length = 0;
     let res: { ok: boolean; message: string };
     try {
       res = m.fn === "confirm"
@@ -199,7 +228,7 @@ async function childMain(role: string) {
     } catch (e) {
       res = { ok: false, message: `THREW: ${e instanceof Error ? e.message : String(e)}` };
     }
-    await ctx.send({ run: k, ok: res.ok, message: res.message, errors: [...errs] } satisfies Res);
+    await ctx.send({ run: k, ok: res.ok, message: res.message, errors: [...errs], warnings: [...warns] } satisfies Res);
   }
   await ctx.exit(0);
 }
@@ -228,6 +257,21 @@ async function main() {
     const { queueRemovedKey, serialize } = await import("@/lib/queueRemoved");
     const oldWorkPath = oldCopy("src/lib/editorWork.ts", tmp);
     const oldTasks = (await import(oldCopy("src/lib/tasks.ts", tmp))) as typeof tasks;
+    // The R01 build the review read, for §4b and §12.
+    const prevTasks = (await import(oldCopy("src/lib/tasks.ts", tmp, PREV))) as typeof tasks;
+    const prevEditing = (await import(oldCopy("src/app/editing/actions.ts", tmp, PREV))) as typeof editing;
+    const prevActions = (await import(oldCopy("src/app/actions.ts", tmp, PREV))) as typeof appActions;
+    const prevComms = (await import(oldCopy("src/lib/comms.ts", tmp, PREV))) as typeof import("@/lib/comms");
+    const comms = await import("@/lib/comms");
+    // The office side's own retries (underJobLock's backstop), for §12.
+    const parentWarns: string[] = [];
+    {
+      const realWarn = console.warn;
+      console.warn = (...a: unknown[]) => {
+        if (typeof a[0] === "string" && a[0].startsWith("[editorWork]")) parentWarns.push(a[0]);
+        realWarn(...a);
+      };
+    }
 
     // ---- the world ---------------------------------------------------------
     const client = await prisma.client.create({ data: { name: "R01 Drill Agent TEST" }, select: { id: true } });
@@ -318,7 +362,7 @@ async function main() {
 
     // ---- the child and the two ways to force an ordering --------------------
     const kid = drill.runChild(__filename, { args: ["starter"] });
-    kid.send({ oldPath: oldWorkPath, users: { kim, jordan } });
+    kid.send({ oldPath: oldWorkPath, prevPath: oldCopy("src/lib/editorWork.ts", tmp, PREV), users: { kim, jordan } });
     await kid.waitFor(has("ready"), 240_000);
     let runN = 0;
     const startIn = (cmd: Omit<Cmd, "run">): Promise<Res> => {
@@ -383,6 +427,7 @@ async function main() {
 
     // ---- the verdicts --------------------------------------------------------
     const quietStart = (s: State) => s.p0.same && s.p0Pauses === 0 && s.p0Lines === 0 && s.bells === 0 && s.kimActive === 1;
+    const NOT_YOURS_4B = /isn't assigned to you, so you can't start it\. Ask the office to hand it over\.$/;
     type Scenario = {
       tag: string;
       title: string;
@@ -584,6 +629,51 @@ async function main() {
     }
 
     // ======================================================================
+    if (on("4")) {
+      c.head("§4b · the RULES' route (no office pin): a Start landing inside the hourly refresh keeps its editor");
+      // The review (Sep 28): mintEditTask counted "did the card's editor start?"
+      // BEFORE its update, so on an UNPINNED card — only the routing rules
+      // moving it — a Start that committed in between was written over (the
+      // card to John) and then closed as REASSIGNED: the hourly rules beating
+      // an editor who had just pressed Start. Same park as §4, no pin.
+      const rulesWorld = () => world({ cardManual: false }); // the project is not pinned: the rules route the reel to John
+      const viaRules = async (t: typeof tasks, i: number, label: string) => {
+        const w = await rulesWorld();
+        const gate = park("editorWorkItem", "count", "after", (a) => whereOf(a).projectId === w.P.id);
+        const mint = t.mintEditTask(w.P.id);
+        await gate.inside;
+        const r = await startIn({ version: "new", fn: "start", as: "kim", projectId: w.P.id, requestId: `§4b-${label}-${i}-${w.n}` });
+        gate.release();
+        await mint;
+        return { s: await state(w), r };
+      };
+      const old = await viaRules(prevTasks, 0, "old");
+      c.ok(`OLD (tasks.ts @ ${PREV}): the rules moved the card to John over her fresh Start and closed it as REASSIGNED`,
+        old.r.ok && old.s.cardKey === "john" && old.s.kp?.state === "CLOSED" && old.s.kp.reason === "REASSIGNED", show(old.s, old.r));
+      const fails: string[] = [];
+      let ex = "";
+      for (let i = 0; i < FORCED; i++) {
+        const { s, r } = await viaRules(tasks, i, "new");
+        ex ||= show(s, r);
+        if (!(r.ok && s.cardKey === "kim" && s.kp?.state === "ACTIVE" && s.kimActive === 1 && !s.ghosts && !s.unpaired)) fails.push(show(s, r));
+      }
+      c.ok(`NEW: the route is asked again under the job's lock — the card stays Kim's and her Start stands — ${FORCED - fails.length}/${FORCED}`, fails.length === 0, fails[0] ?? ex);
+      // And the other order: the refresh routes first (nobody had started),
+      // so her Start, arriving after, finds the card John's and is refused
+      // without touching her real job.
+      const failW: string[] = [];
+      let exW = "";
+      for (let i = 0; i < Math.min(FORCED, 5); i++) {
+        const w = await rulesWorld();
+        const run = await forced("W", { version: "new", fn: "start", as: "kim", projectId: w.P.id, requestId: `§4bW-${i}-${w.n}` }, () => tasks.mintEditTask(w.P.id));
+        const st = await state(w);
+        exW ||= show(st, run.r);
+        if (!(run.parked && !run.r.ok && NOT_YOURS_4B.test(run.r.message) && st.cardKey === "john" && quietStart(st))) failW.push(show(st, run.r));
+      }
+      c.ok(`NEW, the refresh first: the rules' route stands (John), her later Start is refused and nothing of hers moves — ${Math.min(FORCED, 5) - failW.length}/${Math.min(FORCED, 5)}`, failW.length === 0, failW[0] ?? exW);
+    }
+
+    // ======================================================================
     if (on("5")) {
       c.head("§5 · delivery: a Start landing inside closeObsoleteTasks(DELIVERED)");
       // Two points inside closeObsoleteTasks(DELIVERED):
@@ -767,6 +857,373 @@ async function main() {
         c.ok(`NEW: the tool's write waits on the Start's lock, lands, and closes her Start as ${cs.reason}`,
           rn.writerWaited && rn.serverWaits >= 2 && rn.r.ok && cs.left(sn) && sn.kp?.state === "CLOSED" && sn.kp.reason === cs.reason && sn.kimActive === 0,
           `${show(sn, rn.r)} · server-logged waits ${rn.serverWaits}${rn.writerError ? ` · writer: ${rn.writerError}` : ""}`);
+      }
+    }
+
+    // ======================================================================
+    // §12 · TWO OPEN CARDS — the Start's ordered card lock vs a writer's
+    // multi-row UPDATE (review fix, Sep 28 2026)
+    // ======================================================================
+    if (on("12")) {
+      c.head("§12 · two open cards: the Start and a multi-card writer queue behind a third session");
+      // The lock-conflict predicate first: a MODEL query that loses a deadlock
+      // comes back as Prisma's unmapped ConnectorError — no P-code — which the
+      // first R01 predicate did not recognise (so no writer could retry on it).
+      {
+        const { Prisma } = await import("@prisma/client");
+        const connector = new Prisma.PrismaClientUnknownRequestError(
+          'Error occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: "40P01", message: "deadlock detected", severity: "ERROR" }), transient: false })',
+          { clientVersion: "6.19.0" },
+        );
+        const raw = new Prisma.PrismaClientKnownRequestError("Raw query failed. Code: `40P01`. Message: `deadlock detected`", { code: "P2010", clientVersion: "6.19.0", meta: { code: "40P01" } });
+        const p2034 = new Prisma.PrismaClientKnownRequestError("Transaction failed due to a write conflict or a deadlock", { code: "P2034", clientVersion: "6.19.0" });
+        const other = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "6.19.0" });
+        c.ok("isLockConflict knows all three shapes of a lost deadlock (the unmapped ConnectorError, a raw P2010 with 40P01, P2034) and nothing else",
+          work.isLockConflict(connector) && work.isLockConflict(raw) && work.isLockConflict(p2034) && !work.isLockConflict(other) && !work.isLockConflict(new Error("timeout")));
+      }
+
+      // The world: P with its cards created so that the heap order (the
+      // writer's UPDATE order) is the REVERSE of the id order (the Start's
+      // lock order). `heldId` is the card the Start locks first; a third
+      // session holds it, so both line up behind it. Verified by ctid, and
+      // rebuilt if the heap put them the other way round.
+      type Card = { id: string; kind: "edit" | "video" | "photo"; key: string | null };
+      const mkCards = async (w: World, specs: { id: string; kind: Card["kind"]; key: string | null }[]) => {
+        for (const sp of specs) {
+          await prisma.smartTask.create({
+            data: sp.kind === "edit"
+              ? { id: sp.id, taskType: "edit_video", title: `Edit — ${w.P.street}`, status: "OPEN", assignedKey: sp.key, assignedManually: true, projectId: w.P.id, clientId: client.id, dedupeKey: `edit-video-${w.P.id}` }
+              : { id: sp.id, taskType: "revision", title: `${sp.kind === "video" ? "Video" : "Photo"} revision — ${w.P.street}`, status: "OPEN", assignedKey: sp.key, assignedManually: true, projectId: w.P.id, clientId: client.id, dedupeKey: `r01-2c-${sp.kind}-${w.P.id}` },
+          });
+        }
+      };
+      const heapOrder = async (ids: string[]) => (await drill.sql<{ id: string }>(`SELECT "id" FROM "SmartTask" WHERE "id" = ANY($1::text[]) ORDER BY ctid`, [ids])).map((r) => r.id);
+      let cardSeq = 0;
+      const twoCardWorld = async (layout: "edit+video" | "two asks"): Promise<{ w: World; held: string; cards: Card[] }> => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const w = await world({ card: false });
+          const n = ++cardSeq;
+          // ids: "aa…" sorts first (the Start's first lock), "zz…" last; the
+          // creation order puts "zz…" first in the heap (the writer's first).
+          const specs: Card[] = layout === "edit+video"
+            ? [{ id: `zz-edit-${n}`, kind: "edit", key: "kim" }, { id: `aa-video-${n}`, kind: "video", key: "kim" }]
+            : [{ id: `mm-edit-${n}`, kind: "edit", key: "john" }, { id: `zz-video-${n}`, kind: "video", key: "kim" }, { id: `aa-photo-${n}`, kind: "photo", key: "kyle" }];
+          await mkCards(w, specs);
+          const heap = await heapOrder(specs.map((x) => x.id));
+          const zzFirst = heap.indexOf(specs.find((x) => x.id.startsWith("zz"))!.id) < heap.indexOf(specs.find((x) => x.id.startsWith("aa"))!.id);
+          if (zzFirst) {
+            w.P.cardId = specs.find((x) => x.kind === "edit")!.id;
+            return { w, held: specs.find((x) => x.id.startsWith("aa"))!.id, cards: specs };
+          }
+          await prisma.smartTask.deleteMany({ where: { id: { in: specs.map((x) => x.id) } } });
+        }
+        throw new Error("the heap would not put the cards in the order this scenario needs");
+      };
+      const cardsOf = async (cards: Card[]) => new Map((await prisma.smartTask.findMany({ where: { id: { in: cards.map((x) => x.id) } }, select: { id: true, status: true, assignedKey: true } })).map((r) => [r.id, r]));
+
+      // The third session: the harness's own connection, inside a transaction.
+      const holdRow = async (id: string) => { await drill.sql("BEGIN"); await drill.sql(`SELECT "id" FROM "SmartTask" WHERE "id" = $1 FOR UPDATE`, [id]); };
+      const letGo = () => drill.sql("COMMIT");
+      // Row waits only (pg_locks, cluster-wide: this cluster is the drill's) —
+      // never an advisory one, so a Start still parked on its desk is not
+      // mistaken for one queued on a row.
+      const rowsWaiting = async () => (await drill.sql<{ n: number }>(`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype <> 'advisory'`))[0].n;
+      const waiting = (n: number) => until(async () => (await rowsWaiting()) >= n, 8000);
+      type Q = "S" | "W" | "P";
+      type HeldRun = { r: Res; writerError: unknown; lined: boolean; parentRetries: string[] };
+      const behindHeld = async (
+        order: Q, held: string, cmd: Omit<Cmd, "run">, writer: () => Promise<unknown>,
+        parkIt?: () => { inside: Promise<void>; release: () => void },
+        /** Run after the Start has done its unlocked pre-reads and before it
+         *  takes any lock (its desk held here): Aryeo's status write lands
+         *  THERE, or the Start's fast path would refuse the cancelled job
+         *  without ever locking anything. */
+        midStart?: () => Promise<unknown>,
+      ): Promise<HeldRun> => {
+        let writerError: unknown = null;
+        const pw0 = parentWarns.length;
+        const runWriter = () => writer().then(() => undefined, (e: unknown) => { writerError = e; });
+        let res!: Promise<Res>;
+        let wp!: Promise<void>;
+        let a = false, b = false;
+        await holdRow(held);
+        const launchStart = async () => {
+          if (!midStart) { res = startIn(cmd); return; }
+          await holdDesk();
+          res = startIn(cmd);
+          await kimParked();
+          await midStart();
+        };
+        const letStartOn = async () => { if (midStart) await freeDesk(); };
+        try {
+          if (order === "S") {
+            // The Start first: it takes the job's row and queues on the held card.
+            await launchStart(); await letStartOn(); a = await waiting(1);
+            wp = runWriter(); b = await waiting(2);
+          } else if (order === "W") {
+            // The writer first: it is inside its update, queued on the held card.
+            await launchStart();
+            wp = runWriter(); a = await waiting(1);
+            await letStartOn(); b = await waiting(2);
+          } else {
+            // The writer's own Project write has committed and it is parked
+            // before its card update; the Start takes the job's row and
+            // queues on the held card; then the writer's card update runs.
+            const gate = parkIt!();
+            wp = runWriter(); await gate.inside;
+            res = startIn(cmd); a = await waiting(1);
+            gate.release(); b = await waiting(2);
+          }
+          await sleep(150); // both waits outlast deadlock_timeout, so the server logs them
+        } finally {
+          await letGo();
+        }
+        const r = await res;
+        await wp;
+        return { r, writerError, lined: a && b, parentRetries: parentWarns.slice(pw0) };
+      };
+      const lost = (run: HeldRun) => {
+        const e = run.writerError;
+        const wLost = !!e && work.isLockConflict(e);
+        const sLost = run.r.warnings.some((x) => x.includes("lock conflict"));
+        return { any: wLost || sLost, wLost, sLost, words: `${wLost ? `the WRITER was thrown away (${e instanceof Error ? e.constructor.name : typeof e}${e instanceof Error && !("code" in e) ? ", no P-code" : ""})` : ""}${wLost && sLost ? " and " : ""}${sLost ? "the Start was thrown away and retried" : ""}` };
+      };
+      const deadlocksNow = async () => Number((await drill.sql<{ n: string }>("SELECT deadlocks::text AS n FROM pg_stat_database WHERE datname = 'drill'"))[0]?.n ?? 0);
+      const dl0 = await deadlocksNow();
+      const newRunsFailed: string[] = [];
+      const scenario = async (o: {
+        tag: string; title: string; layout: "edit+video" | "two asks";
+        before?: (w: World) => Promise<unknown>;
+        midStart?: (w: World) => Promise<unknown>;
+        oldWriter: (w: World) => Promise<unknown>; newWriter: (w: World) => Promise<unknown>;
+        oldOrder: Q; newOrders: Q[];
+        park?: (w: World) => () => { inside: Promise<void>; release: () => void };
+        verdict: (order: Q, run: HeldRun, w: World, cards: Map<string, { status: string; assignedKey: string | null }>, ids: Card[]) => Promise<string[]>;
+        oldWords: string; newWords: Partial<Record<Q, string>>;
+      }) => {
+        c.head(`§12 ${o.tag} · ${o.title}`);
+        const bad: string[] = [];
+        let last = "";
+        for (let i = 0; i < TWO_CARD_OLD; i++) {
+          const { w, held, cards } = await twoCardWorld(o.layout);
+          await o.before?.(w);
+          const run = await behindHeld(o.oldOrder, held, { version: "new", fn: "start", as: "kim", projectId: w.P.id, requestId: `§12${o.tag}-old-${i}-${w.n}` }, () => o.oldWriter(w), o.park?.(w), o.midStart && (() => o.midStart!(w)));
+          const L = lost(run);
+          last = `${L.words || "no deadlock"} · Start: ${run.r.ok ? "ok" : "refused"} "${run.r.message}"${run.writerError ? ` · writer: ${String((run.writerError as Error).message ?? run.writerError).split("\n").slice(-1)[0].slice(0, 120)}` : ""}`;
+          void cards;
+          if (!(run.lined && L.any)) bad.push(last);
+        }
+        c.ok(`OLD (${PREV}): ${o.oldWords} — a deadlock in ${TWO_CARD_OLD - bad.length}/${TWO_CARD_OLD}`, bad.length === 0, bad[0] ?? last);
+        for (const order of o.newOrders) {
+          const fails: string[] = [];
+          let ex = "";
+          for (let i = 0; i < TWO_CARD_RUNS; i++) {
+            const { w, held, cards } = await twoCardWorld(o.layout);
+            await o.before?.(w);
+            const run = await behindHeld(order, held, { version: "new", fn: "start", as: "kim", projectId: w.P.id, requestId: `§12${o.tag}-${order}-${i}-${w.n}` }, () => o.newWriter(w), o.park?.(w), o.midStart && (() => o.midStart!(w)));
+            allErrors.push(...run.r.errors);
+            const L = lost(run);
+            const why: string[] = [];
+            if (!run.lined) why.push("the two did not both queue (the ordering was not forced)");
+            if (L.any) why.push(`a deadlock: ${L.words}`);
+            if (run.writerError) why.push(`the writer threw: ${String((run.writerError as Error).message ?? run.writerError).slice(0, 120)}`);
+            if (run.parentRetries.length) why.push(`the writer retried: ${run.parentRetries[0]}`);
+            if (run.r.errors.length) why.push("the switch logged an error");
+            const st = await state(w);
+            if (st.ghosts || st.unpaired || st.kimActive > 1) why.push("an invariant broke");
+            why.push(...(await o.verdict(order, run, w, await cardsOf(cards), cards)));
+            const line = `${show(st, run.r)}${run.writerError ? ` · writer: ${String((run.writerError as Error).message).slice(0, 80)}` : ""}`;
+            ex ||= line;
+            if (why.length) fails.push(`#${i + 1}: ${why.join("; ")} — ${line}`);
+          }
+          newRunsFailed.push(...fails);
+          c.ok(`NEW, ${order === "S" ? "the Start queued first" : order === "W" ? "the writer queued first" : "the writer's Project write committed, then the Start, then its card update"}: no deadlock, nobody retried — ${o.newWords[order]} — ${TWO_CARD_RUNS - fails.length}/${TWO_CARD_RUNS}`, fails.length === 0, fails[0] ?? ex);
+        }
+      };
+      const idOf = (cards: Card[], kind: Card["kind"]) => cards.find((x) => x.kind === kind)!.id;
+
+      await scenario({
+        tag: "a", title: "the Editing Room's reassign to John (setEditVideoEditor) — an edit card and a video revision, both Kim's",
+        layout: "edit+video",
+        oldWriter: (w) => prevEditing.setEditVideoEditor(w.P.id, "john"),
+        newWriter: (w) => editing.setEditVideoEditor(w.P.id, "john"),
+        oldOrder: "S", newOrders: ["S", "W"],
+        oldWords: "the Start's ordered lock and the reassign's single UPDATE each held the card the other needed",
+        newWords: { S: "the reassign waits on the job's row, lands after the Start, both cards John's, her Start CLOSED(REASSIGNED)", W: "the reassign lands first, both cards John's, her Start refused and nothing of hers touched" },
+        verdict: async (order, run, w, m, cards) => {
+          const out: string[] = [];
+          const st = await state(w);
+          if (m.get(idOf(cards, "edit"))?.assignedKey !== "john" || m.get(idOf(cards, "video"))?.assignedKey !== "john") out.push("the cards are not both John's");
+          if (order === "S" && !(run.r.ok && st.kp?.state === "CLOSED" && st.kp.reason === "REASSIGNED")) out.push("her Start did not land and then close as REASSIGNED");
+          if (order === "W" && !(!run.r.ok && /isn't assigned to you/.test(run.r.message) && quietStart(st))) out.push("her Start was not refused quietly");
+          return out;
+        },
+      });
+      await scenario({
+        tag: "b", title: "Aryeo's cancel — the status write, then closeObsoleteTasks(CANCELLED) over both cards",
+        layout: "edit+video",
+        // Between the Start's unlocked pre-reads and its locks — the moment
+        // the order sync's status write can land in production.
+        midStart: (w) => prisma.project.update({ where: { id: w.P.id }, data: { status: "CANCELLED", statusPinnedAt: null } }),
+        oldWriter: (w) => prevTasks.closeObsoleteTasks(w.P.id, "CANCELLED"),
+        newWriter: (w) => tasks.closeObsoleteTasks(w.P.id, "CANCELLED"),
+        oldOrder: "S", newOrders: ["S", "W"],
+        oldWords: "a refused Start still takes the card locks, and against the cancel's single UPDATE that deadlocked — when the cancel lost, a cancelled job kept its open cards",
+        newWords: { S: "the cancel waits on the job's row, the Start is refused (cancelled), every card CANCELLED", W: "the cancel lands first, every card CANCELLED, the Start refused" },
+        verdict: async (_order, run, w, m) => {
+          const out: string[] = [];
+          const st = await state(w);
+          if ([...m.values()].some((x) => x.status !== "CANCELLED")) out.push("a card is still open on the cancelled job");
+          if (!(!run.r.ok && /is cancelled/.test(run.r.message) && quietStart(st))) out.push("the Start was not refused quietly");
+          return out;
+        },
+      });
+      await scenario({
+        tag: "c", title: "resolveRevision — two asks open (video: Kim, photo: Kyle), the edit card John's",
+        layout: "two asks",
+        before: (w) => prisma.project.update({ where: { id: w.P.id }, data: { status: "REVISION", revisionRequestedAt: new Date() } }),
+        oldWriter: (w) => prevComms.resolveRevision(w.P.id),
+        newWriter: (w) => comms.resolveRevision(w.P.id),
+        // OLD: its stage write committed on its own; parked there, the Start
+        // takes the job's row, then the asks' close runs. NEW: the stage
+        // write and the close are one transaction behind the job's row, so
+        // there is no "between" to park in — both queue orders instead.
+        oldOrder: "P", newOrders: ["S", "W"],
+        park: (w) => () => park("project", "update", "after", (a) => whereOf(a).id === w.P.id && "revisionRequestedAt" in (((a as { data?: object }).data) ?? {})),
+        oldWords: "its stage write committed alone, then its close of both asks deadlocked against the Start that came between",
+        newWords: { S: "the resolve waits on the job's row; the Start lands, then the job moves and both asks close together, her stretch closed", W: "the job moves and both asks close together first; her Start is refused" },
+        verdict: async (order, run, w, m, cards) => {
+          const out: string[] = [];
+          const st = await state(w);
+          const p = await prisma.project.findUniqueOrThrow({ where: { id: w.P.id }, select: { status: true, revisionRequestedAt: true } });
+          if (m.get(idOf(cards, "video"))?.status !== "COMPLETED" || m.get(idOf(cards, "photo"))?.status !== "COMPLETED") out.push("an ask is still open");
+          if (p.status === "REVISION" || p.revisionRequestedAt) out.push("the job did not move off Revisions");
+          if (order === "S" && !(run.r.ok && st.kp?.state === "CLOSED")) out.push("her Start did not land and then close");
+          if (order === "W" && !(!run.r.ok && quietStart(st))) out.push("her Start was not refused quietly");
+          return out;
+        },
+      });
+      await scenario({
+        tag: "d", title: "the board's Delivered (moveProjectStatus) — two asks open, the edit card John's",
+        layout: "two asks",
+        before: (w) => prisma.project.update({ where: { id: w.P.id }, data: { status: "REVISION", revisionRequestedAt: new Date() } }),
+        oldWriter: (w) => prevActions.moveProjectStatus(w.P.id, "DELIVERED"),
+        newWriter: (w) => appActions.moveProjectStatus(w.P.id, "DELIVERED"),
+        // The same orchestration both times: the board's status write is its
+        // own commit in both versions; only the close of the asks changed.
+        oldOrder: "P", newOrders: ["P"],
+        park: (w) => () => park("project", "update", "after", (a) => whereOf(a).id === w.P.id && (((a as { data?: { status?: string } }).data) ?? {}).status === "DELIVERED"),
+        oldWords: "the Start came between the Delivered write and the close of both asks, and the close deadlocked with it",
+        newWords: { P: "the close waits on the job's row, lands after the Start, both asks COMPLETED, her stretch closed as delivered" },
+        verdict: async (_order, run, w, m, cards) => {
+          const out: string[] = [];
+          const st = await state(w);
+          if (m.get(idOf(cards, "video"))?.status !== "COMPLETED" || m.get(idOf(cards, "photo"))?.status !== "COMPLETED") out.push("an ask is still open on a Delivered job");
+          if (st.status !== "DELIVERED") out.push("not Delivered");
+          if (!(run.r.ok && st.kp?.state === "CLOSED" && st.kp.reason === "PROJECT_DELIVERED")) out.push("her Start did not land and then close as PROJECT_DELIVERED");
+          return out;
+        },
+      });
+      // The server's own count, as corroboration: a lost deadlock is counted
+      // in pg_stat_database by the backend that lost it, flushed within ~10 s.
+      let dl = dl0;
+      for (const end = Date.now() + 12_000; Date.now() < end; await sleep(250)) {
+        dl = await deadlocksNow();
+        if (dl - dl0 >= TWO_CARD_OLD * 4) break;
+      }
+      c.ok(`the server itself counted the OLD deadlocks (pg_stat_database: ${dl - dl0} for ${TWO_CARD_OLD * 4} OLD runs) and none beyond them`,
+        dl - dl0 === TWO_CARD_OLD * 4 && newRunsFailed.length === 0, `deadlocks ${dl0} → ${dl}`);
+
+      // §12e · THE BACKSTOPS. Every writer above now takes the job's row
+      // first, so none of them deadlocks with a Start any more — but not every
+      // writer in the hub does (the hourly reconciler, the Review Room's
+      // closes), so the one retry after a lost deadlock stays as the backstop:
+      // on the one-time confirm (which had none) and on the writers
+      // (underJobLock). Which side Postgres throws away in a real deadlock is
+      // its choice, not the drill's (the review saw 6 Starts and 2 writers in
+      // 8), so here a drill trigger raises the deadlock's own SQLSTATE
+      // (40P01) exactly once, inside the transaction under test: the same
+      // error, the same abort, deterministically on the side being tested.
+      c.head("§12 e · the backstops: one retry when Postgres throws the transaction away (the deadlock's SQLSTATE, raised once by a drill trigger)");
+      {
+        await drill.sql(`CREATE SEQUENCE drill_fail_confirm`);
+        await drill.sql(`CREATE SEQUENCE drill_fail_writer`);
+        await drill.sql(`SELECT setval('drill_fail_confirm', 1000), setval('drill_fail_writer', 1000)`); // disarmed
+        await drill.sql(`CREATE FUNCTION drill_fail_once() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval(TG_ARGV[0]::regclass) = 1 THEN RAISE EXCEPTION 'drill: this transaction lost a deadlock' USING ERRCODE = '40P01'; END IF; RETURN NEW; END $$`);
+        await drill.sql(`CREATE TRIGGER drill_fail_confirm_t AFTER INSERT ON "EditorWorkEvent" FOR EACH ROW WHEN (NEW."kind" = 'CONFIRM') EXECUTE FUNCTION drill_fail_once('drill_fail_confirm')`);
+        await drill.sql(`CREATE TRIGGER drill_fail_writer_t BEFORE UPDATE ON "SmartTask" FOR EACH ROW WHEN (NEW."assignedKey" IS DISTINCT FROM OLD."assignedKey" OR NEW."status" IS DISTINCT FROM OLD."status") EXECUTE FUNCTION drill_fail_once('drill_fail_writer')`);
+        // nextval is not transactional: armed, the NEXT matching row fails
+        // and every one after it passes — the retry sees a clean database.
+        const arm = (seq: "drill_fail_confirm" | "drill_fail_writer") => drill.sql(`SELECT setval('${seq}', 1, false)`);
+        // Fired = the armed value was taken (is_called) and the sequence has
+        // not been disarmed since — i.e. the injected failure really happened.
+        const fired = async (seq: "drill_fail_confirm" | "drill_fail_writer") => {
+          const [row] = await drill.sql<{ n: string; called: boolean }>(`SELECT last_value::text AS n, is_called AS called FROM ${seq}`);
+          return row.called && Number(row.n) >= 1 && Number(row.n) < 1000;
+        };
+
+        // (i) the one-time confirm
+        const claimWorld2 = async () => {
+          const w = await world({ status: "EDITING" });
+          await prisma.smartTask.updateMany({ where: { projectId: { notIn: [w.P.id, w.P0.id] }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "CANCELLED" } });
+          return w;
+        };
+        const confirmOnce = async (version: "prev" | "new") => {
+          const w = await claimWorld2();
+          await arm("drill_fail_confirm");
+          const r = await startIn({ version, fn: "confirm", as: "kim", projectId: w.P.id, requestId: `§12e-confirm-${version}-${w.n}` });
+          const st = await state(w);
+          return { r, st, fired: await fired("drill_fail_confirm"), confirms: await prisma.editorWorkEvent.count({ where: { projectId: w.P.id, kind: "CONFIRM" } }) };
+        };
+        const oc = await confirmOnce("prev");
+        c.ok(`OLD (editorWork.ts @ ${PREV}): the confirm lost once and was simply lost — "Couldn't save that", an error logged, nothing marked`,
+          oc.fired && !oc.r.ok && /^Couldn't save that — nothing changed\. Try again\.$/.test(oc.r.message) && oc.r.errors.length > 0 && oc.st.kp === null && oc.st.p0.same,
+          `${oc.r.message} · errors ${oc.r.errors.join("|")}`);
+        const nc = await confirmOnce("new");
+        c.ok("NEW: the confirm is judged once more (a warning, no error) and lands: ACTIVE on the job she named, ONE confirm event, her previous job paused",
+          nc.fired && nc.r.ok && nc.r.errors.length === 0 && nc.r.warnings.some((x) => x.includes("on a confirm")) && nc.st.kp?.state === "ACTIVE" && nc.confirms === 1 && nc.st.p0.state === "PAUSED" && nc.st.unpaired === 0,
+          `${nc.r.message} · warnings ${nc.r.warnings.join("|")} · ${show(nc.st, nc.r)}`);
+
+        // (ii) the reassign (underJobLock's retry)
+        const reassignOnce = async (ed: typeof editing) => {
+          const { w, cards } = await twoCardWorld("edit+video");
+          const pw0 = parentWarns.length;
+          await arm("drill_fail_writer");
+          let threw: unknown = null;
+          const res = await ed.setEditVideoEditor(w.P.id, "john").catch((e: unknown) => { threw = e; return null; });
+          const m = await cardsOf(cards);
+          return { res, threw, fired: await fired("drill_fail_writer"), keys: [...m.values()].map((x) => x.assignedKey), retries: parentWarns.slice(pw0) };
+        };
+        const or = await reassignOnce(prevEditing);
+        c.ok(`OLD (${PREV}): the reassign lost once and failed outright — the cards stayed Kim's`,
+          or.fired && !!or.threw && work.isLockConflict(or.threw) && or.keys.every((k) => k === "kim"), `threw=${!!or.threw} · cards ${or.keys.join(",")}`);
+        const nr = await reassignOnce(editing);
+        c.ok("NEW: the reassign runs once more under the job's row lock and lands — both cards John's, the retry said out loud",
+          nr.fired && !nr.threw && nr.res?.ok === true && nr.keys.every((k) => k === "john") && nr.retries.some((x) => x.includes("the office's editor pick")),
+          `${nr.res?.message} · cards ${nr.keys.join(",")} · ${nr.retries.join("|")}`);
+
+        // (iii) resolveRevision: the stage write and the asks' close
+        const resolveOnce = async (resolve: typeof comms.resolveRevision) => {
+          const { w, cards } = await twoCardWorld("two asks");
+          await prisma.project.update({ where: { id: w.P.id }, data: { status: "REVISION", revisionRequestedAt: new Date() } });
+          const pw0 = parentWarns.length;
+          await arm("drill_fail_writer");
+          let threw: unknown = null;
+          await resolve(w.P.id).catch((e: unknown) => { threw = e; });
+          const m = await cardsOf(cards);
+          const p = await prisma.project.findUniqueOrThrow({ where: { id: w.P.id }, select: { status: true, revisionRequestedAt: true } });
+          const asksOpen = [idOf(cards, "video"), idOf(cards, "photo")].filter((id) => !["COMPLETED", "CANCELLED"].includes(m.get(id)?.status ?? "")).length;
+          return { threw, fired: await fired("drill_fail_writer"), status: p.status as string, stamped: !!p.revisionRequestedAt, asksOpen, retries: parentWarns.slice(pw0) };
+        };
+        const ov = await resolveOnce(prevComms.resolveRevision);
+        c.ok(`OLD (${PREV}): the stage write had already committed when the asks' close lost — the job is off Revisions with both asks still open`,
+          ov.fired && !!ov.threw && ov.status !== "REVISION" && !ov.stamped && ov.asksOpen === 2, `threw=${!!ov.threw} · ${ov.status} · stamped=${ov.stamped} · asks open ${ov.asksOpen}`);
+        const nv = await resolveOnce(comms.resolveRevision);
+        c.ok("NEW: one transaction, run once more — the job moves AND both asks close, together",
+          nv.fired && !nv.threw && nv.status !== "REVISION" && !nv.stamped && nv.asksOpen === 0 && nv.retries.some((x) => x.includes("the revision's resolve")),
+          `${nv.status} · asks open ${nv.asksOpen} · ${nv.retries.join("|")}`);
+        await drill.sql(`DROP TRIGGER drill_fail_confirm_t ON "EditorWorkEvent"`);
+        await drill.sql(`DROP TRIGGER drill_fail_writer_t ON "SmartTask"`);
       }
     }
 
