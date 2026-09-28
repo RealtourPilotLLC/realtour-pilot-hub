@@ -15,7 +15,18 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
   Jordan's Saturday quiet time is a code default (Sat 00:00–19:30 ET, held → delivered at 19:30).
-- **Next action:** batch 6 build; the supervised Aryeo test in a watched sitting; the final report.
+- **Next action:** batch 6 build; then the queued follow-ups below; the supervised Aryeo test in a
+  watched sitting; the final report.
+- **Queued for right after batch 6 (Jordan, Sep 28):**
+  1. merge branch `room-delivered-closeout` (`81e5fb6`, already live) into main;
+  2. a standing rule: editor-cut and delivery-fix notes on a job delivered after them close
+     themselves ("job delivered", never counted as a checked fix); "Feedback follow-through" rows
+     open the cut with its notes, not the project page;
+  3. test inboxes: `jspackman215@gmail.com` and `bobmike0214@gmail.com` are Jordan's own ("The
+     email for bobby test is my email so that works. the test email for bobby test can just be
+     my jspackman215@gmail.com so I can see the test emails") — add both as verified test
+     destinations beside info@, set Bobby TEST's hub email to jspackman215@ (backup first); the
+     Aryeo side can stay bobmike0214@, so the Aryeo dashboard edit is no longer needed.
 
 ## Batch 0 — facts measured Sep 25 (read-only probe, `scripts/_recon/cp15-config-probe.ts`)
 
@@ -73,6 +84,7 @@ change the design:
 | When (ET) | What | How | Backout |
 |---|---|---|---|
 | Sep 25 | `review_room` seats saved: James primary, Kyle backup, Jordan fallback (row was absent; every other value = its default) | one `putSetting` after `validateReviewSeats(…, "OWNER")`; chain read back: all three canRule | delete the `review_room` AppSetting row (→ unconfigured, the old OWNER+ADMIN broadcast) |
+| Sep 28 | **Editor notes on delivered jobs closed out** (Jordan: "for the editor stuff lets make sure we are up to date and anything completed and delivered can be closed out"). 16 notes (lanes EDITOR 14, EDIT = Kyle's delivery fixes 2) still OPEN/FIXED on 7 DELIVERED jobs delivered after the note — 439 Lake George Cir 1, 632 Greenridge Rd 8, 1462 Brandywine Ln 3, 238 Hudson Dr 1, 13 Chesterland Dr 1, 2051 Old Sumneytown Pike 1, 328 Columbia Ave 1 — resolved with statusBy "Closed out: job delivered", one timeline line per job. **0 linked revision issues**, so no editor KPI moved. Photographer coaching notes left as they are. Backup `~/rtp-backup-2026-09-28-delivered-job-notes.json`. Live: "Feedback follow-through" 14 → 8 (4 photographer rows, 4 editor rows on jobs still in work). | CAS per note on its own status | restore status/resolvedAt/statusBy/statusAt from the backup |
 | Sep 28 | **38 E Gay St closed out of the Review Room** (Jordan: "38 E Gay St project is done but its still in the review room. Can we close that one out"). Sent back Sep 1, delivered Sep 14, still under "In revisions". (1) Code `81e5fb6` on branch `room-delivered-closeout` (deployed from a worktree, Vercel `hy2v729h7`; **merge into main after batch 6**): a sent-back cut leaves the Room and the home board once its job is delivered after the send-back — measured first: exactly 1 of 4 matched. (2) Jordan's 2 open notes on that send-back resolved as his decision (statusBy "Jordan Spackman", CAS on OPEN) with a timeline line; no issue rows were linked. Verified live: "In revisions" 4 → 3, "Feedback follow-through" 15 → 14, the address appears nowhere in the Room. | display rule + a 2-row note update | revert `81e5fb6`; set the two notes back to OPEN |
 | Sep 25 | **Stripe webhook registered** (authorised): endpoint `we_1UJhFVRrlUAkQjeVojLRmkXt` → `https://hub.realtourpilot.com/api/webhooks/stripe`, 5 events, status enabled; signing secret saved encrypted (Connection `stripe_webhook`, never printed) and read back. Proven: a post signed with the saved secret → 200 (test-mode, ignored); a wrong signature → 400. | `scripts/_ops/register-stripe-webhook.ts --apply` (dry run first) | `… --rollback we_1UJhFVRrlUAkQjeVojLRmkXt` (deletes the endpoint, removes only its own secret); polling keeps activating signups |
 | Sep 25 | **Review cuts switched to the private store.** Code `3a301ad` (the private token's presence decides the upload token and the browser's access word together). Store connected for production + development with prefix `REVIEW_CUTS_PRIVATE_`; deployed from a detached worktree at `3a301ad` (Vercel `eclgh0s6v`). Row backup first: `~/rtp-backup-2026-09-25-cut-rows-pre-private-store.json` (32 rows, 4.8 GB, all public, none uploading). Then `migrate-cut-store.ts --apply` (ledger in the session scratchpad, copied beside the backup). | see the cutover section below | disconnect the store (the public token is primary again) and `migrate-cut-store.ts --rollback --ledger <ledger> --apply`; originals were never deleted |
