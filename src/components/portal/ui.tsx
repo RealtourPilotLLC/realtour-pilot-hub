@@ -95,9 +95,13 @@ export function CountBadge({ n, label, className }: { n: number; label: string; 
 export function SubNav({ items, label }: { items: { href: string; label: string; short?: string; active: boolean; count?: number; countLabel?: string }[]; label: string }) {
   return (
     <nav aria-label={label}>
-      <ul className="grid auto-cols-fr grid-flow-col gap-1 rounded-2xl border border-border bg-surface/70 p-1">
+      {/* Tabs share the row by their content, not in equal columns: at 375 px
+          four equal columns left "Scripts" + its badge 80 px and cut it to
+          "Scri…" (walkthrough, Sep 28). flex-auto lets the badged tab take
+          what it needs; min-w-0 still lets a long label truncate. */}
+      <ul className="flex gap-1 rounded-2xl border border-border bg-surface/70 p-1">
         {items.map((i) => (
-          <li key={i.href} className="min-w-0">
+          <li key={i.href} className="min-w-0 flex-auto">
             <Link href={i.href} aria-current={i.active ? "page" : undefined} className={cn("flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-xl px-2 text-[13px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", i.active ? "bg-brand text-white shadow" : "text-muted hover:text-foreground")}>
               <span className="truncate sm:hidden">{i.short ?? i.label}</span>
               <span className="hidden truncate sm:inline">{i.label}</span>
