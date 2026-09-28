@@ -4,7 +4,7 @@
 //
 //   scripts/demo/run-demo-db.sh            start (reuses the database if present)
 //   scripts/demo/run-demo-db.sh --reset    throw it away and seed a fresh one
-//   scripts/demo/run-demo-dev.sh           the hub on http://localhost:3100 against it
+//   scripts/demo/run-demo-dev.sh           the hub on http://localhost:3200 against it
 //                                          (starts this for you if it is not running)
 //
 // WHAT IT IS. PGlite (Postgres compiled to WebAssembly) living INSIDE this

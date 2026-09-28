@@ -1,6 +1,6 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# THE ISOLATED DEMO HUB: `next dev` on http://localhost:3100 against the demo
+# THE ISOLATED DEMO HUB: `next dev` on http://localhost:3200 against the demo
 # database on 127.0.0.1:5599, with every provider disconnected.
 #
 #   scripts/demo/run-demo-dev.sh              start (and the demo database, if it isn't running)
