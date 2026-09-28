@@ -1021,14 +1021,27 @@ function blockerFor(
   work?: ProjectWork | null,
   /** A52: an extra shoot is still owed on this job (reopenedClocksFor). */
   extraOwed = false,
+  /** §7.6: the job's open production gaps, as one line
+   *  (productionGaps.openGapLabelsFor) — "Missing work: <what> — <owner> by
+   *  <due>". Absent = none open (or the read failed). */
+  gapLine: string | null = null,
 ): { kind: BlockerKind; label: string } {
   // THE OBLIGATION IS TESTED FIRST (RTP-04, Sep 16). This used to open with
   // `if (p.deliveredAt) return "Delivered"`, which read a job delivered months
   // ago and reopened today as done and put it in the Delivered column with a
   // green chip — with nothing on the card saying changes were outstanding.
-  if (p.status === "ON_HOLD") return { kind: "on_hold", label: "On hold" };
+  //
+  // MISSING WORK IS NEVER HIDDEN (§7.6, Sep 28). An open production gap — a
+  // video the photographer could not deliver, a missed shot, a limitation
+  // raised off a brief — is the thing in the way, and no other state may
+  // swallow it: a held job or one with changes requested keeps its own word
+  // and carries the gap beside it; everything else (delivered, not shot, the
+  // "Waiting on video" a not-completed reel used to read as, ready to edit)
+  // gives way to it. The camera chip: it is work that has to come in.
+  if (p.status === "ON_HOLD") return { kind: "on_hold", label: gapLine ? `On hold · ${gapLine}` : "On hold" };
   // Neutral: a revision is the client's ask OR the owner bouncing a cut in review.
-  if (hasOpenRevision(p)) return { kind: "revision", label: "Changes requested" };
+  if (hasOpenRevision(p)) return { kind: "revision", label: gapLine ? `Changes requested · ${gapLine}` : "Changes requested" };
+  if (gapLine) return { kind: "awaiting_upload", label: gapLine };
   // Only now may the history speak, and only for a job that is genuinely done.
   if (isSettled(p) && !extraOwed) return { kind: "delivered", label: "Delivered" };
 
@@ -1239,6 +1252,11 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   // date", as they did before, never an invented one.
   const clocks = await reopenedClocksFor(rows.filter((p) => !!p.deliveredAt).map((p) => p.id));
   const dueSet = await dueSetTimesFor(rows.filter((p) => !!p.deliveredAt && !!p.dueOverrideAt).map((p) => p.id));
+  // §7.6: open production gaps — one batched read. A failed read is an empty
+  // map, and every job then reads exactly as it did before gaps existed.
+  const gapLines = await import("@/lib/productionGaps")
+    .then((m) => m.openGapLabelsFor(rows.map((p) => p.id), now))
+    .catch(() => new Map<string, string>());
 
   const jobs: BoardJob[] = rows.map((p) => {
     const items = boardItems(p, now, turnarounds);
@@ -1246,7 +1264,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
 
     const ev = parseEvidence(p.statusEvidence);
     const missingCategories = ev ? ev.missing : null;
-    const { kind, label } = blockerFor(p, p.deliverables, missingCategories, work.get(p.id), !!clock?.extraOwed);
+    const { kind, label } = blockerFor(p, p.deliverables, missingCategories, work.get(p.id), !!clock?.extraOwed, gapLines.get(p.id) ?? null);
     // THE OBLIGATION, once, for the column, the promise and the card.
     const settled = isSettled(p) && !clock?.extraOwed;
     const openAsk = !settled && hasOpenRevision(p);

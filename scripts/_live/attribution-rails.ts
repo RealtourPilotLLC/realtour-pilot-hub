@@ -2,7 +2,7 @@
 // DRILL: WHAT THE POSITIVE-EVIDENCE RULE CHANGES (Sep 21 2026, third pass).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/attribution-rails.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/attribution-rails.ts
 //
 // The react-server condition is not optional: commSenders.ts and openphone.ts
 // both open with `import "server-only"`, which throws on sight without it.

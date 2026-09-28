@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { etDate } from "@/lib/datetime";
 import { clip, stripMoneySentences, stripQuotedReply } from "@/lib/text";
 import { synthesizeClientProfile, type ClientProfileEditing, type ClientProfileInsights } from "@/lib/integrations/ai";
+import { REVISION_FLAG_PREFIX } from "@/lib/debrief";
 
 // The client "working profile": a creative-safe synthesis of who a client is to
 // work with, drawn from comms, creatives' shoot debriefs, revision history,
@@ -54,7 +55,29 @@ export type EditorClientProfile = {
 // One client change request, as an editor should read it back.
 export type RevisionAsk = { when: string; text: string; project: string | null };
 
-export async function buildClientProfile(clientId: string): Promise<{ ok: boolean; error?: string }> {
+// ---------------------------------------------------------------------------
+// WHAT THE SYNTHESIS MAY READ FROM THE FIELD (§7.8, Sep 28 2026).
+//
+// This used to hand the AI every NOTE and FLAG on the client's jobs — the
+// photographer's "Shoot debrief — …", their on-site flags, "they probably
+// prefer this font" — and the nightly profile turned those guesses into the
+// client's preferences, in the editing block editors read. A photographer's
+// report is a PROPOSAL until the office confirms it (lib/clientFacts, source
+// "field"), so from the field this reads ONLY the confirmed ones: ACCEPTED,
+// cleared for AI context, not confidential, and client-wide (a one-job request
+// is that job's, not a standing preference). A proposed or rejected report is
+// never read.
+//
+// What still comes off the timeline is what was never a field guess: a
+// REQUEST (the office's, or the client's own words caught from a message) and
+// the client's own revision asks. Every other NOTE/FLAG is left out — the
+// machine lines ("Upload check", "Photos submitted…") never described the
+// client, and the office's standing knowledge lives in the client notes above.
+// ---------------------------------------------------------------------------
+export const CONFIRMED_FIELD_PREFIX = "Confirmed by the office (reported on site): ";
+
+/** Everything buildClientProfile hands the synthesis — exported so the input can be checked without calling the AI. */
+export async function clientProfileInput(clientId: string): Promise<Parameters<typeof synthesizeClientProfile>[0] | null> {
   const client = await prisma.client.findUnique({
     where: { id: clientId },
     select: {
@@ -67,12 +90,12 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
       },
     },
   });
-  if (!client) return { ok: false, error: "Client not found." };
+  if (!client) return null;
 
   const projectIds = client.projects.map((p) => p.id);
   const nonCancelled = client.projects.filter((p) => p.status !== "CANCELLED");
 
-  const [comms, activities, feedback, revisions, inboundMsgs] = await Promise.all([
+  const [comms, activities, feedback, revisions, inboundMsgs, fieldFacts] = await Promise.all([
     prisma.commLog.findMany({
       where: { clientId, minRole: { in: COMM_ROLES } },
       orderBy: { occurredAt: "desc" }, take: 40,
@@ -80,7 +103,10 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
     }),
     projectIds.length
       ? prisma.activity.findMany({
-          where: { projectId: { in: projectIds }, type: { in: ["NOTE", "FLAG", "SPECIAL_REQUEST"] } },
+          where: {
+            projectId: { in: projectIds },
+            OR: [{ type: "SPECIAL_REQUEST" }, { type: "FLAG", body: { startsWith: REVISION_FLAG_PREFIX } }],
+          },
           orderBy: { createdAt: "desc" }, take: 30,
           select: { body: true },
         })
@@ -98,11 +124,16 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
       : Promise.resolve([] as { rating: number | null; sentiment: string | null; body: string }[]),
     prisma.smartTask.count({ where: { clientId, taskType: "revision", status: { not: "CANCELLED" } } }),
     prisma.commLog.count({ where: { clientId, direction: "in", minRole: { in: COMM_ROLES } } }),
+    prisma.clientFact.findMany({
+      where: { clientId, source: "field", status: "ACCEPTED", aiContext: "ALLOWED", confidential: false, scope: "PERMANENT" },
+      orderBy: [{ reviewedAt: "desc" }, { createdAt: "desc" }], take: 20,
+      select: { body: true },
+    }),
   ]);
 
   const stats = { totalOrders: nonCancelled.length, revisions, inboundMsgs };
 
-  const insights = await synthesizeClientProfile({
+  return {
     name: client.name,
     company: client.company,
     segment: client.segment,
@@ -118,16 +149,22 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
     comms: comms
       .reverse()
       .map((c) => ({ who: c.direction === "out" ? "Us" : c.contactName || client.name, when: etDate(c.occurredAt), text: c.body || "" })),
-    activities: activities.map((a) => a.body),
+    activities: [...fieldFacts.map((f) => `${CONFIRMED_FIELD_PREFIX}${f.body}`), ...activities.map((a) => a.body)],
     feedback: feedback.map((f) => ({ rating: f.rating, sentiment: f.sentiment, text: f.body })),
-  });
+  };
+}
+
+export async function buildClientProfile(clientId: string): Promise<{ ok: boolean; error?: string }> {
+  const input = await clientProfileInput(clientId);
+  if (!input) return { ok: false, error: "Client not found." };
+  const insights = await synthesizeClientProfile(input);
 
   if (!insights) return { ok: false, error: "Could not synthesize a profile (AI not connected, or not enough to go on yet)." };
 
   // `segment` and the version ride along in the JSON so the profile card can
   // show the segment chip (and tell a v1 profile from a v2 one) without every
   // call site having to select and pass those columns.
-  const profile: ClientProfile = { ...insights, v: CLIENT_PROFILE_VERSION, segment: client.segment ?? null, stats };
+  const profile: ClientProfile = { ...insights, v: CLIENT_PROFILE_VERSION, segment: input.segment ?? null, stats: input.stats };
   await prisma.client.update({
     where: { id: clientId },
     data: {

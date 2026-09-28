@@ -1777,6 +1777,19 @@ export async function syncProjectStatuses(
     // Reflect category presence onto the deliverable rows for the portal/detail.
     await syncDeliverableStatuses(p, evidence);
 
+    // §7.3: the one video's "raws are in" stamp, on a FRESH read that found
+    // footage — once, never moved, never on a shared folder (handoffLadder).
+    // Only on the pass that FIRST sees it (review, Sep 28): `p` still holds
+    // the evidence and uploadedAt this job carried INTO the pass, so a job
+    // whose raws an earlier pass already confirmed is left unknown instead of
+    // stamped days late. Never on a delivered job either.
+    if (rawsDetected && sig.dropbox && !sig.dropbox.stale && sig.dropbox.rawVideo > 0 && !p.deliveredAt && final !== "DELIVERED") {
+      const at = sig.dropbox.at ? new Date(sig.dropbox.at) : new Date();
+      await import("@/lib/handoffLadder")
+        .then((m) => (m.firstSightOfRawVideo(parseEvidence(p.statusEvidence ?? null)?.dropbox, p.uploadedAt) ? m.stampRawIn(p.id, at) : null))
+        .catch(() => {});
+    }
+
     // Over-shot the budget → mint ONE cull task + text the photographer, so the
     // pile gets thinned BEFORE it costs editing money. Deduped per project inside
     // mintCullTask. Best-effort; never breaks the sweep.

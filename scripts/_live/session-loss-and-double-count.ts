@@ -3,7 +3,7 @@
 // batch 2 review).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/session-loss-and-double-count.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/session-loss-and-double-count.ts
 //
 // Three questions, all measured against production before anything is edited:
 //

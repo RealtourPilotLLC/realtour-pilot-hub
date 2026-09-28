@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, Loader2, Pin, PinOff, Send, SlidersHorizontal, X } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Pin, PinOff, Send, SlidersHorizontal, X, Zap } from "lucide-react";
 import { escalateRushToJordan, previewPriorityImpact, saveEditOverrides, type RushGate } from "@/app/editing/actions";
 import { etAt, etDateTime } from "@/lib/datetime";
 import {
@@ -22,7 +22,9 @@ import {
 // deliverables, the due date and all other information for the edits in the
 // editing room"). Opened from the small sliders glyph beside each queue row's
 // status pill and from the Override button in the /edit/<id> header — office
-// (owner/admin) only; the server (saveEditOverrides) is the real guard.
+// (owner/admin) only; the server (saveEditOverrides) is the real guard. The
+// header's Rush button (RushButton, below) opens the same dialog on the due
+// date and priority alone.
 //
 // Every field shows two things: what the HUB says on its own (the computed
 // value the engines would use) and what the office set on top of it. A field
@@ -283,7 +285,7 @@ function rushChangeOf(init: Draft, d: Draft): { dueAt?: string | null; priority?
   return out;
 }
 
-function RushPanel({
+export function RushPanel({
   gate, loading, ack, onAck, reason, onReason, onEscalate, escalating,
 }: {
   gate: RushGate | null;
@@ -372,7 +374,20 @@ function RushPanel({
   );
 }
 
-function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onClose: () => void; onSaved: (msg: string) => void }) {
+/** An open "approve this rush?" card for this job (escalateRushToJordan), as the job page reads it. */
+export type RushAsk = { by: string | null; atISO: string | null; words: string };
+
+function OverridesDialog({
+  job, onClose, onSaved, mode = "all", ask = null,
+}: {
+  job: EditOverridesJob;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+  /** "rush" = only the due date and priority, with what they push back (the job page's Rush button). */
+  mode?: "all" | "rush";
+  ask?: RushAsk | null;
+}) {
+  const rushOnly = mode === "rush";
   const [init] = useState(() => draftFrom(job));
   const [d, setD] = useState<Draft>(init);
   const [msg, setMsg] = useState<string | null>(null);
@@ -467,16 +482,18 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Override ${job.street}`}
+        aria-label={`${rushOnly ? "Rush" : "Override"} ${job.street}`}
         className="fixed left-1/2 top-1/2 z-[70] max-h-[90vh] w-[min(94vw,36rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:p-5"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-1.5 text-sm font-semibold">
-              <SlidersHorizontal className="size-4 text-brand" /> Override · {job.street}
+              {rushOnly ? <Zap className="size-4 text-warning" /> : <SlidersHorizontal className="size-4 text-brand" />} {rushOnly ? "Rush" : "Override"} · {job.street}
             </div>
             <p className="mt-0.5 text-[12px] leading-snug text-muted">
-              Whatever you set here wins over what the hub works out on its own. Clear a field to hand it back.
+              {rushOnly
+                ? "Pull the due date earlier or raise the priority. Before you save, you see which of the editor's jobs this pushes back. The date the client was promised stays on record."
+                : "Whatever you set here wins over what the hub works out on its own. Clear a field to hand it back."}
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="rounded-md p-1 text-muted hover:bg-surface-2 hover:text-foreground">
@@ -484,10 +501,12 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
           </button>
         </div>
 
+        {rushOnly && ask && <RushAskNote ask={ask} />}
+
         <div className="mt-3 space-y-2">
           {/* STATUS — a pin, not a column: picking one writes it straight to
               the job and holds it there. */}
-          <Field
+          {!rushOnly && <Field
             label="Status"
             overridden={d.pin}
             hub={d.pin ? "would set it from the uploads and the cuts once you let go" : "sets it from the uploads and the cuts"}
@@ -524,11 +543,11 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
                 <PinOff className="size-3" /> Let the hub manage the status again
               </button>
             )}
-          </Field>
+          </Field>}
 
           {/* EDITOR — the row's own reassign control, here so one Save covers
               the whole hand-off. Routes through setEditVideoEditor. */}
-          <Field label="Editor" overridden={false} hub={hubEditor} hint="moves the open task and pings the editor, like the row's select">
+          {!rushOnly && <Field label="Editor" overridden={false} hub={hubEditor} hint="moves the open task and pings the editor, like the row's select">
             <select aria-label="Editor" value={d.editorKey} onChange={(e) => set({ editorKey: e.target.value })} className={SELECT}>
               <option value={UNASSIGN}>Unassigned</option>
               {!knownEditor && d.editorKey && <option value={d.editorKey} disabled>{job.editorName ?? d.editorKey}</option>}
@@ -539,11 +558,11 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
                 <option value={EXTERNAL}>External agency</option>
               </optgroup>
             </select>
-          </Field>
+          </Field>}
 
           {/* VIDEOS OWED — the batch size: cut slots, the queue count and the
               monthly quota all follow it. */}
-          <Field
+          {!rushOnly && <Field
             label="Videos owed"
             overridden={d.videosOwed !== ""}
             onReset={() => set({ videosOwed: "" })}
@@ -558,7 +577,7 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
               className={cx(INPUT, "w-16 tabular-nums")}
             />
             <span className="text-xs text-muted">1 to 40</span>
-          </Field>
+          </Field>}
 
           {/* DUE — Eastern time. The input has no zone of its own; the value is
               read as ET and converted to an instant on save. */}
@@ -581,7 +600,7 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
             )}
           </Field>
 
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className={cx("grid gap-2", !rushOnly && "sm:grid-cols-2")}>
             {/* PRIORITY — pins the edit card's priority. */}
             <Field
               label="Priority"
@@ -596,7 +615,7 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
             </Field>
 
             {/* TIER — the row's Standard / Premium / Personal Branding pill. */}
-            <Field
+            {!rushOnly && <Field
               label="Tier"
               overridden={d.tier !== ""}
               onReset={() => set({ tier: "" })}
@@ -606,11 +625,11 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
                 <option value="">Hub&rsquo;s value ({TIER_LABEL[computed.tier]})</option>
                 {EDIT_TIERS.map((t) => <option key={t} value={t}>{TIER_LABEL[t]}</option>)}
               </select>
-            </Field>
+            </Field>}
           </div>
 
           {/* VIDEO TYPE — the row's "video type" text under the tier pill. */}
-          <Field
+          {!rushOnly && <Field
             label="Video type"
             overridden={d.typeDetail.trim() !== ""}
             onReset={() => set({ typeDetail: "" })}
@@ -624,11 +643,11 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
               onChange={(e) => set({ typeDetail: e.target.value })}
               className={cx(INPUT, "w-full")}
             />
-          </Field>
+          </Field>}
 
           {/* NOTE — the reason, one line; shows on the row's chip and the
-              timeline sentence. */}
-          <div className="rounded-xl border border-border px-3 py-2.5">
+              timeline sentence. A rush asks its own "why" below instead. */}
+          {!rushOnly && <div className="rounded-xl border border-border px-3 py-2.5">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Note <span className="font-normal normal-case tracking-normal">— optional, one line</span></span>
             <input
               aria-label="Note"
@@ -638,7 +657,7 @@ function OverridesDialog({ job, onClose, onSaved }: { job: EditOverridesJob; onC
               onChange={(e) => set({ note: e.target.value })}
               className={cx(INPUT, "mt-1.5 w-full")}
             />
-          </div>
+          </div>}
         </div>
 
         {/* §10: what the new date / priority pushes back, before Save. */}
@@ -731,6 +750,58 @@ export function EditOverridesButton({
         </span>
       )}
       {open && <OverridesDialog job={job} onClose={() => setOpen(false)} onSaved={saved} />}
+    </span>
+  );
+}
+
+// ---- THE JOB PAGE'S RUSH BUTTON (§10, Sep 28 2026) --------------------------
+// The rush lived inside Override, under a due-date field nobody would read as
+// "rush". This is the same dialog, the same server actions and the same guard
+// (saveEditOverrides / previewPriorityImpact / escalateRushToJordan), opened on
+// the two fields a rush is: the due date and the priority. What the change
+// pushes back is shown before Save, and a rush someone sent to Jordan shows
+// here, on the job, where it is approved. Mounted for the desk only (owner /
+// admin, never an editor, never a "view as" preview); the server re-checks.
+
+/** The ask someone sent to Jordan, above the fields. */
+function RushAskNote({ ask }: { ask: RushAsk }) {
+  return (
+    <div className="mt-3 rounded-xl border border-warning/40 bg-warning-soft/30 px-3 py-2.5 text-[12px] leading-snug text-foreground">
+      <div className="flex items-center gap-1.5 font-semibold">
+        <Send className="size-3.5 text-warning" /> Waiting on approval{ask.by ? ` · sent by ${ask.by}` : ""}{ask.atISO ? ` · ${etDateTime(ask.atISO)} ET` : ""}
+      </div>
+      <p className="mt-1 text-foreground/90">{ask.words}</p>
+      <p className="mt-1 text-[11px] text-muted">Set the same date or priority below and save to approve it. Cancel leaves the job as it is.</p>
+    </div>
+  );
+}
+
+export function RushButton({ job, ask = null }: { job: EditOverridesJob; ask?: RushAsk | null }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  return (
+    <span className="inline-flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title={ask ? "A rush on this job is waiting on approval" : "Rush this job: an earlier due date or a higher priority, with what it pushes back"}
+        className={cx(
+          "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium",
+          ask ? "border-warning/50 bg-warning-soft/40 text-foreground" : "bg-surface text-muted hover:text-foreground",
+        )}
+      >
+        <Zap className={cx("size-3.5", ask && "text-warning")} /> {ask ? "Rush asked" : "Rush"}
+      </button>
+      {note && (
+        // Never wider than a phone's content column (375px, 16px gutters).
+        <span className="flex max-w-[min(24rem,calc(100vw-2rem))] items-start gap-2 whitespace-normal rounded-lg border border-success/30 bg-success/10 px-2 py-1 text-left text-[11px] leading-snug text-foreground/90">
+          <span className="min-w-0 flex-1">{note}</span>
+          <button type="button" onClick={() => setNote(null)} aria-label="Dismiss" className="shrink-0 text-muted hover:text-foreground">
+            <X className="size-3" />
+          </button>
+        </span>
+      )}
+      {open && <OverridesDialog job={job} mode="rush" ask={ask} onClose={() => setOpen(false)} onSaved={setNote} />}
     </span>
   );
 }

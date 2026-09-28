@@ -222,7 +222,9 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
     : "mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
   const p = d.planning;
   const tz = p?.timezone ?? "America/New_York";
-  const tzName = tzShort(tz);
+  // Each time is labelled with its own date's zone (EST in late November),
+  // never today's (Sep 28).
+  const zoneOf = (iso: string) => tzShort(tz, new Date(iso));
   const sessionRequests = d.schedule?.requests.filter((r) => ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"].includes(r.status)) ?? [];
   const sv = homeSessionView(d.progress, d.schedule, { canBook: d.perms.session, readOnly: d.readOnly });
   const pendingAsks = sessionRequests.filter((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED");
@@ -252,7 +254,7 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
           <div className="mt-2 text-sm">
             <div className="rounded-md bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">Booked</div>
             <div className="mt-1 font-medium">{fmtDate(p.callAtISO, tz)}</div>
-            <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {tzName}</div>
+            <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {zoneOf(p.callAtISO)}</div>
             {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <span className="mt-1 block text-xs text-muted-2">Video call — the link is in your calendar invite.</span>}
             {!d.readOnly && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Need to move it? →</Link>}
           </div>
@@ -295,7 +297,7 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
                 <div className="mt-2 text-sm">
                   <div className={cn("inline-block rounded-md px-1.5 py-0.5 text-[10px] font-semibold", c.state === "BOOKED" || c.state === "FILMED" ? "bg-success-soft text-success" : "bg-brand-soft text-brand")}>{c.label}</div>
                   {c.startsAtISO && <div className="mt-1 font-medium">{fmtDate(c.startsAtISO, tz)}</div>}
-                  {c.startsAtISO && <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(c.startsAtISO, tz)} {tzName}</div>}
+                  {c.startsAtISO && <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(c.startsAtISO, tz)} {zoneOf(c.startsAtISO)}</div>}
                   {c.note && <p className="mt-0.5 text-xs text-muted">{c.note}</p>}
                   {loc && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {loc}</div>}
                   {c.state === "BOOKED" && !d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Reschedule or cancel →</Link>}
@@ -309,7 +311,7 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
               {pendingAsks.length ? (
                 <div className="mt-2 text-sm">
                   <div className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">{pendingAsks[0].label}</div>
-                  {pendingAsks[0].slotStartISO && <div className="mt-1 font-medium">{fmtDate(pendingAsks[0].slotStartISO, tz)} · {fmtTime(pendingAsks[0].slotStartISO, tz)} {tzName}</div>}
+                  {pendingAsks[0].slotStartISO && <div className="mt-1 font-medium">{fmtDate(pendingAsks[0].slotStartISO, tz)} · {fmtTime(pendingAsks[0].slotStartISO, tz)} {zoneOf(pendingAsks[0].slotStartISO)}</div>}
                   {pendingAsks[0].locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {pendingAsks[0].locationText}</div>}
                   {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Change or cancel →</Link>}
                 </div>

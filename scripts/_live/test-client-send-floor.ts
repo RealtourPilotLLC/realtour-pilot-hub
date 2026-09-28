@@ -3,7 +3,7 @@
 //
 //   NODE_OPTIONS=--conditions=react-server npx tsx \
 //     --require ./scripts/_drill/_drill-preload.cjs \
-//     scripts/_drill/test-client-send-floor.ts
+//     scripts/_live/test-client-send-floor.ts
 //
 // Phase 0: nothing stood between a synthetic client and a real outbound
 // message. Every protection was a per-feature check that a new send path only

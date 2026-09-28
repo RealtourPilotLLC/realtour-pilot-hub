@@ -5,7 +5,7 @@
  *
  *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
  *   set -a && source .env; set +a && \
- *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/drone-footage.ts
+ *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/drone-footage.ts
  *
  * Read-only: it reads the product catalogue and calls the parser. No writes.
  * STRUCTURALLY read-only since Sep 28 2026 (A02): it reads production, so its

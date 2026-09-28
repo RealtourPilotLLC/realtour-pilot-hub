@@ -2,7 +2,7 @@
  * ACCEPTANCE DRILL — end-of-day comms coaching (Sep 21 2026).
  *
  *   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && set -a && source .env; set +a && \
- *     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/comms-coaching.ts
+ *     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/comms-coaching.ts
  *
  * The react-server condition is not optional: commsCoaching.ts and openphone.ts
  * both open with `import "server-only"`, which throws on sight without it.

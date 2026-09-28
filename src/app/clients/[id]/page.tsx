@@ -17,6 +17,7 @@ import { ClientEmails } from "@/components/clients/ClientEmails";
 import { ClientTodos } from "@/components/clients/ClientTodos";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ClientNotificationPrefs } from "@/components/clients/ClientNotificationPrefs";
+import { FieldReportsCard } from "./FieldReportsCard";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ShowMore } from "@/components/ui/ShowMore";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -90,6 +91,24 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // can say out loud when the global master switch (Settings → Automated texts)
   // is what's actually stopping a text — not a per-client preference.
   const autoRules = await autoTextRules().catch(() => null);
+
+  // §7.8 (Sep 28): the field reports on this client, for a LISTING-ONLY client
+  // (a program client reviews them in the content workspace). Owner/admin see
+  // the list; only a real owner/admin (not a "view as" preview) gets Confirm
+  // and Reject, the same gate as the switches above — decideFieldReport
+  // re-checks. A failed read shows no card.
+  const seesFieldReports = !enrollment && (me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced());
+  const fieldReports = seesFieldReports
+    ? await import("@/lib/clientFacts")
+        .then((m) => m.fieldReportsForClient(client.id))
+        .then((rows) =>
+          rows.map((r) => ({
+            id: r.id, body: scrub(r.body), status: r.status, scope: r.scope, basis: r.basis, speaker: r.speaker,
+            createdAtISO: r.createdAt.toISOString(), projectId: r.projectId, projectTitle: r.projectTitle,
+          })),
+        )
+        .catch(() => [])
+    : [];
 
   return (
     <div>
@@ -180,6 +199,9 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             profile={parseClientProfile(client.profileJson)}
             updatedAt={client.profileUpdatedAt ? etDateTime(client.profileUpdatedAt) : null}
           />
+
+          {/* §7.8: what photographers reported, waiting on the office. */}
+          {fieldReports.length > 0 && <FieldReportsCard reports={fieldReports} canDecide={canEditPrefs} />}
 
           {/* Orders */}
           <section>

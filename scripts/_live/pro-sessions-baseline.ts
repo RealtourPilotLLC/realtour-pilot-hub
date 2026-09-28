@@ -2,7 +2,7 @@
 // DRILL: WHAT A "SESSION" IS, MEASURED (Sep 21 2026, batch 2).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/pro-sessions-baseline.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/pro-sessions-baseline.ts
 //
 // Jordan, Sep 21: Video Pro is the EXISTING four-hour product booked TWICE, and
 // a month is fully scheduled only when two DISTINCT confirmed sessions are

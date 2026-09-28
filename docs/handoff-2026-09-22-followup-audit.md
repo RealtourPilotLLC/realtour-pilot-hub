@@ -181,7 +181,7 @@ src/lib/transcriptJobs.ts       a `paused` outcome: requeued, attempt refunded, 
 src/lib/contentGeneration.ts    AutomationDisabledError returns `paused`, never `reviewReason`
 src/lib/contentPipeline.ts      the adapter carries `paused` through instead of folding it into needsReview
 scripts/_drill/scheduled-journey.ts   88 checks
-scripts/_drill/jordan-call-path.ts    re-runnable assertions (13 checks, twice)
+scripts/_live/jordan-call-path.ts    re-runnable assertions (13 checks, twice)
 scripts/_drill/{identity-access-baseline,pro-sessions-baseline,pro-two-sessions,
                 session-loss-and-double-count,session-loss-and-double-count-proof,
                 test-account-guards}.ts   filed, previously untracked

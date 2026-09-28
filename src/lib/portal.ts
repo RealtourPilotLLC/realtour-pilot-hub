@@ -484,6 +484,10 @@ export async function programSlotDays(opts: {
   /** overrides the package's own length — a Pro session asks for 240 */
   sessionMinutes?: number | null;
   days?: number;
+  /** A19: the session's first allowed moment (sessionTravel passes its gate).
+   *  No start before it is returned; a later day starts the window there, and
+   *  the cache key names that day. */
+  from?: Date | null;
 }): Promise<PortalSlotDay[]> {
   const product = aryeoProductFor(opts.package);
   const minutes = opts.sessionMinutes ?? product?.durationMinutes ?? null;
@@ -492,21 +496,39 @@ export async function programSlotDays(opts: {
   if (!product || !minutes) return [];
 
   const horizonDays = opts.days ?? 21;
-  const key = slotsCacheKey(product.productId, minutes, horizonDays);
+  const { productAvailability, availabilityFromDay } = await import("@/lib/integrations/aryeo");
+  const fromDay = availabilityFromDay(opts.from);
+  const key = slotsCacheKey(product.productId, minutes, horizonDays) + (fromDay ? `:from:${fromDay}` : "");
+  // A19: the row holds every start Aryeo gave, and the session's first
+  // allowed moment is applied on the way OUT.
+  // NO PER-DAY CAP (A19, Sep 28). This used to keep the first ten starts of
+  // each day. Live Aryeo shows 12–13 real four-hour starts on many days, so
+  // the cap silently hid a real afternoon from the client (a day with 14 free
+  // starts offered 10, all before 2 PM) — and, applied before the gate, a day
+  // gated at 2:30 PM kept only morning starts and showed nothing. Every start
+  // Aryeo says is free is offered; the picker wraps them (PortalScheduler).
+  const floor = opts.from && !Number.isNaN(opts.from.getTime()) ? opts.from.getTime() : -Infinity;
+  const shape = (all: PortalSlotDay[]): PortalSlotDay[] =>
+    all
+      .map((d) => {
+        const slots = d.slots.filter((s) => Date.parse(s) >= floor);
+        return { ...d, slots, slotCreatives: Object.fromEntries(slots.map((s) => [s, d.slotCreatives?.[s] ?? []])) };
+      })
+      .filter((d) => d.slots.length > 0);
   const cached = await prisma.appSetting.findUnique({ where: { key } }).catch(() => null);
   if (cached) {
     try {
       const v = JSON.parse(cached.value) as { at: number; days: PortalSlotDay[] };
-      if (Date.now() - v.at < SLOTS_TTL_MS) return v.days;
+      if (Date.now() - v.at < SLOTS_TTL_MS) return shape(v.days);
     } catch { /* recompute */ }
   }
 
-  const { productAvailability } = await import("@/lib/integrations/aryeo");
   const got = await productAvailability({
     productId: product.productId,
     durationMin: minutes,
     days: horizonDays,
     interval: 30,
+    ...(fromDay ? { from: opts.from } : {}),
   }).catch(() => null);
   // COULD NOT ASK vs NOBODY IS FREE. A null is Aryeo being unreachable, and an
   // empty calendar is a real answer — so a null is NOT cached, or one bad
@@ -522,7 +544,7 @@ export async function programSlotDays(opts: {
   const { teamMemberIdByUserId } = await import("@/lib/integrations/aryeo");
   const tmByUser = await teamMemberIdByUserId().catch(() => new Map<string, string>());
   const days: PortalSlotDay[] = got.days.map((d) => {
-    const slots = d.slots.slice(0, 10);
+    const slots = d.slots;
     const slotCreatives: Record<string, { teamMemberId: string; name: string }[]> = {};
     for (const s of slots) {
       const tms = new Set((d.slotUsers?.[s] ?? []).map((u) => tmByUser.get(u)).filter((x): x is string => !!x));
@@ -538,7 +560,7 @@ export async function programSlotDays(opts: {
       create: { key, value: JSON.stringify({ at: Date.now(), days }) },
     })
     .catch(() => {});
-  return days;
+  return shape(days);
 }
 
 /**

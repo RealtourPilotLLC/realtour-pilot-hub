@@ -5,7 +5,7 @@ import { cutSlots, slotKeyOf, type CutSlot } from "@/lib/reviewCuts";
 import type { EditorKey } from "@/lib/editors";
 import { unitCategoryFor } from "@/lib/evidenceUnits";
 import { stripMoneySentences } from "@/lib/text";
-import { etDateTime } from "@/lib/datetime";
+import { etDateTime, etMonthDay } from "@/lib/datetime";
 
 /** Rounds that are not a version of anything — the same list reviewCuts keeps. */
 const NOT_A_ROUND = ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] as const;
@@ -1342,6 +1342,69 @@ export async function saveOutputBrief(input: {
     .create({ data: { projectId: row.projectId, type: "SYSTEM", body: `Brief for “${name}” saved as v${version} by ${actor}.` } })
     .catch(() => {});
   return { ok: true, changed: true, version };
+}
+
+// ---------------------------------------------------------------------------
+// THE PHOTOGRAPHER'S ON-SITE NOTE (§7.5 / §6.8, the upload portal, Sep 28).
+//
+// The person who was there adds to ONE video's brief from the upload page. A
+// note is APPENDED to "Changed on site" as its own line, signed with their
+// name and the day ("Harrison, Sep 23: the agent asked us to skip the
+// garage"), so it never replaces what the office or an earlier note said, and
+// the brief still reads who said what after somebody else saves it. It goes
+// through saveOutputBrief, so it is a new version saved by that person, with
+// the same refusals (another job's video, a video no longer owed, the section
+// cap) and the same Activity line. A save that raced another is tried again on
+// the newer brief — an append cannot overwrite anything — up to three times.
+// The same note twice is one line, not two. The caller owns the permission
+// check (the upload page's action: the shoot's photographer or the office,
+// never a "view as" preview).
+// ---------------------------------------------------------------------------
+
+/** One note's limit. The section it lands in keeps OUTPUT_BRIEF_FIELD_CAP. */
+export const ON_SITE_NOTE_CAP = 1000;
+
+export type AddOnSiteNoteResult =
+  | SaveOutputBriefResult
+  | { ok: false; reason: "empty"; message: string; version: number | null };
+
+export async function addOnSiteNote(input: {
+  outputId: string;
+  projectId: string;
+  note: string;
+  actor: string;
+}): Promise<AddOnSiteNoteResult> {
+  const note = (input.note ?? "").replace(/\r\n/g, "\n").trim();
+  if (!note) return { ok: false, reason: "empty", message: "Write the note first.", version: null };
+  if (note.length > ON_SITE_NOTE_CAP) {
+    return { ok: false, reason: "too_long", message: `Your note is over ${ON_SITE_NOTE_CAP} characters. Put the longer version in your editing notes.`, version: null };
+  }
+  const actor = (input.actor || "the photographer").trim().slice(0, 120);
+  const line = `${actor}, ${etMonthDay(new Date())}: ${note}`;
+  let last: AddOnSiteNoteResult | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await prisma.deliverableOutput.findUnique({ where: { id: input.outputId }, select: { projectId: true, briefJson: true } });
+    if (!row) return { ok: false, reason: "not_found", message: "That video is not on this job any more.", version: null };
+    if (row.projectId !== input.projectId) return { ok: false, reason: "wrong_project", message: "That video belongs to a different job.", version: null };
+    const current = readOutputBrief(row.briefJson);
+    const existing = current?.sections.onSite ?? "";
+    // Already there, word for word (a double tap, a retried request).
+    if (`\n${existing}\n`.includes(`\n${line}\n`)) return { ok: true, changed: false, version: current?.version ?? 0 };
+    const res = await saveOutputBrief({
+      outputId: input.outputId,
+      projectId: input.projectId,
+      sections: { onSite: existing ? `${existing}\n${line}` : line },
+      expectedVersion: current?.version ?? null,
+      actor,
+    });
+    if (res.ok || res.reason !== "conflict") {
+      return !res.ok && res.reason === "too_long"
+        ? { ...res, message: `This video's on-site notes are full (${OUTPUT_BRIEF_FIELD_CAP} characters). Put the rest in your editing notes, or ask the office to tidy the brief.` }
+        : res;
+    }
+    last = res;
+  }
+  return last ?? { ok: false, reason: "conflict", message: "The brief kept changing while this saved. Reload and add the note again.", version: null };
 }
 
 export type OutputBriefSection = { key: OutputBriefKey; label: string; text: string };

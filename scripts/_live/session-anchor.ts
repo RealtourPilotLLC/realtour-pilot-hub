@@ -3,7 +3,7 @@
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
 //     set -a && source .env; set +a && NODE_OPTIONS=--conditions=react-server \
-//     npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_drill/session-anchor.ts
+//     npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_live/session-anchor.ts
 //
 // §9: "Each Pro session has a separate end time and day-7/day-10 target."
 //

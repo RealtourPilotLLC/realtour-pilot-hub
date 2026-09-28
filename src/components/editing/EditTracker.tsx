@@ -1,6 +1,7 @@
-import { ArrowRight, CheckCircle2, ChevronDown, Clapperboard, History, RefreshCw } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronDown, Clapperboard, FolderCheck, History, RefreshCw } from "lucide-react";
 import { SlaCountdown } from "@/components/editing/SlaCountdown";
 import { etDate, etDateTime } from "@/lib/datetime";
+import type { LadderRow, Tri } from "@/lib/handoff";
 
 // ---------------------------------------------------------------------------
 // The per-edit TRACKER — the stage timeline + order facts + round history that
@@ -151,6 +152,44 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
+// §7.3: how true each rung is. Found / done reads plainly; not found or not
+// yet reads amber; "nobody could look" reads muted, never as missing.
+const RUNG_TONE: Record<Tri, string> = {
+  yes: "text-foreground/85",
+  no: "text-warning",
+  unknown: "italic text-muted",
+};
+
+/**
+ * THE FILES, RUNG BY RUNG (§7.3, Sep 28 2026) — one set of words for the edit
+ * tracker and the project summary (lib/handoff evidenceRungs, read once by
+ * lib/handoffLadder): upload reported, files found, handed off, ready or not,
+ * editing started, cuts handed in. Each only if true; an unreadable folder is
+ * "not confirmed", never "missing". Exported so the project summary prints the
+ * identical row.
+ */
+export function EvidenceLadder({ rows, className = "" }: { rows: LadderRow[]; className?: string }) {
+  if (rows.length === 0) return null;
+  return (
+    <ul className={`space-y-1 ${className}`}>
+      {rows.map((row) => (
+        <li key={row.category} className="text-xs leading-relaxed" data-ladder={row.category}>
+          <span className="font-semibold text-foreground/90">{row.name}:</span>{" "}
+          {row.rungs.map((r, i) => (
+            <span key={r.key}>
+              {i > 0 && <span className="text-muted-2"> · </span>}
+              <span className={RUNG_TONE[r.tone]} title={r.detail}>{r.text}</span>
+            </span>
+          ))}
+          {row.rungs.find((r) => r.detail)?.detail && (
+            <span className="block text-[11px] text-muted">{row.rungs.find((r) => r.detail)?.detail}</span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const ROUND_CHIP: Record<string, { text: string; cls: string }> = {
   PENDING: { text: "With Jordan", cls: "bg-warning/10 text-warning" },
   CHANGES_REQUESTED: { text: "Changes requested", cls: "bg-danger/10 text-danger" },
@@ -179,6 +218,7 @@ export function EditTracker({
   overridden,
   dueWords,
   moveDue,
+  evidence,
 }: {
   stage: EditStage;
   statusLine: string;
@@ -234,6 +274,10 @@ export function EditTracker({
     defaultLocal: string;
     notice?: { ok: boolean; text: string } | null;
   } | null;
+  /** §7.3: the video half's evidence ladder (lib/handoffLadder.handoffLadderRows,
+   *  filtered to the half this tracker is about). Absent or empty = the row is
+   *  not drawn, and the tracker reads exactly as it did. */
+  evidence?: LadderRow[] | null;
 }) {
   const dotColor =
     stage === "done" ? "text-success" : stage === "revision" ? "text-danger" : stage === "review" ? "text-warning" : "text-brand";
@@ -323,6 +367,16 @@ export function EditTracker({
           )}
         </Fact>
       </div>
+
+      {/* §7.3: what is actually true about the footage, rung by rung. */}
+      {evidence && evidence.length > 0 && (
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
+            <FolderCheck className="size-3.5" /> The footage
+          </div>
+          <EvidenceLadder rows={evidence} className="mt-1.5" />
+        </div>
+      )}
 
       {/* A52: the office moves a reopened job's due date here. The form posts
           without any script; the page comes back with the new date on it. */}

@@ -2,7 +2,7 @@
 // PROOF: the three session defects, before and after (Sep 21 2026, batch 2).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/session-loss-and-double-count-proof.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/session-loss-and-double-count-proof.ts
 //
 // Each section re-implements the OLD rule beside the shipped one and prints
 // both, so the fix is a measured difference rather than an assertion. Real rows

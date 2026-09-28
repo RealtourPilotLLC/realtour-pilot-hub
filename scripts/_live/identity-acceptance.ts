@@ -2,7 +2,7 @@
 // DRILL: §18 ACCEPTANCE FOR IDENTITY AND ACCESS (Sep 21 2026, batch 2).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/identity-acceptance.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/identity-acceptance.ts
 //
 // A01 payment/discovery in either order, duplicates · A02 different payer and
 // invitee address · A04 a teammate's reach · A22 preparation timing · A51 the

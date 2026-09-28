@@ -52,7 +52,16 @@ export type AssetDependencyInput = {
 };
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
-const slugOk = (s: string) => /^[a-z0-9][a-z0-9-]{0,60}$/.test(s);
+/** A dependency's id. Exported so the job page's card (which derives it from
+ *  the words typed) and its drill test the same rule the server applies. */
+export const slugOk = (s: string) => /^[a-z0-9][a-z0-9-]{0,60}$/.test(s);
+
+/** Who the office may name to read or draw from a file (personFor below puts
+ *  each on a roster row): Jordan — the default, and the only one for property
+ *  lines — Kyle, and the two in-house editors. The job page offers these and
+ *  nothing else, and anything else is refused rather than written as a key no
+ *  board knows (Sep 28). */
+export const INTERPRETER_KEYS = ["jordan", "kyle", "kim", "john"] as const;
 
 /** The pair's keys. Scope = the output, else the category, else the job. */
 export function assetKeys(projectId: string, scope: { outputId?: string | null; category?: string | null }, slug: string) {
@@ -83,6 +92,10 @@ export async function recordAssetDependency(input: AssetDependencyInput): Promis
   if (!slugOk(input.slug)) return { ok: false, message: "That dependency needs a short id.", created: 0 };
   const need = input.need.trim();
   if (!need) return { ok: false, message: "Say what file is needed.", created: 0 };
+  const ownerKey = input.interpretation?.what ? input.interpretation.ownerKey || null : null;
+  if (ownerKey && !(INTERPRETER_KEYS as readonly string[]).includes(ownerKey)) {
+    return { ok: false, message: "Pick who works from the file: Jordan, Kyle, Kim or John Mark.", created: 0 };
+  }
   const p = await prisma.project.findUnique({ where: { id: input.projectId }, select: { id: true, title: true, clientId: true } });
   if (!p) return { ok: false, message: "That job no longer exists.", created: 0 };
   if (input.outputId) {

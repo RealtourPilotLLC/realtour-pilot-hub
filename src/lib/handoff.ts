@@ -1,5 +1,5 @@
 import { videoStepSpec, type VideoScriptMode, type VideoStepSpec } from "@/lib/pipeline";
-import { etAt, etDayKey } from "@/lib/datetime";
+import { etAt, etDateTime, etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // FILES IN IS NOT INSTRUCTIONS READY (audit WF-06, Sep 18 2026).
@@ -379,26 +379,124 @@ export function handoffEvidence(p: {
   });
 }
 
+/**
+ * One rung of the ladder, in the words every surface prints (§7.3). `tone`
+ * is how true it is: yes (it happened), no (it has not, or it was looked for
+ * and not found), unknown (nobody could look). `detail` is the extra a screen
+ * may show on hover — the blocker's own sentence — never part of the line.
+ */
+export type EvidenceRung = {
+  key: "reported" | "found" | "handoff" | "ready" | "started" | "cuts";
+  text: string;
+  tone: Tri;
+  detail?: string;
+};
+
+/**
+ * The rungs of one half, in order. THE words: evidenceLine joins them, and the
+ * edit tracker and the project summary both print them (lib/handoffLadder),
+ * so those screens cannot describe the same files differently.
+ */
+export function evidenceRungs(e: CategoryEvidence, fmt: (d: Date) => string): EvidenceRung[] {
+  const rungs: EvidenceRung[] = [];
+  rungs.push(
+    e.uploadReported
+      ? { key: "reported", text: `upload reported ${fmt(e.uploadReported)}`, tone: "yes" }
+      : { key: "reported", text: "no upload reported", tone: "no" },
+  );
+  rungs.push(
+    e.filesDetected === "yes"
+      ? { key: "found", text: `files found in Dropbox${e.fileCount ? ` (${e.fileCount})` : ""}`, tone: "yes" }
+      : e.filesDetected === "no"
+        ? { key: "found", text: "no files found in Dropbox", tone: "no" }
+        : { key: "found", text: "Dropbox not confirmed", tone: "unknown" },
+  );
+  rungs.push(
+    e.handoffSubmitted
+      ? { key: "handoff", text: `handed off ${fmt(e.handoffSubmitted)}`, tone: "yes" }
+      : { key: "handoff", text: "not handed off yet", tone: "no" },
+  );
+  if (e.category === "video") {
+    if (e.readyToEdit && "at" in e.readyToEdit) rungs.push({ key: "ready", text: "ready to edit", tone: "yes" });
+    else if (e.readyToEdit && "blocked" in e.readyToEdit) {
+      rungs.push({ key: "ready", text: "not ready to edit", tone: "no", detail: e.readyToEdit.blocked });
+    }
+    if (e.editingStarted) rungs.push({ key: "started", text: `editing started ${fmt(e.editingStarted)}`, tone: "yes" });
+    if (e.outputSubmitted > 0) {
+      rungs.push({ key: "cuts", text: `${e.outputSubmitted} cut${e.outputSubmitted === 1 ? "" : "s"} handed in`, tone: "yes" });
+    }
+  }
+  return rungs;
+}
+
 /** One plain line per half, for a brief or a tracker: only what is true. */
 export function evidenceLine(e: CategoryEvidence, fmt: (d: Date) => string): string {
   const name = e.category === "photos" ? "Photos" : "Video";
-  const parts: string[] = [];
-  parts.push(e.uploadReported ? `upload reported ${fmt(e.uploadReported)}` : "no upload reported");
-  parts.push(
-    e.filesDetected === "yes"
-      ? `files found in Dropbox${e.fileCount ? ` (${e.fileCount})` : ""}`
-      : e.filesDetected === "no"
-        ? "no files found in Dropbox"
-        : "Dropbox not confirmed",
-  );
-  parts.push(e.handoffSubmitted ? `handed off ${fmt(e.handoffSubmitted)}` : "not handed off yet");
-  if (e.category === "video") {
-    if (e.readyToEdit && "at" in e.readyToEdit) parts.push("ready to edit");
-    else if (e.readyToEdit && "blocked" in e.readyToEdit) parts.push("not ready to edit");
-    if (e.editingStarted) parts.push(`editing started ${fmt(e.editingStarted)}`);
-    if (e.outputSubmitted > 0) parts.push(`${e.outputSubmitted} cut${e.outputSubmitted === 1 ? "" : "s"} handed in`);
-  }
-  return `${name}: ${parts.join(" · ")}`;
+  return `${name}: ${evidenceRungs(e, fmt).map((r) => r.text).join(" · ")}`;
+}
+
+/**
+ * A half's evidence as it crosses from a server page to a client component
+ * (dates as ISO strings). The upload portal gets THIS, not its own words: it
+ * rebuilds the evidence (evidenceFromView) and prints ladderRows like the edit
+ * tracker and the project summary, so the photographer, the editor and the
+ * office read one set of words about one folder (§7.3, Sep 28). The portal's
+ * own evidenceText said "ticked uploaded" and "Dropbox shows N files".
+ */
+export type EvidenceView = {
+  category: HandoffCategory;
+  uploadReportedISO: string | null;
+  filesDetected: Tri;
+  fileCount: number | null;
+  stale: boolean;
+  handoffISO: string | null;
+  ready: { atISO: string } | { blocked: string } | null;
+  editingStartedISO: string | null;
+  outputSubmitted: number;
+};
+
+export function evidenceView(e: CategoryEvidence): EvidenceView {
+  return {
+    category: e.category,
+    uploadReportedISO: e.uploadReported?.toISOString() ?? null,
+    filesDetected: e.filesDetected,
+    fileCount: e.fileCount,
+    stale: e.stale,
+    handoffISO: e.handoffSubmitted?.toISOString() ?? null,
+    ready: !e.readyToEdit ? null : "at" in e.readyToEdit ? { atISO: e.readyToEdit.at.toISOString() } : { blocked: e.readyToEdit.blocked },
+    editingStartedISO: e.editingStarted?.toISOString() ?? null,
+    outputSubmitted: e.outputSubmitted,
+  };
+}
+
+/** The view back as evidence. `handoffISO` overrides the half's handoff — the
+ *  portal's own submit knows it before the page reloads. */
+export function evidenceFromView(v: EvidenceView, handoffISO: string | null = v.handoffISO): CategoryEvidence {
+  const at = (iso: string | null) => (iso ? new Date(iso) : null);
+  return {
+    category: v.category,
+    uploadReported: at(v.uploadReportedISO),
+    filesDetected: v.filesDetected,
+    fileCount: v.fileCount,
+    stale: v.stale,
+    handoffSubmitted: at(handoffISO),
+    readyToEdit: !v.ready ? null : "atISO" in v.ready ? { at: new Date(v.ready.atISO) } : { blocked: v.ready.blocked },
+    editingStarted: at(v.editingStartedISO),
+    outputSubmitted: v.outputSubmitted,
+  };
+}
+
+/** A half of the ladder, ready for a screen: plain strings only, so it crosses to any component. */
+export type LadderRow = { category: HandoffCategory; name: string; rungs: EvidenceRung[]; line: string };
+
+/** The ladder as screens print it — Eastern times, the same words as evidenceLine. */
+export function ladderRows(evidence: CategoryEvidence[], fmt: (d: Date) => string = (d) => etDateTime(d)): LadderRow[] {
+  return evidence.map((e) => ({
+    category: e.category,
+    name: e.category === "photos" ? "Photos" : "Video",
+    rungs: evidenceRungs(e, fmt),
+    line: evidenceLine(e, fmt),
+  }));
 }
 
 /** The timeline line a half's submit writes (O05) — "<prefix> by <who>." */

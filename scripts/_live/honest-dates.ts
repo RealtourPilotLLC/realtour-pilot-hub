@@ -2,7 +2,7 @@
 // DRILL: "DON'T INVENT PRODUCTION DATES" (Jordan, Sep 21 2026 — batch 2)
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/honest-dates.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/honest-dates.ts
 //
 // Batch 1 answered a missing appointment end by estimating one — booked start
 // plus the package's minutes, or the shoot date — and labelling it
@@ -21,7 +21,7 @@
 //   4. does the delivery board's retired `now` fallback change any live row?
 //
 // READ-ONLY, STRUCTURALLY. The connection refuses writes and proves it with a
-// refused UPDATE before it reads anything (scripts/_drill/attribution-rails.ts).
+// refused UPDATE before it reads anything (scripts/_live/attribution-rails.ts).
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";

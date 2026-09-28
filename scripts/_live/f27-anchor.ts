@@ -3,7 +3,7 @@
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
 //     set -a && source .env; set +a && NODE_OPTIONS=--conditions=react-server \
-//     npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_drill/f27-anchor.ts
+//     npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_live/f27-anchor.ts
 //
 // §8 says the internal production window is "target business day 7, overdue
 // after business day 10, anchored to THAT APPOINTMENT'S END". Today the hub

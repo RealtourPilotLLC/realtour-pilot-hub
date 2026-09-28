@@ -2,7 +2,7 @@
 // DRILL: PRODUCT-SPECIFIC VIDEOGRAPHER ELIGIBILITY (Jordan, Sep 21 2026)
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/product-eligibility.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/product-eligibility.ts
 //
 // Phase 0 read `is_service_provider`, found it true for Harrison Wells, and told
 // Jordan he was already eligible for the three monthly-content products. Jordan:

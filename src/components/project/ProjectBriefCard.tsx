@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { ClipboardList, ArrowRight } from "lucide-react";
 import type { ProjectBrief } from "@/lib/projectBrief";
+import type { LadderRow } from "@/lib/handoff";
+import { EvidenceLadder } from "@/components/editing/EditTracker";
 
 // ---------------------------------------------------------------------------
 // The one summary (R08). Nine cards' worth of facts, said once, at the top, in
@@ -18,12 +20,26 @@ function Line({ label, children }: { label: string; children: React.ReactNode })
   return (
     <div className="flex flex-wrap gap-x-2 gap-y-0.5 px-5 py-2">
       <span className="w-28 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-2">{label}</span>
-      <span className="min-w-0 flex-1 text-[13px] text-foreground/85">{children}</span>
+      <div className="min-w-0 flex-1 text-[13px] text-foreground/85">{children}</div>
     </div>
   );
 }
 
-export function ProjectBriefCard({ brief }: { brief: ProjectBrief }) {
+/**
+ * The card as the project page mounts it. It reads the files ladder itself
+ * (§7.3 — lib/handoffLadder, the same read the edit tracker makes) so the page
+ * needs nothing new; `evidence` lets a caller that already holds it pass it in.
+ * A failed read leaves the line off rather than breaking the summary.
+ */
+export async function ProjectBriefCard({ brief, evidence }: { brief: ProjectBrief; evidence?: LadderRow[] | null }) {
+  const rows =
+    evidence !== undefined
+      ? evidence
+      : await import("@/lib/handoffLadder").then((m) => m.handoffLadderRows(brief.projectId)).catch(() => null);
+  return <ProjectBriefCardView brief={brief} evidence={rows} />;
+}
+
+export function ProjectBriefCardView({ brief, evidence }: { brief: ProjectBrief; evidence?: LadderRow[] | null }) {
   const { outputs, outputsDone, outputsOwed } = brief;
   const promiseWord =
     brief.promiseSource === "frozen" ? "promised" :
@@ -67,6 +83,12 @@ export function ProjectBriefCard({ brief }: { brief: ProjectBrief }) {
               </span>
             )}
           </Line>
+        )}
+
+        {/* §7.3: what is actually true about the files, half by half — the
+            same rungs, in the same words, as the edit tracker. */}
+        {evidence && evidence.length > 0 && (
+          <Line label="The files"><EvidenceLadder rows={evidence} /></Line>
         )}
 
         {brief.promisedAt && (

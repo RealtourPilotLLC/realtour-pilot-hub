@@ -350,6 +350,31 @@ async function main() {
   c.ok("no outbound message was even queued", outbox === 0, `${outbox} rows`);
   c.ok("and no query was ever lost at the socket layer", server.patchStats.rejected === 0, JSON.stringify(server.patchStats));
 
+  // Sep 28 2026: twice a file here that only MENTIONED PGlite was taken for a
+  // drill and read production (read-only, so nothing was written). This folder
+  // now holds isolated drills only; anything that opens the live database lives
+  // in scripts/_live/. A drill file must boot its own database.
+  c.head("H · every drill in this folder boots its own database");
+  {
+    const dir = path.dirname(__filename);
+    // A file may need no database at all (a pure rule). One that reaches a
+    // database must make its own: bootDrillDb/bootDemoDb, PGlite.create, or
+    // DATABASE_URL pinned to a loopback URL in the file. The production shape
+    // (take DATABASE_URL from .env, add the read-only option) has none of these.
+    const shape = (src: string) => {
+      const touchesDb = /@\/lib\/prisma|@prisma\/client|PrismaClient|DATABASE_URL/.test(src);
+      const own =
+        /\bbootDrillDb\(|\bbootDemoDb\(|PGlite\.create\(/.test(src) ||
+        (/process\.env\.DATABASE_URL\s*=/.test(src) && /postgresql:\/\/[^\s"'`]*@127\.0\.0\.1/.test(src));
+      return touchesDb && !own;
+    };
+    const offenders = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".ts") && !f.startsWith("_") && !f.startsWith("zz-scratch-"))
+      .filter((f) => shape(fs.readFileSync(path.join(dir, f), "utf8")));
+    c.ok("no file in scripts/_drill/ can reach a database it did not create (production scripts go in scripts/_live/)", offenders.length === 0, offenders.join(", ") || "none");
+  }
+
   quiet.restore();
   console.log(`    (${quiet.count} expected prisma:error log lines suppressed)`);
   c.summary();

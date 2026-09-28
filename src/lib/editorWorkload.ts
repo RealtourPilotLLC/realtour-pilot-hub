@@ -602,6 +602,70 @@ export function mayDisplace(before: { dueISO: string | null; priority: string },
   return a < b;
 }
 
+// ---------------------------------------------------------------------------
+// THE ASK ON JORDAN'S CARD, AS DATA (review, Sep 28 2026). "Approve by saving
+// the same change" needs to know what the change WAS: the card's summary is
+// words, so the asked columns ride on the card's sourceDetail too
+// ("rush-ask:{...}", the dueOverrideAt / priorityOverride values the dialog
+// asked for). With them a save can tell the ask has landed (whoever saved it,
+// once it pushes nobody back there is nothing left to approve), and the job
+// page stops showing "Waiting on approval" for a date the job already carries.
+// A card written before this carries no ask data and reads as before.
+// ---------------------------------------------------------------------------
+const RUSH_ASK_PREFIX = "rush-ask:";
+export type RushAskChange = { dueAt?: string | null; priority?: string | null };
+
+/** The card's sourceDetail for an ask. Only the two columns a rush is. Pure. */
+export function rushAskDetail(change: RushAskChange): string {
+  const out: RushAskChange = {};
+  if (change.dueAt !== undefined) out.dueAt = change.dueAt;
+  if (change.priority !== undefined) out.priority = change.priority;
+  return `${RUSH_ASK_PREFIX}${JSON.stringify(out)}`;
+}
+
+/** The ask back off a card, or null for a card that carries none. Pure, shape-tolerant. */
+export function readRushAsk(sourceDetail: string | null | undefined): RushAskChange | null {
+  if (!sourceDetail?.startsWith(RUSH_ASK_PREFIX)) return null;
+  try {
+    const v = JSON.parse(sourceDetail.slice(RUSH_ASK_PREFIX.length)) as Record<string, unknown>;
+    const out: RushAskChange = {};
+    if (v.dueAt === null || typeof v.dueAt === "string") out.dueAt = v.dueAt;
+    if (v.priority === null || typeof v.priority === "string") out.priority = v.priority;
+    return out.dueAt === undefined && out.priority === undefined ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+/** Does the job already carry everything the ask asked for? False for no ask. Pure. */
+export function rushAskLanded(ask: RushAskChange | null, job: { dueOverrideAt: Date | null; priorityOverride: string | null }): boolean {
+  if (!ask || (ask.dueAt === undefined && ask.priority === undefined)) return false;
+  if (ask.dueAt !== undefined) {
+    const want = ask.dueAt === null ? null : new Date(ask.dueAt).getTime();
+    if (want !== null && Number.isNaN(want)) return false;
+    if ((job.dueOverrideAt?.getTime() ?? null) !== want) return false;
+  }
+  if (ask.priority !== undefined && (job.priorityOverride ?? null) !== ask.priority) return false;
+  return true;
+}
+
+/**
+ * The open "approve this rush?" card on a job, as the job page shows it: who
+ * sent it, when, and its words without the card's how-to-approve tail (the
+ * dialog says how, in its own words). Null when none is open. The sender is
+ * the card's flaggedBy: a person sent this card to Jordan, which is exactly
+ * what that column records (never a "who asked" for a client's revision).
+ */
+export async function openRushAsk(projectId: string): Promise<{ by: string | null; atISO: string; words: string } | null> {
+  const t = await prisma.smartTask.findFirst({
+    where: { projectId, taskType: "rush_approval", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    orderBy: { updatedAt: "desc" },
+    select: { flaggedBy: true, flaggedAt: true, updatedAt: true, summary: true },
+  });
+  if (!t) return null;
+  return { by: t.flaggedBy, atISO: (t.flaggedAt ?? t.updatedAt).toISOString(), words: (t.summary ?? "").replace(/\s*Approve by saving[\s\S]*$/, "").trim() };
+}
+
 export type RushAuthority = {
   /** this login may approve a change that displaces other jobs */
   may: boolean;

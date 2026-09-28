@@ -2,7 +2,7 @@
 // DRILL: THE TEST-ACCOUNT GUARDS, EXERCISED (Sep 21 2026).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     npx tsx scripts/_drill/test-account-guards.ts
+//     npx tsx scripts/_live/test-account-guards.ts
 //
 // §16 asks for four properties. Three of them are decidable without touching a
 // row, and the fourth is only meaningful against the real database:
@@ -17,7 +17,7 @@
 //
 // READ-ONLY, STRUCTURALLY. The connection itself refuses writes (SQLSTATE
 // 25006) and the drill proves that with a refused write before it reads
-// anything, the same way scripts/_drill/attribution-rails.ts does. A promise
+// anything, the same way scripts/_live/attribution-rails.ts does. A promise
 // about what this file calls is worth nothing next to a connection that cannot
 // execute an INSERT.
 // ---------------------------------------------------------------------------

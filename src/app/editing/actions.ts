@@ -1819,14 +1819,64 @@ export async function saveEditOverrides(
   // overrides a job with three of four videos still on no listing, the row has
   // to say three of four.
   const stillMissing = targetStatus === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : null;
+
+  // THE ASK SENT TO JORDAN (§10; review, Sep 28). An approved rush answers it,
+  // as before. So does any due-date or priority save that settles it without
+  // one: the queue can change between the ask and the save (the job it pushed
+  // back handed its cut in), and then the save needs no approval, rushLine
+  // stays empty and the card used to stay open, with the job page reading
+  // "Waiting on approval" for a date the job already had. It is settled when
+  //   · the job now carries exactly what was asked (the card's ask data). It
+  //     got past the rush gate above, so it pushes nobody back: nothing is
+  //     left to approve, whoever saved it; or
+  //   · the save is by someone who may approve a rush (James, Kyle, Jordan):
+  //     their decision on the date or priority is the answer to the ask.
+  // Anything else (another office login moving the date elsewhere) leaves the
+  // ask open for Jordan. A card written before the ask data carries none, and
+  // only the second rule applies to it.
+  let closeAsk = !!rushLine;
+  let askLine = "";
+  if (!rushLine && dueOrPriorityChanged) {
+    const openAsk = await prisma.smartTask
+      .findFirst({
+        where: { dedupeKey: rushApprovalKey(projectId), status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        select: { flaggedBy: true, sourceDetail: true },
+      })
+      .catch(() => null);
+    if (openAsk) {
+      const { readRushAsk, rushAskLanded, rushAuthority } = await import("@/lib/editorWorkload");
+      const landed = rushAskLanded(readRushAsk(openAsk.sourceDetail), { dueOverrideAt: merged.dueOverrideAt, priorityOverride: merged.priorityOverride });
+      let decides = false;
+      if (!landed) {
+        try {
+          const { authEnforced } = await import("@/lib/auth/guards");
+          decides = (
+            await rushAuthority(
+              me ? { realRole: me.realRole, teamMemberId: me.teamMemberId, impersonating: me.impersonating, status: me.status } : null,
+              { authEnforced: authEnforced() },
+            )
+          ).may;
+        } catch { /* unknown authority settles nothing; the card stays open */ }
+      }
+      if (landed || decides) {
+        closeAsk = true;
+        const by = openAsk.flaggedBy?.trim() || "the office";
+        askLine = landed
+          ? ` — this is the rush ${by} asked for; it no longer pushes any other job back, so it needed no approval`
+          : ` — this settles the rush ${by} asked for`;
+      }
+    }
+  }
+
   const sentence =
     describeOverrides(before, after, actor) +
     (stillMissing && stillMissing.categories.length ? ` — with ${owedPhrase(stillMissing)} still missing on Aryeo` : "") +
     // §10 rush: who approved it, what it pushed back and why — the record.
-    rushLine;
+    rushLine +
+    askLine;
   await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: sentence } }).catch(() => {});
-  // An approved rush answers any "approve this rush?" card sent to Jordan.
-  if (rushLine) {
+  // An approved or settled rush answers the "approve this rush?" card sent to Jordan.
+  if (closeAsk) {
     await prisma.smartTask
       .updateMany({
         where: { dedupeKey: rushApprovalKey(projectId), status: { notIn: ["COMPLETED", "CANCELLED"] } },
@@ -2046,7 +2096,7 @@ export async function escalateRushToJordan(
   if (me?.realRole === "OWNER") return { ok: false, message: "You can approve it yourself — save it here." };
   const actor = await signedAs(me, "The office");
 
-  const { priorityImpact, rushAuthority } = await import("@/lib/editorWorkload");
+  const { priorityImpact, rushAuthority, rushAskDetail } = await import("@/lib/editorWorkload");
   const { authEnforced } = await import("@/lib/auth/guards");
   const { etDateTime } = await import("@/lib/datetime");
   let impact: import("@/lib/editorWorkload").PriorityImpact;
@@ -2096,6 +2146,9 @@ export async function escalateRushToJordan(
     // at the top" (Jordan, Sep 7) — a person sent this, not an engine.
     flaggedBy: actor,
     flaggedAt: now,
+    // What was asked, as data, so a save can tell when it has landed
+    // (editorWorkload.rushAskDetail; review, Sep 28).
+    sourceDetail: rushAskDetail(c.value),
     dedupeKey: rushApprovalKey(projectId),
   };
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey }, select: { id: true } });
@@ -2145,7 +2198,16 @@ export async function recordAssetDependencyAction(input: {
   }
   const me = await getCurrentUser().catch(() => null);
   const { recordAssetDependency } = await import("@/lib/assetDependencies");
-  const r = await recordAssetDependency({ ...input, need: (input.need ?? "").slice(0, 160), by: await signedAs(me, "The office") });
+  // The job page's card is the caller (AssetDependencyCard): the words are
+  // capped here as well as there, the "who" is checked against the lib's
+  // INTERPRETER_KEYS, and a blank "what they do" means no second task.
+  const what = (input.interpretation?.what ?? "").trim().slice(0, 160);
+  const r = await recordAssetDependency({
+    ...input,
+    need: (input.need ?? "").slice(0, 160),
+    interpretation: what ? { what, ownerKey: input.interpretation?.ownerKey ?? null } : null,
+    by: await signedAs(me, "The office"),
+  });
   if (r.ok) for (const path of [`/edit/${input.projectId}`, `/projects/${input.projectId}`, "/tasks"]) revalidatePath(path);
   return { ok: r.ok, message: r.message };
 }

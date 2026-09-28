@@ -418,9 +418,42 @@ export type SessionSlotsResult = {
   addressVersion?: number;
   addressLine?: string;
   earliestISO?: string | null;
+  /** A19: set only when the preparation window (not the next-day floor) makes
+   *  the first day with times later than tomorrow, so the client is told why. */
+  preparation?: PreparationHold | null;
   bufferMinutes?: number;
   days: TravelSlotDay[];
 };
+
+/** Why the first filming day is later than tomorrow: the preparation window, in client-safe facts. */
+export type PreparationHold = {
+  /** the first moment a session may start, by the preparation rule */
+  earliestISO: string;
+  /** the window's length in weekday hours (72 unless staff set another for this client) */
+  windowHours: number;
+  /** what it is counted from: the strategy call's end, or the answers sent */
+  after: "CALL" | "ANSWERS";
+};
+
+/**
+ * A19: the preparation hold, read off the gate sessionGate already returned
+ * (programMonths.preparationGate is the one reader; nothing is recomputed
+ * here). Null when the window is waived, when there is no anchor, or when the
+ * first allowed moment is still on tomorrow's day (the 24-hour floor, not the
+ * window, is what the client meets then).
+ */
+export function preparationHold(
+  preparation: { earliest: Date | null; anchor: { kind: "SUBMISSION" | "CALL_END" } | null; windowHours: number; windowWaived: boolean } | null | undefined,
+  now: Date,
+): PreparationHold | null {
+  if (!preparation?.earliest || !preparation.anchor || preparation.windowWaived) return null;
+  if (etDayKey(preparation.earliest) <= etDayKey(new Date(now.getTime() + 86_400_000))) return null;
+  return {
+    earliestISO: preparation.earliest.toISOString(),
+    windowHours: preparation.windowHours,
+    after: preparation.anchor.kind === "CALL_END" ? "CALL" : "ANSWERS",
+  };
+}
 
 /**
  * THE PORTAL'S TIMES FOR ONE SESSION (§6.6 W02 / A22) — every factor at once:
@@ -448,6 +481,7 @@ export async function sessionSlotsFor(a: {
   if (a.moveRequestId && (!moving || moving.enrollmentId !== a.enrollmentId || moving.monthId !== a.monthId)) return { ok: false, message: "That session isn't on your page.", days: [] };
   const gate = await sessionGate(a.enrollmentId, a.monthId, { now, sessionIndex: moving ? moving.sessionIndex ?? undefined : a.sessionIndex });
   if (gate.locked) return { ok: false, locked: true, message: gate.reason, days: [] };
+  const preparation = preparationHold(gate.preparation, now);
 
   let dest: LatLng | null = null;
   let planInfo: Pick<SessionSlotsResult, "planId" | "addressVersion" | "addressLine"> = {};
@@ -459,17 +493,19 @@ export async function sessionSlotsFor(a: {
   } else {
     const plan = await prisma.programSessionPlan.findUnique({ where: { monthId_sessionIndex: { monthId: a.monthId, sessionIndex: a.sessionIndex } } });
     if (!plan || plan.enrollmentId !== a.enrollmentId || !planExact(plan)) {
-      return { ok: false, needsAddress: true, message: "Add the exact filming address first. We check the drive from your videographer's other shoots before we offer a time.", earliestISO: gate.earliest.toISOString(), days: [] };
+      return { ok: false, needsAddress: true, message: "Add the exact filming address first. We check the drive from your videographer's other shoots before we offer a time.", earliestISO: gate.earliest.toISOString(), preparation, days: [] };
     }
     planInfo = { planId: plan.id, addressVersion: plan.addressVersion, addressLine: planAddressLine(plan) };
     if (!planBookable(plan)) {
-      return { ok: true, deskOnly: true, ...planInfo, earliestISO: gate.earliest.toISOString(), message: "We could not find that address on a map, so Kyle will confirm it and your time with you. Tell us what works.", days: [] };
+      return { ok: true, deskOnly: true, ...planInfo, earliestISO: gate.earliest.toISOString(), preparation, message: "We could not find that address on a map, so Kyle will confirm it and your time with you. Tell us what works.", days: [] };
     }
     dest = { lat: plan.latitude!, lng: plan.longitude! };
   }
 
   const cfg = await travelConfig();
-  const base = await programSlotDays({ package: a.package, sessionMinutes: product.durationMinutes });
+  // A19: ask Aryeo from this session's first allowed day (the gate), not from
+  // tomorrow — a window that ran out before the 72 hours did offered nothing.
+  const base = await programSlotDays({ package: a.package, sessionMinutes: product.durationMinutes, from: gate.earliest });
   const earliest = gate.earliest.getTime();
   const open = base
     .map((d) => ({ ...d, slots: d.slots.filter((s) => new Date(s).getTime() >= earliest) }))
@@ -484,7 +520,7 @@ export async function sessionSlotsFor(a: {
         slotCreativeTravel: Object.fromEntries(d.slots.map((s) => [s, Object.fromEntries((d.slotCreatives?.[s] ?? []).map((c) => [c.teamMemberId, "UNCHECKED" as TravelLabel]))])),
       }));
   return {
-    ok: true, ...planInfo, earliestISO: gate.earliest.toISOString(), bufferMinutes: cfg.bufferMinutes, days,
+    ok: true, ...planInfo, earliestISO: gate.earliest.toISOString(), preparation, bufferMinutes: cfg.bufferMinutes, days,
     message: days.length ? "" : "No open times fit right now. Tell us what works and Kyle will find one.",
   };
 }

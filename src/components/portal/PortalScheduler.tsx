@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { portalRequestSession, portalRescheduleSession, portalSaveSessionPlanAddress, portalSessionSlots, portalSubmitSessionAddress } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
-import type { SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
+import type { PreparationHold, SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
 import { CancelRequestButton } from "@/components/portal/PlanningChoice";
 
 // The scheduling card, clean (Jordan, Aug 28): finished states collapse to
@@ -54,17 +54,77 @@ const dayLabel = (date: string) =>
   new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
 // The client's own timezone (enrollment.timezone, ET by default) — every
 // time on this card is printed in it and labelled with it.
-const tzName = (tz: string) => new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value ?? "ET";
 const timeLabel = (iso: string, tz: string) =>
   new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
 const whenLabel = (iso: string, tz: string) =>
   new Date(iso).toLocaleString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+/** The zone's abbreviation AS IT READS ON THAT DATE (Sep 28). The old label
+ *  read today's, so a November session opened in September said "EDT" on a
+ *  time that is EST — an hour's worth of wrong on the client's own screen. */
+export const zoneAt = (iso: string, tz: string) =>
+  new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(new Date(iso)).find((p) => p.type === "timeZoneName")?.value ?? "ET";
+/** "Friday, November 20, 2:00 PM EST": a time with its own date's zone. */
+export const whenWithZone = (iso: string, tz: string) => `${whenLabel(iso, tz)} ${zoneAt(iso, tz)}`;
 const monthLabel = (monthKey: string) => {
   const [y, m] = monthKey.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" });
 };
 
 const OPEN = new Set(["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"]);
+
+/** A19: why the first filming day is later than tomorrow, in the client's words
+ *  (the server sends it only when the preparation window is the reason). No em dashes. */
+export function preparationLine(p: PreparationHold, tz: string): string {
+  const after = p.after === "CALL" ? "your strategy call" : "you sent us your planning answers";
+  // The zone as it reads ON that day (EST in late November), not today's.
+  return `We need ${p.windowHours} weekday hours after ${after} to prepare, so the first time we can film is ${whenWithZone(p.earliestISO, tz)}.`;
+}
+
+/** The hour (0–23) of a start on the client's own clock. */
+function hourIn(iso: string, tz: string): number {
+  const h = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).formatToParts(new Date(iso)).find((p) => p.type === "hour")?.value;
+  return Number(h ?? 0);
+}
+
+/**
+ * One day's start times (A19, Sep 28). Every start Aryeo says is free is
+ * offered now — the ten-a-day cap hid real afternoons — so a day can carry
+ * 16: three to a row on a phone, four from 640px, wrapping DOWN the card and
+ * never sideways (the grid's columns are minmax(0, 1fr), and every label in a
+ * chip may shrink). Past three rows the day splits into morning and afternoon
+ * so the client can find 2 PM without counting chips.
+ */
+export function SlotTimes({ day, slot, tz, onPick }: { day: TravelSlotDay; slot: string | null; tz: string; onPick: (s: string) => void }) {
+  const groups =
+    day.slots.length > 9
+      ? [
+          { label: "Morning", slots: day.slots.filter((s) => hourIn(s, tz) < 12) },
+          { label: "Afternoon", slots: day.slots.filter((s) => hourIn(s, tz) >= 12) },
+        ].filter((g) => g.slots.length > 0)
+      : [{ label: null, slots: day.slots }];
+  return (
+    <div className="mt-1.5 space-y-2" data-slot-count={day.slots.length}>
+      {groups.map((g) => (
+        <div key={g.label ?? "all"}>
+          {g.label && <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-2">{g.label}</div>}
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {g.slots.map((s) => (
+              <button key={s} type="button" onClick={() => onPick(s)}
+                className={cn(
+                  "min-w-0 rounded-xl border px-2 py-2 text-sm font-medium tabular-nums transition-colors",
+                  slot === s ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
+                )}>
+                {timeLabel(s, tz)}
+                {day.slotCreatives?.[s]?.length === 1 && <span className="block truncate text-[10px] font-normal text-muted-2">{day.slotCreatives[s][0].name.split(" ")[0]}</span>}
+                {day.slotTravel[s] === "UNCHECKED" && <span className="block truncate text-[10px] font-normal text-muted-2">Kyle confirms</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function StatusRow({ icon: Icon, tone, children }: { icon: typeof CheckCircle2; tone: "ok" | "muted" | "pending" | "bad"; children: React.ReactNode }) {
   return (
@@ -97,7 +157,7 @@ function RequestRow({ r, readOnly, tz, selfBooking, onMove, moving }: { r: Porta
       <StatusRow icon={Icon} tone={tone}>
         <span className="font-semibold">{r.label}</span>
         <span className="block text-xs text-muted">
-          {r.slotStartISO ? `${whenLabel(r.slotStartISO, tz)} ${tzName(tz)}` : preferred ? `Preferred: ${preferred}` : "Time to be confirmed"}
+          {r.slotStartISO ? whenWithZone(r.slotStartISO, tz) : preferred ? `Preferred: ${preferred}` : "Time to be confirmed"}
           {r.creativeName ? ` · with ${r.creativeName}` : ""}
           {r.locationText ? ` · ${r.locationText}` : ""}
         </span>
@@ -324,7 +384,7 @@ export function PortalScheduler({
             ) : month.callStatus === "COMPLETED" ? (
               <StatusRow icon={CheckCircle2} tone="ok">Strategy call held{month.callAtISO ? ` ${new Date(month.callAtISO).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" })}` : ""}</StatusRow>
             ) : month.callStatus === "SCHEDULED" ? (
-              <StatusRow icon={CheckCircle2} tone="ok">Strategy call booked{month.callAtISO ? ` for ${whenLabel(month.callAtISO, tz)} ${tzName(tz)}` : " for this month"}</StatusRow>
+              <StatusRow icon={CheckCircle2} tone="ok">Strategy call booked{month.callAtISO ? ` for ${whenWithZone(month.callAtISO, tz)}` : " for this month"}</StatusRow>
             ) : month.callStatus === "NOT_REQUIRED" ? (
               // NOT_REQUIRED means the program has no strategy call at all —
               // say that, never a tick implying one is booked.
@@ -365,7 +425,7 @@ export function PortalScheduler({
                     <StatusRow icon={CheckCircle2} tone={s.state === "CONFIRMING" ? "pending" : "ok"}>
                       <span className="font-semibold">{required > 1 ? `Session ${s.sessionIndex ?? i + 1} of ${required}: ` : "Filming session: "}{s.label}</span>
                       <span className="block text-xs text-muted">
-                        {s.startISO ? `${whenLabel(s.startISO, tz)} ${tzName(tz)}` : "Date being confirmed"}
+                        {s.startISO ? whenWithZone(s.startISO, tz) : "Date being confirmed"}
                         {s.area ? ` · ${s.area}` : ""}
                         {s.addressNote ? ` · ${s.addressNote}` : ""}
                       </span>
@@ -441,7 +501,13 @@ export function PortalScheduler({
                       )
                     )}
 
-                    {/* Step 2: when, from that address. */}
+                    {/* Step 2: when, from that address. A19: when the preparation
+                        window is why the first day is later than tomorrow, say so. */}
+                    {!needsAddress && res.preparation && (
+                      <p className="mt-3 flex items-start gap-1.5 text-xs text-muted">
+                        <Info className="mt-0.5 size-3.5 shrink-0 text-muted-2" /> {preparationLine(res.preparation, tz)}
+                      </p>
+                    )}
                     {!needsAddress && (monthDays.length > 0 ? (
                       <>
                         <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a day</div>
@@ -459,19 +525,7 @@ export function PortalScheduler({
                         {activeDay && (
                           <>
                             <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a time</div>
-                            <div className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-4">
-                              {activeDay.slots.map((s) => (
-                                <button key={s} type="button" onClick={() => pickSlot(s)}
-                                  className={cn(
-                                    "rounded-xl border px-2 py-2 text-sm font-medium tabular-nums transition-colors",
-                                    slot === s ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
-                                  )}>
-                                  {timeLabel(s, tz)}
-                                  {activeDay.slotCreatives?.[s]?.length === 1 && <span className="block text-[10px] font-normal text-muted-2">{activeDay.slotCreatives[s][0].name.split(" ")[0]}</span>}
-                                  {activeDay.slotTravel[s] === "UNCHECKED" && <span className="block text-[10px] font-normal text-muted-2">Kyle confirms</span>}
-                                </button>
-                              ))}
-                            </div>
+                            <SlotTimes day={activeDay} slot={slot} tz={tz} onPick={pickSlot} />
                             {slot && slotCreatives.length > 1 && (
                               <div className="mt-3">
                                 <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Who would you like?</div>
@@ -500,7 +554,7 @@ export function PortalScheduler({
                         {res.message && <span className="mt-1 block text-xs text-muted">{res.message}</span>}
                         <input value={when} onChange={(e) => setWhen(e.target.value)} placeholder="e.g. Tuesday or Thursday afternoon"
                           className="mt-1.5 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand" />
-                        {(res.earliestISO ?? month.earliestISO) && (
+                        {!res.preparation && (res.earliestISO ?? month.earliestISO) && (
                           <span className="mt-1 block text-xs text-muted">Sessions start on or after {new Date((res.earliestISO ?? month.earliestISO)!).toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" })}.</span>
                         )}
                       </label>

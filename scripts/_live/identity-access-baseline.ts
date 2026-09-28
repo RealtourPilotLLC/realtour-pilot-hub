@@ -2,7 +2,7 @@
 // DRILL: IDENTITY AND ACCESS, MEASURED ON LIVE DATA (Sep 21 2026, batch 2).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/identity-access-baseline.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/identity-access-baseline.ts
 //
 // Three questions Jordan asked, answered from production rather than from the
 // spec:
@@ -14,7 +14,7 @@
 //
 // READ-ONLY, STRUCTURALLY. The guard is the connection, not a promise about
 // what this file calls, and it is proven with a refused UPDATE before anything
-// is read — see scripts/_drill/attribution-rails.ts for why that lesson cost us.
+// is read — see scripts/_live/attribution-rails.ts for why that lesson cost us.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";

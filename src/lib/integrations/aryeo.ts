@@ -5,6 +5,7 @@ import { getSecret, markSynced, markError } from "./connections";
 import type { DeliverableType, Prisma, ProjectStatus } from "@prisma/client";
 import type { NotifyTarget } from "@/lib/notify";
 import { streetOf } from "@/lib/delivery";
+import { etAt, etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Aryeo REST client.  Base: https://api.aryeo.com/v1  ·  Auth: Bearer {key}
@@ -383,6 +384,18 @@ export function resetProductProviderCache(): void {
 export type AryeoSlotDay = { date: string; slots: string[]; slotUsers?: Record<string, string[]> };
 
 /**
+ * A19: the ET day an availability window starts on when `from` moves it, or
+ * null when it starts tomorrow as it always has (no `from`, or `from` is no
+ * later than tomorrow's ET day). One answer for productAvailability's query and
+ * programSlotDays' cache key, so the key always names the window asked about.
+ */
+export function availabilityFromDay(from: Date | null | undefined, now: number = Date.now()): string | null {
+  if (!from || Number.isNaN(from.getTime())) return null;
+  const day = etDayKey(from);
+  return day > etDayKey(new Date(now + 86_400_000)) ? day : null;
+}
+
+/**
  * REAL availability for ONE product: the package's own duration, scoped to the
  * creatives Aryeo has assigned to that product, with weekends removed.
  *
@@ -413,6 +426,9 @@ export async function productAvailability(opts: {
   limit?: number;
   /** false only for a drill that wants to SEE the weekend slots Aryeo offers */
   excludeWeekends?: boolean;
+  /** A19: the first moment this session may start (its preparation gate). The
+   *  window starts on that ET day instead of tomorrow and keeps its length. */
+  from?: Date | null;
 }): Promise<{ days: AryeoSlotDay[]; providers: AryeoProductProvider[] } | null> {
   const tz = "America/New_York";
   const interval = opts.interval ?? 30;
@@ -442,8 +458,12 @@ export async function productAvailability(opts: {
   const userFilter: Record<string, string> = {};
   ids.forEach((id, i) => { userFilter[`filter[user_ids][${i}]`] = id; });
 
-  const start = new Date(Date.now() + 86_400_000); // from tomorrow
-  const end = new Date(Date.now() + horizon * 86_400_000);
+  // From tomorrow, or (A19) from the first day the session may start when that
+  // is later: a call booked 25 days out used to leave the whole window before
+  // its 72 hours had run, so nothing was offered at all. Same length either way.
+  const fromDay = availabilityFromDay(opts.from);
+  const start = fromDay ? etAt(fromDay, 0) : new Date(Date.now() + 86_400_000);
+  const end = new Date(start.getTime() + (horizon - 1) * 86_400_000);
   let dates: { date: string; is_available?: boolean }[];
   try {
     const r = await aryeoRequest<{ data?: { date: string; is_available?: boolean }[] }>(

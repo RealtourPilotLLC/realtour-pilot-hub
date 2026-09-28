@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // THE JORDAN JOURNEY — THE CALL PATH (Sep 22 2026).
 //
-//   npx tsx scripts/_drill/jordan-call-path.ts --dry-run   → plan only
-//   npx tsx scripts/_drill/jordan-call-path.ts             → run it
+//   npx tsx scripts/_live/jordan-call-path.ts --dry-run   → plan only
+//   npx tsx scripts/_live/jordan-call-path.ts             → run it
 //
 // The written-answers path was walked in the browser end to end: questions →
 // answers → draft → approve → release → the client's own sign-off. This is the

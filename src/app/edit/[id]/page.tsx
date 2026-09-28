@@ -31,6 +31,9 @@ import { canReplaceApprovedCut } from "@/app/review/actions";
 // §7.5 / §7.7: the per-video brief and the Luma Visuals packet record, posted
 // from plain server-rendered forms on this page.
 import { recordEditorPacketAckForm, recordEditorPacketSentForm, saveVideoBriefForm } from "@/app/editing/actions";
+// §7.6: a limitation on one video's brief becomes missing work in one press.
+import { raiseGapFromBriefForm } from "@/app/editing/gapActions";
+import { etDate } from "@/lib/datetime";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
@@ -43,7 +46,9 @@ import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editin
 import { WorkStateBar } from "@/components/editing/WorkStateBar";
 // §8.1: the ONE person each waiting cut is waiting on, and the desk's doors.
 import { ReviewerStrip } from "@/components/review/ReviewerStrip";
-import { EditOverridesButton } from "@/components/editing/EditOverridesDialog";
+import { EditOverridesButton, RushButton } from "@/components/editing/EditOverridesDialog";
+// §10 J3: the office's "waiting on a file" card (a plat, a logo).
+import { AssetDependencyCard } from "@/components/editing/AssetDependencyCard";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
 import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta } from "@/lib/editors";
@@ -494,6 +499,13 @@ export default async function EditBriefPage({
   // not the status. Read-only here: opening this page never starts anything.
   // A failed read shows no bar and the tracker says "not confirmed".
   const workBar = await import("@/lib/editorWork").then((m) => m.workBarFor(id, viewer)).catch(() => null);
+  // §7.3: what is true about the footage, rung by rung — the video half of
+  // the ladder the project summary prints (lib/handoffLadder, one read, one
+  // set of words). A failed read draws no row.
+  const footage = await import("@/lib/handoffLadder")
+    .then((m) => m.handoffLadderRows(id))
+    .then((rows) => rows.filter((r) => r.category === "video"))
+    .catch(() => null);
   const { stage, label: statusLine } = deriveEditStage({
     projectStatus: project.status,
     revisionOpen,
@@ -565,6 +577,21 @@ export default async function EditBriefPage({
   const { outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
   const outputBriefs = await outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []);
   const canWriteBriefs = canSeeRaw && !viewer?.impersonating;
+  // §7.6: the gaps raised off a video's brief, so its card says so instead of
+  // offering the button again. A failed read shows no line and keeps the button
+  // (a second press finds the open gap and says "already raised"). Its words
+  // are money-scrubbed for an editor like the brief itself (review, Sep 28):
+  // the office writes them, and the line below prints to every viewer.
+  const briefGaps = outputBriefs.length
+    ? (
+        await import("@/lib/productionGaps")
+          .then(async (m) => {
+            const gs = await m.gapsForProject(project.id);
+            return canSeeRaw ? gs : m.gapsForCreatives(gs);
+          })
+          .catch(() => [])
+      ).filter((g) => g.outputId && (g.state === "OPEN" || g.state === "PLANNED"))
+    : [];
   // §7.7 / A33: the Luma Visuals packet card — the office's, and only on a job
   // handed to the agency or one with a send already on record.
   const agencyMod = await import("@/lib/editorPacket");
@@ -582,6 +609,9 @@ export default async function EditBriefPage({
     "brief-conflict": { where: "brief", ok: false, text: "Someone else saved that brief while you were editing, so yours was not saved. What you see now is the newest version." },
     "brief-too-long": { where: "brief", ok: false, text: `A section was over ${OUTPUT_BRIEF_FIELD_CAP} characters, so nothing was saved.` },
     "brief-error": { where: "brief", ok: false, text: "That brief could not be saved. Reload and try again." },
+    "gap-raised": { where: "brief", ok: true, text: "Raised as missing work. It is on the delivery board until the office plans the recovery." },
+    "gap-exists": { where: "brief", ok: true, text: "Already raised as missing work, so nothing new was added." },
+    "gap-error": { where: "brief", ok: false, text: "Not raised. The brief needs a limitation written down, and the video must still be owed." },
     "packet-sent": { where: "packet", ok: true, text: "The send is recorded, with the packet exactly as it went." },
     "packet-duplicate": { where: "packet", ok: true, text: "Already recorded: that exact packet went to that recipient, so no new version was made." },
     "packet-error": { where: "packet", ok: false, text: "Not recorded. Say who it went to and how, and check the job is handed to the agency." },
@@ -698,6 +728,35 @@ export default async function EditBriefPage({
     }
   })();
   const trackerDue = reopened ? reopened.at : effectiveDue(project, sla?.due ?? null);
+
+  // §10 RUSH (Sep 28): the header's Rush button — the override dialog on the
+  // due date and priority alone, with the jobs it pushes back shown before
+  // Save. The desk only: owner / admin (James, Kyle and Jordan are all on
+  // those logins), never an editor, never a "view as" preview — the same gate
+  // as Override and as the server actions it calls, so nobody gets a button
+  // the server refuses. Who may APPROVE a displacing rush (James, Kyle, or
+  // Jordan) is the server's rushAuthority; anyone else on the desk sees the
+  // list and can send it to Jordan. An ask already sent to him is read here
+  // so it shows on the job, where it is approved.
+  const rushDesk = isOwnerAdmin && !viewer?.impersonating && showTracker;
+  // The card is closed by any save that settles it (editing/actions
+  // saveEditOverrides), so an ask shown here is one still waiting on Jordan.
+  const rushAsk = rushDesk ? await import("@/lib/editorWorkload").then((m) => m.openRushAsk(id)).catch(() => null) : null;
+  // §10 J3 (Sep 28): WAITING ON A FILE — what this job cannot start without
+  // (the plat for lot lines, the client's logo), recorded and attached by the
+  // office. A LIVE owner/admin only, never a "view as" preview — the same
+  // strict gate as the raise-gap form above, and the server actions refuse
+  // everyone else anyway. Any job, not just a video one: lot lines go on the
+  // aerial photos. Editors read the same sentences in the job's brief. A
+  // failed read says so rather than showing "nothing waiting".
+  const assetDesk = strictOwnerAdmin && !viewer?.impersonating;
+  const assetDeps = assetDesk
+    ? await import("@/lib/assetDependencies").then((m) => m.openAssetDependencies(project.id)).catch(() => null)
+    : null;
+  const assetVideoWords = new Map(outputBriefs.map((o) => [o.outputId, `Video ${o.index}: ${o.label}`]));
+  const assetPeople = assetDesk
+    ? await import("@/lib/assetDependencies").then((m) => m.INTERPRETER_KEYS.map((k) => ({ key: k, name: editorMeta(k)?.name ?? k })))
+    : [];
   const dueNotice = notice ? REOPENED_DUE_NOTICES[notice] ?? null : null;
   const trackerEditType = effectiveTypeDetail(project, videoTypeLabel(editDeliverables, videoTier(owedDeliverables)) || "Video edit");
   // ---- ONE instruction card ----------------------------------------------
@@ -867,7 +926,24 @@ export default async function EditBriefPage({
           </span>
         }
         actions={
-          <div className="flex items-center gap-2">
+          // Wraps at phone width now that Rush sits beside Override (375px).
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* §10 rush: the desk only (see rushDesk above). */}
+            {rushDesk && (
+              <RushButton
+                ask={rushAsk}
+                job={{
+                  projectId: project.id,
+                  street,
+                  status: STATUS_LABEL[project.status] ?? project.status,
+                  editorKey,
+                  editorName,
+                  editorAuto: false,
+                  overrides,
+                  computed,
+                }}
+              />
+            )}
             {/* THE OVERRIDE (Jordan, Sep 13) — office only, and never from a
                 "view as" preview (read-only; the server re-checks). Wears the
                 Override chip when one is set; its receipt shows as a note
@@ -936,6 +1012,7 @@ export default async function EditBriefPage({
             // (Jordan, Sep 16) — the status line and the ask both land on it.
             revisionHref={revisionHref}
             showSubmitAnchor={!isOwnerAdmin}
+            evidence={footage}
           />
         </div>
       )}
@@ -1224,6 +1301,29 @@ export default async function EditBriefPage({
                         {o.promisedAtISO ? `due ${new Date(o.promisedAtISO).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
                       </p>
                     )}
+                    {/* §7.6: a limitation is missing work once somebody says so —
+                        one press, signed, and it is on Kyle's board. */}
+                    {briefGaps
+                      .filter((g) => g.outputId === o.outputId)
+                      .map((g) => (
+                        <p key={g.id} className="mt-1.5 rounded-lg bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
+                          Missing work raised by {g.raisedBy}: {g.what}
+                          {g.state === "PLANNED" && g.ownerKey
+                            ? ` · recovery planned, ${g.ownerKey.charAt(0).toUpperCase()}${g.ownerKey.slice(1)}${g.dueISO ? ` by ${etDate(g.dueISO)}` : ""}`
+                            : " · waiting for the office to plan the recovery"}
+                        </p>
+                      ))}
+                    {canWriteBriefs &&
+                      o.sections.some((x) => x.key === "limitations" && x.text.trim()) &&
+                      !briefGaps.some((g) => g.outputId === o.outputId) && (
+                        <form action={raiseGapFromBriefForm} className="mt-1.5">
+                          <input type="hidden" name="projectId" value={project.id} />
+                          <input type="hidden" name="outputId" value={o.outputId} />
+                          <button type="submit" className="rounded-lg border border-warning/40 px-2.5 py-1 text-[11px] font-semibold text-warning hover:bg-warning/10">
+                            Raise the limitation as missing work
+                          </button>
+                        </form>
+                      )}
                     {canWriteBriefs && (
                       <details className="mt-2">
                         <summary className="cursor-pointer text-xs font-medium text-brand">{o.version ? "Edit this video's brief" : "Write a brief for this video"}</summary>
@@ -1360,6 +1460,25 @@ export default async function EditBriefPage({
                 )}
               </Section>
             </div>
+          )}
+
+          {/* §10 J3 (Sep 28) — WAITING ON A FILE. The office records what
+              the work cannot start without (Kyle finds it; a named person,
+              Jordan by default, works from it) and attaches it once found.
+              One folded line when nothing is waiting. See assetDesk above. */}
+          {assetDesk && (
+            <AssetDependencyCard
+              projectId={project.id}
+              open={(assetDeps ?? []).map((d) => ({
+                taskId: d.taskId,
+                stage: d.stage,
+                sentence: d.sentence,
+                scope: d.outputId ? assetVideoWords.get(d.outputId) ?? "A video no longer on this job" : "The whole job",
+              }))}
+              videos={outputBriefs.map((o) => ({ outputId: o.outputId, label: assetVideoWords.get(o.outputId) ?? o.label }))}
+              people={assetPeople}
+              readFailed={assetDeps === null}
+            />
           )}
 
           {/* 3b · MUSIC — right under What to make (Jordan, Sep 15: "they

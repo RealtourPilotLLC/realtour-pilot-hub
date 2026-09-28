@@ -11,7 +11,7 @@
  *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
  *   set -a && source .env; set +a && \
  *   NODE_OPTIONS=--conditions=react-server \
- *   npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_drill/f03-owed-now.ts
+ *   npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_live/f03-owed-now.ts
  *
  * Parts 1, 2 and 4 are pure (no database). Part 3 is a read-only SELECT over
  * live production: it recomputes the gate against every blob and must report

@@ -27,7 +27,9 @@ import {
 } from "@/app/upload/actions";
 import { saveUploadDraft, discardUploadDraft } from "@/app/upload/draftActions";
 import { createAutosaver, changedSubmittedFields, type AutosaveStatus, type DraftPayload, type SubmittedFields } from "@/lib/uploadDraft";
-import { handoffCategoryOf, receiptSentence, videoHalfDueAt, type HandoffCategory, type Tri } from "@/lib/handoff";
+import { evidenceFromView, handoffCategoryOf, ladderRows, receiptSentence, videoHalfDueAt, type EvidenceView, type HandoffCategory } from "@/lib/handoff";
+// §7.3: the files ladder, drawn exactly as the edit tracker and the project summary draw it.
+import { EvidenceLadder } from "@/components/editing/EditTracker";
 import type { GapView } from "@/lib/productionGaps";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
@@ -52,10 +54,31 @@ type AskAction =
   | { kind: "submit"; force: boolean; scope?: HandoffCategory; baseHash?: string }
   | { kind: "toggle"; id: string; next: boolean; prevReason: string | undefined };
 
-/** §7.3: what the page knew about the files when it loaded, half by half. */
-type EvidenceView = { category: HandoffCategory; uploadReportedISO: string | null; filesDetected: Tri; fileCount: number | null; handoffISO: string | null };
 type FieldReportView = { id: string; body: string; status: string; scope: string; basis: "client_said" | "observation" | null; createdAtISO: string };
 const DRAFT_MIRROR_KEY = (projectId: string) => `upload-draft:${projectId}`;
+
+/**
+ * §7.5 / §6.8: one video's brief as the upload page carries it — the same row
+ * the editor's page, the printed brief and the shoot screen read
+ * (deliverableOutputs.outputBriefsFor), money-scrubbed, nothing else.
+ */
+export type PortalOutputBrief = {
+  outputId: string;
+  index: number;
+  label: string;
+  /** the Style Guide name of what is being cut, when it differs from the label */
+  format: string;
+  topicTitle: string | null;
+  version: number | null;
+  /** "Brief v2 · saved by …, <when>" — the line every surface prints */
+  versionLabel: string;
+  updatedBy: string | null;
+  updatedAtISO: string | null;
+  directionSource: "own" | "job" | "none";
+  sections: { key: string; label: string; text: string }[];
+};
+/** What the page's note action answers: the video's brief as it is now, when it could be read. */
+export type BriefNoteResult = { ok: boolean; changed: boolean; message: string; brief: PortalOutputBrief | null };
 
 type Deliverable = {
   id: string;
@@ -300,22 +323,19 @@ function draftChip(st: AutosaveStatus, canSave: boolean): React.ReactNode {
   return null;
 }
 
-// §7.3: one plain line per half — ticked, found, handed off — each only if true.
-function evidenceText(e: EvidenceView, halfAt: { photos: string | null; video: string | null }): string {
-  const name = e.category === "photos" ? "Photos" : "Video";
-  const handed = (e.category === "photos" ? halfAt.photos : halfAt.video) ?? e.handoffISO;
-  return [
-    `${name}:`,
-    e.uploadReportedISO ? `ticked uploaded ${etDateTime(e.uploadReportedISO)}` : "not ticked yet",
-    "·",
-    e.filesDetected === "yes"
-      ? `Dropbox shows ${e.fileCount ?? "the"} file${e.fileCount === 1 ? "" : "s"}`
-      : e.filesDetected === "no"
-        ? "Dropbox shows no files yet"
-        : "Dropbox not confirmed",
-    "·",
-    handed ? `handed off ${etDateTime(handed)}` : "not handed off yet",
-  ].join(" ");
+/**
+ * §7.3 (Sep 28): what is true about the files, half by half, in THE words —
+ * lib/handoff evidenceRungs through ladderRows, drawn by the edit tracker's own
+ * EvidenceLadder, so the photographer reads what the editor and the office
+ * read about the same folder. This page used to print its own line ("ticked
+ * uploaded …", "Dropbox shows 12 files"). A tick is the photographer's word
+ * ("upload reported"), never files; files are "found" only when Dropbox showed
+ * them; a stale or failed read is "Dropbox not confirmed". The halves' handoff
+ * times come from this page's own submit (halfAt) when it knows them first.
+ */
+export function PortalEvidence({ evidence, halfAt }: { evidence: EvidenceView[]; halfAt: { photos: string | null; video: string | null } }) {
+  const rows = ladderRows(evidence.map((v) => evidenceFromView(v, (v.category === "photos" ? halfAt.photos : halfAt.video) ?? v.handoffISO)));
+  return <EvidenceLadder rows={rows} className="mt-2.5" />;
 }
 
 // O04: a draft's style and sections, read back through the same keys the
@@ -347,6 +367,10 @@ export function UploadPortal({
   gaps,
   fieldReports,
   nowMs,
+  outputBriefs = [],
+  onBriefNote,
+  briefNoteBlocked = null,
+  briefNoteCap = 1000,
 }: {
   project: {
     id: string;
@@ -461,7 +485,28 @@ export function UploadPortal({
   fieldReports: FieldReportView[];
   /** the page's one clock reading (a render must not read the clock) */
   nowMs: number;
+  /** §7.5 / §6.8: each video's own brief, as the editor reads it (the page picks which to show) */
+  outputBriefs?: PortalOutputBrief[];
+  /** the page's server action: add an on-site note to one video's brief */
+  onBriefNote?: (projectId: string, outputId: string, note: string) => Promise<BriefNoteResult>;
+  /** why notes cannot be added from this view (a "view as" preview); null = they can */
+  briefNoteBlocked?: string | null;
+  /** one note's limit (deliverableOutputs.ON_SITE_NOTE_CAP; the server checks it again) */
+  briefNoteCap?: number;
 }) {
+  // §7.5: the briefs live here, not in the card, so a note added before the
+  // submit is still on the card the submitted page shows (and the other way round).
+  const [briefs, setBriefs] = useState<PortalOutputBrief[]>(outputBriefs);
+  const briefCard = (
+    <VideoBriefs
+      projectId={project.id}
+      briefs={briefs}
+      onSaved={(b) => setBriefs((all) => all.map((x) => (x.outputId === b.outputId ? b : x)))}
+      action={onBriefNote ?? null}
+      blocked={briefNoteBlocked}
+      cap={briefNoteCap}
+    />
+  );
   const [uploaded, setUploaded] = useState<Record<string, boolean>>(
     Object.fromEntries(deliverables.map((d) => [d.id, initialUploaded(d)])),
   );
@@ -1450,6 +1495,12 @@ export function UploadPortal({
               </>
             )}
           </button>
+          {/* §7.5: each video's brief stays readable, and open to an on-site
+              note, after the submit. Something the agent said often comes
+              back to the photographer once the page is done. */}
+          {policy.videoOrdered && briefs.length > 0 && (
+            <section className="rounded-2xl border bg-surface p-4 sm:p-5">{briefCard}</section>
+          )}
           {/* §7.6 / §7.8 stay reachable after the submit: a missed shot or a
               client request often comes up once the page is done, and the
               office plans recoveries from here. */}
@@ -1468,11 +1519,7 @@ export function UploadPortal({
         subtitle="Raw files in the Raw folders · culled extras in Backup Photos."
       >
         {foldersSlot}
-        {evidence.length > 0 && (
-          <ul className="mt-2.5 space-y-0.5 text-xs text-muted">
-            {evidence.map((e) => <li key={e.category}>{evidenceText(e, halfAt)}</li>)}
-          </ul>
-        )}
+        <PortalEvidence evidence={evidence} halfAt={halfAt} />
       </StepCard>
 
       {/* ---- STEP: The photo standard (the SOP, enforced) ---- */}
@@ -1724,6 +1771,9 @@ export function UploadPortal({
           subtitle={`${videoStyleName(policy.videoStyle) ?? "Video"} · shot on ${colorTier === "premium" ? "S-Log3 / D-LogM" : "iPhone"}`}
           done={videoDone}
         >
+          {/* §7.5: what the editor is told for each video, read here before
+              the photographer writes their own instructions below. */}
+          {briefs.length > 0 && <div className="mb-4 border-b border-border pb-3.5">{briefCard}</div>}
           {script ? (
             <div>
               <div className="flex items-center justify-between gap-2">
@@ -1779,13 +1829,15 @@ export function UploadPortal({
                 className="mt-1.5"
               />
             </div>
-          ) : spec.requireIntro ? null : (
+          ) : spec.requireIntro || sessionTopics ? null : (
+            // Not on a content session: its scripts come from the program
+            // (the topic list below says which are signed off), never Studio.
             <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[13px] text-muted">
               No script found in Script Studio for this shoot. If the agent read from one, put it in the instructions below so the editor has it.
             </p>
           )}
 
-          <div className={cn("border-border", (script || !spec.requireIntro) && "mt-4 border-t pt-3.5")}>
+          <div className={cn("border-border", (script || (!spec.requireIntro && !sessionTopics)) && "mt-4 border-t pt-3.5")}>
             {spec.minimalReel ? (
               <p className="text-sm font-semibold">
                 Anything the editor should know? <span className="font-normal text-muted">— optional</span>
@@ -2497,5 +2549,126 @@ function FieldFeedback({ projectId, clientName, reports, office }: { projectId: 
       )}
       {msg && <p className={cn("mt-1 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// §7.5 / §6.8 (Sep 28 2026): EACH VIDEO'S BRIEF, on the page the photographer
+// fills after the shoot. It is the same brief the editor's page, the printed
+// brief and the shoot screen read, with its version and who last saved it.
+// The photographer can add what changed on site to one video: the note is
+// added to that video's "Changed on site" with their name and the day, as a
+// new version (deliverableOutputs.addOnSiteNote); it never replaces what the
+// office wrote. The page decides which videos are shown and whether notes can
+// be added (never from a "view as" preview); the server checks both again.
+// ---------------------------------------------------------------------------
+function VideoBriefs({
+  projectId, briefs, onSaved, action, blocked, cap,
+}: {
+  projectId: string;
+  briefs: PortalOutputBrief[];
+  onSaved: (b: PortalOutputBrief) => void;
+  action: ((projectId: string, outputId: string, note: string) => Promise<BriefNoteResult>) | null;
+  blocked: string | null;
+  cap: number;
+}) {
+  if (!briefs.length) return null;
+  return (
+    <div>
+      <p className="text-sm font-semibold">{briefs.length > 1 ? "Each video's brief" : "This video's brief"}</p>
+      <p className="mt-0.5 text-[13px] text-muted">
+        What the editor is told for {briefs.length > 1 ? "each video" : "this video"}.{" "}
+        {blocked ?? "If something changed on site, add it to that video: it goes on the brief with your name."}
+      </p>
+      <ul className="mt-2 space-y-2">
+        {briefs.map((b) => (
+          <VideoBriefRow key={b.outputId} projectId={projectId} brief={b} onSaved={onSaved} action={blocked ? null : action} cap={cap} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function VideoBriefRow({
+  projectId, brief, onSaved, action, cap,
+}: {
+  projectId: string;
+  brief: PortalOutputBrief;
+  onSaved: (b: PortalOutputBrief) => void;
+  /** null = this view cannot add notes (a preview): the brief is shown, read-only */
+  action: ((projectId: string, outputId: string, note: string) => Promise<BriefNoteResult>) | null;
+  cap: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, start] = useTransition();
+  const save = () => {
+    if (!action) return;
+    const text = note.trim();
+    if (!text) return;
+    start(async () => {
+      const r = await action(projectId, brief.outputId, text).catch(
+        (): BriefNoteResult => ({ ok: false, changed: false, message: "Couldn't save the note. Check your connection and try again.", brief: null }),
+      );
+      if (r.brief) onSaved(r.brief);
+      setMsg({ ok: r.ok, text: r.message });
+      if (r.ok) { setNote(""); setOpen(false); }
+    });
+  };
+  return (
+    <li className="rounded-xl border border-border bg-surface-2/40 p-3">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="text-sm font-medium">{brief.index}. {brief.label}</span>
+        {brief.format !== brief.label && <span className="text-[11px] text-muted">{brief.format}</span>}
+        {brief.topicTitle && <span className="text-[11px] text-muted">· {brief.topicTitle}</span>}
+      </div>
+      <p className="text-[11px] text-muted-2">{brief.versionLabel}</p>
+      {brief.sections.length > 0 && (
+        <dl className="mt-1.5 space-y-1 text-[13px] leading-relaxed">
+          {brief.sections.map((x) => (
+            <div key={x.key}>
+              <dt className="text-xs font-medium text-muted">{x.label}</dt>
+              <dd className="whitespace-pre-wrap text-foreground/90">{x.text}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {action && (open ? (
+        <div className="mt-2">
+          <AutoTextarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            maxLength={cap}
+            minRows={2}
+            aria-label={`On-site note for ${brief.label}`}
+            placeholder="What changed on site for this video? e.g. the agent asked us to skip the garage; use the second take of the intro."
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
+          />
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={pending || !note.trim()}
+              onClick={save}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {pending && <Loader2 className="size-3.5 animate-spin" />} Add to this video&apos;s brief
+            </button>
+            <button type="button" onClick={() => { setOpen(false); setNote(""); }} className="text-xs font-medium text-muted hover:underline">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => { setOpen(true); setMsg(null); }}
+          className="mt-1.5 inline-flex items-center gap-1 py-1 text-xs font-medium text-brand hover:underline"
+        >
+          <NotebookPen className="size-3.5" /> Add an on-site note
+        </button>
+      ))}
+      {msg && <p className={cn("mt-1 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+    </li>
   );
 }

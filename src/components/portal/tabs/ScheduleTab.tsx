@@ -42,7 +42,9 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
     : null;
   const p = planning;
   const tz = p?.timezone ?? "America/New_York";
-  const tzName = tzShort(tz);
+  // Each time is labelled with its own date's zone (EST in late November),
+  // never today's (Sep 28).
+  const zoneOf = (iso: string | Date) => tzShort(tz, new Date(iso));
   const now = new Date();
   const streetOf = (title: string | null, addressLine: string | null) => (addressLine || (title ?? "").split(",")[0] || "").trim();
   return (
@@ -63,7 +65,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>
                 <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</>}</p>
-                {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {tzName} — cancel it on Calendly if you no longer need it.</p>}
+                {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {zoneOf(p.callAtISO)} — cancel it on Calendly if you no longer need it.</p>}
                 {/* Not a one-way door: the same eligibility that offered the
                     written path offers the call back (review, Sep 17). */}
                 {routeHref ? switchLink("Change how you plan this month") : p.noCallEligible && !readOnly && perms.session && <PlanWithCall monthId={p.monthId} />}
@@ -74,7 +76,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
               <>
                 <div><span className="rounded-md bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">Booked</span></div>
                 <div className="font-medium">{fmtDate(p.callAtISO, tz)}</div>
-                <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {tzName}</div>
+                <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {zoneOf(p.callAtISO)}</div>
                 {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <div className="text-xs text-muted-2">Video call — the link is in your calendar invite.</div>}
                 <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email — the change shows here within the hour.</p>
                 {/* §3: filming opens the moment the call is booked, measured from the call's end. */}
@@ -125,7 +127,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             {sessions.filter((s) => s.shootDate).slice(0, 12).map((s) => (
               <li key={s.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
                 <span className="flex items-center gap-1.5"><CalendarClock className={cn("size-4", s.shootDate! >= now ? "text-brand" : "text-muted-2")} /> {fmtDate(s.shootDate!, tz)}</span>
-                <span className="flex items-center gap-1.5 text-muted"><Clock className="size-4" /> {fmtTime(s.shootDate!, tz)} {tzName}</span>
+                <span className="flex items-center gap-1.5 text-muted"><Clock className="size-4" /> {fmtTime(s.shootDate!, tz)} {zoneOf(s.shootDate!)}</span>
                 {streetOf(s.title, s.addressLine) && <span className="flex items-center gap-1.5 text-muted"><MapPin className="size-4" /> {streetOf(s.title, s.addressLine)}</span>}
                 {s.shootDate! >= now ? <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">upcoming</span> : s.status === "DELIVERED" ? <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span> : <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">held</span>}
               </li>

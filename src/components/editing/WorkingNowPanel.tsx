@@ -42,6 +42,21 @@ const clock = (iso: string | null, now: Date) => {
   return etDayKey(d) === etDayKey(now) ? t : `${etMonthDay(d)} ${t}`;
 };
 
+/**
+ * How fresh this read is, for the header — pure, so a drill can pin the clock.
+ * FAILED: the server could not read (ok:false) — never "nobody is working".
+ * STALE: the last good read is more than three minutes old, i.e. the page's
+ * one-minute refresh has stopped landing; the lines stay, the header warns.
+ * Never navigator.onLine or presence: only the read's own timestamp.
+ */
+export function readFreshness(view: { ok: boolean; readAt: string }, now: Date): { state: "fresh" | "stale" | "failed"; words: string } {
+  if (!view.ok) return { state: "failed", words: `Couldn’t read who is working — last attempt ${clock(view.readAt, now)}.` };
+  const stale = now.getTime() - new Date(view.readAt).getTime() > STALE_MS;
+  return stale
+    ? { state: "stale", words: `may be out of date — read ${clock(view.readAt, now)}` }
+    : { state: "fresh", words: `as of ${clock(view.readAt, now)}` };
+}
+
 function Dot({ tone }: { tone: EditorLine["tone"] }) {
   if (tone === "unknown") return <AlertTriangle className="size-3.5 shrink-0 self-center text-warning" aria-label="Couldn't read" />;
   return (
@@ -96,15 +111,14 @@ export function WorkingNowPanel({ view }: { view: EditorsTodayView }) {
     const id = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(id);
   }, []);
-  const readAt = new Date(view.readAt);
-  const stale = now.getTime() - readAt.getTime() > STALE_MS;
+  const fresh = readFreshness(view, now);
 
   if (!view.ok) {
     return (
       <Section icon={PlayCircle} title="Editors today" tone="warning">
         <p className="flex items-center gap-2 text-sm text-foreground">
           <AlertTriangle className="size-4 text-warning" />
-          Couldn&rsquo;t read who is working — last attempt {clock(view.readAt, now)}. This is not &ldquo;nobody is working&rdquo;; refresh to try again.
+          {fresh.words} This is not &ldquo;nobody is working&rdquo;; refresh to try again.
         </p>
       </Section>
     );
@@ -114,8 +128,8 @@ export function WorkingNowPanel({ view }: { view: EditorsTodayView }) {
     <Section
       icon={PlayCircle}
       title="Editors today"
-      count={stale ? `may be out of date — read ${clock(view.readAt, now)}` : `as of ${clock(view.readAt, now)}`}
-      tone={stale ? "warning" : "default"}
+      count={fresh.words}
+      tone={fresh.state === "stale" ? "warning" : "default"}
       flush
     >
       <div className="divide-y divide-border">

@@ -3,7 +3,7 @@
 // Sep 21 2026, batch 2 review close-out.
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/access-gate-proof.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/access-gate-proof.ts
 //
 // READ-ONLY. The connection is forced read-only before anything is imported and
 // the guard is PROVEN by a refused write. Where a fix changes what gets WRITTEN,

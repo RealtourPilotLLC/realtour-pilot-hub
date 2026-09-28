@@ -409,7 +409,7 @@ export function targetAtFor(tier: Tier, startedAt: Date, rules?: PromiseRules | 
 //   not_scheduled       · genuinely unbooked. No date, and nothing to correct.
 //
 // MEASURED BEFORE IT SHIPPED, on every monthly-content project in production
-// (scripts/_drill/honest-dates.ts): 63 of 63 bookable legs carry a real
+// (scripts/_live/honest-dates.ts): 63 of 63 bookable legs carry a real
 // `endAt`, so not one live session loses a date it has today. The three jobs
 // with no bookable leg are all TEST fixtures — two unbooked cut jobs, which
 // now read "Not scheduled", and one filmed-and-delivered job with no
@@ -778,7 +778,7 @@ export type ProductionClock = {
  * shift of a promise already made would be a serious regression — every pinned
  * job and every hand-set override therefore keeps exactly the date it has
  * today, and only an unpinned, un-overridden job feels the new anchor at all.
- * Measured on production in scripts/_drill/f27-anchor.ts before this shipped.
+ * Measured on production in scripts/_live/f27-anchor.ts before this shipped.
  */
 export function productionClockFor(
   p: {

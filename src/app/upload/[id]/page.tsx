@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import {
@@ -12,7 +13,8 @@ import {
 import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { UploadPortal } from "@/components/upload/UploadPortal";
+import { UploadPortal, type BriefNoteResult, type PortalOutputBrief } from "@/components/upload/UploadPortal";
+import type { OutputBrief } from "@/lib/deliverableOutputs";
 import type { VideoStyleKey } from "@/lib/videoStyles";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { AddedAtShoot } from "./AddedAtShoot";
@@ -31,7 +33,7 @@ import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { resolveVideoSpec, type VideoStepSpec } from "@/lib/pipeline";
-import { handoffEvidence } from "@/lib/handoff";
+import { evidenceView, handoffEvidence } from "@/lib/handoff";
 import { normalizeDraftPayload, draftHasContent, submittedFieldsHash, type DraftPayload } from "@/lib/uploadDraft";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
@@ -283,25 +285,34 @@ export default async function UploadProjectPage({
   }
   // The revision a fresh page saves onto: the open draft's, or none.
   const draftRevision = draftRow && !draftRow.consumedAt ? draftRow.revision : null;
-  // §7.3: what is actually true about the files, half by half.
-  const evidence = handoffEvidence({
-    deliverables: project.deliverables,
-    statusEvidence: project.statusEvidence,
-    photosHandoffAt: project.photosHandoffAt,
-    videoHandoffAt: project.videoHandoffAt,
-    debriefSubmittedAt: project.debriefSubmittedAt,
-    handoffReadyAt: project.handoffReadyAt,
-    handoffBlockedReason: project.handoffBlockedReason,
-  }).map((e) => ({
-    category: e.category,
-    uploadReportedISO: e.uploadReported?.toISOString() ?? null,
-    filesDetected: e.filesDetected,
-    fileCount: e.fileCount,
-    handoffISO: e.handoffSubmitted?.toISOString() ?? null,
-  }));
-  // §7.6 / §7.8: the job's production gaps and field reports.
-  const { gapsForProject } = await import("@/lib/productionGaps");
-  const gaps = await gapsForProject(project.id).catch(() => []);
+  // §7.3: what is actually true about the files, half by half — the SAME read
+  // the edit tracker and the project summary print (lib/handoffLadder), so the
+  // portal says "upload reported / files found in Dropbox / handed off …" in
+  // their words, rung for rung (Sep 28). Should that read fail, the pure
+  // reader on this page's own rows still answers — the same words, without
+  // the "editing started" and "cuts handed in" rungs only that read knows.
+  const ladder = await import("@/lib/handoffLadder").then((m) => m.handoffLadderFor(project.id)).catch(() => null);
+  const evidence = (
+    ladder ??
+    handoffEvidence({
+      deliverables: project.deliverables,
+      statusEvidence: project.statusEvidence,
+      photosHandoffAt: project.photosHandoffAt,
+      videoHandoffAt: project.videoHandoffAt,
+      debriefSubmittedAt: project.debriefSubmittedAt,
+      handoffReadyAt: project.handoffReadyAt,
+      handoffBlockedReason: project.handoffBlockedReason,
+    })
+  ).map(evidenceView);
+  // §7.6 / §7.8: the job's production gaps and field reports. A gap's words
+  // are the office's as often as the field's (a limitation off a brief, a
+  // reshoot's scope), so anyone but the office gets them money-scrubbed, like
+  // the briefs below (review, Sep 28). The office keeps the raw words: its
+  // Plan form is filled from them and saves them back, so the gate is the one
+  // that shows that form (viewerIsOffice).
+  const { gapsForProject, gapsForCreatives } = await import("@/lib/productionGaps");
+  const gapsRaw = await gapsForProject(project.id).catch(() => []);
+  const gaps = viewerIsOffice ? gapsRaw : await gapsForCreatives(gapsRaw).catch(() => []);
   const { fieldReportsForProject } = await import("@/lib/clientFacts");
   const fieldReports = (await fieldReportsForProject(project.id).catch(() => [])).map((f) => ({
     id: f.id, body: f.body, status: f.status, scope: f.scope, basis: f.basis, createdAtISO: f.createdAt.toISOString(),
@@ -342,6 +353,26 @@ export default async function UploadProjectPage({
     shotOrderNotes: project.shotOrderNotes, reelScript: hashScript, scriptConfirmNote: project.scriptConfirmNote,
     videosFilmed: project.videosFilmed,
   });
+
+  // §7.5 / §6.8 (Sep 28): each video's own brief, the rows the editor's page,
+  // the printed brief and the shoot screen read — money-scrubbed, because this
+  // is a creative's page whoever opens it. WHICH ones this page shows:
+  //   · a listing job with two or more videos (a reel and an MLS film): every
+  //     one, each with its own brief or the plain "goes by the job's
+  //     instructions", so a note can be added to the one it is about;
+  //   · a one-video job: only once it has a brief of its own. Until then the
+  //     instructions box below IS that video's brief (the batch-4 law);
+  //   · a content session: only the videos the office briefed one by one. The
+  //     rest are directed through the topic list and its notes further down.
+  const { outputBriefsFor, ON_SITE_NOTE_CAP } = await import("@/lib/deliverableOutputs");
+  const allBriefs = videoOrdered ? await outputBriefsFor(project.id, { scrub: true }).catch(() => [] as OutputBrief[]) : [];
+  const shownBriefs = session
+    ? allBriefs.filter((b) => b.directionSource === "own")
+    : allBriefs.length > 1 || allBriefs.some((b) => b.directionSource === "own")
+      ? allBriefs
+      : [];
+  // A preview writes nothing (the action refuses it too, enforced or not).
+  const briefNoteBlocked = viewer?.impersonating ? "You're previewing as someone else, so notes can't be added from here." : null;
 
   // The page's one clock reading, handed down (a render must not read the clock twice).
   const renderedAt = new Date();
@@ -437,6 +468,10 @@ export default async function UploadProjectPage({
         gaps={gaps}
         fieldReports={fieldReports}
         nowMs={renderedAt.getTime()}
+        outputBriefs={shownBriefs.map(portalBriefOf)}
+        onBriefNote={addOnSiteBriefNote}
+        briefNoteBlocked={briefNoteBlocked}
+        briefNoteCap={ON_SITE_NOTE_CAP}
       />
 
       {/* Anything the agent added on site that the order doesn't know about —
@@ -464,6 +499,72 @@ export default async function UploadProjectPage({
 
     </div>
   );
+}
+
+/** One video's brief as the portal carries it: plain, serialisable, already money-scrubbed. */
+function portalBriefOf(b: OutputBrief): PortalOutputBrief {
+  return {
+    outputId: b.outputId,
+    index: b.index,
+    label: b.label,
+    format: b.format,
+    topicTitle: b.topicTitle,
+    version: b.version,
+    versionLabel: b.versionLabel,
+    updatedBy: b.updatedBy,
+    updatedAtISO: b.updatedAtISO,
+    directionSource: b.directionSource,
+    sections: b.sections.map((s) => ({ key: s.key, label: s.label, text: s.text })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// §7.5 / §6.8 (Sep 28 2026): the photographer's on-site note on ONE video's
+// brief, from this page. Who may: the shoot's own photographer or the office
+// (requireShootAccess, fail-closed once auth is enforced); never a "view as"
+// preview, enforced or not; never an editor. Signed with the person's display
+// name (lib/actorName: login name, then roster, then email) and added through
+// deliverableOutputs.addOnSiteNote, so it is a new version of that brief with
+// the same refusals the office's own save has. It answers with the video's
+// brief as it now reads, money-scrubbed. Nothing here is sent to anybody, and
+// no client surface reads a brief.
+// ---------------------------------------------------------------------------
+async function addOnSiteBriefNote(projectId: string, outputId: string, note: string): Promise<BriefNoteResult> {
+  "use server";
+  const pid = String(projectId ?? "").trim().slice(0, 64);
+  const oid = String(outputId ?? "").trim().slice(0, 64);
+  // Well past the note cap, so an over-long note still reaches addOnSiteNote's own "too long" answer.
+  const text = String(note ?? "").slice(0, 4000);
+  const refuse = (message: string): BriefNoteResult => ({ ok: false, changed: false, message, brief: null });
+  if (!pid || !oid) return refuse("That video could not be found. Reload the page and try again.");
+  const me = await getCurrentUser().catch(() => null);
+  if (me?.impersonating) return refuse("You're previewing as someone else, so notes can't be added from here.");
+  try {
+    const { requireShootAccess } = await import("@/lib/auth/guards");
+    await requireShootAccess(pid);
+  } catch (e) {
+    return refuse((e as Error).message || "You don't have access to that shoot.");
+  }
+  const { displayNameFor } = await import("@/lib/actorName");
+  const actor = (await displayNameFor(me)) || "the photographer";
+  const dout = await import("@/lib/deliverableOutputs");
+  const res = await dout.addOnSiteNote({ outputId: oid, projectId: pid, note: text, actor }).catch(() => null);
+  if (!res) return refuse("Couldn't save the note. Try again in a moment.");
+  if (res.ok && res.changed) for (const p of [`/upload/${pid}`, `/edit/${pid}`, `/shoot/${pid}`]) revalidatePath(p);
+  const now = await dout
+    .outputBriefsFor(pid, { scrub: true })
+    .then((all) => all.find((b) => b.outputId === oid) ?? null)
+    .catch(() => null);
+  return {
+    ok: res.ok,
+    changed: res.ok && res.changed,
+    message: res.ok
+      ? res.changed
+        ? `Added to the brief. It is now v${res.version}.`
+        : "That note is already on the brief, so nothing changed."
+      : res.message,
+    brief: now ? portalBriefOf(now) : null,
+  };
 }
 
 // Tiny progress chip (declared at module scope, not inside render).

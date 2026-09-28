@@ -4,7 +4,7 @@
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
 //     set -a && source .env; set +a && NODE_OPTIONS=--conditions=react-server \
 //     npx tsx --require ./scripts/_drill/_drill-preload.cjs \
-//     scripts/_drill/preparation-clock.ts
+//     scripts/_live/preparation-clock.ts
 //
 // Four things, in this order:
 //   1. the weekday-hours clock against Jordan's own worked examples and against

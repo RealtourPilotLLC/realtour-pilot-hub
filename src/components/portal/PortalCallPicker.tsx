@@ -134,7 +134,10 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
   }, [page, tz]);
   const time = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
   const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
-  const tzName = new Date().toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop();
+  // The zone(s) of the times on THIS page, not today's (Sep 28): a week in
+  // November reads EST, and the week the clocks change reads "EDT / EST".
+  const zoneAt = (d: Date) => new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(d).find((p) => p.type === "timeZoneName")?.value ?? tz;
+  const tzName = [...new Set((page?.slots?.length ? page.slots.map((s) => new Date(s.startISO)) : [new Date()]).map(zoneAt))].join(" / ");
 
   const book = () => pick && start(async () => {
     const r: BookCallResult = await portalBookCall(portalAuthFromLocation(), view.monthId, pick.startISO).catch(() => ({ ok: false, state: "PENDING" as const, message: "We're confirming your booking with the calendar. This page will update in a minute." }));

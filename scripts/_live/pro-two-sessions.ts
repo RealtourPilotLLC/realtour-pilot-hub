@@ -2,7 +2,7 @@
 // DRILL: TWO DISTINCT CONFIRMED SESSIONS (§18 A23 / A24, batch 2, Sep 21 2026).
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/pro-two-sessions.ts
+//     NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/pro-two-sessions.ts
 //
 // Jordan, Sep 21: "Video Pro is two separate four-hour sessions. Book the
 // existing four-hour Video Pro product in Aryeo twice. The month is fully

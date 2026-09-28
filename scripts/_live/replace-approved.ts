@@ -16,7 +16,7 @@
 // Read-only. Every query is a findMany/count; nothing is written.
 //
 // Run:
-//   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/replace-approved.ts
+//   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_live/replace-approved.ts
 import { prisma } from "@/lib/prisma";
 import { videoLaneRevisionWhere } from "@/lib/reviewCuts";
 

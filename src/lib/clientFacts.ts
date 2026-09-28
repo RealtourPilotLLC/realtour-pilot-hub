@@ -262,6 +262,40 @@ export async function fieldReportsForProject(projectId: string) {
   return rows.map((r) => ({ ...r, basis: fieldBasisOf(r.sourceRef) }));
 }
 
+/**
+ * Every field report on one CLIENT, for the review list on their client page
+ * (§7.8, Sep 28 2026) — a listing-only client has no program workspace, so
+ * without this the only place to confirm one was the upload page of the job
+ * it came from. Waiting ones first, then the most recent decisions; each with
+ * the job it came off (sourceRef "field:<projectId>:<basis>").
+ */
+export async function fieldReportsForClient(clientId: string, take = 30) {
+  const rows = await prisma.clientFact.findMany({
+    where: { clientId, source: "field", status: { in: ["PROPOSED", "ACCEPTED", "REJECTED"] } },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    select: { id: true, body: true, status: true, scope: true, speaker: true, sourceRef: true, createdAt: true, reviewedBy: true, reviewedAt: true, confidential: true },
+  });
+  const projectIdOf = (ref: string | null) => /^field:([^:]+):/.exec(ref ?? "")?.[1] ?? null;
+  const ids = [...new Set(rows.map((r) => projectIdOf(r.sourceRef)).filter((x): x is string => !!x))];
+  const projects = ids.length
+    ? await prisma.project.findMany({ where: { id: { in: ids }, clientId }, select: { id: true, title: true } })
+    : [];
+  const titleOf = new Map(projects.map((p) => [p.id, (p.title || "").split(",")[0].trim() || "a job"]));
+  const waiting = rows.filter((r) => r.status === "PROPOSED");
+  const decided = rows.filter((r) => r.status !== "PROPOSED");
+  return [...waiting, ...decided].slice(0, take).map((r) => {
+    const projectId = projectIdOf(r.sourceRef);
+    return {
+      ...r,
+      basis: fieldBasisOf(r.sourceRef),
+      // Only a job of THIS client is named; a stray reference is not linked.
+      projectId: projectId && titleOf.has(projectId) ? projectId : null,
+      projectTitle: projectId ? titleOf.get(projectId) ?? null : null,
+    };
+  });
+}
+
 /** The "Updated from your latest call" strip: proposed facts newest first, conflicts flagged. */
 export async function factsForReview(clientId: string, take = 60) {
   return prisma.clientFact.findMany({ where: { clientId, status: { in: ["PROPOSED", "ACCEPTED", "REJECTED"] } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }], take });

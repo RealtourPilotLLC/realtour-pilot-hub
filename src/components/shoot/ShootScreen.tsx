@@ -143,7 +143,10 @@ export function ShootScreen({
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
         {/* The locked script from Script Studio — READ-ONLY. Scripts are written
             in the Studio (the API/webhook sync keeps this fresh); the
-            photographer directs the agent from it in the field. */}
+            photographer directs the agent from it in the field.
+            A CONTENT SESSION never waits on Studio (Sep 28): its scripts come
+            from the program and are on the session card (view.session), so
+            the "No script yet" warning is a listing job's alone. */}
         {isVideo &&
           (project.reelHook || project.reelScript ? (
             <ReelScriptCard
@@ -153,7 +156,7 @@ export function ShootScreen({
               shotList={project.reelShotList}
               updatedAt={project.reelRecipeUpdatedAt}
             />
-          ) : (
+          ) : view.session ? null : (
             <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
               <span className="font-semibold">No script yet.</span> This reel&rsquo;s script is written in Script
               Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or

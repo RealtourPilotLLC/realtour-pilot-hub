@@ -3,7 +3,7 @@
 //
 //   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
 //     set -a && source .env; set +a && NODE_OPTIONS=--conditions=react-server \
-//     npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_drill/reminder-calendar.ts
+//     npx tsx --require ./scripts/_drill/_drill-preload.cjs scripts/_live/reminder-calendar.ts
 //
 // Part 1 is reconnaissance: what the live roster actually looks like (packages,
 // sessions per month, open months, the reminder ledger, provider freshness).
