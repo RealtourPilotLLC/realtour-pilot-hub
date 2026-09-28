@@ -1300,6 +1300,56 @@ async function movedCutEntered(sub: EnteringCut): Promise<{ ok: boolean; message
   return { ok: true, message: `Version ${sub.round} is in the Review Room.` };
 }
 
+/**
+ * THE UPLOADER'S HAND-IN CLOSE (§7.1). Only the stretch on THIS video (or one
+ * that named no video): a fix to video 1 does not end the editor's stretch on
+ * video 3 (review fix, Sep 25). And only a stretch begun at or before the cut
+ * entered review (Sep 28): the store's completion callback and the browser's
+ * finish race, and the editor who was answered first can press "Yes, I'm on
+ * it" while the other caller is still inside its entry — that Start is a new
+ * stretch, never the one this version handed in. Idempotent: an item already
+ * closed is not touched, so the two finalize callers may both run it.
+ */
+async function closeUploadersStretch(
+  sub: { projectId: string; submittedByKey: string | null; submittedByName: string | null; outputId: string | null; round: number },
+  enteredAt: Date | null,
+): Promise<void> {
+  if (!sub.submittedByKey) return;
+  const { closeActiveWork } = await import("@/lib/editorWork");
+  await closeActiveWork(sub.projectId, {
+    editorKey: sub.submittedByKey,
+    forOutputId: sub.outputId ?? null,
+    startedBefore: enteredAt,
+    reason: "SUBMITTED",
+    actor: { userId: null, name: sub.submittedByName ?? sub.submittedByKey, role: "EDITOR" },
+    detail: `version ${sub.round} submitted`,
+  });
+}
+
+/**
+ * The browser's half of the hand-in (Sep 28). When the store's callback won
+ * the entry, the browser was answered "Already in review." while the callback
+ * could still be short of its close — the page then refreshed, still saw the
+ * editor's Start as ACTIVE, and never asked "Are you still working on this
+ * job?" while the close landed a moment later. The browser's finish runs the
+ * same close before it answers, so what the page reads next is settled. Only
+ * for an upload that has entered review (selfCheckedAt, the entry's stamp,
+ * is the cut-off); the office's uploads carry no editor key and close
+ * nothing. Never throws.
+ */
+export async function settleUploadHandIn(submissionId: string): Promise<void> {
+  try {
+    const row = await prisma.reviewSubmission.findUnique({
+      where: { id: submissionId },
+      select: { projectId: true, source: true, submittedByKey: true, submittedByName: true, outputId: true, round: true, selfCheckedAt: true },
+    });
+    if (!row || row.source !== "upload" || !row.submittedByKey || !row.selfCheckedAt) return;
+    await closeUploadersStretch(row, row.selfCheckedAt);
+  } catch (e) {
+    console.error("[review] hand-in settle failed", submissionId, e);
+  }
+}
+
 /** The upload door's entry — moved here verbatim from finalizeCutUpload when
  *  the check gate split "the bytes landed" from "the cut is in review". */
 async function uploadCutEntered(sub: EnteringCut): Promise<{ ok: boolean; message: string }> {
@@ -1334,18 +1384,13 @@ async function uploadCutEntered(sub: EnteringCut): Promise<{ ok: boolean; messag
   // The uploading editor's active stretch on this job ends with the hand-in
   // (§7.1): SUBMITTED, their item only — a co-editor on the same job keeps
   // theirs, and no other output is touched. An office upload carries no editor
-  // key, so it closes nothing. Never throws.
+  // key, so it closes nothing. Never throws. The entry's own stamp is the
+  // cut-off (Sep 28): `sub` was read before the claim, so it is re-read here.
   if (sub.submittedByKey) {
-    const { closeActiveWork } = await import("@/lib/editorWork");
-    await closeActiveWork(sub.projectId, {
-      editorKey: sub.submittedByKey,
-      // Only the stretch on THIS video (or one that named no video): a fix to
-      // video 1 does not end the editor's stretch on video 3 (review fix, Sep 25).
-      forOutputId: sub.outputId ?? null,
-      reason: "SUBMITTED",
-      actor: { userId: null, name: sub.submittedByName ?? sub.submittedByKey, role: "EDITOR" },
-      detail: `version ${sub.round} submitted`,
-    });
+    const entered = await prisma.reviewSubmission
+      .findUnique({ where: { id: sub.id }, select: { selfCheckedAt: true } })
+      .catch(() => null);
+    await closeUploadersStretch(sub, entered?.selfCheckedAt ?? null);
   }
   // The editor's work item answers the way the Final-folder submit always
   // has (submitCutForReview's closeEdit): COMPLETED on a one-video job or once

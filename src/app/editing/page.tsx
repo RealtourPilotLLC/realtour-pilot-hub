@@ -8,7 +8,7 @@ import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
-import { buildEditorQueue, unreadThreadCount, WAITING_ON_INSTRUCTIONS, WAITING_ON_OFFICE } from "@/lib/editorQueue";
+import { buildEditorQueue, unreadThreadCount, WAITING_ON_INSTRUCTIONS } from "@/lib/editorQueue";
 import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
 import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
 import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
@@ -17,6 +17,7 @@ import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { WorkingNowPanel } from "@/components/editing/WorkingNowPanel";
 import { EditorDesk } from "@/components/editing/EditorDesk";
 import { myDesk, workingNow } from "@/lib/editorWork";
+import { editorActivityToday, editorLines, rowEvidence } from "@/lib/editorActivity";
 
 export const dynamic = "force-dynamic";
 
@@ -40,10 +41,17 @@ export const dynamic = "force-dynamic";
 //     view (hideEditor) never renders it, and the server refuses it anyway.
 //     Row values arrive from editorQueue.ts AFTER overrides, so the counts in
 //     the editor's header line below already honour them.
-//   · WORKING NOW (§7.1, Sep 25): what each editor has pressed Start on, above
-//     the backlog, re-read every minute. The editor's own view gets their desk
-//     (what they're on + Pause) and, once, "which one are you on right now?"
-//     for the jobs the old pill left claimed.
+//   · EDITORS TODAY (§7.1, Sep 25; reworded Sep 28): one line per editor
+//     above the backlog, re-read every minute. Green = they pressed Start
+//     (lib/editorWork, the only thing that says someone is working). Amber =
+//     no Start, but they DID something today with their own login — an
+//     upload, the review check, a note, a chat message (lib/editorActivity) —
+//     shown as evidence, "Last action 12:14pm — uploaded a version of …",
+//     never as "working now". Jordan, Sep 28: the old panel said "Kim — Not
+//     on anything" beside three of Kim's uploads that morning. The backlog
+//     row carries the same evidence under its pill. The editor's own view
+//     gets their desk (what they're on + Pause) and, once, "which one are you
+//     on right now?" for the jobs the old pill left claimed.
 
 // The door to the message center, with the viewer's unread count.
 function MessagesButton({ unread }: { unread: number }) {
@@ -150,28 +158,24 @@ export default async function EditorQueuePage() {
     const myNotDone = mine(notDone);
     const myUpcoming = mine(upcomingRows);
     const myDone = mine(done);
-    // "To edit" is work the EDITOR owes. A cut already sitting in the Review
-    // Room (or approved and waiting on delivery) is on Jordan, not on Kim — now
-    // that the row labels tell the truth (Sep 2 audit), the header has to as
-    // well, or the count re-tells the same lie one line higher up.
-    const WAITING_ON_US = WAITING_ON_OFFICE;
-    // A Waiting row is not work either (Sep 11 review): the footage is not
-    // in — the office is holding the job there, or the photographer has not
-    // submitted — so it is counted on its own, never as "to edit". Nor is a
-    // job whose footage is in but whose instructions are not (O01).
-    const isWaiting = (r: QueueRow) => r.status === "Waiting" || r.status === WAITING_ON_INSTRUCTIONS;
-    const myWaiting = myNotDone.filter(isWaiting);
-    const myToEdit = myNotDone.filter((r) => !WAITING_ON_US.has(r.status) && !isWaiting(r));
-    const inReview = myNotDone.length - myToEdit.length - myWaiting.length;
-    const overdue = myToEdit.filter((r) => r.late).length;
-    const waitingInstr = myWaiting.filter((r) => r.status === WAITING_ON_INSTRUCTIONS).length;
-    const waitingNote = myWaiting.length
-      ? ` · ${myWaiting.length} waiting on ${waitingInstr === 0 ? "footage" : waitingInstr === myWaiting.length ? "instructions" : "footage or instructions"}`
-      : "";
     const unread = await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id));
-    // What they said they're on (§7.1). A failed read shows no banner — the
-    // pill on each row still starts and pauses.
+    // THE DESK (§7.1; Jordan, Sep 28: "the working on now button for the
+    // editors needs to be clearer"). Always drawn: "What are you working on
+    // now?" with one button per job they could be on, or "You're on … since"
+    // with Pause and Switch job. Times in the editor's own timezone. A failed
+    // read (null) still draws the list, with a line saying the read failed —
+    // never an empty desk that reads "nothing". Starting from it is the same
+    // §7.1 Start the job page's bar and the row's pill use.
     const desk = await myDesk(editorScope).catch(() => null);
+    const { toDeskJobs, deskHeader } = await import("@/lib/editorDesk");
+    const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
+    // "To edit" is work the EDITOR owes and can start — the desk's own list
+    // (toDeskJobs), so the header, the desk and the table cannot disagree
+    // (Sep 28 review). A cut with the office leaves a job off it only once no
+    // video of it is still theirs; a Waiting job (no footage, or no
+    // instructions yet — O01) is never on it; a job not handed to them yet is
+    // on their list but not counted as something they can start.
+    const deskJobs = toDeskJobs(myNotDone, editorScope, desk?.unconfirmed ?? []);
     // THEIR OWN REVIEW RESULTS (§8.4), here where they work — not only behind
     // /quality. Scoped to their assigned key (editorScopeOf, never the login
     // name), so an editor sees their own numbers and examples and no one
@@ -190,13 +194,9 @@ export default async function EditorQueuePage() {
         <PageHeader
           eyebrow="Your edits"
           title={`Hi ${(me.name ?? "there").split(" ")[0]}`}
-          subtitle={
-            myToEdit.length
-              ? `${myToEdit.length} to edit${overdue ? ` · ${overdue} overdue` : ""}${inReview ? ` · ${inReview} in review` : ""}${waitingNote} · ${myUpcoming.length} upcoming`
-              : inReview || myWaiting.length
-                ? `Nothing to edit${inReview ? ` · ${inReview} waiting on review` : ""}${waitingNote} · ${myUpcoming.length} upcoming`
-                : "Nothing waiting — you're all caught up."
-          }
+          // Short on purpose (Sep 28): what they owe and what is late. The
+          // in-review / waiting / upcoming counts live on the table's tabs.
+          subtitle={deskHeader(deskJobs)}
           actions={
             <div className="flex items-center gap-2">
               <MessagesButton unread={unread} />
@@ -205,8 +205,15 @@ export default async function EditorQueuePage() {
           }
         />
         <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
-          {desk && <EditorDesk active={desk.active} unconfirmed={desk.unconfirmed} />}
-          <WorkloadPanel view={await editingWorkload(workloadRows([...myNotDone, ...myUpcoming]))} mine />
+          <EditorDesk
+            desk={desk}
+            jobs={deskJobs}
+            tz={editorMeta(editorScope)?.tz ?? DEFAULT_EDITOR_TZ}
+            readOnly={!!me.impersonating}
+          />
+          {/* No workload panel here any more (Sep 28): its rates and lanes
+              were the office's numbers, and its one link ("Offline or stuck?")
+              now sits in the desk's footer. */}
           <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
           {quality && <EditorQualityCard report={quality} own />}
         </div>
@@ -215,6 +222,11 @@ export default async function EditorQueuePage() {
   }
 
   const unread = await unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id));
+  // ONE read time for both halves of "Editors today": what each editor said
+  // they're on (Start/Pause) and what they did today (evidence). Neither read
+  // throws; each says so when it failed.
+  const now = new Date();
+  const [wn, act] = await Promise.all([workingNow({ now }), editorActivityToday({ now })]);
 
   return (
     <div>
@@ -237,24 +249,27 @@ export default async function EditorQueuePage() {
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
-        {/* WHAT EACH EDITOR IS ON RIGHT NOW (§7.1) — their own Start/Pause,
-            separate from the backlog below. The page re-reads every minute
-            while the tab is visible; the panel says when it read and says so
-            when that read has gone stale or failed. */}
+        {/* EDITORS TODAY (§7.1) — their own Start/Pause, and, when there is
+            no Start, what they did today as evidence. Separate from the
+            backlog below. The page re-reads every minute while the tab is
+            visible; the panel says when it read and says so when that read
+            has gone stale or failed. */}
         <AutoRefresh seconds={60} />
-        <WorkingNowPanel data={await workingNow()} />
+        <WorkingNowPanel view={editorLines(wn, act, now)} />
         {/* Whose desk each job is on, and whether the person it is on can
             actually move it. See lib/editorWorkload for why there is not a
             single invented hour in it. */}
         <WorkloadPanel view={await editingWorkload(workloadRows([...notDone, ...upcomingRows]))} />
         {/* THE BACKLOG. Rows click straight through to /edit/<id> — the notes
             (customer + shoot) live there now, not in the table. A row reads
-            "In editing" only while somebody has pressed Start on it. */}
+            "In editing" only while somebody has pressed Start on it; a row an
+            editor touched today without a Start carries that as evidence
+            under its pill ("Kim uploaded a version · 12:14pm"). */}
         <div>
           <h2 className="mb-2 text-sm font-semibold text-foreground">
-            Backlog <span className="font-normal text-muted">— every job owed, whoever holds it; Ready for editing means nobody has started it</span>
+            Backlog <span className="font-normal text-muted">— every job owed</span>
           </h2>
-          <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />
+          <SimpleQueue notDone={notDone.map((r) => ({ ...r, lastAction: rowEvidence(r, act, now) }))} upcoming={upcomingRows} done={done} />
         </div>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}

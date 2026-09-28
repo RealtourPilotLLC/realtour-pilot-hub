@@ -1878,7 +1878,15 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   // used to answer "Already in review." here and leave the cut held with no
   // bell (review fix, Sep 25). Every other non-UPLOADING row is as before.
   const awaitingBytes = row.status === "PENDING" && !!row.blobUrl && row.blobUrl === input.url && !!row.selfCheckId && !row.selfCheckedAt;
-  if (row.status !== "UPLOADING" && !awaitingBytes) return { ok: true, message: "Already in review." };
+  // The store's callback won the entry: it may still be short of the hand-in
+  // close, so this caller runs the same (idempotent) close before it answers —
+  // the page's refresh must read a settled Start (Sep 28, reviewCuts.
+  // settleUploadHandIn).
+  if (row.status !== "UPLOADING" && !awaitingBytes) {
+    const { settleUploadHandIn } = await import("@/lib/reviewCuts");
+    await settleUploadHandIn(input.submissionId);
+    return { ok: true, message: "Already in review." };
+  }
   // The blob must live in a store WE HOLD A TOKEN FOR, under THIS row's prefix
   // — never attach a foreign URL to a cut.
   //
@@ -1929,6 +1937,12 @@ export async function finishCutUpload(input: { submissionId: string; url: string
       const { recordArrivedDimensions } = await import("@/lib/reviewCuts");
       await recordArrivedDimensions(input.submissionId, input.url, size);
     });
+  }
+  // Whichever caller entered the cut, the hand-in close has landed before the
+  // browser hears "in review" (a no-op when this caller's own entry ran it).
+  if (r.ok) {
+    const { settleUploadHandIn } = await import("@/lib/reviewCuts");
+    await settleUploadHandIn(input.submissionId);
   }
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
   if (sub) {

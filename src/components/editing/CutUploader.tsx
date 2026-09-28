@@ -14,6 +14,8 @@ import { CutTakeBack, CutTakeBackFlags } from "@/components/review/CutTakeBack";
 import type { CutTakeBackInfo } from "@/components/review/types";
 import { SelfCheckDialog, type SelfCheckContextView } from "@/components/editing/SelfCheckDialog";
 import type { SelfCheckInput } from "@/lib/selfCheck";
+import { StillWorkingPrompt } from "@/components/editing/StillWorkingPrompt";
+import { stillWorkingRemaining } from "@/lib/editorDesk";
 
 // ---------------------------------------------------------------------------
 // "Upload version N" — the editor's way into the Review Room (Jordan, Sep 1:
@@ -307,13 +309,24 @@ function CutMessage({
 // is a revision, and the notes still open on it. onBehalfOf: the office is
 // uploading for an editor or a vendor; the dialog says so and the server
 // records it.
+// stillWorking (Jordan, Sep 28): set by the page ONLY for the editor who could
+// press Start on this job and is not on it right now — never the office, a
+// preview, a blocked editor or the outside shop. After a version of theirs
+// lands, the row asks "Are you still working on this job?" (StillWorkingPrompt)
+// while other videos are still owed here. Asked, never assumed: this panel
+// calls no work action itself, and "No" writes nothing.
 export function CutUploader({
-  projectId, cuts, canUpload, revisionOpen = false, canOverrideExport = false, checks = {}, onBehalfOf = null,
+  projectId, cuts, canUpload, revisionOpen = false, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null,
 }: {
   projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean; canOverrideExport?: boolean;
   checks?: Record<string, SelfCheckContextView>; onBehalfOf?: string | null;
+  stillWorking?: { openSlotKeys: string[]; elsewhereStreet: string | null; paused: boolean } | null;
 }) {
   const router = useRouter();
+  // The row whose version just landed (set once, on a confirmed success only),
+  // and the Start's own sentence once the editor has answered Yes.
+  const [sent, setSent] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<{ key: string; text: string } | null>(null);
   // THE CHECK COMES BEFORE THE BYTES (§8.2). A file picked for a slot opens
   // the checklist first; the answers ride up with startCutUpload and the
   // server binds them to what lands. They are kept per slot for the SAME file
@@ -376,6 +389,8 @@ export function CutUploader({
   // server re-reads the cut's real state on the send that follows, and a reason
   // it turns out not to need is ignored rather than filed.
   async function begin(cut: CutRow, file: File, replacing = false) {
+    setSent(null);
+    setReceipt(null);
     const key = `${cut.deliverableId}:${cut.slot}`;
     setErr((e) => ({ ...e, [key]: "" }));
     clearBlocked(key);
@@ -503,6 +518,9 @@ export function CutUploader({
       // The row's saved-note memory belongs to the version that just went; the
       // fresh render carries the truth.
       setSaved((s) => { const n = { ...s }; delete n[key]; return n; });
+      // The version is in: ask if they're still on the job (the prompt below
+      // draws only when the page says this viewer may be asked).
+      setSent(key);
       router.refresh();
     } catch (e) {
       await abandonCutUpload(started.submissionId, landed).catch(() => {});
@@ -654,6 +672,19 @@ export function CutUploader({
                   </div>
                 )}
                 {err[key] && <p className="mt-1 text-xs text-danger">{err[key]}</p>}
+                {sent === key && stillWorking && stillWorkingRemaining(stillWorking.openSlotKeys, key) > 0 && (
+                  <StillWorkingPrompt
+                    projectId={projectId}
+                    remaining={stillWorkingRemaining(stillWorking.openSlotKeys, key)}
+                    elsewhereStreet={stillWorking.elsewhereStreet}
+                    resumes={stillWorking.paused}
+                    onClose={(text) => {
+                      setSent(null);
+                      if (text) setReceipt({ key, text });
+                    }}
+                  />
+                )}
+                {receipt?.key === key && <p className="mt-1 text-xs text-success" role="status">{receipt.text}</p>}
                 {/* THE REFUSAL. Whoever is reading this has just finished an
                     edit and been told "no" by a dialog, so the first line is
                     the only one that has to land: the work is fine. Then what
