@@ -27,6 +27,14 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
      my jspackman215@gmail.com so I can see the test emails") — add both as verified test
      destinations beside info@, set Bobby TEST's hub email to jspackman215@ (backup first); the
      Aryeo side can stay bobmike0214@, so the Aryeo dashboard edit is no longer needed.
+  4. merge branch `editor-clarity` (Jordan, Sep 28: "the working on now button for the editors
+     needs to be clearer … there is just a lot of information … It says Kim is not working on
+     anything, but I believe he is!"). Measured: Kim has never pressed Start (all recorded
+     events are John's) yet uploaded 3 versions of 107 E Old Baltimore Pike that morning; the
+     office panel read "Kim — Not on anything". Being built in a separate worktree (workflow
+     `wf_3e33ce7d-464`): one obvious Start/Pause/Switch control for editors, a one-tap "still on
+     this?" after an upload, and an office line per editor from evidence ("Last active 12:14 PM
+     — uploaded a version of … · hasn't pressed Start"), never claiming work without Start.
 
 ## Batch 0 — facts measured Sep 25 (read-only probe, `scripts/_recon/cp15-config-probe.ts`)
 
