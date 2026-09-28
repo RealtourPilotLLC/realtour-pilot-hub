@@ -9,13 +9,13 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 ## Resume here
 
-- **Current batch:** 5 — operational visibility (building); schema pushed `17df024`.
-- **Deployed:** batches 1–4 (`b4403ea`, Vercel `41mfzx706`), the private-store switch, the Calendly fix.
+- **Current batch:** 6 — UI and release proof (plus Jordan's Review Room attribution ask, Sep 28).
+- **Deployed:** batches 1–5 (`a183ed6`, Vercel `hy0rnlrxb`).
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
-- **Next action:** batch 5 review/commit/deploy; batch 6 (real-Postgres race tests, restore rehearsal,
-  settings grouping, walkthroughs, final report); the supervised Aryeo test in a watched sitting.
+  Jordan's Saturday quiet time is a code default (Sat 00:00–19:30 ET, held → delivered at 19:30).
+- **Next action:** batch 6 build; the supervised Aryeo test in a watched sitting; the final report.
 
 ## Batch 0 — facts measured Sep 25 (read-only probe, `scripts/_recon/cp15-config-probe.ts`)
 
@@ -43,7 +43,7 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 | 2 Guided content preparation | done | `2c74adc` | see below |
 | 3 Scheduling and integrations | done | `417fe90` | see below |
 | 4 Capture through delivery | done | `b4403ea` | `41mfzx706` |
-| 5 Operational visibility | — | | |
+| 5 Operational visibility | done | `17df024` schema, `a183ed6` | `hy0rnlrxb` |
 | 6 UI and release proof | — | | |
 
 ## Decisions (asked Sep 25, answered by Jordan the same day)
@@ -154,6 +154,26 @@ The sitting, in order (about 20 minutes):
    appointment-scoped availability see drive time?).
 
 ## Tests and environment
+
+### Batch 5 (`a183ed6`)
+
+- Schema pushed first (`17df024`) after a full backup
+  (`~/rtp-backup-2026-09-26-full-pre-batch5.json`, 140/140 models, 114,364
+  rows); the SQL was additions only (3 nullable columns, 4 tables).
+- Four builders (notification schedule + overnight hold; comms; operations;
+  money + vendors), two review lenses. **7 of 9 findings confirmed and
+  fixed** — two were Jordan's rule leaking: the 7 PM upload list and the
+  photographer chaser reached him inside his Saturday window; the AutoHDR card
+  showed the owner's bank top-up to admins.
+- **82 isolated drills green.** (One run was interrupted by the Mac sleeping;
+  the unreached drills were run separately and the four that the two runs
+  killed between them were re-run alone: all green.)
+- **Measured before deploy:** 0 saved schedules, 0 held DMs, 0 photo batches,
+  7 ordinary queued staff texts, 0 owner-shot Saturday jobs in 180 days.
+- Live check: every main page 200, cut stream 206, the Notification schedule
+  card renders in Settings.
+- Boundary, stated plainly: a message a PERSON types and sends from the hub is
+  not held by quiet time — it is their message, not a notification.
 
 ### Batch 4 (`b4403ea`)
 
