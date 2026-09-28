@@ -1,3 +1,4 @@
+// @drill-run: needs=tools/realpg timeout=900
 // ---------------------------------------------------------------------------
 // DRILL: R04 — a worker that loses its lease after an external write
 // (Sep 28 2026).

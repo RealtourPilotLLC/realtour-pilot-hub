@@ -1,3 +1,4 @@
+// @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 // The Editing Room's due filter, drilled on the REAL board (Jordan, Sep 18:
 // "another filter in the editing room like Due Today").
 //

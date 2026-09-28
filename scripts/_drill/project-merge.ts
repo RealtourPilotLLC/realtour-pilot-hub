@@ -1,8 +1,9 @@
 /**
  * MERGING TWO JOBS' WORK — the shipped actions, against an isolated PostgreSQL.
  *
- *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
- *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/project-merge.ts
+ *   npm run drills -- scripts/_drill/project-merge.ts
+ *   (Sep 28, R06: inside the isolation boundary — without the preload this
+ *   now refuses to start instead of reaching Prisma's .env database)
  *
  * This one moves deliverables and CUTS between jobs, so it gets proved before
  * it gets a button. What it has to show: the work lands, the money does not

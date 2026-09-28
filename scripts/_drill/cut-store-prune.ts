@@ -18,7 +18,10 @@
 // be read or deleted whatever happens.
 //
 // Usage, from the repo root:
-//   npx tsx scripts/_drill/cut-store-prune.ts [--port 5441]
+//   npm run drills -- scripts/_drill/cut-store-prune.ts
+//   (by hand, with a port: npx tsx --require ./scripts/_drill/_drill-preload.cjs
+//   scripts/_drill/cut-store-prune.ts --port 5441 — Sep 28, R06: without the
+//   preload this now refuses to start)
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { execFile } from "child_process";

@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------------------
 // DRILL: A02 + A04 — DELIVERY TRUTH (Sep 22 2026).
 //
-//   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     npx tsx scripts/_drill/a02-a04-delivery-truth.ts
+//   npm run drills -- scripts/_drill/a02-a04-delivery-truth.ts
+//   (Sep 28, R06: inside the isolation boundary — without the preload this
+//   now refuses to start instead of reaching Prisma's .env database)
 //
 // A02. clientChangeRequestsFor used to `.catch(() => [])`, and its own comment
 // said "no answer means no complaint, which only ever makes the matcher

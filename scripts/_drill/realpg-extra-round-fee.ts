@@ -1,3 +1,4 @@
+// @drill-run: needs=tools/realpg timeout=900
 // ---------------------------------------------------------------------------
 // DRILL: R04 — the extra revision round and its fee, on REAL Postgres
 // (batch 6, Sep 28 2026).

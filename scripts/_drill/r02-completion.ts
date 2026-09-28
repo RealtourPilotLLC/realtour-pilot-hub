@@ -3,8 +3,9 @@
  * inputs and prints the verdict. No database, no network: computeStatus is
  * pure, so the five acceptance cases can be argued with directly.
  *
- *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
- *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/r02-completion.ts
+ *   npm run drills -- scripts/_drill/r02-completion.ts
+ *   (Sep 28, R06: inside the isolation boundary — without the preload this
+ *   now refuses to start instead of reaching Prisma's .env database)
  *
  * The same file runs against the code BEFORE and AFTER the fix: the unit tally
  * is an optional field, so the old build simply ignores it.

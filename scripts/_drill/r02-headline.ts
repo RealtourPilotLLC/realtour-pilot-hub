@@ -7,8 +7,9 @@
  * contradiction lived: the engine counted three outstanding videos, the parser
  * threw the count away, and the headline said everything was confirmed.
  *
- *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
- *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/r02-headline.ts
+ *   npm run drills -- scripts/_drill/r02-headline.ts
+ *   (Sep 28, R06: inside the isolation boundary — without the preload this
+ *   now refuses to start instead of reaching Prisma's .env database)
  *
  * Pure: no database, no network.
  */

@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------------------
 // DRILL: A07 — A CONTENT SESSION IS NOT CONFIRMED BY PROXIMITY (Sep 22 2026).
 //
-//   cd "/Users/jordanspackman/Realtour Pilot POT Dashboard" && \
-//     npx tsx scripts/_drill/a07-appointment-evidence.ts
+//   npm run drills -- scripts/_drill/a07-appointment-evidence.ts
+//   (Sep 28, R06: inside the isolation boundary — without the preload this
+//   now refuses to start instead of reaching Prisma's .env database)
 //
 // The Sep 21 audit reproduced this: "A content-session request at 10:00 matched
 // a same-client listing-photo appointment at 11:00 whose project had no

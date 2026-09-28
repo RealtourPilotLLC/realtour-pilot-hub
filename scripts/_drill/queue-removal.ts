@@ -1,8 +1,9 @@
 /**
  * REMOVING A JOB FROM THE EDITING ROOM, and putting it back exactly as it was.
  *
- *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
- *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/queue-removal.ts
+ *   npm run drills -- scripts/_drill/queue-removal.ts
+ *   (Sep 28, R06: inside the isolation boundary — without the preload this
+ *   now refuses to start instead of reaching Prisma's .env database)
  *
  * The round trip was walked in a browser against the live database on the Cara
  * test jobs — but NONE of them carries an edit_video task, so the one branch
