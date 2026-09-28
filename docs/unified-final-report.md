@@ -69,7 +69,7 @@ needs:
   - An open ask shows on the job as "Rush asked".
 - A **"Waiting on a file"** card lets the office record what a job cannot start without, for example the plat for lot lines or a client logo.
   - Finding the file is Kyle's task.
-  - The work from it is blocked until the file is attached. ⟨A-STATUS⟩
+  - The work from it is blocked until the file is attached.
 - Also in this area:
   - capacity and scope exceptions with owners;
   - rework cost;
@@ -106,7 +106,7 @@ needs:
 | 5 | 7 of 9 (2 refuted) |
 | 6 | 24 of 24 |
 | Completion | 3 of 4 (1 refuted) |
-| Final | ⟨FINAL-REVIEW⟩ |
+| Final remainders | my own review of the diff, which found the same time-zone bug in 3 more portal files; fixed |
 
 **Real bugs only the real-Postgres race drills found.** All fixed:
 - A burst of Aryeo events for a new agent crashed 25 of 30 imports.
@@ -135,7 +135,7 @@ needs:
 | Batch 6 + 38 E Gay St | `57a2820`, `81e5fb6` | `15fc7f4` (fojahizaz) |
 | Delivered-notes rule, test inboxes, editor clarity | `ac297e8`, `2694cfe` | `eaee7fa` (mqazwgvmn) |
 | Portal tab fix | `0950c1c` | `0950c1c` (5d2osiip6) |
-| Completion + final remainders | ⟨FINAL-COMMITS⟩ | ⟨FINAL-DEPLOY⟩ |
+| Completion + final remainders | `c6b54e3` (+ docs) | ⟨FINAL-DEPLOY⟩ |
 
 **Schema.** Three additive pushes, each after a full backup:
 - `2528374` — batches 1–4;
@@ -167,7 +167,7 @@ Nothing was dropped or renamed. Production schema = HEAD (`prisma migrate diff`:
 
 ## 4. Verification
 
-- **Isolated drills: ⟨DRILLS⟩ drills, ⟨CHECKS⟩ checks, all green at ⟨FINAL-SHA⟩.**
+- **Isolated drills: 102 drills, about 7,810 checks, all green at `c6b54e3`.**
   - Each drill boots its own Postgres (PGlite), with providers faked and fenced and clocks pinned.
   - Drills show the old behaviour failing and the new behaviour passing wherever that is meaningful.
 - **Real Postgres:** 4 race drills on embedded Postgres 18.4, matched to production's 18.6. The harness self-test ran on both engines.
@@ -195,13 +195,26 @@ Nothing was dropped or renamed. Production schema = HEAD (`prisma migrate diff`:
   - Slack;
   - Gmail sends;
   - the AI model, apart from one earlier attended TEST run.
-- **Browsers:** ⟨BROWSER⟩
+- **Browsers:** the isolated demo hub at desktop size and 375 px, in a real browser. Production was never opened.
+  - The Review Room named the client and the time on the send-back, the earlier round and each note.
+  - On the job page, a "Waiting on a file" item was recorded for Video 2 with Kim to work from it, then attached; Kim's step unblocked.
+  - The Rush dialog opened.
+  - The portal Home and Schedule tabs had no sideways scrolling, and September times read EDT.
+  - Settings showed its 7 groups, the readiness panel and the Notification schedule.
+  - The office wrote Video 2's brief on the job page, and it appeared on the upload page at 375 px. The photographer's on-site note made Brief v2, signed with name and date.
+  - The Editing Room office panel rendered.
+  - An editor pressing Start was not clicked in a browser; it is drilled through the server actions.
 - **Not done:**
   - real phones (iPhone Safari, Android Chrome);
   - a real-model strategy draft (a paid AI run, not authorised).
 - **Process failures, recorded:**
   - Two read-only production scripts were run without the connection guard. They were SELECT-only.
-  - A builder ran a production read-only script believing it was an isolated drill. Postgres refused both writes (25006), so nothing was written. All 22 such scripts now live in `scripts/_live/` with a warning README, so the drill folder holds only isolated drills.
+  - Twice, a production read-only script in the drill folder was taken for an isolated drill:
+    - `product-eligibility`, run by a builder;
+    - `pro-two-sessions`, picked up by the suite runner because it mentions PGlite in a comment.
+  - Postgres refused every write (25006), so nothing was written.
+  - All 23 such scripts now live in `scripts/_live/` with a warning README.
+  - The harness self-test now fails if any file in the drill folder can reach a database it did not create.
   - A fake token-shaped string triggered GitGuardian. No real secret was ever committed; this was checked across all history.
 
 ## 5. Automation controls
@@ -259,7 +272,12 @@ Read from production at ⟨PROBE-TIME⟩ by the read-only probe.
 | 8 | GitGuardian alert (optional) | Jordan | None | Mark the Sep 26 incident "false positive / test credential" |
 | 9 | Deliberately not built | — | — | First-cycle "book your call" reminder: the portal already refuses the written route unless eligible, and reminders are OFF. `rawInAt` backfill for jobs already in flight: nothing reads it yet. AutoHDR API alerts: Jordan said "at some point" |
 
-⟨REMAINDERS⟩
+**Small leftovers, no decision needed:**
+- The raise-gap-from-brief button is on the job page only.
+- There is no rush control on /tasks; the card links to the job page.
+- The booking picker shows the first 6 days.
+- A stale Dropbox read that once saw files still says "files found". That's a wording question, if Jordan cares.
+- `rawInAt` is not backfilled for jobs already in progress.
 
 ## 7. Walkthroughs and the client-launch approval package
 

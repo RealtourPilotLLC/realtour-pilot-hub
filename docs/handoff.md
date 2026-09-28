@@ -9,10 +9,11 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 ## Resume here
 
-- **Current batch:** all six built and deployed. Remaining: the queued follow-ups below,
-  role walkthroughs, the final report and launch package, the supervised Aryeo test.
-- **Deployed:** `eaee7fa` (batches 1–6, the 38 E Gay St fix, the delivered-notes rule, the test
-  inboxes and the editor clarity rebuild), Vercel `mqazwgvmn`. 99 isolated drills green.
+- **Current batch:** all six built and deployed, plus the completion pass (`c6b54e3`).
+  **Final report: [`unified-final-report.md`](unified-final-report.md)** (the §13 report and
+  the client-launch approval package). What is left is Jordan's: the supervised Aryeo
+  sitting, a real-phone pass, the launch stages, deleting the old public video copies.
+- **Deployed:** ⟨FINAL-DEPLOY⟩. Before it: `0950c1c` (Vercel `5d2osiip6`).
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
@@ -198,6 +199,58 @@ The sitting, in order (about 20 minutes):
    appointment-scoped availability see drive time?).
 
 ## Tests and environment
+
+### Completion pass (`c6b54e3`, Sep 28)
+
+The checklist rows still marked PARTIAL that needed nobody's decision.
+
+**Built:**
+- per-video briefs and on-site notes on the upload page;
+- one evidence ladder on the tracker, the brief card and the upload page, with `rawInAt` on first fresh sight;
+- open gaps block the delivery board;
+- field reports are confirmed before they reach the AI profile;
+- a Rush button and a "Rush asked" state;
+- a "Waiting on a file" card;
+- booking slots start at the 72-hour line;
+- the ten-starts-a-day cap removed;
+- every portal time labelled with its own date's zone (the scheduler, the Home and Schedule tabs, the call picker).
+
+**Reviewed and tested:**
+- One review lens: 3 of 4 findings confirmed and fixed.
+  - Money wording could reach editors through a gap.
+  - `rawInAt` was stamped on jobs whose raws were already in.
+  - An approved rush could stay "asked".
+- New drills: final-remainders 93, rush-slots-stale 93, evidence-gaps-feedback 95, upload-portal-briefs 62.
+- **Browser walkthrough on the isolated demo** (`scripts/demo`, production never opened):
+  - the Review Room named the client on the send-back, the earlier round and each note;
+  - on `/edit`, a file dependency was recorded for Video 2 with Kim to work from it, then attached, and Kim's step unblocked;
+  - the Rush dialog opened;
+  - the portal Home and Schedule at 375 px: no sideways scroll, September times read EDT;
+  - Settings shows its groups, the readiness panel and the Notification schedule;
+  - the office's per-video brief showed on `/upload` at 375 px, and an on-site note made Brief v2, signed.
+
+**Measured read-only Sep 28:**
+- The probe:
+  - the page build and the last hourly build were both `0950c1c` = HEAD;
+  - all 25 program switches OFF, fixtures and pilot empty;
+  - the evening cron not yet recorded (first run after the fix is tonight).
+- **10 real editor uploads have landed on the private store** since Sep 25, the last at 16:14 UTC today. The browser upload path is now proven by use.
+- A fresh backup (`~/rtp-backup-2026-09-28-full-pre-final.json`, 144/144, 115,401 rows, one snapshot) restored on embedded Postgres 18.4 with 0 differences.
+
+**Safety fix:**
+- Twice a script in `scripts/_drill/` that opens the live database (read-only) was taken for an isolated drill:
+  - `product-eligibility.ts`, run by a builder;
+  - `pro-two-sessions.ts`, picked up by the full-suite runner because it mentions PGlite in a comment.
+- Postgres refused every write (25006), so nothing was written.
+- All 23 such scripts now live in `scripts/_live/` (README).
+- `harness-selftest` §H fails if any file in `scripts/_drill/` can reach a database it did not create. Proven both ways: it passes now, and it caught a copied production script.
+
+**Left, stated plainly:**
+- `rawInAt` is not backfilled for jobs in flight; nothing reads it yet.
+- The raise-gap button is on `/edit` only.
+- No rush control on `/tasks`.
+- The picker shows the first 6 days.
+- Open wording question: a stale Dropbox read that once saw files still says "files found".
 
 ### Batch 6 (`57a2820`, deployed as `15fc7f4`)
 
