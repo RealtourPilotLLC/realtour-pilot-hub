@@ -4,38 +4,38 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Pause, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { etDayKey, etMonthDay, etTime } from "@/lib/datetime";
 import { pauseEditingAction, startEditingAction } from "@/app/editing/workActions";
 import type { WorkBar } from "@/lib/editorWork";
+import { barWords, HOW_START_WORKS } from "@/lib/editorDesk";
 
 // ---------------------------------------------------------------------------
-// START / PAUSE / RESUME, on the editor's actual working screen (§7.1).
+// START / PAUSE / RESUME / SWITCH, on the editor's actual working screen (§7.1).
 //
 // Jordan, Sep 25: a job is "In editing" only because the editor said so, and
 // starting another job pauses the one they were on. This bar is where they
 // say so. Opening this page, reading the brief or playing a cut does nothing
 // to it — only these buttons do.
 //
-// The office sees the same state and, where it has to, corrects it: "Start for
-// Kim" / "Pause for Kim" are labelled as corrections and logged as the office,
-// never as the editor.
+// Sep 28 ("there is just a lot of information to look at, and they get
+// confused"): ONE line and ONE button. The words come from lib/editorDesk
+// (barWords), in the editor's own timezone. Switching is one tap — the line
+// under it already says which job will pause. The video picker and the fine
+// print fold under "details".
+//
+// The office sees the same state in Eastern time and, where it has to,
+// corrects it: "Start for Kim" / "Pause for Kim" are labelled as corrections
+// and logged as the office, never as the editor.
 // ---------------------------------------------------------------------------
-
-const clock = (iso: string | null) => {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const t = etTime(d).replace(/\s?([AP])M$/i, (_m, x: string) => `${x.toLowerCase()}m`);
-  return etDayKey(d) === etDayKey(new Date()) ? t : `${etMonthDay(d)} ${t}`;
-};
 
 const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-export function WorkStateBar({ bar }: { bar: WorkBar }) {
+const BUTTON_WORDS = { start: "Start", resume: "Resume", pause: "Pause", switch: "Switch to this job" } as const;
+
+export function WorkStateBar({ bar, tz }: { bar: WorkBar; tz: string }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [outputId, setOutputId] = useState<string>(bar.mine.outputId ?? "");
   // ONE ID PER CLICK, KEPT FOR ITS RETRY: a request that never came back is
   // sent again under the same id, so the server logs it once however many
@@ -69,25 +69,16 @@ export function WorkStateBar({ bar }: { bar: WorkBar }) {
     run(`pause:${forEditorKey ?? ""}`, (requestId) => pauseEditingAction({ projectId: bar.projectId, requestId, forEditorKey: forEditorKey ?? null }));
 
   const { active, paused } = bar.people;
-
-  // ---- the words ----------------------------------------------------------
-  let state: string;
-  if (bar.mode === "editor") {
-    state =
-      bar.mine.state === "ACTIVE" ? `You're editing this — since ${clock(bar.mine.sinceISO)}`
-      : bar.mine.state === "PAUSED" ? `Paused ${clock(bar.mine.sinceISO)} — everything on it is where you left it`
-      : "Not started — press Start editing when you begin";
-  } else if (active.length) {
-    state = `In editing — ${active.map((a) => `${a.name}${a.sinceISO ? ` since ${clock(a.sinceISO)}` : ""}`).join(", ")}`;
-  } else if (paused.length) {
-    state = `Paused — ${paused.map((p) => `${p.name}${p.sinceISO ? ` ${clock(p.sinceISO)}` : ""}`).join(", ")}`;
-  } else {
-    state = "Nobody has started this one";
-  }
+  const words = barWords(bar, tz, new Date());
   const onBehalf = active.concat(paused).find((x) => x.onBehalfBy);
-  const tone = (bar.mode === "editor" ? bar.mine.state === "ACTIVE" : active.length > 0) ? "active" : (bar.mode === "editor" ? bar.mine.state === "PAUSED" : paused.length > 0) ? "paused" : "idle";
+  const tone =
+    (bar.mode === "editor" ? bar.mine.state === "ACTIVE" : active.length > 0) ? "active"
+    : (bar.mode === "editor" ? bar.mine.state === "PAUSED" : paused.length > 0) ? "paused"
+    : "idle";
+  const button = bar.mode === "editor" ? words.button : null;
+  const showPicker = bar.outputs.length > 1 && bar.mode !== "view";
 
-  const btn = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50";
+  const btn = "inline-flex min-h-9 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50";
   return (
     <div
       className={cn(
@@ -96,53 +87,32 @@ export function WorkStateBar({ bar }: { bar: WorkBar }) {
       )}
     >
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">
-            <span className={cn("mr-2 inline-block size-2 rounded-full align-middle", tone === "active" ? "bg-[#8b5cf6]" : tone === "paused" ? "border border-muted-2" : "bg-muted-2/40")} />
-            {state}
-          </p>
-          {onBehalf && (
-            <p className="mt-0.5 text-[11px] text-muted-2">Last change made by {onBehalf.onBehalfBy} for {onBehalf.name} (office correction).</p>
-          )}
-          {bar.mode === "editor" && bar.blocked && <p className="mt-0.5 text-[11px] text-muted">{bar.blocked}</p>}
-          <p className="mt-0.5 text-[11px] text-muted-2">What you say you&rsquo;re working on — not a timer, and it isn&rsquo;t used for pay.</p>
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <span
+            className={cn(
+              "mt-1.5 inline-block size-2 shrink-0 rounded-full",
+              tone === "active" ? "bg-[#8b5cf6]" : tone === "paused" ? "border border-[#8b5cf6]" : "bg-muted-2/40",
+            )}
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">{words.state}</p>
+            {words.sub && <p className="mt-0.5 text-[11px] text-muted">{words.sub}</p>}
+            {onBehalf && (
+              <p className="mt-0.5 text-[11px] text-muted-2">Last change made by {onBehalf.onBehalfBy} for {onBehalf.name} (office correction).</p>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {bar.outputs.length > 1 && bar.mode !== "view" && (
-            <label className="flex items-center gap-1.5 text-[11px] text-muted">
-              Video
-              <select
-                value={outputId}
-                onChange={(e) => setOutputId(e.target.value)}
-                className="rounded-lg border border-border bg-surface px-2 py-1 text-xs text-foreground"
-                aria-label="Which video you're on (optional)"
-              >
-                <option value="">Any / not sure</option>
-                {bar.outputs.map((o) => (
-                  <option key={o.id} value={o.id}>{o.title}</option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {bar.mode === "editor" && bar.mine.state === "ACTIVE" && (
-            <button type="button" disabled={pending} onClick={() => doPause()} className={cn(btn, "border border-border bg-surface text-foreground hover:bg-surface-2")}>
-              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Pause className="size-3.5" />}
-              Pause
-            </button>
-          )}
-          {bar.mode === "editor" && bar.mine.state !== "ACTIVE" && bar.canStart && (
+          {button && (
             <button
               type="button"
               disabled={pending}
-              // Before a switch, say which job will pause (Jordan: starting B
-              // pauses A — the editor should see that happen, not discover it).
-              onClick={() => (bar.elsewhere && !confirmSwitch ? setConfirmSwitch(true) : (setConfirmSwitch(false), doStart()))}
+              onClick={() => (button === "pause" ? doPause() : doStart())}
               className={cn(btn, "bg-[#8b5cf6] text-white hover:bg-[#7c3aed]")}
             >
-              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-              {bar.mine.state === "PAUSED" ? "Resume" : "Start editing"}
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : button === "pause" ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+              {BUTTON_WORDS[button]}
             </button>
           )}
 
@@ -165,25 +135,38 @@ export function WorkStateBar({ bar }: { bar: WorkBar }) {
         </div>
       </div>
 
-      {confirmSwitch && bar.elsewhere && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-warning/30 bg-warning-soft/40 px-3 py-2 text-xs">
-          <span className="min-w-0 flex-1">
-            You&rsquo;re on <span className="font-semibold">{bar.elsewhere.street}</span> — starting this pauses it. Everything on it stays as it is.
-          </span>
-          <button type="button" disabled={pending} onClick={() => { setConfirmSwitch(false); doStart(); }} className={cn(btn, "bg-[#8b5cf6] text-white hover:bg-[#7c3aed]")}>
-            Pause it and start this
-          </button>
-          <button type="button" onClick={() => setConfirmSwitch(false)} className={cn(btn, "text-muted hover:text-foreground")}>
-            Cancel
-          </button>
-        </div>
-      )}
-
       {msg && (
         <p className={cn("mt-2 text-xs", msg.ok ? "text-success" : "text-warning")} role="status">
           {msg.text}
         </p>
       )}
+
+      <details className="mt-2 text-[11px] text-muted-2">
+        <summary className="cursor-pointer select-none hover:text-foreground">details</summary>
+        <div className="mt-1.5 space-y-2">
+          {showPicker && (
+            <label className="flex flex-wrap items-center gap-1.5 text-muted">
+              Which video? (optional)
+              <select
+                value={outputId}
+                onChange={(e) => setOutputId(e.target.value)}
+                className="rounded-lg border border-border bg-surface px-2 py-1 text-xs text-foreground"
+                aria-label="Which video you're on (optional)"
+              >
+                <option value="">Any / not sure</option>
+                {bar.outputs.map((o) => (
+                  <option key={o.id} value={o.id}>{o.title}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <ul className="list-disc space-y-0.5 pl-4">
+            {HOW_START_WORKS.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      </details>
     </div>
   );
 }

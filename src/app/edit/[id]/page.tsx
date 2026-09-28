@@ -46,7 +46,8 @@ import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { EditOverridesButton } from "@/components/editing/EditOverridesDialog";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
-import { editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { openSlotKeys as openSlotKeysFor } from "@/lib/editorDesk";
 import { RevisionBriefCard, type BouncedCutView } from "@/components/editing/RevisionBriefCard";
 import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
@@ -361,7 +362,7 @@ export default async function EditBriefPage({
   // is the only way the two cannot drift apart again.
   const videoRevisionTasks = await prisma.smartTask.findMany({
     where: videoLaneRevisionWhere(id),
-    select: { id: true, createdAt: true, summary: true, description: true, contactName: true, source: true, title: true, reasonCreated: true },
+    select: { id: true, createdAt: true, summary: true, description: true, contactName: true, source: true, title: true, reasonCreated: true, outputId: true },
     orderBy: { createdAt: "asc" },
   });
   // THE OFFICE'S OWN REOPEN (the Editing Room's "New cut" queue-add) is not a
@@ -791,6 +792,43 @@ export default async function EditBriefPage({
     canReplace: replaceableCuts.has(`${r.deliverableId}:${r.slot}`),
   }));
   const uploadedSlots = cutRows.filter((r) => r.latest && isLive(r.latest)).length;
+  // THE EDITOR'S OWN CLOCK (Sep 28): their Start / Pause read in their own
+  // timezone (Manila for Kim and John Mark); everyone else reads Eastern.
+  const deskTz =
+    viewer?.role === "EDITOR" && viewer.editorKey ? (editorMeta(viewer.editorKey)?.tz ?? DEFAULT_EDITOR_TZ) : "America/New_York";
+  // "SENT. ARE YOU STILL WORKING ON THIS JOB?" (Jordan, Sep 28). Handing a
+  // version in ends the editor's Start, so the upload row asks — only the
+  // editor who could press Start here and is not on it now (workBar's editor
+  // mode already excludes the office, a preview and an editor without a desk;
+  // canStart excludes a job that isn't theirs or is held). Counted over EVERY
+  // slot, not the folded list: a video still owed is owed whether or not its
+  // row is drawn. A slot is open when nothing is in, the last version came
+  // back, was withdrawn, is held for the editor's own check — or is approved
+  // and the client has asked again ABOUT THAT VIDEO, after it was approved
+  // (Sep 28 review): an open ask is a job-level flag, and counting every
+  // approved video under it told Kim "3 more videos to make" on a job that
+  // owed none. An ask that names no video counts no approved one — the card
+  // is a question, and it is never asked off a guess.
+  const askedAgain = cutRows.some((r) => r.latest?.status === "APPROVED")
+    ? await import("@/lib/videoAsks").then((m) => m.slotsAskedAgain(id, videoRevisionTasks, submissions)).catch(() => new Map<string, Date>())
+    : new Map<string, Date>();
+  const openSlotKeys = openSlotKeysFor(
+    cutRows.map((r) => {
+      const key = `${r.deliverableId}:${r.slot}`;
+      const decided = r.latest?.status === "APPROVED" ? (latestPerCut.get(key)?.decidedAt ?? null) : null;
+      return {
+        key,
+        status: r.latest?.status ?? null,
+        held: !!r.latest?.held,
+        approvedAtISO: decided ? decided.toISOString() : r.latest?.status === "APPROVED" ? r.latest.completedAt : null,
+      };
+    }),
+    askedAgain,
+  );
+  const stillWorking =
+    workBar && workBar.mode === "editor" && workBar.canStart && workBar.mine.state !== "ACTIVE"
+      ? { openSlotKeys, elsewhereStreet: workBar.elsewhere?.street ?? null, paused: workBar.mine.state === "PAUSED" }
+      : null;
   // The panel below counts approved against the rows IT was handed, which is
   // the short list while the empty slots are folded. The real totals are said
   // out loud above it, so "0 of 2 approved" can't be read as the job's tally
@@ -864,7 +902,7 @@ export default async function EditBriefPage({
           photos-only or cancelled job has no edit lifecycle to narrate. */}
       {showTracker && (
         <div className="px-4 pt-4 sm:px-6">
-          {workBar && <WorkStateBar bar={workBar} />}
+          {workBar && <WorkStateBar bar={workBar} tz={deskTz} />}
           <EditTracker
             stage={stage}
             statusLine={statusLine}
@@ -1460,6 +1498,7 @@ export default async function EditBriefPage({
               revisionOpen={revisionOpen}
               officeReopen={officeReopen}
               cuts={shownCutRows}
+              stillWorking={stillWorking}
             />
             {hiddenSlots >= 3 && (
               <Link

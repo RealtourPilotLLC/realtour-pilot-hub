@@ -13,7 +13,7 @@ import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
 import { removedProjectIds } from "@/lib/queueRemoved";
 import { OWES_AN_ADDITIONAL_SHOOT } from "@/lib/uploadHistory";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
-import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
+import { holdersFor, workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
 import { isHeldForSelfCheck } from "@/lib/selfCheck";
 // A52: a reopened job's date is its reopen clock — the same reader the
 // delivery board, the project brief and the edit page use.
@@ -186,7 +186,7 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
   // no task yet. Without this, every row showed the current rule's editor and
   // misattributed Kim's and Luma's in-flight work to John Mark.
   const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
-  const [openTasks, msgCounts, cutRows, work] = await Promise.all([
+  const [openTasks, msgCounts, cutRows, work, holders] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
         projectId: { in: inflight.map((p) => p.id) },
@@ -226,7 +226,14 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
     // said so", which the row prints as Ready for editing / not confirmed,
     // never as somebody's live work.
     workStateFor(inflight.map((p) => p.id)).catch(() => new Map<string, ProjectWork>()),
+    // WHO MAY PRESS START (Sep 28) — startEditing's own rule (the live edit
+    // card's or an open video revision's assignee, or a video's owner), so the
+    // editor's desk never offers a Start the server refuses. A failed read is
+    // null: "couldn't tell", and the desk then leaves the refusal to the server
+    // rather than hiding a job.
+    holdersFor(inflight.map((p) => p.id)).catch(() => null),
   ]);
+  const inflightIds = new Set(inflight.map((p) => p.id));
   // This queue narrates the VIDEO lane only. A photo-retouch revision (Kyle's)
   // also lives on the project — it must not flip the video row to "Revisions",
   // pad the revision-ask chip, or show Kyle as the editor (Janice's "remove
@@ -545,6 +552,15 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
     // and nothing says anyone is cutting it.
     if (notStarted) parts.push(`${notStarted}${parts.length ? " more" : ""} to edit`);
     const videoBreakdown = videosOwed > 1 && parts.length > 1 ? parts.join(" · ") : null;
+    // THE SAME ARITHMETIC AS A NUMBER (Sep 28), for the editor's desk: the
+    // videos still theirs to make or redo — no version in yet, one sent back,
+    // or one held for their own check. The pill above picks the loudest state,
+    // so a four-video job with video 3 waiting on a verdict reads "Ready for
+    // review" while video 4 is still owed; the desk keeps such a job on it by
+    // this count, never by parsing the words. 0 when the Review Room holds
+    // nothing for the job (the pill already says it all) and on rows that are
+    // upcoming, delivered or reopened.
+    const videosToEdit = cut && !upcoming && p.status !== "DELIVERED" ? notStarted + cut.revising + cut.checking : 0;
 
     const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
     const computedDue = upcoming ? null : p.deliveryDue ?? null;
@@ -595,6 +611,10 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
         const ask = label === "Revisions" ? askLine.get(p.id)?.line ?? null : null;
         return [videoBreakdown, ask].filter(Boolean).join(" · ") || null;
       })(),
+      videosToEdit,
+      // Who startEditing would let press Start here; null = not read (an
+      // upcoming or delivered row, or the read failed).
+      startableBy: holders && inflightIds.has(p.id) && !upcoming ? [...(holders.get(p.id) ?? [])].sort() : null,
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       // The key behind the name, for the row's reassign select. Same truth
       // ladder as the display: open task → Project.editor → routing rules.

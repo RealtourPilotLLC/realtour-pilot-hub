@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ChevronDown,
-  FileText,
   FolderOpen,
   FolderUp,
   Loader2,
@@ -95,6 +94,14 @@ export type QueueRow = {
    *  "1 ready for review · 3 more to edit". Null when the job owes one
    *  video, where the pill already says everything. */
   videoBreakdown: string | null;
+  /** The same arithmetic as a number (Sep 28): videos still the editor's to
+   *  make or redo — none in yet, sent back, or held for their check. Keeps a
+   *  multi-video job on the editor's desk while one cut waits on a verdict. */
+  videosToEdit: number;
+  /** Editor keys startEditing would let press Start on this job (editorWork.
+   *  holdersFor). Null = not read: an upcoming or delivered row, or a failed
+   *  read — the desk then leaves any refusal to the server. */
+  startableBy: string[] | null;
   editor: string | null;
   editorKey: string | null; // key behind the name, drives the reassign select
   auto: boolean;
@@ -126,6 +133,12 @@ export type QueueRow = {
    *  — the edit card and the delivery board quote the same sentence. Null
    *  when the handoff is complete. */
   blocker: string | null;
+  /** TODAY'S EVIDENCE on this job (Sep 28, lib/editorActivity rowEvidence):
+   *  the newest thing an editor who is NOT on it right now did to it today —
+   *  "Kim uploaded a version · 12:14pm". Activity, never a Start: the row's
+   *  word and its work chip still come from Start/Pause alone (§7.1). Office
+   *  view only; absent everywhere else. */
+  lastAction?: { name: string; words: string; at: string } | null;
 };
 
 const TIER = {
@@ -366,6 +379,9 @@ function EditorSelect({ row }: { row: QueueRow }) {
       {pending && <Loader2 className="size-3 animate-spin text-muted" />}
       <select
         aria-label="Assign editor"
+        // The routing rules' pick used to wear a visible "auto" chip beside
+        // the name (Sep 28: one less word per row); it says so on hover now.
+        title={err ?? (row.auto && key === (row.editorKey ?? UNASSIGN) ? "Assigned by the routing rules — pick a name to override" : undefined)}
         value={key}
         disabled={pending}
         onChange={(e) => pick(e.target.value)}
@@ -392,11 +408,6 @@ function EditorSelect({ row }: { row: QueueRow }) {
           <option value={EXTERNAL}>External agency</option>
         </optgroup>
       </select>
-      {row.auto && key === (row.editorKey ?? UNASSIGN) && (
-        <span className="text-[10px] text-muted-2" title="Assigned by the routing rules — pick a name to override">
-          auto
-        </span>
-      )}
     </span>
   );
 }
@@ -758,7 +769,7 @@ export function SimpleQueue({
         </p>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-border bg-surface">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[700px] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-[11px] font-semibold uppercase tracking-wide text-muted-2">
                 <th className="px-3 py-2">Task</th>
@@ -766,7 +777,6 @@ export function SimpleQueue({
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Due</th>
                 {!hideEditor && <th className="px-3 py-2">Editor</th>}
-                <th className="px-3 py-2 text-center">Videos</th>
                 <th className="px-3 py-2">Links</th>
                 <th className="px-3 py-2 text-center">
                   <MessageSquare className="inline size-3.5" />
@@ -845,11 +855,22 @@ export function SimpleQueue({
                         </span>
                       </span>
                     </td>
+                    {/* VIDEO TYPE + HOW MANY, one pill (Sep 28 — the Videos
+                        column folded in here): "Premium" or "Premium · 4
+                        videos". The deliverable labels, and an office-set
+                        count, are on hover. */}
                     <td className="px-3 py-2.5">
-                      <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
+                      <span
+                        className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
+                        style={{ backgroundColor: `${t.color}26`, color: t.color }}
+                        title={[
+                          r.typeDetail || null,
+                          r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : null,
+                        ].filter(Boolean).join(" · ") || undefined}
+                      >
                         {t.label}
+                        {r.videos > 1 ? ` · ${r.videos} videos` : ""}
                       </span>
-                      {r.typeDetail && <span title={r.typeDetail} className="mt-0.5 block max-w-40 truncate text-[11px] text-muted">{r.typeDetail}</span>}
                     </td>
                     <td className="px-3 py-2.5" onClick={swallow}>
                       <span className="inline-flex items-center gap-1">
@@ -926,10 +947,28 @@ export function SimpleQueue({
                       {r.blocker && (
                         <span className="mt-1 block max-w-64 whitespace-normal text-[11px] leading-snug text-warning">{r.blocker}</span>
                       )}
+                      {/* TODAY'S EVIDENCE (Sep 28) — what an editor who is not
+                          on this job right now DID to it today, labelled as
+                          that. It never changes the pill: "Ready for editing"
+                          with "Kim uploaded a version · 12:14pm" under it is
+                          the truth — Kim has not pressed Start. Office only. */}
+                      {!hideEditor && view === "notdone" && r.lastAction && (
+                        <span
+                          className="mt-1 flex items-center gap-1 text-[11px] text-warning"
+                          title="Today's activity — not a Start. Only Start and Pause say someone is working."
+                        >
+                          <span className="size-1.5 shrink-0 rounded-full border border-warning" />
+                          {r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}
+                        </span>
+                      )}
                       {/* WHO IS ON IT (§7.1) — the editor's own Start/Pause,
                           with the time they said so. A declared status, not a
-                          timer: nothing here counts hours. */}
-                      {r.workChip && (
+                          timer: nothing here counts hours. Office only (Sep
+                          28): on the editor's own view the desk above already
+                          says it, in the editor's own time — this chip is
+                          Eastern, and the same Start twelve hours apart on one
+                          screen was the confusion. */}
+                      {!hideEditor && r.workChip && (
                         <span
                           className={cn(
                             "mt-1 flex items-center gap-1 text-[11px]",
@@ -966,12 +1005,6 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td
-                      className="px-3 py-2.5 text-center text-xs"
-                      title={r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : undefined}
-                    >
-                      {r.videos}
-                    </td>
                     <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
                       <span className="inline-flex items-center gap-1">
                         {r.rawUrl && (
@@ -992,7 +1025,6 @@ export function SimpleQueue({
                             title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"}
                           />
                         )}
-                        {r.hasScript && <LinkChip href={`/edit/${r.id}`} icon={FileText} label="Script" title="A script is on file — view it on the edit page" brand />}
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-center" onClick={swallow}>

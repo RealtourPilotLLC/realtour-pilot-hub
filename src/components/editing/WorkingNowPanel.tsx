@@ -6,19 +6,31 @@ import { AlertTriangle, PlayCircle } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { cn } from "@/lib/utils";
 import { etDayKey, etMonthDay, etTime } from "@/lib/datetime";
-import type { DeskItem, WorkingNow } from "@/lib/editorWork";
+import type { EditorLine, EditorsTodayView } from "@/lib/editorActivity";
 
 // ---------------------------------------------------------------------------
-// WORKING NOW (§7.1). What each editor has SAID they are on — pressed Start on
-// — since when, the last change, and what they have paused. The queue below is
-// the backlog; this is the desk.
+// EDITORS TODAY (§7.1, reworded Sep 28). One line per editor, worded on the
+// server (lib/editorActivity editorLines):
+//
+//   ● green   On 107 E Old Baltimore Pike since 12:40pm      — pressed Start
+//   ○ violet  Paused 107 E Old Baltimore Pike at 12:45pm     — pressed Pause
+//   ○ amber   Last action 12:14pm — uploaded a version of …  — did something
+//             · hasn't pressed Start today                     in the hub today,
+//                                                              no Start
+//   ● grey    Nothing in the hub today                         — what the hub
+//             saw, not a claim about their day: editing on their own computer
+//             shows nowhere until they upload or press Start
+//
+// Jordan, Sep 28: "It says Kim is not working on anything, but I believe he
+// is!" The old panel printed "Not on anything" for an editor with three
+// uploads that morning. Only Start still says someone is working (§7.1) — the
+// amber line is evidence, shown as evidence, never as "working now".
 //
 // Honest about its own freshness. The page re-reads every minute
-// (AutoRefresh); the panel prints when it read, says so if that read is more
-// than three minutes old (a refresh that failed leaves the old page up), and
-// a read that FAILED says it could not read — never an empty "nobody is
-// working". Browser presence and inactivity are not evidence of anything and
-// are not used.
+// (AutoRefresh); the header says when it read, says so when that read is more
+// than three minutes old (a refresh that failed leaves the old page up), and a
+// read that FAILED says it could not read — never an empty "nobody is
+// working". A stale read changes the header, never the lines.
 // ---------------------------------------------------------------------------
 
 const STALE_MS = 3 * 60_000;
@@ -29,28 +41,54 @@ const clock = (iso: string | null, now: Date) => {
   const t = etTime(d).replace(/\s?([AP])M$/i, (_m, x: string) => `${x.toLowerCase()}m`);
   return etDayKey(d) === etDayKey(now) ? t : `${etMonthDay(d)} ${t}`;
 };
-const KIND_WORD: Record<string, string> = {
-  START: "started",
-  RESUME: "resumed",
-  PAUSE: "paused",
-  AUTO_PAUSE: "paused (switched jobs)",
-  CONFIRM: "confirmed",
-  CONFIRM_PAUSED: "confirmed paused",
-};
 
-function Item({ it, now, paused }: { it: DeskItem; now: Date; paused?: boolean }) {
+function Dot({ tone }: { tone: EditorLine["tone"] }) {
+  if (tone === "unknown") return <AlertTriangle className="size-3.5 shrink-0 self-center text-warning" aria-label="Couldn't read" />;
   return (
-    <Link href={`/edit/${it.projectId}`} className="group inline-flex min-w-0 flex-wrap items-baseline gap-x-1.5 hover:underline">
-      <span className={cn("font-medium", paused ? "text-foreground/80" : "text-foreground")}>{it.street}</span>
-      {it.outputTitle && <span className="text-muted">· {it.outputTitle}</span>}
-      {it.revisionOpen && <span className="rounded bg-warning-soft px-1 text-[10px] font-semibold text-warning">revision</span>}
-      {paused && it.sinceISO && <span className="text-[11px] text-muted-2">paused {clock(it.sinceISO, now)}</span>}
-      {paused && it.dueISO && <span className="text-[11px] text-muted-2">· due {etMonthDay(new Date(it.dueISO))}</span>}
-    </Link>
+    <span
+      aria-hidden
+      className={cn(
+        "size-2 shrink-0 self-center rounded-full",
+        tone === "on" && "bg-success",
+        tone === "paused" && "border-[1.5px] border-[#8b5cf6] bg-transparent",
+        tone === "evidence" && "border-[1.5px] border-warning bg-transparent",
+        tone === "idle" && "bg-muted-2/40",
+      )}
+    />
   );
 }
 
-export function WorkingNowPanel({ data }: { data: WorkingNow }) {
+function Line({ l }: { l: EditorLine }) {
+  return (
+    <div className="px-5 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="w-24 shrink-0 text-sm font-medium text-foreground">{l.name}</span>
+        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-1.5 text-sm">
+          <Dot tone={l.tone} />
+          <span className={cn(l.tone === "idle" || l.tone === "unknown" ? "text-muted" : "text-foreground")}>{l.lead}</span>
+          {l.job && (
+            <Link href={l.job.href} className="font-medium text-foreground hover:underline">
+              {l.job.street}
+            </Link>
+          )}
+          {l.tail && <span className={cn("text-[12px]", l.tone === "evidence" ? "text-warning" : "text-muted-2")}>{l.tail}</span>}
+        </span>
+        {l.details.length > 0 && (
+          <details className="group basis-full text-xs sm:basis-auto">
+            <summary className="cursor-pointer select-none text-[11px] font-medium text-muted-2 hover:text-foreground">details</summary>
+            <ul className="mt-1 space-y-0.5 text-[11px] leading-snug text-muted">
+              {l.details.map((d, i) => (
+                <li key={i}>{d}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function WorkingNowPanel({ view }: { view: EditorsTodayView }) {
   // A clock of our own, so "as of" can turn into "may be out of date" while the
   // page sits there without a successful refresh.
   const [now, setNow] = useState(() => new Date());
@@ -58,73 +96,57 @@ export function WorkingNowPanel({ data }: { data: WorkingNow }) {
     const id = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(id);
   }, []);
-  const readAt = new Date(data.readAt);
+  const readAt = new Date(view.readAt);
   const stale = now.getTime() - readAt.getTime() > STALE_MS;
 
-  if (!data.ok) {
+  if (!view.ok) {
     return (
-      <Section icon={PlayCircle} title="Working now" tone="warning">
+      <Section icon={PlayCircle} title="Editors today" tone="warning">
         <p className="flex items-center gap-2 text-sm text-foreground">
           <AlertTriangle className="size-4 text-warning" />
-          Couldn&rsquo;t read who is working — last attempt {clock(data.readAt, now)}. This is not &ldquo;nobody is working&rdquo;; refresh to try again.
+          Couldn&rsquo;t read who is working — last attempt {clock(view.readAt, now)}. This is not &ldquo;nobody is working&rdquo;; refresh to try again.
         </p>
       </Section>
     );
   }
 
-  const anyone = data.editors.some((e) => e.active || e.paused.length || e.unconfirmed.length);
   return (
     <Section
       icon={PlayCircle}
-      title="Working now"
-      count={stale ? `may be out of date — read ${clock(data.readAt, now)}` : `as of ${clock(data.readAt, now)}`}
+      title="Editors today"
+      count={stale ? `may be out of date — read ${clock(view.readAt, now)}` : `as of ${clock(view.readAt, now)}`}
       tone={stale ? "warning" : "default"}
       flush
     >
       <div className="divide-y divide-border">
-        {data.editors.map((e) => (
-          <div key={e.key} className="px-5 py-3">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <span className="w-24 shrink-0 text-sm font-medium text-foreground">{e.name}</span>
-              {e.active ? (
-                <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-sm">
-                  <span className="size-2 shrink-0 self-center rounded-full bg-[#8b5cf6]" />
-                  <Item it={e.active} now={now} />
-                  <span className="text-[11px] text-muted-2">
-                    since {clock(e.active.sinceISO, now)}
-                    {e.active.firstStartedISO && e.active.firstStartedISO !== e.active.sinceISO ? ` · first started ${clock(e.active.firstStartedISO, now)}` : ""}
-                    {e.active.lastEventKind ? ` · last update: ${KIND_WORD[e.active.lastEventKind] ?? e.active.lastEventKind.toLowerCase()} ${clock(e.active.lastEventISO, now)}` : ""}
-                    {e.active.onBehalfBy ? ` by ${e.active.onBehalfBy} (office correction)` : ""}
-                  </span>
-                </span>
-              ) : (
-                <span className="flex-1 text-sm text-muted">Not on anything{e.unconfirmed.length ? " confirmed" : ""}</span>
-              )}
-            </div>
-            {e.paused.length > 0 && (
-              <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-0 text-xs sm:pl-[108px]">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Paused</span>
-                {e.paused.map((p) => <Item key={p.projectId} it={p} now={now} paused />)}
-              </div>
-            )}
-            {e.unconfirmed.length > 0 && (
-              <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-0 text-xs sm:pl-[108px]">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-warning">Claimed in editing — not confirmed</span>
-                {e.unconfirmed.map((c) => (
-                  <Link key={c.projectId} href={`/edit/${c.projectId}`} className="text-foreground/80 hover:underline">
-                    {c.street}
-                    <span className="ml-1 text-[11px] text-muted-2">{c.claimedAt ? `claimed ${clock(c.claimedAt, now)}` : "no start time on record"}</span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
+        {view.lines.map((l) => <Line key={l.key} l={l} />)}
       </div>
-      <p className="border-t border-border px-5 py-2.5 text-[11px] leading-relaxed text-muted-2">
-        {anyone ? "" : "Nobody has pressed Start on anything right now. "}
-        What each editor has said they&rsquo;re on — Start, Pause, Resume — not a timer and not used for pay. The table below is the backlog: everything owed, whoever holds it.
-      </p>
+      <div className="space-y-1 border-t border-border px-5 py-2.5 text-[11px] leading-relaxed text-muted-2">
+        <p className="flex flex-wrap items-center gap-x-1.5">
+          <Dot tone="on" /> pressed Start
+          <span aria-hidden>·</span>
+          <Dot tone="evidence" /> did something in the hub today, no Start
+          <span aria-hidden>·</span>
+          <Dot tone="idle" /> nothing in the hub today
+        </p>
+        <details>
+          <summary className="cursor-pointer select-none font-medium text-muted hover:text-foreground">How this works</summary>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            <li>Green means the editor pressed Start. Only Start says someone is working.</li>
+            <li>
+              Amber means no Start, but they did something today — uploaded a version, did the review check, wrote a note or posted in a
+              job&rsquo;s chat. That&rsquo;s activity, not a claim they&rsquo;re working now.
+            </li>
+            <li>
+              Editing on their own computer (Premiere, Dropbox) doesn&rsquo;t show here until they upload or press Start — &ldquo;nothing
+              in the hub&rdquo; is not &ldquo;not working&rdquo;.
+            </li>
+            <li>Today = since 12am Eastern. Opening a page never counts.</li>
+            <li>Start and Pause are what the editor says — not a timer, not used for pay.</li>
+            <li>Paused jobs and old &ldquo;In editing&rdquo; marks are under each editor&rsquo;s details.</li>
+          </ul>
+        </details>
+      </div>
     </Section>
   );
 }

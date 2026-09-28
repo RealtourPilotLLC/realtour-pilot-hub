@@ -126,8 +126,10 @@ type Db = Prisma.TransactionClient | typeof prisma;
  *  edit card's assignee, an open video-lane revision's assignee, and the owner
  *  of a live DeliverableOutput (which is how two editors share one job). Only
  *  people with a desk (WORK_EDITOR_KEYS) are counted. Sequential on purpose — it
- *  runs inside the switch transaction too. */
-async function holdersFor(projectIds: string[], db: Db = prisma): Promise<Map<string, Set<string>>> {
+ *  runs inside the switch transaction too. Exported (Sep 28) so the editor's
+ *  desk offers Start only where startEditing will take it (editorQueue's
+ *  `startableBy`): one rule for "may this editor start this job", not two. */
+export async function holdersFor(projectIds: string[], db: Db = prisma): Promise<Map<string, Set<string>>> {
   const out = new Map<string, Set<string>>();
   if (projectIds.length === 0) return out;
   const add = (pid: string | null, key: string | null) => {
@@ -492,13 +494,20 @@ export async function closeActiveWork(
      *  the end of her stretch on video 3. An item with no video named, or a
      *  hand-in whose video is unknown (null/undefined), closes as before. */
     forOutputId?: string | null;
+    /** A hand-in ends the stretch it hands in, never one begun AFTER it (Sep
+     *  28): the store's upload callback can still be inside its entry when the
+     *  editor has already been told "in review" and pressed Start again. An
+     *  item whose current stretch started after this moment is left open; one
+     *  never started here (activeSince null) closes as before. Null/undefined
+     *  = no cut-off, as before. */
+    startedBefore?: Date | null;
   },
 ): Promise<number> {
   try {
     const open = await prisma.editorWorkItem.findMany({
       where: {
         projectId, state: { not: WORK_CLOSED }, ...(opts.editorKey ? { editorKey: opts.editorKey } : {}),
-        ...(opts.forOutputId ? { OR: [{ outputId: null }, { outputId: opts.forOutputId }] } : {}),
+        ...closeScope(opts),
       },
       select: { editorKey: true },
     });
@@ -510,10 +519,19 @@ export async function closeActiveWork(
   }
 }
 
+/** Which open items a close may touch: the hand-in's video (forOutputId) and
+ *  only stretches begun at or before the hand-in (startedBefore). */
+function closeScope(opts: { forOutputId?: string | null; startedBefore?: Date | null }): Prisma.EditorWorkItemWhereInput {
+  const and: Prisma.EditorWorkItemWhereInput[] = [];
+  if (opts.forOutputId) and.push({ OR: [{ outputId: null }, { outputId: opts.forOutputId }] });
+  if (opts.startedBefore) and.push({ OR: [{ activeSince: null }, { activeSince: { lte: opts.startedBefore } }] });
+  return and.length ? { AND: and } : {};
+}
+
 async function closeForEditors(
   projectId: string,
   keys: string[],
-  opts: { reason: CloseReason; actor?: WorkActor; detail?: string | null; forOutputId?: string | null },
+  opts: { reason: CloseReason; actor?: WorkActor; detail?: string | null; forOutputId?: string | null; startedBefore?: Date | null },
 ): Promise<number> {
   return prisma.$transaction(async (tx) => {
     // Sorted, so two closers never take the same two locks in opposite orders.
@@ -521,7 +539,7 @@ async function closeForEditors(
     const items = await tx.editorWorkItem.findMany({
       where: {
         projectId, editorKey: { in: keys }, state: { not: WORK_CLOSED },
-        ...(opts.forOutputId ? { OR: [{ outputId: null }, { outputId: opts.forOutputId }] } : {}),
+        ...closeScope(opts),
       },
       select: { id: true, editorKey: true, projectId: true, outputId: true, state: true },
     });
