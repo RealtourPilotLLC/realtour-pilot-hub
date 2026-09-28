@@ -188,18 +188,18 @@ Status key: CONFIRMED (defect/gap real) · PARTIALLY_IMPLEMENTED · ALREADY_FIXE
 
 | Item | Verified | Size | Commit | Tests | Deployed | Enabled | Owner / next |
 |---|---|---|---|---|---|---|---|
-| R04-harness | CONFIRMED | M |  | | | | |
-| R04-duplicate-jobs-bookings | CONFIRMED | L |  | | | | |
-| R04-revision-vs-expiry | PARTIALLY_IMPLEMENTED | M |  | | | | |
-| R04-lease-loss-external-writes | PARTIALLY_IMPLEMENTED | M |  | | | | |
-| R04-extra-round-fee | PARTIALLY_IMPLEMENTED | M |  | | | | |
-| A01 | PARTIALLY_IMPLEMENTED | S |  | | | | |
-| A01-cron-health | CONFIRMED | S |  | | | | |
-| A02-backup-coverage | PARTIALLY_IMPLEMENTED | S |  | | | | |
-| A02-restore-rehearsal | CONFIRMED | M |  | | | | |
-| A02-restore-guard | CONFIRMED | S |  | | | | |
-| A56-readiness | PARTIALLY_IMPLEMENTED | M |  | | | | |
-| 11-settings-grouping | CONFIRMED | M |  | | | | |
+| R04-harness | CONFIRMED | M | 57a2820 | realpg-harness (Postgres-mode selftest 51/51 (five runs, all green, about 6 s each). Postgres 18.4 embedded, providers FAKE, pool 5, 4 processes, …) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | Remaining: the owners of cron-route-journey (idleInTransaction swap) and cp02-revision-policy still need to guard their PGlite-only lines and run them under DRILL_ENGINE=postgres. RACES can now build on runChild, barrier and waitingLocks. Not committed or deployed (as instructed). |
+| R04-duplicate-jobs-bookings | CONFIRMED | L | 57a2820 | races-jobs-leases (realpg-duplicate-jobs.ts 40/40 on real Postgres 18.4, pool 5, providers FAKE, 3 processes, peak 7 backends, 430 server-logged lock…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | not committed or deployed; the webhook dedupe (recentlyReconciled) is still check-then-act, now harmless for new orders |
+| R04-revision-vs-expiry | PARTIALLY_IMPLEMENTED | M | 57a2820 | races-review-fees (realpg-revision-expiry.ts 102/0 on embedded Postgres 18.4, 2 processes: 90 races (30 at each of −50/0/+50 ms), all passed; variant…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | not committed or deployed; the client-approve vs staff-reopen race (no sweep) remains on ATTRIBUTION's reopen path |
+| R04-lease-loss-external-writes | PARTIALLY_IMPLEMENTED | M | 57a2820 | races-jobs-leases (realpg-lease-loss.ts 80/80 on real Postgres 18.4, providers FAKE. Booking takeovers 1a/1c/1d/1e OLD then NEW, plus 1b: OLD strande…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | cron-route-journey itself cannot run under DRILL_ENGINE=postgres without editing it (not mine); the pre-send stillMine gap is documented, not fixed; not committed or deployed |
+| R04-extra-round-fee | PARTIALLY_IMPLEMENTED | M | 57a2820 | races-review-fees (realpg-extra-round-fee.ts 36/0, N=20, 2 processes: §1 owner vs assistant acknowledgement gives 1 request, 1 round 3, 1 fee card an…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | not committed or deployed; the hourly cap is not atomic under concurrency (anti-abuse only, left as is) |
+| A01 | PARTIALLY_IMPLEMENTED | S | 57a2820 | backup-restore-cron (cp15-config-probe.ts: backupFacts reads headers only (model coverage against its own schema, schema-changed-since, rehearsal evide…) | 15fc7f4 (Vercel fojahizaz) | live on deploy (staff) | deploy, then run the probe without --offline to read the page build |
+| A01-cron-health | CONFIRMED | S | 57a2820 | backup-restore-cron (src/lib/cronHealth.ts (vercel.json-derived jobs, windowed per-job query, neverRecorded/stale, 15-min floor), evening route records…) | 15fc7f4 (Vercel fojahizaz) | live on deploy (staff) | deploy; the first evening row appears 23:00 UTC after deploy |
+| A02-backup-coverage | PARTIALLY_IMPLEMENTED | S | 57a2820 | backup-restore-cron (scripts/_lib/exportAll.ts (real PK paging, idHash, one REPEATABLE READ snapshot, unmapped tables), backup-all rtp-backup-all/2 (co…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | main session takes the next backup with the new script (first Neon run of the snapshot) |
+| A02-restore-rehearsal | CONFIRMED | M | 57a2820 | restore-rehearsal (Run on real backups, both engines, clock pinned, output identical across engines. Sep 25: 127 of 127 models, 113,290 = 113,290 = 1…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | The shipped script restores into HEAD, not the backup's own schema; equivalence is proven in a scratch copy. Adding a --backup-schema flag (about 35 lines) is the owner's call |
+| A02-restore-guard | CONFIRMED | S | 57a2820 | backup-restore-cron (scripts/_lib/dbGuard.ts (isHostedUrl/readOnlyUrl/proveReadOnly/restoreGuard); restore-content-program: --deep loopback only, hoste…) | 15fc7f4 (Vercel fojahizaz) | n/a (proof/tooling) | tables; DMMF ids and DateTime revive; guard-prod-db uses the shared helper; a02 drill §4: hosted --deep/--apply/no-incident exit 1 with 0 @prisma/client loads and 0 sockets, wrong typed host writes nothing, loopback --apply restores |
+| A56-readiness | PARTIALLY_IMPLEMENTED | M | 57a2820 | readiness-settings (src/lib/readiness.ts readinessReport (configured, connected, enabled, effective with blockers, healthy with cadence and cron stale…) | 15fc7f4 (Vercel fojahizaz) | live on deploy (staff) | /content/monitoring offNote swap not done (not my file); commit together with BACKUP's cronHealth.ts and probe |
+| 11-settings-grouping | CONFIRMED | M | 57a2820 | readiness-settings (SettingsGroup and SettingsNav, SETTINGS_LAYOUT with 7 groups (financial OWNER-only), all 14 cards unchanged, ids kept plus #intern…) | 15fc7f4 (Vercel fojahizaz) | live on deploy (staff) | — |
 
 ## Batch 0 — verify and prepare
 

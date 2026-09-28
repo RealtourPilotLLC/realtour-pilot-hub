@@ -9,16 +9,15 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 
 ## Resume here
 
-- **Current batch:** 6 — UI and release proof (plus Jordan's Review Room attribution ask, Sep 28).
-- **Deployed:** batches 1–5 (`a183ed6`, Vercel `hy0rnlrxb`).
+- **Current batch:** all six built and deployed. Remaining: the queued follow-ups below,
+  role walkthroughs, the final report and launch package, the supervised Aryeo test.
+- **Deployed:** `15fc7f4` (batch 6 `57a2820` + the 38 E Gay St fix merged), Vercel `fojahizaz`.
 - **Live:** read from the hourly run's deploy stamp (`/content/monitoring`), not assumed.
 - **Enabled:** nothing new for clients. Every ProgramAutomation row is absent (OFF); pilot lists empty.
   Review seats saved (James → Kyle → Jordan). Stripe webhook registered. Review cuts on the private store.
   Jordan's Saturday quiet time is a code default (Sat 00:00–19:30 ET, held → delivered at 19:30).
-- **Next action:** batch 6 build; then the queued follow-ups below; the supervised Aryeo test in a
-  watched sitting; the final report.
 - **Queued for right after batch 6 (Jordan, Sep 28):**
-  1. merge branch `room-delivered-closeout` (`81e5fb6`, already live) into main;
+  1. ~~merge branch `room-delivered-closeout`~~ — merged in `15fc7f4`;
   2. a standing rule: editor-cut and delivery-fix notes on a job delivered after them close
      themselves ("job delivered", never counted as a checked fix); "Feedback follow-through" rows
      open the cut with its notes, not the project page;
@@ -63,7 +62,7 @@ Durable checklist: [`docs/unified-checklist.md`](unified-checklist.md) (written 
 | 3 Scheduling and integrations | done | `417fe90` | see below |
 | 4 Capture through delivery | done | `b4403ea` | `41mfzx706` |
 | 5 Operational visibility | done | `17df024` schema, `a183ed6` | `hy0rnlrxb` |
-| 6 UI and release proof | — | | |
+| 6 UI and release proof | done | `3de6023` schema, `57a2820` | `fojahizaz` (`15fc7f4`) |
 
 ## Decisions (asked Sep 25, answered by Jordan the same day)
 
@@ -185,6 +184,35 @@ The sitting, in order (about 20 minutes):
    appointment-scoped availability see drive time?).
 
 ## Tests and environment
+
+### Batch 6 (`57a2820`, deployed as `15fc7f4`)
+
+- Schema first (`3de6023`, 8 nullable columns) after a full backup
+  (`~/rtp-backup-2026-09-28-full-pre-batch6.json`, 144/144 models, 114,991 rows).
+- Seven builders: Review Room attribution (Jordan's ask, all 21 mapped gaps),
+  backup/restore/cron, readiness + Settings grouping, a real-Postgres harness,
+  then two race builders and the real restore rehearsal. Three review lenses:
+  **24 of 24 findings confirmed and fixed** (highs: an assistant's text or call
+  was credited to the agent on the account; the launch gate read "closed" while
+  auto-share could still release scripts — its listed dependencies were not
+  ones its sweep enforced).
+- **Real bugs the race drills found, fixed:** a burst of Aryeo events for a new
+  agent crashed 25 of 30 concurrent imports (P2002 on Client.aryeoCustomerId)
+  and each showed a false Aryeo error on /connections; an automatic approval
+  could overwrite a client's own approval or a staff reopen racing it; an AI run
+  whose lease lapsed could still write a second script version; the evening
+  cron never wrote a CronRun (production had 0 evening rows); /connections
+  dropped the daily jobs from Sync health.
+- **Restore rehearsal on real backups (isolated only):** the Sep 25 (127 models,
+  older schema, pushed from git) and Sep 28 (144 models) backups restored under
+  both engines (embedded Postgres 18.4 and PGlite): identical results, every
+  count equal to its header, 0 round-trip differences, FK orphans unchanged.
+- **94 isolated drills green (7,105+ checks)** including 4 real-Postgres race
+  drills; harness self-test 44 (PGlite) and 51 (Postgres). tsc clean; eslint 0.
+- Live check: 10 main pages 200; cut stream 206; /api/cron/version 401 without
+  the bearer; Settings shows the groups and the readiness panel.
+- Not proven: none of the provider writes beyond Calendly's supervised test;
+  real phones (iPhone Safari/Android Chrome) for the portal and downloads.
 
 ### Batch 5 (`a183ed6`)
 
