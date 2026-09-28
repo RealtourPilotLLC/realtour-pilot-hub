@@ -154,7 +154,9 @@ process.stdout.write("\\n@@C2@@" + JSON.stringify(out));
     maxBuffer: 64 << 20,
     env: {
       ...process.env,
-      NODE_OPTIONS: `--require ${path.join(REPO, "scripts/_drill/_client-drill-preload.cjs")} --require ${seed}`,
+      // Quoted: the repo folder name has spaces ("Realtour Pilot POT Dashboard"),
+      // and NODE_OPTIONS splits on them unless a path is double-quoted.
+      NODE_OPTIONS: `--require ${JSON.stringify(path.join(REPO, "scripts/_drill/_client-drill-preload.cjs"))} --require ${JSON.stringify(seed)}`,
       C2_NOW: nowISO,
       C2_CASES: casesFile,
     },
