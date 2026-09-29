@@ -693,10 +693,26 @@ async function callAndTranscript(job: TranscriptJobInput) {
  * Handlers for ProgramTranscriptJob kinds. W1-B's driver leases the job,
  * checks the transcript_jobs switch, calls this, and records the outcome on
  * the job row. Every AI call inside is unattended → gated by ai_runs.
+ *
+ * EVERY QUEUED RUN IS UNATTENDED (R05, Sep 28 2026). This used to decide from
+ * the requester's NAME (`cron` / `system` / none), but the real requesters
+ * are "drive-sweep" (the Drive discovery), "onboarding-cron" (a discovery
+ * call's strategy draft) and the email of whoever confirmed or pasted a
+ * transcript — all of which read as a person pressing a button. Two effects:
+ * ai_runs (aiRuns.runAiJson) was skipped, so turning transcript_jobs on by
+ * itself would have spent AI credit with the master switch off; and
+ * fact_extraction's auto-accept (clientFacts.createFact, unattended only)
+ * never applied to queued call analysis. The only way in here is the queue
+ * driver (contentPipeline.transcriptJobHandlers ← transcriptJobs), and nobody
+ * is watching a queued job run, so it is unattended — always. requestedBy is
+ * kept for attribution only. The buttons a person presses (Draft strategy
+ * now, Draft owed scripts, Re-analyse) run inline, not through here, and stay
+ * attended by design (aiRuns.ts). The cost of the change: an owner's Re-run
+ * of a queued job (Settings → Calendly & calls) now waits for ai_runs too.
  */
 export async function runTranscriptJob(job: TranscriptJobInput): Promise<TranscriptJobOutcome> {
   const requestedBy = job.requestedBy ?? "cron";
-  const unattended = !job.requestedBy || job.requestedBy === "cron" || job.requestedBy === "system";
+  const unattended = true;
   try {
     const ct = await callAndTranscript(job);
     if ("error" in ct) return { ok: false, error: ct.error };

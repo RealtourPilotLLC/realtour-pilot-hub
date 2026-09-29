@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
-import { isTestClientName } from "@/lib/testClients";
+import { programReach, rolloutSweepClientIds } from "@/lib/programRollout";
 
 // ---------------------------------------------------------------------------
 // SHARE WITHOUT JORDAN'S INDIVIDUAL APPROVAL (6.5, unified handoff Sep 25 2026).
@@ -30,7 +30,12 @@ import { isTestClientName } from "@/lib/testClients";
 //   · an ACTIVE program with portal access, and no open change request from
 //     the client on this script;
 //   · older than config.holdMinutes (default 120), so Jordan can step in;
-//   · (config.testClientsOnly, default on) a TEST client — the launch gate.
+//   · (config.testClientsOnly, default on) a TEST client — the launch gate;
+//   · (R03, Sep 28 2026) a client the PROGRAM ROLLOUT reaches for this op
+//     (script_auto_share), with testClientsOnly as the feature's own
+//     narrowing lock inside it — lifting the lock now means "the rollout",
+//     never "every real client" — and a draft written SINCE the client entered
+//     the rollout: joining the pilot never auto-shares a backlog of older drafts.
 // Idempotent by construction: shareApprovedScript approves once, releases
 // once, queues once.
 // ---------------------------------------------------------------------------
@@ -78,9 +83,8 @@ export async function autoShareEligible(versionId: string, opts: { now?: Date; c
     if (allowance ? slot !== "IN" : (await prisma.contentTopicSelection.count({ where: { topicId: s.topicId, monthId: s.monthId, status: { in: ["SELECTED", "RECONCILED", "CARRIED"] }, overflow: false } })) === 0) reasons.push("an extra beyond the month's allowance");
   }
 
-  const [enrollment, client, openRequests, returned] = await Promise.all([
+  const [enrollment, openRequests, returned] = await Promise.all([
     prisma.contentEnrollment.findUnique({ where: { id: v.enrollmentId }, select: { status: true, accessRevokedAt: true } }),
-    prisma.client.findUnique({ where: { id: v.clientId }, select: { name: true } }),
     prisma.scriptSuggestion.count({ where: { scriptId: v.scriptId, status: "OPEN" } }),
     prisma.contentScriptRelease.count({ where: { scriptId: v.scriptId, action: "RETURN_TO_QUEUE" } }),
   ]);
@@ -92,11 +96,22 @@ export async function autoShareEligible(versionId: string, opts: { now?: Date; c
   // re-approved and re-shared the script a person had just pulled back.
   if (returned > 0) reasons.push("a person returned this script to the queue — it waits for a person");
   if (now.getTime() - v.createdAt.getTime() < cfg.holdMinutes * 60_000) reasons.push(`inside the ${cfg.holdMinutes}-minute hold`);
-  if (cfg.testClientsOnly && !isTestClientName(client?.name)) reasons.push("testClientsOnly: only TEST clients until launch is authorised");
+  // R03: one decision — the lock and the scope (programReach re-reads the
+  // client row by id, so a real row renamed TEST is real here).
+  const reach = await programReach("script_auto_share", v.clientId, { now, featureTestOnly: cfg.testClientsOnly });
+  if (!reach.ok) reasons.push(reach.code === "feature_test_only" ? "testClientsOnly: only TEST clients until launch is authorised" : `not in the program rollout: ${reach.reason}`);
+  else if (reach.since && v.createdAt < reach.since) reasons.push("drafted before this client joined the rollout");
   return { ok: reasons.length === 0, reasons };
 }
 
-export type AutoShareOutcome = { versionId: string; scriptId: string; title: string; shared: boolean; reasons: string[]; email?: string; error?: string };
+/**
+ * One candidate's result. `wouldShare` is the DRY RUN's "the live run would
+ * approve and release this one" (review fix, Sep 28 2026): the dry run used to
+ * say only { shared: false, reasons: ["would share (dry run)"] }, and the
+ * owner's "What would go out now?" read shared:false as "no" — every draft the
+ * next hourly run would release showed as not going out.
+ */
+export type AutoShareOutcome = { versionId: string; scriptId: string; title: string; shared: boolean; wouldShare?: true; reasons: string[]; email?: string; error?: string };
 
 /**
  * HOURLY, after the drafting sweep. OFF (skipped, nothing read beyond the
@@ -122,10 +137,9 @@ export async function sweepAutoShare(opts: { now?: Date; max?: number; dryRun?: 
   // at. So the read takes only CURRENT versions of live scripts, only TEST
   // clients' while the launch gate holds, never a returned script; what is
   // left is checked in full by autoShareEligible as before.
-  const testClientIds = cfg.testClientsOnly
-    ? (await prisma.client.findMany({ where: { OR: [{ name: { contains: "test", mode: "insensitive" } }, { name: { contains: "john doe", mode: "insensitive" } }] }, select: { id: true, name: true } }))
-        .filter((c) => isTestClientName(c.name)).map((c) => c.id)
-    : null;
+  // R03 (Sep 28 2026): TEST clients plus the real clients the rollout admits
+  // for script_auto_share (null = everyone: mode ALL with the lock lifted).
+  const testClientIds = await rolloutSweepClientIds("script_auto_share", { now, featureTestOnly: cfg.testClientsOnly });
   const liveScripts = testClientIds && !testClientIds.length ? [] : await prisma.contentScript.findMany({
     where: { historical: false, currentVersionId: { not: null }, ...(testClientIds ? { clientId: { in: testClientIds } } : {}) },
     select: { id: true, currentVersionId: true },
@@ -142,12 +156,15 @@ export async function sweepAutoShare(opts: { now?: Date; max?: number; dryRun?: 
   }) : [];
   const outcomes: AutoShareOutcome[] = [];
   let shared = 0;
+  let wouldShare = 0;
   let lastError: string | null = null;
   for (const c of candidates) {
-    if (shared >= max) break;
+    // The dry run counts what it WOULD share against the same cap, so it names
+    // exactly the drafts one live run takes — not every eligible one.
+    if (shared + wouldShare >= max) break;
     const verdict = await autoShareEligible(c.id, { now, config: cfg });
     if (!verdict.ok) { outcomes.push({ versionId: c.id, scriptId: c.scriptId, title: c.title, shared: false, reasons: verdict.reasons }); continue; }
-    if (opts.dryRun) { outcomes.push({ versionId: c.id, scriptId: c.scriptId, title: c.title, shared: false, reasons: ["would share (dry run)"] }); continue; }
+    if (opts.dryRun) { wouldShare++; outcomes.push({ versionId: c.id, scriptId: c.scriptId, title: c.title, shared: false, wouldShare: true, reasons: ["would share (dry run)"] }); continue; }
     try {
       const { shareApprovedScript } = await import("@/lib/scriptShare");
       const r = await shareApprovedScript(c.id, AUTO_SHARE_ACTOR, { note: "Approved and shared automatically (script_auto_share): clean sweep draft after the hold." });

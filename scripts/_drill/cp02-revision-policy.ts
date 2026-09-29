@@ -298,10 +298,32 @@ async function main() {
     const hist = await cd.cutHistory(E.token, e1);
     c.ok("the portal reads AUTO_APPROVED, and never 'by you' to the link", hist[0]?.clientState === "AUTO_APPROVED" && hist[0].decidedByMe === false, `${hist[0]?.clientState}/${hist[0]?.decidedByMe}`);
 
-    // review_auto_approve OFF, a real (non-TEST) client: a task, once.
+    // R03 (Sep 28 2026): review deadlines — and so their expiry — reach a REAL
+    // client only inside the program rollout. Outside it (the default, TEST
+    // only) the client keeps today's page: no deadline, and an "expired" window
+    // is never touched — no task, no outcome. Proven first; then Nora is put in
+    // the approved pilot (joined before her windows opened) and the checks
+    // below run for her unchanged, except that the lock's hold is now named
+    // NOT_IN_ROLLOUT (the testClientsOnly lock is one input to the rollout
+    // decision, not a separate TEST-name rule).
     await setSwitch("review_auto_approve", false);
+    const O = await world("Otto Outside");
+    await prisma.client.update({ where: { id: O.f.clientId }, data: { name: "Otto Outside" } });
+    const o1 = await mkCut(O, 1, 1);
+    await release(o1);
+    const ow = (await windowOf(o1))!;
+    await rw.sweepReviewWindows({ now: new Date(ow.deadlineAt.getTime() + 60_000) });
+    c.ok("R03: a real client OUTSIDE the rollout — the expired window is untouched: no outcome, no task, no decision", (await windowOf(o1))?.expiryOutcome === null && (await prisma.smartTask.count({ where: { dedupeKey: `review-expired:${ow.id}` } })) === 0 && (await prisma.clientDecision.count({ where: { submissionId: o1 } })) === 0, (await windowOf(o1))?.expiryOutcome ?? "null");
+    c.ok("  …and their page shows no deadline (revisionPolicyFor is off for them)", !(await rw.revisionPolicyFor(O.f.clientId)).on);
+    // review_auto_approve OFF, a real (non-TEST) client IN the pilot: a task, once.
     const N = await world("Nora Real");
     await prisma.client.update({ where: { id: N.f.clientId }, data: { name: "Nora Quinn" } });
+    {
+      const core = await import("@/lib/programRolloutCore");
+      const joined = new Date(Date.now() - 2 * HOUR).toISOString();
+      const value = core.serializeProgramRollout({ mode: "PILOT", modeSince: joined, pilot: { clientIds: [N.f.clientId], operations: core.opsForGroups(core.PROGRAM_PILOT_GROUPS.map((g) => g.key)), approvedBy: "info@realtourpilot.com", approvedAt: joined, expiresAt: null, note: null, joinedAt: { [N.f.clientId]: joined } } });
+      await prisma.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value, updatedBy: "drill" }, update: { value } });
+    }
     const n1 = await mkCut(N, 1, 1);
     await release(n1);
     await prisma.contentReviewWindow.update({ where: { submissionId: n1 }, data: { clientNotifiedAt: new Date() } });
@@ -321,7 +343,7 @@ async function main() {
     const nw2 = (await windowOf(n2))!;
     await rw.sweepReviewWindows({ now: new Date(nw2.deadlineAt.getTime() + 60_000) });
     c.ok("a non-TEST client with testClientsOnly (default): no decision", (await prisma.clientDecision.count({ where: { submissionId: n2 } })) === 0);
-    c.ok("  …held for NOT_TEST", /NOT_TEST/.test((await windowOf(n2))?.expiryOutcome ?? ""), (await windowOf(n2))?.expiryOutcome ?? "null");
+    c.ok("  …held for NOT_IN_ROLLOUT (the testClientsOnly lock, inside the rollout decision)", /NOT_IN_ROLLOUT/.test((await windowOf(n2))?.expiryOutcome ?? ""), (await windowOf(n2))?.expiryOutcome ?? "null");
   }
 
   // =========================================================================
@@ -490,7 +512,12 @@ async function main() {
   c.head("11 · the reminder lane reads the window's persisted deadline, per batch");
   // =========================================================================
   {
-    const M = await world("Mo Remind");
+    // R03: a TEST client's reminder must land on one of Jordan's VERIFIED
+    // inboxes (the outbox floor's rule, now shared by the evaluator) — the
+    // world's default mo@realtourpilot.com is staff-controlled, not verified,
+    // and would now be suppressed test_client_real_address before the cadence
+    // this section measures. So the seat is a plus-address of info@.
+    const M = await world("Mo Remind", { owner: { email: "info+mo@realtourpilot.com", name: "Mo Remind" } });
     const m1 = await mkCut(M, 1, 1);
     await release(m1);
     const mw = (await windowOf(m1))!;
@@ -622,7 +649,7 @@ async function main() {
 
     // (A) Three videos Monday, one Tuesday; two reminders went (counting all
     // four) and the lane escalated; then the client approves Monday's.
-    const Q = await world("Quinn Batch");
+    const Q = await world("Quinn Batch", { owner: { email: "info+quinn@realtourpilot.com", name: "Quinn Batch" } }); // R03: a verified inbox (see §11)
     const q = [await releaseAt(Q, 1, MON), await releaseAt(Q, 2, MON), await releaseAt(Q, 3, MON)];
     await releaseAt(Q, 4, TUE);
     const pre = `${Q.f.enrollmentId}:2026-10`;
@@ -638,7 +665,7 @@ async function main() {
 
     // (B) Monday's one video stays undecided after its 2 reminders and the
     // escalation; a batch released the next Tuesday must still be chased.
-    const Z = await world("Zed Starve");
+    const Z = await world("Zed Starve", { owner: { email: "info+zed@realtourpilot.com", name: "Zed Starve" } }); // R03: a verified inbox (see §11)
     await releaseAt(Z, 1, MON);
     const LATER = new Date("2026-10-13T14:00:00Z");
     const z2 = await releaseAt(Z, 2, LATER);

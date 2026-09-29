@@ -45,11 +45,19 @@ export async function setHubWriteFixtures(switchKey: string, change: FixtureChan
       if (t.isNeverSyntheticClientId(c.id)) return { ok: false, message: `"${c.name}" is a real client carrying a TEST name. Nothing was changed.`, from, to: from };
       if (!t.isTestClientName(c.name)) return { ok: false, message: `"${c.name}" is a real client. Real clients are written for only inside an approved pilot. Nothing was changed.`, from, to: from };
       if (!t.isVerifiedTestDestinationEmail(c.email)) return { ok: false, message: `"${c.name}"'s own email (${c.email || "none"}) is not the verified test inbox (${t.JORDAN_TEST_INBOXES_TEXT}). Nothing was changed.`, from, to: from };
-      if (cfg.pilot?.clientIds.includes(c.id)) return { ok: false, message: `"${c.name}" is in this switch's pilot. Nothing was changed.`, from, to: from };
+      // R03 (Sep 28 2026): the pilot the guards read is the PROGRAM pilot.
+      if ((await programPilotIds(switchKey, cfg)).includes(c.id)) return { ok: false, message: `"${c.name}" is in the program pilot. Nothing was changed.`, from, to: from };
     }
   }
   const to = change.clear ? [] : [...new Set([...from.filter((id) => !remove.has(id)), ...add])];
   if (to.length === from.length && to.every((id, i) => id === from[i])) return { ok: true, message: "No change: the fixture list already reads that way.", from, to };
   await setAutomationConfigField(switchKey, "authorizedFixtureClientIds", to, by, "automation_fixture_change");
   return { ok: true, message: `${switchKey} fixtures: ${JSON.stringify(from)} → ${JSON.stringify(to)}. The pilot and the switch's on/off are unchanged.`, from, to };
+}
+
+/** The program pilot's client ids as the guards route this switch (R03). An
+ *  unreadable rollout names nobody. */
+async function programPilotIds(switchKey: import("@/lib/hubWritePermit").HubWriteSwitch, cfg: import("@/lib/hubWritePermit").HubWriteScopeConfig): Promise<string[]> {
+  const { hubWriteScopeWithProgramPilot } = await import("@/lib/programRollout");
+  return (await hubWriteScopeWithProgramPilot(cfg, switchKey)).config.pilot?.clientIds ?? [];
 }

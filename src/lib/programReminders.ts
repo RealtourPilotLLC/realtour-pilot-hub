@@ -4,8 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
 import { recalcProgramMonth, addBusinessDaysET, addWeekdayHoursET, preparationGate, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
-import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
-import { sendThroughOutbox, programReminderKey, markFailed, maskToRef } from "@/lib/outbox";
+import { isSyntheticClientRow, isVerifiedTestDestinationEmail } from "@/lib/testClients";
+import { sendThroughOutbox, programReminderKey, markFailed, maskToRef, TestClientSendRefusedError, type OutboxSendResult } from "@/lib/outbox";
+import { loadProgramRollout, readFeatureTestOnly } from "@/lib/programRollout";
+import { rolloutDecision, reachSuppressionReason, type ProgramReachOp, type ProgramRollout, type ReachDecision, type ReachRefusalCode, type ReachTier } from "@/lib/programRolloutCore";
 import { mintLoginLink } from "@/lib/portalAccess";
 import { appBase } from "@/lib/appUrl";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
@@ -48,8 +50,17 @@ import {
 //     and the no-call sentence renders only for an eligible client.
 //   · A real client cannot be reached before launch even with the switch ON:
 //     the policy's `testClientsOnly` lock (default true) suppresses every
-//     non-TEST enrollment, and a TEST client whose address is not staff-
-//     controlled is suppressed too. Jordan flips both deliberately.
+//     non-TEST enrollment, and a TEST client whose address is not one of
+//     Jordan's verified inboxes is suppressed too. Jordan flips both
+//     deliberately.
+//   · AND THE ROLLOUT SCOPE (R03, Sep 28 2026). Lifting that lock used to mean
+//     "every real client". It is now a NARROWING lock inside the program
+//     rollout (lib/programRolloutCore.rolloutDecision, op "reminders"): the
+//     switch says whether, the scope says who — TEST clients, the approved
+//     pilot of at most three, or everyone once Jordan chooses it. Every lane
+//     asks it at evaluation, and every dispatch re-reads it FRESH before its
+//     recheck, so taking a client out of the pilot stops even a send already
+//     decided. The outbox gate is the last check, with the same rule.
 //   · "Not booked" is never inferred from a stale scheduler: while no enabled
 //     Calendly mapping has synced recently, booking-type reminders are
 //     suppressed as `stale_scheduler_sync` (spec: a failed or stale sync must
@@ -255,6 +266,10 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
     "pending_session_request", "stale_scheduler_sync", "access_revoked", "launch_not_authorised",
     "no_recipient", "test_client_real_address", "quiet_hours", "first_cycle_exempt",
     "catch_up_owed", "another_reminder_today", "no_template_yet", "scripts_approved", "session_not_open",
+    // R03 (Sep 28 2026): outside the program rollout (not the feature's own
+    // lock, which stays launch_not_authorised), and a switch turned off while
+    // the email waited at the outbox.
+    "not_in_rollout_scope", "switched_off",
   ],
   templates: { ...DEFAULT_TEMPLATE_IDS },
   testClientsOnly: true,
@@ -372,7 +387,9 @@ export function validateReminderPolicy(input: unknown): PolicyValidation {
     }
   }
   for (const k of Object.keys(raw)) if (!(k in REMINDER_DEFAULTS)) warnings.push(`Unknown key "${k}" is kept but nothing reads it.`);
-  if (p.testClientsOnly === false) warnings.push("testClientsOnly is false: with the switch on, REAL clients can receive reminders. Only Jordan's launch authorisation should set this.");
+  // R03 (Sep 28 2026): lifting the lock opens reminders to the ROLLOUT SCOPE
+  // (Settings → Who the program may reach), never to every client by itself.
+  if (p.testClientsOnly === false) warnings.push("testClientsOnly is false: with the switch on, the clients the rollout reaches (TEST clients, the approved pilot, or everyone if the rollout is set to everyone) can receive reminders. Only Jordan's launch authorisation should set this.");
   if (errors.length) return { ok: false, errors };
   return { ok: true, policy: p, warnings };
 }
@@ -670,8 +687,37 @@ export type ReminderCandidate = {
   linkPath?: string | null;
   /** REVIEW lane (CP-02): the release batch this candidate chases, `r<YYYYMMDD>`. */
   reviewTag?: string | null;
+  /** R03 (Sep 28 2026): what the rollout scope said for this client (op
+   *  "reminders", with the policy's own lock) — the tier it reaches them as,
+   *  or the refusal code. Both null for a person's copy, which has no scope. */
+  audience: RolloutAudience;
   state: EvaluatedState;
 };
+
+/** The scope's verdict on one preview row (R03): the tier, or the refusal. */
+export type RolloutAudience = { tier: ReachTier | null; code: ReachRefusalCode | null };
+const audienceOf = (d: ReachDecision | null): RolloutAudience => (d ? (d.ok ? { tier: d.tier, code: null } : { tier: null, code: d.code }) : { tier: null, code: null });
+
+/**
+ * The rollout's verdict for a reminder lane, or null for a person's copy (no
+ * scope binds a human pasting text). The policy's testClientsOnly is the
+ * feature's own NARROWING lock inside the scope (lockMapping, R03).
+ */
+function reminderReach(rollout: ProgramRollout | null, e: { clientId: string; client: { name: string } }, now: Date, p: ReminderPolicy, op: ProgramReachOp = "reminders"): ReachDecision | null {
+  if (!rollout) return null;
+  return rolloutDecision({ rollout, client: { id: e.clientId, name: e.client.name }, op, now, featureTestOnly: p.testClientsOnly });
+}
+
+/** A fresh read of the scope for a dispatch recheck. A read that fails is
+ *  reported, never guessed: the caller leaves the row retryable, and nothing
+ *  is sent on a scope nobody could read. */
+async function freshRollout(): Promise<{ rollout: ProgramRollout; error: null } | { rollout: null; error: string }> {
+  try {
+    return { rollout: (await loadProgramRollout()).rollout, error: null };
+  } catch (e) {
+    return { rollout: null, error: `the rollout scope could not be read (${(e instanceof Error ? e.message : String(e)).split("\n")[0].slice(0, 200)})` };
+  }
+}
 
 type EnrollmentRow = {
   id: string; clientId: string; status: string; callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null;
@@ -1052,12 +1098,17 @@ async function evaluateMonth(
   feeds: BookingFeeds,
   clientWindowOpen: boolean,
   lane: "PRIMARY" | "REVIEW",
-  ignoreReminderId?: string | null,
+  ignoreReminderId: string | null | undefined,
+  /** R03: the rollout scope this run decides with — loaded once per run, and
+   *  FRESH for a dispatch's recheck. null only for a person's copy. */
+  rollout: ProgramRollout | null,
 ): Promise<ReminderCandidate> {
-  const isTest = isTestClientName(e.client.name);
+  // BY ID AS WELL AS NAME (R03): a never-synthetic real row renamed TEST is real.
+  const isTest = isSyntheticClientRow({ id: e.clientId, name: e.client.name });
+  const reach = reminderReach(rollout, e, now, p);
   const cal = monthlyCalendar(month.monthKey, p);
   const base = {
-    enrollmentId: e.id, clientId: e.clientId, clientName: e.client.name, isTest, monthId: month.id, monthKey: month.monthKey,
+    enrollmentId: e.id, clientId: e.clientId, clientName: e.client.name, isTest, monthId: month.id, monthKey: month.monthKey, audience: audienceOf(reach),
     lane: lane as ReminderLane, milestone: "OFF_CALENDAR" as ReminderMilestone, sessionOrdinal: null as number | null,
     templateKey: null as string | null, attempt: 0, dedupeKey: null as string | null, to: null as string | null, nextEligibleAt: null as Date | null,
     deadlineAt: null as Date | null, quotedDeadlineAt: null as Date | null,
@@ -1221,21 +1272,32 @@ async function evaluateMonth(
   // pre-launch — but it means Kyle's 15th-of-the-month list stays empty for real
   // clients until Jordan authorises client reminders, which is his call to make,
   // not this file's to assume (F20, Sep 21 2026).
-  if (p.testClientsOnly && !isTest) {
+  //
+  // R03 (Sep 28 2026): the lock is now ONE input to the rollout decision
+  // (featureTestOnly), and the scope is the other. A refusal by the lock stays
+  // launch_not_authorised; a refusal by the scope is not_in_rollout_scope.
+  // The recipient is read FIRST so the dry run shows who would have been
+  // reached even for a client the scope refuses.
+  const toEarly = await recipientFor(e);
+  const toMasked = toEarly ? maskToRef("email", toEarly.email) : null;
+  const refusedBy = reach && !reach.ok ? reach : null;
+  if (refusedBy) {
+    const code = reachSuppressionReason(refusedBy) ?? "not_in_rollout_scope";
     // KYLE'S 15th FOR REAL CLIENTS, BEFORE LAUNCH (A50, Sep 26 2026). The lock
     // above the calendar kept his mid-month list empty for every real client
     // (see the note above). With staffFollowUpsForRealClients on, the 15th
     // still raises HIS task — the one internal row, keyed per month — while
     // the client gets nothing and no ledger row is written: the candidate
     // stays suppressed, and only suppressed-with-a-follow-up reaches
-    // raiseMidMonthFollowUp. Off by default; internal only.
+    // raiseMidMonthFollowUp. Off by default; internal only. R03: for EVERY
+    // real client the scope refuses, whichever of the two refused them.
     if (p.staffFollowUpsForRealClients && lane === "PRIMARY" && now >= cal.midMonthAt) {
-      return sup("launch_not_authorised", "policy.testClientsOnly is on — the client is not written to; Kyle's mid-month follow-up is raised (staffFollowUpsForRealClients)", action, {
-        milestone: "MID_MONTH",
-        kyleFollowUp: { due: true, reason: `mid-month check on ${month.monthKey}: still needs ${actionLabel(action)} (client reminders are not launched)` },
+      return sup(code, `${refusedBy.reason} — the client is not written to; Kyle's mid-month follow-up is raised (staffFollowUpsForRealClients)`, action, {
+        milestone: "MID_MONTH", to: toMasked,
+        kyleFollowUp: { due: true, reason: `mid-month check on ${month.monthKey}: still needs ${actionLabel(action)} (client reminders do not reach this client yet)` },
       });
     }
-    return sup("launch_not_authorised", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised");
+    return sup(code, code === "launch_not_authorised" ? `policy.testClientsOnly is on — ${refusedBy.reason}` : refusedBy.reason, action, { to: toMasked });
   }
 
   // ---- the §12 calendar ---------------------------------------------------------
@@ -1454,8 +1516,8 @@ async function evaluateMonth(
     ? { due: true, reason: rowCeilingHit ? `${laneRows.length} reminder rows exist for this month and action but only ${laneAttemptsMade} actually sent — the evaluator has stopped` : deadlineNear ? `deadline ${fmtDay(deadlineAt)} is within ${escalateWithin} business day(s)` : `${laneAttemptsMade} reminder(s) sent, no response` }
     : null;
 
-  const to = await recipientFor(e);
-  const common = { ...withMid, action, noCallEligible, digestSession, answersStarted, escalation, to: to ? maskToRef("email", to.email) : null, reviewTag };
+  const to = toEarly;
+  const common = { ...withMid, action, noCallEligible, digestSession, answersStarted, escalation, to: toMasked, reviewTag };
   if (rowCeilingHit) {
     return out({ ...common, attempt: laneAttemptsMade, decision: escalation ? "escalate" : "none", reason: `${laneRows.length} reminder rows already written for this month and action (only ${laneAttemptsMade} sent) — stopping so a person looks` });
   }
@@ -1486,7 +1548,11 @@ async function evaluateMonth(
     : attempt === 1 && p.firstReminderDelayBusinessDays > 0 ? addBusinessDaysET(opensAt, p.firstReminderDelayBusinessDays) : opensAt;
   if (now < nextEligibleAt) return out({ ...common, attempt, dedupeKey, decision: "wait", reason: attempt === 1 ? `first reminder due ${fmtDay(nextEligibleAt)}` : `follow-up due ${fmtDay(nextEligibleAt)} (${spacingBusinessDays} weekdays after the last one)`, nextEligibleAt, retryOfId: failedRetry?.id ?? null });
   if (!to) return sup("no_recipient", "no email address on the portal seat or the client record");
-  if (isTest && !isStaffControlledEmail(to.email)) return sup("test_client_real_address", `TEST client's address ${maskToRef("email", to.email)} is not staff-controlled`);
+  // R03: the SAME rule as the outbox floor — one of Jordan's verified inboxes,
+  // not any @realtourpilot.com address (nick@ is a colleague's mailbox). The
+  // dry run and the live tick now agree: a TEST row on a colleague's inbox is
+  // suppressed here, instead of the send throwing and aborting the run.
+  if (isTest && !isVerifiedTestDestinationEmail(to.email)) return sup("test_client_real_address", `TEST client's address ${maskToRef("email", to.email)} is not one of Jordan's verified test inboxes`, action, { to: toMasked });
   // ONE client email per enrollment per ET day, across every lane. Two cadences
   // landing together is a normal month (a planning follow-up on the day the
   // review clock opens), and two emails an hour apart reads as a system with no
@@ -1620,8 +1686,12 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
   }
   const month = await prisma.contentMonth.findUnique({ where: { id: c.monthId }, select: { id: true, monthKey: true, status: true, remindersSnoozedUntil: true } });
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: e.id }, select: { status: true } });
-  // 2. RECHECK — the authoritative state, read again this instant.
-  const fresh = month && enrollment ? await evaluateMonth({ ...e, status: enrollment.status }, month, now, p, opts.feeds, opts.clientWindowOpen, c.lane === "REVIEW" ? "REVIEW" : "PRIMARY", reminderId) : null;
+  // 2. RECHECK — the authoritative state, read again this instant. R03: the
+  //    rollout scope too, FRESH — a client taken out of the pilot between the
+  //    evaluation and this line is suppressed here, not emailed.
+  const scope = await freshRollout();
+  if (!scope.rollout) return leaveRetryable(reminderId, scope.error, now);
+  const fresh = month && enrollment ? await evaluateMonth({ ...e, status: enrollment.status }, month, now, p, opts.feeds, opts.clientWindowOpen, c.lane === "REVIEW" ? "REVIEW" : "PRIMARY", reminderId, scope.rollout) : null;
   // The recheck has to agree about the MILESTONE too, not just the action: a
   // run that decided "the 15th, with the roll-over note" must not quietly send
   // the plain follow-up body, and vice versa.
@@ -1649,11 +1719,9 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
   // 5. THE ONE SEND. sendThroughOutbox queues, leases and delivers in one call,
   //    so a pending row never sits where the recovery drain could pick it up
   //    outside the window (it is a client kind there too, for that reason).
-  const r = await sendThroughOutbox(
-    { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey(c.action, reminderId, c.monthKey), clientId: c.clientId, requestedBy: opts.requestedBy },
-    { workerId: leaseBy },
-  );
-  const result = await recordSendResult(reminderId, r, now);
+  const g = await sendGuarded(reminderId, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey(c.action, reminderId, c.monthKey), clientId: c.clientId, requestedBy: opts.requestedBy }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  const result = await recordSendResult(reminderId, g.r, now);
   // A review reminder that actually went out is the evidence the client was
   // told (CP-02): the open windows it was about carry clientNotifiedAt, which
   // an automatic approval needs.
@@ -1662,6 +1730,38 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
     await markReviewWindowsNotified(c.monthId, now).catch(() => 0);
   }
   return result;
+}
+
+/**
+ * THE ONE SEND, WITH THE TEST FLOOR'S REFUSAL CAUGHT (R03, Sep 28 2026). The
+ * outbox floor throws TestClientSendRefusedError for a TEST client's message
+ * to an address that is not one of Jordan's; uncaught, one such row aborted
+ * the whole hourly loop and every client after it went unreminded. It is now
+ * this row's SUPPRESSED test_client_real_address, and the loop goes on.
+ * Anything else still throws — a database error is not a decision.
+ */
+async function sendGuarded(
+  reminderId: string,
+  msg: Parameters<typeof sendThroughOutbox>[0],
+  workerId: string,
+  now: Date,
+): Promise<{ kind: "sent"; r: OutboxSendResult } | { kind: "refused"; outcome: DispatchOutcome }> {
+  try {
+    return { kind: "sent", r: await sendThroughOutbox(msg, { workerId }) };
+  } catch (e) {
+    if (!(e instanceof TestClientSendRefusedError)) throw e;
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "test_client_real_address", lastError: e.message.slice(0, 500), lastErrorAt: now, nextAttemptAt: null, leaseUntil: null, leaseBy: null } });
+    await prisma.contentScriptRelease.updateMany({ where: { reminderId }, data: { notificationState: "SUPPRESSED", note: "Email suppressed: a TEST client may only be emailed at one of Jordan's verified test inboxes." } });
+    return { kind: "refused", outcome: { reminderId, outcome: "suppressed", detail: "test_client_real_address" } };
+  }
+}
+
+/** The scope could not be read at the recheck: nothing is sent, and the row is
+ *  left FAILED with a retry in an hour — a transient read error must not
+ *  permanently suppress a reminder, and must never send one either. */
+async function leaveRetryable(reminderId: string, why: string, now: Date): Promise<DispatchOutcome> {
+  await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "FAILED", outcome: "failed", failedAt: now, lastError: `${why} — nothing was sent`.slice(0, 500), lastErrorAt: now, nextAttemptAt: new Date(now.getTime() + 60 * 60_000), leaseUntil: null, leaseBy: null } });
+  return { reminderId, outcome: "failed", detail: why };
 }
 
 async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLink: string, fresh: ReminderCandidate | null): Promise<TemplateVars> {
@@ -1703,16 +1803,28 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
     // CP-02: the review window's own deadline, quoted only while the policy
     // that shows it in the portal is on (and the auto sentence only with
     // automatic approval on) — the email never promises what the page does not.
-    ...(c.lane === "REVIEW" ? await reviewTemplateVars(fresh?.state.reviewDeadlineAt ?? c.state.reviewDeadlineAt ?? null, c.isTest) : {}),
+    ...(c.lane === "REVIEW" ? await reviewTemplateVars(fresh?.state.reviewDeadlineAt ?? c.state.reviewDeadlineAt ?? null, c.clientId) : {}),
   };
 }
 
-async function reviewTemplateVars(deadlineISO: string | null, isTest: boolean): Promise<Pick<TemplateVars, "reviewDeadline" | "reviewAutoApprove">> {
-  const { revisionPolicy, deadlineLabel } = await import("@/lib/reviewWindows");
-  const p = await revisionPolicy();
-  if (!p.on || !deadlineISO) return { reviewDeadline: null, reviewAutoApprove: false };
+/**
+ * The review deadline and the automatic-approval sentence, quoted only when
+ * THIS client's policy holds the window to it (R03, Sep 28 2026): the policy
+ * is per client now (reviewWindows.revisionPolicyFor — the switch AND the
+ * rollout scope, with the later of the switch's enabledAt and the client's
+ * join), so the email promises exactly what the client's page will show.
+ */
+async function reviewTemplateVars(deadlineISO: string | null, clientId: string): Promise<Pick<TemplateVars, "reviewDeadline" | "reviewAutoApprove">> {
+  const { revisionPolicyFor, deadlineLabel } = await import("@/lib/reviewWindows");
+  const p = await revisionPolicyFor(clientId);
+  if (!p.on || !deadlineISO || !p.enabledAt) return { reviewDeadline: null, reviewAutoApprove: false };
+  // A deadline stamped on a window opened before this client's policy began is
+  // not one they were ever shown, so it is not quoted either.
+  const w = await prisma.contentReviewWindow.findFirst({ where: { clientId, deadlineAt: new Date(deadlineISO) }, select: { openedAt: true, source: true } }).catch(() => null);
+  if (w && (w.source === "LAZY" || w.openedAt < p.enabledAt)) return { reviewDeadline: null, reviewAutoApprove: false };
   // Only promise automatic approval to a client it can actually happen to.
-  return { reviewDeadline: deadlineLabel(new Date(deadlineISO)), reviewAutoApprove: p.autoApprove.on && (!p.autoApprove.testClientsOnly || isTest) };
+  const autoFrom = p.autoApprove.enabledAt;
+  return { reviewDeadline: deadlineLabel(new Date(deadlineISO)), reviewAutoApprove: p.autoApprove.on && !!autoFrom && (!w || w.openedAt >= autoFrom) };
 }
 
 /** Write the outbox's verdict on the ledger row. Exported so the share-notice
@@ -1723,8 +1835,18 @@ export async function recordSendResult(reminderId: string, r: Awaited<ReturnType
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SENT", outcome: "accepted", outboxMessageId: r.id, providerMessageId: r.providerId, sentAt: now, lastError: null, ...clear } });
     return { reminderId, outcome: "sent", detail: `provider id ${r.providerId ?? "(none)"}` };
   }
+  if (r.outcome === "failed" && r.refused && r.refused !== "gate_error") {
+    // THE DISPATCH GATE SAID NO (R03, Sep 28 2026): the client is outside the
+    // rollout, the switch was turned off, or a TEST client's address is not
+    // Jordan's. That is a decision, not a delivery failure — SUPPRESSED with
+    // the reason, no retry, and no escalation to a person.
+    const reason = GATE_SUPPRESSION[r.refused] ?? "not_in_rollout_scope";
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, outcome: "refused", outboxMessageId: r.id, lastError: r.error.slice(0, 500), lastErrorAt: now, nextAttemptAt: null, ...clear } });
+    return { reminderId, outcome: "suppressed", detail: `${reason}: ${r.error}` };
+  }
   if (r.outcome === "failed") {
-    // NOTHING WAS SENT. Same row retries after an hour (the outbox released the identity).
+    // NOTHING WAS SENT. Same row retries after an hour (the outbox released the
+    // identity) — including gate_error, "the gate could not decide" (R03).
     const row = await prisma.programReminder.findUnique({ where: { id: reminderId }, select: { evaluatedStateJson: true } });
     const retries = readRetries(row?.evaluatedStateJson) + 1;
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "FAILED", outcome: "failed", outboxMessageId: r.id, failedAt: now, lastError: r.error.slice(0, 500), lastErrorAt: now, nextAttemptAt: retries >= 3 ? null : new Date(now.getTime() + 60 * 60_000), evaluatedStateJson: withRetries(row?.evaluatedStateJson, retries), ...clear } });
@@ -1739,6 +1861,14 @@ export async function recordSendResult(reminderId: string, r: Awaited<ReturnType
   await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", outboxMessageId: r.id || null, lastError: `outbox: ${r.outcome}`, ...clear } });
   return { reminderId, outcome: "unknown", detail: `outbox reported ${r.outcome}` };
 }
+/** The outbox gate's codes as ledger suppression reasons (R03). */
+const GATE_SUPPRESSION: Record<string, string> = {
+  not_in_rollout_scope: "not_in_rollout_scope",
+  launch_not_authorised: "launch_not_authorised",
+  switched_off: "switched_off",
+  test_client_real_address: "test_client_real_address",
+  seat_mismatch: "no_recipient",
+};
 function readRetries(json: string | null | undefined): number { try { return Number((JSON.parse(json ?? "{}") as { retries?: number }).retries ?? 0) || 0; } catch { return 0; } }
 function withRetries(json: string | null | undefined, retries: number): string { let o: Record<string, unknown> = {}; try { o = JSON.parse(json ?? "{}") as Record<string, unknown>; } catch { /* keep {} */ } return JSON.stringify({ ...o, retries }); }
 
@@ -1789,6 +1919,20 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   }
   const [feeds, clientWindowOpen] = await Promise.all([bookingFeeds(now, policy), clientTextWindowOpen(now)]);
   const sync = feeds.call;
+  // THE ROLLOUT SCOPE, once per run (R03, Sep 28 2026) — every lane decides
+  // with it, and every dispatch re-reads it fresh before its recheck. A scope
+  // that cannot be read runs this pass as TEST-only (nobody real is reached;
+  // the health line says why) rather than guessing.
+  let rollout: ProgramRollout;
+  let scopeError: string | null = null;
+  try {
+    const loaded = await loadProgramRollout();
+    rollout = loaded.rollout;
+    if (loaded.problem) scopeError = `the stored rollout could not be read (${loaded.problem}) — only TEST clients were considered`;
+  } catch (e) {
+    rollout = { mode: "TEST_ONLY", modeSince: null, pilot: null };
+    scopeError = `the rollout scope could not be read (${(e instanceof Error ? e.message : String(e)).split("\n")[0].slice(0, 200)}) — only TEST clients were considered`;
+  }
   const rawEnrollments = await prisma.contentEnrollment.findMany({
     where: { status: { in: ["ACTIVE", "PAUSED"] }, ...(opts.enrollmentIds?.length ? { id: { in: opts.enrollmentIds } } : {}) },
     select: ENROLLMENT_SELECT,
@@ -1822,7 +1966,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // ADDRESS FIRST (CP-05). A session starting in two days with no street on
     // file is the one message that cannot wait for tomorrow, so it takes the
     // one-email-a-day slot and the planning cadence waits a day behind it.
-    const address = await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun });
+    const address = await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun }, rollout);
     addressLane.push(...address);
     if (!opts.dryRun) {
       for (const a of address) {
@@ -1835,7 +1979,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     // SCRIPTS SECOND (6.5): an approval deadline a day away beats the planning
     // cadence to the one-email-a-day slot, and loses it only to a missing address.
-    const scripts = await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {});
+    const scripts = await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
     scriptApprovalLane.push(...scripts);
     if (!opts.dryRun) {
       for (const a of scripts) {
@@ -1847,7 +1991,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       }
     }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
-      const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane);
+      const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane, null, rollout);
       if (lane === "REVIEW" && c.action === null && c.decision === "none") continue; // nothing waiting: not worth a row in the preview
       candidates.push(c);
       if (c.kyleFollowUp?.due) {
@@ -1877,10 +2021,11 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   // sessions), so the sentence names whichever it actually was rather than
   // always blaming Calendly.
   const staleDetail = [feeds.call.fresh ? null : `Calendly: ${feeds.call.detail}`, feeds.session.fresh ? null : `Aryeo: ${feeds.session.detail}`].filter(Boolean).join("; ") || sync.detail;
-  const healthError = stale.length
+  const staleError = stale.length
     ? `${stale.length} month(s) got no booking reminder because the booking state is not trustworthy (${staleDetail}). Nothing was sent for them — this is a suppression, not a decision about the client.`
     : null;
-  if (!opts.dryRun && healthError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, healthError);
+  const healthError = [staleError, scopeError].filter(Boolean).join(" ") || null;
+  if (!opts.dryRun && staleError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, staleError);
   return {
     enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, healthError,
     note: opts.dryRun ? `dry run: ${wouldSend} would send, ${candidates.filter((c) => c.decision === "suppressed").length} suppressed, ${candidates.filter((c) => c.decision === "wait").length} waiting` : `${sends} sent`,
@@ -1940,6 +2085,11 @@ export type AddressReminderPreview = {
   /** the session's identity (countDistinctSessions key) — ONE reminder per session */
   sessionKey: string;
   shootAt: Date; remindAt: Date; movedOffWeekend: boolean; addressLine: string | null;
+  /** R03: who it would reach, masked — filled BEFORE the scope check, so a
+   *  suppressed row still shows the address it would have gone to. */
+  to: string | null;
+  /** R03: the rollout scope's verdict for this client. */
+  audience: RolloutAudience;
   /** Past its moment: §8 says send at the next office opportunity and flag Kyle. */
   overdue: boolean;
   /** Less than 24 hours between the send and the session: Kyle is told too. */
@@ -1983,11 +2133,19 @@ async function evaluateAddressLane(
   feeds: BookingFeeds,
   clientWindowOpen: boolean,
   opts: { dryRun: boolean; ignoreReminderId?: string | null; onlySessionKey?: string | null },
+  /** R03: the rollout scope (the run's, or a dispatch's fresh read); null = no scope (a person's copy). */
+  rollout: ProgramRollout | null,
 ): Promise<AddressReminderPreview[]> {
   const { upcomingProgramSessions, sessionNeedsAddress } = await import("@/lib/sessionAddress");
   const sessions = (await upcomingProgramSessions(month.id, now)).filter((s) => !opts.onlySessionKey || s.key === opts.onlySessionKey);
-  const isTest = isTestClientName(e.client.name);
+  const isTest = isSyntheticClientRow({ id: e.clientId, name: e.client.name });
+  const reach = reminderReach(rollout, e, now, p);
+  const audience = audienceOf(reach);
   const out: AddressReminderPreview[] = [];
+  // Read once per lane, BEFORE any scope check, so every preview row names who
+  // it would reach (masked) even when the scope refuses the client.
+  const recipient = sessions.length ? await recipientFor(e) : null;
+  const toMasked = recipient ? maskToRef("email", recipient.email) : null;
   for (const s of sessions) {
     if (!(await sessionNeedsAddress(s))) continue;
     const remindAt = addressReminderAt(s.startsAt, p);
@@ -1998,7 +2156,7 @@ async function evaluateAddressLane(
     const base = {
       enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, monthId: month.id, projectId: s.projectId, sessionKey: s.key,
       shootAt: s.startsAt, remindAt, movedOffWeekend: remindAt.getTime() !== raw.getTime(), addressLine: s.area, overdue: remindAt <= now,
-      urgent: s.startsAt.getTime() - sendAt.getTime() < 24 * 3_600_000, dedupeKey, retryOfId: null as string | null,
+      urgent: s.startsAt.getTime() - sendAt.getTime() < 24 * 3_600_000, dedupeKey, retryOfId: null as string | null, to: toMasked, audience,
     };
     const push = (decision: ReminderDecision, reason: string, suppressionReason: string | null = null, nextEligibleAt: Date | null = null) =>
       out.push({ ...base, decision, reason, suppressionReason, nextEligibleAt });
@@ -2012,11 +2170,12 @@ async function evaluateAddressLane(
     // Late is still worth sending, but Kyle is told once: an email read on
     // the morning of the shoot is too late to be the only safeguard.
     if (base.urgent && !opts.dryRun) await raiseUrgentAddressTask(e, month, s.key, s.startsAt, s.area, now);
-    if (p.testClientsOnly && !isTest) { push("suppressed", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised", "launch_not_authorised"); continue; }
+    // R03: the lock AND the rollout scope — one decision (reminderReach).
+    if (reach && !reach.ok) { const code = reachSuppressionReason(reach) ?? "not_in_rollout_scope"; push("suppressed", code === "launch_not_authorised" ? `policy.testClientsOnly is on — ${reach.reason}` : reach.reason, code); continue; }
     if (!feeds.session.fresh) { push("suppressed", `the Aryeo booking feed is not trustworthy right now (${feeds.session.detail})`, "stale_scheduler_sync"); continue; }
-    const to = await recipientFor(e);
+    const to = recipient;
     if (!to) { push("suppressed", "no email address on the portal seat or the client record", "no_recipient"); continue; }
-    if (isTest && !isStaffControlledEmail(to.email)) { push("suppressed", `TEST client's address ${maskToRef("email", to.email)} is not staff-controlled`, "test_client_real_address"); continue; }
+    if (isTest && !isVerifiedTestDestinationEmail(to.email)) { push("suppressed", `TEST client's address ${maskToRef("email", to.email)} is not one of Jordan's verified test inboxes`, "test_client_real_address"); continue; }
     const dayFrom = etAt(etDayKey(now), 0);
     const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
     const sentToday = await prisma.programReminder.count({
@@ -2040,7 +2199,7 @@ async function evaluateAddressLane(
 /** Kyle hears about a late address once per session (find-then-create). TEST
  *  clients make no owner work unless a probe asks (PROGRAM_DESK_TASKS_FOR_TEST). */
 async function raiseUrgentAddressTask(e: EnrollmentRow, month: { id: string; monthKey: string }, sessionKey: string, startsAt: Date, area: string | null, now: Date): Promise<void> {
-  if (isTestClientName(e.client.name) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
+  if (isSyntheticClientRow({ id: e.clientId, name: e.client.name }) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
   const dedupeKey = `program-address-urgent:${sessionKey}`;
   if (await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } })) return;
   const owner = await escalationOwner(e.id, month.id, "SCHEDULING").catch(() => null);
@@ -2081,7 +2240,10 @@ async function dispatchAddress(a: AddressReminderPreview, e: EnrollmentRow, p: R
     }
   }
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: e.id }, select: { status: true } });
-  const fresh = enrollment ? (await evaluateAddressLane({ ...e, status: enrollment.status }, { id: a.monthId, monthKey: a.monthKey }, now, p, opts.feeds, opts.clientWindowOpen, { dryRun: false, ignoreReminderId: reminderId, onlySessionKey: a.sessionKey }))[0] ?? null : null;
+  // R03: the rollout scope re-read FRESH for the recheck.
+  const scope = await freshRollout();
+  if (!scope.rollout) return leaveRetryable(reminderId, scope.error, now);
+  const fresh = enrollment ? (await evaluateAddressLane({ ...e, status: enrollment.status }, { id: a.monthId, monthKey: a.monthKey }, now, p, opts.feeds, opts.clientWindowOpen, { dryRun: false, ignoreReminderId: reminderId, onlySessionKey: a.sessionKey }, scope.rollout))[0] ?? null : null;
   if (!fresh || fresh.decision !== "send") {
     const reason = fresh?.suppressionReason ?? (fresh ? (fresh.decision === "wait" ? "quiet_hours" : "state_changed") : "address_received");
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, leaseUntil: null, leaseBy: null, lastError: fresh?.reason ?? "the session no longer needs an address (given, moved or cancelled)" } });
@@ -2111,11 +2273,9 @@ async function dispatchAddress(a: AddressReminderPreview, e: EnrollmentRow, p: R
     areaText: session.area, addressLink,
   });
   await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, evaluatedStateJson: JSON.stringify({ sessionKey: a.sessionKey, shootAt: a.shootAt.toISOString(), area: a.addressLine, urgent: a.urgent, portalLinkKind: "session_address" }) } });
-  const r = await sendThroughOutbox(
-    { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("CONFIRM_ADDRESS", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy },
-    { workerId: leaseBy },
-  );
-  return recordSendResult(reminderId, r, now);
+  const g = await sendGuarded(reminderId, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("CONFIRM_ADDRESS", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  return recordSendResult(reminderId, g.r, now);
 }
 
 /** Has the exact address for this reminder's session been given? */
@@ -2151,6 +2311,10 @@ export type ScriptApprovalPreview = {
   shootAt: Date; remindAt: Date; movedOffWeekend: boolean; deadlineAt: Date;
   /** Released scripts on this month's plan still waiting on the client's answer. */
   titles: string[];
+  /** R03: who it would reach, masked, filled BEFORE the scope check. */
+  to: string | null;
+  /** R03: the rollout scope's verdict for this client. */
+  audience: RolloutAudience;
   decision: ReminderDecision;
   suppressionReason: string | null;
   nextEligibleAt: Date | null;
@@ -2253,12 +2417,20 @@ async function evaluateScriptApprovalLane(
   p: ReminderPolicy,
   clientWindowOpen: boolean,
   opts: { ignoreReminderId?: string | null; onlySessionKey?: string | null },
+  /** R03: the rollout scope (the run's, or a dispatch's fresh read); null = no scope. */
+  rollout: ProgramRollout | null,
 ): Promise<ScriptApprovalPreview[]> {
   const { upcomingProgramSessions } = await import("@/lib/sessionAddress");
   const sessions = (await upcomingProgramSessions(month.id, now)).filter((x) => !opts.onlySessionKey || x.key === opts.onlySessionKey);
   if (!sessions.length) return [];
   const pending = await monthScriptApprovals(month.id);
-  const isTest = isTestClientName(e.client.name);
+  const isTest = isSyntheticClientRow({ id: e.clientId, name: e.client.name });
+  const reach = reminderReach(rollout, e, now, p);
+  const audience = audienceOf(reach);
+  // Read BEFORE the scope check: the dry run shows who it would have reached
+  // (it used to hard-code `to: null` for this lane).
+  const recipient = await recipientFor(e);
+  const toMasked = recipient ? maskToRef("email", recipient.email) : null;
   const out: ScriptApprovalPreview[] = [];
   for (const x of sessions) {
     const remindAt = scriptApprovalReminderAt(x.startsAt, p);
@@ -2268,6 +2440,7 @@ async function evaluateScriptApprovalLane(
     const base = {
       enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, monthId: month.id, sessionKey: x.key, shootAt: x.startsAt, remindAt,
       movedOffWeekend: isWeekendKey(etDayKey(raw)), deadlineAt, titles: pending.awaitingClient.map((a) => a.title), dedupeKey, retryOfId: null as string | null,
+      to: toMasked, audience,
     };
     const push = (decision: ReminderDecision, reason: string, suppressionReason: string | null = null, nextEligibleAt: Date | null = null) =>
       out.push({ ...base, decision, reason, suppressionReason, nextEligibleAt });
@@ -2287,10 +2460,11 @@ async function evaluateScriptApprovalLane(
     // Past the deadline it would quote: an email asking for "by <a time that
     // has gone>" helps nobody. Kyle's task is the backstop from here.
     if (now >= deadlineAt) { push("suppressed", "the approval deadline has passed — Kyle's follow-up task covers it", "state_changed"); continue; }
-    if (p.testClientsOnly && !isTest) { push("suppressed", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised", "launch_not_authorised"); continue; }
-    const to = await recipientFor(e);
+    // R03: the lock AND the rollout scope — one decision (reminderReach).
+    if (reach && !reach.ok) { const code = reachSuppressionReason(reach) ?? "not_in_rollout_scope"; push("suppressed", code === "launch_not_authorised" ? `policy.testClientsOnly is on — ${reach.reason}` : reach.reason, code); continue; }
+    const to = recipient;
     if (!to) { push("suppressed", "no email address on the portal seat or the client record", "no_recipient"); continue; }
-    if (isTest && !isStaffControlledEmail(to.email)) { push("suppressed", `TEST client's address ${maskToRef("email", to.email)} is not staff-controlled`, "test_client_real_address"); continue; }
+    if (isTest && !isVerifiedTestDestinationEmail(to.email)) { push("suppressed", `TEST client's address ${maskToRef("email", to.email)} is not one of Jordan's verified test inboxes`, "test_client_real_address"); continue; }
     const dayFrom = etAt(etDayKey(now), 0);
     const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
     const sentToday = await prisma.programReminder.count({
@@ -2343,7 +2517,10 @@ async function dispatchScriptApproval(a: ScriptApprovalPreview, e: EnrollmentRow
     // The snooze as it stands NOW — one set since the evaluation still stops this send.
     prisma.contentMonth.findUnique({ where: { id: a.monthId }, select: { remindersSnoozedUntil: true } }),
   ]);
-  const fresh = enrollment && freshMonth ? (await evaluateScriptApprovalLane({ ...e, status: enrollment.status, accessRevokedAt: enrollment.accessRevokedAt }, { id: a.monthId, monthKey: a.monthKey, remindersSnoozedUntil: freshMonth.remindersSnoozedUntil }, now, p, opts.clientWindowOpen, { ignoreReminderId: reminderId, onlySessionKey: a.sessionKey }))[0] ?? null : null;
+  // R03: the rollout scope re-read FRESH for the recheck.
+  const scope = await freshRollout();
+  if (!scope.rollout) return leaveRetryable(reminderId, scope.error, now);
+  const fresh = enrollment && freshMonth ? (await evaluateScriptApprovalLane({ ...e, status: enrollment.status, accessRevokedAt: enrollment.accessRevokedAt }, { id: a.monthId, monthKey: a.monthKey, remindersSnoozedUntil: freshMonth.remindersSnoozedUntil }, now, p, opts.clientWindowOpen, { ignoreReminderId: reminderId, onlySessionKey: a.sessionKey }, scope.rollout))[0] ?? null : null;
   if (!fresh || fresh.decision !== "send") {
     const reason = fresh?.suppressionReason ?? (fresh ? (fresh.decision === "wait" ? "quiet_hours" : "state_changed") : "state_changed");
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, leaseUntil: null, leaseBy: null, lastError: fresh?.reason ?? "the session is no longer upcoming" } });
@@ -2365,11 +2542,9 @@ async function dispatchScriptApproval(a: ScriptApprovalPreview, e: EnrollmentRow
     sessionDay: fmtDay(fresh.shootAt), approvalDeadline: fmtWhen(fresh.deadlineAt),
   });
   await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, evaluatedStateJson: JSON.stringify({ sessionKey: a.sessionKey, shootAt: a.shootAt.toISOString(), deadlineAt: fresh.deadlineAt.toISOString(), titles: fresh.titles, portalLinkKind: link.kind }) } });
-  const r = await sendThroughOutbox(
-    { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("APPROVE_SCRIPTS", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy },
-    { workerId: leaseBy },
-  );
-  return recordSendResult(reminderId, r, now);
+  const g = await sendGuarded(reminderId, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("APPROVE_SCRIPTS", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  return recordSendResult(reminderId, g.r, now);
 }
 
 /** The session an APPROVE_SCRIPTS ledger row is about, out of its dedupeKey. */
@@ -2412,6 +2587,14 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
   const [remindersOn, shareOn] = await Promise.all([isAutomationEnabled(REMINDERS_KEY), isAutomationEnabled("script_share_email")]);
   const switchOnFor = (action: string) => (action === "SCRIPTS_READY" || action === "STRATEGY_READY" ? shareOn : remindersOn);
   const open = await prisma.programReminder.findMany({ where: { state: { in: ["PENDING", "QUEUED", "UNKNOWN", "FAILED"] }, action: { not: "ESCALATION" } }, take: 200 });
+  // THE ROLLOUT, re-read per pass (R03, Sep 28 2026). A client taken out of
+  // the pilot has work already on its way: a QUEUED row waiting in the outbox
+  // is pulled back like a booked month's, and a FAILED row stops being
+  // re-offered. Per ROW, with the op the row belongs to (the share notices
+  // ride script_share_email; everything else, reminders) and that feature's
+  // own lock. A scope that cannot be read cancels NOTHING here — cancelling is
+  // a write on a guess — and the outbox gate still refuses to send on it.
+  const scopeOf = await rolloutForReconcile(open.map((r) => r.clientId), now);
   for (const r of open) {
     // A QUEUED row with NO outbox id and a dead lease died between the claim
     // and the outbox call — the sender crashed in the one-statement window
@@ -2450,16 +2633,29 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
         // CP-05: the exact address arrived while the email waited — it would
         // now ask for something the client has already given us.
         const addressIn = (r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) || (r.action === "APPROVE_SCRIPTS" && !!r.monthId && (await monthScriptApprovals(r.monthId)).awaitingClient.length === 0);
-        const stop = switchOff || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn;
+        const outOfScope = scopeOf(r.clientId, r.action);
+        const stop = switchOff || !!outOfScope || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn;
         if (stop) {
-          const why = switchOff ? "the automation was switched off" : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : "address_received") : booked ? "booked" : "snoozed";
+          const why = switchOff ? "the automation was switched off" : outOfScope ? outOfScope : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : "address_received") : booked ? "booked" : "snoozed";
           const released = await markFailed(r.outboxMessageId, `cancelled before send: ${why}`);
           if (released) {
-            await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: switchOff ? "switched_off" : why, lastError: `cancelled before send: ${why}`, lastErrorAt: now } });
+            await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: switchOff ? "switched_off" : outOfScope ? "not_in_rollout_scope" : why, lastError: `cancelled before send: ${why}`, lastErrorAt: now } });
             await prisma.contentScriptRelease.updateMany({ where: { reminderId: r.id }, data: { notificationState: "SUPPRESSED", note: `Email cancelled before it went out: ${why}. The approval and the portal release stand.` } });
             cancelled++;
           }
         }
+      }
+    }
+    // R03: a FAILED row for a client the rollout no longer reaches is over —
+    // SUPPRESSED, so neither the evaluator nor the share drain re-offers it,
+    // and no delivery-problem task is raised for a message we chose not to send.
+    if (r.state === "FAILED") {
+      const outOfScope = scopeOf(r.clientId, r.action);
+      if (outOfScope) {
+        await prisma.programReminder.update({ where: { id: r.id }, data: { state: "SUPPRESSED", suppressionReason: "not_in_rollout_scope", nextAttemptAt: null, lastError: `not retried: ${outOfScope}`.slice(0, 500), lastErrorAt: now, leaseUntil: null, leaseBy: null } });
+        await prisma.contentScriptRelease.updateMany({ where: { reminderId: r.id }, data: { notificationState: "SUPPRESSED", note: `Email not retried: ${outOfScope}. The approval and the portal release stand.` } });
+        cancelled++;
+        continue;
       }
     }
     // A failed address reminder whose address has since arrived is over — its
@@ -2473,7 +2669,7 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
     const persistent = (r.state === "FAILED" && !r.nextAttemptAt) || r.state === "UNKNOWN" || r.state === "BOUNCED";
     if (persistent && !r.escalationTaskId) {
       const client = await prisma.client.findUnique({ where: { id: r.clientId }, select: { name: true } });
-      if (isTestClientName(client?.name)) continue; // TEST records make no owner work
+      if (isSyntheticClientRow({ id: r.clientId, name: client?.name ?? null })) continue; // TEST records make no owner work
       const owner = await escalationOwner(r.enrollmentId, r.monthId ?? "", "ESCALATION");
       const task = await prisma.smartTask.create({
         data: {
@@ -2490,6 +2686,38 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
     }
   }
   return { checked: open.length, settled, cancelled, escalatedFailures };
+}
+
+/**
+ * The reconcile pass's scope reader (R03): ONE rollout read and ONE client
+ * query for the whole pass, and each feature lock read once. Returns, per row,
+ * the reason the rollout refuses its client — or null when the client is in
+ * scope, or when the scope could not be read (nothing is cancelled on a guess).
+ */
+async function rolloutForReconcile(clientIds: string[], now: Date): Promise<(clientId: string, action: string) => string | null> {
+  const none = () => null;
+  if (clientIds.length === 0) return none;
+  try {
+    const [{ rollout }, rows, remindersLock, shareLock] = await Promise.all([
+      loadProgramRollout(),
+      prisma.client.findMany({ where: { id: { in: [...new Set(clientIds)] } }, select: { id: true, name: true } }),
+      readFeatureTestOnly("reminders"),
+      readFeatureTestOnly("script_share_email"),
+    ]);
+    // A lock that could not be READ is not a lock that is on (review fix,
+    // Sep 28 2026): cancelling queued rows on it would be a cancel on a guess.
+    if (remindersLock === "error" || shareLock === "error") return none;
+    const byId = new Map(rows.map((c) => [c.id, c]));
+    return (clientId, action) => {
+      const c = byId.get(clientId);
+      if (!c) return null;
+      const share = action === "SCRIPTS_READY" || action === "STRATEGY_READY";
+      const d = rolloutDecision({ rollout, client: c, op: share ? "script_share_email" : "reminders", now, featureTestOnly: share ? shareLock : remindersLock });
+      return d.ok ? null : d.reason;
+    };
+  } catch {
+    return none;
+  }
 }
 
 /** A bounce reported by the mailbox (HANDOVER: the Gmail poller can call this
@@ -2561,9 +2789,11 @@ export type ReminderPreview = {
 export async function previewReminders(monthId: string, opts: { now?: Date } = {}): Promise<ReminderPreview> {
   const now = opts.now ?? new Date();
   const { month, e, policy, feeds, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: true });
+  // R03: the preview decides with the same scope the hourly run would.
+  const rollout = (await freshRollout()).rollout ?? { mode: "TEST_ONLY" as const, modeSince: null, pilot: null };
   const lanes: ReminderPreview["lanes"] = [];
   for (const lane of ["PRIMARY", "REVIEW"] as const) {
-    const c = await evaluateMonth(e, month, now, policy, feeds, clientWindowOpen, lane);
+    const c = await evaluateMonth(e, month, now, policy, feeds, clientWindowOpen, lane, null, rollout);
     let body: string | null = null;
     if (c.action && c.templateKey) {
       const tokenLink = e.portalToken && !e.accessRevokedAt ? `${appBase()}/portal/${e.portalToken}` : "(no portal link has been issued for this client yet)";
@@ -2576,7 +2806,7 @@ export async function previewReminders(monthId: string, opts: { now?: Date } = {
     clientName: e.client.name,
     calendar: monthlyCalendar(month.monthKey, policy),
     lanes,
-    addressLane: await evaluateAddressLane(e, month, now, policy, feeds, clientWindowOpen, { dryRun: true }),
+    addressLane: await evaluateAddressLane(e, month, now, policy, feeds, clientWindowOpen, { dryRun: true }, rollout),
   };
 }
 
@@ -2595,7 +2825,11 @@ export async function copyReminderLink(rowId: string, by: { email: string; appUs
   // the derivation and the state-based suppressions do. maxClientEmailsPerDay
   // is lifted for the same reason: a person who has decided to write to this
   // client today is not the automation doubling up on itself.
-  const c = await evaluateMonth(e, month, now, { ...policy, testClientsOnly: false, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, reviewFollowUpBusinessDays: 0, maxAttemptsPerAction: 99, reviewMaxAttempts: 99, maxClientEmailsPerDay: 99 }, feeds, true, lane);
+  // R03: no rollout scope either (the explicit null) — a person copying text
+  // is not the automation, and the link it mints falls back to the token page
+  // for a client outside the rollout (mintLoginLink refuses; resolvePortalLink
+  // catches that).
+  const c = await evaluateMonth(e, month, now, { ...policy, testClientsOnly: false, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, reviewFollowUpBusinessDays: 0, maxAttemptsPerAction: 99, reviewMaxAttempts: 99, maxClientEmailsPerDay: 99 }, feeds, true, lane, null, null);
   if (c.decision === "suppressed" && c.suppressionReason !== "test_client_real_address") return { ok: false, message: `Nothing to copy — ${c.reason}.`, candidate: c };
   if (!c.action || !c.templateKey) return { ok: false, message: `Nothing to copy — ${c.reason}.`, candidate: c };
   const to = await recipientFor(e);
@@ -2632,7 +2866,11 @@ export async function sendReminderNow(rowId: string, by: { email: string; appUse
   // A human overriding the cadence is not a human overriding the milestone: the
   // one-a-day rule and the mid-month exemptions stay exactly as the evaluator
   // computed them, because those protect the client, not the schedule.
-  const c = await evaluateMonth(e, month, now, { ...policy, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, reviewFollowUpBusinessDays: 0 }, feeds, clientWindowOpen, lane);
+  // R03: an owner's Send now is still the automation's email — the scope binds
+  // it here and again (fresh) in dispatch's recheck.
+  const scope = await freshRollout();
+  if (!scope.rollout) return { ok: false, message: `Not sent — ${scope.error}.` };
+  const c = await evaluateMonth(e, month, now, { ...policy, firstReminderDelayBusinessDays: 0, followUpAfterBusinessDays: 0, reviewFollowUpBusinessDays: 0 }, feeds, clientWindowOpen, lane, null, scope.rollout);
   if (c.decision === "suppressed") return { ok: false, message: `Not sent — ${c.reason}.`, candidate: c };
   if (c.decision === "wait") return { ok: false, message: `Not sent — ${c.reason}.`, candidate: c };
   if (c.decision !== "send") return { ok: false, message: `Not sent — ${c.reason}.`, candidate: c };

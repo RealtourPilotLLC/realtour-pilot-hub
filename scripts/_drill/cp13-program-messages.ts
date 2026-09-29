@@ -294,7 +294,11 @@ async function main() {
     // 4:10 and 4:15pm ET: still inside the client window (it closes at 4:30).
     await pm.postStaffMessage(mara.enrollmentId, { id: kyle.id, name: "Kyle Drill", email: kyle.email }, "Checking in.", null, { now: new Date(T.getTime() + 310 * 60_000) });
     const floor = await pm.sweepProgramMessageNotices({ now: new Date(T.getTime() + 315 * 60_000) });
-    c.ok("a TEST client's unverified address is refused by the outbox floor, loudly", floor.refused >= 1 && floor.notes.some((n) => /Refusing to send/.test(n)) && (await prisma.outboxMessage.count({ where: { toRef: "mara.real.inbox@gmail.com" } })) === 0, floor.notes[0]);
+    // Sep 28 2026 (R03 review fix): the sweep applies the TEST floor ITSELF
+    // now, in the dry run and the live run alike, instead of handing the row
+    // to the outbox floor to throw on every hour — so "What would go out now?"
+    // and the live run agree. Still loud: the run's notes name the skip.
+    c.ok("a TEST client's unverified address is skipped by the sweep's own TEST floor, loudly (never queued, never thrown)", floor.refused === 0 && floor.notes.some((n) => /test_client_real_address/.test(n)) && (await prisma.outboxMessage.count({ where: { toRef: "mara.real.inbox@gmail.com" } })) === 0, floor.notes.join(" | "));
     await prisma.clientUser.update({ where: { id: mara.clientUserId! }, data: { email: seatEmail } });
   }
 

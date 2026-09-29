@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { ArrowRight, Check, Gauge, Minus, Plug, ShieldCheck, TriangleAlert, X } from "lucide-react";
+import { ArrowRight, Check, Gauge, Minus, Plug, ShieldCheck, TriangleAlert, Users, X } from "lucide-react";
 import { Section } from "@/components/ui/Section";
-import type { ReadinessReport, ReadinessRow } from "@/lib/readiness";
+import type { ProgramScopeView, ReadinessReport, ReadinessRow } from "@/lib/readiness";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -50,13 +50,18 @@ const sentence = (parts: string[]) => {
 /** One sentence: does it take effect, and if not, why — whether or not it is on. */
 function effectLine(r: ReadinessRow): { text: string; tone: "ok" | "warn" | "muted" } {
   const needs = r.effective.blockers;
+  const part = r.effective.partial;
   if (!r.enabled.ok) {
+    const all = [...needs, ...part.map((x) => `for one part of it, ${x}`)];
     return {
-      text: needs.length ? `Off. Turning it on alone would not make it work: ${sentence(needs)}` : "Off. Turning it on is all it needs.",
+      text: all.length ? `Off. Turning it on alone would not make it work: ${sentence(all)}` : "Off. Turning it on is all it needs.",
       tone: "muted",
     };
   }
   if (!r.effective.ok) return { text: `Switched on but NOT working: ${sentence(needs)}`, tone: "warn" };
+  // R05: one path of it is blocked (the call processor, for example) — it is
+  // working for the rest, and it is never called healthy.
+  if (part.length) return { text: `Switched on, but PART of it is blocked: ${sentence(part)}`, tone: "warn" };
   if (r.healthy.ok === false) return { text: `Working, but unhealthy: ${sentence([r.healthy.detail])}`, tone: "warn" };
   return { text: `Working. ${sentence([r.healthy.detail[0].toUpperCase() + r.healthy.detail.slice(1)])}`, tone: "ok" };
 }
@@ -84,8 +89,9 @@ function Row({ r }: { r: ReadinessRow }) {
         <p className="break-words text-[12px] text-warning">Configuration: {r.configured.detail}.</p>
       )}
       <p className="break-words text-[12px] text-muted-2">
-        Who hears about it: {r.recipients}.{r.scope && <> Scope: {r.scope}.</>}
+        Who hears about it: {r.recipients}.{r.scope && <> Who it may reach: {r.scope}.</>}
       </p>
+      {r.note && <p data-readiness-note className="break-words text-[12px] text-muted-2">{r.note}</p>}
     </li>
   );
 }
@@ -124,6 +130,68 @@ function Block({ title, rows, note }: { title: string; rows: ReadinessRow[]; not
   );
 }
 
+const dayET = (d: Date | null) => (d ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : null);
+const MODE_WORDS: Record<ProgramScopeView["mode"], string> = {
+  TEST_ONLY: "Only your TEST clients",
+  PILOT: "Your TEST clients and the pilot clients you named",
+  ALL: "Every client with a program",
+};
+const TIER_WORDS = { TEST: "TEST client", PILOT: "in the pilot", ALL: "everyone (rollout)" } as const;
+const CODE_WORDS: Record<string, string> = {
+  rollout_test_only: "not reached: the rollout is TEST only",
+  not_in_pilot: "not reached: not in the pilot",
+  pilot_unapproved: "not reached: the pilot has no recorded approval",
+  pilot_expired: "not reached: the pilot has ended",
+  operation_not_in_pilot: "in the pilot, but for none of the program's features",
+  feature_test_only: "not reached: a feature lock is on",
+  client_missing: "not reached: the client is gone",
+  scope_unreadable: "not reached: the rollout could not be read",
+};
+
+/**
+ * WHO THE PROGRAM MAY REACH (R03, Sep 28 2026) — the rollout itself, read-only,
+ * at the top of readiness. The mode in plain words, the pilot (who, what it
+ * covers, who approved it and until when) and every program client with its
+ * tier or the reason the rollout does not reach them. Edited in Content
+ * program automations → Who the program may reach (owner only).
+ */
+function ProgramScope({ v }: { v: ProgramScopeView }) {
+  return (
+    <div data-program-scope={v.mode} className="rounded-xl border border-border p-3 text-[13px]">
+      <p className="flex items-center gap-1.5 font-semibold"><Users className="size-4 text-muted-2" aria-hidden /> Who the program may reach</p>
+      <p className="mt-1">
+        <span className="font-medium">{MODE_WORDS[v.mode]}</span>
+        {v.modeSince && <span className="text-muted"> · since {dayET(v.modeSince)}</span>}
+        {v.updatedBy && <span className="text-muted"> · last changed by {v.updatedBy}{v.updatedAt ? ` on ${dayET(v.updatedAt)}` : ""}</span>}
+      </p>
+      {v.problem && <p className="mt-1 text-warning">The stored rollout could not be read, so only TEST clients are reached: {v.problem}.</p>}
+      {v.pilot ? (
+        <p className="mt-1 text-[12px] text-muted">
+          Pilot ({v.pilotState.toLowerCase()}, {v.pilot.names.length} of at most {v.cap}): <span className="text-foreground">{v.pilot.names.join(", ")}</span>
+          {" "}· covers {v.pilot.groups.length ? v.pilot.groups.map((g) => g.toLowerCase()).join("; ") : "nothing"}
+          {v.pilot.approvedBy && <> · approved by {v.pilot.approvedBy}{v.pilot.approvedAt ? ` on ${dayET(v.pilot.approvedAt)}` : ""}</>}
+          {v.pilot.expiresAt ? <> · ends {dayET(new Date(v.pilot.expiresAt.getTime() - 1))}</> : <> · no end date</>}
+          {v.mode !== "PILOT" && <> · (on file, but the rollout is not set to a pilot)</>}
+        </p>
+      ) : (
+        <p className="mt-1 text-[12px] text-muted">No pilot client is named.</p>
+      )}
+      {v.clients.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1">
+          {v.clients.map((c) => (
+            <li key={c.name} title={c.reason} className={cn("rounded-full px-2 py-0.5 text-[11px]", c.tier ? "bg-success/15 text-success" : "bg-surface-2 text-muted")}>
+              {/* Per group, not one op (review fix, Sep 28 2026): a pilot
+                  client reads "in the pilot — program emails, …". */}
+              {c.name}: {c.tier ? TIER_WORDS[c.tier] : (c.code ? CODE_WORDS[c.code] ?? c.code : "not reached")}
+              {c.tier === "PILOT" && c.groups.length > 0 && <> — {c.groups.join(", ")}</>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 const ago = (d: Date, now: Date) => {
   const min = Math.max(0, Math.round((now.getTime() - d.getTime()) / 60_000));
   return min < 60 ? `${min} min ago` : min < 48 * 60 ? `${Math.round(min / 60)} h ago` : `${Math.round(min / 1440)} days ago`;
@@ -149,7 +217,7 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
       </Section>
     );
   }
-  const { rows, rolloutClosed, deploy, gmailSend, generatedAt: now } = report;
+  const { rows, rolloutClosed, deploy, gmailSend, generatedAt: now, programScope } = report;
   const program = rows.filter((r) => r.kind === "program");
   const texts = rows.filter((r) => r.key.startsWith("auto_texts."));
   const alerts = rows.filter((r) => r.key.startsWith("internal_alerts."));
@@ -173,17 +241,24 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
                 (confirmations, delivery feedback, after-hours replies, welcome) keep running as before.
               </p>
             ) : (
+              // Each opener names WHO (R03): "open for the pilot: A, B" is not
+              // "open for every client", and the sentence must not imply it.
+              // The banner's WHO comes from the openers themselves (review
+              // fix, Sep 28 2026), never from the mode alone.
               <p>
-                <span className="font-semibold">Client launch is OPEN.</span> Working for real clients now: {rolloutClosed.openers.join(", ")}.
+                <span className="font-semibold">Client launch is OPEN{rolloutClosed.openFor ? ` for ${rolloutClosed.openFor}` : ""}.</span>{" "}
+                Working for real clients now: {rolloutClosed.openers.join("; ")}.
               </p>
             )}
             {rolloutClosed.armed.length > 0 && (
               <p className="mt-1 text-warning">
-                Switched on for real clients but held only by a missing dependency, so fixing that would open it: {rolloutClosed.armed.join(", ")}.
+                Switched on for real clients but held only by a missing dependency, so fixing that would open it: {rolloutClosed.armed.join("; ")}.
               </p>
             )}
           </div>
         </div>
+
+        <ProgramScope v={programScope} />
 
         <p className="text-[12px] text-muted">
           This page is build <code className="rounded bg-surface-2 px-1">{deploy.page ?? "unstamped"}</code>

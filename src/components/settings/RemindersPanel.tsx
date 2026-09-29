@@ -61,10 +61,20 @@ function Btn({ onClick, children, busy, tone = "default", title }: { onClick: ()
 // rows that carry no action to name a lane with: a paused month is suppressed
 // in both lanes with action null, and a dry run replaces the whole list at once,
 // so nothing here is ever reordered or filtered in place.
+//
+// FOUR LANES NOW (R03, Sep 28 2026): the row carries its lane. The per-row
+// buttons act on a month's PLANNING (PRIMARY) or REVIEW lane only; the address
+// and script-approval rows are per session and read-only here.
 type Lane = "PRIMARY" | "REVIEW";
-const laneOfRow = (r: DryRunRow): Lane => (r.action === "REVIEW_WORK" ? "REVIEW" : "PRIMARY");
+const laneOfRow = (r: DryRunRow): Lane => (r.lane === "REVIEW" || r.action === "REVIEW_WORK" ? "REVIEW" : "PRIMARY");
 /** What the per-row buttons send: the month id carrying its own lane. */
 const rowActionId = (r: DryRunRow) => `${r.monthId}#${laneOfRow(r)}`;
+const hasMonthButtons = (r: DryRunRow) => !!r.action && (r.lane === "PLANNING" || r.lane === "REVIEW");
+const LANE_WORDS: Record<DryRunRow["lane"], string> = { PLANNING: "planning", REVIEW: "review", ADDRESS: "exact address", APPROVE_SCRIPTS: "approve scripts" };
+/** The rollout's verdict, in two words. */
+const reachWords = (r: DryRunRow): { text: string; tone: "ok" | "muted" } =>
+  r.tier ? { text: r.tier === "TEST" ? "TEST" : r.tier === "PILOT" ? "pilot" : "everyone", tone: "ok" }
+    : { text: r.code === "feature_test_only" ? "held: TEST-only lock" : r.code ? "not in the rollout" : "—", tone: "muted" };
 
 const decisionTone = (d: string): "ok" | "warn" | "bad" | "muted" => (d === "send" ? "ok" : d === "wait" ? "warn" : d === "suppressed" ? "bad" : d === "escalate" ? "warn" : "muted");
 const stateTone = (s: string): "ok" | "warn" | "bad" | "muted" => (s === "SENT" ? "ok" : s === "QUEUED" || s === "PENDING" ? "warn" : s === "FAILED" || s === "BOUNCED" || s === "UNKNOWN" ? "bad" : "muted");
@@ -92,7 +102,7 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [json, setJson] = useState(state.policyJson);
   const [validation, setValidation] = useState(state.validation);
-  const [dry, setDry] = useState<{ rows: DryRunRow[]; note: string; enabled: boolean; policySource: string } | null>(null);
+  const [dry, setDry] = useState<{ rows: DryRunRow[]; note: string; enabled: boolean; policySource: string; scopeLine: string } | null>(null);
   const [copied, setCopied] = useState<{ monthId: string; link: string; body: string } | null>(null);
   const [showLedger, setShowLedger] = useState(false);
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setMsg({ ok: r.ok, text: r.message }); });
@@ -110,8 +120,10 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
       </div>
       <p className="text-xs leading-relaxed text-muted">
         Nothing is sent while the switch is off, and a missing row is off. The switch is flipped on the Automations panel; this panel holds the
-        policy, a dry run, and the history. Even with the switch on, <code>testClientsOnly</code> keeps every real client out until Jordan clears it,
-        and every send holds to the Mon–Fri 9:00–4:30 ET client-text window on top of the policy&rsquo;s own hours.
+        policy, a dry run, and the history. Even with the switch on, reminders go only to the clients the rollout reaches (<a href="#program-rollout" className="font-medium text-brand hover:underline">Who the program may reach</a>),
+        and the policy&rsquo;s <code>testClientsOnly</code> lock narrows that to TEST clients: lifting it lets the rollout scope receive reminders — your pilot
+        clients, or every client only once the rollout is set to everyone. The same lock governs the scripts-ready emails. Every send holds to the
+        Mon–Fri 9:00–4:30 ET client-text window on top of the policy&rsquo;s own hours.
       </p>
       {msg && <p className={cn("rounded-lg px-3 py-2 text-xs", msg.ok ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{msg.text}</p>}
 
@@ -153,32 +165,34 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-semibold">What would go out now?</h4>
-          <Btn busy={pending} onClick={() => start(async () => { const r = await runReminderDryRun(); setDry({ rows: r.rows, note: r.message, enabled: r.enabled, policySource: r.policySource }); })}>
+          <Btn busy={pending} onClick={() => start(async () => { const r = await runReminderDryRun(); setDry({ rows: r.rows, note: r.message, enabled: r.enabled, policySource: r.policySource, scopeLine: r.scopeLine }); })}>
             <Play className="size-3" /> Dry run (writes nothing)
           </Btn>
         </div>
         {dry && (
           <>
             <p className="text-xs text-muted">{dry.note} · evaluated with the {dry.policySource === "defaults" ? "code defaults" : "stored policy"}{dry.enabled ? "" : " · switch OFF, so none of this sends"}</p>
+            {dry.scopeLine && <p className="text-xs text-muted"><strong className="text-foreground">Who reminders reach:</strong> {dry.scopeLine}.</p>}
             {dry.rows.length === 0 ? <p className="text-xs text-muted">No open months to evaluate.</p> : (
               <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full text-xs">
                   <thead className="bg-surface-2 text-left text-[11px] uppercase tracking-wide text-muted">
-                    <tr><th className="px-2 py-1.5">Client</th><th className="px-2 py-1.5">Month</th><th className="px-2 py-1.5">Action</th><th className="px-2 py-1.5">Decision</th><th className="px-2 py-1.5">Why</th><th className="px-2 py-1.5">Next</th><th className="px-2 py-1.5"></th></tr>
+                    <tr><th className="px-2 py-1.5">Client</th><th className="px-2 py-1.5">Month</th><th className="px-2 py-1.5">Action</th><th className="px-2 py-1.5">Decision</th><th className="px-2 py-1.5">To</th><th className="px-2 py-1.5">Why</th><th className="px-2 py-1.5">Next</th><th className="px-2 py-1.5"></th></tr>
                   </thead>
                   <tbody>
                     {dry.rows.map((r, i) => (
-                      <tr key={`${r.enrollmentId}:${r.monthKey}:${laneOfRow(r)}:${i}`} className="border-t border-border align-top">
-                        <td className="px-2 py-1.5 whitespace-nowrap">{r.clientName}{r.isTest && <Chip tone="muted">TEST</Chip>}</td>
+                      <tr key={`${r.enrollmentId}:${r.monthKey}:${r.lane}:${i}`} data-dry-lane={r.lane} className="border-t border-border align-top">
+                        <td className="px-2 py-1.5 whitespace-nowrap">{r.clientName} <Chip tone={reachWords(r).tone}>{reachWords(r).text}</Chip></td>
                         <td className="px-2 py-1.5">{r.monthKey}</td>
-                        <td className="px-2 py-1.5 whitespace-nowrap">{r.action ?? "—"}{r.attempt ? <span className="text-muted"> #{r.attempt}</span> : null}{laneOfRow(r) === "REVIEW" && <Chip tone="muted">review lane</Chip>}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{r.action ?? "—"}{r.attempt ? <span className="text-muted"> #{r.attempt}</span> : null}{r.lane !== "PLANNING" && <Chip tone="muted">{LANE_WORDS[r.lane]} lane</Chip>}</td>
                         <td className="px-2 py-1.5"><Chip tone={decisionTone(r.decision)}>{r.decision}{r.suppressionReason ? ` · ${r.suppressionReason}` : ""}</Chip>{r.escalation && <div className="mt-0.5 text-[11px] text-warning">escalate: {r.escalation}</div>}</td>
-                        <td className="px-2 py-1.5 text-muted">{r.reason}{r.to ? ` → ${r.to}` : ""}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-muted">{r.to ?? "—"}</td>
+                        <td className="px-2 py-1.5 text-muted">{r.reason}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-muted">{fmt(r.nextEligibleAt)}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
-                          {/* APPROVE_SCRIPTS rows (6.5) are per session and read-only here:
-                              the buttons below act on a month's planning lane. */}
-                          {r.action && r.action !== "APPROVE_SCRIPTS" && (
+                          {/* ADDRESS and APPROVE_SCRIPTS rows are per session and
+                              read-only here: the buttons act on a month's lane. */}
+                          {hasMonthButtons(r) && (
                             <span className="flex gap-1">
                               <Btn busy={pending} title={`Render the text + a portal link to paste yourself (records an attempt). Acts on this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} lane.`} onClick={() => start(async () => { const c = await copyReminderLinkAction(rowActionId(r)); setMsg({ ok: c.ok, text: c.message }); if (c.ok && c.link && c.body) setCopied({ monthId: r.monthId, link: c.link, body: c.body }); })}><Copy className="size-3" /> Copy link</Btn>
                               <Btn busy={pending} title={`Owner only. Still blocked while the switch is off; still holds outside the send window. Sends this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} message.`} onClick={() => run(() => sendReminderNowAction(rowActionId(r)))}><Send className="size-3" /> Send now</Btn>

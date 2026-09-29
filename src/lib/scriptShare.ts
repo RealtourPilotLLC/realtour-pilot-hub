@@ -3,8 +3,10 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { approveScriptVersion, releaseScriptVersion } from "@/lib/contentScripts";
-import { sendThroughOutbox, scriptShareKey, strategyReadyKey, maskToRef } from "@/lib/outbox";
-import { isTestClientName, isStaffControlledEmail } from "@/lib/testClients";
+import { sendThroughOutbox, scriptShareKey, strategyReadyKey, maskToRef, TestClientSendRefusedError } from "@/lib/outbox";
+import { isSyntheticClientRow, isVerifiedTestDestinationEmail } from "@/lib/testClients";
+import { loadProgramRollout, programReachWithLock } from "@/lib/programRollout";
+import { reachSuppressionReason, rolloutDecision, type ProgramRollout, type ReachDecision, type ReachRefusalCode, type ReachTier } from "@/lib/programRolloutCore";
 import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
 import { reminderPolicy, inPolicyWindow, nextPolicyWindowOpen, resolvePortalLink, recordSendResult, REMINDER_DEFAULTS, type ReminderPolicy } from "@/lib/programReminders";
 import { templateForAction, renderReminder, reminderTemplate, sendableTemplateId, monthName, firstNameOf, type TemplateVars } from "@/lib/reminderTemplates";
@@ -46,7 +48,24 @@ import { templateForAction, renderReminder, reminderTemplate, sendableTemplateId
 // With the switch OFF the release still happens: the SHARE row records
 // notificationState SUPPRESSED with the reason, no notice row is written, no
 // OutboxMessage exists, and the caller's message says so.
+//
+// THE ROLLOUT SCOPE (R03, Sep 28 2026). The same is true, with the switch ON,
+// for a client the program rollout does not reach for these emails (op
+// script_share_email; the reminders policy's testClientsOnly stays the
+// feature's own narrowing lock, as it always governed these notices): the
+// script is released, the email is suppressed at creation with the reason,
+// and the drain and the outbox gate re-check the same rule before any send.
 // ---------------------------------------------------------------------------
+
+/** May the scripts-ready / strategy-ready email reach this client now? One
+ *  read of the switch, the lock and the scope (R03). */
+async function shareEmailReach(clientId: string): Promise<{ on: boolean; reach: ReachDecision | null }> {
+  const on = await isAutomationEnabled(SHARE_KEY);
+  if (!on) return { on, reach: null };
+  // The lock and the scope together; a failed lock read is scope_unreadable
+  // (an honest "could not be read"), never "the lock is on" (review fix, Sep 28).
+  return { on, reach: await programReachWithLock("script_share_email", clientId) };
+}
 
 export const SHARE_KEY = "script_share_email" as const;
 
@@ -104,11 +123,15 @@ export async function shareApprovedScript(scriptVersionId: string, by: ShareActo
     }
   }
   const release = await latestShareRelease(scriptVersionId);
-  // 3. The email — only behind its switch. contentScripts already wrote
-  //    SUPPRESSED when the switch was off; say so and stop.
-  const emailOn = await isAutomationEnabled(SHARE_KEY);
-  if (!emailOn || notificationState === "SUPPRESSED") {
-    const note = "Email suppressed: script_share_email is off — launch is not authorised. The script is on the portal; no email was queued.";
+  // 3. The email — only behind its switch AND the rollout scope (R03).
+  //    contentScripts already wrote SUPPRESSED for either; say so and stop.
+  const { on: emailOn, reach } = await shareEmailReach(v.clientId);
+  if (!emailOn || !reach?.ok || notificationState === "SUPPRESSED") {
+    const note = !emailOn
+      ? "Email suppressed: script_share_email is off — launch is not authorised. The script is on the portal; no email was queued."
+      : reach && !reach.ok
+        ? `Email suppressed (${reachSuppressionReason(reach) ?? "not_in_rollout_scope"}): ${reach.reason}. The script is on the portal; no email was queued.`
+        : "Email suppressed when the script was released. The script is on the portal; no email was queued.";
     if (release) await prisma.contentScriptRelease.update({ where: { id: release.id }, data: { notificationState: "SUPPRESSED", note } });
     return { scriptId: v.scriptId, versionId: scriptVersionId, approved, released, update, email: "suppressed", noticeId: null, emailNote: note, message: `Approved and shared "${v.title}" to the portal. ${note}` };
   }
@@ -180,11 +203,15 @@ async function attachToNotice(o: { enrollmentId: string; clientId: string; month
  * Same switch (`script_share_email` — shared work), same notice machinery.
  * Returns null when the switch is off; the caller says so.
  */
-export async function queueStrategyReadyNotice(o: { enrollmentId: string; strategyVersionId: string; by: string; now?: Date }): Promise<{ id: string; created: boolean } | null> {
+export async function queueStrategyReadyNotice(o: { enrollmentId: string; strategyVersionId: string; by: string; now?: Date }): Promise<{ id: string; created: boolean } | { id: null; created: false; reason: string } | null> {
   if (!(await isAutomationEnabled(SHARE_KEY))) return null;
   const now = o.now ?? new Date();
   const e = await prisma.contentEnrollment.findUnique({ where: { id: o.enrollmentId }, select: { clientId: true } });
   if (!e) throw new Error("Enrollment not found.");
+  // R03 (Sep 28 2026): no notice for a client the rollout does not reach for
+  // this email — nothing is queued, and the caller's message names why.
+  const { reach } = await shareEmailReach(e.clientId);
+  if (reach && !reach.ok) return { id: null, created: false, reason: reach.reason };
   const { policy } = await reminderPolicy({ orDefaults: true });
   const templateKey = templateForAction("STRATEGY_READY", (policy ?? REMINDER_DEFAULTS).templates).id;
   const dedupeKey = `${o.enrollmentId}:strategy:${o.strategyVersionId}:STRATEGY_READY`;
@@ -205,19 +232,46 @@ export async function queueStrategyReadyNotice(o: { enrollmentId: string; strate
 
 export type DrainResult = { enabled: boolean; considered: number; sent: number; failed: number; unknown: number; held: number; suppressed: number; notes: string[] };
 
+/** One notice as the drain decided it (R03) — the dry run's row, and the live
+ *  run's record. `to` is masked and filled BEFORE the scope check, so an
+ *  excluded client's row still shows who it would have reached. */
+export type ShareNoticePreview = {
+  reminderId: string;
+  action: "SCRIPTS_READY" | "STRATEGY_READY";
+  clientId: string;
+  clientName: string;
+  to: string | null;
+  decision: "send" | "hold" | "suppress" | "cancel";
+  reason: string;
+  audience: { tier: ReachTier | null; code: ReachRefusalCode | null };
+};
+
 /**
  * Send the notices whose batch window has closed. Hourly from the cron; a
  * caller may pass `now` for a probe. Every gate re-checked per notice:
- * switch, enrollment status, the releases still shared, the lock, the window.
+ * switch, enrollment status, the releases still shared, the scope, the window.
+ *
+ * R03 (Sep 28 2026): "the lock" is now the rollout decision (op
+ * script_share_email, with the reminders policy's testClientsOnly as the
+ * feature's own narrowing lock), read ONCE per drain and fresh each drain — a
+ * notice for a client taken out of the pilot is suppressed, FAILED ones
+ * included. A TEST client's address must be one of Jordan's verified inboxes
+ * (the outbox floor's rule). `dryRun` claims nothing and writes nothing: it
+ * returns the same per-notice decisions the live drain would make.
  */
-export async function drainShareNotices(opts: { now?: Date; max?: number; requestedBy?: string; byAppUserId?: string | null } = {}): Promise<DrainResult> {
+export async function drainShareNotices(opts: { now?: Date; max?: number; requestedBy?: string; byAppUserId?: string | null; dryRun?: boolean } = {}): Promise<DrainResult & { preview: ShareNoticePreview[] }> {
   const now = opts.now ?? new Date();
-  const out: DrainResult = { enabled: false, considered: 0, sent: 0, failed: 0, unknown: 0, held: 0, suppressed: 0, notes: [] };
-  if (!(await isAutomationEnabled(SHARE_KEY))) { out.notes.push("script_share_email is off — nothing sent"); return out; }
-  out.enabled = true;
+  const dry = !!opts.dryRun;
+  const out: DrainResult & { preview: ShareNoticePreview[] } = { enabled: false, considered: 0, sent: 0, failed: 0, unknown: 0, held: 0, suppressed: 0, notes: [], preview: [] };
+  const switchOn = await isAutomationEnabled(SHARE_KEY);
+  if (!switchOn && !dry) { out.notes.push("script_share_email is off — nothing sent"); return out; }
+  out.enabled = switchOn;
   const { policy: p0 } = await reminderPolicy({ orDefaults: true });
   const policy: ReminderPolicy = p0 ?? REMINDER_DEFAULTS;
   const windowOpen = inPolicyWindow(now, policy) && (await clientTextWindowOpen(now));
+  let rollout: ProgramRollout | null = null;
+  let scopeError: string | null = null;
+  try { rollout = (await loadProgramRollout()).rollout; } catch (e) { scopeError = `the rollout scope could not be read (${(e instanceof Error ? e.message : String(e)).split("\n")[0].slice(0, 200)})`; }
   const due = await prisma.programReminder.findMany({
     where: {
       action: { in: ["SCRIPTS_READY", "STRATEGY_READY"] },
@@ -232,36 +286,62 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
   const leaseBy = `${opts.requestedBy ?? "share-drain"}:${process.pid}`;
   for (const n of due) {
     out.considered++;
-    if (!windowOpen) {
-      const next = nextPolicyWindowOpen(now, policy);
-      await prisma.programReminder.update({ where: { id: n.id }, data: { nextEligibleAt: n.state === "PENDING" ? next : n.nextEligibleAt, nextAttemptAt: n.state === "FAILED" ? next : n.nextAttemptAt } });
+    const action = n.action === "STRATEGY_READY" ? "STRATEGY_READY" : "SCRIPTS_READY";
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: n.enrollmentId }, select: { id: true, clientId: true, status: true, portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true } });
+    const client = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true, email: true } }) : null;
+    // Recipient first (R03): the preview names who it would reach, masked,
+    // before any gate below decides whether it may.
+    const seats = e ? await prisma.clientMembership.findMany({ where: { enrollmentId: e.id, revokedAt: null }, select: { id: true, clientUserId: true, role: true }, orderBy: { invitedAt: "asc" } }) : [];
+    const seat = seats.find((x) => x.role === "OWNER") ?? seats[0] ?? null;
+    const seatUser = seat ? await prisma.clientUser.findUnique({ where: { id: seat.clientUserId }, select: { email: true, status: true } }) : null;
+    const email = seatUser && seatUser.status !== "DISABLED" ? seatUser.email : (client?.email ?? "").trim().toLowerCase();
+    const d: ReachDecision | null = e && client && rollout ? rolloutDecision({ rollout, client: { id: e.clientId, name: client.name }, op: "script_share_email", now, featureTestOnly: policy.testClientsOnly }) : null;
+    const row: ShareNoticePreview = {
+      reminderId: n.id, action, clientId: n.clientId, clientName: client?.name ?? "?", to: email ? maskToRef("email", email) : null, decision: "send", reason: "",
+      audience: d ? (d.ok ? { tier: d.tier, code: null } : { tier: null, code: d.code }) : { tier: null, code: scopeError ? "scope_unreadable" : null },
+    };
+    const record = (decision: ShareNoticePreview["decision"], reason: string) => { row.decision = decision; row.reason = reason; out.preview.push(row); };
+    if (!switchOn) { record("hold", "script_share_email is off — nothing is sent while it is"); out.held++; continue; }
+    if (!windowOpen || scopeError) {
+      // A closed window waits; so does a scope nobody could read — never a
+      // send on a guess, and never a suppression of a notice the next drain may send.
+      const why = scopeError ? `${scopeError} — held for the next drain` : "outside the send window";
+      record("hold", why);
+      if (!dry) {
+        const next = scopeError ? new Date(now.getTime() + 60 * 60_000) : nextPolicyWindowOpen(now, policy);
+        await prisma.programReminder.update({ where: { id: n.id }, data: { nextEligibleAt: n.state === "PENDING" ? next : n.nextEligibleAt, nextAttemptAt: n.state === "FAILED" ? next : n.nextAttemptAt } });
+      }
       out.held++;
       continue;
     }
-    // Claim.
-    const won = await prisma.programReminder.updateMany({ where: { id: n.id, state: n.state }, data: { leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, state: "QUEUED" } });
-    if (won.count === 0) continue;
+    // Claim (live only — the dry run touches nothing).
+    if (!dry) {
+      const won = await prisma.programReminder.updateMany({ where: { id: n.id, state: n.state }, data: { leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, state: "QUEUED" } });
+      if (won.count === 0) continue;
+    }
     const suppress = async (reason: string, why: string) => {
-      await prisma.programReminder.update({ where: { id: n.id }, data: { state: "SUPPRESSED", suppressionReason: reason, lastError: why, lastErrorAt: now, leaseUntil: null, leaseBy: null } });
-      await prisma.contentScriptRelease.updateMany({ where: { reminderId: n.id }, data: { notificationState: "SUPPRESSED", note: `Email suppressed: ${why}` } });
+      record("suppress", `${reason}: ${why}`);
       out.suppressed++;
       out.notes.push(`${n.id}: suppressed (${reason})`);
+      if (dry) return;
+      await prisma.programReminder.update({ where: { id: n.id }, data: { state: "SUPPRESSED", suppressionReason: reason, lastError: why, lastErrorAt: now, nextAttemptAt: null, leaseUntil: null, leaseBy: null } });
+      await prisma.contentScriptRelease.updateMany({ where: { reminderId: n.id }, data: { notificationState: "SUPPRESSED", note: `Email suppressed: ${why}` } });
     };
-    const e = await prisma.contentEnrollment.findUnique({ where: { id: n.enrollmentId }, select: { id: true, clientId: true, status: true, portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true } });
-    const client = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true, email: true } }) : null;
     if (!e || !client) { await suppress("no_enrollment", "enrollment or client no longer exists"); continue; }
     if (e.status !== "ACTIVE") { await suppress(e.status === "PAUSED" ? "paused" : "ended", `enrollment is ${e.status}`); continue; }
     if (e.accessRevokedAt) { await suppress("access_revoked", "portal access was revoked"); continue; }
-    const isTest = isTestClientName(client.name);
-    if (policy.testClientsOnly && !isTest) { await suppress("launch_not_authorised", "policy.testClientsOnly is on — only TEST clients may receive until launch is authorised"); continue; }
+    // By id as well as name (R03): a never-synthetic real row renamed TEST is real.
+    const isTest = isSyntheticClientRow({ id: e.clientId, name: client.name });
+    // THE ROLLOUT, with the policy's own lock inside it (R03).
+    if (d && !d.ok) { const reason = reachSuppressionReason(d) ?? "not_in_rollout_scope"; await suppress(reason, reason === "launch_not_authorised" ? `policy.testClientsOnly is on — ${d.reason}` : d.reason); continue; }
     // What is still shared (a script pulled back to the queue drops out of the email).
     let titles: string[] = [];
     let updated: string[] = [];
     if (n.action === "SCRIPTS_READY") {
       const releases = await prisma.contentScriptRelease.findMany({ where: { reminderId: n.id, action: "SHARE" }, orderBy: { createdAt: "asc" } });
       for (const r of releases) {
-        const s = await prisma.contentScript.findUnique({ where: { id: r.scriptId }, select: { sharedVersionId: true, releaseState: true } });
-        if (!s || s.sharedVersionId !== r.scriptVersionId || s.releaseState !== "released") continue;
+        const sc = await prisma.contentScript.findUnique({ where: { id: r.scriptId }, select: { sharedVersionId: true, releaseState: true } });
+        if (!sc || sc.sharedVersionId !== r.scriptVersionId || sc.releaseState !== "released") continue;
         const v = await prisma.contentScriptVersion.findUnique({ where: { id: r.scriptVersionId }, select: { title: true } });
         if (!v) continue;
         const earlier = await prisma.contentScriptRelease.count({ where: { scriptId: r.scriptId, action: "SHARE", notificationState: "SENT", scriptVersionId: { not: r.scriptVersionId }, createdAt: { lt: r.createdAt } } });
@@ -269,7 +349,8 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
       }
       titles = [...new Set(titles)]; updated = [...new Set(updated)].filter((t) => !titles.includes(t));
       if (titles.length === 0 && updated.length === 0) {
-        await prisma.programReminder.update({ where: { id: n.id }, data: { state: "CANCELLED", suppressionReason: "nothing_shared", lastError: "every script in this batch was pulled back before the email went out", leaseUntil: null, leaseBy: null } });
+        record("cancel", "every script in this batch was pulled back before the email went out");
+        if (!dry) await prisma.programReminder.update({ where: { id: n.id }, data: { state: "CANCELLED", suppressionReason: "nothing_shared", lastError: "every script in this batch was pulled back before the email went out", leaseUntil: null, leaseBy: null } });
         out.notes.push(`${n.id}: cancelled (nothing left to share)`);
         continue;
       }
@@ -279,13 +360,11 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
       const sv = svId ? await prisma.contentStrategyVersion.findUnique({ where: { id: svId }, select: { status: true, releasedAt: true } }) : null;
       if (!sv || sv.status !== "APPROVED" || !sv.releasedAt) { await suppress("not_released", "the strategy version is no longer approved and released"); continue; }
     }
-    // Recipient + link.
-    const seats = await prisma.clientMembership.findMany({ where: { enrollmentId: e.id, revokedAt: null }, select: { id: true, clientUserId: true, role: true }, orderBy: { invitedAt: "asc" } });
-    const seat = seats.find((s) => s.role === "OWNER") ?? seats[0] ?? null;
-    const seatUser = seat ? await prisma.clientUser.findUnique({ where: { id: seat.clientUserId }, select: { email: true, status: true } }) : null;
-    const email = seatUser && seatUser.status !== "DISABLED" ? seatUser.email : (client.email ?? "").trim().toLowerCase();
     if (!email) { await suppress("no_recipient", "no email address on the portal seat or the client record"); continue; }
-    if (isTest && !isStaffControlledEmail(email)) { await suppress("test_client_real_address", `TEST client's address ${maskToRef("email", email)} is not staff-controlled`); continue; }
+    // R03: the outbox floor's rule — one of Jordan's verified inboxes, not any
+    // @realtourpilot.com address.
+    if (isTest && !isVerifiedTestDestinationEmail(email)) { await suppress("test_client_real_address", `TEST client's address ${maskToRef("email", email)} is not one of Jordan's verified test inboxes`); continue; }
+    if (dry) { record("send", `${n.action === "SCRIPTS_READY" ? `${titles.length + updated.length} script(s)` : "the strategy"} — would email now`); continue; }
     const link = await resolvePortalLink(e, seat ? { membershipId: seat.id, clientUserId: seat.clientUserId } : null, opts.byAppUserId ?? null, now);
     if (!link) { await suppress("no_portal_link", "no portal link could be produced (no seat, no token)"); continue; }
     // STRATEGY_READY's next steps are composed NOW, at send time (6.2), like
@@ -307,11 +386,29 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
     const body = renderReminder(tpl, vars);
     await prisma.programReminder.update({ where: { id: n.id }, data: { toRef: email, ...(tpl.id !== n.templateKey ? { templateKey: tpl.id, templateVersion: tpl.version } : {}), evaluatedStateJson: JSON.stringify({ ...(readJson(n.evaluatedStateJson)), titles, updated, portalLinkKind: link.kind }) } });
     const key = n.action === "SCRIPTS_READY" ? scriptShareKey(n.id) : strategyReadyKey(n.id);
-    const r = await sendThroughOutbox({ channel: "email", toRef: email, body, dedupeKey: key, clientId: e.clientId, requestedBy: opts.requestedBy ?? "share-drain" }, { workerId: leaseBy });
+    let r: Awaited<ReturnType<typeof sendThroughOutbox>>;
+    try {
+      r = await sendThroughOutbox({ channel: "email", toRef: email, body, dedupeKey: key, clientId: e.clientId, requestedBy: opts.requestedBy ?? "share-drain" }, { workerId: leaseBy });
+    } catch (err) {
+      // One refused TEST row must not abort the drain (R03).
+      if (err instanceof TestClientSendRefusedError) { await suppress("test_client_real_address", err.message); continue; }
+      throw err;
+    }
     const rec = await recordSendResult(n.id, r, now);
-    const relState = rec.outcome === "sent" ? "SENT" : rec.outcome === "failed" ? "FAILED" : "QUEUED";
-    await prisma.contentScriptRelease.updateMany({ where: { reminderId: n.id }, data: { notificationState: relState, outboxMessageId: r.id || null, note: rec.outcome === "sent" ? `Emailed to ${maskToRef("email", email)} (${titles.length + updated.length} script(s) in one message).` : `Email ${rec.outcome}: ${rec.detail} — the approval and the portal release stand; the email retries on its own.` } });
-    if (rec.outcome === "sent") out.sent++; else if (rec.outcome === "failed") out.failed++; else out.unknown++;
+    const relState = rec.outcome === "sent" ? "SENT" : rec.outcome === "failed" ? "FAILED" : rec.outcome === "suppressed" ? "SUPPRESSED" : "QUEUED";
+    await prisma.contentScriptRelease.updateMany({
+      where: { reminderId: n.id },
+      data: {
+        notificationState: relState, outboxMessageId: r.id || null,
+        note: rec.outcome === "sent"
+          ? `Emailed to ${maskToRef("email", email)} (${titles.length + updated.length} script(s) in one message).`
+          : rec.outcome === "suppressed"
+            ? `Email not sent: ${rec.detail}. The approval and the portal release stand.`
+            : `Email ${rec.outcome}: ${rec.detail} — the approval and the portal release stand; the email retries on its own.`,
+      },
+    });
+    record(rec.outcome === "sent" ? "send" : rec.outcome === "suppressed" ? "suppress" : "hold", `${rec.outcome}: ${rec.detail}`);
+    if (rec.outcome === "sent") out.sent++; else if (rec.outcome === "failed") out.failed++; else if (rec.outcome === "suppressed") out.suppressed++; else out.unknown++;
     out.notes.push(`${n.id}: ${rec.outcome} (${rec.detail})`);
   }
   return out;

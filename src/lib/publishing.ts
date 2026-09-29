@@ -320,6 +320,15 @@ export async function createPublishingJob(input: CreatePublishingJobInput): Prom
   if (caption.enrollmentId !== acct.account.enrollmentId) {
     return { ok: false, reason: "cross_client", message: "That caption belongs to a different client than this Instagram account." };
   }
+  // Gate 4 (R03, Sep 28 2026): the program rollout. Publishing is in no pilot
+  // group, so it reaches TEST clients only — or every client once Jordan sets
+  // the rollout to everyone. Dormant today (no caller), so this changes nothing
+  // now; it is here so the day a caller lands, the scope already holds.
+  {
+    const { programReach } = await import("@/lib/programRollout");
+    const d = await programReach("publishing", caption.clientId);
+    if (!d.ok) return { ok: false, reason: "not_in_rollout_scope", message: `Publishing does not reach this client (${d.reason}). No job was created.` };
+  }
   const captionText = caption.body.trim();
   if (!captionText) return { ok: false, reason: "empty_caption", message: "The caption is empty." };
 
@@ -591,6 +600,30 @@ async function publishOne(jobId: string, claimedFrom: string): Promise<"succeede
     const draft = await prisma.contentCaptionDraft.findUnique({ where: { id: job.captionDraftId }, select: { body: true, status: true } });
     if (!draft || sha(draft.body.trim()) !== snap.captionHash || draft.status === "STALE" || draft.status === "ARCHIVED") {
       await stop(JOB_STATE.INVALIDATED, "The caption changed after this post was approved — approve the new wording to publish it.", { invalidatedAt: now(), invalidatedReason: "caption changed" });
+      return "invalidated";
+    }
+  }
+  // THE ROLLOUT, AGAIN AT RUN TIME (review fix, Sep 28 2026). Only
+  // createPublishingJob asked it, so a job created while the rollout reached
+  // this client (mode ALL, or a TEST client later renamed) still published
+  // after Jordan set the rollout back — the queued-work gap the outbox gate
+  // closes for emails. Asked here, after the account and approval checks and
+  // BEFORE any Meta call (a container read included): a refusal cancels the
+  // job with the reason; a rollout that cannot be read is a retry, never a
+  // cancel. The client is the account's (createPublishingJob already required
+  // the caption's to be the same one).
+  {
+    const { programReach } = await import("@/lib/programRollout");
+    const d = await programReach("publishing", acct.account.clientId);
+    if (!d.ok && d.code === "scope_unreadable") {
+      await retryLater(claimedFrom, `The program rollout could not be read, so nothing was posted — it tries again shortly (${d.reason}).`, 15);
+      return "awaiting";
+    }
+    if (!d.ok) {
+      // A container already on the row means an earlier attempt reached Meta;
+      // say so, so a person checks the account rather than trusting "not posted".
+      const earlier = job.providerContainerId ? ` An earlier attempt had already sent the video to Instagram (container ${job.providerContainerId}) — check the account in case it went live.` : "";
+      await stop(JOB_STATE.CANCELLED, `The program rollout no longer reaches this client, so the hub did not post it (${d.reason}).${earlier}`, { invalidatedAt: now(), invalidatedReason: "not_in_rollout_scope" });
       return "invalidated";
     }
   }

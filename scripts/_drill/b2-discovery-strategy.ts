@@ -20,6 +20,12 @@
 // Calendly's event listing is a fake list; every other outbound call is
 // blocked and counted. Nothing reaches a provider, a client or a teammate.
 //
+// R05 (Sep 28 2026): every queued run is unattended now, so the drill turns
+// ai_runs on for its queued work; the rollout is set to every client and the
+// processor's backlog is included, so the new holds (proven in
+// r04-r05-scope-readiness) do not change what this drill tests. §4 turns
+// strategy_generation on: the queue runs a STRATEGY_DRAFT only then.
+//
 // ISOLATION: PGlite on 127.0.0.1:5623 via the shared harness; production is
 // never opened. Clock-dependent steps take a pinned `now`.
 // ---------------------------------------------------------------------------
@@ -238,6 +244,21 @@ async function main() {
   // Another enrolled client, so the other-client scrub has a name to find.
   await client("Harriet Vance");
 
+  // R05 (Sep 28 2026): a QUEUED job now always runs unattended, whoever asked
+  // for it ("drill-staff" included), so this drill's queued work needs the AI
+  // master switch on, exactly as production would; the attended buttons
+  // (revise, draft now) are untouched by it. The processor's two new holds —
+  // the backlog from before its first switch-on, and internal AI only for
+  // TEST and pilot clients — are proven in r04-r05-scope-readiness; here the
+  // rollout reaches every client and the backlog is included, so this drill
+  // goes on testing what it tests (identity, A09, the house format).
+  await setSwitch("ai_runs", true);
+  {
+    const core = await import("@/lib/programRolloutCore");
+    await prisma.appSetting.create({ data: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value: core.serializeProgramRollout({ mode: "ALL", modeSince: new Date().toISOString(), pilot: null }), updatedBy: "drill" } });
+    await prisma.programAutomation.create({ data: { key: "transcript_jobs", enabled: false, configJson: JSON.stringify({ onlyQueuedAfter: "ALL" }) } });
+  }
+
   // =========================================================================
   c.head("1 · 6.2 transcript association — the doc attached to the booking's own event");
   // =========================================================================
@@ -427,6 +448,9 @@ async function main() {
   c.head("4 · A09 — the strategy draft waits for the call's analysis");
   // =========================================================================
   {
+    // R05: the queue runs a STRATEGY_DRAFT only while strategy_generation is
+    // on (transcriptJobs.KIND_OWNER) — the state in which this wait matters.
+    await setSwitch("strategy_generation", true);
     fixtures.analysis = ANALYSIS();
     fixtures.strategy = STRATEGY_OUT();
     const wes = await client("Wes Waits");
@@ -445,6 +469,7 @@ async function main() {
     const d2 = await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: draftJob.id } });
     c.ok("…then the STRATEGY_DRAFT runs once and a DRAFT version exists", d2.state === "SUCCEEDED" && (await runsOf("strategy_draft", wes.enrollmentId)) === 1 && (await prisma.contentStrategyVersion.count({ where: { enrollmentId: wes.enrollmentId, status: "DRAFT" } })) === 1, `${d2.state} ${d2.lastError}`);
     await setSwitch("transcript_jobs", false);
+    await setSwitch("strategy_generation", false);
   }
 
   // =========================================================================
@@ -585,9 +610,19 @@ async function main() {
     const off = await actions.releaseStrategy(clean);
     c.ok("released with script_share_email OFF: 0 notices, and the message says suppressed", off.ok && /suppressed/i.test(off.message) && (await prisma.programReminder.count({ where: { enrollmentId: nadia.enrollmentId, action: "STRATEGY_READY" } })) === 0, off.message);
     await setSwitch("script_share_email", true);
+    // MOVED TO R03's LAW (Sep 28 2026): a notice the rollout (with the
+    // reminders policy's testClientsOnly lock, on by default) would refuse is
+    // no longer queued and suppressed later — it is refused where it is made,
+    // and the release says why. The release itself still happens.
+    const locked = await actions.releaseStrategy(clean);
+    c.ok("R03: ON with the reminders lock on (the default): released, the email held by the lock, and NO notice queued", locked.ok && /testClientsOnly lock/.test(locked.message) && (await prisma.programReminder.count({ where: { enrollmentId: nadia.enrollmentId, action: "STRATEGY_READY" } })) === 0, locked.message);
+    const setLock = (on: boolean) => prisma.programAutomation.upsert({ where: { key: "reminders" }, create: { key: "reminders", enabled: false, configJson: JSON.stringify({ testClientsOnly: on }) }, update: { configJson: JSON.stringify({ testClientsOnly: on }) } });
+    await setLock(false);
     const on1 = await actions.releaseStrategy(clean);
     const on2 = await actions.releaseStrategy(clean);
-    c.ok("with it ON: exactly ONE STRATEGY_READY notice for the version, however often it is pressed", on1.ok && on2.ok && (await prisma.programReminder.count({ where: { enrollmentId: nadia.enrollmentId, action: "STRATEGY_READY" } })) === 1, `${on1.message} | ${on2.message}`);
+    c.ok("with it ON and the lock lifted (the rollout reaches everyone here): exactly ONE STRATEGY_READY notice for the version, however often it is pressed", on1.ok && on2.ok && (await prisma.programReminder.count({ where: { enrollmentId: nadia.enrollmentId, action: "STRATEGY_READY" } })) === 1, `${on1.message} | ${on2.message}`);
+    // The lock back on: the drain below re-checks it at sending.
+    await setLock(true);
     const ps = await portalStrategy({ id: nadia.enrollmentId, clientId: nadia.clientId });
     c.ok("the portal shows the released version without the framework, captions or the team's notes", !!ps && !ps.sections.some((s) => s.id === "gaps" || /framework|caption/i.test(s.heading)) && ps.sections.some((s) => s.id === "content-goals"), ps?.sections.map((s) => s.heading).join(" | "));
 

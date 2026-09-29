@@ -47,6 +47,15 @@
 //      health fact (20); nothing on-action is "healthy" without a run (23); a
 //      row that is its whole run fails with it (13).
 //  §2 and §4 each had one check MOVED to that law (never loosened).
+//  R03 (Sep 28 2026, builder B): WHO a client-reaching switch reaches is now
+//      the rollout scope (Settings → Who the program may reach), read through
+//      programRollout.programAudience — never "every client" unless the
+//      rollout says everyone — and the three hub-write switches read the ONE
+//      program pilot. Every check that asserted "the switch alone opens the
+//      gate for every real client" (§3, §5, §7, §11/18) or read a per-switch
+//      pilot (§4, §11/19-20) is MOVED to that law: with the default rollout
+//      (TEST only) the gate stays closed, and naming Dana in the pilot opens it
+//      with an opener that names her. Nothing was loosened.
 //
 // ISOLATION: PGlite on 127.0.0.1:5870 (DRILL_PORT overrides) through the shared
 // harness; production is never opened. Every non-loopback call is fenced; the
@@ -119,6 +128,18 @@ async function main() {
     db.programAutomation.upsert({ where: { key }, create: { key, enabled: false, ...data }, update: data });
   const connect = (provider: string, secret = `drill-${provider}-credential`) => saveSecret(provider, secret);
   const disconnect = (provider: string) => db.connection.deleteMany({ where: { provider } });
+  // R03: the rollout scope (one AppSetting row). TEST_ONLY is the default.
+  const core = await import("@/lib/programRolloutCore");
+  const setRollout = (r: import("@/lib/programRolloutCore").ProgramRollout) =>
+    db.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value: core.serializeProgramRollout(r), updatedBy: "drill" }, update: { value: core.serializeProgramRollout(r) } });
+  const pilotOf = (ids: string[], o: { ops?: import("@/lib/programRolloutCore").ProgramReachOp[]; expiresAt?: string | null } = {}): import("@/lib/programRolloutCore").ProgramRollout => ({
+    mode: "PILOT", modeSince: minsAgo(120).toISOString(),
+    pilot: { clientIds: ids, operations: o.ops ?? core.opsForGroups(core.PROGRAM_PILOT_GROUPS.map((g) => g.key)), approvedBy: "jordan@drill", approvedAt: minsAgo(60).toISOString(), expiresAt: o.expiresAt ?? null, note: null, joinedAt: {} },
+  });
+  const testOnly = () => setRollout({ ...core.CLOSED_ROLLOUT });
+  /** Is this switch an opener / armed — its opener now names who ("Title — pilot: Dana Realclient"). */
+  const opens = (rep: Awaited<ReturnType<typeof report>>, key: keyof typeof AUTOMATION_EFFECTS) => rep.rolloutClosed.openers.some((o) => o.startsWith(`${AUTOMATION_EFFECTS[key].title} — `));
+  const armedFor = (rep: Awaited<ReturnType<typeof report>>, key: keyof typeof AUTOMATION_EFFECTS) => rep.rolloutClosed.armed.some((o) => o.startsWith(`${AUTOMATION_EFFECTS[key].title} — `));
 
   // Clients for the scope checks.
   const fixture = await db.client.create({ data: { name: "Drill Fixture TEST", email: JORDAN_TEST_EMAIL } });
@@ -180,7 +201,7 @@ async function main() {
     await connect("ai");
     await setSwitch("script_auto_share", { enabled: true });
     r = rowOf(await report(), "script_auto_share");
-    c.ok("script_auto_share ON behind drafting + AI: effective, TEST clients only, not a real-client opener", r.effective.ok && r.realClients === false && /TEST clients only/.test(r.scope ?? "") );
+    c.ok("script_auto_share ON behind drafting + AI: effective, TEST clients only, not a real-client opener", r.effective.ok && r.realClients === false && /^TEST clients \(.*\) only/.test(r.scope ?? ""), r.scope ?? "");
     await setSwitch("script_drafting", { enabled: false });
     r = rowOf(await report(), "script_auto_share");
     // MOVED TO THE REVIEW'S LAW (Sep 28): this asserted "needs script_drafting".
@@ -205,8 +226,15 @@ async function main() {
     rep = await report();
     r = rowOf(rep, "review_auto_approve");
     c.ok("revision_policy ON → auto-approve effective", r.effective.ok);
-    c.ok("revision_policy itself reaches every client once on → the gate is OPEN and names it", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.revision_policy.title), rep.rolloutClosed.openers.join(","));
-    c.ok("…and auto-approve (TEST only) is not among the openers", !rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.review_auto_approve.title));
+    // MOVED TO R03's LAW (Sep 28): this asserted "revision_policy reaches
+    // every client once on → OPEN". The switch alone reaches the rollout scope,
+    // which is TEST clients only by default; naming Dana opens it for her.
+    c.ok("revision_policy ON with the rollout at its default (TEST only) → reaches TEST clients only; the gate stays CLOSED", rep.rolloutClosed.ok && !rowOf(rep, "revision_policy").realClients && /^TEST clients \(.*\) only — the rollout is set to TEST only/.test(rowOf(rep, "revision_policy").scope ?? ""), rowOf(rep, "revision_policy").scope ?? "");
+    await setRollout(pilotOf([real.id]));
+    rep = await report();
+    c.ok("…Dana named in the pilot → the gate is OPEN, and the opener names her: \"Review deadlines and revision rounds — pilot: Dana Realclient\"", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(`${AUTOMATION_EFFECTS.revision_policy.title} — pilot: Dana Realclient`), rep.rolloutClosed.openers.join(" | "));
+    c.ok("…and auto-approve (its own TEST-only lock) is not among the openers", !opens(rep, "review_auto_approve"));
+    await testOnly();
     await setSwitch("review_auto_approve", { enabled: false });
     await setSwitch("revision_policy", { enabled: false });
     c.ok("both off → closed again", (await report()).rolloutClosed.ok);
@@ -234,13 +262,24 @@ async function main() {
     c.ok("a real TEST fixture + Aryeo connected → effective", r.configured.ok && r.connected.ok === true && r.effective.ok, r.effective.blockers.join(" | "));
     c.ok("the scope names the fixture, and says there is no pilot", /Drill Fixture TEST/.test(r.scope ?? "") && /no pilot/.test(r.scope ?? ""), r.scope ?? "");
     c.ok("rolloutClosed stays true (a fixture is not a real client)", rep.rolloutClosed.ok && !r.realClients);
+    // MOVED TO R03's LAW (Sep 28, Jordan's one-pilot rule): a real client is
+    // written for through the PROGRAM pilot with bookings ticked; a pilot left
+    // in the switch's own config is no longer read by anything.
     const approvedAt = minsAgo(60).toISOString();
     await setSwitch("session_booking", { configJson: JSON.stringify({ authorizedFixtureClientIds: [fixture.id], pilot: { clientIds: [real.id], operations: ["orders.create"], approvedBy: "jordan@drill", approvedAt, expiresAt: null, note: null } }) });
     rep = await report();
     r = rowOf(rep, "session_booking");
-    c.ok("an approved pilot of a real client → the gate is OPEN and names Self-booking", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.session_booking.title) && /Dana Realclient/.test(r.scope ?? ""));
-    await setSwitch("session_booking", { configJson: JSON.stringify({ authorizedFixtureClientIds: [fixture.id], pilot: { clientIds: [real.id], operations: ["orders.create"], approvedBy: "jordan@drill", approvedAt, expiresAt: minsAgo(5).toISOString(), note: null } }) });
+    c.ok("a per-switch pilot on file (the old list) → NOT read: the gate stays closed and the row says so", rep.rolloutClosed.ok && !r.realClients && /older per-switch pilot on file \(Dana Realclient\) is no longer read/.test(r.scope ?? ""), r.scope ?? "");
+    await setSwitch("session_booking", { configJson: JSON.stringify({ authorizedFixtureClientIds: [fixture.id] }) });
+    await setRollout(pilotOf([real.id]));
+    rep = await report();
+    r = rowOf(rep, "session_booking");
+    c.ok("Dana in the PROGRAM pilot with bookings → the gate is OPEN and names Self-booking — pilot: Dana Realclient", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(`${AUTOMATION_EFFECTS.session_booking.title} — pilot: Dana Realclient`) && /program pilot: active · Dana Realclient/.test(r.scope ?? ""), r.scope ?? "");
+    await setRollout(pilotOf([real.id], { ops: core.opsForGroups(["emails"]) }));
+    c.ok("the program pilot without bookings ticked → closed for the hub writes", !opens(await report(), "session_booking"));
+    await setRollout(pilotOf([real.id], { expiresAt: minsAgo(5).toISOString() }));
     c.ok("the same pilot, expired → closed again", (await report()).rolloutClosed.ok);
+    await testOnly();
     await setSwitch("session_booking", { enabled: false, configJson: JSON.stringify({ authorizedFixtureClientIds: [fixture.id] }) });
     r = rowOf(await report(), "session_booking");
     c.ok("switched off with a good list → configured=true, enabled=false, healthy=null", r.configured.ok && !r.enabled.ok && r.healthy.ok === null);
@@ -262,7 +301,13 @@ async function main() {
     c.ok("a valid policy → configured, effective, TEST clients only; the gate stays closed", r.configured.ok && r.effective.ok && !r.realClients && rep.rolloutClosed.ok, r.effective.blockers.join(" | "));
     await setSwitch("reminders", { configJson: JSON.stringify({ testClientsOnly: false }) });
     rep = await report();
-    c.ok("testClientsOnly cleared → every client, and the gate is OPEN naming Client reminders", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.reminders.title));
+    // MOVED TO R03's LAW (Sep 28): lifting the lock used to mean "every
+    // client". It now lets the ROLLOUT SCOPE in — TEST only by default.
+    c.ok("testClientsOnly cleared with the rollout TEST only → still TEST clients only; the gate stays closed", rep.rolloutClosed.ok && !rowOf(rep, "reminders").realClients, rowOf(rep, "reminders").scope ?? "");
+    await setRollout(pilotOf([real.id]));
+    rep = await report();
+    c.ok("…Dana in the pilot → the gate is OPEN: \"Client reminders — pilot: Dana Realclient\"", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(`${AUTOMATION_EFFECTS.reminders.title} — pilot: Dana Realclient`), rep.rolloutClosed.openers.join(" | "));
+    await testOnly();
     await setSwitch("reminders", { enabled: false, configJson: JSON.stringify({}) });
   }
 
@@ -307,23 +352,28 @@ async function main() {
   {
     await disconnect("gmail");
     await setSwitch("portal_invites", { enabled: true });
+    // R03: "for real clients" is now the rollout naming one (Dana).
     let rep = await report();
-    c.ok("ON with Gmail missing → not effective, the gate stays closed, but it is named as ARMED", rep.rolloutClosed.ok && rep.rolloutClosed.armed.includes(AUTOMATION_EFFECTS.portal_invites.title));
+    c.ok("R03: ON with the rollout TEST only → reaches no real client: neither open nor armed", rep.rolloutClosed.ok && !armedFor(rep, "portal_invites"));
+    await setRollout(pilotOf([real.id]));
+    rep = await report();
+    c.ok("ON with Gmail missing → not effective, the gate stays closed, but it is named as ARMED", rep.rolloutClosed.ok && armedFor(rep, "portal_invites"), rep.rolloutClosed.armed.join(" | "));
     await connect("gmail", JSON.stringify({ "info@realtourpilot.com": "drill-refresh-token" }));
     rep = await report();
-    c.ok("Gmail connected → the gate is OPEN and names Portal invitations", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.portal_invites.title));
+    c.ok("Gmail connected → the gate is OPEN and names Portal invitations — pilot: Dana Realclient", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(`${AUTOMATION_EFFECTS.portal_invites.title} — pilot: Dana Realclient`), rep.rolloutClosed.openers.join(" | "));
     const before = fence.faked.length;
     tokenScope = "https://www.googleapis.com/auth/gmail.readonly";
     rep = await report(true);
     const r = rowOf(rep, "portal_invites");
     c.ok("live check, mailbox lacks gmail.send → canSend=false and a blocker on the email switch", rep.gmailSend.checked && rep.gmailSend.canSend === false && !r.effective.ok && r.effective.blockers.some((b) => /cannot send/.test(b)), `${rep.gmailSend.detail} | ${r.effective.blockers.join(";")}`);
-    c.ok("…which closes the gate again and names it as armed (fixing Gmail would open it)", rep.rolloutClosed.ok && rep.rolloutClosed.armed.includes(AUTOMATION_EFFECTS.portal_invites.title));
+    c.ok("…which closes the gate again and names it as armed (fixing Gmail would open it)", rep.rolloutClosed.ok && armedFor(rep, "portal_invites"));
     c.ok("only the live check reached Google: token + tokeninfo, nothing else blocked", fence.faked.length - before >= 1 && fence.faked.slice(before).every((u) => u.startsWith("https://oauth2.googleapis.com/")) && fence.blocked.length === 0, fence.faked.slice(before).join(" "));
     tokenScope = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
     rep = await report(true);
     c.ok("live check with gmail.send → can send, portal_invites effective, gate open", rep.gmailSend.canSend === true && rowOf(rep, "portal_invites").effective.ok && !rep.rolloutClosed.ok);
     await setSwitch("portal_invites", { enabled: false });
     c.ok("off → closed", (await report()).rolloutClosed.ok);
+    await testOnly();
   }
 
   // =========================================================================
@@ -407,18 +457,20 @@ async function main() {
     await setSwitch("script_drafting", { enabled: false });
     await setSwitch("ai_runs", { enabled: false });
     await setSwitch("script_auto_share", { enabled: true, configJson: JSON.stringify({ testClientsOnly: false }) });
+    // R03: "for real clients" = its lock lifted AND the rollout naming Dana.
+    await setRollout(pilotOf([real.id]));
     let rep = await report();
     let r = rowOf(rep, "script_auto_share");
-    c.ok("18 · ON for real clients with drafting and AI OFF → effective, and the gate is OPEN naming it (it was 'closed', armed)", r.effective.ok && r.realClients && !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.script_auto_share.title) && !rep.rolloutClosed.armed.includes(AUTOMATION_EFFECTS.script_auto_share.title), rep.rolloutClosed.openers.join(", "));
+    c.ok("18 · ON for real clients with drafting and AI OFF → effective, and the gate is OPEN naming it (it was 'closed', armed)", r.effective.ok && r.realClients && !rep.rolloutClosed.ok && opens(rep, "script_auto_share") && !armedFor(rep, "script_auto_share"), rep.rolloutClosed.openers.join(", "));
     await setSwitch("script_auto_share", { enabled: false, configJson: null });
 
-    // Finding 19 — one drifted fixture entry beside an ACTIVE pilot.
+    // Finding 19 — one drifted fixture entry beside an ACTIVE pilot (R03:
+    // the PROGRAM pilot, with bookings — set just above).
     await connect("aryeo");
-    const approvedAt = minsAgo(60).toISOString();
-    await setSwitch("session_booking", { enabled: true, configJson: JSON.stringify({ authorizedFixtureClientIds: ["c_deleted_fixture"], pilot: { clientIds: [real.id], operations: ["orders.create"], approvedBy: "jordan@drill", approvedAt, expiresAt: null, note: null } }) });
+    await setSwitch("session_booking", { enabled: true, configJson: JSON.stringify({ authorizedFixtureClientIds: ["c_deleted_fixture"] }) });
     rep = await report();
     r = rowOf(rep, "session_booking");
-    c.ok("19 · a deleted fixture beside an approved pilot → still EFFECTIVE (the pilot writes per client), and an opener", r.effective.ok && !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.session_booking.title), r.effective.blockers.join(" | "));
+    c.ok("19 · a deleted fixture beside an approved pilot → still EFFECTIVE (the pilot writes per client), and an opener", r.effective.ok && !rep.rolloutClosed.ok && opens(rep, "session_booking"), r.effective.blockers.join(" | "));
     c.ok("…the bad entry is named as configuration, never as a blocker", !r.configured.ok && /c_deleted_fixture is on the fixture list but no such client exists \(this entry only/.test(r.configured.detail) && !r.effective.blockers.some((b) => /c_deleted_fixture/.test(b)), r.configured.detail);
     c.ok("…and with no pilot and only bad entries, nobody is in scope → blocked", R.fixtureScope({ authorizedFixtureClientIds: ["c_deleted_fixture"], pilot: null }, new Map(), NOW).blocking.some((b) => /no usable TEST fixture/.test(b)));
 
@@ -429,7 +481,7 @@ async function main() {
     r = rowOf(rep, "session_booking");
     const aryeo = rep.providers.find((p) => p.id === "aryeo")!;
     c.ok("20 · Aryeo ERROR with its key kept → connected (the key is still used), status 'error' with the error", aryeo.connected && aryeo.status === "error" && /503/.test(aryeo.lastError ?? ""));
-    c.ok("…session_booking stays effective and an OPENER — no 'needs Aryeo connected' (the gate no longer reads closed while it writes)", r.effective.ok && !r.effective.blockers.some((b) => /Aryeo connected/.test(b)) && rep.rolloutClosed.openers.includes(AUTOMATION_EFFECTS.session_booking.title));
+    c.ok("…session_booking stays effective and an OPENER — no 'needs Aryeo connected' (the gate no longer reads closed while it writes)", r.effective.ok && !r.effective.blockers.some((b) => /Aryeo connected/.test(b)) && opens(rep, "session_booking"));
     c.ok("…and the failure is a HEALTH fact: healthy=false, naming it", r.healthy.ok === false && /Aryeo is connected but refused the hub last time: drill: Aryeo 503/.test(r.healthy.detail), r.healthy.detail);
     await db.connection.update({ where: { provider: "aryeo" }, data: { status: "DISCONNECTED", secretEncrypted: null } });
     c.ok("…a DISCONNECTED row (no key) is still not connected", !(await report()).providers.find((p) => p.id === "aryeo")!.connected);
@@ -437,6 +489,7 @@ async function main() {
     await db.connection.update({ where: { provider: "transcription_openai" }, data: { status: "ERROR", lastError: "drill: refused" } });
     c.ok("…speech-to-text keeps the strict test (its reader refuses unless CONNECTED)", !(await report()).providers.find((p) => p.id === "stt")!.connected);
     await setSwitch("session_booking", { enabled: false });
+    await testOnly();
 
     // Finding 23 — healthy needs evidence.
     await connect("ai");

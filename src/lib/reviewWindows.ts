@@ -6,8 +6,10 @@ import { getAutomation, recordAutomationRun } from "@/lib/programAutomation";
 import { DELIVERED_STAMP, cutSlots } from "@/lib/reviewCuts";
 import { cutReleasedAt, videoCutKey } from "@/lib/contentVideos";
 import { cutChainOf } from "@/lib/cutEntitlement";
-import { isTestClientName } from "@/lib/testClients";
+import { isSyntheticClientRow } from "@/lib/testClients";
 import { can } from "@/lib/portalAccess";
+import { programReach, rolloutSweepClientIds } from "@/lib/programRollout";
+import { effectiveSince } from "@/lib/programRolloutCore";
 import type { PortalViewer } from "@/lib/portal";
 
 // ---------------------------------------------------------------------------
@@ -122,9 +124,45 @@ export async function revisionPolicy(): Promise<RevisionPolicy> {
   };
 }
 
+/**
+ * THE POLICY FOR ONE CLIENT (R03, Sep 28 2026). revision_policy being ON used
+ * to put a deadline, rounds and the extra-round fee in front of every client;
+ * now it reaches only the clients the program rollout admits, and only from
+ * the moment they entered it:
+ *   on        = the switch AND rolloutDecision("revision_policy").ok
+ *   enabledAt = the LATER of the switch's enabledAt and the client's `since`
+ *               (effectiveSince) — so a client added to the pilot today is
+ *               never held to a deadline on a video released last week, which
+ *               they were never shown one for;
+ *   autoApprove.on additionally needs rolloutDecision("review_auto_approve",
+ *               with its own testClientsOnly lock).ok, with its own later-of.
+ * A client outside the scope gets `on: false` — exactly today's page: no
+ * deadline, no rounds line, no fee, no late refusal. enforced() is unchanged
+ * and pure; it simply reads this policy. The global revisionPolicy() stays for
+ * what is not client-facing (writeWindow and rehome read reviewBusinessDays).
+ */
+export async function revisionPolicyFor(clientId: string, now: Date = new Date()): Promise<RevisionPolicy> {
+  const base = await revisionPolicy();
+  if (!base.on) return base;
+  const [pol, auto] = await Promise.all([
+    programReach("revision_policy", clientId, { now }),
+    base.autoApprove.on ? programReach("review_auto_approve", clientId, { now, featureTestOnly: base.autoApprove.testClientsOnly }) : Promise.resolve(null),
+  ]);
+  const enabledAt = effectiveSince(base.enabledAt, pol);
+  const on = pol.ok && !!enabledAt;
+  const autoFrom = on && auto ? effectiveSince(base.autoApprove.enabledAt, auto) : null;
+  return {
+    ...base,
+    on,
+    enabledAt: on ? enabledAt : null,
+    autoApprove: { on: on && !!auto?.ok && !!autoFrom, enabledAt: autoFrom, testClientsOnly: base.autoApprove.testClientsOnly },
+  };
+}
+
 /** Is this window held to its deadline? Only windows opened while the policy
  *  was on — turning the switch on must never close reviews a client was never
- *  told had a deadline — and never a LAZY one. */
+ *  told had a deadline — and never a LAZY one. (R03: pass the CLIENT's policy,
+ *  revisionPolicyFor, wherever a client is shown or held to it.) */
 export function enforced(w: Pick<ContentReviewWindow, "source" | "openedAt">, p: RevisionPolicy): boolean {
   return p.on && w.source !== "LAZY" && !!p.enabledAt && w.openedAt.getTime() >= p.enabledAt.getTime();
 }
@@ -381,7 +419,8 @@ export type ReviewPanel = {
  * null while revision_policy is off, so the page is exactly what it was.
  */
 export async function reviewPanelFor(viewer: PortalViewer, submissionId: string, now = new Date()): Promise<ReviewPanel | null> {
-  const policy = await revisionPolicy();
+  // R03: THIS client's policy — a client outside the rollout sees no panel.
+  const policy = await revisionPolicyFor(viewer.enrollment.clientId, now);
   if (!policy.on) return null;
   const w = await prisma.contentReviewWindow.findUnique({ where: { submissionId } });
   if (!w || w.enrollmentId !== viewer.enrollment.id || w.clientId !== viewer.enrollment.clientId) return null;
@@ -418,11 +457,21 @@ export async function holdsFor(w: ContentReviewWindow, p: RevisionPolicy): Promi
   const holds: Hold[] = [];
   if (w.state !== "OPEN") holds.push({ code: "STATE", why: `the window is ${w.state}` });
   if (w.source === "LAZY") holds.push({ code: "LAZY", why: "the version was released before review windows were recorded" });
-  if (!p.enabledAt || w.openedAt < p.enabledAt) holds.push({ code: "PRE_POLICY", why: "the version was released before review deadlines were switched on" });
-  if (!p.autoApprove.enabledAt || w.openedAt < p.autoApprove.enabledAt) holds.push({ code: "PRE_AUTO", why: "the version was released before automatic approval was switched on" });
-  const [enrollment, client, openNotes, chain] = await Promise.all([
+  // R03 (Sep 28 2026): the rollout decides per client, re-read here whatever
+  // policy the caller passed. NOT_TEST became NOT_IN_ROLLOUT: the lock is one
+  // input to the decision and the scope the other. The two clocks are the
+  // later of the switch and the client's join (effectiveSince), so a window
+  // released before this client entered the pilot is never approved for them.
+  const [polReach, autoReach] = await Promise.all([
+    programReach("revision_policy", w.clientId),
+    programReach("review_auto_approve", w.clientId, { featureTestOnly: p.autoApprove.testClientsOnly }),
+  ]);
+  const policyFrom = effectiveSince(p.enabledAt, polReach);
+  const autoFrom = effectiveSince(p.autoApprove.enabledAt, autoReach);
+  if (!policyFrom || w.openedAt < policyFrom) holds.push({ code: "PRE_POLICY", why: polReach.ok ? "the version was released before review deadlines were switched on for this client" : `review deadlines do not reach this client (${polReach.reason})` });
+  if (!autoFrom || w.openedAt < autoFrom) holds.push({ code: "PRE_AUTO", why: "the version was released before automatic approval was switched on for this client" });
+  const [enrollment, openNotes, chain] = await Promise.all([
     prisma.contentEnrollment.findUnique({ where: { id: w.enrollmentId }, select: { status: true, accessRevokedAt: true } }),
-    prisma.client.findUnique({ where: { id: w.clientId }, select: { name: true } }),
     prisma.portalComment.count({ where: { submissionId: w.submissionId, enrollmentId: w.enrollmentId, status: "OPEN", parentId: null, resolvedAt: null } }),
     cutChainOf(w.submissionId),
   ]);
@@ -438,7 +487,7 @@ export async function holdsFor(w: ContentReviewWindow, p: RevisionPolicy): Promi
     if (!sub.assetUrl) holds.push({ code: "NO_FILE", why: "the cut has no playable file" });
   }
   if (!w.clientNotifiedAt && !w.firstViewedAt) holds.push({ code: "NEVER_SEEN", why: "the client was never sent a reminder and never opened it" });
-  if (p.autoApprove.testClientsOnly && !isTestClientName(client?.name)) holds.push({ code: "NOT_TEST", why: "automatic approval is limited to TEST clients (testClientsOnly)" });
+  if (!autoReach.ok) holds.push({ code: "NOT_IN_ROLLOUT", why: autoReach.code === "feature_test_only" ? "automatic approval is limited to TEST clients (testClientsOnly)" : `automatic approval does not reach this client (${autoReach.reason})` });
   return holds;
 }
 
@@ -461,13 +510,18 @@ export async function sweepReviewWindows(opts: { now?: Date; max?: number } = {}
   // a deadline its client was never shown.
   if (!p.enabledAt) return { skipped: "revision_policy has no enabledAt — nothing is held to a deadline" };
   const staleLease = { OR: [{ expiryClaimedAt: null }, { expiryClaimedAt: { lt: new Date(now.getTime() - LEASE_MS) } }] };
+  // R03 (Sep 28 2026): only clients the rollout admits for review deadlines —
+  // TEST clients plus rolloutClientFilter's real ids, or everyone in ALL. A
+  // client outside it keeps today's page, and its windows are never expired.
+  const inScope = await rolloutSweepClientIds("revision_policy", { now });
   const due = await prisma.contentReviewWindow.findMany({
-    where: { state: "OPEN", deadlineAt: { lte: now }, expiryOutcome: null, source: { not: "LAZY" }, openedAt: { gte: p.enabledAt }, ...staleLease },
+    where: { state: "OPEN", deadlineAt: { lte: now }, expiryOutcome: null, source: { not: "LAZY" }, openedAt: { gte: p.enabledAt }, ...(inScope ? { clientId: { in: inScope } } : {}), ...staleLease },
     orderBy: { deadlineAt: "asc" },
     take: opts.max ?? 25,
   });
   const sent = await sentOutsidePortal(due.map((w) => w.submissionId));
-  const out = { due: due.length, autoApproved: 0, toOffice: 0, decidedMeanwhile: 0, sentOutside: 0, errors: [] as string[] };
+  const out = { due: due.length, autoApproved: 0, toOffice: 0, decidedMeanwhile: 0, sentOutside: 0, notHeldBeforeScope: 0, notInScope: 0, errors: [] as string[] };
+  const policies = new Map<string, RevisionPolicy>();
   for (const w of due) {
     // Kyle sent it (Mark as sent): the client has the file, and a link-token
     // client could never have closed this window by approving. Settled once,
@@ -477,12 +531,30 @@ export async function sweepReviewWindows(opts: { now?: Date; max?: number } = {}
       out.sentOutside += r.count;
       continue;
     }
+    // THIS CLIENT's policy (R03): the switch AND the rollout, with the later of
+    // the switch's enabledAt and the client's join.
+    if (!policies.has(w.clientId)) policies.set(w.clientId, await revisionPolicyFor(w.clientId, now));
+    const pc = policies.get(w.clientId)!;
+    if (!pc.on) {
+      // Taken out of the rollout since the read above (or unreadable): left
+      // exactly as it is — no task, no outcome — like any excluded client's.
+      out.notInScope++;
+      continue;
+    }
+    if (!enforced(w, pc)) {
+      // Opened before this client joined the rollout: they were never shown a
+      // deadline on it, so it is settled ONCE with no task, and it cannot clog
+      // the `take` for the windows that are held.
+      const r = await prisma.contentReviewWindow.updateMany({ where: { id: w.id, state: "OPEN", expiryOutcome: null }, data: { expiryOutcome: "NOT_HELD_BEFORE_SCOPE" } });
+      out.notHeldBeforeScope += r.count;
+      continue;
+    }
     const lease = await prisma.contentReviewWindow.updateMany({ where: { id: w.id, state: "OPEN", expiryOutcome: null, ...staleLease }, data: { expiryClaimedAt: now } });
     if (lease.count === 0) continue;
     try {
       // Automatic approval off: every expiry is the office's, whatever else is true.
-      const holds = p.autoApprove.on ? await holdsFor(w, p) : [{ code: "AUTO_OFF", why: "automatic approval is switched off" }];
-      const outcome = holds.length ? await handToOffice(w, holds, now) : await autoApprove(w, now, p);
+      const holds = p.autoApprove.on ? await holdsFor(w, pc) : [{ code: "AUTO_OFF", why: "automatic approval is switched off" }];
+      const outcome = holds.length ? await handToOffice(w, holds, now) : await autoApprove(w, now, pc);
       if (outcome === "approved") out.autoApproved++;
       else if (outcome === "office") out.toOffice++;
       else out.decidedMeanwhile++;
@@ -508,7 +580,7 @@ async function handToOffice(w: ContentReviewWindow, holds: Hold[], now: Date): P
   let taskId: string | null = null;
   // TEST records make no owner work (the reminder escalation's rule): the
   // window's own expiryOutcome is the evidence, nobody's to-do list grows.
-  if (!isTestClientName(client?.name)) {
+  if (!isSyntheticClientRow({ id: w.clientId, name: client?.name ?? null })) {
     const label = sub ? await videoLabelOf(sub) : "a video";
     const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
     const key = `review-expired:${w.id}`;

@@ -10,7 +10,7 @@ import {
   snoozeMonthReminders, unsnoozeMonthReminders, type ReminderLedgerRow,
 } from "@/lib/programReminders";
 import { REMINDER_TEMPLATES } from "@/lib/reminderTemplates";
-import { isTestClientName } from "@/lib/testClients";
+import type { ReachRefusalCode, ReachTier } from "@/lib/programRolloutCore";
 
 // ---------------------------------------------------------------------------
 // Settings → Program reminders (spec §24). Reads: owner or admin. Writes that
@@ -35,6 +35,14 @@ async function admin(): Promise<{ email: string; appUserId: string | null }> {
 export type DryRunRow = {
   enrollmentId: string; monthId: string; clientName: string; isTest: boolean; monthKey: string; action: string | null; decision: string; reason: string;
   suppressionReason: string | null; attempt: number; to: string | null; nextEligibleAt: string | null; deadlineAt: string | null; escalation: string | null; templateKey: string | null;
+  /**
+   * Which of the four lanes (R03, Sep 28 2026 — the address lane used to be
+   * dropped here). The per-row buttons act only on PLANNING and REVIEW.
+   */
+  lane: "PLANNING" | "REVIEW" | "ADDRESS" | "APPROVE_SCRIPTS";
+  /** The rollout's verdict for this client (op "reminders", with the policy's own lock): the tier, or the refusal. */
+  tier: ReachTier | null;
+  code: ReachRefusalCode | null;
 };
 
 export type RemindersPanelState = {
@@ -98,27 +106,53 @@ export async function saveReminderPolicy(json: string): Promise<R> {
   } catch (e) { return fail(e); }
 }
 
-/** "What would go out now?" — reads everything, writes nothing. */
-export async function runReminderDryRun(): Promise<{ ok: boolean; message: string; rows: DryRunRow[]; enabled: boolean; policySource: string }> {
+/**
+ * "What would go out now?" — reads everything, writes nothing. The SAME
+ * evaluator the hourly run and dispatch run (evaluateReminders), so its
+ * "send" rows are what would go out (R03, Sep 28 2026):
+ *   · all four lanes — the address lane was dropped here, so an exact-address
+ *     reminder could go out that the dry run never showed;
+ *   · the recipient on every row, masked, computed BEFORE the scope check, so
+ *     a client the rollout does not reach still shows who it would have gone
+ *     to (the script-approval lane used to show nobody, and every real client
+ *     nobody);
+ *   · the rollout's verdict per row, and the one line saying whom the
+ *     reminders reach (programRollout.programAudience — readiness's line).
+ */
+export async function runReminderDryRun(): Promise<{ ok: boolean; message: string; rows: DryRunRow[]; enabled: boolean; policySource: string; scopeLine: string }> {
   try {
     await admin();
-    const r = await evaluateReminders({ dryRun: true, requestedBy: "dry-run" });
+    const { programAudience } = await import("@/lib/programRollout");
+    const [r, scope] = await Promise.all([evaluateReminders({ dryRun: true, requestedBy: "dry-run" }), programAudience("reminders")]);
+    const isTest = (a: { tier: ReachTier | null }) => a.tier === "TEST";
     const rows: DryRunRow[] = r.candidates.map((c) => ({
       enrollmentId: c.enrollmentId, monthId: c.monthId, clientName: c.clientName, isTest: c.isTest, monthKey: c.monthKey, action: c.action, decision: c.decision, reason: c.reason,
       suppressionReason: c.suppressionReason, attempt: c.attempt, to: c.to, nextEligibleAt: c.nextEligibleAt?.toISOString() ?? null, deadlineAt: c.deadlineAt?.toISOString() ?? null,
       escalation: c.escalation?.due ? c.escalation.reason : null, templateKey: c.templateKey,
+      lane: c.lane === "REVIEW" ? "REVIEW" : "PLANNING", tier: c.audience.tier, code: c.audience.code,
     }));
+    // §8's exact-address lane (CP-05): one row per session that has only a
+    // general area. Read-only here, like the script lane below.
+    for (const a of r.addressLane) {
+      rows.push({
+        enrollmentId: a.enrollmentId, monthId: a.monthId, clientName: a.clientName, isTest: isTest(a.audience), monthKey: a.monthKey, action: "CONFIRM_ADDRESS", decision: a.decision,
+        reason: `${a.reason}${a.addressLine ? ` (on file: ${a.addressLine})` : ""}`, suppressionReason: a.suppressionReason, attempt: 1, to: a.to, nextEligibleAt: a.nextEligibleAt?.toISOString() ?? a.remindAt.toISOString(),
+        deadlineAt: a.shootAt.toISOString(), escalation: a.urgent ? "less than a day before the session: Kyle is told too" : null, templateKey: null,
+        lane: "ADDRESS", tier: a.audience.tier, code: a.audience.code,
+      });
+    }
     // 6.5: the scripts-not-approved lane, one row per session (read-only here:
     // its per-row buttons would act on the planning lane, so the panel hides them).
     for (const a of r.scriptApprovalLane) {
       rows.push({
-        enrollmentId: a.enrollmentId, monthId: a.monthId, clientName: a.clientName, isTest: isTestClientName(a.clientName), monthKey: a.monthKey, action: "APPROVE_SCRIPTS", decision: a.decision,
-        reason: `${a.reason}${a.titles.length ? ` (${a.titles.join(", ")})` : ""}`, suppressionReason: a.suppressionReason, attempt: 1, to: null, nextEligibleAt: a.nextEligibleAt?.toISOString() ?? a.remindAt.toISOString(),
+        enrollmentId: a.enrollmentId, monthId: a.monthId, clientName: a.clientName, isTest: isTest(a.audience), monthKey: a.monthKey, action: "APPROVE_SCRIPTS", decision: a.decision,
+        reason: `${a.reason}${a.titles.length ? ` (${a.titles.join(", ")})` : ""}`, suppressionReason: a.suppressionReason, attempt: 1, to: a.to, nextEligibleAt: a.nextEligibleAt?.toISOString() ?? a.remindAt.toISOString(),
         deadlineAt: a.deadlineAt.toISOString(), escalation: null, templateKey: "reminder.approve_scripts.v1",
+        lane: "APPROVE_SCRIPTS", tier: a.audience.tier, code: a.audience.code,
       });
     }
-    return { ok: true, message: r.note, rows, enabled: r.enabled, policySource: r.policySource };
-  } catch (e) { return { ...fail(e), rows: [], enabled: false, policySource: "off" }; }
+    return { ok: true, message: r.note, rows, enabled: r.enabled, policySource: r.policySource, scopeLine: scope.line };
+  } catch (e) { return { ...fail(e), rows: [], enabled: false, policySource: "off", scopeLine: "" }; }
 }
 
 /** Owner-only, and still blocked by the switch inside sendReminderNow. */

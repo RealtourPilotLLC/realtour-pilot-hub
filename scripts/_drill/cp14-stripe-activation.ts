@@ -194,6 +194,21 @@ async function main() {
   await saveSecret("gmail", JSON.stringify({ "info@realtourpilot.com": "drill-refresh-token" }));
   // Isolated database only: invitations ON, so welcome rows can be counted.
   await prisma.programAutomation.create({ data: { key: "portal_invites", enabled: true, enabledBy: "drill", enabledAt: new Date() } });
+  // R03 (Sep 28 2026): "invitations on" no longer means "every client". A real
+  // payer's account opens only while the program rollout reaches them, so at
+  // the default (TEST clients only) the Stripe door HOLDS it, with the reason.
+  // Proven first; then this drill runs with the rollout set to everyone (Stage
+  // D, the retained global option), which is the precondition every check
+  // below was written for — the checks themselves are unchanged.
+  {
+    const pa = await import("@/lib/portalAccess");
+    const held = await prisma.client.create({ data: { name: "Held Payer Realty", email: "held.payer@example.test" } });
+    const he = await prisma.contentEnrollment.create({ data: { clientId: held.id, status: "ACTIVE", package: "Starter", videosPerMonth: 1, sessionsPerMonth: 1, sessionHours: 1, startedAt: new Date() } });
+    const g = await pa.grantProgramAccess({ enrollmentId: he.id, emailRaw: "held.payer@example.test", name: "Held Payer", reason: "welcome", requestedBy: "stripe-signup" });
+    const owed = await pa.owedAccessFor(he.id);
+    c.ok("R03: rollout at its default (TEST only) → a real payer's account is HELD, no seat, the reason on the debt", g.outcome === "HELD" && (await prisma.clientMembership.count({ where: { clientId: held.id } })) === 0 && owed[0]?.heldBecause?.code === "rollout_test_only", `${g.outcome}: ${g.note}`);
+    await prisma.appSetting.create({ data: { key: "program-rollout", value: JSON.stringify({ mode: "ALL", modeSince: new Date(Date.now() - 86_400_000).toISOString(), pilot: null }), updatedBy: "drill" } });
+  }
   await prisma.programCalendlyEventMapping.create({ data: { eventTypeUri: "https://api.calendly.com/event_types/drill-discovery", eventName: "Brand discovery", publicUrl: "https://calendly.com/realtourpilot/brand-discovery", purpose: "BRAND_DISCOVERY", enabled: true, validationStatus: "VALID" } });
   const ACC_1Y = addProduct("Video Accelerator - 1-Year Commitment");
   const START_M2M = addProduct("Video Starter — Month-to-Month");

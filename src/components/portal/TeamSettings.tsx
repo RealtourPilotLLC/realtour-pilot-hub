@@ -43,7 +43,10 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
       {!invitationsOn && (
         <p className="flex items-start gap-2 rounded-xl border border-border bg-surface-2/50 p-3 text-xs text-muted">
           <Clock className="mt-0.5 size-3.5 shrink-0" />
-          Invitations aren&rsquo;t being sent yet. Anyone you add here is saved on your account, and we&rsquo;ll email their sign-in the moment we switch invitations on. Nothing goes to them before that.
+          {/* Neutral (review fix, Sep 28 2026): invitationsOn is per client
+              now (the switch AND the program rollout), so "the moment we
+              switch invitations on" was untrue for a client the rollout holds. */}
+          Invitations aren&rsquo;t being sent yet for your account. Anyone you add here is saved on your account, and we&rsquo;ll email their sign-in as soon as your account is set up for it. Nothing goes to them before that.
         </p>
       )}
 

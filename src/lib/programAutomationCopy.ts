@@ -31,12 +31,33 @@ import type { AutomationKey } from "@/lib/programAutomation";
 //   requires.providers  connections that must be connected (Settings shows
 //                       them; /connections is where they are fixed)
 //   requires.config     the switch's own stored config must pass a check
+//   requires.partial    a switch that stops PART of this one (a named path),
+//                       never all of it — readiness reports it as a blocker
+//                       for that path and never calls the switch healthy
 //   recipients          who actually hears about it, in plain words
 //   cadence             how often its driver runs, which is what "late" means
-//   launchGate          how a client-reaching switch holds itself to TEST
-//                       clients until launch (none = real clients once on)
+//   launchGate          who a client-reaching switch may touch: programScope
+//                       (the rollout scope, lib/programRolloutCore) or
+//                       hubWriteScope (TEST fixtures + the program pilot)
 //
 // Presentation and judgement only. Nothing here turns anything on.
+//
+// WHO, NOT WHETHER (R03, Sep 28 2026). Every client-reaching program switch is
+// now read with the rollout scope — Settings → "Who the program may reach":
+// TEST clients only, TEST clients plus a named pilot of at most three, or
+// every client with a program. The switch stays the on/off; the scope decides
+// who. So none of the sentences below may promise "every client": the switch
+// on means "the clients the rollout reaches", and only the rollout set to
+// everyone makes that every client. A feature's own testClientsOnly lock is
+// still there, but only NARROWS inside the scope (lifting it lets the scope
+// in, never everyone).
+//
+// THE CALL PROCESSOR IS A DEPENDENCY (R05, Sep 28 2026). strategy_generation's
+// only automatic path is the transcript queue (programOnboarding enqueues a
+// STRATEGY_DRAFT; transcriptJobs runs it), so it needs transcript_jobs as
+// well as ai_runs; readiness called it effective and healthy while its drafts
+// sat unprocessed. script_drafting and fact_extraction depend on the processor
+// for one path each (requires.partial).
 // ---------------------------------------------------------------------------
 
 /** A connection a switch depends on. Mapped to Connection rows in lib/readiness.ts. */
@@ -48,15 +69,39 @@ export type ReadinessConfigCheck =
   | "callApiMode" // call_booking config.mode is "API" (EMBED means the portal embeds Calendly and the hub books nothing)
   | "noCallMapping"; // legacy sweeps stand down while any Calendly mapping is enabled
 export type AutomationCadence = "hourly" | "daily" | "on-action";
-/** How a client-reaching switch keeps to TEST clients before launch. */
-export type LaunchGate = "reminderPolicy" | "testClientsOnly" | "hubWriteScope";
+/**
+ * Who a client-reaching switch may touch (R03, Sep 28 2026).
+ *   programScope   the rollout scope (lib/programRolloutCore.rolloutDecision),
+ *                  narrowed by the feature's own testClientsOnly lock where it
+ *                  has one (programRollout.featureTestOnlyFor). The twelve
+ *                  client-reaching program switches (caption_assistant joined
+ *                  them in the Sep 28 review fix).
+ *   hubWriteScope  the provider writes: TEST fixtures on the switch, plus the
+ *                  PROGRAM pilot when its "bookings" group is ticked (Jordan's
+ *                  Sep 28 rule: one pilot list, programRolloutCore.withProgramPilot).
+ * The old "reminderPolicy" and "testClientsOnly" gates meant "TEST clients, or
+ * every real client once the lock is lifted"; they are gone, because lifting a
+ * lock no longer means every real client.
+ */
+export type LaunchGate = "programScope" | "hubWriteScope";
+
+/**
+ * What the owner types to let the program reach EVERY client with a program
+ * (Settings → Who the program may reach; business default 4, Sep 28 2026).
+ * Here, not in the action file, because a "use server" file may export only
+ * async functions and the panel quotes the same words.
+ */
+export const EVERY_CLIENT_CONFIRM = "EVERY CLIENT";
+
+/** A switch that stops one named path of another, never all of it. */
+export type PartialDependency = { switch: AutomationKey; why: string };
 
 export type AutomationEffect = {
   title: string;
   onEffect: string;
   reaches: "clients" | "staff" | "internal";
   blocked?: string;
-  requires?: { switches?: AutomationKey[]; providers?: ReadinessProvider[]; config?: ReadinessConfigCheck[] };
+  requires?: { switches?: AutomationKey[]; providers?: ReadinessProvider[]; config?: ReadinessConfigCheck[]; partial?: PartialDependency[] };
   recipients: string;
   cadence: AutomationCadence;
   launchGate?: LaunchGate;
@@ -66,26 +111,35 @@ export type AutomationEffect = {
 export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   reminders: {
     title: "Client reminders",
-    onEffect: "The hub starts EMAILING CLIENTS on its own — reminders to choose a planning path, book a call, finish their answers, book a session and review work — inside the hours the reminder policy sets (Settings → Program reminders, where you can also dry-run exactly what would go out). Nothing else in the hub sends a client an email without a person pressing send.",
+    onEffect: "The hub starts EMAILING THE CLIENTS THE ROLLOUT REACHES on its own (Who the program may reach, below: your TEST clients, and any pilot clients you named) — reminders to choose a planning path, book a call, finish their answers, book a session, give the exact filming address, approve scripts and review work — inside the hours the reminder policy sets (Settings → Program reminders, where you can also dry-run exactly what would go out and to whom). The policy's testClientsOnly lock narrows it further to TEST clients until you lift it. Nothing else in the hub sends a client an email without a person pressing send.",
     reaches: "clients",
     requires: { providers: ["gmail"], config: ["reminderPolicy"] },
-    recipients: "Each client seat (owner and assistant) by email, from info@",
+    // ONE address per client, not each seat (R05 copy fix, Sep 28 2026):
+    // programReminders.recipientFor picks the first OWNER seat, else the
+    // client's own email.
+    recipients: "One address per client: the first owner seat on the program, else the client's email. By email, from info@",
     cadence: "hourly",
-    launchGate: "reminderPolicy",
+    launchGate: "programScope",
   },
   transcript_jobs: {
     title: "Transcript processing",
-    onEffect: "Queued call transcripts are analysed automatically into topics, answers, facts and script inputs, spending AI credit per run. Results still land as proposals a person reviews.",
+    onEffect: "The call processor: queued call transcripts are pulled in and analysed automatically into topics, answers, facts and script inputs, and queued strategy drafts are written, spending AI credit per run (AI runs must also be on). By default it only takes jobs queued AFTER you first turn it on: anything already waiting is skipped unless you choose to include it (Settings → Calendly & calls, which shows the count). Until the rollout is set to everyone, AI work runs only for your TEST clients and the pilot clients you named. Five jobs per hourly run. Results still land as proposals a person reviews; nothing is released to a client. The Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use this queue.",
     reaches: "internal",
     requires: { switches: ["ai_runs"], providers: ["ai"] },
-    recipients: "Nobody is messaged. Results wait as proposals on the client file",
+    recipients: "Nobody is messaged. Results wait as proposals on the client file, drafts in Jordan's queue",
     cadence: "hourly",
   },
   script_drafting: {
     title: "Prepare and draft what a month owes",
     onEffect: "Two steps of one chain. First, for each topic the month has committed to, the hub phrases the six planning questions FOR THAT TOPIC before the client opens them — so they read a question about their actual subject instead of the house wording. Then it drafts each owed script: from the client's written answers where they gave them, otherwise from the planning call's excerpts. It never drafts a topic with neither (that one waits for a person), never touches a topic still only proposed by the call, and nothing it writes is approved, released or client-visible. Spends AI credit per question set and per script.",
     reaches: "internal",
-    requires: { switches: ["ai_runs"], providers: ["ai"] },
+    requires: {
+      switches: ["ai_runs"],
+      providers: ["ai"],
+      // contentDrafting.ts: a FROM_CALL topic is drafted from the call's
+      // excerpts, which only the call processor's ANALYZE writes.
+      partial: [{ switch: "transcript_jobs", why: "scripts drafted from a planning call need the call's analysis; the written-answers path does not" }],
+    },
     recipients: "Nobody is messaged. Drafts wait in Jordan's script review queue",
     cadence: "hourly",
   },
@@ -105,19 +159,22 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     requires: { providers: ["instagram"] },
     recipients: "The public, on the client's connected Instagram account",
     cadence: "on-action",
+    // Never part of a pilot: TEST clients, or every client once the rollout
+    // is set to everyone (programRolloutCore.PROGRAM_PILOT_GROUPS).
+    launchGate: "programScope",
   },
   script_share_email: {
     title: "Approve & share → email the client",
-    onEffect: "Approving a script version EMAILS IT TO THE CLIENT immediately instead of only releasing it to their portal.",
+    onEffect: "Approving (or automatically sharing) a script, and releasing a strategy, also EMAILS THE CLIENT that it is ready — within the hour, after a 15-minute batch so several approvals become one email — instead of only releasing it to their portal. Only for the clients the rollout reaches, and only inside client hours. It shares the reminder policy's testClientsOnly lock: while that is on, only TEST clients are emailed.",
     reaches: "clients",
     requires: { providers: ["gmail"] },
-    recipients: "Each client seat (owner and assistant) by email, from info@",
+    recipients: "One address per client: the first owner seat on the program, else the client's email. By email, from info@",
     cadence: "hourly",
-    launchGate: "reminderPolicy",
+    launchGate: "programScope",
   },
   script_auto_share: {
     title: "Share scripts without my approval",
-    onEffect: "A script the hub drafted on its own is APPROVED AND RELEASED TO THE CLIENT'S PORTAL WITHOUT YOU, once it has waited the hold (two hours by default, so you can still step in) and only when it is clean: no format problem, inside the 20 to 30 second target, drafted from the strategy that is still approved, for a topic in the month's allowance, on an active program with no open change request. Every approval and release is recorded as done automatically. Whether the client is also emailed is the separate \"Approve & share → email the client\" switch. By default only TEST clients (testClientsOnly). With this off you approve every script before a client sees it.",
+    onEffect: "A script the hub drafted on its own is APPROVED AND RELEASED TO THE CLIENT'S PORTAL WITHOUT YOU, once it has waited the hold (two hours by default, so you can still step in) and only when it is clean: no format problem, inside the 20 to 30 second target, drafted from the strategy that is still approved, for a topic in the month's allowance, on an active program with no open change request. Every approval and release is recorded as done automatically. Whether the client is also emailed is the separate \"Approve & share → email the client\" switch. Only for the clients the rollout reaches, and by default only TEST clients (its own testClientsOnly lock); a script drafted before a client joined the rollout is never shared on its own. With this off you approve every script before a client sees it.",
     reaches: "clients",
     // NO requires.switches (review, Sep 28). It listed script_drafting and
     // ai_runs, but the hourly sweep (scriptAutoShare.sweepAutoShare) checks
@@ -127,23 +184,25 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     // read closed. A dependency listed here must be one the code enforces.
     recipients: "The client's portal (Scripts). An email only if the share email switch is also on",
     cadence: "hourly",
-    launchGate: "testClientsOnly",
+    launchGate: "programScope",
   },
   portal_invites: {
     title: "Portal invitations",
-    onEffect: "Real clients can be invited to the portal by email. Until this is on, invitations only go to staff-controlled test addresses.",
+    onEffect: "Clients the rollout reaches can be invited to the portal by email, and people who pay for a program get their welcome email. A client outside the rollout is not invited: their access is held and released later from Settings. Until this is on, invitations only go to Jordan's verified test inboxes.",
     reaches: "clients",
     requires: { providers: ["gmail"] },
     recipients: "The invited client seat, by email",
     cadence: "on-action",
+    launchGate: "programScope",
   },
   portal_login_email: {
     title: "Portal sign-in links",
-    onEffect: "A client who asks to sign in is emailed a magic link. Transactional — it answers a request the person just made, and is not held for quiet hours.",
+    onEffect: "A client the rollout reaches who asks to sign in is emailed a magic link. Transactional — it answers a request the person just made, and is not held for quiet hours. Anyone outside the rollout keeps the shared portal link they have today and is sent nothing.",
     reaches: "clients",
     requires: { providers: ["gmail"] },
     recipients: "The client seat that asked to sign in, by email",
     cadence: "on-action",
+    launchGate: "programScope",
   },
   topic_refresh: {
     // CP-07: this used to say it gated the refresh button, which was never true —
@@ -157,18 +216,22 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   topic_carryover: {
     title: "Carry unfilmed scripts into the new month",
-    onEffect: "On the 1st, every scripted topic that was not filmed last month moves into the new month and takes one of its videos, with its script and every version kept. The client sees it under \"Scripted, not filmed\" and can swap it for another topic, which frees the slot. Check the list first with \"Check carry-over\" on the client's Video Topics tab. Nothing is sent to the client; they see it on their portal.",
+    onEffect: "On the 1st, every scripted topic that was not filmed last month moves into the new month and takes one of its videos, with its script and every version kept. The client sees it under \"Scripted, not filmed\" and can swap it for another topic, which frees the slot. Check the list first with \"Check carry-over\" on the client's Video Topics tab. Only for the clients the rollout reaches; a pilot client carries only topics scripted after they joined, and their first carry-over is on the next 1st after joining. Nothing is sent to the client; they see it on their portal.",
     // "clients", not "internal": nothing is sent, but the carried topic is on
     // their page and occupies their allowance, which is a client-facing fact.
     reaches: "clients",
     recipients: "Nobody is messaged. The client sees the carried topic on their portal",
     cadence: "hourly",
+    launchGate: "programScope",
   },
   strategy_generation: {
     title: "Strategy drafting",
-    onEffect: "A discovery call can be drafted into a strategy version automatically. The draft still needs Jordan's approval before anyone sees it.",
+    onEffect: "A discovery call can be drafted into a strategy version automatically. The draft is written by the call processor (Transcript processing), so that must be on too, and AI runs. The draft still needs Jordan's approval before anyone sees it. Turning this off also stops drafts already waiting in the queue. The Draft strategy now button works either way.",
     reaches: "internal",
-    requires: { switches: ["ai_runs"], providers: ["ai"] },
+    // R05 (Sep 28 2026): the ONLY automatic path is the transcript queue —
+    // programOnboarding.advanceOnboarding enqueues STRATEGY_DRAFT and
+    // transcriptJobs runs it (and now leaves it waiting while this is off).
+    requires: { switches: ["transcript_jobs", "ai_runs"], providers: ["ai"] },
     recipients: "Nobody is messaged. The draft waits for Jordan's approval",
     cadence: "hourly",
   },
@@ -182,7 +245,7 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   session_booking: {
     title: "Self-booking against Aryeo",
-    onEffect: "A client's session request CREATES A REAL ARYEO ORDER AND APPOINTMENT (one order per session, on the creative they picked), reads it back and shows it as booked, instead of a request Kyle books by hand. It also lets the hub cancel or move a session it booked itself. ONLY for TEST fixtures listed in this switch's authorizedFixtureClientIds (on Jordan's test inbox) and real clients in an approved pilot for the named actions (Who the hub may write for, below); everyone else stays desk-assisted. Aryeo's customer notifications stay off; our team gets Aryeo's own notice.",
+    onEffect: "A client's session request CREATES A REAL ARYEO ORDER AND APPOINTMENT (one order per session, on the creative they picked), reads it back and shows it as booked, instead of a request Kyle books by hand. It also lets the hub cancel or move a session it booked itself. ONLY for TEST fixtures listed in this switch's authorizedFixtureClientIds (on Jordan's test inbox) and the real clients in the program pilot with bookings ticked (Who the program may reach, below — the same one list as the program's emails); everyone else stays desk-assisted. Aryeo's customer notifications stay off; our team gets Aryeo's own notice.",
     reaches: "clients",
     requires: { providers: ["aryeo"], config: ["fixtures"] },
     recipients: "The client's booking in Aryeo, and Aryeo's own notice to our team",
@@ -191,7 +254,7 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   address_sync: {
     title: "Exact-address sync to Aryeo",
-    onEffect: "When a client adds the exact filming address for a session, the hub UPDATES THAT SESSION'S ADDRESS IN ARYEO itself and reads it back, instead of leaving it on Kyle's desk. ONLY for TEST fixtures listed in authorizedFixtureClientIds and real clients in an approved address pilot. Two sessions sharing one Aryeo address are never changed by the hub; Kyle gets them.",
+    onEffect: "When a client adds the exact filming address for a session, the hub UPDATES THAT SESSION'S ADDRESS IN ARYEO itself and reads it back, instead of leaving it on Kyle's desk. ONLY for TEST fixtures listed in authorizedFixtureClientIds and the real clients in the program pilot with bookings ticked. Two sessions sharing one Aryeo address are never changed by the hub; Kyle gets them.",
     reaches: "clients",
     requires: { providers: ["aryeo"], config: ["fixtures"] },
     recipients: "The session's address in Aryeo (no message is sent)",
@@ -200,7 +263,7 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   call_booking: {
     title: "Strategy-call booking through Calendly's API",
-    onEffect: "With config mode \"API\" and a passed read-only Calendly probe, the hub BOOKS THE CLIENT'S STRATEGY CALL ON JORDAN'S CALENDLY itself (one invitee on the mapped monthly type; Calendly sends its own confirmation per the event type's settings) from a list of open times in the portal. ONLY for TEST fixtures in authorizedFixtureClientIds or an approved pilot. Everyone else keeps the embedded Calendly page, where the client books and the hub only reads.",
+    onEffect: "With config mode \"API\" and a passed read-only Calendly probe, the hub BOOKS THE CLIENT'S STRATEGY CALL ON JORDAN'S CALENDLY itself (one invitee on the mapped monthly type; Calendly sends its own confirmation per the event type's settings) from a list of open times in the portal. ONLY for TEST fixtures in authorizedFixtureClientIds or the real clients in the program pilot with bookings ticked. Everyone else keeps the embedded Calendly page, where the client books and the hub only reads.",
     reaches: "clients",
     requires: { providers: ["calendly"], config: ["callApiMode", "fixtures"] },
     recipients: "Jordan's Calendly, and Calendly's own confirmation to the client",
@@ -213,39 +276,63 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     reaches: "internal",
     blocked: "No speech-to-text provider is configured (this needs an OpenAI Whisper or Deepgram key). Turning it on today does nothing.",
     requires: { providers: ["stt"] },
-    recipients: "Nobody is messaged. Transcripts are stored with the video",
+    // Said plainly (review, Sep 28 2026): the transcript is shown in the
+    // client's posting kit beside the caption. Nobody is messaged and it is
+    // the client's own words from their own finished cut, so it stays
+    // "internal"; whether it should follow the rollout is for Jordan to decide
+    // before a speech-to-text key is ever connected.
+    recipients: "Nobody is messaged. Transcripts are stored with the video, and the client sees their own cut's transcript in its posting kit",
     cadence: "on-action",
   },
+  // A CLIENT-FACING PORTAL FEATURE (review fix, Sep 28 2026). It was labelled
+  // internal ("drafts wait on the video for staff") while the client's own
+  // "Draft a caption" button runs it and shows the draft in their portal —
+  // and it was gated by this switch alone, so switching it on reached every
+  // client. It reads the rollout now (op caption_assistant, in "Automatic
+  // portal changes"), and readiness lists it with the other program switches.
+  // A client's click is attended, so AI runs does NOT stop it (aiRuns.ts): it
+  // is not listed as a requirement, or readiness would call it blocked while
+  // it worked.
   caption_assistant: {
     title: "Caption assistant",
-    onEffect: "Captions are drafted from the script and strategy for each delivered video, with gaps shown rather than invented.",
-    reaches: "internal",
-    requires: { switches: ["ai_runs"], providers: ["ai"] },
-    recipients: "Nobody is messaged. Drafts wait on the video for staff",
+    onEffect: "CLIENTS THE ROLLOUT REACHES get a \"Draft a caption\" button on each approved video in their portal. A click drafts a caption from the final cut's transcript (or from the script when there is none) and shows it to them there, with gaps shown rather than invented. It is the client's own click, so it runs even while AI runs is off, and each draft spends AI credit. Your TEST clients, the pilot clients you named with automatic portal changes ticked, or every client once the rollout is set to everyone; everyone else keeps today's kit with no button.",
+    reaches: "clients",
+    requires: { providers: ["ai"] },
+    recipients: "Clients the rollout reaches, on their portal (the Draft a caption button and the drafts it writes). Nobody is messaged",
     cadence: "on-action",
+    launchGate: "programScope",
   },
   fact_extraction: {
     title: "Automatic fact acceptance",
-    onEffect: "Facts extracted from calls on the documented low-risk fields are ACCEPTED without a person reading them, which means they reach generators and the editor brief on their own.",
+    onEffect: "Facts extracted from calls on the documented low-risk fields are ACCEPTED without a person reading them, which means they reach generators and the editor brief on their own. Only facts the hub extracts on its own are auto-accepted (a person's Re-analyse still proposes), so AI runs must be on; facts from Calendly-mapped calls are extracted by the call processor (Transcript processing).",
     reaches: "internal",
+    // clientFacts.createFact auto-accepts only UNATTENDED extraction, and
+    // aiRuns.runAiJson refuses every unattended run while ai_runs is off: a
+    // hard dependency. The processor is partial: the legacy month-transcript
+    // path (cron sync contentCalls step) still extracts without it.
+    requires: {
+      switches: ["ai_runs"],
+      partial: [{ switch: "transcript_jobs", why: "facts from Calendly-mapped calls are only extracted by the call processor" }],
+    },
     recipients: "Nobody is messaged. Accepted facts reach generators and the editor brief",
     cadence: "on-action",
   },
   revision_policy: {
     title: "Review deadlines and revision rounds",
-    onEffect: "CLIENTS SEE a review deadline (four business days, Mon to Fri) and how many of their two included revision rounds each video has used. A third round asks the account owner to acknowledge that an extra round may carry a $50 fee; the office then charges or waives it, and nothing is ever charged automatically. A change request after the deadline is refused and Kyle is asked to reopen it, and an expired review becomes a task for Kyle. Only reviews opened after you turn this on are held to a deadline.",
+    onEffect: "CLIENTS SEE a review deadline (four business days, Mon to Fri) and how many of their two included revision rounds each video has used. A third round asks the account owner to acknowledge that an extra round may carry a $50 fee; the office then charges or waives it, and nothing is ever charged automatically. A change request after the deadline is refused and Kyle is asked to reopen it, and an expired review becomes a task for Kyle. Only for the clients the rollout reaches, and only reviews opened after you turn this on (or after the client joined the rollout, whichever is later) are held to a deadline.",
     reaches: "clients",
-    recipients: "Clients, on their portal (deadline and rounds). Kyle, as a task when a review expires",
+    recipients: "Clients the rollout reaches, on their portal (deadline and rounds). Kyle, as a task when a review expires",
     cadence: "hourly",
+    launchGate: "programScope",
   },
   review_auto_approve: {
     title: "Automatic approval on expiry",
-    onEffect: "When a review deadline passes with no answer, no open notes and no other hold, the hub records the approval itself (\"Automatic approval\") instead of handing it to Kyle. Needs Review deadlines on too, applies only to reviews opened after you turn this on, and by default only to TEST clients (testClientsOnly).",
+    onEffect: "When a review deadline passes with no answer, no open notes and no other hold, the hub records the approval itself (\"Automatic approval\") instead of handing it to Kyle. Needs Review deadlines on too, applies only to reviews opened after you turn this on (or after the client joined the rollout), only for the clients the rollout reaches, and by default only to TEST clients (its own testClientsOnly lock).",
     reaches: "clients",
     requires: { switches: ["revision_policy"] },
     recipients: "The client's portal shows the video as approved. Nobody is messaged",
     cadence: "hourly",
-    launchGate: "testClientsOnly",
+    launchGate: "programScope",
   },
   brand_change_alerts: {
     title: "Brand-change alerts to the editor",
@@ -265,17 +352,24 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   program_message_notice: {
     title: "Email clients when the office replies",
-    onEffect: "When someone on the team replies on a client's Messages tab, each person on that account (owner and assistant seats, not view-only) gets ONE email saying who replied, with the reply and the sign-in link, unless they already read it on the portal. A second reply before they read the first does not send another. Sent only Mon to Fri before 4:30pm ET; a reply written later goes out the next working morning. Replies from the last three days that nobody has read yet are sent within the hour of turning this on. With this off, replies still appear on the client's page; only the email waits.",
+    onEffect: "When someone on the team replies on a client's Messages tab, each person on that account (owner and assistant seats, not view-only) gets ONE email saying who replied, with the reply and the sign-in link, unless they already read it on the portal. Only for the clients the rollout reaches. A second reply before they read the first does not send another. Sent only Mon to Fri before 4:30pm ET; a reply written later goes out the next working morning. Replies from the last three days that nobody has read yet are sent within the hour of turning this on — but never replies from before a pilot client joined. With this off, replies still appear on the client's page; only the email waits.",
     reaches: "clients",
     requires: { providers: ["gmail"] },
-    recipients: "Each client seat (owner and assistant) by email, from info@",
+    recipients: "Each client seat (owner and assistant, not view-only) on a client the rollout reaches, by email, from info@",
     cadence: "hourly",
+    launchGate: "programScope",
   },
   portal_layout_v2: {
-    title: "New portal layout for every client",
-    onEffect: "EVERY CLIENT'S PORTAL switches to the new layout on their next page load: Home with one next step, My Plan (this month, scripts to approve, topic bank, strategy), Content Library (videos to review first, search and filters), Schedule, and More (Brand Profile, Messages, Resources, Settings & Team, Terms), with a bottom bar on phones. Nothing is sent and no data changes; old links keep working. TEST clients already see it, and staff can preview any client with ?layout=v2. Turning it off puts everyone back on today's layout.",
+    // R04 (Sep 28 2026): the switch alone used to mean every client. Now it
+    // is the switch AND the rollout scope (portalLayout.portalLayoutDecision):
+    // pilot clients get it with the pilot, everyone only in the rollout's
+    // "every client" mode, and a client taken out of the pilot is back on
+    // today's layout on their next page load.
+    title: "New portal layout for the clients the rollout reaches",
+    onEffect: "THE PORTAL OF EVERY CLIENT THE ROLLOUT REACHES (your TEST clients, the pilot clients you named with the layout ticked, or everyone once the rollout is set to every client) switches to the new layout on their next page load: Home with one next step, My Plan (this month, scripts to approve, topic bank, strategy), Content Library (videos to review first, search and filters), Schedule, and More (Brand Profile, Messages, Resources, Settings & Team, Terms), with a bottom bar on phones. Everyone else keeps today's layout. Nothing is sent and no data changes; old links keep working. TEST clients already see it, and staff can preview any client with ?layout=v2. Turning it off, or taking a client out of the pilot, puts them back on today's layout.",
     reaches: "clients",
-    recipients: "Every real client, on their next portal visit. Nothing is sent",
+    recipients: "The clients the rollout reaches, on their next portal visit. Nothing is sent",
     cadence: "on-action",
+    launchGate: "programScope",
   },
 };

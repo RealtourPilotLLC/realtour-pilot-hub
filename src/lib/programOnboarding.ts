@@ -617,6 +617,9 @@ export async function releaseStrategyToPortal(strategyVersionId: string, by: str
     await advanceOnboarding(v.enrollmentId, { enqueue: false, requestedBy: by }).catch(() => {});
   }
   if (!notice) return { released: true, email: "suppressed", message: "Released to the portal. Email suppressed: script_share_email is off — launch is not authorised." };
+  // R03 (Sep 28 2026): the switch is on but the program rollout does not reach
+  // this client for the strategy email — released, nothing queued, and why.
+  if (notice.id === null) return { released: true, email: "suppressed", message: `Released to the portal. Email suppressed: ${"reason" in notice ? notice.reason : "the program rollout does not reach this client"}.` };
   return { released: true, email: "queued", message: notice.created ? "Released to the portal; the 'strategy ready' email is queued." : "Released to the portal; the email was already queued." };
 }
 

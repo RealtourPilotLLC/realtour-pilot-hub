@@ -13,8 +13,9 @@
 //       UNMATCHED, and a late-month call for October was filed on November.
 //    1. The token: format, verification, tampering, another account's month,
 //       an ended program, a stale page.
-//    2. The mode: NONE / EMBED / API, the switch, R02's fixture and pilot
-//       scopes, the probe (ok and 403), never the discovery type.
+//    2. The mode: NONE / EMBED / API, the switch, R02's fixture scope and
+//       (R03, Sep 28 2026) the PROGRAM pilot — one list; a per-switch pilot is
+//       no longer read — the probe (ok and 403), never the discovery type.
 //    3. EMBED: the widget's "scheduled" is re-read from Calendly; the booking
 //       is MATCHED by token (not by email), locked to the portal month although
 //       the call is on the 30th, and the filming gate opens at the call's END +
@@ -222,17 +223,38 @@ async function main() {
     c.ok("a listed TEST-named row whose OWN email is a real inbox is refused (a renamed real row)", !renamed.ok && /own email/.test(renamed.ok ? "" : renamed.reason), renamed.ok ? "" : renamed.reason);
     const lied = await cb.callBookingScope({ client: { id: R.clientId, name: "Real Person Realty TEST" }, operation: "invitees.create", inviteeEmail: "info@realtourpilot.com" });
     c.ok("the guard re-reads the row: a caller passing a TEST name for a real client gets nothing", !lied.ok);
-    const pilot = (p: Record<string, unknown>) => setAutomation("call_booking", true, "drill", JSON.stringify({ mode: "API", authorizedFixtureClientIds: [A.clientId], pilot: p }));
-    await pilot({ clientIds: [R.clientId], operations: ["scheduled_events.cancel"], approvedBy: "jordan", approvedAt: "2026-10-01T12:00:00Z" });
-    c.ok("pilot without the operation → refused", !(await scope(R.clientId, "Real Person Realty")).ok);
-    await pilot({ clientIds: [R.clientId], operations: ["invitees.create"], approvedBy: null, approvedAt: null });
-    c.ok("pilot without a recorded approval → refused", !(await scope(R.clientId, "Real Person Realty")).ok);
-    await pilot({ clientIds: [R.clientId], operations: ["invitees.create"], approvedBy: "jordan", approvedAt: "2026-10-01T12:00:00Z", expiresAt: "2026-10-15T00:00:00Z" });
-    c.ok("an expired pilot → refused", !(await scope(R.clientId, "Real Person Realty")).ok);
-    await pilot({ clientIds: [R.clientId], operations: ["invitees.create"], approvedBy: "jordan", approvedAt: "2026-10-01T12:00:00Z", expiresAt: null });
+    // MOVED TO R03's LAW (Sep 28 2026 — Jordan's rule: ONE pilot list for the
+    // program and the hub's bookings). The PILOT route reads the PROGRAM pilot
+    // (Settings → Who the program may reach, "bookings" ticked); a pilot left
+    // in call_booking's own config is read by nobody. The same four refusals
+    // and the one PILOT, on the one list.
+    const core = await import("@/lib/programRolloutCore");
+    const programPilot = (p: { ops?: import("@/lib/programRolloutCore").ProgramReachOp[]; approvedBy?: string | null; approvedAt?: string | null; expiresAt?: string | null }, mode: "PILOT" | "TEST_ONLY" = "PILOT") =>
+      prisma.appSetting.upsert({
+        where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY },
+        create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value: "{}", updatedBy: "drill" },
+        update: {},
+      }).then(() => prisma.appSetting.update({
+        where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY },
+        data: { value: core.serializeProgramRollout({ mode, modeSince: "2026-10-01T12:00:00Z", pilot: { clientIds: [R.clientId], operations: p.ops ?? core.opsForGroups(["bookings"]), approvedBy: p.approvedBy === undefined ? "jordan" : p.approvedBy, approvedAt: p.approvedAt === undefined ? "2026-10-01T12:00:00Z" : p.approvedAt, expiresAt: p.expiresAt ?? null, note: null, joinedAt: {} } }) },
+      }));
+    await setAutomation("call_booking", true, "drill", JSON.stringify({ mode: "API", authorizedFixtureClientIds: [A.clientId], pilot: { clientIds: [R.clientId], operations: ["invitees.create"], approvedBy: "jordan", approvedAt: "2026-10-01T12:00:00Z" } }));
+    const onFile = await scope(R.clientId, "Real Person Realty");
+    c.ok("R03: a per-switch pilot on file (the old list) is no longer read → refused", !onFile.ok && /program pilot|not in an approved/.test(onFile.ok ? "" : onFile.reason), onFile.ok ? "" : onFile.reason);
+    await setAutomation("call_booking", true, "drill", JSON.stringify({ mode: "API", authorizedFixtureClientIds: [A.clientId] }));
+    await programPilot({ ops: core.opsForGroups(["emails", "accounts"]) });
+    c.ok("program pilot without bookings ticked (the operation) → refused", !(await scope(R.clientId, "Real Person Realty")).ok);
+    await programPilot({ approvedBy: null, approvedAt: null });
+    c.ok("program pilot without a recorded approval → refused", !(await scope(R.clientId, "Real Person Realty")).ok);
+    await programPilot({ expiresAt: "2026-10-15T00:00:00Z" });
+    c.ok("an expired program pilot → refused", !(await scope(R.clientId, "Real Person Realty")).ok);
+    await programPilot({}, "TEST_ONLY");
+    c.ok("the same pilot on file with the rollout set to TEST only → refused (the mode decides)", !(await scope(R.clientId, "Real Person Realty")).ok);
+    await programPilot({});
     const ok = await scope(R.clientId, "Real Person Realty");
-    c.ok("approved, unexpired pilot with the operation → PILOT", ok.ok && ok.scope === "PILOT");
+    c.ok("approved, unexpired program pilot with bookings → PILOT", ok.ok && ok.scope === "PILOT", ok.ok ? "" : ok.reason);
     c.ok("an unrelated real client → refused", !(await scope("someone-else-id", "Another Realty")).ok);
+    await prisma.appSetting.update({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, data: { value: core.serializeProgramRollout({ ...core.CLOSED_ROLLOUT }) } });
     // Back to: switch OFF, empty lists — the shipped state.
     await setAutomation("call_booking", false, "drill", JSON.stringify({ mode: "EMBED", authorizedFixtureClientIds: [] }));
     c.ok("switch OFF again → every write refused before a socket opens", !(await cb.callBookingScope({ client: { id: A.clientId, name: A.clientName }, operation: "invitees.create", inviteeEmail: "info@realtourpilot.com" })).ok && fake.state.posts === 0);

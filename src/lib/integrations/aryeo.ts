@@ -626,7 +626,12 @@ export async function hubWritePermit(a: {
   if (!a.client?.id) return { ok: false, reason: `this client is not in ${a.switchKey}'s authorizedFixtureClientIds or an approved pilot, so the hub does not write to Aryeo for it` };
   const row = await prisma.client.findUnique({ where: { id: a.client.id }, select: { id: true, name: true, email: true, aryeoCustomerId: true } });
   if (!row) return { ok: false, reason: `client ${a.client.id} does not exist, so the hub does not write to Aryeo for it` };
-  const config = parseHubWriteConfig(cfg);
+  // ONE PILOT LIST (R03, Jordan's Sep 28 rule): the PILOT route reads the
+  // program pilot — a real client is written for only while they are in the
+  // approved program pilot with "bookings" ticked — never a second per-switch
+  // list that can drift from it. The fixture list is kept exactly as stored.
+  const { hubWriteScopeWithProgramPilot } = await import("@/lib/programRollout");
+  const { config } = await hubWriteScopeWithProgramPilot(parseHubWriteConfig(cfg), a.switchKey);
   const route = routeHubWrite({
     switchKey: a.switchKey, config, client: { id: row.id, name: row.name }, operation: a.operation, now: new Date(),
     isTestName: isTestClientName, isNeverSynthetic: isNeverSyntheticClientId,

@@ -22,11 +22,23 @@ import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 // OFF it (removeFixtureClientAction). Both go through lib/hubWriteFixtures —
 // that one field, audited, never the pilot — and a real client on the list is
 // refused by the guard anyway.
+//
+// ONE PILOT LIST (R03, Jordan's Sep 28 2026 rule). The Aryeo and Calendly
+// guards now read the PROGRAM pilot (Settings → Who the program may reach,
+// src/app/settings/rolloutActions.ts) — a client in the approved pilot with
+// "bookings" ticked is written for once these switches are on. A second,
+// per-switch list here could only drift from it, so this panel now SHOWS the
+// program pilot read-only, per switch, and the three per-switch pilot actions
+// refuse with a pointer to the one editor. The per-switch `pilot` values on
+// file are left untouched (history) and read by nobody.
 // ---------------------------------------------------------------------------
+
+/** Where the one pilot is edited. */
+const PROGRAM_PILOT_HOME = "Settings → Who the program may reach";
+const retired = (): Result => ({ ok: false, message: `There is one pilot list now: the program pilot, in ${PROGRAM_PILOT_HOME}. Add or remove clients there, and tick "bookings" for the ones the hub may book for. Nothing was changed here.` });
 
 type Result = { ok: boolean; message: string };
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
-const squash = (s: string | null | undefined) => (s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 
 export type HubWriteScopeView = {
   switchKey: string;
@@ -45,6 +57,10 @@ export type HubWriteScopeView = {
     note: string | null;
   };
   groups: { key: string; label: string }[];
+  /** R03: the pilot shown is the PROGRAM pilot (read-only here). */
+  pilotSource: "program";
+  /** Why the program pilot could not be read, if it could not (nobody real is written for). */
+  pilotProblem: string | null;
 };
 
 export type HubWriteScopesPayload = {
@@ -62,12 +78,18 @@ export async function loadHubWriteScopes(): Promise<HubWriteScopesPayload | { er
   const { HUB_WRITE_SWITCHES, HUB_WRITE_OPERATION_GROUPS, parseHubWriteConfig, describeHubWriteScope } = await import("@/lib/hubWritePermit");
   const { isTestClientName, isVerifiedTestDestinationEmail } = await import("@/lib/testClients");
   const now = new Date();
-  const rows = await Promise.all(HUB_WRITE_SWITCHES.map(async (k) => ({ k, s: await getAutomation(k), cfg: parseHubWriteConfig(await storedAutomationConfigForDisplay(k)) })));
+  // R03: each switch's config with its pilot REPLACED by the program pilot —
+  // exactly what the guards route on — and the fixture list as stored.
+  const { hubWriteScopeWithProgramPilot } = await import("@/lib/programRollout");
+  const rows = await Promise.all(HUB_WRITE_SWITCHES.map(async (k) => {
+    const scoped = await hubWriteScopeWithProgramPilot(parseHubWriteConfig(await storedAutomationConfigForDisplay(k)), k);
+    return { k, s: await getAutomation(k), cfg: scoped.config, problem: scoped.problem };
+  }));
   const ids = [...new Set(rows.flatMap((r) => [...r.cfg.authorizedFixtureClientIds, ...(r.cfg.pilot?.clientIds ?? [])]))];
   const clients = ids.length ? await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, email: true } }) : [];
   const byId = new Map(clients.map((c) => [c.id, c]));
   const names = new Map(clients.map((c) => [c.id, c.name]));
-  const switches: HubWriteScopeView[] = rows.map(({ k, s, cfg }) => {
+  const switches: HubWriteScopeView[] = rows.map(({ k, s, cfg, problem }) => {
     const d = describeHubWriteScope(k, { enabled: s.enabled, missing: s.missing, config: cfg }, names, now);
     const groups = HUB_WRITE_OPERATION_GROUPS[k];
     const p = cfg.pilot;
@@ -93,20 +115,12 @@ export async function loadHubWriteScopes(): Promise<HubWriteScopesPayload | { er
           }
         : null,
       groups: groups.map((g) => ({ key: g.key, label: g.label })),
+      pilotSource: "program",
+      pilotProblem: problem,
     };
   });
-  // No relation on ContentEnrollment → Client, so two reads.
-  const enrolled = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { clientId: true }, take: 500 });
-  const enrolledClients = enrolled.length ? await prisma.client.findMany({ where: { id: { in: [...new Set(enrolled.map((e) => e.clientId))] } }, select: { id: true, name: true } }) : [];
-  const candidates = enrolledClients
-    .filter((c) => !isTestClientName(c.name))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return { switches, candidates };
-}
-
-/** A pilot's stored end (the NEXT ET midnight after the chosen day) as the day the owner chose. */
-function pilotEndDay(iso: string): string {
-  return new Date(Date.parse(iso) - 1).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" });
+  // R03: nobody is added from here any more (one pilot list), so no candidates.
+  return { switches, candidates: [] };
 }
 
 async function ownerEmail(): Promise<string> {
@@ -116,104 +130,31 @@ async function ownerEmail(): Promise<string> {
   return me?.email ?? "dev@local";
 }
 
-async function writePilot(switchKey: string, pilot: unknown, by: string): Promise<void> {
-  const { isHubWriteSwitch } = await import("@/lib/hubWritePermit");
-  if (!isHubWriteSwitch(switchKey)) throw new Error("That switch has no pilot.");
-  const { setAutomationConfigField } = await import("@/lib/programAutomation");
-  await setAutomationConfigField(switchKey, "pilot", pilot, by, "automation_pilot_change");
-  revalidatePath("/settings");
-}
+// THE PER-SWITCH PILOT ACTIONS ARE RETIRED (R03, Sep 28 2026). They wrote a
+// `pilot` onto each switch's config — a second list beside the program pilot,
+// free to drift from it. The names stay (the panel and any bookmarked form
+// still call them) and each one refuses, owner-checked, pointing at the one
+// editor. Nothing is written. What they used to do lives in the program
+// pilot's actions (rolloutActions.ts), with the same typed-name confirm, the
+// same end-date rules and the same audit row.
 
-/**
- * Add ONE real client to a switch's pilot, with the writes it covers. The
- * owner types the client's name; the pilot's operations become the groups
- * ticked here (for every client in it), and the approval is re-stamped.
- *
- * THE END DATE IS KEPT unless it is changed on purpose (batch-3 review, Sep 25
- * 2026). It is one date for the whole pilot, and adding a second client with
- * the optional field left blank used to write `expiresAt: null` — silently
- * removing the end date the owner approved for the clients already in it.
- * Now: a date given → that date; `clearExpiry` → no end date; neither → the
- * pilot's current end date. Any change to it is said in the result.
- */
+/** Retired — see above. */
 export async function addPilotClientAction(input: {
   switchKey: string; clientId: string; typedName: string; groups: string[];
-  /** "YYYY-MM-DD" in ET: the pilot runs to the END of that day. Empty/null = keep the current end date. */
   expiresOnET?: string | null;
-  /** true = remove the pilot's end date (it runs until someone ends it). */
   clearExpiry?: boolean;
   note?: string | null;
 }): Promise<Result> {
-  let by: string;
-  try { by = await ownerEmail(); } catch (e) { return fail(e); }
-  try {
-    const { prisma } = await import("@/lib/prisma");
-    const { HUB_WRITE_OPERATION_GROUPS, isHubWriteSwitch, parseHubWriteConfig } = await import("@/lib/hubWritePermit");
-    const { isTestClientName, isNeverSyntheticClientId } = await import("@/lib/testClients");
-    const { storedAutomationConfigForDisplay } = await import("@/lib/programAutomation");
-    if (!isHubWriteSwitch(input.switchKey)) return { ok: false, message: "That switch has no pilot." };
-    const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, name: true } });
-    if (!client) return { ok: false, message: "That client no longer exists." };
-    if (squash(input.typedName) !== squash(client.name)) return { ok: false, message: `Type the client's name exactly as it appears ("${client.name}") to approve the pilot.` };
-    if (isTestClientName(client.name)) {
-      return { ok: false, message: isNeverSyntheticClientId(client.id) ? "This is a real client carrying a TEST name. Fix the name first; nothing was changed." : "TEST clients are fixtures, not pilot clients. Nothing was changed." };
-    }
-    const enrolled = await prisma.contentEnrollment.count({ where: { clientId: client.id, status: "ACTIVE" } });
-    if (!enrolled) return { ok: false, message: `${client.name} has no active program, so there is nothing for a pilot to book.` };
-    const groups = HUB_WRITE_OPERATION_GROUPS[input.switchKey].filter((g) => input.groups.includes(g.key));
-    if (!groups.length) return { ok: false, message: "Tick at least one kind of write the pilot covers." };
-    const cfg = parseHubWriteConfig(await storedAutomationConfigForDisplay(input.switchKey));
-    const was = cfg.pilot?.clientIds.length ? cfg.pilot.expiresAt ?? null : null;
-    let expiresAt: string | null = was;
-    if (input.expiresOnET) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(input.expiresOnET)) return { ok: false, message: "Pick an end date from the calendar (or leave it empty)." };
-      // The end of that ET day (DST-correct: the next ET midnight), not its first minute.
-      const { etAt } = await import("@/lib/datetime");
-      const [y, m, d] = input.expiresOnET.split("-").map(Number);
-      const t = etAt(new Date(Date.UTC(y, m - 1, d + 1, 12)).toISOString().slice(0, 10), 0).getTime();
-      if (!Number.isFinite(t) || t <= Date.now()) return { ok: false, message: "The end date has to be in the future (or left empty)." };
-      expiresAt = new Date(t).toISOString();
-    } else if (input.clearExpiry) {
-      expiresAt = null;
-    } else if (was && Date.parse(was) <= Date.now()) {
-      // Kept as it is, it would add this client to a pilot that has already ended.
-      return { ok: false, message: `This pilot ended on ${pilotEndDay(was)}. Pick a new end date, or remove the end date, to add a client. Nothing was changed.` };
-    }
-    if (cfg.authorizedFixtureClientIds.includes(client.id)) {
-      return { ok: false, message: `${client.name} is on this switch's fixture list, which is for TEST clients only. Take them off it first; nothing was changed.` };
-    }
-    const pilot = {
-      clientIds: [...new Set([...(cfg.pilot?.clientIds ?? []), client.id])],
-      operations: [...new Set(groups.flatMap((g) => g.operations))],
-      approvedBy: by,
-      approvedAt: new Date().toISOString(),
-      expiresAt,
-      note: input.note?.trim().slice(0, 500) || cfg.pilot?.note || null,
-    };
-    await writePilot(input.switchKey, pilot, by);
-    const endLine = (was ?? null) === (expiresAt ?? null)
-      ? expiresAt ? ` The pilot still ends ${pilotEndDay(expiresAt)}.` : ""
-      : cfg.pilot?.clientIds.length
-        ? ` The pilot's end date changed from ${was ? pilotEndDay(was) : "none"} to ${expiresAt ? pilotEndDay(expiresAt) : "none"}, for every client in it.`
-        : expiresAt ? ` The pilot ends ${pilotEndDay(expiresAt)}.` : "";
-    return { ok: true, message: `${client.name} is in the ${input.switchKey} pilot for: ${groups.map((g) => g.label.toLowerCase()).join("; ")}.${endLine} Nothing runs until the switch itself is on.` };
-  } catch (e) { return fail(e); }
+  void input;
+  try { await ownerEmail(); } catch (e) { return fail(e); }
+  return retired();
 }
 
-/** Take one client out of a pilot. Recorded; an emptied pilot is removed. */
+/** Retired — removing a client from the pilot is done once, in the program pilot. */
 export async function removePilotClientAction(input: { switchKey: string; clientId: string }): Promise<Result> {
-  let by: string;
-  try { by = await ownerEmail(); } catch (e) { return fail(e); }
-  try {
-    const { isHubWriteSwitch, parseHubWriteConfig } = await import("@/lib/hubWritePermit");
-    const { storedAutomationConfigForDisplay } = await import("@/lib/programAutomation");
-    if (!isHubWriteSwitch(input.switchKey)) return { ok: false, message: "That switch has no pilot." };
-    const cfg = parseHubWriteConfig(await storedAutomationConfigForDisplay(input.switchKey));
-    if (!cfg.pilot?.clientIds.includes(input.clientId)) return { ok: true, message: "That client was not in the pilot." };
-    const rest = cfg.pilot.clientIds.filter((id) => id !== input.clientId);
-    await writePilot(input.switchKey, rest.length ? { ...cfg.pilot, clientIds: rest, approvedBy: by, approvedAt: new Date().toISOString() } : null, by);
-    return { ok: true, message: rest.length ? "Removed from the pilot. The hub no longer writes for them." : "The pilot is empty and has been ended. No real client is written for." };
-  } catch (e) { return fail(e); }
+  void input;
+  try { await ownerEmail(); } catch (e) { return fail(e); }
+  return retired();
 }
 
 /** Take one TEST fixture off a switch's fixture list (audited; the pilot and the on/off are untouched). */
@@ -228,12 +169,9 @@ export async function removeFixtureClientAction(input: { switchKey: string; clie
   } catch (e) { return fail(e); }
 }
 
-/** End a switch's pilot altogether. */
+/** Retired — the pilot is ended once, in the program pilot. */
 export async function endPilotAction(input: { switchKey: string }): Promise<Result> {
-  let by: string;
-  try { by = await ownerEmail(); } catch (e) { return fail(e); }
-  try {
-    await writePilot(input.switchKey, null, by);
-    return { ok: true, message: "Pilot ended. No real client is written for on this switch." };
-  } catch (e) { return fail(e); }
+  void input;
+  try { await ownerEmail(); } catch (e) { return fail(e); }
+  return retired();
 }

@@ -4,7 +4,7 @@ import { clip } from "@/lib/text";
 import type { PortalViewer } from "@/lib/portal";
 import {
   can, actorLabel, refusalMessage, isPortalRole, grantProgramAccess, setMembershipRole, revokeMembership, owedAccessFor, cancelOwedAccess,
-  portalLoginEmailEnabled,
+  portalLoginEmailEnabledFor,
 } from "@/lib/portalAccess";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
@@ -106,7 +106,23 @@ export async function teamSeats(v: PortalViewer): Promise<{ ok: boolean; message
       invitedAtISO: o.since, acceptedAtISO: null, lastSignInISO: null, isYou: false, pending: true, held: true, accountHolder: false,
     });
   }
-  return { ok: true, message: "", seats, invitationsOn: await isAutomationEnabled("portal_invites"), signInEmailOn: await portalLoginEmailEnabled().catch(() => false) };
+  // PER CLIENT, NOT THE SWITCH ALONE (review fix, Sep 28 2026). With
+  // portal_invites on, a client the rollout does not reach was shown "Send
+  // invitation" and no "not being sent yet" note — then inviteTeammate held
+  // the invitation (grantProgramAccess holds for not_in_pilot) and told them
+  // "the moment we switch invitations on", although the switch was on. The
+  // page now asks what the send asks: the switch AND the rollout for THIS
+  // client; and email sign-in the same way (portalLoginEmailEnabledFor).
+  const clientId = v.enrollment.clientId;
+  const [invitationsOn, signInEmailOn] = await Promise.all([invitationsOnFor(clientId), portalLoginEmailEnabledFor(clientId).catch(() => false)]);
+  return { ok: true, message: "", seats, invitationsOn, signInEmailOn };
+}
+
+/** Would an invitation to this client's account be SENT now: portal_invites on AND the rollout reaching them. Never throws. */
+async function invitationsOnFor(clientId: string): Promise<boolean> {
+  if (!(await isAutomationEnabled("portal_invites").catch(() => false))) return false;
+  const { programReach } = await import("@/lib/programRollout");
+  return (await programReach("portal_invites", clientId)).ok;
 }
 
 /**
@@ -163,21 +179,29 @@ export async function inviteTeammate(
   await ownerBell(
     "portal_teammate",
     `Teammate added — ${v.enrollment.clientName || "a client"}`,
-    `${actorLabel(v)} gave ${name} <${email}> ${role.toLowerCase()} access${g.outcome === "HELD" ? " (held: invitations are switched off)" : ""}.`,
+    // R03 (Sep 28 2026): a hold is no longer only "invitations are off" — the
+    // client may be outside the program rollout — so the bell carries the
+    // grant's own sentence, which names the actual reason.
+    `${actorLabel(v)} gave ${name} <${email}> ${role.toLowerCase()} access${g.outcome === "HELD" || (g.outcome === "GRANTED" && g.welcome !== "queued" && g.welcome !== "already") ? ` (${g.note})` : ""}.`,
     `/content/${v.enrollment.id}`,
     `portal-teammate-${v.enrollment.id}-${email}`,
   );
   if (g.outcome === "HELD") {
     return {
       ok: true, held: true,
-      message: `Saved. ${name} is on your account, and we'll send their sign-in email the moment we switch invitations on. Nothing has gone to them yet.`,
+      // Neutral on purpose (review fix, Sep 28 2026): the hold may be the
+      // switch or the rollout, and "the moment we switch invitations on" was
+      // false for a client held by the rollout with the switch already on.
+      message: `Saved. ${name} is on your account, and we'll email them their sign-in as soon as your account is set up for it. Nothing has gone to them yet.`,
     };
   }
   return {
     ok: true, membershipId: g.membershipId,
     message:
       g.welcome === "suppressed"
-        ? `${name} is on your account. Invitations aren't being sent yet, so we haven't emailed them — we'll send their sign-in the moment we switch them on.`
+        ? `${name} is on your account. Invitations aren't being sent yet for your account, so we haven't emailed them — we'll send their sign-in as soon as your account is set up for it.`
+        : g.welcome === "failed"
+          ? `${name} is on your account. Their sign-in email didn't go through, and our team has been told so we can send it again.`
         : role === "OWNER"
           ? `${name} is in. They can do everything you can on this account, including approving videos, and we've emailed them their sign-in link.`
           : role === "COLLABORATOR"

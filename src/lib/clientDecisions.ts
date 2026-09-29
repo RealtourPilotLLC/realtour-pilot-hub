@@ -12,7 +12,7 @@ import { actorLabel, actorLabelResolved } from "@/lib/portalAccess";
 import { cutReleasedAt } from "@/lib/contentVideos";
 import { slotKeyOf } from "@/lib/reviewCuts";
 import {
-  claimWindow, deadlineLabel, enforced, ensureWindow, extraRoundAckText, mayAcknowledgeFee, outputIdFor, revisionPolicy, roundsUsed, settleExpiryTask, videoKeyOf, videoLabelOf,
+  claimWindow, deadlineLabel, enforced, ensureWindow, extraRoundAckText, mayAcknowledgeFee, outputIdFor, revisionPolicyFor, roundsUsed, settleExpiryTask, videoKeyOf, videoLabelOf,
   EXTRA_ROUND_ROUTES_IMMEDIATELY, URGENT_CONTACT, type ReviewPanel,
 } from "@/lib/reviewWindows";
 import { clip } from "@/lib/text";
@@ -750,7 +750,11 @@ export async function requestChangesOnCut(
   const owner = { enrollmentId: viewer.enrollment.id, clientId: viewer.enrollment.clientId };
   const w = await ensureWindow(submissionId, owner);
   if (!w) return { ok: false, message: `That version isn't open for review — ${TEXT_KYLE} and we'll sort it out.` };
-  const policy = await revisionPolicy();
+  // R03 (Sep 28 2026): THIS client's policy. The late refusal (d) and the
+  // extra-round fee (e) follow from it, so a client outside the program
+  // rollout — or a window released before they joined it — is never refused
+  // as late or asked to acknowledge a fee they were never shown.
+  const policy = await revisionPolicyFor(viewer.enrollment.clientId, new Date());
   const overall = clip((generalNote ?? "").trim(), 1000);
   // Roster name for a nameless staff login (Sep 28): the request, its brief and
   // the Review Room's line for the same person's notes all read one name.

@@ -17,7 +17,9 @@
 //   2. Layout selection: no switch row → a real client's link, a real
 //      client's person and staff without ?layout=v2 all get v1; a TEST client
 //      and a staff ?layout=v2 preview get v2; a client asking for v2 does not;
-//      the switch on → everyone.
+//      the switch on → the clients the ROLLOUT reaches (R04, Sep 28 2026:
+//      TEST only by default, so a real client stays on v1; the rollout set to
+//      every client → everyone, SWITCH_ON; a named pilot client → PILOT).
 //   3. v1 untouched: for a real client, the new page's element tree is the
 //      HEAD page's element tree on every old tab (and old aliases).
 //   4. Home: ONE primary action — reviews first, the waiting script second;
@@ -266,13 +268,26 @@ async function main() {
 
     // The switch, then back off (update, never a second create: 23505 would end the socket).
     await prisma.programAutomation.create({ data: { key: "portal_layout_v2", enabled: true, enabledBy: "drill", enabledAt: new Date() } });
+    // MOVED TO R04's LAW (Sep 28 2026): the switch alone used to mean EVERY
+    // client. It is now the switch AND the rollout scope; the default rollout
+    // is TEST clients only, so a real client keeps today's page.
+    const onDefault = await L(realTokenViewer, "Harper Lane Realty");
+    c.ok("switch ON, rollout at its default (TEST only) → the real client's link stays v1", onDefault.layout === "v1" && onDefault.why === "DEFAULT", JSON.stringify(onDefault));
+    const core = await import("@/lib/programRolloutCore");
+    const setRollout = (r: import("@/lib/programRolloutCore").ProgramRollout) =>
+      prisma.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value: core.serializeProgramRollout(r), updatedBy: "drill" }, update: { value: core.serializeProgramRollout(r) } });
+    await setRollout({ mode: "PILOT", modeSince: new Date().toISOString(), pilot: { clientIds: [realClient.id], operations: core.opsForGroups(["layout"]), approvedBy: "jordan@drill", approvedAt: new Date().toISOString(), expiresAt: null, note: null, joinedAt: {} } });
+    const piloted = await L(realTokenViewer, "Harper Lane Realty");
+    c.ok("…the real client named in the pilot with the layout ticked → v2, reason PILOT", piloted.layout === "v2" && piloted.why === "PILOT", JSON.stringify(piloted));
+    await setRollout({ mode: "ALL", modeSince: new Date().toISOString(), pilot: null });
     const on = await L(realTokenViewer, "Harper Lane Realty");
-    c.ok("switch ON → the real client's link gets v2", on.layout === "v2" && on.why === "SWITCH_ON");
+    c.ok("switch ON + the rollout set to every client → the real client's link gets v2", on.layout === "v2" && on.why === "SWITCH_ON");
     const onPage = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "home" } });
     const onNav = isEl(onPage) ? (onPage.props.nav.primary as { href: string }[]).map((i) => i.href) : [];
     c.ok("…and its links carry no layout=v2 (nothing in the address is needed)", onNav.length === 5 && onNav.every((h) => !h.includes("layout")), onNav.join(" "));
     await prisma.programAutomation.update({ where: { key: "portal_layout_v2" }, data: { enabled: false } });
     c.ok("switch OFF (enabled=false) → v1 again", (await L(realTokenViewer, "Harper Lane Realty")).layout === "v1");
+    await setRollout({ ...core.CLOSED_ROLLOUT });
 
     // =======================================================================
     c.head("4 · Home: one next step, in priority order");

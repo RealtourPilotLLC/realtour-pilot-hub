@@ -459,6 +459,17 @@ async function main() {
   {
     const W = await world("Kay Sent");
     await prisma.client.update({ where: { id: W.f.clientId }, data: { name: "Kay Sent" } });
+    // R03 (Sep 28 2026): review deadlines reach a REAL client only inside the
+    // program rollout — outside it the sweep never looks at the window and the
+    // page shows no panel at all. This section is about a cut Kyle marked as
+    // sent, so Kay is put in the approved pilot (joined before the release) and
+    // every check below runs for her unchanged.
+    {
+      const core = await import("@/lib/programRolloutCore");
+      const joined = new Date(Date.now() - 2 * HOUR).toISOString();
+      const value = core.serializeProgramRollout({ mode: "PILOT", modeSince: joined, pilot: { clientIds: [W.f.clientId], operations: core.opsForGroups(core.PROGRAM_PILOT_GROUPS.map((g) => g.key)), approvedBy: "info@realtourpilot.com", approvedAt: joined, expiresAt: null, note: null, joinedAt: { [W.f.clientId]: joined } } });
+      await prisma.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value, updatedBy: "drill" }, update: { value } });
+    }
     const k1 = await mkCut(W, 1, 1);
     await release(k1);
     // markVideoSent: the link-token client got it by text.

@@ -516,11 +516,31 @@ async function travelRecheck(row: ProgramSessionAddress, s: ProgramSession, dest
 }
 
 /** Will the hub itself put this client's address on the Aryeo booking? Only
- *  then can Aryeo be asked about travel (the address_sync permit rule). */
-async function aryeoWillBeAsked(clientId: string): Promise<boolean> {
+ *  then can Aryeo be asked about travel (the address_sync permit rule).
+ *
+ *  THE PERMIT'S OWN ROUTE (review fix, Sep 28 2026). This read the fixture
+ *  list alone, so once the program pilot became the address_sync PILOT
+ *  (Jordan's Sep 28 rule, one list) a pilot client's address WAS patched into
+ *  Aryeo while this still said it would not be — and the local travel check
+ *  ran on top of Aryeo's, giving Kyle a second travel task. It now routes the
+ *  way hubWritePermit does (routeHubWrite over hubWriteScopeWithProgramPilot,
+ *  operation addresses.patch): FIXTURE or PILOT means Aryeo is asked. Pure
+ *  reads — no provider call, no permit issued; the fixture's identity check
+ *  (one Aryeo read) is left to the write itself, as before. */
+export async function aryeoWillBeAsked(clientId: string): Promise<boolean> {
   const { automationConfig } = await import("@/lib/programAutomation");
-  const cfg = await automationConfig<{ authorizedFixtureClientIds: unknown }>("address_sync", { authorizedFixtureClientIds: [] });
-  return !!cfg && Array.isArray(cfg.authorizedFixtureClientIds) && cfg.authorizedFixtureClientIds.includes(clientId);
+  const cfg = await automationConfig<Record<string, unknown>>("address_sync", {});
+  if (!cfg) return false; // the switch is off: the hub writes nothing
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, name: true } });
+  if (!client) return false;
+  const [{ parseHubWriteConfig, routeHubWrite }, { hubWriteScopeWithProgramPilot }, { isTestClientName, isNeverSyntheticClientId }] = await Promise.all([
+    import("@/lib/hubWritePermit"),
+    import("@/lib/programRollout"),
+    import("@/lib/testClients"),
+  ]);
+  const { config } = await hubWriteScopeWithProgramPilot(parseHubWriteConfig(cfg), "address_sync");
+  const route = routeHubWrite({ switchKey: "address_sync", config, client, operation: "addresses.patch", now: new Date(), isTestName: isTestClientName, isNeverSynthetic: isNeverSyntheticClientId });
+  return route.kind !== "REFUSE";
 }
 
 /**

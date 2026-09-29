@@ -220,6 +220,14 @@ async function main() {
   await saveSecret("calendly", "drill-calendly-token");
   // Isolated database only: invitations ON, so welcome rows can be counted.
   await prisma.programAutomation.create({ data: { key: "portal_invites", enabled: true, enabledBy: "drill", enabledAt: new Date() } });
+  // R03 (Sep 28 2026): "invitations on" no longer means every client — a real
+  // payer's account opens only while the program rollout reaches them (at the
+  // default, TEST clients only, the Stripe door HOLDS it; cp14 proves that).
+  // These payers are created by the checkouts themselves, so they cannot be
+  // named in a pilot beforehand: this drill runs with the rollout set to
+  // everyone (Stage D, the retained global option) — the precondition every
+  // check below was written for. The checks themselves are unchanged.
+  await prisma.appSetting.create({ data: { key: "program-rollout", value: JSON.stringify({ mode: "ALL", modeSince: new Date(Date.now() - 86_400_000).toISOString(), pilot: null }), updatedBy: "drill" } });
   await prisma.programCalendlyEventMapping.create({ data: { eventTypeUri: DISCOVERY_TYPE, eventName: "Brand discovery call", publicUrl: "https://calendly.com/realtourpilot-info/brand-discovery-call", purpose: "BRAND_DISCOVERY", enabled: true, validationStatus: "VALID" } });
 
   // =========================================================================

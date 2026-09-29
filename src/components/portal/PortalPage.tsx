@@ -58,13 +58,16 @@ import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 // bound to that one cut/video and this viewer's seat/link, and the client
 // components read the address bar when they call an action.
 //
-// TWO LAYOUTS (UI-01, Sep 24 2026). The layout above is "v1" and is what every
-// real client sees until Jordan turns on `portal_layout_v2`; its render below
-// is deliberately left exactly as it was. "v2" — Home · My Plan · Content
-// Library · Schedule · More, in PortalShell — is served to TEST clients, to
-// everyone once the switch is on, and to staff who add ?layout=v2. Both read
-// the same address (lib/portalNav.resolvePortalRoute: old ?tab= links land in
-// either layout) and load their data through the same per-tab blocks below.
+// TWO LAYOUTS (UI-01, Sep 24 2026; R04, Sep 28 2026). The layout above is
+// "v1" and is what every real client sees until the rollout reaches them; its
+// render below is deliberately left exactly as it was. "v2" — Home · My Plan ·
+// Content Library · Schedule · More, in PortalShell — is served to TEST
+// clients, to the pilot clients the rollout names with the layout ticked
+// while `portal_layout_v2` is on, to everyone once the rollout is set to every
+// client, and to staff who add ?layout=v2 (lib/portalLayout decides, from the
+// client, never the viewer). Both read the same address
+// (lib/portalNav.resolvePortalRoute: old ?tab= links land in either layout)
+// and load their data through the same per-tab blocks below.
 // ---------------------------------------------------------------------------
 
 export type PortalTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms";
@@ -169,8 +172,11 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // can actually go out: with `portal_login_email` off, this banner sends the
   // client to a form that takes their address and sends nothing, on every tab
   // of every portal including paused and ended ones (review blocker, Sep 17).
-  const { portalLoginEmailEnabled } = await import("@/lib/portalAccess");
-  const emailSignInLive = await portalLoginEmailEnabled().catch(() => false);
+  // And only for a client the rollout reaches (R04, Sep 28 2026): for a client
+  // outside it requestLoginLink sends nothing either, so the global switch
+  // alone would invite them to a form that never answers.
+  const { portalLoginEmailEnabledFor } = await import("@/lib/portalAccess");
+  const emailSignInLive = await portalLoginEmailEnabledFor(enrollment.clientId).catch(() => false);
   const offerSignIn = emailSignInLive && actor.kind === "TOKEN" && (await enrollmentHasMembership(enrollment.id));
 
   // ---- per-tab data --------------------------------------------------------

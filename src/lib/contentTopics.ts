@@ -1124,7 +1124,7 @@ export type CarryCandidate = { topicId: string; title: string; fromMonthKey: str
  * topic (monthId null, after a swap) is never auto-carried: someone chose to
  * take it off a month.
  */
-export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Date; dryRun?: boolean; actor?: Actor } = {}): Promise<{ candidates: CarryCandidate[]; carried: number; skipped: { topicId: string; why: string }[] }> {
+export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Date; dryRun?: boolean; actor?: Actor; scriptedSince?: Date | null } = {}): Promise<{ candidates: CarryCandidate[]; carried: number; skipped: { topicId: string; why: string }[] }> {
   const now = opts.now ?? new Date();
   const { etMonthKey } = await import("@/lib/contentProgram");
   const currentKey = etMonthKey(now);
@@ -1137,7 +1137,10 @@ export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Da
   const candidates: CarryCandidate[] = [];
   for (const t of topics) {
     const [script, footage, ahead] = await Promise.all([
-      prisma.contentScript.findFirst({ where: { topicId: t.id, historical: false }, orderBy: { updatedAt: "desc" }, select: { id: true } }),
+      // R03 (Sep 28 2026, business default 5): the sweep passes the client's
+      // rollout join as `scriptedSince`, so only topics SCRIPTED from that day
+      // onward carry — joining the pilot never rolls a backlog forward.
+      prisma.contentScript.findFirst({ where: { topicId: t.id, historical: false, ...(opts.scriptedSince ? { createdAt: { gte: opts.scriptedSince } } : {}) }, orderBy: { updatedAt: "desc" }, select: { id: true } }),
       prisma.contentVideo.findFirst({ where: { topicId: t.id, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } }),
       prisma.contentTopicSelection.findFirst({ where: { topicId: t.id, status: { in: ALLOWANCE_SELECTION_STATUSES }, monthId: { notIn: past.map((m) => m.id) } }, select: { id: true } }),
     ]);
@@ -1156,14 +1159,23 @@ export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Da
 }
 
 /** HOURLY, behind `topic_carryover` (a missing row is OFF). Must run after the month is minted (contentProgram). */
-export async function sweepCarryover(opts: { now?: Date } = {}): Promise<{ skipped: string } | { enrollments: number; carried: number; skippedTopics: number }> {
+export async function sweepCarryover(opts: { now?: Date } = {}): Promise<{ skipped: string } | { enrollments: number; carried: number; skippedTopics: number; outOfScope: number }> {
   if (!(await isAutomationEnabled("topic_carryover"))) return { skipped: "topic_carryover is off" };
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
-  let carried = 0, skippedTopics = 0, touched = 0;
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } });
+  // THE ROLLOUT (R03, Sep 28 2026): the switch on carried every client's
+  // unfilmed topics; now only the clients the program rollout admits for
+  // topic_carryover, one scope read for the whole pass. A client outside it
+  // keeps today's behaviour (a person carries by hand). A pilot client carries
+  // only what was scripted since they joined (their `since`).
+  const { programReachMany } = await import("@/lib/programRollout");
+  const reach = await programReachMany("topic_carryover", live.map((e) => e.clientId), { now: opts.now });
+  let carried = 0, skippedTopics = 0, touched = 0, outOfScope = 0;
   let lastError: string | null = null;
   for (const e of live) {
+    const d = reach.get(e.clientId);
+    if (!d?.ok) { outOfScope++; continue; }
     try {
-      const r = await carryUnfilmedTopics(e.id, { now: opts.now });
+      const r = await carryUnfilmedTopics(e.id, { now: opts.now, scriptedSince: d.since });
       if (r.carried) touched++;
       carried += r.carried;
       skippedTopics += r.skipped.length;
@@ -1172,7 +1184,7 @@ export async function sweepCarryover(opts: { now?: Date } = {}): Promise<{ skipp
     }
   }
   await recordAutomationRun("topic_carryover", lastError).catch(() => {});
-  return { enrollments: touched, carried, skippedTopics };
+  return { enrollments: touched, carried, skippedTopics, outOfScope };
 }
 
 /**

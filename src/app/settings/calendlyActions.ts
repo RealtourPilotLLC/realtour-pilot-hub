@@ -14,7 +14,7 @@ import {
   confirmCallRecordClient, ignoreCallRecord, setCallRecordTargetMonth, confirmTranscriptSource, rejectTranscriptSource,
   verifyClientEmailAlias, dismissClientEmailAlias, attachPastedTranscript,
 } from "@/lib/contentCallRecords";
-import { transcriptJobsSnapshot, enqueueTranscriptJob, isTranscriptJobKind } from "@/lib/transcriptJobs";
+import { transcriptJobsSnapshot, transcriptQueueBatch, transcriptJobHold, enqueueTranscriptJob, isTranscriptJobKind, BACKLOG_FIELD, FIRST_ON_FIELD, INCLUDE_BACKLOG, type TranscriptQueueBatch } from "@/lib/transcriptJobs";
 
 // ---------------------------------------------------------------------------
 // Settings → Calendly & calls (spec §26). Reads: owner or admin (the page's
@@ -52,12 +52,18 @@ export type CalendlyPanelState = {
   reviewRecords: CallRecordView[];
   queue: Awaited<ReturnType<typeof callReviewQueue>>;
   jobs: Awaited<ReturnType<typeof transcriptJobsSnapshot>>;
+  /**
+   * What the call processor would face now (R05, Sep 28 2026): by kind, by
+   * requester, by client with its tier, the backlog it skips, what is
+   * runnable. The driver's own hold rule, read-only. null if it could not be read.
+   */
+  batch: TranscriptQueueBatch | null;
   enrolledClients: { id: string; name: string }[];
 };
 
 export async function loadCalendlyPanelState(): Promise<CalendlyPanelState> {
   await requireAdmin();
-  const [conn, gmail, mappings, switches, rules, records, reviewRecords, queue, jobs, enrollments] = await Promise.all([
+  const [conn, gmail, mappings, switches, rules, records, reviewRecords, queue, jobs, batch, enrollments] = await Promise.all([
     prisma.connection.findUnique({ where: { provider: "calendly" } }),
     prisma.connection.findUnique({ where: { provider: "gmail" }, select: { lastSyncedAt: true } }),
     prisma.programCalendlyEventMapping.findMany({ orderBy: { createdAt: "asc" } }),
@@ -67,6 +73,7 @@ export async function loadCalendlyPanelState(): Promise<CalendlyPanelState> {
     listCallRecords({ limit: 30, onlyReview: true }),
     callReviewQueue(),
     transcriptJobsSnapshot(),
+    transcriptQueueBatch().catch(() => null),
     prisma.contentEnrollment.findMany({ select: { clientId: true } }),
   ]);
   const clients = await prisma.client.findMany({ where: { id: { in: enrollments.map((e) => e.clientId) } }, select: { id: true, name: true }, orderBy: { name: "asc" } });
@@ -91,8 +98,52 @@ export async function loadCalendlyPanelState(): Promise<CalendlyPanelState> {
     // A name heuristic only decides which HINT shows — classification stays by URI.
     discoveryTypeExists: types.some((t) => /brand/i.test(`${t.name} ${t.slug ?? ""}`) && /discover/i.test(`${t.name} ${t.slug ?? ""}`)),
     switches: switches.map((s) => ({ key: s.key, enabled: s.enabled, missing: s.missing, lastRunAt: s.lastRunAt, lastError: s.lastError })),
-    rules, records, reviewRecords, queue, jobs, enrolledClients: clients,
+    rules, records, reviewRecords, queue, jobs, batch, enrolledClients: clients,
   };
+}
+
+/** The call processor's batch on its own — the switch-on confirm reads it before the owner says yes. */
+export async function loadTranscriptQueueBatch(): Promise<TranscriptQueueBatch | { error: string }> {
+  try { await requireAdmin(); } catch (e) { return { error: fail(e).message }; }
+  try { return await transcriptQueueBatch(); } catch (e) { return { error: `The transcript queue could not be read (${fail(e).message}).` }; }
+}
+
+/**
+ * THE BACKLOG CHOICE (R05, Sep 28 2026 — business default: when the call
+ * processor is first switched on it takes ONLY jobs queued after that moment).
+ *   "include" — also process the jobs queued before it (spends AI credit on
+ *               older calls; the count is shown before this is pressed);
+ *   "skip"    — back to the default: jobs queued before the FIRST switch-on
+ *               are skipped. The first switch-on is its own field
+ *               (FIRST_ON_FIELD, written once by the processor), and "skip"
+ *               restores the cutoff to it (review fix, Sep 28 2026: clearing
+ *               the field fell back to the LATEST switch-on, which moves on
+ *               every off/on, and quietly skipped the jobs queued between).
+ * One config field, under the switch's own advisory lock and audited
+ * (setAutomationConfigField); the switch's on/off is never touched here.
+ */
+export async function setTranscriptBacklogAction(choice: "include" | "skip"): Promise<R> {
+  try {
+    const by = await owner();
+    if (choice !== "include" && choice !== "skip") return { ok: false, message: "Choose include or skip." };
+    const before = await transcriptQueueBatch();
+    const { setAutomationConfigField } = await import("@/lib/programAutomation");
+    // Keep the first switch-on before "include" overwrites the pinned cutoff
+    // (a value pinned before FIRST_ON_FIELD existed is that moment).
+    const first = before.backlog.firstSwitchedOnAt ?? (before.backlog.source === "pinned" ? before.backlog.cutoff : null);
+    if (!before.backlog.firstSwitchedOnAt && first) {
+      await setAutomationConfigField("transcript_jobs", FIRST_ON_FIELD, first.toISOString(), by ?? "owner", "transcript_first_switch_on");
+    }
+    await setAutomationConfigField("transcript_jobs", BACKLOG_FIELD, choice === "include" ? INCLUDE_BACKLOG : first ? first.toISOString() : null, by ?? "owner", "transcript_backlog_choice");
+    revalidatePath("/settings");
+    const after = await transcriptQueueBatch();
+    return {
+      ok: true,
+      message: choice === "include"
+        ? `The call processor will also work through the ${before.heldBacklog} job${before.heldBacklog === 1 ? "" : "s"} queued before it was switched on (${after.runnableNow} runnable now, five per hourly run, each AI job spends credit${after.heldScope ? `; ${after.heldScope} for clients outside the rollout still wait` : ""}).`
+        : `The call processor will skip jobs queued before it was first switched on${first ? ` (${first.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })})` : ""}${after.heldBacklog ? ` — ${after.heldBacklog} skipped now` : ""}. Nothing already processed is undone.`,
+    };
+  } catch (e) { return fail(e); }
 }
 
 /**
@@ -241,13 +292,31 @@ export async function dismissAlias(aliasId: string): Promise<R> {
   try { await owner(); await dismissClientEmailAlias(aliasId); revalidatePath("/settings"); return { ok: true, message: "Dismissed." }; }
   catch (e) { return fail(e); }
 }
+/** What a Re-run will actually do, in the driver's own terms. */
+function rerunWords(state: string, h: Awaited<ReturnType<typeof transcriptJobHold>>): string {
+  if (state !== "QUEUED") return `Not re-queued: the job is ${state.toLowerCase()} (it is re-run only once it has finished, failed or been cancelled).`;
+  if (!h) return "Re-queued. Whether it runs on the next hourly run could not be checked just now.";
+  if (h.hold) {
+    const why = h.hold.reason.replace(/^waiting: /, "");
+    const fix = h.hold.kind === "scope" ? " (add the client to the pilot to run it)" : h.hold.kind === "owner" ? " (switch it on to run it)" : "";
+    return `Re-queued, but it waits: ${why}${fix}.`;
+  }
+  if (!h.processorOn) return "Re-queued, but it waits: Transcript processing is off, so the call processor does not run. It runs on the first hourly run after you switch it on.";
+  if (!h.aiRunsOn && h.kind !== "INGEST") return "Re-queued, but it waits: AI runs is off, and a queued job spends AI credit only while it is on.";
+  return "Re-queued. It runs on the next hourly run of the call processor.";
+}
+
 export async function rerunTranscriptJob(jobId: string): Promise<R> {
   try {
     const by = await owner();
     const j = await prisma.programTranscriptJob.findUnique({ where: { id: jobId }, select: { kind: true, callRecordId: true, transcriptSourceId: true, enrollmentId: true } });
     if (!j || !isTranscriptJobKind(j.kind)) throw new Error("Job not found.");
-    await enqueueTranscriptJob({ callRecordId: j.callRecordId, kind: j.kind, transcriptSourceId: j.transcriptSourceId, enrollmentId: j.enrollmentId, requestedBy: by, rerun: true });
+    const q = await enqueueTranscriptJob({ callRecordId: j.callRecordId, kind: j.kind, transcriptSourceId: j.transcriptSourceId, enrollmentId: j.enrollmentId, requestedBy: by, rerun: true });
     revalidatePath("/settings");
-    return { ok: true, message: "Re-queued." };
+    // R05: a queued run is unattended now, whoever asked for it, so the
+    // re-run waits for AI runs like every other queued job. And ONLY a job
+    // nothing holds is promised the next run (review fix, Sep 28 2026): the
+    // same hold rule the driver uses decides the sentence.
+    return { ok: true, message: rerunWords(q.state, await transcriptJobHold(q.id).catch(() => null)) };
   } catch (e) { return fail(e); }
 }

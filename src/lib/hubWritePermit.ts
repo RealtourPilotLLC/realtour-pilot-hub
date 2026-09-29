@@ -33,6 +33,16 @@
 // The pilot lists are EMPTY and every switch is off. Turning a pilot on is
 // Jordan's launch decision, made on Settings → Automations by the owner, who
 // types the client's name to confirm and is recorded in the audit log.
+//
+// ONE PILOT LIST (R03, Jordan's Sep 28 2026 rule: "automatic booking must be
+// enabled for the approved pilot before we call the self-service scheduling
+// workflow complete"). The PILOT that rule 3 reads is now the PROGRAM pilot
+// (Settings → Who the program may reach; programRolloutCore.withProgramPilot):
+// the Aryeo guard and the Calendly guard both replace the per-switch `pilot`
+// with it before routing, so a pilot client whose "bookings" group is ticked
+// gets session_booking / address_sync / call_booking writes once those
+// switches are on, and nobody else does. The per-switch pilot on file is read
+// by nobody; the FIXTURE list and its rules are exactly as they were.
 // ---------------------------------------------------------------------------
 
 /** The switches whose writes are scoped by this file. */
@@ -105,6 +115,21 @@ export function parseHubWriteConfig(raw: unknown): HubWriteScopeConfig {
 
 export type PilotState = "NONE" | "ACTIVE" | "EXPIRED" | "UNAPPROVED";
 
+/**
+ * The LAST DAY a pilot covers, as "Oct 18" in Eastern time. The editors store
+ * expiresAt as the NEXT ET midnight after the day the owner chose (the pilot
+ * runs to the end of that day), so printing expiresAt itself named the day
+ * AFTER — "until Oct 19" for a pilot Jordan set to end Oct 18, and the UTC
+ * slice said 2026-10-19 on the hub-write rows (review fix, Sep 28 2026). Every
+ * pilot end date in words goes through here: "through Oct 18", "ended after
+ * Oct 18". Pure; this module imports nothing.
+ */
+export function pilotLastDay(expiresAt: string | null | undefined): string {
+  const t = expiresAt ? Date.parse(expiresAt) : NaN;
+  if (!Number.isFinite(t)) return "";
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }).format(new Date(t - 1));
+}
+
 /** Where a switch's pilot stands, as a whole. */
 export function pilotState(pilot: HubPilot | null, now: Date): PilotState {
   if (!pilot || pilot.clientIds.length === 0) return "NONE";
@@ -113,15 +138,17 @@ export function pilotState(pilot: HubPilot | null, now: Date): PilotState {
   return "ACTIVE";
 }
 
-/** Why this pilot does not cover this client and operation, or null when it does. */
+/** Why this pilot does not cover this client and operation, or null when it
+ *  does. The pilot the guards pass is the PROGRAM pilot (R03, Sep 28 2026), so
+ *  the words say so: Kyle reads them on the desk task a refusal leaves. */
 export function pilotProblem(switchKey: HubWriteSwitch, pilot: HubPilot | null, clientId: string, operation: string, now: Date): string | null {
   if (!pilot || !pilot.clientIds.includes(clientId)) {
-    return `this client is not in an approved ${switchKey} pilot, so the hub does not write to the provider for it (Kyle books it by hand)`;
+    return `this client is not in the program pilot, so the hub does not write to the provider for it on ${switchKey} (Kyle books it by hand)`;
   }
   const state = pilotState(pilot, now);
-  if (state === "UNAPPROVED") return `the ${switchKey} pilot has no recorded approval (approvedBy/approvedAt), so it covers nobody`;
-  if (state === "EXPIRED") return `the ${switchKey} pilot expired ${pilot.expiresAt}, so the hub no longer writes for its clients`;
-  if (!pilot.operations.includes(operation)) return `the ${switchKey} pilot does not include ${operation} for this client`;
+  if (state === "UNAPPROVED") return `the program pilot has no recorded approval (approvedBy/approvedAt), so it covers nobody on ${switchKey}`;
+  if (state === "EXPIRED") return `the program pilot ended after ${pilotLastDay(pilot.expiresAt)}, so the hub no longer writes for its clients on ${switchKey}`;
+  if (!pilot.operations.includes(operation)) return `the program pilot does not include bookings (${operation} on ${switchKey}) for this client`;
   return null;
 }
 
@@ -177,7 +204,7 @@ export function describeHubWriteScope(
   const pilot =
     ps === "NONE"
       ? "no pilot — no real client is written for"
-      : `${ps.toLowerCase()} · ${who(p!.clientIds)} · ${p!.operations.join(", ") || "no operations"}${p!.approvedBy ? ` · approved by ${p!.approvedBy}${p!.approvedAt ? ` ${p!.approvedAt.slice(0, 10)}` : ""}` : ""}${p!.expiresAt ? ` · until ${p!.expiresAt.slice(0, 10)}` : ""}`;
+      : `${ps.toLowerCase()} · ${who(p!.clientIds)} · ${p!.operations.join(", ") || "no operations"}${p!.approvedBy ? ` · approved by ${p!.approvedBy}${p!.approvedAt ? ` ${p!.approvedAt.slice(0, 10)}` : ""}` : ""}${p!.expiresAt ? ` · through ${pilotLastDay(p!.expiresAt)}` : ""}`;
   const headline = !s.enabled
     ? `${s.missing ? "never configured" : "off"} — no hub writes for anyone, whatever the lists say`
     : ps === "ACTIVE"

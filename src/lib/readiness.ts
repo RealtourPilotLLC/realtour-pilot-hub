@@ -4,8 +4,14 @@ import { AUTOMATION_KEYS, type AutomationKey } from "@/lib/programAutomation";
 import { AUTOMATION_EFFECTS, type AutomationCadence, type ReadinessConfigCheck, type ReadinessProvider } from "@/lib/programAutomationCopy";
 import { deployStamp, lastRunDeploy } from "@/lib/cron";
 import { cronHealthByJob } from "@/lib/cronHealth";
-import { isHubWriteSwitch, parseHubWriteConfig, pilotState, describeHubWriteScope, type HubWriteScopeConfig } from "@/lib/hubWritePermit";
+import { isHubWriteSwitch, parseHubWriteConfig, pilotState, describeHubWriteScope, type HubWriteScopeConfig, type PilotState } from "@/lib/hubWritePermit";
 import { isTestClientName, isNeverSyntheticClientId, isVerifiedTestDestinationEmail } from "@/lib/testClients";
+import {
+  CLOSED_ROLLOUT, PROGRAM_PILOT_GROUPS, PROGRAM_PILOT_GROUP_SHORT, PROGRAM_PILOT_MAX, clientReachSummary, isProgramReachOp, pilotStateOf, withProgramPilot,
+  type ProgramReachOp, type ProgramRollout, type ReachRefusalCode, type ReachTier, type RolloutMode,
+} from "@/lib/programRolloutCore";
+import type { ProgramAudience } from "@/lib/programRollout";
+import type { TranscriptQueueBatch } from "@/lib/transcriptJobs";
 
 // ---------------------------------------------------------------------------
 // READINESS (A56, unified handoff §11 and §12, Sep 28 2026).
@@ -42,6 +48,25 @@ import { isTestClientName, isNeverSyntheticClientId, isVerifiedTestDestinationEm
 // today (§4: "Do not disable unrelated approved communications already used
 // by the team"), and the launch gate is about the content program.
 //
+// WHO, FROM THE SAME PLACE DISPATCH ASKS (R03, Sep 28 2026). The scope line
+// used to be derived here from each feature's testClientsOnly lock, so it
+// could only ever say "TEST clients only" or "every client" — and five
+// switches read "every client it concerns, once on" with no lock at all. It
+// now comes from programRollout.programAudience(op): the same stored rollout,
+// the same featureTestOnlyFor lock reader and the same rolloutDecision the
+// outbox gate, the evaluators and the dry run call. So what readiness names,
+// what the dry run marks "send" and what dispatch lets through are one answer.
+// It says "every client" only when the rollout is set to everyone. The three
+// provider-write switches read the PROGRAM pilot (withProgramPilot — Jordan's
+// Sep 28 rule), and their per-switch pilot on file is reported as not read.
+//
+// THE CALL PROCESSOR (R05, Sep 28 2026). A switch whose work waits in the
+// transcript queue is not effective while the processor is off, and the
+// blocker says how much is waiting; a partial dependency (one path of a
+// switch) is reported as blocked for that path and the switch is never called
+// healthy while it is. The transcript_jobs row carries the read-only batch
+// (transcriptJobs.transcriptQueueBatch — the driver's own hold rule).
+//
 // READ-ONLY. Nothing here writes a row or changes a saved value, and nothing
 // here asks a provider anything unless the caller passes live:true — and then
 // only Google's tokeninfo, the same send-scope probe /connections runs on
@@ -61,16 +86,43 @@ export type ReadinessRow = {
   configured: { ok: boolean; detail: string };
   connected: { ok: boolean | null; providers: string[]; missing: string[]; detail: string };
   enabled: { ok: boolean; detail: string };
-  effective: { ok: boolean; blockers: string[] };
+  /**
+   * `blockers` stop the whole switch. `partial` stop one named path of it
+   * (requires.partial, R05): the switch can still be effective, but it is
+   * never reported healthy while one of these stands.
+   */
+  effective: { ok: boolean; blockers: string[]; partial: string[] };
   healthy: { ok: boolean | null; lastRunAt: Date | null; lastError: string | null; stale: boolean; detail: string };
   recipients: string;
   /** Whom it may touch, when that is narrower or wider than "everyone it concerns". */
   scope: string | null;
+  /** A plain extra line (the queue batch; "the buttons do not use the queue"). */
+  note: string | null;
   cadence: AutomationCadence;
   /** Counted by rolloutClosed (a content-program switch that reaches clients). */
   launchGated: boolean;
   /** As configured now, would it touch a real (non-TEST) client once effective? */
   realClients: boolean;
+};
+
+/** "Who the program may reach" — the rollout itself, for the header of the panel. */
+export type ProgramScopeView = {
+  mode: RolloutMode;
+  modeSince: Date | null;
+  pilotState: PilotState;
+  cap: number;
+  pilot: null | { names: string[]; groups: string[]; approvedBy: string | null; approvedAt: Date | null; expiresAt: Date | null; note: string | null };
+  /** The stored value could not be read (it reads as TEST only), or the database could not be asked. */
+  problem: string | null;
+  updatedBy: string | null;
+  updatedAt: Date | null;
+  /**
+   * Every client with an ACTIVE or PAUSED program: its tier and the groups the
+   * rollout reaches it for (programRolloutCore.clientReachSummary — review
+   * fix, Sep 28 2026: this read portal_sign_in alone, so an emails-only pilot
+   * client read "not reached for this"), or why it reaches it for none.
+   */
+  clients: { name: string; tier: ReachTier | null; code: ReachRefusalCode | null; reason: string; groups: string[] }[];
 };
 
 export type ProviderReadiness = {
@@ -101,8 +153,28 @@ export type ReadinessReport = {
   generatedAt: Date;
   live: boolean;
   deploy: { page: string | null; lastSync: { deploy: string | null; startedAt: Date; finishedAt: Date | null } | null };
-  /** openers: effective for a real client now. armed: on for real clients but held only by a missing dependency. */
-  rolloutClosed: { ok: boolean; openers: string[]; armed: string[] };
+  /**
+   * openers: effective for a real client now. armed: on for real clients but
+   * held only by a missing dependency. Each names WHO, e.g. "Client reminders
+   * — pilot: Acme Realty" (never a bare title that reads as every client).
+   */
+  rolloutClosed: {
+    ok: boolean;
+    openers: string[];
+    armed: string[];
+    /**
+     * Who the OPENERS reach, for the banner (review fix, Sep 28 2026): "every
+     * client with a program" only when at least one opener does; otherwise
+     * the pilot's names. It used to follow the mode alone, so in ALL with only
+     * pilot-scoped openers (the booking writes, or every program switch still
+     * held by its own lock) it said "OPEN for every client with a program".
+     * null when closed.
+     */
+    openFor: string | null;
+  };
+  programScope: ProgramScopeView;
+  /** The transcript queue as the processor would face it now; null when it could not be read. */
+  transcriptQueue: TranscriptQueueBatch | null;
   rows: ReadinessRow[];
   providers: ProviderReadiness[];
   crons: CronFreshness[];
@@ -307,6 +379,22 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   const live = opts.live === true;
   const settingsMod = await import("@/lib/settings");
 
+  // The rollout scope, read through the SAME functions dispatch uses (see the
+  // header): the stored value once (for the header and the hub pilots), and
+  // one programAudience per client-reaching op (its lock, its line, its
+  // clients). The call processor's batch, from the driver's own hold rule.
+  const scopeOps = AUTOMATION_KEYS.filter((k) => AUTOMATION_EFFECTS[k].launchGate === "programScope" && isProgramReachOp(k)) as unknown as ProgramReachOp[];
+  const rolloutMod = await import("@/lib/programRollout");
+  const [rolloutRead, audienceList, signInAudience, transcriptQueue] = await Promise.all([
+    rolloutMod.loadProgramRollout().then((r) => ({ ok: true as const, ...r })).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message.split("\n")[0].slice(0, 200) : String(e) })),
+    Promise.all(scopeOps.map((op) => rolloutMod.programAudience(op, { now }))),
+    rolloutMod.programAudience("portal_sign_in", { now }),
+    import("@/lib/transcriptJobs").then((m) => m.transcriptQueueBatch(now)).catch(() => null),
+  ]);
+  const audiences = new Map<string, ProgramAudience>(audienceList.map((a) => [a.op, a]));
+  const rollout: ProgramRollout = rolloutRead.ok ? rolloutRead.rollout : { ...CLOSED_ROLLOUT };
+  const rolloutProblem = rolloutRead.ok ? rolloutRead.problem : `the rollout could not be read from the database (${rolloutRead.error})`;
+
   const [automationRows, connRows, settingRows, cron, lastSync, texts, alerts, topaz, routing, reviewRoom, callMappingOn, gmailSend] = await Promise.all([
     prisma.programAutomation.findMany({ select: { key: true, enabled: true, enabledBy: true, enabledAt: true, configJson: true, lastRunAt: true, lastError: true, lastErrorAt: true } }),
     prisma.connection.findMany({ select: { provider: true, status: true, secretEncrypted: true, lastError: true, lastSyncedAt: true } }),
@@ -345,14 +433,20 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
             ? { checked: true, canSend: false, detail: `Checked ${et(now)}: ${infoBox ? infoBox.email : "the connected mailbox"} is connected but cannot send (it lacks the send permission). Reconnect it on Connections.` }
             : { checked: true, canSend: null, detail: `Checked ${et(now)}: Google did not say whether the mailbox can send.` };
 
-  // Client names for the provider-write scopes (fixtures and pilots).
+  // The provider-write scopes: each switch's TEST fixtures as stored, with the
+  // PILOT replaced by the program pilot (Jordan's Sep 28 rule, one list —
+  // programRolloutCore.withProgramPilot, the same call the permit routes on).
+  // An unreadable rollout is no pilot at all: nobody real is written for.
+  const storedScopeCfgs = new Map<AutomationKey, HubWriteScopeConfig>();
   const scopeCfgs = new Map<AutomationKey, HubWriteScopeConfig>();
   for (const key of AUTOMATION_KEYS) {
     if (!isHubWriteSwitch(key)) continue;
     const obj = parseObj(stored.get(key)?.configJson);
-    scopeCfgs.set(key, parseHubWriteConfig(obj === "unreadable" ? null : obj));
+    const cfg = parseHubWriteConfig(obj === "unreadable" ? null : obj);
+    storedScopeCfgs.set(key, cfg);
+    scopeCfgs.set(key, rolloutRead.ok ? withProgramPilot(cfg, rollout, key) : { authorizedFixtureClientIds: [...cfg.authorizedFixtureClientIds], pilot: null });
   }
-  const scopeIds = [...new Set([...scopeCfgs.values()].flatMap((c) => [...c.authorizedFixtureClientIds, ...(c.pilot?.clientIds ?? [])]))];
+  const scopeIds = [...new Set([...scopeCfgs.values(), ...storedScopeCfgs.values()].flatMap((c) => [...c.authorizedFixtureClientIds, ...(c.pilot?.clientIds ?? [])]))];
   const scopeClients = scopeIds.length
     ? await prisma.client.findMany({ where: { id: { in: scopeIds } }, select: { id: true, name: true, email: true } })
     : [];
@@ -360,28 +454,37 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   const namesById = new Map(scopeClients.map((c) => [c.id, c.name ?? c.id]));
 
   // Reminder policy — the one shape the evaluator reads (programReminders.ts).
+  // Only its VALIDITY is judged here now: its testClientsOnly lock is read,
+  // with every other feature's, by programRollout.featureTestOnlyFor inside
+  // programAudience — the one lock reader (the private readers are gone).
   const { REMINDER_DEFAULTS, validateReminderPolicy } = await import("@/lib/programReminders");
   const remindersObj = parseObj(stored.get("reminders")?.configJson);
   const reminderCheck = remindersObj === "unreadable"
-    ? { ok: false, errors: ["the stored reminder policy is not valid JSON"], testClientsOnly: true }
+    ? { ok: false, errors: ["the stored reminder policy is not valid JSON"] }
     : (() => {
         const v = validateReminderPolicy({ ...REMINDER_DEFAULTS, ...(remindersObj ?? {}) });
-        const tco = v.ok ? v.policy.testClientsOnly : true;
-        return { ok: v.ok, errors: v.ok ? [] : v.errors, testClientsOnly: tco };
+        return { ok: v.ok, errors: v.ok ? [] : v.errors };
       })();
 
-  // testClientsOnly locks (scriptAutoShare.ts, reviewWindows.ts), defaults on.
-  const { AUTO_SHARE_DEFAULTS } = await import("@/lib/scriptAutoShare");
-  const { REVISION_POLICY_DEFAULTS } = await import("@/lib/reviewWindows");
-  const boolOr = (o: Record<string, unknown> | null | "unreadable", k: string): boolean | undefined =>
-    o && o !== "unreadable" && typeof o[k] === "boolean" ? (o[k] as boolean) : undefined;
-  const testOnly: Partial<Record<AutomationKey, boolean>> = {
-    script_auto_share: boolOr(parseObj(stored.get("script_auto_share")?.configJson), "testClientsOnly") ?? AUTO_SHARE_DEFAULTS.testClientsOnly,
-    review_auto_approve:
-      boolOr(parseObj(stored.get("review_auto_approve")?.configJson), "testClientsOnly") ??
-      boolOr(parseObj(stored.get("revision_policy")?.configJson), "testClientsOnly") ??
-      REVISION_POLICY_DEFAULTS.testClientsOnly,
+  // Who each client-reaching row reaches, in the launch gate's words. The
+  // pilot is named from the stored list itself (as the scope line names it),
+  // not from who happens to hold a program today.
+  const whoOf = new Map<string, string>();
+  const pilotIds = rollout.pilot?.clientIds ?? [];
+  const pilotRows = pilotIds.length ? await prisma.client.findMany({ where: { id: { in: pilotIds } }, select: { id: true, name: true } }) : [];
+  const pilotNamesAll = pilotIds.map((id) => pilotRows.find((c) => c.id === id)?.name ?? `${id} (not found)`);
+  // What waits in the transcript queue for a switch that depends on it.
+  const q = transcriptQueue;
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const waitingOnProcessor = (key: AutomationKey): string => {
+    if (!q) return "";
+    if (key === "strategy_generation") return ` — ${plural(q.byKind.STRATEGY_DRAFT ?? 0, "strategy draft is", "strategy drafts are")} queued and not being processed`;
+    if (key === "script_drafting" || key === "fact_extraction") return ` — ${plural(q.byKind.ANALYZE ?? 0, "call analysis is", "call analyses are")} queued and not being processed`;
+    return ` — ${plural(q.queued, "job is", "jobs are")} queued and not being processed`;
   };
+  // The manual buttons never touch the queue (aiRuns.ts: a person's click is
+  // attended), and the rows whose work the queue does say so.
+  const INLINE_BUTTONS = "The Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use the queue.";
 
   // call_booking's API mode and its stored read-only probe (callBooking.ts).
   const callCfg = parseObj(stored.get("call_booking")?.configJson);
@@ -461,7 +564,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
     // the owner sees what else it needs before he turns it on.
     const blockers: string[] = [];
     for (const dep of needs.switches ?? []) {
-      if (stored.get(dep)?.enabled !== true) blockers.push(`needs ${dep} switched on: “${title(dep)}”`);
+      if (stored.get(dep)?.enabled !== true) blockers.push(`needs ${dep} switched on: “${title(dep)}”${dep === "transcript_jobs" ? waitingOnProcessor(key) : ""}`);
     }
     for (const p of missing) blockers.push(p === "instagram" || p === "stt" ? (e.blocked ?? `needs ${PROVIDERS[p].label} connected`) : `needs ${PROVIDERS[p].label} connected`);
     if (gmailCannotSend) blockers.push("Gmail is connected but cannot send");
@@ -469,7 +572,9 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
     if (key === "legacy_call_sweeps" && (needs.config ?? []).includes("noCallMapping") && callMappingOn === true) {
       blockers.push("stands down while a Calendly event type is mapped (by design)");
     }
-    const effective = { ok: enabled && blockers.length === 0, blockers };
+    // Filled in after every row exists (a partial dependency is judged by the
+    // dependency's own EFFECTIVE verdict, which may come later in the list).
+    const effective = { ok: enabled && blockers.length === 0, blockers, partial: [] as string[] };
 
     // healthy
     const cadenceMs = CADENCE_MS[e.cadence];
@@ -499,33 +604,82 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
                   ? { ok: true, lastRunAt, lastError: null, stale: false, detail: `last ran ${agoWords(lastRunAt, now)}` }
                   : { ok: null, lastRunAt: null, lastError: null, stale: false, detail: e.cadence === "on-action" ? "no run recorded yet (it runs when something happens)" : "no run recorded yet" };
 
-    // scope, and whether it touches real clients
+    // scope, and whether it touches real clients. Never "every client" unless
+    // the rollout says everyone (the deleted fallback said it for five
+    // switches that had no lock at all).
     let scope: string | null = null;
     let realClients = false;
     if (e.reaches === "clients") {
       if (e.launchGate === "hubWriteScope") {
         const cfg = scopeCfgs.get(key)!;
         const d = describeHubWriteScope(key as Parameters<typeof describeHubWriteScope>[0], { enabled, missing: !s, config: cfg }, namesById, now);
-        scope = `TEST fixtures: ${d.fixtures} · pilot: ${d.pilot}`;
-        realClients = d.pilotState === "ACTIVE";
-      } else if (e.launchGate === "reminderPolicy") {
-        realClients = reminderCheck.testClientsOnly === false;
-        scope = realClients ? "every client (the reminder policy's testClientsOnly lock is off)" : "TEST clients only (the reminder policy's testClientsOnly lock)";
-      } else if (e.launchGate === "testClientsOnly") {
-        realClients = testOnly[key] === false;
-        scope = realClients ? "every client (testClientsOnly is off)" : "TEST clients only (testClientsOnly)";
+        const pilotNames = (cfg.pilot?.clientIds ?? []).map((id) => namesById.get(id) ?? id);
+        const writes = d.pilotState === "ACTIVE" && (cfg.pilot?.operations.length ?? 0) > 0;
+        const parts = [`TEST fixtures: ${d.fixtures}`, `program pilot: ${d.pilot}`];
+        if (!rolloutRead.ok) parts.push(`the program rollout could not be read, so no pilot client is written for (${rolloutRead.error})`);
+        else if (d.pilotState === "ACTIVE" && !writes) parts.push(`pilot clients ${pilotNames.join(", ")} are not written for — the program pilot does not include bookings`);
+        const onFile = storedScopeCfgs.get(key)?.pilot?.clientIds ?? [];
+        if (onFile.length) parts.push(`the older per-switch pilot on file (${onFile.map((id) => namesById.get(id) ?? id).join(", ")}) is no longer read — the program pilot decides`);
+        scope = parts.join(" · ");
+        realClients = writes;
+        if (writes) whoOf.set(key, `pilot: ${pilotNames.join(", ")}`);
+      } else if (e.launchGate === "programScope") {
+        const aud = audiences.get(key);
+        scope = aud?.line ?? "TEST clients only — the rollout scope could not be read";
+        realClients = aud?.realClients === true;
+        // ALL reaches everyone only where the feature's own lock is lifted
+        // (realClients is false under the lock), so "every client" is honest.
+        if (aud && realClients) whoOf.set(key, aud.mode === "ALL" ? "every client with a program" : `pilot: ${pilotNamesAll.join(", ")}`);
       } else {
-        realClients = true;
-        scope = "every client it concerns, once on";
+        // A client-reaching switch with no declared gate would be a copy
+        // mistake; say so rather than guess an audience.
+        scope = "no audience rule is declared for this switch";
       }
     }
+
+    const note =
+      key === "transcript_jobs" ? [q ? q.queuedNowLine : "Queued now: the queue could not be read", q?.line ?? null, INLINE_BUTTONS].filter(Boolean).join(". ")
+        : key === "strategy_generation" || key === "script_drafting" ? INLINE_BUTTONS
+          : null;
 
     rows.push({
       key, kind: "program", group: "program", title: e.title, reaches: e.reaches,
       configured, connected, enabled: enabledState, effective, healthy,
-      recipients: e.recipients, scope, cadence: e.cadence,
+      recipients: e.recipients, scope, note, cadence: e.cadence,
       launchGated: e.reaches === "clients", realClients,
     });
+  }
+
+  // ---- partial dependencies and queue health (R05) -----------------------------
+  // A partial dependency stops one named path: blocked for that path, and the
+  // switch is never "healthy" while it stands — but it is not a whole-switch
+  // blocker, so a switch whose other path runs is not called "NOT working".
+  const rowOf = (k: string) => rows.find((r) => r.key === k) ?? null;
+  for (const key of AUTOMATION_KEYS) {
+    const partial = AUTOMATION_EFFECTS[key].requires?.partial ?? [];
+    const row = rowOf(key);
+    if (!row || !partial.length) continue;
+    for (const dep of partial) {
+      if (rowOf(dep.switch)?.effective.ok) continue;
+      row.effective.partial.push(`${dep.why}: needs ${dep.switch} working (“${title(dep.switch)}”)${dep.switch === "transcript_jobs" ? waitingOnProcessor(key) : ""}`);
+    }
+    if (row.enabled.ok && row.effective.ok && row.effective.partial.length) {
+      const words = `partly blocked: ${row.effective.partial.join("; ")}`;
+      row.healthy = row.healthy.ok === false
+        ? { ...row.healthy, detail: `${row.healthy.detail}; ${words}` }
+        : { ok: false, lastRunAt: row.healthy.lastRunAt, lastError: null, stale: false, detail: words };
+    }
+  }
+  // The processor itself: on and working, but its oldest runnable job has
+  // waited longer than the queue's own length explains (two hours, plus an
+  // hour for every batch of five ahead of it) → it is not draining.
+  const tj = rowOf("transcript_jobs");
+  if (tj && tj.effective.ok && tj.healthy.ok !== false && q?.oldestRunnableSince) {
+    const waitedMs = now.getTime() - q.oldestRunnableSince.getTime();
+    const allowMs = 2 * HOUR + q.ticksToDrain * HOUR;
+    if (waitedMs > allowMs) {
+      tj.healthy = { ok: false, lastRunAt: tj.healthy.lastRunAt, lastError: null, stale: true, detail: `queue not draining: a runnable job has waited ${agoWords(q.oldestRunnableSince, now).replace(" ago", "")} (${q.runnableNow} runnable)` };
+    }
   }
 
   // ---- the business automations that already run ---------------------------
@@ -590,8 +744,8 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
         ? { ok: missing.length === 0, providers: b.providers.map((p) => PROVIDERS[p].label), missing: missing.map((p) => PROVIDERS[p].label), detail: missing.length ? `not connected: ${missing.map((p) => PROVIDERS[p].label).join(", ")}` : `connected: ${b.providers.map((p) => PROVIDERS[p].label).join(", ")}` }
         : { ok: null, providers: [], missing: [], detail: "needs no outside connection" },
       enabled: { ok: b.enabled, detail: b.enabledDetail ?? (b.enabled ? "on" : "off") },
-      effective: { ok: effectiveOk, blockers },
-      healthy, recipients: b.recipients, scope: b.scope, cadence: b.cadence,
+      effective: { ok: effectiveOk, blockers, partial: [] },
+      healthy, recipients: b.recipients, scope: b.scope, note: null, cadence: b.cadence,
       launchGated: false, realClients: b.reaches === "clients",
     });
   };
@@ -646,14 +800,52 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   });
 
   const gated = rows.filter((r) => r.launchGated && r.realClients);
-  const openers = gated.filter((r) => r.effective.ok).map((r) => r.title);
-  const armed = gated.filter((r) => r.enabled.ok && !r.effective.ok).map((r) => r.title);
+  const named = (r: ReadinessRow) => `${r.title} — ${whoOf.get(r.key) ?? "real clients"}`;
+  const openRows = gated.filter((r) => r.effective.ok);
+  const openers = openRows.map(named);
+  const armed = gated.filter((r) => r.enabled.ok && !r.effective.ok).map(named);
+  const EVERY = "every client with a program";
+  const openWho = openRows.map((r) => whoOf.get(r.key) ?? "real clients");
+  const openFor = !openRows.length
+    ? null
+    : openWho.includes(EVERY)
+      ? EVERY
+      : openWho.every((w) => w.startsWith("pilot: "))
+        ? `the pilot: ${[...new Set(openWho.flatMap((w) => w.slice("pilot: ".length).split(", ")))].join(", ")}`
+        : "real clients";
+
+  // ---- who the program may reach (the header of the panel) -------------------
+  const p = rollout.pilot;
+  const programScope: ProgramScopeView = {
+    mode: rollout.mode,
+    modeSince: rollout.modeSince ? new Date(rollout.modeSince) : null,
+    pilotState: pilotStateOf(rollout, now),
+    cap: PROGRAM_PILOT_MAX,
+    pilot: p && p.clientIds.length
+      ? {
+          names: pilotNamesAll,
+          groups: PROGRAM_PILOT_GROUPS.filter((g) => g.ops.every((op) => p.operations.includes(op))).map((g) => g.label),
+          approvedBy: p.approvedBy, approvedAt: p.approvedAt ? new Date(p.approvedAt) : null, expiresAt: p.expiresAt ? new Date(p.expiresAt) : null, note: p.note,
+        }
+      : null,
+    problem: rolloutProblem ?? signInAudience.problem,
+    updatedBy: rolloutRead.ok ? rolloutRead.updatedBy : null,
+    updatedAt: rolloutRead.ok ? rolloutRead.updatedAt : null,
+    clients: signInAudience.clients.map((c) => {
+      // A stored value that could not be read keeps the one decision (it says why).
+      if (!rolloutRead.ok || rolloutRead.problem) return { name: c.name, tier: c.tier, code: c.decision.ok ? null : c.decision.code, reason: c.decision.reason, groups: [] };
+      const sum = clientReachSummary(rollout, { id: c.clientId, name: c.name }, now);
+      return { name: c.name, tier: sum.tier, code: sum.code, reason: sum.reason, groups: sum.groups.map((k) => PROGRAM_PILOT_GROUP_SHORT[k]) };
+    }),
+  };
 
   return {
     generatedAt: now,
     live,
     deploy: { page: deployStamp(), lastSync: lastSync ?? null },
-    rolloutClosed: { ok: openers.length === 0, openers, armed },
+    rolloutClosed: { ok: openers.length === 0, openers, armed, openFor },
+    programScope,
+    transcriptQueue,
     rows,
     providers,
     crons: cron.crons,
@@ -672,6 +864,7 @@ export function readinessLine(r: ReadinessRow): string {
     `connected ${mark(r.connected.ok)}`,
     `enabled ${mark(r.enabled.ok)}`,
     `effective ${mark(r.effective.ok)}${r.effective.blockers.length ? ` (${r.effective.blockers.join("; ")})` : ""}`,
+    r.effective.partial.length ? `partly blocked (${r.effective.partial.join("; ")})` : null,
     `healthy ${mark(r.healthy.ok)} (${r.healthy.detail})`,
     r.scope ? `scope: ${r.scope}` : null,
   ].filter(Boolean).join(" · ");

@@ -1,6 +1,9 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+// TYPES ONLY (R03, Sep 28 2026): the gate module is imported lazily, below, and
+// only for the six rollout kinds — a confirmation or a staff text never loads it.
+import type { GateCode, GateVerdict } from "@/lib/programRolloutGate";
 
 // ---------------------------------------------------------------------------
 // THE OUTBOX (RTP-08, Sep 16 2026). One durable record per message the hub
@@ -70,7 +73,16 @@ export type OutboxState = "pending" | "attempting" | "accepted" | "failed" | "un
  *  holds them for the Mon–Fri-before-4:30 window. They are gated instead by the
  *  ProgramAutomation switches `portal_login_email` / `portal_invites`, which
  *  stay OFF until launch is authorised — nothing of these kinds is even
- *  enqueued while a switch is off (src/lib/portalAccess.ts). */
+ *  enqueued while a switch is off (src/lib/portalAccess.ts), with ONE
+ *  documented exception: a TEST client's welcome to one of Jordan's own
+ *  verified inboxes (portalAccess.queueWelcome — Jordan emailing himself).
+ *
+ *  R03 (Sep 28 2026): these two and the four program kinds are the ROLLOUT
+ *  kinds (ROLLOUT_KINDS). Deciding the audience only when a message was
+ *  created let a queued reminder, a drained row or a person's Retry reach a
+ *  client Jordan had since taken out of the pilot. deliver() now asks
+ *  programRolloutGate at the moment of sending — the switch, the TEST floor
+ *  and the rollout scope, re-read — before the attempts fence. */
 export type OutboxKind =
   | "confirmation" | "delivery" | "welcome" | "afterhours" | "staff" | "portal_login" | "portal_invite"
   | "program_reminder" | "script_share" | "strategy_ready"
@@ -95,6 +107,12 @@ const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share"
 const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
 export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
+/** R03 (Sep 28 2026): the kinds the rollout scope governs — the four program
+ *  emails and the two portal-account emails. Only these ever reach the
+ *  dispatch gate; confirmation, delivery, welcome, afterhours, staff and
+ *  manual never import it and never read the database for it. */
+export const ROLLOUT_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message", "portal_invite", "portal_login"];
+export const isRolloutKind = (k: OutboxKind | null): boolean => !!k && ROLLOUT_KINDS.includes(k);
 
 export type OutboxRow = {
   id: string;
@@ -153,8 +171,15 @@ export type OutboxMessageInput = {
 export type OutboxSendResult =
   /** The provider took it and named it. Do your bookkeeping now, not before. */
   | { outcome: "accepted"; id: string; providerId: string | null }
-  /** Nothing was sent, and the identity is free again — offer it next tick. */
-  | { outcome: "failed"; id: string; error: string }
+  /** Nothing was sent, and the identity is free again — offer it next tick.
+   *  `refused` (R03, Sep 28 2026) is set when the DISPATCH GATE stopped it
+   *  before any provider was asked: the switch is off, the client is outside
+   *  the rollout scope, a TEST client's address is not one of Jordan's, the
+   *  seat is gone — or gate_error, "could not decide, try later". A caller
+   *  that owns a ledger writes SUPPRESSED (or HELD) for a decision, never a
+   *  retry. It is a field, not a new outcome, so every existing reader of
+   *  "failed" compiles and behaves exactly as before. */
+  | { outcome: "failed"; id: string; error: string; refused?: GateCode }
   /** It may have gone. Held for ever; never resend without a person. */
   | { outcome: "unknown"; id: string; error: string }
   /** Someone else owns this message (another cron, a human, an earlier send). */
@@ -433,7 +458,14 @@ function programReminderSubject(dedupeKey: string | null): string {
 
 export type Outbox = ReturnType<typeof createOutbox>;
 
-export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvider; now?: () => Date }) {
+export function createOutbox(deps: {
+  store: OutboxStore;
+  provider: OutboxProvider;
+  now?: () => Date;
+  /** R03: asked in deliver() for a ROLLOUT kind only, before the attempts
+   *  fence. Absent (the in-memory drills) = no gate, exactly as before. */
+  gate?: (row: OutboxRow) => Promise<GateVerdict>;
+}) {
   const { store, provider } = deps;
   const now = deps.now ?? (() => new Date());
 
@@ -547,12 +579,40 @@ export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvide
    *       only to unknown (it may have been).
    *    2. call the provider.
    *    3. record what it said.
+   *
+   *  THE DISPATCH GATE COMES FIRST (R03, Sep 28 2026). A rollout kind (a
+   *  program or portal email) is asked "may this still go?" BEFORE step 1:
+   *  the kind's switch, the TEST floor and the rollout scope, re-read now.
+   *  This is the one place every path meets — the first send, the recovery
+   *  drain and a person's Retry — so taking a client out of the pilot stops
+   *  work that was already queued for them. A refusal is written like a
+   *  provider refusal (failed, identity released, NOTHING sent) and carries
+   *  the gate's code; a gate that throws is gate_error, never a send. The row
+   *  is read before the fence so the read count is what it was; the fence
+   *  still decides whether this worker holds it.
    */
   async function deliver(id: string, workerId: string): Promise<OutboxSendResult> {
-    const fenced = await store.patch(id, { state: "attempting", leaseBy: workerId }, { bumpAttempts: true });
-    if (fenced === 0) return { outcome: "busy", id };
     const row = await store.byId(id);
     if (!row) return { outcome: "busy", id };
+    if (deps.gate && isRolloutKind(outboxKind(row.dedupeKey))) {
+      if (row.state !== "attempting" || row.leaseBy !== workerId) return { outcome: "busy", id };
+      let verdict: GateVerdict;
+      try {
+        verdict = await deps.gate(row);
+      } catch (e) {
+        verdict = { ok: false, code: "gate_error", reason: `the send could not be checked (${e instanceof Error ? e.message.split("\n")[0].slice(0, 200) : String(e)}), so it was not sent` };
+      }
+      if (!verdict.ok) {
+        const error = `refused before send: ${verdict.reason}`;
+        const recorded = await markFailed(id, error, { leaseBy: workerId });
+        // Not ours any more (the watchdog took it back while the gate read):
+        // nothing was sent and the identity is not ours to release.
+        if (!recorded) return { outcome: "busy", id };
+        return { outcome: "failed", id, error, refused: verdict.code };
+      }
+    }
+    const fenced = await store.patch(id, { state: "attempting", leaseBy: workerId }, { bumpAttempts: true });
+    if (fenced === 0) return { outcome: "busy", id };
     try {
       const { providerId } = await provider.send(row);
       // The mark can MISS: the watchdog may have recovered this row to `unknown`
@@ -682,9 +742,12 @@ export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvide
     maxAgeMs?: number;
     canSend?: (row: OutboxRow) => boolean | Promise<boolean>;
     onAccepted?: (row: OutboxRow, providerId: string | null) => Promise<void>;
-  }): Promise<{ sent: number; failed: number; unknown: number; held: number }> {
+  }): Promise<{ sent: number; failed: number; unknown: number; held: number; refused: number }> {
     const rows = await claim(opts.workerId, opts.limit ?? 5, { maxAgeMs: opts.maxAgeMs ?? STALE_PENDING_MS });
-    let sent = 0, failed = 0, unknownCount = 0, held = 0;
+    // `refused` (R03): rows the dispatch gate stopped before any provider was
+    // asked — a pilot client removed, a switch turned off since it was queued.
+    // Counted apart from `failed`, which stays "a provider said no".
+    let sent = 0, failed = 0, unknownCount = 0, held = 0, refused = 0;
     for (const row of rows) {
       if (opts.canSend && !(await opts.canSend(row))) {
         // Put the lease back; the row stays pending and either its window
@@ -703,11 +766,13 @@ export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvide
             console.error(`[outbox] drained ${row.dedupeKey ?? row.id} but its bookkeeping failed`, e);
           }
         }
-      } else if (r.outcome === "failed") failed++;
-      else if (r.outcome === "unknown") unknownCount++;
+      } else if (r.outcome === "failed") {
+        if (r.refused) refused++;
+        else failed++;
+      } else if (r.outcome === "unknown") unknownCount++;
       else held++;
     }
-    return { sent, failed, unknown: unknownCount, held };
+    return { sent, failed, unknown: unknownCount, held, refused };
   }
 
   /** A PERSON says an unconfirmed message never landed. This is the ONLY way an
@@ -738,6 +803,9 @@ export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvide
     });
     if (result.outcome === "accepted") return { ok: true, message: "Sent.", result };
     if (result.outcome === "unknown") return { ok: false, message: `Still unconfirmed — ${result.error}`, result };
+    // R03: the gate, not the provider, said no — the client is out of the
+    // rollout, the switch is off, or the seat is gone. Nothing went out.
+    if (result.outcome === "failed" && result.refused) return { ok: false, message: `Not sent: ${result.error.replace(/^refused before send: /, "")}`, result };
     if (result.outcome === "failed") return { ok: false, message: `The provider refused it — ${result.error}`, result };
     return { ok: false, message: "Another send for this message is already in flight.", result };
   }
@@ -749,8 +817,14 @@ export function createOutbox(deps: { store: OutboxStore; provider: OutboxProvide
   };
 }
 
-// The hub's outbox: the real table, the real providers.
-const hubOutbox = createOutbox({ store: prismaOutboxStore(), provider: realOutboxProvider() });
+// The hub's outbox: the real table, the real providers — and, for the six
+// rollout kinds only, the dispatch gate (R03, Sep 28 2026), imported lazily so
+// no other kind ever loads it.
+const hubOutbox = createOutbox({
+  store: prismaOutboxStore(),
+  provider: realOutboxProvider(),
+  gate: (row) => import("@/lib/programRolloutGate").then((m) => m.programDispatchGate(row)),
+});
 
 // ---------------------------------------------------------------------------
 // THE TEST-CLIENT FLOOR (§16, Sep 22 2026).
@@ -944,7 +1018,24 @@ export async function unknownSendCount(): Promise<number> {
 
 /** "It never landed — send it now", pressed by a person on Connections. Never
  *  called by a sweep, a cron or a retry loop: see retryHeld above. */
-export const retryUnknownSend: Outbox["retryHeld"] = (id, by) => hubOutbox.retryHeld(id, by);
+export const retryUnknownSend: Outbox["retryHeld"] = async (id, by) => {
+  // THE TEST FLOOR ON RETRY (R03, Sep 28 2026). retryHeld re-sends through the
+  // machine's own sendThroughOutbox, which skips refuseTestClientSend (only the
+  // exported wrappers run it) — so a held row for a TEST client on a
+  // colleague's inbox could be re-sent by a person pressing Retry. The floor
+  // runs on the held row first; it stays fail-open for real clients, and the
+  // dispatch gate re-checks the rollout kinds inside deliver() as well.
+  const held = await hubOutbox.store.byId(id).catch(() => null);
+  if (held) {
+    try {
+      await refuseTestClientSend({ channel: held.channel === "email" ? "email" : "sms", toRef: held.toRef, body: held.body, dedupeKey: held.dedupeKey ?? "", clientId: held.clientId });
+    } catch (e) {
+      if (e instanceof TestClientSendRefusedError) return { ok: false, message: `Not sent: ${e.message}` };
+      throw e;
+    }
+  }
+  return hubOutbox.retryHeld(id, by);
+};
 
 /** What the outbox knows about one message identity — the state a task should
  *  read instead of standing in for the send itself (RTP-08 item 3). Null means

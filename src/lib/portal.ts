@@ -202,7 +202,18 @@ const asRole = (r: string): PortalRole => (r === "OWNER" || r === "COLLABORATOR"
  *  means: the seat is not revoked, the enrollment's access is not revoked,
  *  AND the seat's denormalised clientId agrees with the enrollment's — so
  *  every caller (the resolver, the cut stream, the sign-in flow) inherits the
- *  same ownership check and none can forget it (review, Sep 17). */
+ *  same ownership check and none can forget it (review, Sep 17).
+ *
+ *  AND THE SEAT'S CLIENT IS IN THE ROLLOUT (R03, Sep 28 2026). Signing in by
+ *  email is a program feature (op portal_sign_in), so a seat on a client the
+ *  rollout scope does not admit is not live here: the resolver, /portal/me,
+ *  /portal/login, the cut stream, the upload route, the portal actions and
+ *  consumeLoginToken all inherit it. The rule is PER SEAT, never per person —
+ *  someone holding seats on an included client and an excluded one (an
+ *  assistant working for two agents) sees only the included one, and no path
+ *  opens the other. The seat rows themselves are kept (business default 3):
+ *  an excluded client's people fall back to the older shared portal link,
+ *  which this does not touch. An unreadable scope keeps only TEST seats. */
 export async function liveMemberships(clientUserId: string) {
   const rows = await prisma.clientMembership.findMany({
     where: { clientUserId, revokedAt: null },
@@ -217,8 +228,19 @@ export async function liveMemberships(clientUserId: string) {
   const clients = await prisma.client.findMany({ where: { id: { in: enrollments.map((e) => e.clientId) } }, select: { id: true, name: true } });
   const nameOf = new Map(clients.map((c) => [c.id, c.name]));
   const byId = new Map(enrollments.map((e) => [e.id, e]));
-  return rows
-    .filter((r) => byId.get(r.enrollmentId)?.clientId === r.clientId)
+  const owned = rows.filter((r) => byId.get(r.enrollmentId)?.clientId === r.clientId);
+  if (owned.length === 0) return [];
+  const [{ programReachMany }, { isSyntheticClientRow }] = await Promise.all([import("@/lib/programRollout"), import("@/lib/testClients")]);
+  const reach = await programReachMany("portal_sign_in", owned.map((r) => r.clientId));
+  const inScope = (clientId: string): boolean => {
+    const d = reach.get(clientId);
+    if (d?.ok) return true;
+    // Fail closed, but not on Jordan's own test seats: a scope that cannot be
+    // read keeps TEST clients signed in and nobody real.
+    return d?.code === "scope_unreadable" && isSyntheticClientRow({ id: clientId, name: nameOf.get(clientId) ?? null });
+  };
+  return owned
+    .filter((r) => inScope(r.clientId))
     .map((r) => ({ ...r, status: byId.get(r.enrollmentId)!.status, clientName: nameOf.get(r.clientId) ?? "" }))
     .sort((a, b) => Number(b.status === "ACTIVE") - Number(a.status === "ACTIVE"));
 }

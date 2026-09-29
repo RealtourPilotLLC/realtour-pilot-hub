@@ -5,7 +5,7 @@ import { Loader2, RefreshCw, Check, AlertTriangle, ExternalLink, ShieldCheck, Ci
 import { cn } from "@/lib/utils";
 import {
   saveCalendlyMapping, removeCalendlyMapping, revalidateCalendlyMappings, runCallSyncNow, saveCallRules,
-  confirmCallClient, ignoreCall, retargetCall, confirmTranscript, rejectTranscript, verifyAlias, dismissAlias, rerunTranscriptJob,
+  confirmCallClient, ignoreCall, retargetCall, confirmTranscript, rejectTranscript, verifyAlias, dismissAlias, rerunTranscriptJob, setTranscriptBacklogAction,
   type CalendlyPanelState,
 } from "@/app/settings/calendlyActions";
 
@@ -19,7 +19,10 @@ import {
 //      for a person, alias proposals;
 //   4. recent call records with booking link, type, client, source event,
 //      transcript link, analysis state and last error (§26's last test);
-//   5. the switches (read-only here; they stay off) and the job lane.
+//   5. the switches (read-only here; they stay off) and the job lane — with
+//      what is queued now, by kind, client and tier, and the backlog choice
+//      (R05, Sep 28 2026: the processor takes only jobs queued after it was
+//      first switched on unless the owner includes the older ones here).
 // ---------------------------------------------------------------------------
 
 const PURPOSES = [
@@ -255,6 +258,56 @@ export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) 
         {state.jobs.counts.length > 0 && (
           <div className="mt-2 text-muted">{state.jobs.counts.map((c) => `${c.kind} ${c.state.toLowerCase()}: ${c.n}`).join(" · ")}{state.jobs.oldestQueuedAt && ` · oldest queued ${fmt(state.jobs.oldestQueuedAt)}`}</div>
         )}
+        {state.batch ? <QueueBatch batch={state.batch} busy={pending} run={run} /> : <p className="mt-2 text-muted">What is queued could not be read just now.</p>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * WHAT THE CALL PROCESSOR WOULD FACE (R05, Sep 28 2026) — read-only, from the
+ * driver's own hold rule (transcriptJobs.transcriptQueueBatch), plus the one
+ * choice the owner makes about it: skip the jobs queued before the processor
+ * was first switched on (the default) or include them.
+ */
+function QueueBatch({ batch, busy, run }: { batch: NonNullable<CalendlyPanelState["batch"]>; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
+  const including = batch.backlog.source === "include_all";
+  // The dates come from the FIRST switch-on on record (review fix, Sep 28
+  // 2026): "skip" restores that moment, so the words may say "first" only
+  // when it is that moment.
+  const first = batch.backlog.firstSwitchedOnAt ?? null;
+  const cutoffIsFirst = !!first && !!batch.backlog.cutoff && new Date(first).getTime() === new Date(batch.backlog.cutoff).getTime();
+  const cutoffWords = batch.backlog.source === "never_on"
+    ? "When you switch it on, it takes only jobs queued after that moment"
+    : batch.backlog.source === "include_all"
+      ? `It also works through the jobs queued before it was first switched on${first ? ` (${fmt(first)})` : ""} (you chose to include them)`
+      : batch.backlog.source === "switch_on"
+        ? `It takes only jobs queued after ${fmt(batch.backlog.cutoff)}, when it was switched on (its next run records that as the first switch-on)`
+        : cutoffIsFirst
+          ? `It takes only jobs queued after ${fmt(batch.backlog.cutoff)}, when it was first switched on`
+          : `It takes only jobs queued after ${fmt(batch.backlog.cutoff)}, the cutoff on record`;
+  return (
+    <div data-queue-batch className="mt-2 space-y-1.5 border-t border-border pt-2">
+      <p className="font-medium text-foreground">{batch.queuedNowLine}</p>
+      {batch.queued > 0 && (
+        <p className="text-muted">
+          {batch.clients.map((c) => `${c.name} (${c.tier === "REAL" ? "real client" : c.tier === "PILOT" ? "pilot" : c.tier === "TEST" ? "TEST" : "client not confirmed yet"}): ${c.jobs}`).join(" · ")}
+          {" "}· asked for by {Object.entries(batch.byRequester).map(([k, n]) => `${k} ${n}`).join(", ")}
+        </p>
+      )}
+      <p className="text-muted">
+        {cutoffWords}. Runnable now: <strong className="text-foreground">{batch.runnableNow}</strong> (five per hourly run{batch.aiJobs ? "; each AI job spends credit" : ""})
+        {batch.heldBacklog > 0 && <> · <span className="text-warning">{batch.heldBacklog} skipped as older than that</span></>}
+        {batch.heldScope > 0 && <> · {batch.heldScope} wait because their client is outside the rollout (internal AI runs only for TEST and pilot clients)</>}
+        {batch.ownerOff.map((o) => <span key={o.kind}> · {o.jobs} {o.kind} wait for <code>{o.owner}</code> to be on</span>)}
+        {batch.needsReview > 0 && <> · {batch.needsReview} need a person</>}.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {!including && batch.heldBacklog > 0 && (
+          <Btn busy={busy} onClick={() => { if (window.confirm(`Also process the ${batch.heldBacklog} older job${batch.heldBacklog === 1 ? "" : "s"}? The AI jobs among them spend credit, and some may be real clients' calls.`)) run(() => setTranscriptBacklogAction("include")); }}>Include the {batch.heldBacklog} older job{batch.heldBacklog === 1 ? "" : "s"}</Btn>
+        )}
+        {including && <Btn busy={busy} onClick={() => run(() => setTranscriptBacklogAction("skip"))}>Skip jobs queued before the first switch-on{first ? ` (${fmt(first)})` : ""} again</Btn>}
+        <span className="text-[11px] text-muted">Drafts still wait for your approval; nothing is released to a client. The Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use this queue.</span>
       </div>
     </div>
   );

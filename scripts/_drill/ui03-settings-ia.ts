@@ -29,7 +29,8 @@
 //      redirected away, and with enforcement on nobody signed in (a client
 //      has no hub login) is sent to /login.
 //   3. Anchors: #coaching, #topaz, #program-automations, #program-reminders,
-//      #calendly, #notification-schedule, #internal-alerts, #hub-write-scopes
+//      #calendly, #notification-schedule, #internal-alerts, #hub-write-scopes,
+//      #program-rollout (R03, Sep 28 2026)
 //      and every group chip resolve to exactly one element; no id appears
 //      twice anywhere on the page; every "/settings#…" link written anywhere
 //      in src, and every in-page "#…" link the settings cards write, points at
@@ -396,7 +397,10 @@ async function parent() {
   c.head("3 · anchors resolve, once each, and every inbound link still lands");
   // =========================================================================
   {
-    const REQUIRED = ["coaching", "topaz", "program-automations", "program-reminders", "calendly", "notification-schedule", "internal-alerts", "hub-write-scopes", "readiness"];
+    // R03 (Sep 28 2026): #program-rollout — "Who the program may reach", the
+    // one pilot list — is linked from the switches, the reminders card and the
+    // hub-write scopes, so it must resolve once on every role's page.
+    const REQUIRED = ["coaching", "topaz", "program-automations", "program-reminders", "calendly", "notification-schedule", "internal-alerts", "hub-write-scopes", "program-rollout", "readiness"];
     for (const role of ["OWNER", "ADMIN"] as const) {
       const ids = all(NEW[role].root, (e) => "id" in e.attrs).map((e) => e.attrs.id);
       const dup = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];

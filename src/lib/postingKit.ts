@@ -27,6 +27,17 @@ import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 // transcriptForCut reports a gap the draft is made from the script and the
 // kit says so in plain words — it never pretends a transcript existed.
 //
+// AND ONLY FOR CLIENTS THE PROGRAM ROLLOUT REACHES (review fix, Sep 28 2026).
+// The switch alone used to decide, and the copy called it "internal": turning
+// caption_assistant on gave EVERY real client — pilot or not, token link or
+// signed in — a "Draft a caption" button and AI-written text in their portal,
+// the same "switch = every client" defect R03 fixed for every other switch.
+// It is op caption_assistant now (programRolloutCore, the portal_changes
+// group): the kit offers the button, and draftCaptionForVideo drafts, only
+// when the switch is on AND the rollout reaches this client (TEST clients,
+// the named pilot, or everyone once Jordan chooses it). assistantFor is the
+// one question both ask.
+//
 // WHICH FILE, AND WHETHER THE CLIENT MAY HAVE IT (CP-01, Sep 24 2026), is not
 // decided here any more: the download, the caption target and the kit's
 // `access` all come from cutEntitlement's one rule. Internal completion is not
@@ -252,6 +263,13 @@ const captionView = (c: { id: string; kind: string; body: string; alternativesJs
   return { id: c.id, kind: c.kind, body: c.body, alternatives, versionNo: c.versionNo, authorKind: c.authorKind, status: c.status, staleReason: c.staleReason, basedOnId: c.basedOnId, createdAtISO: c.createdAt.toISOString(), sourceNote };
 };
 
+/** Switch on AND the rollout reaches this client for the caption assistant. Never throws (off on any error). */
+async function assistantFor(clientId: string): Promise<boolean> {
+  if (!(await isAutomationEnabled("caption_assistant").catch(() => false))) return false;
+  const { programReach } = await import("@/lib/programRollout");
+  return (await programReach("caption_assistant", clientId)).ok;
+}
+
 /** The kit for one of the viewer's videos (ownership already proven by the caller). */
 export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awaited<ReturnType<typeof videoForEnrollment>>>): Promise<PostingKit> {
   const { final, note, entitlement: e } = await resolveFinalFile(video);
@@ -277,7 +295,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     prisma.portalVisit.findFirst({ where: { ...clientVisit, NOT: { path: { contains: DONE_MARK } } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     prisma.portalVisit.findFirst({ where: { ...clientVisit, path: { contains: DONE_MARK } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, select: { portalVideoId: true } }).then(async (s) => (s?.portalVideoId ? (await prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { thumb: true } }))?.thumb ?? null : null)),
-    isAutomationEnabled("caption_assistant"),
+    assistantFor(viewer.enrollment.clientId),
     downloadPlanFor(e).catch(() => (e.file ? { mode: "redirect" as const, fileName: e.file.fileName, sizeBytes: null, ref: e.captionRef } : null)),
   ]);
   // Any AI draft tied to a cut that is no longer the final is STALE (spec §10):
@@ -427,7 +445,7 @@ const INVENTED_OFFER = /\b(free|download|guide|checklist|e-?book|template|webina
 
 /**
  * "Draft a caption" from the portal: a person's click, gated by the
- * caption_assistant switch. The final cut's transcript is the primary factual
+ * caption_assistant switch and the program rollout (assistantFor). The final cut's transcript is the primary factual
  * source; when there is none the draft is made from the linked script and
  * every row records that in words.
  */
@@ -440,7 +458,9 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   // review cut — gated by the switch alone.
   const target = await captionTarget(viewer, v);
   if (!target.ok) return { ok: false, message: target.message };
-  if (!(await isAutomationEnabled("caption_assistant"))) {
+  // The switch AND the rollout (op caption_assistant) — the same question the
+  // kit's button asked, so a client never gets a draft the kit did not offer.
+  if (!(await assistantFor(viewer.enrollment.clientId))) {
     return { ok: false, message: `Caption drafting is switched off until the program launches — write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
   }
   const submissionId = target.submissionId;

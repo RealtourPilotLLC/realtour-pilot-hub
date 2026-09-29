@@ -76,3 +76,45 @@ export async function getPortalSignInLink(enrollmentId: string, membershipId: st
     return { ok: true, message: "Sign-in link minted — it works once and expires in 15 minutes.", url: r.url, expiresAtISO: r.expiresAt.toISOString() };
   } catch (e) { return fail(e); }
 }
+
+// ---------------------------------------------------------------------------
+// HELD PORTAL ACCESS (R03, Sep 28 2026). Accounts owed to paying clients (and
+// their teammates) while invitations were off, or while the client was outside
+// the program rollout. The owner reads the preview FIRST — the same classifier
+// the release runs, so what it lists is what Release does — then releases.
+// Only clients the rollout admits are granted; everyone else stays held, with
+// the reason. Deliberately not wired to the portal_invites switch.
+// ---------------------------------------------------------------------------
+
+export async function previewHeldAccessReleaseAction(): Promise<{
+  ok: boolean;
+  message: string;
+  preview?: Awaited<ReturnType<typeof import("@/lib/portalAccess").previewHeldAccessRelease>>;
+}> {
+  try { await requireOwner(); } catch (e) { return fail(e); }
+  try {
+    const { previewHeldAccessRelease } = await import("@/lib/portalAccess");
+    const preview = await previewHeldAccessRelease();
+    const message = !preview.switchOn
+      ? `Client invitations are switched off, so Release would grant nobody. ${preview.stay.length} held.`
+      : `Release would open ${preview.grant.length} account${preview.grant.length === 1 ? "" : "s"} and send their welcome; ${preview.stay.length} stay held.`;
+    return { ok: true, message, preview };
+  } catch (e) { return fail(e); }
+}
+
+export async function releaseHeldAccessAction(): Promise<{ ok: boolean; message: string; granted: number; held: number; conflicts: string[] }> {
+  try { await requireOwner(); } catch (e) { return { ...fail(e), granted: 0, held: 0, conflicts: [] }; }
+  try {
+    const { releasePendingProgramAccess } = await import("@/lib/portalAccess");
+    const who = (await getCurrentUser())?.email ?? (await me());
+    const r = await releasePendingProgramAccess(who);
+    revalidatePath("/content");
+    revalidatePath("/settings");
+    const parts = [
+      `${r.granted} account${r.granted === 1 ? "" : "s"} opened`,
+      `${r.held} still held`,
+      ...(r.conflicts.length ? [`${r.conflicts.length} need a person: ${r.conflicts.join("; ")}`] : []),
+    ];
+    return { ok: true, message: `${parts.join(" · ")}.`, ...r };
+  } catch (e) { return { ...fail(e), granted: 0, held: 0, conflicts: [] }; }
+}

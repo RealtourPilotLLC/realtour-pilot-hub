@@ -38,6 +38,23 @@
 //       never the pilot or the mode; real clients and real inboxes refused;
 //       --on refused while a pilot with real clients is on file.
 //
+// R03 (Sep 28 2026, Jordan: "automatic booking must be enabled for the
+// approved pilot"). The PILOT route now reads the PROGRAM pilot (one list for
+// program emails, portal changes AND hub writes — AppSetting "program-rollout",
+// "bookings" ticked), never a per-switch `pilot`, which is left on file and
+// read by nobody. What changed here, and why (no check was loosened):
+//   · §1, §3-§5 set the program pilot (programPilot below) where they set a
+//     per-switch one; the refusal sentences now say "program pilot";
+//   · §3 "an operation the pilot does not name" became "bookings not ticked
+//     for the pilot" — the owner approves plain-word groups now, and the
+//     bookings group covers the whole switch's operations;
+//   · §4's "a book permit cannot cancel" became "a session_booking permit
+//     cannot be spent on an address_sync write" — the permit's approval is
+//     still checked at the write, now per switch rather than per operation;
+//   · §6: the per-switch pilot editor is retired (it refuses, writes nothing,
+//     and points at the one editor); the end-date rules moved with the pilot
+//     to Settings → Who the program may reach (builder B's drill holds them).
+//
 // ISOLATION: PGlite on 127.0.0.1:5663. Every non-loopback call is fenced;
 // Aryeo is the stateful fake (plus a canned GET /customers/{id}); nothing real
 // is contacted and nothing is sent.
@@ -130,6 +147,18 @@ async function main() {
   const approved = (clientIds: string[], operations: string[], extra: Record<string, unknown> = {}) =>
     ({ clientIds, operations, approvedBy: "jordan@realtourpilot.com", approvedAt: et(10, 1, 9).toISOString(), expiresAt: null, ...extra });
   const BOOK = scopeLib.HUB_WRITE_OPERATION_GROUPS.session_booking.find((g) => g.key === "book")!.operations;
+  // R03: the ONE pilot the guards read — the program pilot, "bookings" ticked
+  // unless said otherwise.
+  const core = await import("@/lib/programRolloutCore");
+  const programPilot = async (clientIds: string[], extra: { bookings?: boolean; approvedBy?: string | null; expiresAt?: string | null } = {}) => {
+    const groups = core.PROGRAM_PILOT_GROUPS.map((g) => g.key).filter((k) => extra.bookings !== false || k !== "bookings");
+    const value = core.serializeProgramRollout({
+      mode: "PILOT",
+      modeSince: et(10, 1, 9).toISOString(),
+      pilot: { clientIds, operations: core.opsForGroups(groups), approvedBy: extra.approvedBy === undefined ? "jordan@realtourpilot.com" : extra.approvedBy, approvedAt: et(10, 1, 9).toISOString(), expiresAt: extra.expiresAt ?? null, note: null, joinedAt: Object.fromEntries(clientIds.map((id) => [id, et(10, 1, 9).toISOString()])) },
+    });
+    await prisma.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value, updatedBy: "drill" }, update: { value } });
+  };
   let seq = 0;
   const realCustomer = () => `0197eeee-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
   const world = async (name: string): Promise<ContentMonthFixture> => {
@@ -176,6 +205,7 @@ async function main() {
   c.head("1 · switch off: nobody, whatever the lists say");
   {
     const cfg = { authorizedFixtureClientIds: [fixture.clientId], pilot: approved([pilotClient.clientId], BOOK) };
+    await programPilot([pilotClient.clientId]);
     await setSwitch("session_booking", false, cfg);
     const a = await permit(fixture.clientId, fixture.clientName);
     const b = await permit(pilotClient.clientId, pilotClient.clientName);
@@ -230,43 +260,53 @@ async function main() {
   }
 
   // ======================================================================
-  c.head("3 · PILOT: a real client Jordan approved, for named writes, until an end date");
+  c.head("3 · PILOT: a real client Jordan approved in the PROGRAM pilot, bookings ticked, until an end date");
   {
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [fixture.clientId], pilot: approved([pilotClient.clientId], BOOK) });
+    await programPilot([pilotClient.clientId]);
+    // The switch's own `pilot` names somebody else — read by nobody now (R03).
+    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [fixture.clientId], pilot: approved([unrelated.clientId], BOOK) });
     const readsBefore = ids.reads.length;
     const g = await permit(pilotClient.clientId, pilotClient.clientName);
     c.ok("PILOT permit issued for orders.create", g.ok && g.scope === "PILOT", g.ok ? g.scope : g.reason);
     c.ok("a pilot permit NEVER carries sandbox:true", g.ok && g.permit.sandbox === false);
     c.ok("no fixture identity read for a real client", ids.reads.length === readsBefore);
-    const noOp = await permit(pilotClient.clientId, pilotClient.clientName, "appointments.cancel");
-    c.ok("an operation the pilot does not name is refused", !noOp.ok && /does not include appointments\.cancel/.test(noOp.ok ? "" : noOp.reason));
     const unrelatedP = await permit(unrelated.clientId, unrelated.clientName);
-    c.ok("an unrelated real client is refused", !unrelatedP.ok && /not in an approved session_booking pilot/.test(unrelatedP.ok ? "" : unrelatedP.reason));
+    c.ok("an unrelated real client is refused — even though the switch's own (dead) list names them", !unrelatedP.ok && /not in the program pilot/.test(unrelatedP.ok ? "" : unrelatedP.reason), unrelatedP.ok ? "allowed" : unrelatedP.reason);
+    await programPilot([pilotClient.clientId], { bookings: false });
+    const noOp = await permit(pilotClient.clientId, pilotClient.clientName);
+    c.ok("a pilot client without 'bookings' ticked is refused (the group, not the client, is missing)", !noOp.ok && /does not include bookings/.test(noOp.ok ? "" : noOp.reason), noOp.ok ? "allowed" : noOp.reason);
 
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [pilotClient.clientId], pilot: approved([pilotClient.clientId], BOOK) });
+    await programPilot([pilotClient.clientId]);
+    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [pilotClient.clientId], pilot: null });
     const fixtureListed = await permit(pilotClient.clientId, pilotClient.clientName);
     c.ok("a real client on the FIXTURE list is refused as a misconfiguration (even inside a pilot)", !fixtureListed.ok && /fixture list/.test(fixtureListed.ok ? "" : fixtureListed.reason));
 
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [], pilot: approved([pilotClient.clientId], BOOK, { approvedBy: null }) });
+    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [], pilot: null });
+    await programPilot([pilotClient.clientId], { approvedBy: null });
     const unapproved = await permit(pilotClient.clientId, pilotClient.clientName);
     c.ok("a pilot with no recorded approver covers nobody", !unapproved.ok && /no recorded approval/.test(unapproved.ok ? "" : unapproved.reason));
 
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [], pilot: approved([pilotClient.clientId], BOOK, { expiresAt: et(10, 2, 13).toISOString() }) });
+    await programPilot([pilotClient.clientId], { expiresAt: et(10, 2, 13).toISOString() });
     const expired = await permit(pilotClient.clientId, pilotClient.clientName);
-    c.ok("an expired pilot (ended an hour ago) is refused", !expired.ok && /expired/.test(expired.ok ? "" : expired.reason));
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [], pilot: approved([pilotClient.clientId], BOOK, { expiresAt: et(10, 2, 15).toISOString() }) });
+    c.ok("an expired pilot (ended an hour ago) is refused", !expired.ok && /ended/.test(expired.ok ? "" : expired.reason), expired.ok ? "allowed" : expired.reason);
+    await programPilot([pilotClient.clientId], { expiresAt: et(10, 2, 15).toISOString() });
     const live = await permit(pilotClient.clientId, pilotClient.clientName);
     c.ok("…and one ending in an hour still covers them", live.ok && live.scope === "PILOT");
 
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [NEVER], pilot: approved([NEVER], BOOK) });
+    // A stored value naming the never-synthetic row (the editor refuses it; a
+    // hand-edit could not): still refused as never-synthetic.
+    await programPilot([NEVER]);
+    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [NEVER], pilot: null });
     const never = await permit(NEVER, "Jordan Spackman TEST");
     c.ok("a never-synthetic row renamed '… TEST' is refused, listed as fixture AND pilot", !never.ok && /never-synthetic/.test(never.ok ? "" : never.reason), never.ok ? "allowed" : never.reason.slice(0, 90));
+    await programPilot([pilotClient.clientId]);
   }
 
   // ======================================================================
   c.head("4 · writes through the fake Aryeo: own customer only, team notices only");
   {
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [fixture.clientId], pilot: approved([pilotClient.clientId], BOOK) });
+    await programPilot([pilotClient.clientId]);
+    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [fixture.clientId], pilot: null });
     aryeo.resetFixtureIdentityCache();
     const before = fake.writes.length;
     const pa = await permit(pilotClient.clientId, pilotClient.clientName, "addresses.create");
@@ -297,9 +337,8 @@ async function main() {
 
     threw = "";
     const bookPermit = await permit(pilotClient.clientId, pilotClient.clientName, "orders.create");
-    const apptId = [...fake.appts.keys()][0];
-    try { if (bookPermit.ok) await aryeo.AryeoBooking.cancelAppointment(bookPermit.permit, apptId); } catch (e) { threw = e instanceof Error ? e.message : String(e); }
-    c.ok("a 'book' pilot permit cannot be spent on a cancel (0 writes)", /pilot approval does not cover it/.test(threw) && fake.writes.length === w0, threw);
+    try { if (bookPermit.ok) await aryeo.AryeoBooking.patchAddress(bookPermit.permit, addr.id, { street_number: "118", street_name: "Kyle Ln", city: "West Chester", state_or_province: "PA", postal_code: "19380", country: "US", latitude: 39.96, longitude: -75.6 }); } catch (e) { threw = e instanceof Error ? e.message : String(e); }
+    c.ok("a session_booking pilot permit cannot be spent on an address_sync write (0 writes)", /pilot approval does not cover it/.test(threw) && fake.writes.length === w0, threw);
   }
 
   // ======================================================================
@@ -321,9 +360,10 @@ async function main() {
     };
     const modeOf = async (f: ContentMonthFixture) => (await portal.portalScheduleMonths({ id: f.enrollmentId, clientId: f.clientId })).find((m) => m.monthId === f.monthId)?.bookingMode ?? null;
     // The unrelated client's portal with the switch OFF — the "before".
-    await setSwitch("session_booking", false, { authorizedFixtureClientIds: [fixture.clientId], pilot: approved([pilotClient.clientId], BOOK) });
+    await programPilot([pilotClient.clientId]);
+    await setSwitch("session_booking", false, { authorizedFixtureClientIds: [fixture.clientId], pilot: null });
     const offMode = await modeOf(unrelated);
-    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [fixture.clientId], pilot: approved([pilotClient.clientId], BOOK) });
+    await setSwitch("session_booking", true, { authorizedFixtureClientIds: [fixture.clientId], pilot: null });
     aryeo.resetFixtureIdentityCache();
     const w0 = fake.writes.length;
     const a = await ask(fixture, 13);
@@ -333,7 +373,7 @@ async function main() {
     const [ra, rb, ru] = [await row(a), await row(b), await row(u)];
     c.ok("the TEST fixture's ask is QUEUED for the hub", ra?.bookingState === "QUEUED", ra?.bookingState ?? (a.ok ? "" : a.reason));
     c.ok("the pilot client's ask is QUEUED for the hub", rb?.bookingState === "QUEUED", rb?.bookingState ?? (b.ok ? "" : b.reason));
-    c.ok("the unrelated real client's ask stays desk-assisted (NONE) with the reason on the row", ru?.bookingState === "NONE" && /not in an approved session_booking pilot/.test(ru?.lastError ?? ""), ru?.lastError ?? "");
+    c.ok("the unrelated real client's ask stays desk-assisted (NONE) with the reason on the row", ru?.bookingState === "NONE" && /not in the program pilot/.test(ru?.lastError ?? ""), ru?.lastError ?? "");
     c.ok("asking wrote nothing to Aryeo", fake.writes.length === w0);
     c.ok("portal booking mode: fixture SELF, pilot SELF", (await modeOf(fixture)) === "SELF" && (await modeOf(pilotClient)) === "SELF");
     const onMode = await modeOf(unrelated);
@@ -351,66 +391,45 @@ async function main() {
   }
 
   // ======================================================================
-  c.head("6 · the pilot editor: typed name, owner only, audited, never switches anything on");
+  c.head("6 · the per-switch pilot editor is retired: ONE pilot list, shown read-only per switch (R03)");
   {
+    // What this section used to prove (typed name, owner only, audited, the
+    // end date kept) now belongs to the program pilot's editor, Settings → Who
+    // the program may reach (rolloutActions.ts), and builder B's drill holds it.
     const actions = await import("@/app/settings/pilotActions");
     await dropSwitch("address_sync");
-    const wrong = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: "Marcee", groups: ["address"] });
-    c.ok("a name that does not match is refused", !wrong.ok && /Type the client's name/.test(wrong.message), wrong.message);
-    c.ok("…and nothing was written", (await prisma.programAutomation.count({ where: { key: "address_sync" } })) === 0);
-    const test = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: fixture.clientId, typedName: fixture.clientName, groups: ["address"] });
-    c.ok("a TEST client cannot join a pilot (it is a fixture)", !test.ok && /fixtures, not pilot clients/.test(test.message));
-    const none = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: "marcee   REALAGENT", groups: [] });
-    c.ok("a pilot must name at least one kind of write", !none.ok);
-    const past = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: pilotClient.clientName, groups: ["address"], expiresOnET: "2026-10-01" });
-    c.ok("an end date in the past is refused", !past.ok && /future/.test(past.message));
     const audits0 = await prisma.auditLog.count({ where: { action: "automation_pilot_change" } });
-    const ok = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: "marcee   REALAGENT", groups: ["address"], expiresOnET: "2026-10-31", note: "first address pilot" });
-    c.ok("the typed name (case and spacing aside) approves the pilot", ok.ok, ok.message);
-    const rowA = await prisma.programAutomation.findUniqueOrThrow({ where: { key: "address_sync" } });
-    const stored = scopeLib.parseHubWriteConfig(JSON.parse(rowA.configJson ?? "{}"));
-    c.ok("the switch was created OFF — approving a pilot never turns writes on", rowA.enabled === false);
-    c.ok("the pilot names the client, the operation, the approver and time", !!stored.pilot && stored.pilot.clientIds[0] === pilotClient.clientId && stored.pilot.operations.join() === "addresses.patch" && stored.pilot.approvedBy === "dev@local" && !!stored.pilot.approvedAt);
-    c.ok("the end date is the END of Oct 31 ET (Nov 1 00:00 EDT)", stored.pilot?.expiresAt === et(11, 1, 0).toISOString(), stored.pilot?.expiresAt ?? "");
-    const audit = await prisma.auditLog.findFirst({ where: { action: "automation_pilot_change" }, orderBy: { createdAt: "desc" } });
-    c.ok("one audit row, before → after", (await prisma.auditLog.count({ where: { action: "automation_pilot_change" } })) === audits0 + 1 && audit?.target === "automation:address_sync" && /pilot: null ->/.test(audit?.detail ?? ""), audit?.detail.slice(0, 80) ?? "");
+    const add = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: pilotClient.clientName, groups: ["address"], expiresOnET: "2026-10-31" });
+    c.ok("adding to a per-switch pilot is refused, pointing at the one list", !add.ok && /one pilot list/.test(add.message), add.message);
+    c.ok("…and nothing was written: no switch row, no audit row", (await prisma.programAutomation.count({ where: { key: "address_sync" } })) === 0 && (await prisma.auditLog.count({ where: { action: "automation_pilot_change" } })) === audits0);
+    const rm = await actions.removePilotClientAction({ switchKey: "session_booking", clientId: pilotClient.clientId });
+    const end = await actions.endPilotAction({ switchKey: "session_booking" });
+    c.ok("remove and end are refused the same way", !rm.ok && !end.ok && /one pilot list/.test(rm.message) && /one pilot list/.test(end.message));
+    // The one pilot, through the switch: off → nothing; on → PILOT.
+    await setSwitch("address_sync", false, { authorizedFixtureClientIds: [], pilot: null });
+    await programPilot([pilotClient.clientId]);
     const blocked = await aryeo.hubWritePermit({ switchKey: "address_sync", client: { id: pilotClient.clientId, name: pilotClient.clientName }, operation: "addresses.patch" });
-    c.ok("with the switch still off, the approved pilot still writes nothing", !blocked.ok && /switch is off/.test(blocked.ok ? "" : blocked.reason));
+    c.ok("with the switch off, the program pilot still writes nothing", !blocked.ok && /switch is off/.test(blocked.ok ? "" : blocked.reason));
     await prisma.programAutomation.update({ where: { key: "address_sync" }, data: { enabled: true } });
     const open = await aryeo.hubWritePermit({ switchKey: "address_sync", client: { id: pilotClient.clientId, name: pilotClient.clientName }, operation: "addresses.patch" });
-    c.ok("switch on + pilot → PILOT for addresses.patch", open.ok && open.scope === "PILOT");
+    c.ok("switch on + program pilot (bookings ticked) → PILOT for addresses.patch", open.ok && open.scope === "PILOT", open.ok ? open.scope : open.reason);
     const view = await actions.loadHubWriteScopes();
     const addr = "error" in view ? null : view.switches.find((s) => s.switchKey === "address_sync");
-    c.ok("the settings read-out shows the scope per switch", !!addr && addr.enabled && addr.pilot?.state === "ACTIVE" && addr.pilot.clients[0]?.name === pilotClient.clientName && addr.headline.includes("approved pilot"), addr ? `${addr.headline} · ${addr.pilot?.state}` : JSON.stringify(view).slice(0, 80));
+    c.ok("the settings read-out shows the PROGRAM pilot on the switch", !!addr && addr.enabled && addr.pilotSource === "program" && addr.pilot?.state === "ACTIVE" && addr.pilot.clients[0]?.name === pilotClient.clientName && addr.headline.includes("approved pilot"), addr ? `${addr.headline} · ${addr.pilot?.state}` : JSON.stringify(view).slice(0, 80));
     c.ok("…every scoped switch is listed (call_booking included)", !("error" in view) && view.switches.map((s) => s.switchKey).join() === "session_booking,address_sync,call_booking");
-    c.ok("…and the candidate list holds no TEST client", !("error" in view) && view.candidates.every((x) => !tc.isTestClientName(x.name)) && view.candidates.some((x) => x.id === pilotClient.clientId));
-    const rm = await actions.removePilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId });
-    const after = scopeLib.parseHubWriteConfig(JSON.parse((await prisma.programAutomation.findUniqueOrThrow({ where: { key: "address_sync" } })).configJson ?? "{}"));
-    c.ok("removing the last client ends the pilot (and is audited)", rm.ok && after.pilot === null && (await prisma.auditLog.count({ where: { action: "automation_pilot_change" } })) === audits0 + 2);
+    c.ok("…and nobody is offered for adding here any more", !("error" in view) && view.candidates.length === 0);
+    await programPilot([]);
     const gone = await aryeo.hubWritePermit({ switchKey: "address_sync", client: { id: pilotClient.clientId, name: pilotClient.clientName }, operation: "addresses.patch" });
-    c.ok("…and the guard refuses them the moment it is gone", !gone.ok);
+    c.ok("taking them out of the program pilot → the guard refuses them the moment it is gone", !gone.ok && /not in the program pilot/.test(gone.ok ? "" : gone.reason));
     const d = scopeLib.describeHubWriteScope("session_booking", { enabled: false, missing: false, config: scopeLib.parseHubWriteConfig({ authorizedFixtureClientIds: [fixture.clientId], pilot: approved([pilotClient.clientId], BOOK) }) }, new Map([[fixture.clientId, fixture.clientName], [pilotClient.clientId, pilotClient.clientName]]), new Date());
     c.ok("the probe line says an off switch writes for nobody, whatever the lists", /^off — no hub writes for anyone/.test(d.headline) && d.fixtures === fixture.clientName && d.pilot.startsWith("active"), `${d.headline} | ${d.pilot}`);
     process.env.AUTH_ENFORCE = "true";
     const anon = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: pilotClient.clientName, groups: ["address"] });
     delete process.env.AUTH_ENFORCE;
-    c.ok("with sign-in enforced, nobody signed in cannot approve a pilot", !anon.ok && /sign in/i.test(anon.message), anon.message);
-
-    // Batch-3 review (Sep 25 2026): the end date is ONE date for the whole
-    // pilot, and adding a second client with the field blank used to write
-    // expiresAt null — the first client's approved end date gone, silently.
-    const pilotOf = async () => scopeLib.parseHubWriteConfig(JSON.parse((await prisma.programAutomation.findUniqueOrThrow({ where: { key: "address_sync" } })).configJson ?? "{}")).pilot;
-    const first = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: pilotClient.clientId, typedName: pilotClient.clientName, groups: ["address"], expiresOnET: "2026-10-31" });
-    c.ok("(a pilot for Marcee, ending Oct 31)", first.ok && (await pilotOf())?.expiresAt === et(11, 1, 0).toISOString() && /ends Oct 31, 2026/.test(first.message), first.message);
-    const second = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: unrelated.clientId, typedName: unrelated.clientName, groups: ["address"], expiresOnET: null });
-    const p2 = await pilotOf();
-    c.ok("adding a second client with the end date left blank KEEPS Oct 31 for everyone", second.ok && p2?.expiresAt === et(11, 1, 0).toISOString() && p2.clientIds.length === 2, `${p2?.expiresAt} · ${second.message}`);
-    c.ok("…and says so", /still ends Oct 31, 2026/.test(second.message), second.message);
-    const cleared = await actions.addPilotClientAction({ switchKey: "address_sync", clientId: unrelated.clientId, typedName: unrelated.clientName, groups: ["address"], clearExpiry: true });
-    c.ok("removing the end date is an explicit choice, and the result names the change", cleared.ok && (await pilotOf())?.expiresAt === null && /end date changed from Oct 31, 2026 to none, for every client in it/.test(cleared.message), cleared.message);
+    c.ok("with sign-in enforced, nobody signed in is still refused as not signed in first", !anon.ok && /sign in/i.test(anon.message), anon.message);
     const panel = fs.readFileSync(path.join(REPO, "src/components/settings/HubWriteScopePanel.tsx"), "utf8");
-    c.ok("the form starts on the saved end date and sends clearExpiry only when that date was emptied", /useState\(savedUntil\)/.test(panel) && /clearExpiry: !until && !!savedUntil/.test(panel));
-    await actions.endPilotAction({ switchKey: "address_sync" });
+    c.ok("the panel shows the program pilot read-only with a link to its editor, and no per-switch add form", /href="#program-rollout"/.test(panel) && !/addPilotClientAction/.test(panel) && !/PilotForm/.test(panel));
+    await programPilot([pilotClient.clientId]);
   }
 
   // ======================================================================

@@ -232,6 +232,18 @@ async function main() {
   const staffUser = await prisma.appUser.create({ data: { email: "kyle@realtourpilot.com", name: "Kyle Drill", role: "ADMIN", status: "ACTIVE" }, select: { id: true } });
   const { world, mkCut, release } = await reviewWorldKit({ staffUserId: staffUser.id });
   const windowOf = (sub: string) => prisma.contentReviewWindow.findUnique({ where: { submissionId: sub } });
+  // R03 (Sep 28 2026): review deadlines, their expiry and automatic approval
+  // reach a REAL client only inside the program rollout — outside it the sweep
+  // never looks at the window. Sections (a) and (b) race a REAL client's
+  // window against the sweep, so that client is put in the approved pilot
+  // first (joined long before any of its windows opened, so no window is
+  // "before the join"); every race and every invariant below is unchanged.
+  const admitToPilot = async (clientIds: string[]) => {
+    const core = await import("@/lib/programRolloutCore");
+    const joined = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const value = core.serializeProgramRollout({ mode: "PILOT", modeSince: joined, pilot: { clientIds, operations: core.opsForGroups(core.PROGRAM_PILOT_GROUPS.map((g) => g.key)), approvedBy: "info@realtourpilot.com", approvedAt: joined, expiresAt: null, note: null, joinedAt: Object.fromEntries(clientIds.map((id) => [id, joined])) } });
+    await prisma.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value, updatedBy: "drill" }, update: { value } });
+  };
   const setSwitch = (key: string, enabled: boolean, configJson: string | null = null) =>
     prisma.programAutomation.upsert({ where: { key }, create: { key, enabled, enabledBy: "drill", enabledAt: new Date(Date.now() - HOUR), configJson }, update: { enabled, enabledAt: new Date(Date.now() - HOUR), configJson } });
   // Both switches ON in THIS database only; the anti-abuse cap out of the way
@@ -415,6 +427,7 @@ async function main() {
     await setSwitch("review_auto_approve", false);
     const W = await world("Nia Manual", {}, { slots: 24 });
     await prisma.client.update({ where: { id: W.f.clientId }, data: { name: "Nia Manual" } });
+    await admitToPilot([W.f.clientId]);
     const round = async (t: ReturnType<typeof tally>, slot: number, early: boolean, requester: typeof cd.requestChangesOnCut) => {
       const arm = await armChild(child);
       const { sub, windowId, sweepAt } = await openDue(W, slot, early ? 300 : -50);
@@ -430,8 +443,16 @@ async function main() {
     // "review window closed, the client has not answered" card for it.
     const tOld = tally();
     let oldStale = 0;
+    // R03 (Sep 28 2026): the sweep now reads the rollout scope and each
+    // client's policy before it claims a window, so it reaches the hand-off a
+    // few ms later than at 3de6023 — and a request fired at the barrier then
+    // finished first every time, which hid the OLD defect rather than fixing
+    // it. The OLD request is started 40 ms after the barrier (still stamped
+    // 260 ms BEFORE the deadline), so the hand-off lands while it is in flight
+    // — the interleaving this OLD check exists to show. The check is unchanged.
+    const oldLate = (async (...a: Parameters<typeof cd.requestChangesOnCut>) => { await sleep(40); return (oldCd.requestChangesOnCut as typeof cd.requestChangesOnCut)(...a); }) as typeof cd.requestChangesOnCut;
     for (let i = 0; i < 3; i++) {
-      const { req, j } = await round(tOld, 21 + i, true, oldCd.requestChangesOnCut as typeof cd.requestChangesOnCut);
+      const { req, j } = await round(tOld, 21 + i, true, oldLate);
       if (req.ok && j.w.state === "CHANGES_REQUESTED" && j.tasks.some((x) => x.status === "OPEN")) oldStale++;
     }
     c.ok(`OLD (${BASE}): a request that beat the deadline but landed after the hand-off left the 'no answer' card OPEN`, oldStale >= 1, `${oldStale}/3`);
@@ -464,6 +485,7 @@ async function main() {
     const t = tally();
     const W = await world("Bo Broken", {}, { slots: 12 });
     await prisma.client.update({ where: { id: W.f.clientId }, data: { name: "Bo Broken" } });
+    await admitToPilot([W.f.clientId]);
     const subs: { sub: string; windowId: string }[] = [];
     for (let i = 0; i < 10; i++) {
       const arm = await armChild(child);

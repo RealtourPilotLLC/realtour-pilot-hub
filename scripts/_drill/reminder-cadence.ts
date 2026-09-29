@@ -70,7 +70,13 @@ async function main() {
   /** A written-route month still owed its answers, with ONE reminder already
    *  sent at `sentAt` — the follow-up is what is being measured. */
   const monthWithSend = async (name: string, monthKey: string, sentAt: Date) => {
-    const f = await buildContentMonth(db, { name, package: "Starter", videosPerMonth: 1, monthKey, project: false, owner: { email: `drill-${name.split(" ")[0].toLowerCase()}@realtourpilot.com` }, topics: [{ title: `${name} topic`, selection: "SELECTED" }] });
+    // R03 (Sep 28 2026): a TEST client's reminder must land on one of Jordan's
+    // VERIFIED inboxes — the outbox floor's rule, which the evaluator now
+    // shares (it used to accept any @realtourpilot.com address, so a dry run
+    // said "send" for nick@ and the live tick then threw). The fixture's seat
+    // is therefore a plus-address of info@, which folds to the verified inbox;
+    // the cadence being measured is unchanged, and so is every check below.
+    const f = await buildContentMonth(db, { name, package: "Starter", videosPerMonth: 1, monthKey, project: false, owner: { email: `info+drill-${name.split(" ")[0].toLowerCase()}@realtourpilot.com` }, topics: [{ title: `${name} topic`, selection: "SELECTED" }] });
     await prisma.contentMonth.update({ where: { id: f.monthId }, data: { planningMode: "WRITTEN" } });
     await prisma.programReminder.create({
       data: {
@@ -112,7 +118,7 @@ async function main() {
   // =========================================================================
   c.head("3 · An ENDED enrollment");
   // =========================================================================
-  const E = await buildContentMonth(db, { name: "Eli Ended TEST", package: "Starter", videosPerMonth: 1, monthKey: "2026-10", enrollmentStatus: "ENDED", project: false, owner: { email: "drill-eli@realtourpilot.com" }, topics: [{ title: "Ended topic", selection: "SELECTED" }] });
+  const E = await buildContentMonth(db, { name: "Eli Ended TEST", package: "Starter", videosPerMonth: 1, monthKey: "2026-10", enrollmentStatus: "ENDED", project: false, owner: { email: "info+drill-eli@realtourpilot.com" }, topics: [{ title: "Ended topic", selection: "SELECTED" }] });
   await prisma.contentMonth.update({ where: { id: E.monthId }, data: { planningMode: "WRITTEN" } });
   const ended = await primary(R, E.monthId, et(2026, 10, 6, 10));
   c.ok("suppressed: ended", ended.decision === "suppressed" && ended.suppressionReason === "ended", `${ended.decision} ${ended.suppressionReason}`);
@@ -121,7 +127,7 @@ async function main() {
   c.head("4 · Kyle's 15th for a REAL client, before launch");
   // =========================================================================
   await prisma.teamMember.create({ data: { name: "Kyle Smith", email: "kyle@drill.invalid", role: "MANAGER", active: true, payPercent: 0.35, payFloor: 100 } });
-  const Rl = await buildContentMonth(db, { name: "Olivia Real TEST", package: "Starter", videosPerMonth: 1, monthKey: "2026-10", project: false, owner: { email: "drill-olivia@realtourpilot.com" }, topics: [{ title: "Real topic", selection: "SELECTED" }] });
+  const Rl = await buildContentMonth(db, { name: "Olivia Real TEST", package: "Starter", videosPerMonth: 1, monthKey: "2026-10", project: false, owner: { email: "info+drill-olivia@realtourpilot.com" }, topics: [{ title: "Real topic", selection: "SELECTED" }] });
   await prisma.contentMonth.update({ where: { id: Rl.monthId }, data: { planningMode: "WRITTEN" } });
   await prisma.client.update({ where: { id: Rl.clientId }, data: { name: "Olivia Hart" } }); // a real client now: no TEST in the name
   const FIFTEENTH = et(2026, 10, 15, 10);

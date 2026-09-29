@@ -87,6 +87,17 @@ export function verifyMediaToken(submissionId: string, token: string | null | un
  * in? Mirrors the resolver's own rules for that path — re-read on every
  * stream request so revocation is immediate. Paused/ended programs stay
  * playable (released content is theirs); revoked, expired and rotated do not.
+ *
+ * A SEAT IS LIVE ONLY WHILE THE ROLLOUT ADMITS ITS CLIENT (review fix, Sep 28
+ * 2026). The resolver's seat rule is portal.liveMemberships, which since R03
+ * also drops a seat whose client the program rollout does not reach for
+ * signing in (op portal_sign_in). This branch had kept its own copy of the
+ * older rule — not revoked, program not revoked, clientIds agree, person not
+ * disabled — so a seat token minted while P was in the pilot kept streaming
+ * and downloading P's cuts for up to six hours after Jordan took P out, or
+ * after the pilot's end date passed (which writes nothing at all). It now
+ * asks liveMemberships itself: one rule, so the two can never drift again. An
+ * unreadable rollout keeps only TEST seats, exactly as the resolver does.
  */
 export async function mediaScopeLive(scope: MediaScope, mintedAt: Date, now: number = Date.now()): Promise<boolean> {
   if (scope.kind === "enrollment") {
@@ -104,13 +115,13 @@ export async function mediaScopeLive(scope: MediaScope, mintedAt: Date, now: num
     return true;
   }
   if (scope.kind === "membership") {
-    const m = await prisma.clientMembership.findUnique({ where: { id: scope.id }, select: { revokedAt: true, enrollmentId: true, clientId: true, clientUserId: true } });
+    const m = await prisma.clientMembership.findUnique({ where: { id: scope.id }, select: { revokedAt: true, clientUserId: true } });
     if (!m || m.revokedAt) return false;
-    const [e, u] = await Promise.all([
-      prisma.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { clientId: true, accessRevokedAt: true } }),
-      prisma.clientUser.findUnique({ where: { id: m.clientUserId }, select: { status: true } }),
-    ]);
-    return !!e && !e.accessRevokedAt && e.clientId === m.clientId && !!u && u.status !== "DISABLED";
+    const u = await prisma.clientUser.findUnique({ where: { id: m.clientUserId }, select: { status: true } });
+    if (!u || u.status === "DISABLED") return false;
+    // Lazy: portal.ts is the resolver; this module only needs its seat rule.
+    const { liveMemberships } = await import("@/lib/portal");
+    return (await liveMemberships(m.clientUserId)).some((s) => s.id === scope.id);
   }
   const u = await prisma.appUser.findUnique({ where: { id: scope.id }, select: { status: true, role: true } });
   return !!u && u.status === "ACTIVE" && (u.role === "OWNER" || u.role === "ADMIN");

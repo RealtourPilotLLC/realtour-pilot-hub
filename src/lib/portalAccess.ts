@@ -3,8 +3,10 @@ import { createHash, randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { appBase } from "@/lib/appUrl";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { isTestClientName, isStaffControlledEmail, isVerifiedTestDestinationEmail } from "@/lib/testClients";
+import { isSyntheticClientRow, isStaffControlledEmail, isVerifiedTestDestinationEmail } from "@/lib/testClients";
 import { liveMemberships, type PortalRole, type PortalViewer } from "@/lib/portal";
+import { programReach, programReachMany } from "@/lib/programRollout";
+import type { ReachDecision } from "@/lib/programRolloutCore";
 
 // ---------------------------------------------------------------------------
 // PORTAL ACCESS — who may do what on a client's portal, and the staff-side
@@ -21,7 +23,19 @@ import { liveMemberships, type PortalRole, type PortalViewer } from "@/lib/porta
 //     real client's record can never say "signed in" because Jordan pressed a
 //     button.
 // Both reads go through isAutomationEnabled: a missing row is OFF.
+//
+// AND THE ROLLOUT SCOPE (R03, Sep 28 2026). A switch being on used to mean
+// "every client". Now a REAL client must also be inside the program rollout
+// (lib/programRollout — TEST clients, plus the approved pilot of at most three,
+// or everyone once Jordan chooses it) for every account operation here: a staff
+// invitation, a payment's welcome, the release of held access, a sign-in link,
+// and a signed-in session (portal.liveMemberships). A seat on an included
+// client never unlocks an excluded one. The outbox dispatch gate re-checks the
+// same rule when the email actually leaves.
 // ---------------------------------------------------------------------------
+
+/** Where the owner widens who the program reaches — named in every refusal. */
+const SCOPE_HOME = "Settings → Who the program may reach";
 
 export const PORTAL_ROLES: readonly PortalRole[] = ["OWNER", "COLLABORATOR", "VIEWER"];
 export const isPortalRole = (r: unknown): r is PortalRole => typeof r === "string" && (PORTAL_ROLES as readonly string[]).includes(r);
@@ -175,7 +189,10 @@ export async function consumeLoginToken(raw: string): Promise<LoginConsumption> 
   const hash = hashToken(raw);
   const holder = await prisma.clientUser.findUnique({ where: { loginTokenHash: hash }, select: { id: true, email: true, status: true } });
   if (!holder || holder.status === "DISABLED") return { ok: false, reason: "invalid" };
-  if ((await liveMemberships(holder.id)).length === 0) {
+  // Live AND inside the rollout scope (R03): a person whose only seats are on
+  // excluded clients is "noaccess" here, exactly like one whose seats were revoked.
+  const live = await liveMemberships(holder.id);
+  if (live.length === 0) {
     await prisma.clientUser.updateMany({ where: { id: holder.id, loginTokenHash: hash }, data: { loginTokenHash: null, loginTokenExpiresAt: null } });
     return { ok: false, reason: "noaccess" };
   }
@@ -186,16 +203,22 @@ export async function consumeLoginToken(raw: string): Promise<LoginConsumption> 
   if (won.count !== 1) return { ok: false, reason: "invalid" };
   // The first sign-in accepts every seat this person holds that was still
   // pending — acceptance is "the actual person showed up", not a per-program
-  // click.
-  await prisma.clientMembership.updateMany({ where: { clientUserId: holder.id, acceptedAt: null, revokedAt: null }, data: { acceptedAt: new Date() } });
+  // click. R03 (Sep 28 2026): only the seats they could actually open. A seat
+  // on a client outside the rollout was not shown to them, so its record must
+  // not say they accepted it.
+  await prisma.clientMembership.updateMany({ where: { id: { in: live.map((m) => m.id) }, clientUserId: holder.id, acceptedAt: null, revokedAt: null }, data: { acceptedAt: new Date() } });
   return { ok: true, clientUserId: holder.id, email: holder.email };
 }
 
+/** The enrollment's client, and whether it is a synthetic TEST row. BY ID as
+ *  well as by name (R03, Sep 28 2026): a never-synthetic real row renamed
+ *  "… TEST" is REAL here — in invitations, grants and minted links — and gets
+ *  nothing a real client outside the rollout would not. */
 async function testClientOf(enrollmentId: string): Promise<{ clientId: string; name: string; isTest: boolean } | null> {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
   if (!e) return null;
   const c = await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } });
-  return { clientId: e.clientId, name: c?.name ?? "", isTest: isTestClientName(c?.name) };
+  return { clientId: e.clientId, name: c?.name ?? "", isTest: isSyntheticClientRow({ id: e.clientId, name: c?.name ?? null }) };
 }
 
 /**
@@ -225,13 +248,24 @@ export async function inviteClientUser(
     if (!target.isTest) throw new Error("Client invitations are switched off until launch is authorised. Only TEST clients can be given portal people right now.");
     if (!isStaffControlledEmail(email)) throw new Error("Until launch, portal people must use a staff-controlled @realtourpilot.com address (for example info+name@realtourpilot.com).");
   }
+  // R03 (Sep 28 2026): the switch on is not "every client". A real client must
+  // be inside the rollout for portal accounts, checked BEFORE any seat or
+  // person is written, so a refused invitation leaves nothing behind.
+  if (!target.isTest) {
+    const d = await programReach("portal_invites", target.clientId);
+    if (!d.ok) throw new Error(`${target.name || "This client"} is not in the program rollout for portal accounts (${d.reason}). Add them in ${SCOPE_HOME} first. No seat was created and nothing was sent.`);
+  }
   const name = (nameRaw ?? "").trim().slice(0, 120) || null;
-  const person = await prisma.clientUser.upsert({
-    where: { email },
-    create: { email, name },
-    update: name ? { name } : {},
-    select: { id: true },
-  });
+  // A NAME IS FILLED IN, NEVER REPLACED (R03 review, Sep 28 2026). ClientUser
+  // is keyed by email across every client, so the old `update: { name }` let
+  // an invitation on one program rename a person another program knows —
+  // grantProgramAccess has refused that since Sep 21; this door now agrees.
+  const prior = await prisma.clientUser.findUnique({ where: { email }, select: { id: true, name: true } });
+  const person = prior
+    ? name && !prior.name?.trim()
+      ? await prisma.clientUser.update({ where: { id: prior.id }, data: { name }, select: { id: true } })
+      : { id: prior.id }
+    : await prisma.clientUser.upsert({ where: { email }, create: { email, name }, update: {}, select: { id: true } });
   const existing = await prisma.clientMembership.findUnique({ where: { clientUserId_enrollmentId: { clientUserId: person.id, enrollmentId } } });
   const membership = existing
     ? await prisma.clientMembership.update({
@@ -267,7 +301,13 @@ export async function inviteClientUser(
   const emailed = r.outcome === "accepted";
   return {
     membershipId: membership.id, clientUserId: person.id, emailed,
-    note: emailed ? "Invitation sent." : r.outcome === "unknown" ? "The invitation may have gone out — it is held on Connections for a person to confirm." : `The invitation did not send (${"error" in r ? r.error : r.outcome}). The seat exists; try again.`,
+    note: emailed
+      ? "Invitation sent."
+      : r.outcome === "unknown"
+        ? "The invitation may have gone out — it is held on Connections for a person to confirm."
+        : r.outcome === "failed" && r.refused
+          ? `The invitation was not sent: ${r.error.replace(/^refused before send: /, "")}. The seat exists.`
+          : `The invitation did not send (${"error" in r ? r.error : r.outcome}). The seat exists; try again.`,
   };
 }
 
@@ -310,11 +350,16 @@ export type OwedAccess = {
   role: PortalRole;
   reason: "welcome" | "teammate";
   since: string;
+  /** R03 (Sep 28 2026): why it is held — the switch, or the rollout scope
+   *  (a ReachRefusalCode such as not_in_pilot). Absent on rows written before. */
+  heldBecause?: { code: string; reason: string };
 };
 
 export type GrantOutcome =
-  /** The seat exists and the welcome is queued (or was already). */
-  | { outcome: "GRANTED"; membershipId: string; clientUserId: string; welcome: "queued" | "already" | "suppressed"; note: string }
+  /** The seat exists and the welcome is queued (or was already). "failed":
+   *  the provider refused it or the dispatch gate stopped it — nothing was
+   *  sent, and the debt stays on file so a release re-sends it (R03). */
+  | { outcome: "GRANTED"; membershipId: string; clientUserId: string; welcome: "queued" | "already" | "suppressed" | "failed"; note: string }
   /** Launch is not authorised: nothing was created, the debt is recorded. */
   | { outcome: "HELD"; note: string }
   /** Two different people, or one person we cannot safely name. A human decides. */
@@ -352,20 +397,26 @@ export async function grantProgramAccess(input: {
     // is not a person who read the warning.
     return { outcome: "CONFLICT", note: "Until launch, portal people on a TEST client must use a staff-controlled @realtourpilot.com address." };
   }
-  if (!invitesOn && !target.isTest) {
+  // R03 (Sep 28 2026): a REAL client is held unless invitations are on AND
+  // the client is inside the program rollout. A payment from a client outside
+  // the pilot opens no account and composes no email — the debt is recorded
+  // with the reason, and granted by the owner's release once they are in.
+  const reach: ReachDecision | null = target.isTest ? null : invitesOn ? await programReach("portal_invites", target.clientId) : null;
+  if (!target.isTest && (!invitesOn || !reach?.ok)) {
     // HELD. Record the debt (idempotent on the key) and stop. Nothing about
     // this reaches the client, and nothing about it is lost either.
-    const value = JSON.stringify({
+    const heldBecause = !invitesOn || !reach || reach.ok
+      ? { code: "switched_off", reason: "client invitations are switched off until Jordan authorises rollout" }
+      : { code: reach.code, reason: reach.reason };
+    await recordOwed({
       enrollmentId: input.enrollmentId, clientId: target.clientId, email,
-      name: input.name?.trim() || null, role, reason: input.reason, since: new Date().toISOString(),
-    } satisfies OwedAccess);
-    const key = owedKey(input.enrollmentId, email);
-    await prisma.appSetting
-      .upsert({ where: { key }, create: { key, value }, update: {} }) // update:{} — the FIRST time we owed it is the fact worth keeping
-      .catch(() => {});
+      name: input.name?.trim() || null, role, reason: input.reason, since: new Date().toISOString(), heldBecause,
+    });
     return {
       outcome: "HELD",
-      note: "Account access is held: client invitations are switched off until Jordan authorises rollout. The debt is recorded and will be granted in one pass when the switch turns on.",
+      note: heldBecause.code === "switched_off"
+        ? "Account access is held: client invitations are switched off until Jordan authorises rollout. The debt is recorded and will be granted in one pass when the switch turns on."
+        : `Account access is held: ${target.name || "this client"} is not in the program rollout yet (${heldBecause.reason}). The debt is recorded; once they are added in ${SCOPE_HOME}, the owner's "Release held access" grants it.`,
     };
   }
 
@@ -427,14 +478,32 @@ export async function grantProgramAccess(input: {
   if (!seat) return { outcome: "CONFLICT", note: "The seat could not be opened. Nothing was sent; the next pass tries again." };
   const membershipId = seat.id;
 
-  const welcome = await queueWelcome({
+  const w = await queueWelcome({
     membershipId, email, name, clientName: target.name, clientId: target.clientId, isTestClient: target.isTest,
     reason: input.reason, requestedBy: input.requestedBy ?? input.byAppUserId ?? "program-activation",
   });
-  await prisma.appSetting.deleteMany({ where: { key: owedKey(input.enrollmentId, email) } }).catch(() => {});
+  const welcome = w.welcome;
+  if (w.keepDebt) {
+    // THE WELCOME DID NOT GO (R03, Sep 28 2026). Deleting the debt here used
+    // to leave a seat with no welcome and nothing that would ever send one —
+    // and a failed send was reported as "queued". The debt stays (with why),
+    // so a release re-sends it: the seat already exists, and the welcome's
+    // identity was released by the refusal.
+    await recordOwed({
+      enrollmentId: input.enrollmentId, clientId: target.clientId, email, name, role, reason: input.reason, since: new Date().toISOString(),
+      heldBecause: { code: w.code ?? "send_failed", reason: w.why ?? "the welcome did not send" },
+    });
+  } else {
+    await prisma.appSetting.deleteMany({ where: { key: owedKey(input.enrollmentId, email) } }).catch(() => {});
+  }
   return {
     outcome: "GRANTED", membershipId, clientUserId: person.id, welcome,
-    note: welcome === "queued" ? "Account opened and the welcome is queued." : welcome === "already" ? "Account already open; the welcome was queued earlier." : "Account opened. The welcome is suppressed while invitations are switched off.",
+    note:
+      welcome === "queued" ? "Account opened and the welcome is queued."
+      : welcome === "already" ? "Account already open; the welcome was queued earlier."
+      : welcome === "failed" ? `Account opened, but the welcome did not send (${w.why ?? "unknown"}). It stays on the held list and goes out on the next release.`
+      : w.keepDebt ? `Account opened. The welcome was not sent: ${w.why ?? "the rollout does not reach this client"}. It stays on the held list.`
+      : "Account opened. The welcome is suppressed while invitations are switched off.",
   };
 }
 
@@ -444,10 +513,32 @@ export async function grantProgramAccess(input: {
  *  welcome however the events arrive. */
 export const portalWelcomeKey = (membershipId: string) => `portal_invite:${membershipId}:welcome`;
 
+/** Write one owed-access row, or refresh the reason on the one already there.
+ *  The FIRST write is the fact worth keeping (who, which role, since when —
+ *  as before); only `heldBecause` is refreshed on a later pass, so the held
+ *  list always says the current reason. */
+async function recordOwed(o: OwedAccess): Promise<void> {
+  const key = owedKey(o.enrollmentId, o.email);
+  const fresh: OwedAccess = { enrollmentId: o.enrollmentId, clientId: o.clientId, email: o.email, name: o.name, role: o.role, reason: o.reason, since: o.since, ...(o.heldBecause ? { heldBecause: o.heldBecause } : {}) };
+  try {
+    const prior = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+    let value = JSON.stringify(fresh);
+    if (prior) {
+      try {
+        const kept = JSON.parse(prior.value) as OwedAccess;
+        if (kept && typeof kept.email === "string") value = JSON.stringify({ ...kept, ...(o.heldBecause ? { heldBecause: o.heldBecause } : {}) } satisfies OwedAccess);
+      } catch { /* a hand-edited row: write it fresh */ }
+    }
+    await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+  } catch { /* a failed write must not fail the payment path; the next pass writes it */ }
+}
+
+type WelcomeResult = { welcome: "queued" | "already" | "suppressed" | "failed"; keepDebt: boolean; code?: string; why?: string };
+
 async function queueWelcome(input: {
   membershipId: string; email: string; name: string | null; clientName: string; clientId: string; isTestClient: boolean;
   reason: "welcome" | "teammate"; requestedBy: string;
-}): Promise<"queued" | "already" | "suppressed"> {
+}): Promise<WelcomeResult> {
   // THE ONE WAY THIS EMAIL LEAVES THE BUILDING BEFORE LAUNCH (Jordan, Sep 21:
   // "Keep client invitations and new client-facing automations held until I
   // test the Jordan account and approve rollout"). He cannot approve a welcome
@@ -474,19 +565,41 @@ async function queueWelcome(input: {
   // as close to keeping that sentence true as a testable pre-launch rail can
   // get; outbox.ts was outside this pass's files, so its parenthetical still
   // needs the matching one-line amendment.
-  const allowed =
-    (await isAutomationEnabled("portal_invites")) || (input.isTestClient && isVerifiedTestDestinationEmail(input.email));
-  if (!allowed) return "suppressed";
+  //
+  // R03 (Sep 28 2026): "on" also means "this client is inside the rollout".
+  // A real client outside it gets no welcome even with the switch on; the
+  // TEST exception above is unchanged.
+  const invitesOn = await isAutomationEnabled("portal_invites");
+  const reach = invitesOn ? await programReach("portal_invites", input.clientId) : null;
+  const allowed = (invitesOn && !!reach?.ok) || (input.isTestClient && isVerifiedTestDestinationEmail(input.email));
+  if (!allowed) {
+    // Out of scope with the switch on is a debt, not a silence: kept, with why.
+    if (invitesOn && reach && !reach.ok && !input.isTestClient) return { welcome: "suppressed", keepDebt: true, code: reach.code, why: reach.reason };
+    return { welcome: "suppressed", keepDebt: false };
+  }
   // Composed NOW, not when access was first owed: a held welcome released
   // later reads the discovery booking as it stands at that moment (CP-14).
   const body = await composeWelcomeEmail({ name: input.name, clientName: input.clientName, reason: input.reason, clientId: input.clientId });
-  const { sendThroughOutbox } = await import("@/lib/outbox");
-  const r = await sendThroughOutbox({
-    channel: "email", toRef: input.email, body,
-    dedupeKey: portalWelcomeKey(input.membershipId),
-    clientId: input.clientId, requestedBy: input.requestedBy,
-  });
-  return r.outcome === "duplicate" ? "already" : "queued";
+  const { sendThroughOutbox, TestClientSendRefusedError } = await import("@/lib/outbox");
+  let r: Awaited<ReturnType<typeof sendThroughOutbox>>;
+  try {
+    r = await sendThroughOutbox({
+      channel: "email", toRef: input.email, body,
+      dedupeKey: portalWelcomeKey(input.membershipId),
+      clientId: input.clientId, requestedBy: input.requestedBy,
+    });
+  } catch (e) {
+    if (e instanceof TestClientSendRefusedError) return { welcome: "suppressed", keepDebt: false, code: "test_client_real_address", why: e.message };
+    throw e;
+  }
+  if (r.outcome === "duplicate") return { welcome: "already", keepDebt: false };
+  // THE DISPATCH GATE SAID NO between this check and the send (the client was
+  // taken out of the pilot, the switch turned off): suppressed, debt kept.
+  if (r.outcome === "failed" && r.refused) return { welcome: "suppressed", keepDebt: true, code: r.refused, why: r.error.replace(/^refused before send: /, "") };
+  // A provider refusal is NOT "queued" (it used to be reported as one): nothing
+  // went, the identity is free, and the debt keeps it on the held list.
+  if (r.outcome === "failed") return { welcome: "failed", keepDebt: true, code: "send_failed", why: r.error };
+  return { welcome: "queued", keepDebt: false };
 }
 
 /**
@@ -617,19 +730,65 @@ export async function cancelOwedAccess(enrollmentId: string, emailRaw: string): 
   return { ok: true, note: "Cancelled — nothing was ever sent to them." };
 }
 
+// ---------------------------------------------------------------------------
+// RELEASING HELD ACCESS, SCOPED (R03, Sep 28 2026).
+//
+// The release used to grant EVERY owed row the moment `portal_invites` was on —
+// every paying client who arrived while invitations were off, pilot or not.
+// It now grants only the rows whose client the rollout admits for portal
+// accounts; every other row stays HELD with the reason. ONE classifier decides
+// for the preview and the release, so "what would be granted" and "what was
+// granted" cannot disagree. Still deliberately NOT wired to the switch: the
+// owner previews, then presses Release (content/portalAccessActions.ts).
+// ---------------------------------------------------------------------------
+
+type OwedClassified = { switchOn: boolean; grant: OwedAccess[]; stay: (OwedAccess & { code: string; why: string })[] };
+
+async function classifyOwedAccess(owed: OwedAccess[]): Promise<OwedClassified> {
+  const switchOn = await isAutomationEnabled("portal_invites");
+  if (!switchOn) return { switchOn, grant: [], stay: owed.map((o) => ({ ...o, code: "switched_off", why: "client invitations are switched off" })) };
+  const reach = await programReachMany("portal_invites", owed.map((o) => o.clientId));
+  const out: OwedClassified = { switchOn, grant: [], stay: [] };
+  for (const o of owed) {
+    const d = reach.get(o.clientId);
+    if (d?.ok) out.grant.push(o);
+    else out.stay.push({ ...o, code: d && !d.ok ? d.code : "scope_unreadable", why: d && !d.ok ? d.reason : "the rollout scope could not be read" });
+  }
+  return out;
+}
+
+export type OwedPreview = { enrollmentId: string; clientId: string; clientName: string; email: string; reason: "welcome" | "teammate"; since: string };
+
+/** What a release would do right now — the same classifier, read-only, addresses masked. */
+export async function previewHeldAccessRelease(): Promise<{ switchOn: boolean; grant: OwedPreview[]; stay: (OwedPreview & { code: string; why: string })[] }> {
+  const owed = await pendingProgramAccess();
+  const c = await classifyOwedAccess(owed);
+  const ids = [...new Set(owed.map((o) => o.clientId))];
+  const names = new Map(ids.length ? (await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })).map((x) => [x.id, x.name]) : []);
+  const { maskToRef } = await import("@/lib/outbox");
+  const view = (o: OwedAccess): OwedPreview => ({ enrollmentId: o.enrollmentId, clientId: o.clientId, clientName: names.get(o.clientId) ?? o.clientId, email: maskToRef("email", o.email), reason: o.reason, since: o.since });
+  return { switchOn: c.switchOn, grant: c.grant.map(view), stay: c.stay.map((o) => ({ ...view(o), code: o.code, why: o.why })) };
+}
+
 /**
- * Grant everything that was held, in the order it was owed. Safe to call twice:
+ * Grant what the rollout admits, in the order it was owed. Safe to call twice:
  * `grantProgramAccess` is idempotent and clears each debt as it settles. Does
  * nothing at all while `portal_invites` is still off, so a stray call cannot
- * open the gate — only the switch can.
+ * open the gate — only the switch can. Rows outside the scope stay HELD, with
+ * the reason written on the row.
  */
 export async function releasePendingProgramAccess(by: string | null): Promise<{ granted: number; held: number; conflicts: string[] }> {
-  if (!(await isAutomationEnabled("portal_invites"))) return { granted: 0, held: (await pendingProgramAccess()).length, conflicts: [] };
   const owed = await pendingProgramAccess();
+  const c = await classifyOwedAccess(owed);
+  if (!c.switchOn) return { granted: 0, held: owed.length, conflicts: [] };
   let granted = 0;
   let held = 0;
   const conflicts: string[] = [];
-  for (const o of owed) {
+  for (const o of c.stay) {
+    held++;
+    await recordOwed({ ...o, heldBecause: { code: o.code, reason: o.why } });
+  }
+  for (const o of c.grant) {
     const r = await grantProgramAccess({
       enrollmentId: o.enrollmentId, emailRaw: o.email, name: o.name, role: o.role, reason: o.reason,
       byAppUserId: by, requestedBy: by ?? "release-held-access",
@@ -692,6 +851,14 @@ export async function mintLoginLink(membershipId: string, byAppUserId: string | 
   if (!target.isTest && !(await isAutomationEnabled("portal_login_email"))) {
     throw new Error("Sign-in links for real clients are switched off until launch is authorised. Test with a TEST client.");
   }
+  // R03 (Sep 28 2026): a link that signs a real client's person in is a
+  // program sign-in, so the client must be inside the rollout for it — the
+  // session it opens would be refused anyway (portal.liveMemberships). The
+  // reminder and share emails that mint one fall back to the token page.
+  if (!target.isTest) {
+    const d = await programReach("portal_sign_in", target.clientId);
+    if (!d.ok) throw new Error(`${target.name || "This client"} is not in the program rollout for signing in (${d.reason}). Use their portal link, or add them in ${SCOPE_HOME}.`);
+  }
   const { raw, expiresAt } = await mintToken(m.clientUserId);
   console.info(`[portal] login link minted for membership ${membershipId} by ${byAppUserId ?? "unknown"} (expires ${expiresAt.toISOString()})`);
   return { url: loginUrl(raw), expiresAt };
@@ -717,19 +884,75 @@ export async function portalLoginEmailEnabled(): Promise<boolean> {
   return isAutomationEnabled("portal_login_email");
 }
 
+/** The same question for ONE client (R03, Sep 28 2026): the switch AND the
+ *  rollout. A client outside the rollout is not offered email sign-in on their
+ *  token page, because requestLoginLink would never send them a link.
+ *
+ *  A TEST CLIENT NEEDS A VERIFIED INBOX TOO (review fix, Sep 28 2026). For a
+ *  TEST client requestLoginLink sends only when the address is one of
+ *  Jordan's verified test inboxes, so a TEST client whose seats are all on
+ *  other addresses (a colleague's nick@…) was offered sign-in and then sent
+ *  nothing. Offered now only when at least one live seat's person is on a
+ *  verified inbox — the same rule the send uses. */
+export async function portalLoginEmailEnabledFor(clientId: string): Promise<boolean> {
+  if (!(await isAutomationEnabled("portal_login_email"))) return false;
+  const d = await programReach("portal_login_email", clientId);
+  if (!d.ok) return false;
+  if (d.tier !== "TEST") return true;
+  const seats = await prisma.clientMembership.findMany({ where: { clientId, revokedAt: null }, select: { clientUserId: true } });
+  if (!seats.length) return false;
+  const people = await prisma.clientUser.findMany({ where: { id: { in: seats.map((x) => x.clientUserId) } }, select: { email: true, status: true } });
+  return people.some((u) => u.status !== "DISABLED" && isVerifiedTestDestinationEmail(u.email));
+}
+
+/** The counter the public form writes when it sends nothing (switch off, or
+ *  no seat the rollout admits) — "someone asked", never "someone got a link". */
+async function recordLoginRequest(personId: string, why: string): Promise<void> {
+  const key = `portal-login-requested:${personId}`;
+  await prisma.appSetting
+    .upsert({ where: { key }, create: { key, value: `1 @ ${new Date().toISOString()}` }, update: { value: `${await nextCount(key)} @ ${new Date().toISOString()}` } })
+    .catch(() => {});
+  console.info(`[portal] sign-in link requested for ${personId} — ${why}, nothing sent`);
+}
+
 export async function requestLoginLink(emailRaw: string): Promise<void> {
   const email = emailRaw.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
   const person = await prisma.clientUser.findUnique({ where: { email }, select: { id: true, name: true, status: true, loginTokenExpiresAt: true } });
   if (!person || person.status === "DISABLED") return;
-  if ((await liveMemberships(person.id)).length === 0) return;
+  // Live seats the rollout lets them OPEN (portal_sign_in — liveMemberships).
+  const seats = await liveMemberships(person.id);
+  if (seats.length === 0) {
+    // Seats that exist but sit on clients outside the rollout: the request is
+    // recorded (someone asked), and nothing is minted or sent. A person with
+    // no seat at all is still silence, as before.
+    if ((await prisma.clientMembership.count({ where: { clientUserId: person.id, revokedAt: null } })) > 0) {
+      await recordLoginRequest(person.id, "their seats are on clients the rollout does not reach");
+    }
+    return;
+  }
 
   if (!(await isAutomationEnabled("portal_login_email"))) {
-    const key = `portal-login-requested:${person.id}`;
-    await prisma.appSetting
-      .upsert({ where: { key }, create: { key, value: `1 @ ${new Date().toISOString()}` }, update: { value: `${await nextCount(key)} @ ${new Date().toISOString()}` } })
-      .catch(() => {});
-    console.info(`[portal] sign-in link requested for ${person.id} — portal_login_email is off, nothing sent`);
+    await recordLoginRequest(person.id, "portal_login_email is off");
+    return;
+  }
+
+  // THE SEAT THAT EARNS THE EMAIL (R03, Sep 28 2026). The link signs the
+  // person in to every seat they may open, so it may only be SENT because of a
+  // seat on a client the rollout reaches for sign-in emails — a seat on an
+  // included program never unlocks an excluded one, and a seat on an excluded
+  // one never earns a link. A real client in scope comes first; a TEST seat
+  // counts only when this address is one of Jordan's verified inboxes (the
+  // outbox's TEST floor would refuse anything else). The row carries that
+  // seat's clientId so the floor, and the dispatch gate, see whose it is.
+  const reach = await programReachMany("portal_login_email", seats.map((s) => s.clientId));
+  const tierOf = (clientId: string) => { const d = reach.get(clientId); return d?.ok ? d.tier : null; };
+  const earning =
+    seats.find((s) => { const t = tierOf(s.clientId); return t === "PILOT" || t === "ALL"; }) ??
+    seats.find((s) => tierOf(s.clientId) === "TEST" && isVerifiedTestDestinationEmail(email)) ??
+    null;
+  if (!earning) {
+    await recordLoginRequest(person.id, "no seat of theirs is on a client the rollout reaches for sign-in emails");
     return;
   }
 
@@ -750,8 +973,14 @@ export async function requestLoginLink(emailRaw: string): Promise<void> {
     "— RealTour Pilot",
   ].join("\n");
   const { sendThroughOutbox, portalLoginKey } = await import("@/lib/outbox");
-  const r = await sendThroughOutbox({ channel: "email", toRef: email, body, dedupeKey: portalLoginKey(person.id, expiresAt), requestedBy: "portal-login" });
-  if (r.outcome !== "accepted") console.warn(`[portal] sign-in link for ${person.id}: ${r.outcome}${"error" in r ? ` — ${r.error}` : ""}`);
+  try {
+    const r = await sendThroughOutbox({ channel: "email", toRef: email, body, dedupeKey: portalLoginKey(person.id, expiresAt), clientId: earning.clientId, requestedBy: "portal-login" });
+    if (r.outcome !== "accepted") console.warn(`[portal] sign-in link for ${person.id}: ${r.outcome}${"error" in r ? ` — ${r.error}` : ""}`);
+  } catch (e) {
+    // The TEST floor refusing is loud in the log and silent on the page (the
+    // form never says whether an address exists).
+    console.warn(`[portal] sign-in link for ${person.id} refused: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 async function nextCount(key: string): Promise<number> {
@@ -815,7 +1044,7 @@ export async function portalAccessSummary(enrollmentId: string): Promise<PortalA
   return {
     enrollmentId,
     clientName: client?.name ?? "",
-    isTestClient: isTestClientName(client?.name),
+    isTestClient: isSyntheticClientRow({ id: e.clientId, name: client?.name ?? null }),
     status: e.status,
     link: {
       issued: !!e.portalToken,

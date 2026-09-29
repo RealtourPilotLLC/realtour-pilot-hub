@@ -186,6 +186,8 @@ export type CallBookingScope = { ok: true; scope: "FIXTURE" | "PILOT" } | { ok: 
  *     not move whose inbox the confirmation lands in → FIXTURE.
  *   a real client: never from the fixture list; an approved (approvedBy +
  *     approvedAt), unexpired pilot naming the client AND this operation → PILOT.
+ *     R03 (Sep 28 2026): that pilot is the PROGRAM pilot ("bookings" ticked),
+ *     not a per-switch list.
  * Pure reads. Nothing is written.
  */
 export async function callBookingScope(a: {
@@ -201,8 +203,12 @@ export async function callBookingScope(a: {
   if (!row) return { ok: false, reason: "no such client" };
   const t = await import("@/lib/testClients");
   const { routeHubWrite } = await import("@/lib/hubWritePermit");
+  // ONE PILOT LIST (R03, Jordan's Sep 28 rule): the PILOT route reads the
+  // program pilot, like the Aryeo guard; the fixture list stays as stored.
+  const { hubWriteScopeWithProgramPilot } = await import("@/lib/programRollout");
+  const { config } = await hubWriteScopeWithProgramPilot({ authorizedFixtureClientIds: cfg.authorizedFixtureClientIds, pilot: cfg.pilot }, CALL_BOOKING_SWITCH);
   const route = routeHubWrite({
-    switchKey: CALL_BOOKING_SWITCH, config: { authorizedFixtureClientIds: cfg.authorizedFixtureClientIds, pilot: cfg.pilot },
+    switchKey: CALL_BOOKING_SWITCH, config,
     client: { id: row.id, name: row.name }, operation: a.operation, now: a.now ?? new Date(),
     isTestName: t.isTestClientName, isNeverSynthetic: t.isNeverSyntheticClientId,
   });

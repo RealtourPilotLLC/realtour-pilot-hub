@@ -359,10 +359,21 @@ export async function releaseScriptVersion(scriptId: string, actor: { email: str
   }
   const now = new Date();
   const emailOn = await isAutomationEnabled("script_share_email");
-  const notificationState = emailOn ? "QUEUED" : "SUPPRESSED";
+  // R03 (Sep 28 2026): QUEUED only when the switch is on AND the program
+  // rollout reaches this client for the scripts-ready email (with the
+  // reminders policy's testClientsOnly lock inside it). Otherwise the release
+  // still happens and the email is SUPPRESSED here, with the reason.
+  let suppressedWhy: string | null = emailOn ? null : "Email suppressed: script_share_email is off.";
+  if (emailOn) {
+    const [{ programReachWithLock }, { reachSuppressionReason }] = await Promise.all([import("@/lib/programRollout"), import("@/lib/programRolloutCore")]);
+    // A failed lock read is scope_unreadable, never "the lock is on" (review fix, Sep 28 2026).
+    const d = await programReachWithLock("script_share_email", s.clientId);
+    if (!d.ok) suppressedWhy = `Email suppressed (${reachSuppressionReason(d) ?? "not_in_rollout_scope"}): ${d.reason}.`;
+  }
+  const notificationState = suppressedWhy ? "SUPPRESSED" : "QUEUED";
   await prisma.contentScriptVersion.update({ where: { id: s.approvedVersionId }, data: { status: "SHARED", sharedAt: now } });
   await prisma.contentScript.update({ where: { id: scriptId }, data: { sharedVersionId: s.approvedVersionId, sharedAt: now, releaseState: "released" } });
-  await prisma.contentScriptRelease.create({ data: { scriptId, scriptVersionId: s.approvedVersionId, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, action: "SHARE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, batchKey: opts.batchKey ?? null, releasedAt: now, notificationState, note: opts.note ?? (emailOn ? "Email queued for the share sender (W2-F)." : "Email suppressed: script_share_email is off.") } });
+  await prisma.contentScriptRelease.create({ data: { scriptId, scriptVersionId: s.approvedVersionId, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, action: "SHARE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, batchKey: opts.batchKey ?? null, releasedAt: now, notificationState, note: opts.note ?? (suppressedWhy ?? "Email queued for the share sender (W2-F).") } });
   await syncLegacyPointer(scriptId, s.approvedVersionId);
   return { versionId: s.approvedVersionId, notificationState };
 }
