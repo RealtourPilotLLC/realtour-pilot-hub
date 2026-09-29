@@ -350,6 +350,17 @@ async function standDownNonRevision(briefId: string): Promise<void> {
         reasonCreated: "Read as a revision, but the request contains no edits — re-filed as a client question",
       },
     });
+    // The card just left the editor for Kyle's desk, so an editor who held the
+    // job only through this ask — and had pressed Start — is not on it any
+    // more (review fix, Sep 28 2026). Only the Delivered branch below used to
+    // close work (through closeObsoleteTasks); on every other branch she stayed
+    // ACTIVE on a job that was no longer hers until the hourly ghost sweep,
+    // her one active slot taken by it. After the write; recomputed under the
+    // desk lock, so the edit card's editor keeps theirs. Never throws.
+    {
+      const { closeGhostWork } = await import("@/lib/editorWork");
+      await closeGhostWork(brief.projectId, { reason: "UNASSIGNED", detail: "the revision was re-filed as a client question" });
+    }
 
     // A job only went to REVISION because of this message — put it back.
     // Not while the office has pinned the status (Sep 13, editOverrides.ts):

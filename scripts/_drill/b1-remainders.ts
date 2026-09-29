@@ -24,10 +24,16 @@
 //   §6  8.3      reanalyzeBrief asks the lock before it touches a tick
 //   §7  8.4      the editor's own review card on /editing
 //   §8  stale words (Topaz hold, the private-store comment, Luma)
+//   §9  the Sep 28 review of R01 (against b222dde, the build it read): the
+//       project page's pick moves a HAND-assigned card too; a revision
+//       re-filed as a client question closes the Start it took; a video line
+//       removed on Aryeo closes its owner's Start after the rows retire; a
+//       client's video ask brings a removed job back to the Editing Room
 //
 // THE CLOCK IS PINNED to Tuesday Sep 22 2026, 10:00 ET, and runs forward.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import Module, { createRequire } from "node:module";
@@ -123,6 +129,8 @@ const fence = fenceFetch(async (url, init) => {
 
 let aiCalls = 0;
 let aiDown = false;
+/** §9: the model reads a message with no edits in it (standDownNonRevision). */
+let aiEmpty = false;
 interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
@@ -131,6 +139,7 @@ interceptModule(
       return async () => {
         aiCalls++;
         if (aiDown) throw new Error("drill: model down");
+        if (aiEmpty) return { headline: "No edit requests — the client asked where to find the video link", items: [], keep: [], references: [], questions: [] };
         return {
           headline: "Drill re-read",
           items: [
@@ -314,23 +323,32 @@ async function main() {
     // "started work keeps its editor" rule outranked that pick, so a card the
     // rules routed to Kim stayed hers for good once she had paused on it
     // (batch-2 review, Sep 25). OLD first, on its own job.
-    const pickJob = async (street: string) => {
+    //
+    // R01 (Sep 28 2026): assignMember now runs that refresh ITSELF when the
+    // job has a live card, so the OLD run writes the pin exactly as the
+    // BASE-era assignMember did (Project.editorId + editorManual, nothing
+    // else) — otherwise today's assignMember would move the card before the
+    // old refresh ever ran, and the old line would be testing new code.
+    const pickJob = async (street: string, pin: "old-assignMember" | "assignMember") => {
       const j = await mkJob({ street, status: "SHOT", editor: "kim" });
       await prisma.smartTask.update({ where: { id: j.cardId }, data: { assignedManually: false } });
       await kimStarts(j.id, `kim-${street}`);
       await as(kim);
       await work.pauseEditing({ projectId: j.id, requestId: `kim-${street}-pause` });
       await as(jordan);
-      await appActions.assignMember(j.id, "editor", johnTm.id);
+      if (pin === "assignMember") await appActions.assignMember(j.id, "editor", johnTm.id);
+      else await prisma.project.update({ where: { id: j.id }, data: { editorId: johnTm.id, editorManual: true } });
       return j;
     };
     const oldTasks = (await import(baseline("src/lib/tasks.ts"))) as typeof import("@/lib/tasks");
-    const J8o = await pickJob("8 Project Pick Old Rd");
+    const J8o = await pickJob("8 Project Pick Old Rd", "old-assignMember");
     await oldTasks.mintEditTask(J8o.id);
     c.ok(`old (${BASE}): after the project page picked John on a job Kim had PAUSED, the refresh left the card Kim's and her work open`,
       (await cardOf(J8o.cardId)).assignedKey === "kim" && (await item("kim", J8o.id))?.state === "PAUSED");
     const tasks = await import("@/lib/tasks");
-    const J8 = await pickJob("8 Project Pick Rd");
+    const J8 = await pickJob("8 Project Pick Rd", "assignMember");
+    c.ok("new (R01): the project page's pick moves a live card at once — no waiting for the hourly refresh",
+      (await cardOf(J8.cardId)).assignedKey === "john" && (await item("kim", J8.id))?.state === "CLOSED");
     await tasks.mintEditTask(J8.id);
     const card8 = await prisma.smartTask.findUniqueOrThrow({ where: { id: J8.cardId }, select: { assignedKey: true, assignedManually: true } });
     const kim8 = await item("kim", J8.id);
@@ -650,7 +668,11 @@ async function main() {
     // already in require.cache, so the real file's slot is filled with the
     // same stub the preload hands every CJS require.
     {
-      const realNav = path.join(REPO, "node_modules/next/navigation.js");
+      // realpath (Sep 28): in a git worktree node_modules is a symlink to the
+      // main checkout's, and Node keys require.cache by the RESOLVED path — a
+      // slot filled under the symlinked path was never found, the real
+      // next/navigation loaded, and §7 crashed on React's missing context.
+      const realNav = fs.realpathSync(path.join(REPO, "node_modules/next/navigation.js"));
       const M = Module as unknown as { new (id: string): { filename: string; loaded: boolean; exports: unknown; paths: string[] }; _cache: Record<string, unknown> };
       const m = new M(realNav);
       m.filename = realNav;
@@ -704,6 +726,180 @@ async function main() {
   const { EDITORS } = await import("@/lib/editors");
   c.ok("Luma support itself is untouched (an active outside agency, Jordan Sep 25): the roster entry and the tracker link remain",
     !!(EDITORS as Record<string, unknown>).luma && read("src/components/queue/TaskCard.tsx").includes("LUMA_TRACKER_URL"));
+
+  // =========================================================================
+  c.head("§9 · the Sep 28 review of R01 — each against the build it read (b222dde)");
+  // =========================================================================
+  {
+    const PREV = "b222dde";
+    const prevDir = fs.mkdtempSync(path.join(os.tmpdir(), "b1r-prev-"));
+    fs.symlinkSync(path.join(REPO, "node_modules"), path.join(prevDir, "node_modules"));
+    // The file at PREV with its "@/" AND relative imports pointed at this
+    // tree, so only the one file is old (aryeo.ts imports its siblings).
+    const prevCopy = (rel: string): string => {
+      const src = execFileSync("git", ["show", `${PREV}:${rel}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
+      const from = path.dirname(path.join(REPO, rel));
+      const pointed = src.replace(/((?:from|import)\s*\(?\s*)(["'])(@\/|\.\.?\/)([^"']+)\2/g, (_m, pre: string, q: string, head: string, rest: string) =>
+        `${pre}${q}${head === "@/" ? path.join(REPO, "src", rest) : path.resolve(from, head + rest)}${q}`);
+      const out = path.join(prevDir, rel.replace(/[/[\]]/g, "_"));
+      fs.writeFileSync(out, pointed);
+      return out;
+    };
+    try {
+      await as(jordan);
+      const NOT_YOURS = /isn't assigned to you, so you can't start it/;
+      const johnStarts = async (projectId: string, rid: string) => { await as(john); const r = await work.startEditing({ projectId, requestId: rid }); await as(jordan); return r; };
+      const cardFull = (id: string) => prisma.smartTask.findUniqueOrThrow({ where: { id }, select: { status: true, assignedKey: true, assignedManually: true, taskType: true } });
+
+      // ---- (a) the project page's pick on a HAND-assigned card ----------------
+      // The review: assignMember only wrote the pin and ran mintEditTask, whose
+      // route never moves a hand-assigned card — so the page said John Mark,
+      // the card stayed Kim's, Kim stayed ACTIVE and startable, John refused.
+      const prevActions = (await import(prevCopy("src/app/actions.ts"))) as typeof appActions;
+      const handPick = async (actions: typeof appActions, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "SHOT", editor: "kim" }); // Kim's by hand (assignedManually)
+        const vrev = await prisma.smartTask.create({ data: { taskType: "revision", title: `Video revision — ${street}`, status: "OPEN", assignedKey: "kim", projectId: j.id, clientId: client.id, dedupeKey: `r01fx-v-${j.id}` }, select: { id: true } });
+        const prev = await prisma.smartTask.create({ data: { taskType: "revision", title: `Photo revision — ${street}`, status: "OPEN", assignedKey: "kyle", projectId: j.id, clientId: client.id, dedupeKey: `r01fx-p-${j.id}` }, select: { id: true } });
+        await kimStarts(j.id, `kim-${tag}`);
+        await actions.assignMember(j.id, "editor", johnTm.id);
+        const card = await cardFull(j.cardId);
+        const kimItem = await item("kim", j.id);
+        const ev = await prisma.editorWorkEvent.findFirst({ where: { projectId: j.id, kind: "CLOSE" } });
+        const vr = await cardFull(vrev.id);
+        const pr = await cardFull(prev.id);
+        const js = await johnStarts(j.id, `john-${tag}`);
+        const ks = await kimStarts(j.id, `kim-${tag}-again`);
+        const editorId = (await prisma.project.findUniqueOrThrow({ where: { id: j.id }, select: { editorId: true } })).editorId;
+        return { id: j.id, card, kimItem, ev, vr, pr, js, ks, editorId };
+      };
+      const oa = await handPick(prevActions, "91 Hand Picked Old Rd", "91o");
+      c.ok(`old (${PREV}): the page says John, but the hand-assigned card stayed Kim's, Kim stayed ACTIVE on it, and John's Start was refused`,
+        oa.editorId === johnTm.id && oa.card.assignedKey === "kim" && oa.kimItem?.state === "ACTIVE" && !oa.js.ok && NOT_YOURS.test(oa.js.message),
+        `card ${oa.card.assignedKey} · kim ${oa.kimItem?.state} · john: ${oa.js.message}`);
+      const na = await handPick(appActions, "91 Hand Picked Rd", "91n");
+      c.ok("new: the pick moves the hand-assigned card to John at once (pinned) and closes Kim's stretch as REASSIGNED, recorded as the person who picked",
+        na.editorId === johnTm.id && na.card.assignedKey === "john" && na.card.assignedManually && na.kimItem?.state === "CLOSED" && na.kimItem.closeReason === "REASSIGNED" &&
+          na.ev?.actorName === "Jordan Spackman" && (await lines(na.id, "Jordan Spackman picked John Mark on the project page")) === 1,
+        `card ${na.card.assignedKey}/manual=${na.card.assignedManually} · kim ${na.kimItem?.state}/${na.kimItem?.closeReason} · by ${na.ev?.actorName}`);
+      c.ok("…the video revision goes with it, the photo ask stays Kyle's", na.vr.assignedKey === "john" && na.pr.assignedKey === "kyle", `video ${na.vr.assignedKey} · photo ${na.pr.assignedKey}`);
+      c.ok("…John's Start is taken; Kim's is refused — the page, the card and the Start agree", na.js.ok && !na.ks.ok && NOT_YOURS.test(na.ks.message), `john: ${na.js.message} · kim: ${na.ks.message}`);
+
+      // (b) a rules-routed card picked John (it moves, and is hand-pinned), John
+      // starts, then the page picks Kim: the second pick must move it back.
+      const pickTwice = async (actions: typeof appActions, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "SHOT", editor: "kim" });
+        await prisma.smartTask.update({ where: { id: j.cardId }, data: { assignedManually: false } });
+        await actions.assignMember(j.id, "editor", johnTm.id);
+        const first = await cardFull(j.cardId);
+        const js = await johnStarts(j.id, `john-${tag}`);
+        await actions.assignMember(j.id, "editor", kimTm.id);
+        const card = await cardFull(j.cardId);
+        const johnItem = await item("john", j.id);
+        const ks = await kimStarts(j.id, `kim-${tag}`);
+        return { first, js, card, johnItem, ks };
+      };
+      const ob = await pickTwice(prevActions, "92 Picked Twice Old Rd", "92o");
+      c.ok(`old (${PREV}): the first pick moved the rules' card to John (and pinned it); the second pick, Kim, left it John's — John still ACTIVE, Kim refused`,
+        ob.first.assignedKey === "john" && ob.js.ok && ob.card.assignedKey === "john" && ob.johnItem?.state === "ACTIVE" && !ob.ks.ok,
+        `first ${ob.first.assignedKey} · then ${ob.card.assignedKey} · john ${ob.johnItem?.state} · kim: ${ob.ks.message}`);
+      const nb = await pickTwice(appActions, "92 Picked Twice Rd", "92n");
+      c.ok("new: the second pick moves it back to Kim, closes John's stretch (REASSIGNED), and Kim's Start is taken",
+        nb.first.assignedKey === "john" && nb.js.ok && nb.card.assignedKey === "kim" && nb.johnItem?.state === "CLOSED" && nb.johnItem.closeReason === "REASSIGNED" && nb.ks.ok,
+        `first ${nb.first.assignedKey} · then ${nb.card.assignedKey} · john ${nb.johnItem?.state}/${nb.johnItem?.closeReason} · kim: ${nb.ks.message}`);
+
+      // ---- (c) a revision re-filed as a client question ------------------------
+      // standDownNonRevision moves the card to Kyle as a client_reply; only the
+      // branch that lands the job on Delivered used to close work. A job that was
+      // never delivered keeps its stage — and Kim, who held it only through the
+      // ask and had pressed Start, stayed ACTIVE on it.
+      const { analyzeBrief } = await import("@/lib/revisionBrief");
+      const prevBrief = (await import(prevCopy("src/lib/revisionBrief.ts"))) as typeof import("@/lib/revisionBrief");
+      const refiled = async (analyze: typeof analyzeBrief, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "REVISION", editor: "john" }); // the edit card is John's
+        const rev = await prisma.smartTask.create({ data: { taskType: "revision", title: `Video revision — ${street}`, status: "OPEN", assignedKey: "kim", assignedManually: true, projectId: j.id, clientId: client.id, dedupeKey: `r01fx-rf-${j.id}` }, select: { id: true } });
+        await prisma.project.update({ where: { id: j.id }, data: { revisionRequestedAt: new Date() } });
+        const s = await kimStarts(j.id, `kim-${tag}`);
+        const brief = await prisma.revisionBrief.create({ data: { projectId: j.id, taskId: rev.id, source: "openphone", originalText: "Hi! Where do I find the link to the video again?" }, select: { id: true } });
+        aiEmpty = true;
+        try { await analyze(brief.id); } finally { aiEmpty = false; }
+        return {
+          s, card: await cardFull(rev.id), kimItem: await item("kim", j.id),
+          status: (await prisma.project.findUniqueOrThrow({ where: { id: j.id }, select: { status: true } })).status,
+          edit: await cardFull(j.cardId),
+        };
+      };
+      const oc = await refiled(prevBrief.analyzeBrief, "93 Just A Question Old Ln", "93o");
+      c.ok(`old (${PREV}): the ask became Kyle's client question, the job kept its stage — and Kim stayed ACTIVE on a job she no longer held`,
+        oc.s.ok && oc.card.taskType === "client_reply" && oc.card.assignedKey === "kyle" && oc.status === "REVISION" && oc.kimItem?.state === "ACTIVE",
+        `card ${oc.card.taskType}/${oc.card.assignedKey} · ${oc.status} · kim ${oc.kimItem?.state}`);
+      const nc = await refiled(analyzeBrief, "93 Just A Question Ln", "93n");
+      c.ok("new: the re-file closes her stretch (UNASSIGNED) right behind the card move; John's edit card is untouched",
+        nc.s.ok && nc.card.taskType === "client_reply" && nc.card.assignedKey === "kyle" && nc.kimItem?.state === "CLOSED" && nc.kimItem.closeReason === "UNASSIGNED" && nc.edit.assignedKey === "john" && nc.edit.status === "OPEN",
+        `card ${nc.card.taskType}/${nc.card.assignedKey} · kim ${nc.kimItem?.state}/${nc.kimItem?.closeReason} · edit ${nc.edit.assignedKey}/${nc.edit.status}`);
+
+      // ---- (d) a video line removed on the Aryeo order -------------------------
+      // Dormant today (nothing writes DeliverableOutput.ownerKey) but the order
+      // was wrong: the close ran BEFORE ensureOutputsSafely retired the row, and
+      // an owner of a live row counts as holding the job — so the owner survived.
+      const { reconcileDeliverablesToOrder } = await import("@/lib/integrations/aryeo");
+      const prevAryeo = (await import(prevCopy("src/lib/integrations/aryeo.ts"))) as typeof import("@/lib/integrations/aryeo");
+      type Order = Parameters<typeof reconcileDeliverablesToOrder>[1];
+      const order = (tag: string, video: boolean): Order =>
+        ({
+          id: `ord-${tag}`, number: 9300,
+          items: [
+            ...(video ? [{ id: `it-v-${tag}`, title: "Cinematic Video", quantity: 1, amount: 45000, is_canceled: false }] : []),
+            { id: `it-p-${tag}`, title: "HDR Photos", quantity: 1, amount: 20000, is_canceled: false },
+          ],
+        }) as unknown as Order;
+      const lineRemoved = async (reconcile: typeof reconcileDeliverablesToOrder, street: string, tag: string) => {
+        const p = await prisma.project.create({
+          data: { title: `${street}, Royersford, PA`, clientId: client.id, status: "SHOT", aryeoOrderId: `ord-${tag}`, shootDate: new Date(Date.now() - 3 * DAY), photographerId: harrison.id },
+          select: { id: true },
+        });
+        await reconcile(p.id, order(tag, true));
+        const out = await prisma.deliverableOutput.findFirstOrThrow({ where: { projectId: p.id }, select: { id: true } });
+        await prisma.deliverableOutput.update({ where: { id: out.id }, data: { ownerKey: "kim" } }); // the dormant shape
+        const s = await kimStarts(p.id, `kim-${tag}`);
+        const r = await reconcile(p.id, order(tag, false));
+        return { s, r, kimItem: await item("kim", p.id), out: await prisma.deliverableOutput.findUniqueOrThrow({ where: { id: out.id }, select: { removedFromOrderAt: true } }) };
+      };
+      const od = await lineRemoved(prevAryeo.reconcileDeliverablesToOrder, "94 Video Dropped Old Rd", "94o");
+      c.ok(`old (${PREV}): the video line left the order and its row was retired — but its owner, Kim, stayed ACTIVE (the close ran before the retirement)`,
+        od.s.ok && od.r.retired.length > 0 && !!od.out.removedFromOrderAt && od.kimItem?.state === "ACTIVE",
+        `start: ${od.s.message} · retired ${od.r.retired.join(",")} · kim ${od.kimItem?.state}`);
+      const nd = await lineRemoved(reconcileDeliverablesToOrder, "94 Video Dropped Rd", "94n");
+      c.ok("new: the close runs after the rows retire — Kim's stretch CLOSED(REMOVED)",
+        nd.s.ok && nd.r.retired.length > 0 && !!nd.out.removedFromOrderAt && nd.kimItem?.state === "CLOSED" && nd.kimItem.closeReason === "REMOVED",
+        `retired ${nd.r.retired.join(",")} · kim ${nd.kimItem?.state}/${nd.kimItem?.closeReason}`);
+
+      // ---- (e) a client's video ask on a job the office took off the Editing Room
+      const comms = await import("@/lib/comms");
+      const prevComms = (await import(prevCopy("src/lib/comms.ts"))) as typeof comms;
+      const editing = await import("@/app/editing/actions");
+      const { removalFor, isRemoved } = await import("@/lib/queueRemoved");
+      const askOnRemoved = async (raise: typeof comms.raiseRevisionDetailed, street: string, tag: string) => {
+        const j = await mkJob({ street, status: "REVIEW", editor: "john" });
+        await editing.removeFromEditorQueue(j.id, "drill: parked");
+        const r = await raise({ projectId: j.id, note: "Can you make the music quieter in the video?", source: "openphone", clientName: "Drill Agent" });
+        const rev = r.taskId ? await cardFull(r.taskId) : null;
+        const marker = await removalFor(j.id);
+        const row = await rowOf(j.id);
+        const js = await johnStarts(j.id, `john-${tag}`);
+        return { r, rev, marker, row, js };
+      };
+      const oe = await askOnRemoved(prevComms.raiseRevisionDetailed, "95 Asked After Removal Old Rd", "95o");
+      c.ok(`old (${PREV}): the client's video ask routed to John on a removed job — the row stays hidden and John's Start is refused "bring it back"`,
+        oe.r.ok && oe.rev?.assignedKey === "john" && isRemoved(oe.marker) && !oe.row && !oe.js.ok && /taken off the Editing Room/.test(oe.js.message),
+        `rev ${oe.rev?.assignedKey} · removed=${isRemoved(oe.marker)} · row=${!!oe.row} · john: ${oe.js.message}`);
+      const ne = await askOnRemoved(comms.raiseRevisionDetailed, "95 Asked After Removal Rd", "95n");
+      c.ok("new: the ask brings the job back to the Editing Room (on the record: how), the row shows, John's Start is taken",
+        ne.r.ok && ne.rev?.assignedKey === "john" && !isRemoved(ne.marker) && /client asked for changes to the video/.test(ne.marker?.restoredHow ?? "") && !!ne.row && ne.js.ok,
+        `removed=${isRemoved(ne.marker)} · how=${ne.marker?.restoredHow} · row=${!!ne.row} · john: ${ne.js.message}`);
+    } finally {
+      fs.rmSync(prevDir, { recursive: true, force: true });
+    }
+  }
 
   // ---- close ---------------------------------------------------------------
   c.ok("nothing left the building: only the Dropbox fake answered (at the edge); every other host was blocked",

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireRole, requireShootAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { EDITORS, editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
+import { EDITORS, editorTeamMemberId, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
 import { officeQueueReason } from "@/lib/reviewAttribution";
@@ -90,19 +90,20 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   }
 
   // Re-route the open VIDEO work: the edit task, plus revision tasks that are
-  // in the video lane. Scoped on purpose — a mixed job's photo-retouch revision
-  // is Kyle's and must not be hijacked onto a video editor.
-  const moved = await prisma.smartTask.updateMany({
-    where: {
-      projectId,
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-      OR: [{ taskType: "edit_video" }, { taskType: "revision", assignedKey: { in: VIDEO_LANE_KEYS } }],
-    },
-    // assignedManually either way — including on the unassign, where it is the
-    // whole point: a null key WITHOUT the flag is just "not routed yet" and
-    // mintEditTask would fill it back in on the next sweep.
-    data: { assignedKey: key, assignedManually: true },
-  });
+  // in the video lane — pinned (assignedManually) either way, the unassign
+  // included. The one writer the project page's pick shares (tasks.
+  // moveLiveVideoWork), in the Start's lock order: this update touching the
+  // edit card and a video revision in one statement is what deadlocked
+  // against a Start in the Sep 28 review, and twice in eight the reassign
+  // was the side Postgres threw away.
+  let moved: { count: number };
+  try {
+    const { moveLiveVideoWork } = await import("@/lib/tasks");
+    moved = { count: await moveLiveVideoWork(projectId, key) };
+  } catch (e) {
+    console.error("[editing] reassign failed", projectId, e);
+    return { ok: false, message: "Couldn't reassign it just now — nothing changed. Try again." };
+  }
 
   // Persist + pin the pick on the Project so every engine treats it as manual.
   // No TeamMember row AND no task moved = the pick would vanish (mint reads the
@@ -408,6 +409,19 @@ export async function addToEditorQueue(
     return { ok: true, message };
   };
 
+  // A RE-ADD ENDS A REMOVAL (review fix, Sep 28 2026). "Add it to the queue
+  // again" is exactly what the restore tells the office to do once its 7 days
+  // are up — but this never touched the removal marker, so the job stayed
+  // hidden from the Editing Room and its Start was refused "bring it back
+  // first" for good (nothing else could clear it). Both rails end it, after
+  // their own card write, under the job's row lock (queueRemoved.endRemoval).
+  // It also stops a later restore from putting the card back to whoever held
+  // it before the removal: an ended removal is not restorable.
+  const endRemovalHere = async () => {
+    const { endRemoval } = await import("@/lib/queueRemoved");
+    await endRemoval(projectId, { by: queuedBy ?? "The office", how: `added to the Editing Room again for ${editorName}` });
+  };
+
   // ---- PRIOR-CUT path: a new cut on a finished job = a revision. ----
   if (priorCut) {
     const revNote = cleanNote || `New cut requested — added to the Editing Room for ${editorName}.`;
@@ -460,9 +474,21 @@ export async function addToEditorQueue(
         where: { id: existing.id },
         data: { ...taskData, status: "OPEN", completedAt: null },
       });
+      // The ask may have just changed hands (Kim's open revision routed to
+      // John): whoever held the job only through it stops holding it now, and
+      // their started work closes after this write (R01, Sep 28 2026).
+      if (existing.assignedKey !== key) {
+        const { closeGhostWork } = await import("@/lib/editorWork");
+        await closeGhostWork(projectId, {
+          reason: "REASSIGNED",
+          actor: { userId: me?.id ?? null, name: queuedBy ?? "The office", role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          detail: `the new cut was routed to ${editorName}`,
+        });
+      }
     } else {
       await prisma.smartTask.create({ data: taskData });
     }
+    await endRemovalHere();
 
     const tmId = await editorTeamMemberId(key);
     await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
@@ -507,6 +533,7 @@ export async function addToEditorQueue(
     },
   });
   await mintEditTask(projectId);
+  await endRemovalHere();
 
   const tmId = await editorTeamMemberId(key);
   // A manual queue-add is a human pick — pin it (editorManual) so the hourly
@@ -1932,6 +1959,13 @@ export async function saveEditOverrides(
           const { mintEditTask } = await import("@/lib/tasks");
           await mintEditTask(projectId);
         } catch { /* the hourly handoff is the backstop */ }
+        // Back to work is back on the Editing Room (review fix, Sep 28 2026):
+        // a job the office had taken off it would otherwise reopen its card on
+        // a hidden row whose Start is refused. A no-op read on every other job.
+        {
+          const { endRemoval } = await import("@/lib/queueRemoved");
+          await endRemoval(projectId, { by: actor, how: "moved back to work with the override" });
+        }
       }
       // An override to In editing is the office pinning the STAGE (§7.1): it
       // does not say any editor started, so no work row is written and the
@@ -2270,10 +2304,21 @@ export async function removeFromEditorQueue(projectId: string, note?: string): P
 
   const at = new Date();
   const clean = (note ?? "").trim().slice(0, 300) || null;
-  await prisma.appSetting.upsert({
-    where: { key: queueRemovedKey(projectId) },
-    create: { key: queueRemovedKey(projectId), value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
-    update: { value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+  // THE MARKER IS WRITTEN UNDER THE JOB'S ROW LOCK (R01, Sep 28 2026). A job
+  // off the Editing Room can't be started (editorWork.startBlock), and a Start
+  // judges that under a FOR NO KEY UPDATE on this same Project row — but this
+  // is the one eligibility writer that otherwise touches no row a Start locks
+  // (the marker is an AppSetting; a job held only through a video revision
+  // has no edit card to cancel). Taking the row lock here orders the two: a
+  // Start in flight finishes first and is closed by the closeActiveWork below;
+  // a Start after this commits sees the marker and is refused.
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR NO KEY UPDATE`;
+    await tx.appSetting.upsert({
+      where: { key: queueRemovedKey(projectId) },
+      create: { key: queueRemovedKey(projectId), value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+      update: { value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+    });
   });
 
   // CANCELLED, not deleted, and only if it is still live — a task somebody has
@@ -2334,46 +2379,83 @@ export async function restoreToEditorQueue(projectId: string): Promise<{ ok: boo
 
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true } });
   if (!project) return { ok: false, message: "That job no longer exists." };
-
-  // The task first: a job back on the board with no card is the same
-  // half-restored state the removal exists to avoid, in reverse.
-  if (rec.task) {
-    await prisma.smartTask
-      .update({
-        where: { dedupeKey: `edit-video-${projectId}` },
-        data: {
-          status: rec.task.status,
-          assignedKey: rec.task.assignedKey,
-          // Whoever held it still holds it. Re-deriving from the routing rules
-          // here would quietly hand a job to a different editor than the one it
-          // was taken from.
-          assignedManually: rec.task.assignedManually,
-          ...(["COMPLETED", "CANCELLED"].includes(rec.task.status) ? {} : { completedAt: null }),
-        },
-      })
-      .catch(() => null);
-  }
-
-  const at = new Date();
-  // The marker STAYS — who removed what and when is the record. `restoredAt` is
-  // what takes the job off the hidden set (lib/queueRemoved.removedProjectIds).
-  await prisma.appSetting
-    .update({
-      where: { key: queueRemovedKey(projectId) },
-      data: { value: serialize({ by: rec.by, at: rec.at, note: rec.note, task: rec.task, restoredAt: at, restoredBy: actor }) },
-    })
-    .catch(() => null);
-
   const street = (project.title || "this job").split(",")[0].trim();
-  await prisma.activity
-    .create({
-      data: { projectId, type: "SYSTEM", body: `${actor} brought ${street} back to the Editing Room.`.slice(0, 500) },
-    })
-    .catch(() => {});
+
+  // UNDER THE JOB'S ROW LOCK, and only over a card nobody has touched since
+  // the removal (review fix, Sep 28 2026). The removal's record is what the
+  // card looked like THEN; writing it back over a card the office has since
+  // re-added for John handed the job straight back to Kim — undoing the
+  // office's own re-add, on the words of the restore's own refusal. Now the
+  // record is written back only over the removal's own cancel (CANCELLED,
+  // stamped at the removal's instant) or a card still exactly as it was left
+  // (one already closed when it was removed); anything else is a later human
+  // or engine decision and is left standing, and the message says so. The
+  // lock is the remover's order (Project row first), so a remove, a re-add
+  // and a restore never interleave, and the marker is re-read under it.
+  type Outcome = { gone: true } | { gone: false; leftAlone: { assignedKey: string | null; status: string } | null };
+  let outcome: Outcome;
+  try {
+    outcome = await prisma.$transaction(async (tx): Promise<Outcome> => {
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR NO KEY UPDATE`;
+      const now = await removalFor(projectId, tx);
+      if (!now || now.restoredAt) return { gone: true };
+      let leftAlone: { assignedKey: string | null; status: string } | null = null;
+      // The task first: a job back on the board with no card is the same
+      // half-restored state the removal exists to avoid, in reverse.
+      if (now.task) {
+        const card = await tx.smartTask.findUnique({
+          where: { dedupeKey: `edit-video-${projectId}` },
+          select: { id: true, status: true, assignedKey: true, completedAt: true },
+        });
+        const removalsCancel = !!card && card.status === "CANCELLED" && card.completedAt?.getTime() === now.at.getTime();
+        const asLeft = !!card && card.status === now.task.status && card.assignedKey === now.task.assignedKey;
+        if (card && (removalsCancel || asLeft)) {
+          await tx.smartTask.update({
+            where: { id: card.id },
+            data: {
+              status: now.task.status,
+              assignedKey: now.task.assignedKey,
+              // Whoever held it still holds it. Re-deriving from the routing rules
+              // here would quietly hand a job to a different editor than the one it
+              // was taken from.
+              assignedManually: now.task.assignedManually,
+              ...(["COMPLETED", "CANCELLED"].includes(now.task.status) ? {} : { completedAt: null }),
+            },
+          });
+        } else if (card) {
+          leftAlone = { assignedKey: card.assignedKey, status: card.status };
+        }
+      }
+      // The marker STAYS — who removed what and when is the record. `restoredAt` is
+      // what takes the job off the hidden set (lib/queueRemoved.removedProjectIds).
+      await tx.appSetting.update({
+        where: { key: queueRemovedKey(projectId) },
+        data: { value: serialize({ by: now.by, at: now.at, note: now.note, task: now.task, restoredAt: new Date(), restoredBy: actor }) },
+      });
+      await tx.activity.create({
+        data: {
+          projectId, type: "SYSTEM",
+          body: `${actor} brought ${street} back to the Editing Room.${leftAlone ? " Its edit card had changed since it was taken off, so it was left as it is." : ""}`.slice(0, 500),
+        },
+      });
+      return { gone: false, leftAlone };
+    });
+  } catch (e) {
+    console.error("[editing] restore failed", projectId, e);
+    return { ok: false, message: "Couldn't bring it back just now — nothing changed. Try again." };
+  }
+  if (outcome.gone) return { ok: false, message: "That job isn't off the Editing Room." };
 
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
-  return { ok: true, message: `${street} is back on the Editing Room.` };
+  const { editorMeta } = await import("@/lib/editors");
+  const holder = outcome.leftAlone?.assignedKey ? editorMeta(outcome.leftAlone.assignedKey)?.name ?? outcome.leftAlone.assignedKey : null;
+  return {
+    ok: true,
+    message: outcome.leftAlone
+      ? `${street} is back on the Editing Room. Its edit card changed after it was taken off${holder ? ` (it's ${holder}'s now)` : ""}, so it was left as it is.`
+      : `${street} is back on the Editing Room.`,
+  };
 }
 
 /** The "Recently removed" list the Editing Room offers — removals still inside
@@ -2656,6 +2738,17 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
     await ensureOutputsSafely(fromId, `unmerge#${m.intoId}`);
     await ensureOutputsSafely(m.intoId, `unmerge-away#${fromId}`);
   } catch { /* the hourly sweep repairs it */ }
+  // The cards went home, so an editor started on the survivor only through
+  // one of them holds nothing there any more (R01, Sep 28 2026): closed after
+  // the move, as merged. Anyone still holding the survivor keeps theirs.
+  {
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    await closeGhostWork(m.intoId, {
+      reason: "MERGED",
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      detail: `${actor} put the merged work back on its own job`,
+    });
+  }
 
   const p = await prisma.project.findUnique({ where: { id: fromId }, select: { title: true } });
   const street = (p?.title || "that job").split(",")[0].trim();

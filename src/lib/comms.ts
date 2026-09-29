@@ -739,8 +739,31 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       data: { ...data, description, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), flaggedBy: null, flaggedAt: null, status: "OPEN", completedAt: null },
     });
     taskId = existing.id;
+    // A re-raise that ROUTED an open ask to a different editor (the rules or
+    // the pin moved since it was first raised) took the job from whoever held
+    // it: close their started work AFTER this write (R01, Sep 28 2026) — a
+    // Start that landed a moment before it would otherwise stay ACTIVE on a
+    // job that is no longer theirs. Recomputed under the desk lock; closes
+    // nothing when they still hold the job another way. Never throws.
+    if (wasAlreadyOpen && !existing.assignedManually && existing.assignedKey !== data.assignedKey) {
+      const { closeGhostWork } = await import("@/lib/editorWork");
+      await closeGhostWork(project.id, { reason: "REASSIGNED", detail: "the client's revision was routed to another editor" });
+    }
   }
   if (!taskId) return none;
+
+  // A CLIENT'S VIDEO ASK BRINGS THE JOB BACK TO THE EDITING ROOM (review fix,
+  // Sep 28 2026 — Jordan to confirm). If the office had taken the job off it,
+  // the ask would land on a row the Editing Room hides, and the editor it
+  // routes to could not press Start ("taken off the Editing Room — bring it
+  // back first"): the client waiting on work nobody can see or record. The
+  // removal ends, on the record (queueRemoved.endRemoval — the marker stays,
+  // with how it came back). Video asks only: a photo ask is Kyle's and never
+  // on the Editing Room. A no-op read on every job that was never removed.
+  if (primaryIsVideoWork) {
+    const { endRemoval } = await import("@/lib/queueRemoved");
+    await endRemoval(project.id, { by: askedBy ?? null, how: "the client asked for changes to the video" });
+  }
 
   // THE WORK ORDER. The task description above is a clipped paragraph by
   // necessity (it has to fit a task card); the brief keeps the client's ask
@@ -949,26 +972,36 @@ export async function resolveRevision(projectId: string): Promise<void> {
       : project?.status === "REVIEW" && project.deliveredAt && !cutWaiting
         ? ("DELIVERED" as RevisionLanding)
         : null;
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      revisionRequestedAt: null,
-      revisionNote: null,
-      // The landing is a human status write (the approval, the task's
-      // Complete, the project-page button), and a human write ends the
-      // office's status pin (Sep 13, editOverrides.ts).
-      ...(landing ? { status: landing, statusPinnedAt: null } : {}),
-      // deliveredAt is NEVER written here. Resolving a revision is not a
-      // delivery: a job that was delivered keeps the date it actually shipped
-      // on, and a job that never shipped must not acquire one. The real stamp
-      // happens where delivery happens (the status sweep's first arrival at
-      // DELIVERED, the pipeline board, the editor queue).
-    },
-  });
-  await prisma.smartTask.updateMany({
-    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
+  // ONE TRANSACTION, THE JOB'S ROW FIRST (review fix, Sep 28 2026). The stage
+  // write and the asks' close used to be two separate commits, and the close
+  // updates every open ask in one statement — against a Start's ordered card
+  // lock on a job with two asks open, that could deadlock, and a close that
+  // lost left the job moved off Revisions with its asks still open. Now the
+  // Project row is taken first (editorWork.underJobLock, the Start's order)
+  // and both land together or neither does.
+  const { underJobLock } = await import("@/lib/editorWork");
+  await underJobLock(projectId, async (tx) => {
+    await tx.project.update({
+      where: { id: projectId },
+      data: {
+        revisionRequestedAt: null,
+        revisionNote: null,
+        // The landing is a human status write (the approval, the task's
+        // Complete, the project-page button), and a human write ends the
+        // office's status pin (Sep 13, editOverrides.ts).
+        ...(landing ? { status: landing, statusPinnedAt: null } : {}),
+        // deliveredAt is NEVER written here. Resolving a revision is not a
+        // delivery: a job that was delivered keeps the date it actually shipped
+        // on, and a job that never shipped must not acquire one. The real stamp
+        // happens where delivery happens (the status sweep's first arrival at
+        // DELIVERED, the pipeline board, the editor queue).
+      },
+    });
+    await tx.smartTask.updateMany({
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  }, "the revision's resolve");
   // The job is delivered again → its re-QC / delivery tasks are done too. The
   // revision flow reopened the QC task (reflectRevisionInQc), but nothing could
   // ever close it: the task sync skips REVISION jobs and this function only
@@ -985,6 +1018,14 @@ export async function resolveRevision(projectId: string): Promise<void> {
   // actually reaches DELIVERED (projectStatus.ts).
   if (landing === "DELIVERED" || (!landing && project?.status === "DELIVERED")) {
     await closeObsoleteTasks(projectId, "DELIVERED");
+  } else {
+    // A job that does NOT land on Delivered keeps its other cards — but the
+    // revision holder's claim on it ended with the ask (R01, Sep 28 2026):
+    // an editor who held the job only through this revision, and had pressed
+    // Start, must not stay ACTIVE on it. After the close above; recomputed
+    // under the desk lock, so the edit card's editor keeps theirs.
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    await closeGhostWork(projectId, { reason: "UNASSIGNED", detail: "the revision was resolved" });
   }
   // RESOLVED IS NOT SENT (audit WF-03, Sep 18 — Jordan: "Keep the return-to-
   // client action visible after internal approval"). Closing the ask ends OUR
@@ -1178,6 +1219,12 @@ export async function resolveRevisionForTask(
       },
     })
     .catch(() => {}); // the row is already closed — the note is the record, not the work
+  // The job is held, but THIS ask left the open set (the Complete button, a
+  // dismissal, the last checklist tick all come through here): an editor who
+  // held the job only through it is not on it any more (R01, Sep 28 2026).
+  // After the row's own close; recomputed under the desk lock. Never throws.
+  const { closeGhostWork } = await import("@/lib/editorWork");
+  await closeGhostWork(projectId, { reason: "UNASSIGNED", detail: `the revision ${verb}` });
   return { resolved: false, otherOpen };
 }
 

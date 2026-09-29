@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,10 @@ export type QueueRemoval = {
   /** Set once somebody brought it back — the marker stays as the record. */
   restoredAt: Date | null;
   restoredBy: string | null;
+  /** How it came back when it was NOT the restore button (Sep 28 review fix):
+   *  "added to the Editing Room again", "a client asked for changes to the
+   *  video"… Null for the restore itself and for every older marker. */
+  restoredHow?: string | null;
 };
 
 function parse(key: string, value: string, fallbackAt: Date): QueueRemoval | null {
@@ -66,7 +71,7 @@ function parse(key: string, value: string, fallbackAt: Date): QueueRemoval | nul
   try {
     const v = JSON.parse(value) as Partial<{
       by: string | null; at: string; note: string | null; task: RemovedTask;
-      restoredAt: string | null; restoredBy: string | null;
+      restoredAt: string | null; restoredBy: string | null; restoredHow: string | null;
     }>;
     const at = v.at ? new Date(v.at) : null;
     const restoredAt = v.restoredAt ? new Date(v.restoredAt) : null;
@@ -78,6 +83,7 @@ function parse(key: string, value: string, fallbackAt: Date): QueueRemoval | nul
       task: v.task ?? null,
       restoredAt: restoredAt && Number.isFinite(restoredAt.getTime()) ? restoredAt : null,
       restoredBy: v.restoredBy ?? null,
+      restoredHow: v.restoredHow ?? null,
     };
   } catch {
     // An unreadable value still means REMOVED — the marker's existence is the
@@ -92,7 +98,7 @@ export function serialize(r: Omit<QueueRemoval, "projectId">): string {
     at: r.at.toISOString(),
     note: r.note,
     task: r.task,
-    ...(r.restoredAt ? { restoredAt: r.restoredAt.toISOString(), restoredBy: r.restoredBy } : {}),
+    ...(r.restoredAt ? { restoredAt: r.restoredAt.toISOString(), restoredBy: r.restoredBy, ...(r.restoredHow ? { restoredHow: r.restoredHow } : {}) } : {}),
   });
 }
 
@@ -116,10 +122,86 @@ export async function removedProjectIds(): Promise<Set<string>> {
   return new Set((await allRemovals()).filter((r) => !r.restoredAt).map((r) => r.projectId));
 }
 
-/** One removal, or null. */
-export async function removalFor(projectId: string): Promise<QueueRemoval | null> {
-  const row = await prisma.appSetting
-    .findUnique({ where: { key: queueRemovedKey(projectId) }, select: { key: true, value: true, updatedAt: true } })
-    .catch(() => null);
+/** One removal, or null. `db` (Sep 28 2026, R01): startEditing reads the
+ *  marker inside its switch transaction, after the job's row is locked — a
+ *  job taken off the Editing Room can't be started until it is brought back.
+ *  Inside a transaction a failed read is NOT swallowed into "not removed": on
+ *  Postgres that transaction is already aborted, and the Start fails safe. */
+export async function removalFor(projectId: string, db?: Prisma.TransactionClient): Promise<QueueRemoval | null> {
+  const read = (db ?? prisma).appSetting.findUnique({ where: { key: queueRemovedKey(projectId) }, select: { key: true, value: true, updatedAt: true } });
+  const row = db ? await read : await read.catch(() => null);
   return row ? parse(row.key, row.value, row.updatedAt) : null;
+}
+
+/** Off the Editing Room right now: removed, and not brought back. The one
+ *  definition the Start rule and the queue share (removedProjectIds). */
+export function isRemoved(r: QueueRemoval | null | undefined): boolean {
+  return !!r && !r.restoredAt;
+}
+
+// ---------------------------------------------------------------------------
+// A REMOVAL ENDS WHEN VIDEO WORK COMES BACK BY ANOTHER DOOR (review fix, Sep
+// 28 2026).
+//
+// R01 made "taken off the Editing Room" refuse a Start until the job came
+// back (editorWork.startBlock), and the only thing that ever set restoredAt
+// was the restore button — which refuses after 7 days and tells the office to
+// "Add it to the queue again". That re-add never touched the marker. The
+// review walked it: remove, wait 8 days, re-add for Kim — the card OPEN and
+// hers, the marker still live, her Start refused "bring it back before
+// starting it", the office's Start refused the same way, a second restore
+// refused again. No way out. And inside the 7 days, following those words
+// after re-adding for John, the restore put the card back to Kim from the
+// record — undoing the office's own re-add.
+//
+// So every door that puts video work back on a removed job ends the removal,
+// here, in one place: the queue's re-add (both rails), a client's video
+// revision, a cut sent back for another round, the override moving a
+// delivered job back to work. The marker is KEPT (the record, as the restore
+// keeps it) with restoredAt stamped and restoredHow naming the door, so the
+// queue shows the job again and the Start rule stops refusing it — one fact,
+// read the same way by both (isRemoved). Written under the job's Project row
+// lock, the same order removeFromEditorQueue writes it in, so a remove and a
+// re-add never interleave.
+// ---------------------------------------------------------------------------
+
+/** Inside a transaction that already holds the job's Project row. True when a
+ *  live removal was ended. */
+export async function endRemovalTx(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  opts: { by: string | null; how: string },
+): Promise<boolean> {
+  const r = await removalFor(projectId, tx);
+  if (!r || !isRemoved(r)) return false;
+  const at = new Date();
+  await tx.appSetting.update({
+    where: { key: queueRemovedKey(projectId) },
+    data: { value: serialize({ by: r.by, at: r.at, note: r.note, task: r.task, restoredAt: at, restoredBy: opts.by, restoredHow: opts.how }) },
+  });
+  await tx.activity.create({
+    data: {
+      projectId,
+      type: "SYSTEM",
+      body: `Back on the Editing Room — ${opts.how}${opts.by ? ` (${opts.by})` : ""}. It had been taken off${r.by ? ` by ${r.by}` : ""}.`.slice(0, 500),
+    },
+  });
+  return true;
+}
+
+/** The same, on its own: a cheap read first (almost no job was ever removed),
+ *  then the job's row lock and the write. Never throws — every caller's own
+ *  write has already landed and must not be undone by this; a failure is
+ *  logged, and the office can still restore or re-add. */
+export async function endRemoval(projectId: string, opts: { by: string | null; how: string }): Promise<boolean> {
+  try {
+    if (!isRemoved(await removalFor(projectId))) return false;
+    return await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR NO KEY UPDATE`;
+      return endRemovalTx(tx, projectId, opts);
+    });
+  } catch (e) {
+    console.error("[queueRemoved] could not end the removal", projectId, e);
+    return false;
+  }
 }

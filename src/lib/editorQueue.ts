@@ -603,7 +603,10 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job
       // that is no longer on Waiting is stale and does not count.
-      held: heldSet.has(p.id) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
+      // A Waiting the office PINNED through the override dialog is the same
+      // hold (R01, Sep 28 2026): startEditing refuses the editor on either
+      // (editorWork.startBlock "WAITING"), so the desk must not offer it.
+      held: (heldSet.has(p.id) || !!p.statusPinnedAt) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
       // "1 ready for review · 3 more to edit" — null on a one-video job. On a
       // row reading Revisions it also names who asked and when (Sep 28).
       videoBreakdown: (() => {

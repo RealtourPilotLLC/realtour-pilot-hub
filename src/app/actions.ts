@@ -1171,6 +1171,13 @@ export async function toggleTaskChecklistItem(
     revalidatePath("/pipeline");
     revalidatePath("/");
   }
+  // The last tick on an EDIT card is a Complete too (R01, Sep 28): the card
+  // editor's stretch on the job ends with it, exactly as the Complete button
+  // closes it (setSmartTaskStatus) — otherwise the tick left them "In
+  // editing" on a job with no card, holding their one active slot.
+  if (completed && t.status !== "COMPLETED" && t.projectId && t.assignedKey && (await isDeskEditorCard({ taskType: t.taskType, projectId: t.projectId, assignedKey: t.assignedKey }))) {
+    await closeEditCardWork(t.projectId, t.assignedKey, (by) => `the edit card's checklist was completed by ${by}`);
+  }
   revalidatePath("/queue");
   revalidatePath("/history");
   revalidatePath("/tasks");
@@ -1215,6 +1222,49 @@ export async function assignMember(
       body: member ? `${role[0].toUpperCase() + role.slice(1)} set to ${member.name}.` : `${role} unassigned.`,
     },
   });
+  // THE CARD FOLLOWS THE PICK NOW, not within the hour (R01, Sep 28 2026).
+  // Left to the hourly refresh, the old editor could keep pressing Start on a
+  // job the project page already gave to someone else.
+  //
+  // A PICK OF AN IN-HOUSE EDITOR MOVES THE LIVE VIDEO WORK ITSELF (review fix,
+  // Sep 28). The first version only wrote the pin and ran mintEditTask — whose
+  // route rule never moves a card a human hand-assigned, and most live cards
+  // are (a queue add, a reassign, the first pinned pick itself). Picking John
+  // on the project page of a job Kim held by hand left the card Kim's, Kim
+  // ACTIVE and startable, John refused, while the page said John Mark. Now it
+  // is the same writer as the Editing Room's reassign (tasks.moveLiveVideoWork:
+  // the edit card and the video-lane revisions, pinned, in the Start's lock
+  // order), then whoever lost the job is closed as reassigned, recorded as the
+  // person who picked. No bell: the project-page pick never rang one.
+  //
+  // Clearing the pick (or naming somebody with no editing desk) hands control
+  // back to the routing rules, as it always has: mintEditTask refreshes a live
+  // card. Only a LIVE card either way — mintEditTask would otherwise mint a
+  // "Raws are in" card on a job that has none (the saveEditOverrides guard).
+  if (role === "editor") {
+    try {
+      const live = await prisma.smartTask.findFirst({
+        where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        select: { id: true },
+      });
+      const { editorKeyForTeamName } = await import("@/lib/editors");
+      const { DESK_EDITOR_KEYS, closeGhostWork } = await import("@/lib/editorWork");
+      const key = member ? editorKeyForTeamName(member.name) : null;
+      if (key && DESK_EDITOR_KEYS.includes(key)) {
+        const { moveLiveVideoWork } = await import("@/lib/tasks");
+        const moved = await moveLiveVideoWork(projectId, key);
+        if (moved > 0) {
+          const actor = await workActorNow();
+          await closeGhostWork(projectId, { reason: "REASSIGNED", actor, detail: `${actor.name} picked ${member!.name} on the project page` });
+        }
+      } else if (live) {
+        const { mintEditTask } = await import("@/lib/tasks");
+        await mintEditTask(projectId);
+      }
+    } catch (e) {
+      console.error("[assignMember] the live card did not follow the pick — the hourly refresh is the backstop", projectId, e);
+    }
+  }
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");
   revalidatePath("/schedule");
@@ -1303,6 +1353,20 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
     } catch { /* never blocks the move */ }
   }
 
+  // ON HOLD STOPS THE EDIT (R01 default, Sep 28 2026 — Jordan to confirm).
+  // A job the office parks can't be started (startEditing refuses On hold for
+  // everyone), and whoever is actively editing it is PAUSED — not closed: the
+  // work is still theirs to Resume when the job comes off hold. After the
+  // status write, so a Start that committed a moment before it is paused too;
+  // one that comes after it sees On hold under its lock and is refused.
+  if (status === ProjectStatus.ON_HOLD) {
+    try {
+      const { pauseActiveWorkOnHold } = await import("@/lib/editorWork");
+      const actor = await workActorNow();
+      await pauseActiveWorkOnHold(projectId, { actor, detail: `${actor.name} put the job on hold` });
+    } catch { /* never blocks the move */ }
+  }
+
   // Close out the revision task too when manually delivered.
   //
   // Whole-job on purpose, like the project page's Mark resolved: dragging the
@@ -1317,10 +1381,15 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
       select: { title: true, dedupeKey: true, assignedKey: true },
     });
-    await prisma.smartTask.updateMany({
+    // In the Start's lock order (review fix, Sep 28 2026): a job with a video
+    // and a photo ask open closes both in this one statement, which could
+    // deadlock against a Start's ordered card lock — and a lost close left
+    // the asks open on a job the board had just called Delivered.
+    const { underJobLock } = await import("@/lib/editorWork");
+    await underJobLock(projectId, (tx) => tx.smartTask.updateMany({
       where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
-    });
+    }), "the board's Delivered revision close");
     const { getCurrentUser } = await import("@/lib/auth/user");
     const mover = await getCurrentUser().catch(() => null);
     const movedBy = (mover?.name ?? mover?.email ?? "").trim() || "The office";
