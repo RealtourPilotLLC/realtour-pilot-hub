@@ -1,9 +1,12 @@
+// @drill-run: engine=pglite
+// @drill-run: engine=postgres needs=tools/realpg timeout=900
 // ---------------------------------------------------------------------------
 // DRILL: THE HARNESS PROVES ITSELF (batch A, Sep 24 2026).
 //
-//   NODE_OPTIONS=--conditions=react-server npx tsx \
-//     --require ./scripts/_drill/_drill-preload.cjs \
-//     scripts/_drill/harness-selftest.ts
+//   npm run drills -- scripts/_drill/harness-selftest.ts
+//   (both runs above: PGlite, then DRILL_ENGINE=postgres when tools/realpg is
+//   installed; by hand: NODE_OPTIONS=--conditions=react-server npx tsx
+//   --require ./scripts/_drill/_drill-preload.cjs scripts/_drill/harness-selftest.ts)
 //
 // Two things every earlier drill had to write down as "not proven", because
 // PGlite's socket server died on the first unique violation:
@@ -353,26 +356,30 @@ async function main() {
   // Sep 28 2026: twice a file here that only MENTIONED PGlite was taken for a
   // drill and read production (read-only, so nothing was written). This folder
   // now holds isolated drills only; anything that opens the live database lives
-  // in scripts/_live/. A drill file must boot its own database.
-  c.head("H · every drill in this folder boots its own database");
+  // in scripts/_live/.
+  //
+  // R06 (Sep 28 eve): this section used to be presented as the proof of that,
+  // and it was a text scan — a comment saying bootDrillDb( passed it, and a
+  // drill reaching Prisma through an app import was not counted at all. The
+  // CONTROL is now the runner boundary (_isolation.cjs: the sentinel database,
+  // the socket fence, the Prisma engine guard), proven by
+  // `npm run drills:boundary` and isolation-boundary.ts. What stays here is a
+  // lint, and it says so: it fails only on production shapes (comments
+  // stripped) and reports the rest.
+  c.head("H · LINT (heuristic — the control is scripts/_drill/_isolation.cjs, proven by run-all --boundary)");
   {
+    const { drillSourceShape } = await import("./_isolationLint");
     const dir = path.dirname(__filename);
-    // A file may need no database at all (a pure rule). One that reaches a
-    // database must make its own: bootDrillDb/bootDemoDb, PGlite.create, or
-    // DATABASE_URL pinned to a loopback URL in the file. The production shape
-    // (take DATABASE_URL from .env, add the read-only option) has none of these.
-    const shape = (src: string) => {
-      const touchesDb = /@\/lib\/prisma|@prisma\/client|PrismaClient|DATABASE_URL/.test(src);
-      const own =
-        /\bbootDrillDb\(|\bbootDemoDb\(|PGlite\.create\(/.test(src) ||
-        (/process\.env\.DATABASE_URL\s*=/.test(src) && /postgresql:\/\/[^\s"'`]*@127\.0\.0\.1/.test(src));
-      return touchesDb && !own;
-    };
-    const offenders = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".ts") && !f.startsWith("_") && !f.startsWith("zz-scratch-"))
-      .filter((f) => shape(fs.readFileSync(path.join(dir, f), "utf8")));
-    c.ok("no file in scripts/_drill/ can reach a database it did not create (production scripts go in scripts/_live/)", offenders.length === 0, offenders.join(", ") || "none");
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".ts") && !f.startsWith("_") && !f.startsWith("zz-scratch-"));
+    const shapes = files.map((f) => ({ f, ...drillSourceShape(fs.readFileSync(path.join(dir, f), "utf8")) }));
+    const offenders = shapes.filter((s) => s.production.length);
+    const noted = shapes.filter((s) => s.notes.length);
+    console.log(`    ${files.length} drills read · reported, not failed (the boundary refuses these at runtime): ${noted.length}`);
+    for (const s of noted.slice(0, 12)) console.log(`      ${s.f}: ${s.notes.join("; ")}`);
+    if (noted.length > 12) console.log(`      … and ${noted.length - 12} more`);
+    c.ok("lint: no drill has a production shape (.env DATABASE_URL, _live/_recon import, dotenv) — those go in scripts/_live/", offenders.length === 0, offenders.map((s) => `${s.f}: ${s.production.join("; ")}`).join(" | ") || "none");
+    const { state } = await import("./_isolation.cjs");
+    c.ok("and this process ran inside the boundary it points to", state().active && state().drillEntry, JSON.stringify({ role: state().role }));
   }
 
   quiet.restore();

@@ -1,3 +1,4 @@
+// @drill-run: needs=tools/realpg timeout=900
 // ---------------------------------------------------------------------------
 // DRILL: R04 — duplicate jobs and bookings under REAL concurrency (Sep 28 2026).
 //

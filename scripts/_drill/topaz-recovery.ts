@@ -2,8 +2,9 @@
  * INTERRUPTED RESERVATIONS — the reviewer's own table, reproduced and then
  * fixed, against the shipped advanceTopazJob in an isolated PostgreSQL.
  *
- *   PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
- *   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_drill/topaz-recovery.ts
+ *   npm run drills -- scripts/_drill/topaz-recovery.ts
+ *   (Sep 28, R06: inside the isolation boundary — without the preload this
+ *   now refuses to start instead of reaching Prisma's .env database)
  *
  * A reservation is written BEFORE the provider call and BEFORE the upload
  * targets are saved, so a worker killed in between leaves a row committed to

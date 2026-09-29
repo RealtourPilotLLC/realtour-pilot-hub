@@ -6,8 +6,22 @@ providers. They are walkthroughs and read-only measurements that were run on
 purpose, with Jordan's say-so, against real data.
 
 **They are not drills.** Isolated drills live in `scripts/_drill/` and boot their
-own throwaway Postgres (`bootDrillDb` / PGlite); `scratchpad/run-iso-drills.sh`
-and any "run the whole suite" step must only ever pick from there.
+own throwaway Postgres (`bootDrillDb` / PGlite). Run them with the committed
+runner — `npm run drills` (all), `npm run drills -- scripts/_drill/<file>.ts`
+(some), `npm run drills:boundary` (the isolation boundary's own proof). It only
+ever picks from `scripts/_drill/`, refuses a file from here by name, and runs
+every drill inside the isolation boundary (`scripts/_drill/_isolation.cjs`:
+database keys on a dead loopback sentinel, non-loopback sockets and Prisma
+engines refused, children included). The old scratch runner
+(`scratchpad/run-iso-drills.sh`) is retired: it skipped 11 drills and
+`kill -9`'d every port from 5480 to 5660, the isolated demo's included.
+
+The boundary switches itself on for every script that loads
+`_drill-preload.cjs` except a named few — the scripts here, `scripts/_recon`,
+`scripts/_probe`, `scripts/_fix`, the demo and `create-test-client` — so these
+keep working exactly as before, unless a drill starts one, in which case it
+runs isolated too. A drill copied anywhere else (a scratchpad, another folder)
+is isolated wherever it runs.
 
 Before running anything here:
 - Read its header. Most force `default_transaction_read_only=on` and prove a

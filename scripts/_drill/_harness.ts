@@ -93,6 +93,18 @@
 // Providers stay FAKE in this mode: the fence is the same one. Report it with
 // drill.evidence(), which prints the engine next to "providers=FAKE" so fake-
 // provider evidence is never mistaken for a provider test.
+//
+// ---------------------------------------------------------------------------
+// THE BOUNDARY UNDER ALL OF THIS (R06, Sep 28 2026).
+//
+// Isolation is no longer something a drill opts into by calling the right
+// helper. _drill-preload.cjs loads _isolation.cjs before the drill: database
+// keys on a sentinel, every .env key blank, every non-loopback socket and
+// Prisma engine refused, and all of it handed to child processes. What this
+// file adds sits ON TOP as a layer: fenceFetch()'s allow-fakers, its counts
+// and its "OUTBOUND BLOCKED BY DRILL" messages, bootDrillDb's own database.
+// bootDrillDb and attachDrillChild refuse to run without the boundary
+// underneath (`npm run drills -- <file>` provides it).
 // ---------------------------------------------------------------------------
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
@@ -105,6 +117,11 @@ import tls from "node:tls";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { assertActive, assertLoopbackDbUrl, onBlocked, secretKeyNames } from "./_isolation.cjs";
+
+// The one check that stands between a schema push and production now lives
+// with the boundary; re-exported so every existing import keeps working.
+export { assertLoopbackDbUrl };
 
 const exec = promisify(execFile);
 const REPO = path.resolve(__dirname, "../..");
@@ -272,12 +289,13 @@ export class DrillSocketServer extends PGLiteSocketServer {
  *  the moment the client is constructed (dotenv never overrides a key that is
  *  already set), so a drill that does nothing inherits real provider secrets —
  *  BLOB_READ_WRITE_TOKEN, the Script Studio key. Each one is pre-set here to an
- *  empty string so the load finds it taken and the drill sees "not configured". */
+ *  empty string so the load finds it taken and the drill sees "not configured".
+ *  (Sep 28: the names now come from the boundary, which also reads the .env
+ *  beside a symlinked node_modules — a worktree's Prisma client loads the MAIN
+ *  tree's .env, which this used to miss — and the app's provider keys.) */
 function neutraliseDotEnv(keep: Set<string>) {
-  let text = "";
-  try { text = fs.readFileSync(path.join(REPO, ".env"), "utf8"); } catch { return; }
-  for (const m of text.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)) {
-    if (!keep.has(m[1])) process.env[m[1]] = "";
+  for (const k of secretKeyNames()) {
+    if (!keep.has(k)) process.env[k] = "";
   }
 }
 
@@ -299,13 +317,6 @@ export function resolveDrillEngine(explicit?: DrillEngine, env: Record<string, s
   const pick = explicit ?? (env.DRILL_ENGINE?.trim() || "pglite");
   if (pick !== "pglite" && pick !== "postgres") throw new Error(`unknown drill engine "${pick}" — use pglite or postgres`);
   return pick;
-}
-
-/** The one check that stands between a schema push and production. */
-export function assertLoopbackDbUrl(url: string): void {
-  let host = "";
-  try { host = new URL(url).hostname; } catch { /* stays empty, refused below */ }
-  if (host !== "127.0.0.1") throw new Error(`refusing to push a schema to ${host || "an unparsable URL"}: a drill database must be 127.0.0.1`);
 }
 
 export type RunChildOptions = {
@@ -426,6 +437,9 @@ export type BootDrillOptions = {
 export async function bootDrillDb(opts: BootDrillOptions & { engine: "postgres" }): Promise<RealPgDrillDb>;
 export async function bootDrillDb(opts: BootDrillOptions): Promise<DrillDb>;
 export async function bootDrillDb(opts: BootDrillOptions): Promise<DrillDb | RealPgDrillDb> {
+  // Before anything boots: a drill run without the boundary (a hand-typed
+  // `npx tsx` with no preload) is refused here rather than half-isolated.
+  assertActive("bootDrillDb");
   assertPrismaNotLoaded();
   if (resolveDrillEngine(opts.engine) === "postgres") {
     const pool = opts.pool ?? Number(process.env.DRILL_POOL ?? 5);
@@ -914,14 +928,14 @@ export type DrillChildContext = {
 export function attachDrillChild(): DrillChildContext {
   const url = process.env.DRILL_CHILD_URL ?? "";
   if (!process.env.DRILL_CHILD || !url || !process.send) throw new Error("attachDrillChild() runs only inside a process started by drill.runChild()");
+  assertActive("attachDrillChild");
   assertLoopbackDbUrl(url);
   assertPrismaNotLoaded();
   process.env.DATABASE_URL = url;
   process.env.DIRECT_URL = url;
-  let text = "";
-  try { text = fs.readFileSync(path.join(REPO, ".env"), "utf8"); } catch { /* no .env, nothing to shadow */ }
-  for (const m of text.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)) {
-    if (process.env[m[1]] === undefined) process.env[m[1]] = "";
+  // The boundary already filled these as a descendant; kept as a second pass.
+  for (const k of secretKeyNames()) {
+    if (process.env[k] === undefined) process.env[k] = "";
   }
   if (!replacements.has("next/cache")) installNextStubs();
   const fence = activeFence ?? fenceFetch();
@@ -1087,6 +1101,12 @@ function targetOf(args: unknown[]): string | null {
  *
  * `allow(url, init)` may answer a specific host with a canned Response (return
  * null to fall through to the block). Loopback fetches go to the real network.
+ *
+ * Since Sep 28 (R06) this is a layer OVER the runner boundary, not the fence
+ * itself: the functions it wraps are the boundary's fenced ones, so whatever
+ * slips past this layer (a `new net.Socket().connect()`, an argument shape it
+ * cannot read) is refused underneath, and those refusals are listed in
+ * `blocked` too. restore() takes away only this layer.
  */
 export function fenceFetch(
   allow?: (url: string, init?: RequestInit) => Response | null | Promise<Response | null>,
@@ -1094,6 +1114,11 @@ export function fenceFetch(
   const blocked: string[] = [];
   const faked: string[] = [];
   const realFetch = globalThis.fetch;
+  // Refusals made by the boundary underneath, while this layer is up.
+  const unsubscribe = onBlocked((entry) => {
+    blocked.push(entry);
+    if (activeFence === fence) for (const tell of fenceListeners) tell(entry);
+  });
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (LOOPBACK_URL.test(url)) return realFetch(input, init);
@@ -1136,6 +1161,7 @@ export function fenceFetch(
       netMod.connect = real.netConnect;
       netMod.createConnection = real.netCreate;
       tlsMod.connect = real.tlsConnect;
+      unsubscribe();
       if (activeFence === fence) activeFence = null;
     },
   };
