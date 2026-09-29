@@ -16,8 +16,10 @@
 //       email AND its Aryeo customer's must be Jordan's verified test inboxes
 //       — testClients.JORDAN_TEST_INBOXES, since Sep 28 his two Gmail too), both
 //       switches' scopes, the Accelerator's price in Aryeo, James's assignment
-//       and his free weekday slots at least 24 hours out. Prints exactly what
-//       --apply would do. Writes nothing anywhere.
+//       and his free weekday slots at least 24 hours out, and — information
+//       only — how many "synced to accounting" events Aryeo sent the hub in the
+//       last 30 days (the hub's own webhook log). Prints exactly what --apply
+//       would do. Writes nothing anywhere.
 //
 //   … --apply   (same flags; optional --start <ISO> and --move-to <ISO>)
 //       1. saves the plan address and makes the request (Video Accelerator,
@@ -57,9 +59,18 @@
 // James's calendar. Now a stop says, first, to switch both OFF (a switch left
 // on lets the hourly cron finish the half-made booking by itself), then what
 // to look for: the order's marker when no order id came back, the appointment
-// to CANCEL by hand when it is live, the order to close, the QuickBooks
-// invoice to void, and that James got Aryeo's notice for a test booking
-// (notifyCompany is on: the hub's bookings notify our team).
+// to CANCEL by hand when it is live, the order to close (and any balance on it
+// to clear in Aryeo by hand), and that James got Aryeo's notice for a test
+// booking (notifyCompany is on: the hub's bookings notify our team).
+//
+// NO QUICKBOOKS STEP (Sep 28 2026). Jordan does not use QuickBooks, so no
+// cleanup step or measurement names it: the order and its balance are closed
+// in Aryeo, and the R03 observation names the fixture's OWN inboxes (the
+// Aryeo customer's and the hub's) rather than a hard-coded info@ — since Sep 28
+// the fixture may be on one of Jordan's Gmail inboxes instead. The dry run's
+// one read-only observation of Aryeo's own accounting sync (webhook log, last
+// 30 days) is information only: the hub writes nothing there and it is nobody's
+// task.
 // ---------------------------------------------------------------------------
 
 type Log = (line: string) => void;
@@ -203,6 +214,17 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   log("  5. cancelSessionRequest → PUT /appointments/{id}/cancel (notify false) → readback CANCELED");
   log("  6. read-only: filter[appointment_id] availability and has_conflicts for the booked appointment");
   if (!apply) {
+    // Read-only, from the hub's own webhook log; prints nothing when there is
+    // nothing to say. Aryeo syncing orders onward is Aryeo's own setting — no
+    // cleanup step, no measurement, nobody's task (Sep 28 2026).
+    const since = new Date(now.getTime() - 30 * 864e5);
+    const syncEvents = await prisma.webhookEvent
+      .count({ where: { provider: "aryeo", eventType: { in: ["ORDER_SYNCED_TO_QUICKBOOKS", "ORDER_PAYMENT_SYNCED_TO_QUICKBOOKS"] }, createdAt: { gte: since } } })
+      .catch(() => 0);
+    if (syncEvents > 0) {
+      log("");
+      log(`Aryeo reports syncing orders to an outside accounting system (${syncEvents} events in 30 days). Its own sync may copy this $0 test order there. The hub writes nothing there and nobody needs to act.`);
+    }
     log("");
     log(`DRY RUN: nothing was written. To run it: ${SCRIPT} --fixture ${client.id} --address "…" --new-address "…" --apply`);
     return { code: 0, mode };
@@ -261,7 +283,13 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   report.moneyCheck = moneyProblem ? `FAIL: ${moneyProblem}` : row.aryeoOrderId ? "PASS: $0 total, $0 owed after the booking" : "no order";
   if (row.status !== "CONFIRMED" || !row.aryeoAppointmentId) {
     log(`   The booking did not confirm: request ${row.status}/${row.bookingState}${row.lastError ? ` (${row.lastError})` : ""}. Stop here and clean up by hand, starting with the switches (list below).`);
-    printCleanup(log, await cleanupFacts(requestId, client.id, false));
+    // The cleanup's R03 step says to record report.money and report.orderReadback:
+    // print them here too (review of the R02 repair, Sep 28 2026 — a stop used
+    // to print the list and return, so the operator was pointed at values the
+    // run never showed). The travel probe did not run; the list says so.
+    log("");
+    log(`REPORT ${JSON.stringify(report, null, 2)}`);
+    printCleanup(log, await cleanupFacts(requestId, client.id, false, { clientEmail: client.email, customerEmail }));
     return { code: 1, mode, requestId, report, refused: "booking-not-confirmed" };
   }
 
@@ -297,7 +325,7 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
 
   log("");
   log(`REPORT ${JSON.stringify(report, null, 2)}`);
-  printCleanup(log, await cleanupFacts(requestId, client.id, true));
+  printCleanup(log, await cleanupFacts(requestId, client.id, true, { clientEmail: client.email, customerEmail }));
   const ok = cancelled.status === "CANCELLED" && !moneyProblem;
   return { code: ok ? 0 : 1, mode, requestId, report, ...(moneyProblem ? { refused: "money-readback" } : {}) };
 }
@@ -305,10 +333,19 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
 type CleanupFacts = {
   clientId: string; requestId: string; completed: boolean;
   status: string; bookingState: string; orderId: string | null; appointmentId: string | null; marker: string;
+  /** The fixture's own inboxes, as proven by assertFixtureIdentity: the hub's
+   *  Client.email and the linked Aryeo customer's — where an Aryeo email to the
+   *  customer would land (Sep 28 2026: named, never a hard-coded info@). */
+  clientEmail: string | null; customerEmail: string | null;
 };
 
 /** What actually happened, read back from the request and its attempts — the cleanup list follows it. */
-async function cleanupFacts(requestId: string, clientId: string, completed: boolean): Promise<CleanupFacts> {
+async function cleanupFacts(
+  requestId: string,
+  clientId: string,
+  completed: boolean,
+  inboxes: { clientEmail: string | null; customerEmail: string | null },
+): Promise<CleanupFacts> {
   const { prisma } = await import("@/lib/prisma");
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { status: true, bookingState: true, aryeoOrderId: true, aryeoAppointmentId: true } });
   // An order may exist that the request never heard about (a timeout after
@@ -321,6 +358,8 @@ async function cleanupFacts(requestId: string, clientId: string, completed: bool
     orderId: r?.aryeoOrderId ?? attempts.find((a) => a.aryeoOrderId)?.aryeoOrderId ?? null,
     appointmentId: r?.aryeoAppointmentId ?? attempts.find((a) => a.aryeoAppointmentId)?.aryeoAppointmentId ?? null,
     marker: `hub-session:${requestId}:`,
+    clientEmail: inboxes.clientEmail,
+    customerEmail: inboxes.customerEmail,
   };
 }
 
@@ -343,15 +382,17 @@ export function printCleanup(log: Log, f: CleanupFacts): void {
   else if (f.appointmentId) step(`Confirm appointment ${f.appointmentId} reads CANCELED.`);
   else step("If the order carries an appointment, cancel it by hand (none was recorded here).");
   step("Close or cancel the test order itself (a $0 order with a cancelled appointment stays on the TEST customer otherwise). If it shows ANY balance, void that balance by hand: the hub never voids, refunds or edits an order. The Address the hub made for it books nothing and can stay.");
-  step("QuickBooks: if an ORDER_SYNCED_TO_QUICKBOOKS invoice was made for that order, void or delete it by hand, and note its amount ($0 expected) for R03.");
   step("Tell James the 117 Kyle Lane booking was a supervised TEST: the hub's bookings notify our team (notifyCompany), so Aryeo sent him the new-appointment notice. It is unproven whether Aryeo tells him about the move or the cancel.");
   if (f.completed) {
     step(`Disarm both switches (audited; only the fixture list and the on/off):
        ${FIXTURE_SCRIPT} --switch session_booking --remove ${f.clientId} --off --apply
        ${FIXTURE_SCRIPT} --switch address_sync --remove ${f.clientId} --off --apply`);
   }
-  step("R03 observations: check info@realtourpilot.com for any Aryeo order/invoice/appointment email to the CUSTOMER; record it and the QuickBooks invoice on the checklist (R03 / A27).");
-  step("Record report.aryeoTravelProbe: if appointment-scoped availability was honoured AND a far/near pair shows it counts drive time, session_booking.travelSource may become ARYEO_APPOINTMENT; otherwise it stays HUB_DRIVE.");
+  step(`R03 observations: check the fixture's Aryeo customer inbox (${f.customerEmail ?? "none on file"}) and its hub email (${f.clientEmail ?? "none on file"}) for any Aryeo order, invoice or appointment email to the CUSTOMER (the hub sent notify false / notifyCustomer false); record what arrived, or that nothing did, with report.money and report.orderReadback (the REPORT above) on the checklist (R03 / A27).`);
+  // The probe (step 6) runs only once the appointment is confirmed, so a stop
+  // has none to record: say that, rather than name a value the run never made.
+  if (f.completed) step("Record report.aryeoTravelProbe: if appointment-scoped availability was honoured AND a far/near pair shows it counts drive time, session_booking.travelSource may become ARYEO_APPOINTMENT; otherwise it stays HUB_DRIVE.");
+  else step("The travel probe (step 6) did not run: the test stopped before it. session_booking.travelSource stays HUB_DRIVE until a completed run measures it.");
 }
 
 if (require.main === module) {

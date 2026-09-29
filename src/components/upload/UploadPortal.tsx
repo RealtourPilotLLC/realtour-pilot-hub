@@ -26,7 +26,11 @@ import {
   reportMissedShot, planGapRecovery, closeProductionGap, recordFieldPreference, decideFieldReport,
 } from "@/app/upload/actions";
 import { saveUploadDraft, discardUploadDraft } from "@/app/upload/draftActions";
-import { createAutosaver, changedSubmittedFields, type AutosaveStatus, type DraftPayload, type SubmittedFields } from "@/lib/uploadDraft";
+import {
+  createAutosaver, changedSubmittedFields, restoredTopicTicks, settleDraftSave, DRAFT_TOPIC_CHECK_FAILED,
+  initialTopicAnswer, nextDeviceCopy, decideDeviceRestore,
+  type AutosaveStatus, type DraftPayload, type SubmittedFields,
+} from "@/lib/uploadDraft";
 import { evidenceFromView, handoffCategoryOf, ladderRows, receiptSentence, videoHalfDueAt, type EvidenceView, type HandoffCategory } from "@/lib/handoff";
 // §7.3: the files ladder, drawn exactly as the edit tracker and the project summary draw it.
 import { EvidenceLadder } from "@/components/editing/EditTracker";
@@ -318,7 +322,15 @@ function draftChip(st: AutosaveStatus, canSave: boolean): React.ReactNode {
   if (!canSave) return null;
   if (st.kind === "saving") return <span className="ml-1.5 text-muted-2"> · Saving…</span>;
   if (st.kind === "saved") return <span className="ml-1.5 text-success"> · Draft saved {etTime(st.atISO)}</span>;
-  if (st.kind === "failed") return <span className="ml-1.5 text-warning"> · Unable to save — retrying (kept on this device)</span>;
+  // R02 (Sep 28 2026): a save held back because the topic list did not load
+  // says so in the photographer's words; anything else keeps the old line.
+  if (st.kind === "failed") {
+    return (
+      <span className="ml-1.5 text-warning">
+        {" · "}{st.message === DRAFT_TOPIC_CHECK_FAILED ? DRAFT_TOPIC_CHECK_FAILED : "Unable to save — retrying (kept on this device)"}
+      </span>
+    );
+  }
   if (st.kind === "conflict") return <span className="ml-1.5 text-warning"> · Another copy was saved — choose one above</span>;
   return null;
 }
@@ -359,6 +371,7 @@ export function UploadPortal({
   viewerIsOffice,
   payGateFromMs,
   sessionTopics,
+  topicsUnavailable = false,
   draft,
   draftRevision,
   canSaveDraft,
@@ -463,6 +476,13 @@ export function UploadPortal({
     /** CP-09: this job's last report, when it has not landed yet — what it said, so a reopened page shows it */
     pending: { state: string; topicIds: string[]; extras: { title: string; note: string }[] } | null;
   } | null;
+  /**
+   * R02: this is a content session, but its topic list FAILED to load (the
+   * render's read threw). Not the same as no list: stored ticks are kept as
+   * saved (never dropped), the page says so, and the video half waits for a
+   * reload rather than being submitted by the bare count box.
+   */
+  topicsUnavailable?: boolean;
   /** owner/admin — the reopen button reads "Edit this upload" for them */
   viewerIsOffice: boolean;
   /** DEBRIEF_PAY_GATE_FROM (lib/payroll is server-only, so the page passes
@@ -606,13 +626,29 @@ export function UploadPortal({
   // A report that has not landed yet is still the photographer's word about
   // this job: its ticks come back ticked, so re-sending the page unchanged is
   // the same report rather than a different answer.
-  const pendingTicks = sessionTopics?.pending?.topicIds ?? [];
   // A draft's ticks come back too — but only for topics this session can
   // still tick, and never un-ticking one already recorded here.
-  const ticksFrom = (ids: string[]) => (sessionTopics?.topics ?? [])
-    .filter((t) => recordedHere(t) || (ids.includes(t.topicId) && !confirmedElsewhere(t)))
-    .map((t) => t.topicId);
-  const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(() => ticksFrom(d0 ? d0.filmedTopicIds : pendingTicks));
+  // R02 (Sep 28 2026): when the list did not load, the ticks come back exactly
+  // as saved. Filtering them against a list that failed to load emptied them,
+  // and the next autosave stored the empty list over the real one.
+  const ticksFrom = (ids: string[]) =>
+    restoredTopicTicks({ unavailable: topicsUnavailable, topics: sessionTopics?.topics ?? [], ids, projectId: project.id });
+  // Where the page's topic answer starts (lib/uploadDraft initialTopicAnswer —
+  // the drill runs the same rule on the real page's props): the draft's answer
+  // when it has one, else the job's own (the report not landed yet, the notes
+  // on file). R02 follow-up (Sep 28 2026): with the list unavailable and no
+  // draft answer, the page has NO topic answer — `unknown`, not "none". Its
+  // empty fields are placeholders, and the draft says so (topicsUnknown) rather
+  // than saving them over a report's ticks and extras.
+  const [topic0] = useState(() => initialTopicAnswer({
+    draft: d0,
+    unavailable: topicsUnavailable,
+    topics: sessionTopics?.topics ?? [],
+    pending: sessionTopics?.pending ?? null,
+    projectId: project.id,
+  }));
+  const [topicAnswerUnknown, setTopicAnswerUnknown] = useState(topic0.unknown);
+  const [filmedTopicIds, setFilmedTopicIds] = useState<string[]>(topic0.ticks);
   const hasTopics = (sessionTopics?.topics.length ?? 0) > 0;
   const toggleTopic = (id: string) => {
     if (sessionTopics?.topics.some((t) => t.topicId === id && (confirmedElsewhere(t) || recordedHere(t)))) return;
@@ -621,22 +657,18 @@ export function UploadPortal({
   // CP-09: a note to the editor per topic (collapsed until asked for), and the
   // topics filmed on site that were not on the list. Both ride the same report
   // as the ticks, so they land — or wait and retry — together.
-  const [topicNotes, setTopicNotes] = useState<Record<string, string>>(
-    () => d0
-      ? { ...d0.topicNotes }
-      : Object.fromEntries((sessionTopics?.topics ?? []).filter((t) => t.note?.trim()).map((t) => [t.topicId, t.note as string])),
-  );
+  const [topicNotes, setTopicNotes] = useState<Record<string, string>>(topic0.notes);
   const [notesOpen, setNotesOpen] = useState<string[]>(() => Object.keys(topicNotes));
   const [extraRows, setExtraRows] = useState<{ key: string; title: string; note: string }[]>(
-    () => d0
-      ? d0.extraRows.map((x) => ({ key: newExtraKey(), title: x.title, note: x.note }))
-      : (sessionTopics?.pending?.extras ?? []).map((x, i) => ({ key: `pending-${i}`, title: x.title, note: x.note })),
+    () => topic0.extras.map((x, i) => ({ key: topic0.source === "draft" ? newExtraKey() : `pending-${i}`, title: x.title, note: x.note })),
   );
   const liveExtras = extraRows
     .map((x) => ({ ...x, title: x.title.replace(/\s+/g, " ").trim() }))
     .filter((x) => x.title);
   // Answered by topic (ticks and/or extras) rather than by the bare count box.
-  const answersByTopic = hasTopics || liveExtras.length > 0;
+  // Never while the list is unavailable: the ticks carried then are unchecked,
+  // and the video half is held until a reload (missingItems below).
+  const answersByTopic = !topicsUnavailable && (hasTopics || liveExtras.length > 0);
   const overflowOf = new Map((sessionTopics?.topics ?? []).map((t) => [t.topicId, t.overflow]));
   const plannedTicked = filmedTopicIds.filter((id) => !overflowOf.get(id)).length;
   const extraCount = filmedTopicIds.length - plannedTicked + liveExtras.length;
@@ -683,7 +715,7 @@ export function UploadPortal({
   // "vision and style" on a shape whose only required field is the intro.
   const requiredLabels = [
     spec.requireIntro ? "The intro script" : null,
-    spec.requireVideoCount ? (answersByTopic ? "Which topics you filmed" : "The video count") : null,
+    spec.requireVideoCount ? (answersByTopic || topicsUnavailable ? "Which topics you filmed" : "The video count") : null,
     fullFields ? (spec.fixedStyle ? "vision" : "vision and style") : null,
     notesRequired ? "Your editing instructions" : null,
   ].filter(Boolean) as string[];
@@ -745,8 +777,11 @@ export function UploadPortal({
       vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes,
       extraRows: extraRows.map((x) => ({ title: x.title, note: x.note })),
       scriptChoice, scriptText: scriptChoice === "edited" || !script ? scriptText : "", scriptNote,
+      // R02 follow-up: no topic answer on this page — the server keeps the
+      // stored draft's, and a later page takes the job's own.
+      ...(topicAnswerUnknown ? { topicsUnknown: true as const } : {}),
     }),
-    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script],
+    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script, topicAnswerUnknown],
   );
   const payloadJson = JSON.stringify(draftPayload);
   const payloadRef = useRef(draftPayload);
@@ -767,13 +802,28 @@ export function UploadPortal({
   const [submitHash, setSubmitHash] = useState(draftBase ?? loadedBaseHash);
   const saverRef = useRef<ReturnType<typeof createAutosaver> | null>(null);
   const [saveStatus, setSaveStatus] = useState<AutosaveStatus>({ kind: "idle" });
-  const [draftConflict, setDraftConflict] = useState<{ revision: number; payload: DraftPayload; savedAtISO: string; by: string | null; submitted: boolean } | null>(null);
+  // `device`: the conflict is between the copy kept on THIS device (now on the
+  // page) and the server's, found when the page opened — its fingerprint is
+  // taken only if the person keeps it (review of the R02 repair, Sep 28 2026).
+  const [draftConflict, setDraftConflict] = useState<{
+    revision: number; payload: DraftPayload; savedAtISO: string; by: string | null; submitted: boolean;
+    device?: { typedAtISO: string; baseHash: string | null; baseAtISO: string | null };
+  } | null>(null);
   const [restored, setRestored] = useState<{ atISO: string; from: "server" | "device" } | null>(
     draft ? { atISO: draft.savedAtISO, from: "server" } : null,
   );
   const mirrorKey = DRAFT_MIRROR_KEY(project.id);
+  // The copy records the revision these answers were typed on and WHEN they
+  // were typed — kept across retries of the same answers (lib/uploadDraft
+  // nextDeviceCopy). It used to be re-stamped "now" on every failed attempt,
+  // so a copy typed before another device's save looked newer than it and was
+  // pushed over that save on the next reload (review of the R02 repair).
   const writeMirror = (json: string) => {
-    try { window.localStorage.setItem(mirrorKey, JSON.stringify({ savedAtISO: new Date().toISOString(), baseHash: baseHashRef.current, baseAtISO: baseAtRef.current, payload: JSON.parse(json) })); } catch { /* private window */ }
+    try {
+      window.localStorage.setItem(mirrorKey, nextDeviceCopy(window.localStorage.getItem(mirrorKey), {
+        json, revision: revRef.current, nowISO: new Date().toISOString(), baseHash: baseHashRef.current, baseAtISO: baseAtRef.current,
+      }));
+    } catch { /* private window */ }
   };
   const clearMirror = () => {
     try { window.localStorage.removeItem(mirrorKey); } catch { /* private window */ }
@@ -789,9 +839,15 @@ export function UploadPortal({
     setVidStyle(draftStyle(p));
     setVidSections(draftSections(p));
     setVideosFilmed(p.videosFilmed);
-    setFilmedTopicIds(ticksFrom(p.filmedTopicIds));
-    setTopicNotes({ ...p.topicNotes });
-    setExtraRows(p.extraRows.map((x) => ({ key: newExtraKey(), title: x.title, note: x.note })));
+    // R02 follow-up: a copy saved with no topic answer (topicsUnknown) says
+    // nothing about the topics — the page keeps the answer it has. One that
+    // has an answer brings it, and the page then HAS an answer to save.
+    if (!p.topicsUnknown) {
+      setFilmedTopicIds(ticksFrom(p.filmedTopicIds));
+      setTopicNotes({ ...p.topicNotes });
+      setExtraRows(p.extraRows.map((x) => ({ key: newExtraKey(), title: x.title, note: x.note })));
+      setTopicAnswerUnknown(false);
+    }
     setScriptChoice(p.scriptChoice);
     if (p.scriptChoice === "edited" || !script) setScriptText(p.scriptText || script?.body || "");
     setScriptNote(p.scriptNote);
@@ -804,56 +860,74 @@ export function UploadPortal({
       save: async () => {
         const payload = payloadRef.current;
         const json = JSON.stringify(payload);
+        // The device copy goes ONLY when the server says these answers are
+        // saved (settleDraftSave — the drill runs the same rule). R02: the
+        // server used to say "saved" after stripping every topic tick when the
+        // topic list failed to load, and this deleted the one copy that still
+        // held them. It now answers "not saved, retryable" instead, the copy
+        // stays, and the autosaver retries with the same revision.
+        const device = { keep: () => writeMirror(json), clear: clearMirror };
         try {
           const r = await saveUploadDraft(project.id, { revision: revRef.current, baseHash: baseHashRef.current, payload });
-          if (r.ok) {
-            revRef.current = r.revision;
+          const settled = settleDraftSave(r, device);
+          if (settled.revision !== null) {
+            revRef.current = settled.revision;
             lastSavedJson.current = json;
-            clearMirror();
-            return { ok: true, savedAtISO: r.savedAtISO };
           }
-          if ("conflict" in r) {
-            writeMirror(json);
-            setDraftConflict(r.conflict);
-            return { ok: false, conflict: true };
-          }
-          writeMirror(json);
-          return { ok: false, message: r.message };
+          if (settled.conflict) setDraftConflict(settled.conflict);
+          return settled.outcome;
         } catch {
-          writeMirror(json);
+          device.keep();
           return { ok: false, message: "Unable to save" };
         }
       },
     });
     saverRef.current = saver;
-    // A copy kept on THIS device while the server was unreachable, newer than
-    // the server's: it is what the person last typed, so it wins the restore
-    // and is pushed to the server by the change below. Read after mount (the
-    // server render has no device storage), on the next tick.
+    // A copy kept on THIS device while the server could not take it. Read
+    // after mount (the server render has no device storage), on the next tick,
+    // and decided by lib/uploadDraft decideDeviceRestore:
+    //   · typed before the whole wrap-up's submit, or the same as the server's
+    //     copy → nothing unsent in it, dropped (review, Sep 25). A copy from
+    //     before one HALF may still hold the other half's unsent answers, so
+    //     it is kept — its fingerprint makes the submit show what changed;
+    //   · typed on the server's CURRENT copy (same revision), or there is none
+    //     → it is what the person last typed: put back, and pushed by the
+    //     change below;
+    //   · the server's copy moved on since it was typed (another device saved)
+    //     → the person chooses, in the conflict panel. Nothing is pushed until
+    //     they do. This used to be "restore when the copy's stamp is newer" —
+    //     a stamp every failed retry renewed (review of the R02 repair).
     const restoreTimer = setTimeout(() => {
       try {
-        const raw = window.localStorage.getItem(mirrorKey);
-        if (!raw) return;
-        const m = JSON.parse(raw) as { savedAtISO?: string; baseHash?: string; baseAtISO?: string; payload?: DraftPayload };
-        // A copy older than the whole wrap-up's submit is not unsent any more:
-        // that submit (from here or another device) is what went in. Dropped,
-        // not restored over it (review, Sep 25). A copy from before one HALF
-        // may still hold the other half's unsent answers, so it is kept — its
-        // fingerprint below makes the submit show what changed since.
-        if (project.debriefSubmittedAt && (m.savedAtISO ?? "") < project.debriefSubmittedAt) { clearMirror(); return; }
-        const newer = m?.payload && (!draft || (m.savedAtISO ?? "") > draft.savedAtISO);
-        if (newer && m.payload) {
+        const d = decideDeviceRestore(window.localStorage.getItem(mirrorKey), {
+          draft: draft ? { revision: draft.revision, savedAtISO: draft.savedAtISO, payload: draft.payload } : null,
+          debriefSubmittedAtISO: project.debriefSubmittedAt,
+        });
+        if (d.action === "drop") { clearMirror(); return; }
+        if (d.action === "none") return;
+        const m = d.copy;
+        if (d.action === "ask" && draft) {
+          // Hold the autosave FIRST: putting the copy on the page is a change,
+          // and a save now would be the silent overwrite this asks about.
+          saver.stop();
           applyDraft(m.payload);
-          // The fingerprint the copy was typed against, when it carries one.
-          if (m.baseHash) {
-            baseHashRef.current = m.baseHash;
-            setSubmitHash(m.baseHash);
-            baseAtRef.current = m.baseAtISO ?? m.savedAtISO ?? baseAtRef.current;
-            setMovedSinceDraft(m.baseHash !== loadedBaseHash);
-          }
-          setRestored({ atISO: m.savedAtISO ?? new Date().toISOString(), from: "device" });
           setReopened(true);
+          setDraftConflict({
+            revision: draft.revision, payload: draft.payload, savedAtISO: draft.savedAtISO, by: null, submitted: false,
+            device: { typedAtISO: m.typedAtISO, baseHash: m.baseHash, baseAtISO: m.baseAtISO },
+          });
+          return;
         }
+        applyDraft(m.payload);
+        // The fingerprint the copy was typed against, when it carries one.
+        if (m.baseHash) {
+          baseHashRef.current = m.baseHash;
+          setSubmitHash(m.baseHash);
+          baseAtRef.current = m.baseAtISO ?? m.typedAtISO ?? baseAtRef.current;
+          setMovedSinceDraft(m.baseHash !== loadedBaseHash);
+        }
+        setRestored({ atISO: m.typedAtISO || new Date().toISOString(), from: "device" });
+        setReopened(true);
       } catch { /* unreadable mirror — the server copy stands */ }
     }, 0);
     const onHide = () => { if (document.visibilityState === "hidden") void saver.flush(); };
@@ -878,6 +952,17 @@ export function UploadPortal({
   function keepMineAfterConflict() {
     if (!draftConflict) return;
     revRef.current = draftConflict.submitted ? null : draftConflict.revision;
+    // The device copy won: it goes on with the fingerprint IT was typed against.
+    const dev = draftConflict.device;
+    if (dev) {
+      if (dev.baseHash) {
+        baseHashRef.current = dev.baseHash;
+        setSubmitHash(dev.baseHash);
+        baseAtRef.current = dev.baseAtISO ?? dev.typedAtISO;
+        setMovedSinceDraft(dev.baseHash !== loadedBaseHash);
+      }
+      setRestored({ atISO: dev.typedAtISO, from: "device" });
+    }
     setDraftConflict(null);
     saverRef.current?.resume();
     saverRef.current?.change();
@@ -1027,7 +1112,11 @@ export function UploadPortal({
       if (fullFields && effectiveStyle === null) missing.push("pick an edit style");
       if (notesRequired && !vidSections.editNotes.trim()) missing.push("your editing instructions for the editor");
     }
-    if (vOn && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
+    // R02: a content session whose topic list did not load can't hand the
+    // video over — it would go without a filming report (no list, no ticks).
+    // A reload brings the list back; the photos half is unaffected.
+    if (vOn && topicsUnavailable) missing.push("reload the page (this job's topic list didn't load)");
+    if (vOn && !topicsUnavailable && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
       missing.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
     }
     if (vOn && script && !scriptChoice) missing.push("confirm the script");
@@ -1260,7 +1349,9 @@ export function UploadPortal({
             <span>
               {draftConflict.submitted
                 ? `These answers were submitted from another tab or device (${etDateTime(draftConflict.savedAtISO)}). What you typed here is still on this page.`
-                : `Another copy of your unsent answers was saved ${etDateTime(draftConflict.savedAtISO)}${draftConflict.by ? ` by ${draftConflict.by}` : ""}, probably in another tab or on another device. Which one should be kept?`}
+                : draftConflict.device
+                  ? `This page shows answers kept on this device (typed ${etDateTime(draftConflict.device.typedAtISO)}). A different copy of your unsent answers was saved ${etDateTime(draftConflict.savedAtISO)}, probably on another device. Which one should be kept?`
+                  : `Another copy of your unsent answers was saved ${etDateTime(draftConflict.savedAtISO)}${draftConflict.by ? ` by ${draftConflict.by}` : ""}, probably in another tab or on another device. Which one should be kept?`}
             </span>
           </p>
           <div className="mt-2.5 flex flex-wrap gap-2">
@@ -1829,7 +1920,7 @@ export function UploadPortal({
                 className="mt-1.5"
               />
             </div>
-          ) : spec.requireIntro || sessionTopics ? null : (
+          ) : spec.requireIntro || sessionTopics || topicsUnavailable ? null : (
             // Not on a content session: its scripts come from the program
             // (the topic list below says which are signed off), never Studio.
             <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[13px] text-muted">
@@ -1909,6 +2000,15 @@ export function UploadPortal({
                 so it all lands — or waits and retries — together. An extra is
                 never refused: it goes to the editor like the others, and the
                 office decides what it counts toward (capacity review). */}
+            {/* R02: the list did not load. Not "no topics": the ticks saved
+                earlier are kept exactly as they were, and the video half waits
+                for a reload (see missingItems). */}
+            {topicsUnavailable && (
+              <p role="status" className="mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[13px]">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+                <span>This job&rsquo;s topic list didn&rsquo;t load. Reload the page before you submit the video — the topics you ticked earlier are kept.</span>
+              </p>
+            )}
             {spec.requireVideoCount && !!sessionTopics && (
               <div className="mt-3">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -2055,7 +2155,7 @@ export function UploadPortal({
 
             {/* No topic list (a session booked before the month was planned):
                 the batch size the editor cuts to, as before. */}
-            {spec.requireVideoCount && !hasTopics && liveExtras.length === 0 && (
+            {spec.requireVideoCount && !hasTopics && liveExtras.length === 0 && !topicsUnavailable && (
               <div className="mt-3">
                 <label className="text-[13px] font-medium text-muted">
                   How many videos did you film? <span className="text-brand">*</span>

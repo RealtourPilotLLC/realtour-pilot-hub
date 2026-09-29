@@ -186,8 +186,19 @@ export default async function UploadProjectPage({
   const photoTarget = photoPolicy.target;
   // F12: the content-program topics this session is for. Null on an ordinary
   // listing shoot, which has no month and no topic bank.
-  const { topicsForSession } = await import("@/lib/filmedTopics");
-  const session = await topicsForSession(project.id).catch(() => null);
+  //
+  // R02 (external review, Sep 28 2026): a list that FAILED to load is not a
+  // job with no list. This was `.catch(() => null)`: the page then dropped the
+  // stored draft's topic ticks (nothing to match them against), its next
+  // autosave wrote [] over them even once the database was healthy, the count
+  // box replaced the topics, and the submit sent no filming report at all. Now
+  // the page is told the list is UNKNOWN (topicsUnavailable, content jobs only
+  // — a listing shoot has no list to lose): it keeps the stored ticks exactly
+  // as saved, says so, and holds the video half until a reload brings the list.
+  const { readSessionTopics } = await import("@/lib/filmedTopics");
+  const topicsRead = await readSessionTopics(project.id);
+  const session = topicsRead.ok ? topicsRead.session : null;
+  if (!topicsRead.ok) console.warn(`[upload-page] topic list unreadable for ${project.id}: ${topicsRead.error}`);
   // CP-09 (batch C): each topic's raw folder, where it is TODAY (the folder
   // engine may have moved the listing since it was made), and — when the
   // photographer's last report has not landed yet — what that report said, so
@@ -197,11 +208,31 @@ export default async function UploadProjectPage({
   const topicFolders = session
     ? await topicFolderLinksFor(project.id).catch(() => new Map<string, { label: string; path: string; url: string }>())
     : new Map<string, { label: string; path: string; url: string }>();
-  const pendingRow = session?.pendingReport
+  // R02 follow-up (Sep 28 2026): this read was `.catch(() => null)` too — the
+  // same catch-to-empty the repair took out of the list read above.
+  // A report the session SAYS is pending, whose own row could not be read,
+  // became "ticked nothing, no extras" on a page that loaded fine and showed no
+  // warning; the next autosave stored that as the draft's answer, and every
+  // later render restored it over the report's. What the report said is
+  // unknown, so the page is treated exactly like a list that did not load:
+  // topicsUnavailable, the reload banner, the video half held, and no topic
+  // answer in the draft.
+  const pendingRead = session?.pendingReport
     ? await prisma.contentFilmingReport
         .findUnique({ where: { id: session.pendingReport.id }, select: { topicIdsJson: true, extrasJson: true } })
-        .catch(() => null)
+        .then(
+          (row) => ({ ok: true as const, row }),
+          (e: unknown) => ({ ok: false as const, error: (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim().slice(0, 300) }),
+        )
     : null;
+  // A row that vanished between the two reads is no more known than one that
+  // failed: nothing may be said about what the photographer ticked.
+  const pendingUnknown = !!session?.pendingReport && (!pendingRead?.ok || !pendingRead.row);
+  if (pendingUnknown) {
+    console.warn(`[upload-page] pending filming report unreadable for ${project.id}: ${pendingRead && !pendingRead.ok ? pendingRead.error : "the row was not found"}`);
+  }
+  const pendingRow = pendingRead?.ok ? pendingRead.row : null;
+  const topicsUnavailable = (!topicsRead.ok || pendingUnknown) && !!project.contentMonthId;
   const parsed = <T,>(s: string | null | undefined, fallback: T): T => {
     try {
       return s ? (JSON.parse(s) as T) : fallback;
@@ -209,7 +240,9 @@ export default async function UploadProjectPage({
       return fallback;
     }
   };
-  const sessionTopics = session
+  // Unavailable = no list handed to the portal at all (not a list with an
+  // empty report): the portal's one "unknown" path then holds everything.
+  const sessionTopics = session && !topicsUnavailable
     ? {
         owed: session.owed,
         topics: session.topics.map((t) => {
@@ -366,7 +399,9 @@ export default async function UploadProjectPage({
   //     rest are directed through the topic list and its notes further down.
   const { outputBriefsFor, ON_SITE_NOTE_CAP } = await import("@/lib/deliverableOutputs");
   const allBriefs = videoOrdered ? await outputBriefsFor(project.id, { scrub: true }).catch(() => [] as OutputBrief[]) : [];
-  const shownBriefs = session
+  // A content session whose topic list did not load is still a content
+  // session: its videos are directed through that list, not one by one.
+  const shownBriefs = session || topicsUnavailable
     ? allBriefs.filter((b) => b.directionSource === "own")
     : allBriefs.length > 1 || allBriefs.some((b) => b.directionSource === "own")
       ? allBriefs
@@ -383,6 +418,7 @@ export default async function UploadProjectPage({
 
       <UploadPortal
         sessionTopics={sessionTopics}
+        topicsUnavailable={topicsUnavailable}
         foldersSlot={<DropboxFolders state={folderState} photoTarget={photoTarget} />}
         project={{
           id: project.id,

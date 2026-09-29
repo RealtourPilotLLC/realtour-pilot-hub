@@ -55,9 +55,19 @@ export type DraftPayload = {
   scriptChoice: DraftScriptChoice | null;
   scriptText: string;
   scriptNote: string;
+  /**
+   * R02 follow-up (Sep 28 2026): this draft carries NO topic answer. Set by a
+   * page that could not read the job's topic list and had no earlier answer to
+   * carry (no open draft), so its empty ticks, notes and extras are "unknown",
+   * not "none". The three topic fields are empty and mean nothing; a save
+   * keeps the stored draft's answer instead, and a page restoring this draft
+   * takes the job's own answer (its pending report, its notes). Absent = the
+   * draft's topic fields ARE its answer, as before.
+   */
+  topicsUnknown?: true;
 };
 
-const str = (v: unknown, max: number): string => (typeof v === "string" ? v.slice(0, max) : "");
+const str =(v: unknown, max: number): string => (typeof v === "string" ? v.slice(0, max) : "");
 const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 const SECTION_KEY_RE = /^[a-zA-Z]{2,24}$/;
 
@@ -100,6 +110,9 @@ export function normalizeDraftPayload(raw: unknown): DraftPayload {
     const note = str(e.note, DRAFT_LIMITS.note);
     if (title.trim() || note.trim()) extraRows.push({ title, note });
   }
+  // No topic answer (R02 follow-up): the topic fields are emptied so an
+  // "unknown" draft can never be read as an answer of none.
+  const unknown = r.topicsUnknown === true;
   return {
     editorBrief: str(r.editorBrief, DRAFT_LIMITS.editorBrief),
     checks: {
@@ -115,12 +128,13 @@ export function normalizeDraftPayload(raw: unknown): DraftPayload {
     vidStyle: typeof r.vidStyle === "string" && /^[a-z_]{1,24}$/.test(r.vidStyle) ? r.vidStyle : null,
     vidSections: sections,
     videosFilmed: typeof r.videosFilmed === "string" ? r.videosFilmed.replace(/[^\d]/g, "").slice(0, 3) : "",
-    filmedTopicIds: topicIds,
-    topicNotes,
-    extraRows,
+    filmedTopicIds: unknown ? [] : topicIds,
+    topicNotes: unknown ? {} : topicNotes,
+    extraRows: unknown ? [] : extraRows,
     scriptChoice: script === "as-written" || script === "edited" ? script : null,
     scriptText: str(r.scriptText, DRAFT_LIMITS.script),
     scriptNote: str(r.scriptNote, DRAFT_LIMITS.scriptNote),
+    ...(unknown ? { topicsUnknown: true as const } : {}),
   };
 }
 
@@ -133,6 +147,289 @@ export function draftHasContent(p: DraftPayload): boolean {
     p.scriptChoice || p.scriptNote.trim() ||
     p.checks.coverage || p.checks.culling || p.checks.quality || p.checks.count
   );
+}
+
+// ---------------------------------------------------------------------------
+// R02 (external review, Sep 28 2026): A TOPIC LIST THAT COULD NOT BE READ IS
+// NOT AN EMPTY ONE.
+//
+// A save checks the draft's topic ids against the job's own topic list, so an
+// invented id is never stored. The check used to turn a FAILED read of that
+// list into "this job has no topics": every tick and every topic note was
+// filtered out, the stripped draft was written as a new revision, the page was
+// told "saved", and it then deleted the device copy that still held the ticks.
+// The upload page's own render did the same, and its next autosave wrote []
+// over the stored ticks even once the database was healthy again.
+//
+// Now "the list could not be read" is its own answer everywhere: the server
+// writes nothing and says so (retryable), the page keeps the device copy and
+// retries, and a page rendered without the list echoes the stored ticks back
+// untouched instead of dropping them.
+// ---------------------------------------------------------------------------
+
+/** The photographer's words for a save held back because the topic list could not be read. */
+export const DRAFT_TOPIC_CHECK_FAILED = "Couldn't save your topic ticks just now — they're kept on this device. Trying again…";
+
+/** Another copy of this person's draft was saved first (another tab, another device). */
+export type DraftConflict = {
+  revision: number;
+  payload: DraftPayload;
+  savedAtISO: string;
+  by: string | null;
+  /** The draft was consumed by a submit from another tab — the server copy is
+   *  what went in, not an unsent answer. */
+  submitted: boolean;
+};
+
+/** What saveUploadDraft answers (app/upload/draftActions.ts). */
+export type SaveDraftResult =
+  | { ok: true; revision: number; savedAtISO: string }
+  | { ok: false; conflict: DraftConflict }
+  /** retryable: nothing is wrong with the answers — the server could not check
+   *  them just now (the topic list did not load). The same save will land. */
+  | { ok: false; message: string; retryable?: true };
+
+/**
+ * What the page does with one save's answer, and with its device copy. Pure,
+ * so the drill runs the page's exact rule: the device copy is deleted ONLY
+ * when the server says the answers are saved. Any other answer — a conflict,
+ * a refusal, a topic list that did not load — keeps it, because until the
+ * server holds the answers that copy may be the only one.
+ */
+export function settleDraftSave(
+  r: SaveDraftResult,
+  device: { keep: () => void; clear: () => void },
+): { outcome: SaveOutcome; revision: number | null; conflict: DraftConflict | null } {
+  if (r.ok) {
+    device.clear();
+    return { outcome: { ok: true, savedAtISO: r.savedAtISO }, revision: r.revision, conflict: null };
+  }
+  device.keep();
+  if ("conflict" in r) return { outcome: { ok: false, conflict: true }, revision: null, conflict: r.conflict };
+  return { outcome: { ok: false, message: r.message }, revision: null, conflict: null };
+}
+
+/**
+ * Which topics come back ticked when answers are put back on the page (a saved
+ * draft, a device copy, the other copy after a conflict, a report that has not
+ * landed yet).
+ *
+ * With the job's topic list: only topics this session can still tick, and a
+ * topic already RECORDED as filmed here stays ticked (a re-submit never walks
+ * a confirmation back). A topic confirmed at another session is that
+ * session's video and never comes back ticked here.
+ *
+ * WITHOUT it (`unavailable`: the list failed to load, which is not the same as
+ * a job with no list): the ids come back exactly as they were saved. The page
+ * cannot show them, but it must not drop them either — the next autosave would
+ * store the drop. The server checks them against the real list on its next
+ * healthy save, so nothing invented is ever kept.
+ */
+export function restoredTopicTicks(o: {
+  unavailable: boolean;
+  topics: readonly { topicId: string; confirmedOnProjectId: string | null }[];
+  ids: readonly string[];
+  projectId: string;
+}): string[] {
+  if (o.unavailable) return [...o.ids];
+  const recordedHere = (t: { confirmedOnProjectId: string | null }) => t.confirmedOnProjectId === o.projectId;
+  const confirmedElsewhere = (t: { confirmedOnProjectId: string | null }) => !!t.confirmedOnProjectId && t.confirmedOnProjectId !== o.projectId;
+  return o.topics
+    .filter((t) => recordedHere(t) || (o.ids.includes(t.topicId) && !confirmedElsewhere(t)))
+    .map((t) => t.topicId);
+}
+
+// ---------------------------------------------------------------------------
+// R02 FOLLOW-UP (review of the R02 repair, Sep 28 2026): A PAGE THAT DOES NOT
+// KNOW THE TOPIC ANSWER MUST NOT SAVE ONE.
+//
+// The repair kept a stored draft's ticks when the page could not read the
+// topic list. It missed the page with NO open draft — the common case after a
+// whole submit whose filming report has not landed yet, which is exactly when
+// the same outage also fails the page's read. That page seeded its ticks,
+// notes and extras from values it did not have ([] / {} / []), and the first
+// autosave (a typo fixed in the brief — no topic ids, so no topic check)
+// stored them as the answer. On the healthy reload the banner had asked for,
+// that draft's empty answer won over the report's: nothing ticked, no extra,
+// while the report still said two topics and an extra — and a photographer who
+// re-ticks from memory files a second, different report.
+//
+// Now the page carries "no topic answer" as its own state (topicsUnknown on
+// the draft): the server keeps the stored draft's answer rather than writing
+// the empty one, and a page restoring such a draft takes the job's own answer.
+// ---------------------------------------------------------------------------
+
+/** The topic half of the page's answers, and where it came from. */
+export type TopicAnswer = {
+  ticks: string[];
+  notes: Record<string, string>;
+  extras: { title: string; note: string }[];
+  /** "draft": the saved draft's answer; "job": the job's own (a report that has not landed, the notes on file). */
+  source: "draft" | "job";
+  /** The page has no topic answer at all: the list did not load and no draft carried one. */
+  unknown: boolean;
+};
+
+/**
+ * The topic answer a freshly opened upload page starts from — the portal's
+ * own rule, pure so the drill runs it on the real page's props. A draft's
+ * answer wins when it HAS one; a draft saved without one (topicsUnknown) falls
+ * through to the job's own, as if there were no draft. With the list
+ * unavailable and no draft answer, the result is `unknown`: its empty fields
+ * are placeholders the page must never save as an answer.
+ */
+export function initialTopicAnswer(o: {
+  draft: DraftPayload | null;
+  unavailable: boolean;
+  topics: readonly { topicId: string; confirmedOnProjectId: string | null; note?: string | null }[];
+  pending: { topicIds: readonly string[]; extras: readonly { title: string; note: string }[] } | null;
+  projectId: string;
+}): TopicAnswer {
+  const ticks = (ids: readonly string[]) => restoredTopicTicks({ unavailable: o.unavailable, topics: o.topics, ids, projectId: o.projectId });
+  if (o.draft && !o.draft.topicsUnknown) {
+    return {
+      ticks: ticks(o.draft.filmedTopicIds),
+      notes: { ...o.draft.topicNotes },
+      extras: o.draft.extraRows.map((x) => ({ title: x.title, note: x.note })),
+      source: "draft",
+      unknown: false,
+    };
+  }
+  return {
+    ticks: ticks(o.pending?.topicIds ?? []),
+    notes: Object.fromEntries(o.topics.filter((t) => t.note?.trim()).map((t) => [t.topicId, t.note as string])),
+    extras: (o.pending?.extras ?? []).map((x) => ({ title: x.title, note: x.note })),
+    source: "job",
+    unknown: o.unavailable,
+  };
+}
+
+/**
+ * The server's half: a save that carries no topic answer keeps the one the
+ * stored draft has (the row it is about to replace, at the same revision).
+ * With nothing stored, the draft stays "no topic answer" — never "none".
+ */
+export function carryTopicAnswer(next: DraftPayload, stored: DraftPayload | null): DraftPayload {
+  if (!next.topicsUnknown || !stored || stored.topicsUnknown) return next;
+  const out: DraftPayload = {
+    ...next,
+    filmedTopicIds: [...stored.filmedTopicIds],
+    topicNotes: { ...stored.topicNotes },
+    extraRows: stored.extraRows.map((x) => ({ title: x.title, note: x.note })),
+  };
+  delete out.topicsUnknown;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// THE DEVICE COPY (O04, Sep 25; review of the R02 repair, Sep 28 2026).
+//
+// While the server has not taken the answers, the page keeps them in this
+// browser. The copy used to carry only `savedAtISO`, re-stamped on EVERY
+// failed attempt — each retry, each conflict — and a reload restored it
+// whenever that stamp was newer than the server's draft, then pushed it onto
+// the server's newest revision with no conflict. So a phone that typed on
+// revision 1, failed, and kept retrying past a laptop's save of revision 2
+// silently overwrote the laptop's answers the next time the phone's page was
+// opened: the one thing the conflict panel exists to stop. R02 made it more
+// likely (a failed topic read now keeps and re-stamps the copy every retry,
+// where it used to "save" and clear it).
+//
+// Now the copy records the REVISION it was typed on and WHEN it was typed
+// (kept across retries of the same answers). A reload restores it silently
+// only onto that same revision; if the server moved on since, the person is
+// asked, with the existing conflict panel.
+// ---------------------------------------------------------------------------
+
+/** One device copy, as read back. */
+export type DeviceCopy = {
+  payload: DraftPayload;
+  /** When these answers were typed (the first attempt that held them). */
+  typedAtISO: string;
+  /** When the copy was last written (every failed attempt). */
+  savedAtISO: string;
+  /** The server revision the answers were typed on; null = none yet;
+   *  undefined = a copy written before Sep 28 2026, which did not record it. */
+  baseRevision?: number | null;
+  baseHash: string | null;
+  baseAtISO: string | null;
+};
+
+/**
+ * The device copy to store after an attempt the server did not take.
+ * `revision` is the revision that attempt was made on (the page's revRef);
+ * the typing time is kept when the answers are the same as the copy already
+ * held, so a retry never makes old answers look new.
+ */
+export function nextDeviceCopy(
+  prevRaw: string | null,
+  o: { json: string; revision: number | null; nowISO: string; baseHash: string | null; baseAtISO: string | null },
+): string {
+  let typedAtISO = o.nowISO;
+  try {
+    const prev = prevRaw ? (JSON.parse(prevRaw) as Record<string, unknown>) : null;
+    if (prev && typeof prev === "object" && JSON.stringify(prev.payload) === o.json) {
+      const was = typeof prev.typedAtISO === "string" ? prev.typedAtISO : typeof prev.savedAtISO === "string" ? prev.savedAtISO : null;
+      if (was) typedAtISO = was;
+    }
+  } catch { /* an unreadable copy is replaced by a fresh one */ }
+  return JSON.stringify({
+    typedAtISO,
+    savedAtISO: o.nowISO,
+    baseRevision: o.revision,
+    baseHash: o.baseHash,
+    baseAtISO: o.baseAtISO,
+    payload: JSON.parse(o.json) as unknown,
+  });
+}
+
+export type DeviceRestore =
+  | { action: "none" }
+  /** Nothing unsent in it: older than the whole submit, or the same as the server's copy. */
+  | { action: "drop" }
+  /** Typed on the server's current copy (or there is none): put back silently. */
+  | { action: "restore"; copy: DeviceCopy }
+  /** The server's copy moved on since this was typed: the person chooses. */
+  | { action: "ask"; copy: DeviceCopy };
+
+/**
+ * What a freshly opened page does with the copy on this device, given the
+ * server's open draft (`draft`: null when there is none with content).
+ */
+export function decideDeviceRestore(
+  raw: string | null,
+  o: { draft: { revision: number; savedAtISO: string; payload: DraftPayload } | null; debriefSubmittedAtISO: string | null },
+): DeviceRestore {
+  if (!raw) return { action: "none" };
+  let m: Record<string, unknown>;
+  try {
+    m = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return { action: "none" };
+  }
+  if (!m || typeof m !== "object" || !m.payload || typeof m.payload !== "object") return { action: "none" };
+  const savedAtISO = typeof m.savedAtISO === "string" ? m.savedAtISO : "";
+  const typedAtISO = typeof m.typedAtISO === "string" ? m.typedAtISO : savedAtISO;
+  const base = m.baseRevision;
+  const copy: DeviceCopy = {
+    payload: normalizeDraftPayload(m.payload),
+    typedAtISO,
+    savedAtISO: savedAtISO || typedAtISO,
+    baseRevision: "baseRevision" in m && (base === null || (typeof base === "number" && Number.isInteger(base))) ? (base as number | null) : undefined,
+    baseHash: typeof m.baseHash === "string" ? m.baseHash : null,
+    baseAtISO: typeof m.baseAtISO === "string" ? m.baseAtISO : null,
+  };
+  // A copy typed before the whole wrap-up's submit is not unsent any more:
+  // that submit is what went in (review, Sep 25). By when it was TYPED — a
+  // retry after the submit used to make it look newer.
+  if (o.debriefSubmittedAtISO && typedAtISO < o.debriefSubmittedAtISO) return { action: "drop" };
+  // No server copy with anything in it: nothing to overwrite.
+  if (!o.draft) return { action: "restore", copy };
+  if (JSON.stringify(copy.payload) === JSON.stringify(o.draft.payload)) return { action: "drop" };
+  // A copy from before this rule knows no revision. Its stamp may be a retry's,
+  // so a newer stamp proves nothing: ask rather than overwrite.
+  if (copy.baseRevision === undefined) return typedAtISO > o.draft.savedAtISO ? { action: "ask", copy } : { action: "none" };
+  return copy.baseRevision === o.draft.revision ? { action: "restore", copy } : { action: "ask", copy };
 }
 
 // cyrb53 — a small, stable, non-cryptographic string hash. This is change

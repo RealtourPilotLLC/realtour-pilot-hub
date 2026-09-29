@@ -44,7 +44,13 @@
 //  17. The supervised script, against the fake: the whole journey, then its
 //      stops (batch-3 review): an order timeout (switches off first, search for
 //      the marker), a MISMATCH (cancel the LIVE appointment by hand), and a fee
-//      on the order after the booking (the run FAILS).
+//      on the order after the booking (the run FAILS). Sep 28 2026: QuickBooks
+//      is in no step of any run (Jordan does not use it); the R03 line names
+//      the fixture's own inboxes, never a hard-coded info@; the dry run notes
+//      Aryeo's own accounting sync from the webhook log as information only.
+//      A stop prints the REPORT (report.money, report.orderReadback) before
+//      the cleanup list that names them, and asks for the travel probe only
+//      when step 6 ran (review of the R02 repair, Sep 28 2026).
 //  16. Fence: nothing reached anything but the fakes.
 //
 // NOT PROVEN HERE, said plainly: real Aryeo (the supervised test,
@@ -103,6 +109,8 @@ const geocodes: string[] = [];
 
 installNextStubs();
 let fake: ReturnType<typeof createFakeAryeo>;
+/** Aryeo customer id → the email the fake's GET /customers/:id reads back (default info@ otherwise). */
+const fakeCustomers: Record<string, string | null> = {};
 const fence = fenceFetch(async (url, init) => {
   if (url.startsWith("https://geocoding.geo.census.gov/")) {
     const q = decodeURIComponent(new URL(url).searchParams.get("address") ?? "").toUpperCase();
@@ -152,6 +160,7 @@ async function main() {
     products,
     variants: Object.fromEntries(Object.values(ARYEO_CONTENT_PRODUCTS).map((p) => [p.productId, p.variantId])),
     variantPrices: Object.fromEntries(Object.values(ARYEO_CONTENT_PRODUCTS).map((p) => [p.variantId, 0])),
+    customers: fakeCustomers,
     defaultCustomerEmail: "info@realtourpilot.com",
   });
   const { saveSecret } = await import("@/lib/integrations/connections");
@@ -513,11 +522,21 @@ async function main() {
   {
     const { aryeoSupervisedTest } = await import("../_ops/aryeo-supervised-test");
     const lines: string[] = [];
-    const log = (l: string) => { lines.push(l); };
+    /** Every line every run printed — the no-QuickBooks check reads them all. */
+    const allLines: string[] = [];
+    const log = (l: string) => { lines.push(l); allLines.push(l); };
     const run = async (argv: string[]) => { lines.length = 0; return aryeoSupervisedTest(argv, log); };
     // The fixture: TEST name, the verified inbox, a linked Aryeo customer, an ACTIVE Accelerator month.
     const F = await world("Accelerator");
     const clientRow = await prisma.client.findUniqueOrThrow({ where: { id: F.clientId } });
+    // Sep 28 2026: the fixture on one of Jordan's own Gmail inboxes, as Bobby
+    // TEST is — plus-tagged so the hub's email and the Aryeo customer's read
+    // differently (both fold to the verified inbox). The R03 cleanup line must
+    // name THESE, not a hard-coded info@.
+    const HUB_INBOX = "bobmike0214+hub@gmail.com";
+    const ARYEO_INBOX = "bobmike0214+aryeo@gmail.com";
+    await prisma.client.update({ where: { id: F.clientId }, data: { email: HUB_INBOX } });
+    fakeCustomers[clientRow.aryeoCustomerId!] = ARYEO_INBOX;
     const setBoth = async (fixtures: string[], pilot: Record<string, unknown> | null = null) => {
       for (const key of ["session_booking", "address_sync"]) await setSwitch(key, true, { authorizedFixtureClientIds: fixtures, ...(pilot ? { pilot } : {}) });
     };
@@ -548,6 +567,27 @@ async function main() {
     const dry = await run(["--fixture", F.clientId, ...ADDR]);
     c.ok("the dry run passes its checks and prints the plan", dry.code === 0 && dry.mode === "dry-run" && lines.some((l) => /DRY RUN: nothing was written/.test(l)) && lines.some((l) => /price \$0 ✓/.test(l)), lines.slice(-2).join(" | "));
     c.ok("  and writes nothing (Aryeo, requests, plans)", fake.writes.length === w0 && (await prisma.programSessionRequest.count()) === reqs0 && (await prisma.programSessionPlan.count({ where: { monthId: F.monthId } })) === 0);
+    c.ok("  with no accounting-sync events on the hub's webhook log it says nothing about them", !lines.some((l) => /outside accounting system/.test(l)));
+    // The dry run's one read-only observation (Sep 28 2026): Aryeo's OWN sync
+    // of orders to an accounting system, counted off the hub's webhook log —
+    // information only, no cleanup step, nobody's task. Two in the window, one
+    // older than 30 days and one from another provider (neither counted).
+    const syncMarker = `{"drill":"b3-accounting-sync"}`;
+    const DAY = 864e5;
+    await prisma.webhookEvent.createMany({
+      data: [
+        { provider: "aryeo", eventType: "ORDER_SYNCED_TO_QUICKBOOKS", payload: syncMarker, status: "PROCESSED", createdAt: new Date(Date.now() - 2 * DAY) },
+        { provider: "aryeo", eventType: "ORDER_PAYMENT_SYNCED_TO_QUICKBOOKS", payload: syncMarker, status: "PROCESSED", createdAt: new Date(Date.now() - 9 * DAY) },
+        { provider: "aryeo", eventType: "ORDER_SYNCED_TO_QUICKBOOKS", payload: syncMarker, status: "PROCESSED", createdAt: new Date(Date.now() - 40 * DAY) },
+        { provider: "stripe", eventType: "ORDER_SYNCED_TO_QUICKBOOKS", payload: syncMarker, status: "PROCESSED", createdAt: new Date(Date.now() - 1 * DAY) },
+      ],
+    });
+    const drySync = await run(["--fixture", F.clientId, ...ADDR]);
+    const syncLine = lines.find((l) => /outside accounting system/.test(l)) ?? "";
+    c.ok("  with Aryeo's own accounting-sync events logged, the dry run notes them (2 in 30 days) as information only",
+      drySync.code === 0 && /\(2 events in 30 days\)/.test(syncLine) && /nobody needs to act/.test(syncLine) && !/QuickBooks|QBO/.test(syncLine), syncLine);
+    c.ok("  …and still writes nothing, and prints no cleanup list", fake.writes.length === w0 && (await prisma.programSessionRequest.count()) === reqs0 && !lines.some((l) => /MANUAL CLEANUP/.test(l)));
+    await prisma.webhookEvent.deleteMany({ where: { payload: syncMarker } });
 
     // --apply: the whole §5 journey.
     const before = { a: fake.count("POST", "/addresses", true), o: fake.count("POST", "/orders", true), s: fake.count("POST", "/appointments/store", true), p: fake.count("PATCH", "/addresses/", true), put: fake.count("PUT", "/appointments/", true) };
@@ -564,8 +604,16 @@ async function main() {
     c.ok("  the travel probe was recorded (the fake honours filter[appointment_id])", rep.aryeoTravelProbe?.appointmentScopedHonoured === true);
     c.ok("  no payment, discount or void route was ever called", !fake.writes.some((w) => /payments|discounts|void|refund/.test(w.path)));
     c.ok("  and the manual cleanup list is printed", lines.some((l) => /MANUAL CLEANUP/.test(l)) && lines.some((l) => /void that balance by hand/.test(l)) && lines.some((l) => l.includes(`hub-write-fixture.ts --switch session_booking --remove ${F.clientId} --off --apply`)) && lines.some((l) => l.includes(`--switch address_sync --remove ${F.clientId} --off --apply`)));
-    c.ok("  …including closing the order, the QuickBooks invoice and telling James it was a test", lines.some((l) => /Close or cancel the test order itself/.test(l)) && lines.some((l) => /QuickBooks/.test(l)) && lines.some((l) => /Tell James/.test(l)));
+    // Sep 28 2026: Jordan does not use QuickBooks — it is in no step.
+    c.ok("  …including closing the order in Aryeo and telling James it was a test", lines.some((l) => /Close or cancel the test order itself/.test(l)) && !lines.some((l) => /QuickBooks|QBO/.test(l)) && lines.some((l) => /Tell James/.test(l)));
+    const r03 = lines.find((l) => /R03 observations/.test(l)) ?? "";
+    c.ok("  the R03 line names the fixture's own inboxes (its Aryeo customer's and its hub email), not a hard-coded info@",
+      r03.includes(ARYEO_INBOX) && r03.includes(HUB_INBOX) && r03.indexOf(ARYEO_INBOX) < r03.indexOf(HUB_INBOX) && !/info@/i.test(r03), r03.slice(0, 220));
     c.ok("  the money check after the booking is recorded as PASS ($0 / $0)", /^PASS/.test(String((res.report as { moneyCheck?: string } | undefined)?.moneyCheck ?? "")), String((res.report as { moneyCheck?: string } | undefined)?.moneyCheck));
+    // Review of the R02 repair (Sep 28 2026): the travel-probe step belongs to
+    // a run that reached step 6 — this one did, so it is asked for.
+    c.ok("  a completed run asks for report.aryeoTravelProbe (it was measured), and never says it did not run",
+      lines.some((l) => /Record report\.aryeoTravelProbe/.test(l)) && !lines.some((l) => /travel probe \(step 6\) did not run/.test(l)));
     void clientRow;
 
     // Batch-3 review (Sep 25 2026): the cleanup list used to be the success
@@ -579,6 +627,23 @@ async function main() {
     const rowA = await prisma.programSessionRequest.findUniqueOrThrow({ where: { id: ra.requestId! } });
     c.ok("(a) order timeout after commit: stop, and FIRST switch both off (the cron would carry on)", ra.code === 1 && rowA.bookingState === "UNKNOWN" && /1\. Switch both OFF now/.test(text()) && text().includes(`--switch session_booking --remove ${Fa.clientId} --off --apply`), `${rowA.bookingState} | ${lines.find((l) => /1\./.test(l)) ?? ""}`);
     c.ok("(a) …then SEARCH Aryeo orders for the marker — never 'the test order (none made)'", text().includes(`SEARCH ORDERS for the internal note "hub-session:${rowA.id}:"`) && !/none made/.test(text()));
+    // Review of the R02 repair (Sep 28 2026): a stop printed the cleanup list
+    // and returned, so its R03 step pointed at report.money — never printed on
+    // that path — and asked to record report.aryeoTravelProbe, a probe that
+    // only runs after a confirmed booking. The stop now prints the REPORT first,
+    // and the list says the probe did not run.
+    const stopShape = () => {
+      const reportAt = lines.findIndex((l) => l.startsWith("REPORT "));
+      const cleanupAt = lines.findIndex((l) => /MANUAL CLEANUP/.test(l));
+      let rep: Record<string, unknown> | null = null;
+      try { rep = reportAt >= 0 ? (JSON.parse(lines[reportAt].slice("REPORT ".length)) as Record<string, unknown>) : null; } catch { rep = null; }
+      return { reportAt, cleanupAt, rep };
+    };
+    const sa = stopShape();
+    c.ok("(a) the stop prints the REPORT — with report.money — BEFORE the cleanup list that names it",
+      sa.reportAt >= 0 && sa.cleanupAt > sa.reportAt && !!sa.rep && "money" in sa.rep && sa.rep.requestId === rowA.id, `REPORT@${sa.reportAt} CLEANUP@${sa.cleanupAt} keys=${Object.keys(sa.rep ?? {}).join(",")}`);
+    c.ok("(a) …and never asks to record report.aryeoTravelProbe (step 6 never ran); it says so instead",
+      !/Record report\.aryeoTravelProbe/.test(text()) && /travel probe \(step 6\) did not run/.test(text()) && !(sa.rep && "aryeoTravelProbe" in sa.rep));
     // The operator's cleanup, so the next run's slot is free again.
     await prisma.programSessionRequest.update({ where: { id: rowA.id }, data: { status: "CANCELLED", cancelledAt: new Date() } });
     await sr.releaseCreativeHold(rowA.id, "CANCELLED");
@@ -590,12 +655,18 @@ async function main() {
     const rowB = await prisma.programSessionRequest.findUniqueOrThrow({ where: { id: rb.requestId } });
     c.ok("(b) readback MISMATCH: 'CANCEL appointment … by hand: it is LIVE' (never 'confirm it reads CANCELED')", rb.code === 1 && rowB.bookingState === "MISMATCH" && text().includes(`CANCEL appointment ${rowB.aryeoAppointmentId} by hand: it is LIVE`) && !/reads CANCELED/.test(text()), `${rowB.bookingState} ${rowB.aryeoAppointmentId}`);
     c.ok("(b) …the order is named for closing", text().includes(`open test order ${rowB.aryeoOrderId}`) && /Close or cancel the test order itself/.test(text()));
+    const sb2 = stopShape();
+    c.ok("(b) the stop's REPORT carries report.money AND report.orderReadback, printed before the cleanup list",
+      sb2.reportAt >= 0 && sb2.cleanupAt > sb2.reportAt && !!sb2.rep && "money" in sb2.rep && "orderReadback" in sb2.rep, `REPORT@${sb2.reportAt} CLEANUP@${sb2.cleanupAt} keys=${Object.keys(sb2.rep ?? {}).join(",")}`);
+    c.ok("(b) …and no travel-probe step to record", !/Record report\.aryeoTravelProbe/.test(text()) && /travel probe \(step 6\) did not run/.test(text()));
     // (c) R03 after the store: a fee appears with the appointment → the run FAILS.
     const Fc = await armed();
     fake.script("POST /appointments/store", "add-fee-on-store");
     const rc = await run(["--fixture", Fc.clientId, ...ADDR, "--apply"]);
     const repC = (rc.report ?? {}) as { moneyCheck?: string };
     c.ok("(c) a balance on the order after the booking marks the run FAIL (exit 1, moneyCheck FAIL)", rc.code === 1 && rc.refused === "money-readback" && /^FAIL/.test(repC.moneyCheck ?? "") && lines.some((l) => /FAIL \(R03\)/.test(l)), `${rc.code} ${repC.moneyCheck}`);
+    c.ok("no run printed QuickBooks or QBO — not the dry runs, the whole journey, or any stop's cleanup list",
+      allLines.length > 0 && !allLines.some((l) => /QuickBooks|QBO/.test(l)), allLines.filter((l) => /QuickBooks|QBO/.test(l)).join(" | ").slice(0, 200));
     // Every armed switch goes back off before the fence check.
     for (const key of ["session_booking", "address_sync"]) await setSwitch(key, false, { authorizedFixtureClientIds: [] });
   }

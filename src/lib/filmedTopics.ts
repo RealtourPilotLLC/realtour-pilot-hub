@@ -153,8 +153,21 @@ export type SessionTopics = {
  * back to the bare count box. A topic whose selection for this month was
  * REMOVED stays out: the removal is the office's decision, and the legacy
  * pointer lagging behind it is not a second opinion.
+ *
+ * NULL IS AN ANSWER, A THROW IS NOT (R02, Sep 28 2026). Null comes back only
+ * after a SUCCESSFUL read shows the job is not program work; a read that fails
+ * throws, so a caller can always tell "no list" from "couldn't read the list".
+ * Callers that write must let the throw through (or use readSessionTopics) —
+ * turning it into null is how an autosave came to store a draft with every
+ * topic tick stripped.
+ *
+ * `strictVerdicts`: the client's script decisions are a second read. A page
+ * that only SHOWS "signed off by the client" can live with "script written"
+ * for one render when it fails; confirmFilmedTopics cannot, because it WRITES
+ * the approved version onto the video and never re-stamps it — so it asks for
+ * the failure to be thrown, and the filming report retries.
  */
-export async function topicsForSession(projectId: string): Promise<SessionTopics | null> {
+export async function topicsForSession(projectId: string, opts: { strictVerdicts?: boolean } = {}): Promise<SessionTopics | null> {
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, contentMonthId: true } });
   if (!project?.contentMonthId) return null;
   const month = await prisma.contentMonth.findUnique({
@@ -231,8 +244,20 @@ export async function topicsForSession(projectId: string): Promise<SessionTopics
   // signed off on it. The filming brief is the LAST place that should be
   // guessing, so it asks the same function the other two do.
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
+  // R02 sibling (Sep 28 2026): a failed decision read used to become "nobody
+  // decided" for EVERY caller — including confirmFilmedTopics, which then
+  // recorded the filmed video with no approved script version and, being
+  // idempotent, never came back to stamp it. The editor's brief lost "approved
+  // by the client before filming" for good. Read-only callers still get the
+  // soft answer for one render; a writer asks for strictVerdicts and the throw.
   const verdicts = scripts.length
-    ? await scriptDecisionsFor(month.enrollmentId, scripts.map((sc) => sc.id)).catch(() => new Map())
+    ? await scriptDecisionsFor(month.enrollmentId, scripts.map((sc) => sc.id)).catch((e: unknown) => {
+        if (opts.strictVerdicts) {
+          const why = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim().slice(0, 300);
+          throw new Error(`Couldn't read the client's script decisions for this month, so nothing was recorded yet (it is retried): ${why}`);
+        }
+        return new Map();
+      })
     : new Map();
   const titleOf = new Map(topics.map((t) => [t.id, t.title]));
   const pillarOf = new Map(topics.map((t) => [t.id, t.pillarId]));
@@ -273,6 +298,24 @@ export async function topicsForSession(projectId: string): Promise<SessionTopics
       };
     }),
   };
+}
+
+export type SessionTopicsRead = { ok: true; session: SessionTopics | null } | { ok: false; error: string };
+
+/**
+ * topicsForSession for a caller that must not throw — the upload page's render
+ * and the draft autosave — without losing the difference between the two
+ * answers (R02, Sep 28 2026). `ok: true, session: null` = read, and this job has
+ * no topic list (a listing shoot). `ok: false` = the read failed: the list is
+ * UNKNOWN, and nothing may be decided from it — not "no ticks", not "no
+ * topics". Both callers used `.catch(() => null)`, which made the two the same.
+ */
+export async function readSessionTopics(projectId: string): Promise<SessionTopicsRead> {
+  try {
+    return { ok: true, session: await topicsForSession(projectId) };
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim().slice(0, 300) };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +417,11 @@ export async function confirmFilmedTopics(
   by: string,
   opts: { now?: Date; appointmentId?: string | null; byEmail?: string | null } = {},
 ): Promise<ConfirmResult> {
-  const session = await topicsForSession(projectId);
+  // strictVerdicts (R02 sibling, Sep 28 2026): this WRITES the client's
+  // approved script version onto the video, once. A decision read that failed
+  // must stop the confirmation (the report is FAILED and retried) rather than
+  // record "not approved" for ever.
+  const session = await topicsForSession(projectId, { strictVerdicts: true });
   if (!session) return { confirmed: 0, alreadyConfirmed: 0, notFilmed: 0, ignored: [], overflow: [], filmedAtISO: null, dateUnverified: false };
 
   const byId = new Map(session.topics.map((t) => [t.topicId, t]));
