@@ -9,7 +9,7 @@ export type IsolationState = {
   role: IsolationRole;
   /** The script this process runs (real path), or null for eval/stdin/workers. */
   entry: string | null;
-  /** The entry is a drill (scripts/_drill/**) or an isolated tool. */
+  /** The entry is a drill (a scripts/_drill/ folder of any checkout) or an isolated tool. */
   drillEntry: boolean;
   /** Every refusal made in this process, in order (tcp://, tls://, https://, prisma://, exec://). */
   blocked: string[];
@@ -32,10 +32,18 @@ export declare function state(): IsolationState;
 export declare function assertActive(caller?: string): void;
 export declare function onBlocked(fn: (entry: string) => void): () => void;
 
-export declare function decide(opts: { entry: string | null; env: EnvLike; drillDir?: string; tools?: string[] }): {
+export declare function decide(opts: { entry: string | null; env: EnvLike }): {
   role: IsolationRole;
   drillEntry: boolean;
 };
+/** Every host a database URL can reach (authority, then host / hostaddr query values); null if unparsable. */
+export declare function dbHostsOf(url: string | undefined | null): string[] | null;
+/** What net.Socket.prototype.connect was asked for, read with Node's own normalizer. */
+export declare function connectTarget(args: unknown[]): { local: true } | { local?: undefined; host: string; port: unknown; options: object };
+/** Pins an environment the way activate() pins process.env (mutates and returns nothing). */
+export declare function pinOwnEnv(env: EnvLike, role: IsolationRole, drillEntry: boolean): void;
+/** A shell command string split into simple commands of words (parts: literals and variable references). */
+export declare function shellCommands(src: string): (string | { v: string; d?: string })[][][];
 export declare function isDrillDbUrl(url: string | undefined | null): boolean;
 export declare function isSentinelUrl(url: string | undefined | null): boolean;
 export declare function assertLoopbackDbUrl(url: string): void;

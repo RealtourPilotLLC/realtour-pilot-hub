@@ -8,6 +8,11 @@
 // boundary fences net.Socket.prototype.connect, which every one of these ends
 // in, and fetch. Destinations are TEST-NET-3 and .invalid names only. The
 // controls — a loopback server, a unix socket, a local fetch — must still work.
+//
+// Second review (Sep 28 eve): the fence read a string port that was not all
+// digits as a unix pipe name and let it through, while Node reads "5432\n",
+// " 5432", "0x1538" and "5432.0" as TCP port 5432 — four SYNs went out. The
+// fence now reads the arguments with Node's own normalizer.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import http from "node:http";
@@ -48,6 +53,12 @@ async function main() {
     ["https.get('https://db.boundary.invalid/')", () => https.get("https://db.boundary.invalid/")],
     ["http.get('http://203.0.113.10:5432/')", () => http.get("http://203.0.113.10:5432/")],
     ["'localhost' with a lookup that answers 203.0.113.10", () => net.connect({ port: 5432, host: "localhost", lookup: (_h: string, _o: unknown, cb: (e: Error | null, a: string, f: number) => void) => cb(null, "203.0.113.10", 4) } as net.NetConnectOpts)],
+    // NEW: string ports Node takes as numbers (a port read from a file or an env var).
+    ...["5432\n", " 5432", "0x1538", "5432.0"].map((port): [string, () => net.Socket] => [
+      `NEW: new net.Socket().connect(${JSON.stringify(port)}, '203.0.113.10') — Node reads that as port ${Number(port)}`,
+      () => { const sock = new net.Socket(); return (sock.connect as unknown as (...a: unknown[]) => net.Socket).call(sock, port, "203.0.113.10"); },
+    ]),
+    ["NEW: net.connect('5432\\n', '203.0.113.10')", () => (net.connect as unknown as (...a: unknown[]) => net.Socket)("5432\n", "203.0.113.10")],
   ];
   for (const [label, open] of cases) {
     const r = await outcome(open);

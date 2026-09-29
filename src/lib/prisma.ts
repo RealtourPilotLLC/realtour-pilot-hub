@@ -16,10 +16,19 @@ if (drillRun) {
   if (!boundary?.active) {
     throw new Error("DRILL ISOLATION: this is a drill process without the isolation boundary — run it with `npm run drills -- <file>` (or npx tsx --require ./scripts/_drill/_drill-preload.cjs <file>).");
   }
+  // Every host the URL can reach: a `host` / `hostaddr` query parameter
+  // overrides the authority in Prisma's engine and libpq, so
+  // `@127.0.0.1:6301/db?host=203.0.113.10` is NOT loopback (second review,
+  // Sep 28 eve — the same rule as _isolation.cjs dbHostsOf).
   let where = "";
   try {
     const u = new URL(process.env.DATABASE_URL ?? "");
-    where = u.hostname === "127.0.0.1" ? "" : `${u.hostname}:${u.port || "5432"}`;
+    const hosts = [u.hostname];
+    u.searchParams.forEach((value, key) => {
+      if (/^host(addr)?$/i.test(key)) hosts.push(...value.split(",").map((h) => h.trim()));
+    });
+    const bad = hosts.find((h) => h !== "127.0.0.1");
+    where = bad === undefined ? "" : `${bad || "(no host)"}:${u.port || "5432"}`;
   } catch {
     where = "an unparsable DATABASE_URL";
   }

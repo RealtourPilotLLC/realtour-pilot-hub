@@ -7,6 +7,7 @@
 //   npm run drills -- scripts/_drill/<f>.ts …   just those
 //   npm run drills:boundary                     the isolation boundary's own proof
 //   options: --list (the plan, nothing run) · --timeout <s> · --logs <dir>
+//            --allow-skips (a SKIPPED run no longer fails the suite)
 //
 // WHY A COMMITTED RUNNER. What actually ran as "the suite" was a scratch
 // script outside the repo. It picked drills by grepping for PGlite, so 11 of
@@ -23,7 +24,13 @@
 //   · runs each in its own process group and, on timeout, kills that group —
 //     the processes it started — never anything found by port;
 //   · prints one row per run (verdict, seconds, the drill's own tally) and
-//     exits 1 on any failure.
+//     exits 1 on any failure — and on any SKIPPED run (second review, Sep 28
+//     eve: five realpg runs could skip on a machine without tools/realpg and
+//     the suite still exited 0), unless --allow-skips says that is accepted;
+//   · counts a drill that exits 0 but prints no pass/fail tally as RAN, not
+//     PASS (r02-completion is a walkthrough with no assertions: it used to be
+//     counted as a passing check), and fails a run if ANY tally line it
+//     prints has failures, not just the last.
 //
 // A drill can ask for a different launch in its header, one line per run:
 //   // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
@@ -37,10 +44,13 @@
 // processes, exactly like a drill but with the database keys preset to an
 // unreachable TEST-NET-3 address (203.0.113.10) instead of the sentinel — so
 // even a broken preload could only ever send a SYN there — and a dummy blob
-// token the boundary must blank. While they run it polls lsof for any socket
-// to 203.0.113.10 (the OS-level witness). It also runs the OLD shape — the
-// same query with the boundary taken away — to show the witness sees a real
-// attempt, then the in-suite drill isolation-boundary.ts.
+// token the boundary must blank. A10 runs a COPY of a fixture from a temp
+// folder outside scripts/_drill/, handed a 127.0.0.1 database. While they run
+// it polls lsof for any socket to 203.0.113.10 (the OS-level witness). It also
+// runs the OLD shapes — the same query with no boundary (A9), the old harness
+// fence (A9b), and the FIRST R06 boundary with the six holes the second
+// review found (A9c) — to show the witness sees real attempts, then the
+// in-suite drill isolation-boundary.ts.
 // ---------------------------------------------------------------------------
 "use strict";
 
@@ -49,8 +59,12 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync, execFileSync } = require("child_process");
 
+// Required as a module (isolation-boundary.ts checks the verdict rules
+// below), it runs nothing: no version hop, no marker check, no arguments.
+const AS_MAIN = require.main === module;
+
 const NODE20 = "/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin/node";
-if (Number(process.versions.node.split(".")[0]) < 20) {
+if (AS_MAIN && Number(process.versions.node.split(".")[0]) < 20) {
   // The system Node here is 16 (AGENTS.md). Re-run under 20 rather than fail.
   if (fs.existsSync(NODE20) && process.execPath !== NODE20) {
     const r = spawnSync(NODE20, [__filename].concat(process.argv.slice(2)), { stdio: "inherit" });
@@ -67,7 +81,7 @@ const TSX = path.join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const PRELOAD = "./scripts/_drill/_drill-preload.cjs";
 const iso = require("./_isolation.cjs");
 
-if (process.env[iso.MARKER] === "1") {
+if (AS_MAIN && process.env[iso.MARKER] === "1") {
   // Everything this process started would inherit the marker and run as a
   // descendant, not as the root a drill must be.
   console.error("run-all must be started from a normal shell, not from inside a drill (RTP_DRILL_ISOLATION is set).");
@@ -76,18 +90,19 @@ if (process.env[iso.MARKER] === "1") {
 
 // ---- arguments ---------------------------------------------------------------
 
-const argv = process.argv.slice(2);
-const opt = { boundary: false, list: false, timeout: 600, logs: null, files: [] };
+const argv = AS_MAIN ? process.argv.slice(2) : [];
+const opt = { boundary: false, list: false, timeout: 600, logs: null, allowSkips: false, files: [] };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--boundary") opt.boundary = true;
   else if (a === "--list") opt.list = true;
   else if (a === "--timeout") opt.timeout = Number(argv[++i]);
   else if (a === "--logs") opt.logs = argv[++i];
+  else if (a === "--allow-skips") opt.allowSkips = true;
   else if (a.startsWith("-")) { console.error(`unknown option ${a}`); process.exit(2); }
   else opt.files.push(a);
 }
-if (!Number.isFinite(opt.timeout) || opt.timeout <= 0) { console.error("--timeout needs seconds"); process.exit(2); }
+if (AS_MAIN && (!Number.isFinite(opt.timeout) || opt.timeout <= 0)) { console.error("--timeout needs seconds"); process.exit(2); }
 
 /** A drill file named on the command line, or a refusal. */
 function drillFile(arg) {
@@ -154,10 +169,12 @@ function cleanEnv(extra) {
 }
 
 let current = null; // the process group now running, for Ctrl-C
-process.on("SIGINT", () => {
-  if (current) { try { process.kill(-current.pid, "SIGKILL"); } catch { /* gone */ } }
-  process.exit(130);
-});
+if (AS_MAIN) {
+  process.on("SIGINT", () => {
+    if (current) { try { process.kill(-current.pid, "SIGKILL"); } catch { /* gone */ } }
+    process.exit(130);
+  });
+}
 
 /** Runs one process in its own group; resolves with its output and verdict inputs. */
 function launch({ args, env, timeoutS, witness }) {
@@ -206,10 +223,21 @@ function startWitness() {
   return { stop() { live = false; return Array.from(lines); } };
 }
 
+/** Every "N passed, M failed" tally LINE a run printed — at the start of a
+ *  line (or after "ALL PASS — " / "ALL GREEN — "), which is how every drill
+ *  prints it. Anchored because a check's own detail may quote a tally
+ *  ("… — 3 passed, 1 failed"), and that is not the run's verdict. */
+function tallies(text) {
+  return text.match(/^[ \t]*(?:ALL [A-Z ]+— )?\d+ passed, \d+ failed\b[^\n]*/gm) || [];
+}
+
+/** The run's own verdict line: its last tally, or a final ALL PASSED / ALL
+ *  GREEN / "PASS — …" line (due-filter and r02-sentence end that way). "" when
+ *  it printed none. */
 function tally(text) {
-  const all = text.match(/\b\d+ passed, \d+ failed\b[^\n]*/g) || [];
+  const all = tallies(text);
   if (all.length) return all[all.length - 1];
-  const ok = text.match(/ALL (CHECKS )?PASS(ED)?[^\n]*|ALL GREEN[^\n]*/g) || [];
+  const ok = text.match(/ALL (CHECKS )?PASS(ED)?[^\n]*|ALL GREEN[^\n]*|^PASS — [^\n]*/gm) || [];
   return ok.length ? ok[ok.length - 1] : "";
 }
 
@@ -230,14 +258,27 @@ async function runDrill(run, logDir) {
   const text = r.out + r.err;
   const log = path.join(logDir, label.replace(/[^\w.-]+/g, "_") + ".log");
   fs.writeFileSync(log, text);
+  const v = drillVerdict({ bannerSeen: r.err.includes(iso.BANNER), timedOut: r.timedOut, code: r.code, signal: r.signal, text, timeoutS: spec.timeout || opt.timeout });
+  return { label, verdict: v.verdict, seconds: r.seconds, note: v.note, log };
+}
+
+/** Pure: one drill run's verdict from how it ended and what it printed. */
+function drillVerdict({ bannerSeen, timedOut, code, signal, text, timeoutS }) {
   const t = tally(text);
-  const failedTally = /\b[1-9]\d* failed\b/.test(t);
-  let verdict = "PASS";
-  let note = t || "(no tally line)";
-  if (!r.err.includes(iso.BANNER)) { verdict = "FAIL"; note = "ran without the isolation boundary"; }
-  else if (r.timedOut) { verdict = "FAIL"; note = `timed out after ${spec.timeout || opt.timeout}s — its process group was killed`; }
-  else if (r.code !== 0 || failedTally) { verdict = "FAIL"; note = `exit ${r.code === null ? r.signal : r.code} · ${t || lastLines(text)}`; }
-  return { label, verdict, seconds: r.seconds, note, log };
+  // ANY tally with failures, not just the last one printed.
+  const failing = tallies(text).find((x) => /\b[1-9]\d* failed\b/.test(x));
+  if (!bannerSeen) return { verdict: "FAIL", note: "ran without the isolation boundary" };
+  if (timedOut) return { verdict: "FAIL", note: `timed out after ${timeoutS}s — its process group was killed` };
+  if (code !== 0 || failing) return { verdict: "FAIL", note: `exit ${code === null ? signal : code} · ${failing || t || lastLines(text)}` };
+  if (!t) return { verdict: "RAN", note: "exit 0, but it printed no pass/fail tally — a walkthrough, not a check" };
+  return { verdict: "PASS", note: t };
+}
+
+/** Pure: the suite's exit code — 1 on any FAIL, and on any SKIPPED run unless
+ *  skips were accepted. RAN is neither a pass nor a failure. */
+function suiteExitCode(rows, allowSkips) {
+  const has = (v) => rows.some((r) => r.verdict === v);
+  return has("FAIL") || (has("SKIPPED") && !allowSkips) ? 1 : 0;
 }
 
 function lastLines(text) {
@@ -252,6 +293,62 @@ function printRow(row) {
 // ---- the boundary proof --------------------------------------------------------------------
 
 const DUMMY_DB = "postgresql://drill:dummy@203.0.113.10:5432/none?connect_timeout=2&sslmode=disable";
+// The first R06 boundary, the one the second review (Sep 28 eve) tested.
+const FIRST_BUILD = "c52d4a2";
+// A9c's control, run under that boundary. Every destination is TEST-NET-3.
+// It never builds a Prisma client where the boundary might be off (a worker,
+// env -i): with no boundary, Prisma's .env load would be production.
+const FIRST_BUILD_CONTROL = `// Generated by run-all --boundary (A9c): the ${FIRST_BUILD} boundary and six of its holes.
+const net = require("net");
+const path = require("path");
+const { Worker } = require("worker_threads");
+const { spawnSync } = require("child_process");
+const REPO = process.argv[2];
+const h = globalThis[Symbol.for("rtp.drillIsolation")];
+const out = (k, v) => console.log("OLD-BOUNDARY " + k + ": " + v);
+const RAW = 'const net = require("net"); const h = globalThis[Symbol.for("rtp.drillIsolation")]; const s = new net.Socket(); let d = false;' +
+  ' const fin = (m) => { if (!d) { d = true; s.destroy(); REPORT((h && h.active ? "active" : "NO BOUNDARY") + " · " + m); } };' +
+  ' s.on("error", (e) => fin(e.message)); s.on("connect", () => fin("connected")); s.setTimeout(2500, () => fin("still connecting after 2.5 s")); s.connect(PORT, "203.0.113.10");';
+const sock = (port) => new Promise((resolve) => {
+  const s = new net.Socket();
+  let done = false;
+  const fin = (m) => { if (!done) { done = true; s.destroy(); resolve(m); } };
+  s.on("error", (e) => fin(e.message));
+  s.on("connect", () => fin("connected"));
+  s.setTimeout(2500, () => fin("still connecting after 2.5 s"));
+  s.connect(port, "203.0.113.10");
+});
+(async () => {
+  out("active", String(!!(h && h.active)) + " role=" + (h ? h.role : "none"));
+  // 1. string ports Node reads as 6282 (0x188a is 6282 too)
+  const ports = ["6282\\n", " 6282", "0x188a", "6282.0"];
+  const got = await Promise.all(ports.map(sock));
+  ports.forEach((p, i) => out("port#" + i, JSON.stringify(p) + " · " + got[i]));
+  // 2. ?host= past the engine guard
+  const { PrismaClient } = require(require("module").createRequire(path.join(REPO, "package.json")).resolve("@prisma/client"));
+  const p = new PrismaClient({ datasourceUrl: "postgresql://drill:dummy@127.0.0.1:6283/none?host=203.0.113.10&connect_timeout=2&sslmode=disable" });
+  out("prisma ?host=", await p.$queryRawUnsafe("SELECT 1").then(() => "CONNECTED", (e) => String(e.message).replace(/\\s+/g, " ").slice(0, 160)));
+  await p.$disconnect().catch(() => {});
+  // 3. a worker given its own env: a raw socket only
+  out("worker env {PATH}", await new Promise((resolve) => {
+    const w = new Worker(RAW.replace("REPORT(", "require('worker_threads').parentPort.postMessage(").replace("PORT", "6284"), { eval: true, env: { PATH: process.env.PATH } });
+    w.on("message", (m) => { resolve(m); w.terminate(); });
+    w.on("error", (e) => resolve("worker error " + e.message));
+  }));
+  // 4. curl, a native program that is not a database client, handed a URL
+  try { const r = spawnSync("/usr/bin/curl", ["-s", "-m", "2", "http://203.0.113.10:6285/"]); out("curl", "started, exit " + r.status); } catch (e) { out("curl", "refused: " + e.message.slice(0, 100)); }
+  // 5. env -i node: a grandchild with none of the boundary's environment
+  try {
+    const r = spawnSync("/usr/bin/env", ["-i", process.execPath, "-e", RAW.replace("REPORT(", "console.log(").replace("PORT", "6286")], { encoding: "utf8" });
+    out("env -i node", String(r.stdout).trim() || "exit " + r.status);
+  } catch (e) { out("env -i node", "refused: " + e.message.slice(0, 100)); }
+  // 6. the Prisma CLI, --url on 127.0.0.1 with ?host=
+  const t0 = Date.now();
+  const cli = spawnSync(process.execPath, [path.join(REPO, "node_modules", "prisma", "build", "index.js"), "db", "execute", "--stdin", "--url", "postgresql://drill:dummy@127.0.0.1:6287/none?host=203.0.113.10&connect_timeout=2&sslmode=disable"], { input: "SELECT 1;", encoding: "utf8", cwd: REPO, timeout: 60000 });
+  out("prisma cli ?host=", "exit " + cli.status + " after " + (Date.now() - t0) + " ms · " + (String(cli.stdout) + String(cli.stderr)).replace(/\\s+/g, " ").trim().slice(-200));
+  process.exit(0);
+})();
+`;
 // Built at run time: a token-shaped literal trips secret scanners (Sep 26).
 const DUMMY_BLOB = [["vercel", "blob", "rw"].join("_"), "boundarydummy"].join("_");
 
@@ -269,11 +366,9 @@ async function runBoundary(logDir) {
   };
   const save = (name, r) => { const log = path.join(logDir, `boundary-${name}.log`); fs.writeFileSync(log, `${r.out}${r.err}\n--- lsof witness ---\n${r.sockets.join("\n")}\n`); return log; };
 
-  const fixtures = ["comment-only", "indirect", "late-env", "explicit-client", "raw-sockets", "children", "dotenv"];
-  const ids = { "comment-only": "A1", indirect: "A2", "late-env": "A3", "explicit-client": "A4", "raw-sockets": "A5", children: "A6", dotenv: "A7" };
-  for (const name of fixtures) {
-    const file = path.join(FIXTURES, `${name}.ts`);
-    const r = await launch({ args: [TSX, "--require", PRELOAD, file], env: bareEnv(), timeoutS: 180, witness: true });
+  /** A fixture run as a root: banner, a clean tally, and no socket seen. */
+  const rootRun = async (label, name, args, e) => {
+    const r = await launch({ args, env: e, timeoutS: 180, witness: true });
     const text = r.out + r.err;
     const t = tally(text);
     let verdict = "PASS";
@@ -282,8 +377,35 @@ async function runBoundary(logDir) {
     else if (r.code !== 0 || !/\b0 failed\b/.test(t)) { verdict = "FAIL"; note = `exit ${r.code} · ${t || lastLines(text)}`; }
     else if (r.sockets.length) { verdict = "FAIL"; note = `lsof saw a socket to 203.0.113.10: ${r.sockets[0]}`; }
     else note += " · lsof: no socket to 203.0.113.10";
-    rows.push({ label: `${ids[name]} ${name}.ts (root)`, verdict, seconds: r.seconds, note, log: save(name, r) });
+    rows.push({ label, verdict, seconds: r.seconds, note, log: save(name, r) });
     printRow(rows[rows.length - 1]);
+  };
+
+  const fixtures = ["comment-only", "indirect", "late-env", "explicit-client", "raw-sockets", "children", "dotenv"];
+  const ids = { "comment-only": "A1", indirect: "A2", "late-env": "A3", "explicit-client": "A4", "raw-sockets": "A5", children: "A6", dotenv: "A7" };
+  for (const name of fixtures) {
+    await rootRun(`${ids[name]} ${name}.ts (root)`, name, [TSX, "--require", PRELOAD, path.join(FIXTURES, `${name}.ts`)], bareEnv());
+  }
+
+  // A10: a drill COPIED OUT of scripts/_drill/ (second review, Sep 28 eve).
+  // A fresh temp folder with node_modules linked in, as a scratchpad copy
+  // would have it, run with the preload and handed a 127.0.0.1 database on
+  // port 1 (nothing listens there, so even a broken boundary could reach no
+  // one's database). The first build left it inactive.
+  {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rtp-isolation-outside-"));
+    try {
+      fs.symlinkSync(path.join(REPO, "node_modules"), path.join(tmp, "node_modules"), "dir");
+      const copy = path.join(tmp, "outside-copy.ts");
+      fs.copyFileSync(path.join(FIXTURES, "outside-copy.ts"), copy);
+      const handed = "postgresql://postgres:postgres@127.0.0.1:1/handed_by_the_caller?sslmode=disable&connect_timeout=2";
+      const e = bareEnv();
+      e.DATABASE_URL = handed;
+      e.DIRECT_URL = handed;
+      await rootRun("A10 outside-copy.ts (a copy in a temp folder)", "outside-copy", [TSX, "--require", PRELOAD, copy, path.join(DRILL_DIR, "_isolation.cjs")], e);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   }
 
   // A8: a drill that boots a database, run WITHOUT the preload — refused
@@ -394,6 +516,47 @@ async function runBoundary(logDir) {
     }
   }
 
+  // A9c: the FIRST R06 boundary (c52d4a2), the one the second review tested,
+  // and the six holes it found — each really going out to TEST-NET-3 with the
+  // old boundary up (banner printed, role root). The witness must see a SYN
+  // on every one of the six ports. The same shapes are refused, with no
+  // socket seen, by A3 (late ?host=), A4 (datasourceUrl ?host=), A5 (string
+  // ports), A6 (curl, env -i, the CLI --url ?host=, workers) and A10 above.
+  {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rtp-isolation-first-"));
+    try {
+      fs.writeFileSync(path.join(tmp, "_isolation.cjs"), execFileSync("git", ["show", `${FIRST_BUILD}:scripts/_drill/_isolation.cjs`], { cwd: REPO, encoding: "utf8" }));
+      fs.writeFileSync(path.join(tmp, "preload.cjs"), 'require("./_isolation.cjs").activate();\n');
+      const control = path.join(tmp, "control.cjs");
+      fs.writeFileSync(control, FIRST_BUILD_CONTROL);
+      const r = await launch({ args: ["--require", path.join(tmp, "preload.cjs"), control, REPO], env: env(), timeoutS: 120, witness: true });
+      const text = r.out + r.err;
+      const said = (k) => { const m = new RegExp(`^OLD-BOUNDARY ${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: (.*)$`, "m").exec(text); return m ? m[1] : "(missing)"; };
+      const notRefused = (v) => v !== "(missing)" && !/DRILL ISOLATION|OUTBOUND BLOCKED/.test(v);
+      const holes = [
+        ["string ports", 6282, [0, 1, 2, 3].every((i) => notRefused(said(`port#${i}`)))],
+        ["?host= through the engine guard", 6283, /Can't reach database server at `?203\.0\.113\.10:6283/.test(said("prisma ?host="))],
+        ["a worker given { PATH }", 6284, /^NO BOUNDARY/.test(said("worker env {PATH}")) && notRefused(said("worker env {PATH}"))],
+        ["curl handed a URL", 6285, /^started/.test(said("curl"))],
+        ["env -i node", 6286, /^NO BOUNDARY/.test(said("env -i node")) && notRefused(said("env -i node"))],
+        ["the Prisma CLI --url ?host=", 6287, notRefused(said("prisma cli ?host=")) && /203\.0\.113\.10:6287|P1001/.test(said("prisma cli ?host="))],
+      ];
+      const seen = (port) => r.sockets.some((l) => l.includes(`203.0.113.10:${port}`));
+      const active = /^true role=root/.test(said("active")) && r.err.includes("[drill-isolation] on");
+      const missed = holes.filter(([, port, reproduced]) => !reproduced || !seen(port)).map(([name, port, reproduced]) => `${name} (${reproduced ? "" : "not reproduced, "}${seen(port) ? "" : `no SYN on :${port}`})`);
+      rows.push({
+        label: `A9c FIRST boundary ${FIRST_BUILD} (six holes)`,
+        verdict: active && !missed.length ? "PASS" : "FAIL",
+        seconds: r.seconds,
+        note: active && !missed.length ? `old boundary up, and all six went out: lsof saw a SYN on each of :6282-:6287 (${r.sockets.length} line(s))` : `${active ? "" : "old boundary not up · "}expected every hole to go out: ${missed.join("; ")}`,
+        log: save("first-build-holes", r),
+      });
+      printRow(rows[rows.length - 1]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
   // B: the in-suite drill (unit rules, layering, a real boot, a child).
   for (const run of runsOf(path.join(DRILL_DIR, "isolation-boundary.ts"))) {
     const row = await runDrill(run, logDir);
@@ -410,7 +573,7 @@ async function main() {
   fs.mkdirSync(logDir, { recursive: true });
 
   if (opt.boundary) {
-    if (opt.list) { console.log("boundary: A1-A7 fixtures as roots, A8/A8b without the preload, A9/A9b the old shapes, then isolation-boundary.ts"); return; }
+    if (opt.list) { console.log("boundary: A1-A7 fixtures as roots, A10 a fixture copied outside scripts/_drill, A8/A8b without the preload, A9/A9b/A9c the old shapes (no boundary, the old harness fence, the first R06 boundary), then isolation-boundary.ts"); return; }
     console.log(`drill isolation boundary · logs in ${logDir}\n`);
     const rows = await runBoundary(logDir);
     return finish(rows, logDir);
@@ -436,13 +599,20 @@ async function main() {
 
 function finish(rows, logDir) {
   const n = (v) => rows.filter((r) => r.verdict === v).length;
-  console.log(`\n${n("PASS")} passed · ${n("FAIL")} failed · ${n("SKIPPED")} skipped · logs in ${logDir}`);
+  console.log(`\n${n("PASS")} passed · ${n("FAIL")} failed · ${n("SKIPPED")} skipped · ${n("RAN")} ran with no checks · logs in ${logDir}`);
   const failed = rows.filter((r) => r.verdict === "FAIL");
   for (const r of failed) console.log(`  FAIL ${r.label} — ${r.log || ""}`);
-  process.exitCode = failed.length ? 1 : 0;
+  const skipped = rows.filter((r) => r.verdict === "SKIPPED");
+  for (const r of skipped) console.log(`  SKIPPED ${r.label} — ${r.note}`);
+  if (skipped.length && !opt.allowSkips) console.log(`  ${skipped.length} run(s) did not run, so this is not a passing suite (--allow-skips accepts that).`);
+  process.exitCode = suiteExitCode(rows, opt.allowSkips);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+module.exports = { tally, tallies, drillVerdict, suiteExitCode };
+
+if (AS_MAIN) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

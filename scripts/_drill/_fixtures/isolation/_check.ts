@@ -5,6 +5,12 @@
 
 export const DUMMY_DB = "postgresql://drill:dummy@203.0.113.10:5432/none?connect_timeout=2&sslmode=disable";
 export const DUMMY_WHERE = "203.0.113.10:5432";
+// A LOOPBACK-looking URL whose `host` query parameter sends the connection to
+// TEST-NET-3 instead: Prisma's engine and libpq both let it override the
+// authority (second review, Sep 28 eve). Port 6279 is in this workstream's
+// range and never bound; the connection would go to 203.0.113.10:6279.
+export const HOSTPARAM_DB = "postgresql://drill:dummy@127.0.0.1:6279/none?host=203.0.113.10&connect_timeout=2&sslmode=disable";
+export const HOSTPARAM_WHERE = "203.0.113.10:6279";
 
 export function check(title: string) {
   let pass = 0;

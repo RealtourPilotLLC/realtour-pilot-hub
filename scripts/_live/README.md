@@ -16,9 +16,12 @@ engines refused, children included). The old scratch runner
 (`scratchpad/run-iso-drills.sh`) is retired: it skipped 11 drills and
 `kill -9`'d every port from 5480 to 5660, the isolated demo's included.
 
-The boundary switches itself on by WHICH SCRIPT runs, so the scripts here keep
-working exactly as before even though several load `_drill-preload.cjs` —
-unless a drill starts one, in which case it runs isolated too.
+The boundary switches itself on for every script that loads
+`_drill-preload.cjs` except a named few — the scripts here, `scripts/_recon`,
+`scripts/_probe`, `scripts/_fix`, the demo and `create-test-client` — so these
+keep working exactly as before, unless a drill starts one, in which case it
+runs isolated too. A drill copied anywhere else (a scratchpad, another folder)
+is isolated wherever it runs.
 
 Before running anything here:
 - Read its header. Most force `default_transaction_read_only=on` and prove a
