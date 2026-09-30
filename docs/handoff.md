@@ -2,7 +2,33 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — bounded project chat reads
+### Current resume point — guided Your Month work area
+
+`7b07840` keeps the existing one-current-step planning model and changes its
+presentation. The current call booking or filming picker expands in place;
+booked-call management and the month topic list fold into labeled disclosures
+when a later step is current. Filming remains reachable on the separate
+Appointments page, and a released script keeps a Review script link on its own
+step for deep links. Completed stages are compact, with truthful links to
+their available views. No route, eligibility, allowance, version, booking,
+notification or release rule changed. The topic bank still opens during
+topic/answer work.
+
+The isolated `b2-planning` drill passed 153/0. Node20 TypeScript, focused
+lint and production build passed. The provider-fenced Avery TEST portal was
+checked on desktop and at 390px: current September script review was clear,
+chosen topics started folded and opened on request, the page had no horizontal
+overflow, and the deep-linked step opened September script v1. The demo was
+stopped; its clean worktree is at `7b07840`. No client approval, booking,
+provider message, live DB write, push or deployment occurred.
+
+UX07 and U2 remain partial. Next: verify a normal signed client seat through
+the written route and first required/later optional call routes, including
+answer submission, schedule later, Pro session two and script review, using
+only isolated fixtures. The rest of UX08/UX09, brand, video review and other
+U2 acceptance work remains. Keep the five-table schema release gate intact.
+
+### Previous checkpoint — bounded project chat reads
 
 `ede6acf` puts a read-only team-message cue near the editor brief's work
 controls, linking to the conversation far below. A read failure is shown as
