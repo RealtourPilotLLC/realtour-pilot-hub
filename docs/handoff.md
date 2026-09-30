@@ -2,7 +2,34 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — client answer draft isolation
+### Current resume point — client script reading
+
+`4ad0993` gives the client Scripts queue a 70-character reading width,
+16px/28px body text and more space between Hook, Talking Points and Close.
+Its month and exact script version are legible beside the title. The existing
+ScriptApprovalCard still sends only the version rendered on the page; its
+client decision buttons remain 44px tall through phone, tablet and desktop
+breakpoints. Closing and reopening Request changes keeps an unsent note;
+editing after a failed request hides the old retry closure so it cannot send
+stale wording. The rest of the shared renderer and staff views keep their
+prior sizes. No version, approval, release or permission rule changed.
+
+The isolated UI01 drill passed 92/0; Node20 TypeScript, focused lint and
+production build passed. The provider-fenced Avery TEST portal rendered
+September script v1 at 16px with 28px line height; both decision buttons
+measured 44px at desktop, 768px tablet and 390px phone widths, with no phone
+horizontal overflow. An unsent TEST note remained after closing/reopening
+the request panel. No script decision or client message was sent. The demo
+server was stopped; its clean worktree is at `4ad0993`. No live DB write,
+provider call, push or deployment occurred.
+
+UX09 remains partial. Next: cap the portrait player and put the exact-version
+review controls beside it on desktop and beneath it on phones; then replay
+client comment/revision failures and the editor's approved-script brief with
+normal roles. Continue the U2 route/brand/booking journeys and keep the
+five-table schema release gate intact.
+
+### Previous checkpoint — client answer draft isolation
 
 `1f2d933` scopes the existing sessionStorage answer draft by client, enrollment,
 month, interview and question. It restores an old-key draft when present,
