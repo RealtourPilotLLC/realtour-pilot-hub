@@ -41,13 +41,13 @@ export function DraftUpdateDialog({
         <Sparkles className="size-3.5" /> Draft update
       </button>
       {open && (
-        <ModalDialog label="Draft a client update" busy={busy} onCancel={() => setOpen(false)} className="max-w-md">
+        <ModalDialog label="Draft a client update" busy={busy} onCancel={() => { if (!submitting.current) setOpen(false); }} className="max-w-md">
             <div className="mb-2 flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-sm font-semibold">Draft a client update</p>
                 <p className="truncate text-xs text-muted">{label}</p>
               </div>
-              <button type="button" aria-label="Close" disabled={busy} onClick={() => setOpen(false)} className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2">
+              <button type="button" aria-label="Close" disabled={busy} onClick={() => { if (!submitting.current) setOpen(false); }} className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2">
                 <X className="size-4" />
               </button>
             </div>

@@ -77,7 +77,7 @@ export function SelfCheckDialog({
   const set = (key: string, a: "YES" | "NA", reason?: string) => setAnswers((s) => ({ ...s, [key]: { answer: a, reason: reason ?? s[key]?.reason ?? null } }));
 
   return (
-    <ModalDialog label="Send-for-review check" busy={pending} onCancel={onCancel}>
+    <ModalDialog label="Send-for-review check" busy={pending} onCancel={() => { if (!submitting.current) onCancel(); }}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <div tabIndex={-1} data-modal-initial-focus className="flex items-center gap-1.5 text-sm font-semibold">
@@ -88,7 +88,7 @@ export function SelfCheckDialog({
               {onBehalfOf ? <> · you are checking it on behalf of <span className="font-medium text-foreground">{onBehalfOf}</span>, and it is recorded that way</> : null}
             </p>
           </div>
-          <button type="button" onClick={onCancel} disabled={pending} className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2" aria-label="Close">
+          <button type="button" onClick={() => { if (!submitting.current) onCancel(); }} disabled={pending} className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2" aria-label="Close">
             <X className="size-4" />
           </button>
         </div>
@@ -188,7 +188,7 @@ export function SelfCheckDialog({
         {err && <p className="mt-3 text-xs text-danger">{err}</p>}
         {!verdict.ok && <p className="mt-3 text-[11px] text-muted">{verdict.message}</p>}
         <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-          <button type="button" onClick={onCancel} disabled={pending} className="min-h-11 rounded-lg border border-border px-3 text-sm text-muted hover:bg-surface-2">
+          <button type="button" onClick={() => { if (!submitting.current) onCancel(); }} disabled={pending} className="min-h-11 rounded-lg border border-border px-3 text-sm text-muted hover:bg-surface-2">
             Not yet
           </button>
           <button
