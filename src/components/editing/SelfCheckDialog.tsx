@@ -104,7 +104,7 @@ export function SelfCheckDialog({
   const set = (key: string, a: "YES" | "NA", reason?: string) => setAnswers((s) => ({ ...s, [key]: { answer: a, reason: reason ?? s[key]?.reason ?? null } }));
 
   return (
-    <ModalDialog label="Send-for-review check" busy={pending} onCancel={requestClose}>
+    <ModalDialog label="Send-for-review check" busy={pending} holdEscape={confirmClose} onCancel={requestClose}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <div tabIndex={-1} data-modal-initial-focus className="flex items-center gap-1.5 text-sm font-semibold">

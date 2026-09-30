@@ -7,12 +7,15 @@ import { cn } from "@/lib/utils";
 export function ModalDialog({
   label,
   busy = false,
+  holdEscape = false,
   onCancel,
   children,
   className,
 }: {
   label: string;
   busy?: boolean;
+  /** Keep a nested confirmation visible until its own buttons decide. */
+  holdEscape?: boolean;
   onCancel: () => void;
   children: ReactNode;
   className?: string;
@@ -41,6 +44,12 @@ export function ModalDialog({
       ref={ref}
       aria-label={label}
       onCancel={cancel}
+      onKeyDownCapture={(event) => {
+        if (event.key === "Escape" && (busy || holdEscape)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
       className={cn(
         "fixed left-1/2 top-1/2 m-0 max-h-[90dvh] w-[min(94vw,40rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface p-4 text-foreground shadow-2xl backdrop:bg-black/60 sm:p-5",
         className,
