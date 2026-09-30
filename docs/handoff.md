@@ -2,7 +2,35 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — W06 fresh handoff evidence
+### Current resume point — W02 in-house brief receipt
+
+`6693c47` adds `EditorBriefReceipt`, a fifth additive local table for a named
+in-house editor's receipt of one output's current brief. The snapshot pins
+video identity, saved owner, deadline, directions, script standing/words,
+chosen brand asset version and source folder. A changed digest asks for a new
+receipt; the old receipt stays. An editor can only record their own assigned
+video, never an office preview. Receipt does not start, pause, approve or
+deliver work. The job read guard now admits a current per-output owner, which
+the isolated drill proved was otherwise denied the very brief they own.
+
+The signed-session isolated W02 drill passed 15/0: stale version, repeat,
+brief change, reassignment, cross-job id, retired output, owner preview and
+unchanged Start/Pause state. Node20 TypeScript, focused lint and production
+build passed. The provider-fenced demo was reset to the new isolated schema,
+its Prisma client regenerated, and the unassigned receipt state was checked
+at desktop and 390px on Avery TEST. The demo has auth disabled, so the editor
+button and read-back still need a normal browser role replay. The demo server
+was stopped; the clean demo worktree is at `6693c47`.
+
+W02 remains partial: a real multi-output assignment/brand/source replay,
+normal signed editor and office browser checks, intentional no-brand policy,
+and whether reassignment back to a prior editor requires a new receipt.
+`EditorBriefReceipt` has **not** been pushed to production; all five additive
+tables remain local. No live database write, provider call, send, push or
+deployment occurred. Continue open operating work and UI U0–U6; do not
+describe the editor receipt as deployed or client-visible.
+
+### Previous checkpoint — W06 fresh handoff evidence
 
 `18a3d94` adds a read-only Dropbox check when the photographer opens the final
 handoff review. It uses the job's recorded current folder, counts RAW-Photos
