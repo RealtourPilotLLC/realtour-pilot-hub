@@ -79,7 +79,10 @@ export function SelfCheckDialog({
 
   function requestClose() {
     if (submitting.current) return;
-    if (confirmClose) { setConfirmClose(false); return; }
+    // Leave the choice visible on a second Escape. Hiding it during the native
+    // cancel event can close the top-layer dialog while retaining this form's
+    // React state, making the trigger unable to reopen it.
+    if (confirmClose) return;
     if (Object.keys(answers).length || Object.keys(done).length || Object.values(why).some(Boolean)) {
       setConfirmClose(true);
       return;
