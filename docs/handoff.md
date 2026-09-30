@@ -2,7 +2,33 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — client script reading
+### Current resume point — client video review layout
+
+`2162186` caps the portal video player at the available 70vh/760px bound
+with `object-contain`, preserving portrait and landscape aspect ratios. On
+desktop, the current cut sits beside its exact-version notes and decisions;
+on phones the same controls follow the player. The player remains visible
+while scrolling the desktop review column. Primary note, request and approval
+buttons are 44px tall. The version pin, comment writer, review window,
+download gate and confirmation rules are unchanged.
+
+The isolated CP03 revision drill passed 52/0; Node20 TypeScript, focused
+lint and production build passed. The provider-fenced Avery TEST review
+played the exact current cut from local sample media. At 1280x720, the
+portrait box was 504px tall and the note/decision controls sat beside it;
+at 390x844, it was 576px tall and the controls stacked below, without page
+overflow. The main decision buttons measured 44px at both widths. Keyboard
+Enter opened the version-1 approval confirmation, and Not yet cancelled it.
+No note, change request or approval was submitted. The demo was stopped;
+its clean worktree is at `2162186`. No live DB write, provider call, push or
+deployment occurred.
+
+UX09 remains partial: replay normal client roles and injected comment/revision
+failures, verify real portrait/landscape files and phone download, then reuse
+the shared script renderer in the editor brief after confirming its audience
+and money scrubbing. The complete U2 journey and other U0–U6 items remain.
+
+### Previous checkpoint — client script reading
 
 `4ad0993` gives the client Scripts queue a 70-character reading width,
 16px/28px body text and more space between Hook, Talking Points and Close.
