@@ -513,8 +513,8 @@ export const HALF_SUBMITTED_PREFIX: Record<HandoffCategory, string> = {
  */
 export function receiptSentence(evidence: { filesDetected: Tri }[], forced: boolean): string {
   if (forced || evidence.some((e) => e.filesDetected === "no")) {
-    return "Dropbox didn't show every file yet, so the office will check the folder before editing starts.";
+    return "The last recorded Dropbox check did not show every file, so the office will check before editing starts.";
   }
-  if (evidence.length > 0 && evidence.every((e) => e.filesDetected === "yes")) return "The editors know the files are in Dropbox.";
-  return "The hub couldn't confirm the files in Dropbox just now, so the office will check.";
+  if (evidence.length > 0 && evidence.every((e) => e.filesDetected === "yes")) return "The last recorded Dropbox check showed files; the editor can confirm they are still there.";
+  return "The hub has no confirmed file count for this view, so the office will check Dropbox.";
 }

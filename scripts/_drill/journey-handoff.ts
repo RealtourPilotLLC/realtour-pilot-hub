@@ -148,7 +148,7 @@ async function main() {
   const { handoffReadiness } = await import("@/lib/handoff");
   const { addBusinessDaysET, endOfBusinessDaysET } = await import("@/lib/datetime");
   const { projectBrief } = await import("@/lib/projectBrief");
-  const { finalizeUpload } = await import("@/app/upload/actions");
+  const { finalizeUpload, checkUploadRawFiles } = await import("@/app/upload/actions");
   const { folderFileCount, videoFilesUnder, getProjectFolderState, syncDropboxFolderStatus, actualFolderPaths } =
     await import("@/lib/dropboxFolders");
   const { saveSecret } = await import("@/lib/integrations/connections");
@@ -676,9 +676,13 @@ async function main() {
   DBX.mode = "missing";
   const missingCount = await folderFileCount(paths.rawPhotos);
   ok("a folder that does not exist is a TRUSTWORTHY zero", missingCount === 0, `count=${String(missingCount)}`);
+  const missingReview = await checkUploadRawFiles(J5);
+  ok("a handoff review freshly checks the current job folder and separates halves", missingReview.photos?.count === 0 && missingReview.video?.count === 0 && missingReview.photos.path === paths.rawPhotos && missingReview.video.path === paths.listing, JSON.stringify(missingReview));
   DBX.mode = "outage";
   const outageCount = await folderFileCount(paths.rawPhotos);
   ok("A FOLDER WE COULD NOT READ IS NOT A ZERO — it is unknown", outageCount === null, `count=${String(outageCount)}`);
+  const outageReview = await checkUploadRawFiles(J5, "video");
+  ok("an unreadable video handoff is unknown and does not invent a photo count", outageReview.video?.count === null && outageReview.photos === null, JSON.stringify(outageReview));
   DBX.mode = "outage";
   const outageVideo = await videoFilesUnder(paths.listing);
   ok("…and the video search says unknown too, not 'no video files'", outageVideo === null, JSON.stringify(outageVideo));
@@ -697,6 +701,8 @@ async function main() {
   DBX.files = [{ name: "A7R_0001.ARW", tag: "file", path: "/x/A7R_0001.ARW" }];
   const stateOk = (await getProjectFolderState(j5row))!;
   ok("when the read works, it reports real numbers", stateOk.readFailed === false && stateOk.hasRaw === true, stateOk.folders.map((f) => `${f.label}=${String(f.count)}`).join(", "));
+  const photoReview = await checkUploadRawFiles(J5, "photos");
+  ok("photo-only review counts the real file and leaves video outside its scope", photoReview.photos?.count === 1 && photoReview.video === null && !!photoReview.checkedAtISO, JSON.stringify(photoReview));
 
   console.log("\n5c. THE FOLDER SWEEP DOES NOT ADVANCE A JOB IT COULD NOT LOOK AT");
   const J5b = await prisma.project.create({

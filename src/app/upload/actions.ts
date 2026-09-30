@@ -38,6 +38,19 @@ import { UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PRE
 // portal's re-open both key off the same string.
 const PROVIDED_ON_SITE = "Provided on site";
 
+/** Read-only evidence for the photographer's final handoff review. The page's
+ * initial folder counts may be hours old by the time Submit is pressed. */
+export async function checkUploadRawFiles(projectId: string, scope?: "photos" | "video") {
+  await requireShootAccess(projectId);
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, client: { select: { name: true } } },
+  });
+  if (!project) throw new Error("This shoot is no longer available.");
+  const { freshHandoffFileCheck } = await import("@/lib/dropboxFolders");
+  return freshHandoffFileCheck(project, scope);
+}
+
 /** Save one or more files, optionally tied to a deliverable, and mark it uploaded. */
 export async function uploadFiles(
   projectId: string,

@@ -24,6 +24,7 @@ import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
 import { photoRangeFor } from "@/lib/culling";
 import {
   markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback, setProjectSquareFeet,
+  checkUploadRawFiles,
   reportMissedShot, planGapRecovery, closeProductionGap, recordFieldPreference, decideFieldReport,
 } from "@/app/upload/actions";
 import { saveUploadDraft, discardUploadDraft } from "@/app/upload/draftActions";
@@ -767,6 +768,9 @@ export function UploadPortal({
   // panel was open got silently dropped from the submit (review HIGH). The
   // yes button dispatches from the CURRENT render instead.
   const [ask, setAsk] = useState<{ body: string; yes: string; action: AskAction; review?: boolean } | null>(null);
+  const [rawCheck, setRawCheck] = useState<Awaited<ReturnType<typeof checkUploadRawFiles>> | null>(null);
+  const [checkingRaw, setCheckingRaw] = useState(false);
+  const rawCheckRequest = useRef(0);
 
   // ---- O04: THE DRAFT AUTOSAVE -------------------------------------------
   // Every answer below is saved as the person types (1.2 s after they pause,
@@ -1144,6 +1148,19 @@ export function UploadPortal({
       return;
     }
     const rem = scope ? remaining.filter((d) => handoffCategoryOf(d.type) === scope) : remaining;
+    // Re-read the actual Dropbox location for this review. A page-load count
+    // is only historical evidence after someone spends time on the debrief.
+    const request = ++rawCheckRequest.current;
+    setRawCheck(null);
+    setCheckingRaw(true);
+    checkUploadRawFiles(project.id, scope).then((result) => {
+      if (rawCheckRequest.current === request) setRawCheck(result);
+    }).catch(() => {
+      // A provider/read error is unknown, never an empty folder or a reason to
+      // discard the photographer's answers.
+    }).finally(() => {
+      if (rawCheckRequest.current === request) setCheckingRaw(false);
+    });
     setAsk({
       body: rem.length
         ? `${rem.length} item${rem.length === 1 ? " is" : "s are"} still unchecked. Review exactly what is going to the editor and what is still owed before you submit.`
@@ -1271,7 +1288,14 @@ export function UploadPortal({
   // §7.3: say only what is true about the files. A tick is the photographer's
   // word; Dropbox showing the files is evidence; an unreadable folder is
   // neither, and "Submit anyway" past an empty-folder warning is not proof.
-  const filesSentence = receiptSentence(evidence, forcedSubmit);
+  const checkedCounts = rawCheck ? [rawCheck.photos?.count, rawCheck.video?.count].filter((x) => x !== undefined) : [];
+  const filesSentence = rawCheck
+    ? forcedSubmit || checkedCounts.some((n) => n === 0)
+      ? "Dropbox did not confirm every file at the final handoff, so the office will check the folder before editing."
+      : checkedCounts.length > 0 && checkedCounts.every((n) => typeof n === "number" && n > 0)
+        ? "Dropbox showed files at the handoff check."
+        : "Dropbox could not confirm every file at the handoff check, so the office will check."
+    : receiptSentence(evidence, forcedSubmit);
   const handoffReceipt = (scope?: HandoffCategory) => {
     const photosIn = photosLive && scope !== "video";
     const videoIn = videoLive && scope !== "photos";
@@ -1299,12 +1323,17 @@ export function UploadPortal({
               ))}
             </ul>
           ) : <span> Dropbox folder link unavailable.</span>}
-          {fileRows.map((e) => <p key={e.category} className="text-muted">{e.category === "photos" ? "Photos" : "Video"}: {e.stale || e.filesDetected === "unknown"
+          {rawCheck && <p className="text-muted"><strong>Fresh Dropbox check:</strong> {etDateTime(rawCheck.checkedAtISO)}. {rawCheck.connected ? "Read from this job’s current Dropbox location." : "Dropbox connection unavailable; file counts are unknown."}</p>}
+          {rawCheck?.photos && photosIn && <p className="text-muted">Photos: {rawCheck.photos.count === null ? "could not confirm files" : `Dropbox showed ${rawCheck.photos.count} file${rawCheck.photos.count === 1 ? "" : "s"} in RAW-Photos`}. A checked box is a report, not file verification.</p>}
+          {rawCheck?.video && videoIn && <p className="text-muted">Video: {rawCheck.video.count === null ? "could not confirm files" : `Dropbox showed ${rawCheck.video.count} video file${rawCheck.video.count === 1 ? "" : "s"} under this job${rawCheck.video.where.length ? ` (${rawCheck.video.where.join(", ")})` : ""}`}. A checked box is a report, not file verification.</p>}
+          {!rawCheck && checkingRaw && <p className="text-muted">Checking Dropbox now… File counts are not confirmed yet.</p>}
+          {!rawCheck && !checkingRaw && ask?.review && <p className="text-muted">Fresh Dropbox check unavailable; file counts are not confirmed.</p>}
+          {!rawCheck && fileRows.map((e) => <p key={e.category} className="text-muted">{e.category === "photos" ? "Photos" : "Video"}: {e.stale || e.filesDetected === "unknown"
             ? "Dropbox read unavailable or stale — files not confirmed"
             : e.filesDetected === "yes"
-              ? `Dropbox showed ${e.fileCount ?? "some"} file${e.fileCount === 1 ? "" : "s"} when this page loaded`
-              : "Dropbox showed no files when this page loaded"}. A checked upload box is a report, not file verification.</p>)}
-          {fileRows.length === 0 && <p className="text-muted">Dropbox file evidence was unavailable when this page loaded; files are not confirmed.</p>}
+              ? `The last recorded Dropbox check showed ${e.fileCount ?? "some"} file${e.fileCount === 1 ? "" : "s"}`
+              : "The last recorded Dropbox check showed no files"}. A checked upload box is a report, not file verification.</p>)}
+          {!rawCheck && fileRows.length === 0 && <p className="text-muted">Dropbox file evidence was unavailable when this page loaded; files are not confirmed.</p>}
         </div>
         {(notes.length > 0 || editorBrief.trim() || (videoIn && scriptChoice)) && <div>
           <strong>Editing instructions:</strong>
@@ -2409,7 +2438,7 @@ export function UploadPortal({
             <div className="mt-2.5 flex flex-wrap gap-2">
               <button
                 type="button"
-                disabled={isPending}
+                disabled={isPending || (ask.review && checkingRaw)}
                 onClick={() => {
                   const a = ask.action;
                   setAsk(null);
@@ -2417,16 +2446,17 @@ export function UploadPortal({
                   // photographer has typed up to the moment they confirm.
                   if (a.kind === "submit") {
                     if (a.reviewFingerprint && a.reviewFingerprint !== reviewFingerprint) { finalize(a.scope); return; }
+                    if (a.reviewFingerprint && rawCheck && Date.now() - Date.parse(rawCheck.checkedAtISO) > 120_000) { finalize(a.scope); return; }
                     runSubmit(a.force, a.scope, a.baseHash);
                   }
                   else applyToggle(a.id, a.next, a.prevReason);
                 }}
                 className="rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
               >
-                {isPending ? "Submitting…" : ask.yes}
+                {isPending ? "Submitting…" : ask.review && checkingRaw ? "Checking files…" : ask.yes}
               </button>
               <button
-                onClick={() => setAsk(null)}
+                onClick={() => { rawCheckRequest.current++; setCheckingRaw(false); setAsk(null); }}
                 className="rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
               >
                 Go back

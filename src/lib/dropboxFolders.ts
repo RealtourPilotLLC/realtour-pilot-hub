@@ -713,6 +713,27 @@ export async function videoFilesUnder(
   }
 }
 
+/** A fresh, read-only check for the photographer's final review. Video is
+ * searched across the listing, matching the submit gate's treatment of clips
+ * accidentally placed outside 02-RAW-Video. Null means unknown, never empty. */
+export async function freshHandoffFileCheck(p: FolderProject, scope?: "photos" | "video") {
+  const paths = actualFolderPaths(p);
+  let connected = false;
+  try { connected = dropboxConfigured() && !!(await getSecret("dropbox")); } catch { /* unknown, never zero */ }
+  const [photos, video] = connected
+    ? await Promise.all([
+        scope !== "video" ? folderFileCount(paths.rawPhotos) : Promise.resolve(null),
+        scope !== "photos" ? videoFilesUnder(paths.listing) : Promise.resolve(null),
+      ])
+    : [null, null];
+  return {
+    checkedAtISO: new Date().toISOString(),
+    connected,
+    photos: scope === "video" ? null : { count: photos, path: paths.rawPhotos },
+    video: scope === "photos" ? null : { count: video?.count ?? null, where: video?.where ?? [], path: paths.listing },
+  };
+}
+
 // Web deep-link that opens a folder in the Dropbox web app (team members land
 // in the team space they have access to).
 export function dropboxWebUrl(path: string): string {

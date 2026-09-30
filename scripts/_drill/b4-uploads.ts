@@ -154,10 +154,10 @@ async function main() {
   const legacy = handoff.handoffEvidence({ deliverables: [{ type: "PHOTOS" }], statusEvidence: fresh(10, 0), debriefSubmittedAt: t0 });
   c.ok("a page submitted the old way reads its whole-page stamp as the half's handoff", legacy[0].handoffSubmitted?.getTime() === t0.getTime());
   c.ok("an excused half is not on the ladder at all", handoff.handoffEvidence({ deliverables: [{ type: "PHOTOS" }, { type: "VIDEO", notCompletedReason: "agent cancelled" }], statusEvidence: null }).map((e) => e.category).join() === "photos");
-  c.ok("the receipt after 'Submit anyway' never claims the files", /office will check the folder/.test(handoff.receiptSentence([{ filesDetected: "yes" }], true)));
-  c.ok("the receipt with an empty folder says so", /didn't show every file/.test(handoff.receiptSentence([{ filesDetected: "yes" }, { filesDetected: "no" }], false)));
-  c.ok("the receipt with every half found says the editors know", handoff.receiptSentence([{ filesDetected: "yes" }, { filesDetected: "yes" }], false) === "The editors know the files are in Dropbox.");
-  c.ok("the receipt that could not look says it could not look", /couldn't confirm/.test(handoff.receiptSentence([{ filesDetected: "unknown" }], false)));
+  c.ok("the receipt after 'Submit anyway' never claims the files", /office will check before editing/.test(handoff.receiptSentence([{ filesDetected: "yes" }], true)));
+  c.ok("the receipt with an empty folder says so", /did not show every file/.test(handoff.receiptSentence([{ filesDetected: "yes" }, { filesDetected: "no" }], false)));
+  c.ok("the recorded file evidence does not pretend to be a fresh read", /last recorded Dropbox check showed files/.test(handoff.receiptSentence([{ filesDetected: "yes" }, { filesDetected: "yes" }], false)));
+  c.ok("the receipt that could not look says it could not look", /no confirmed file count/.test(handoff.receiptSentence([{ filesDetected: "unknown" }], false)));
   const lineText = handoff.evidenceLine(vi, () => "t");
   c.ok("the one-line ladder names only what is true", lineText === "Video: no upload reported · files found in Dropbox (6) · not handed off yet · not ready to edit", lineText);
 
