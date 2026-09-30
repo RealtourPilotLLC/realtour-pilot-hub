@@ -155,11 +155,15 @@ async function editorHoldsProject(projectId: string, keys: Set<string>): Promise
   const teamName = p.editor?.name ?? null;
   if (teamName && (keys.has(slugForName(teamName)) || keys.has(editorKeyForTeamName(teamName) ?? ""))) return true;
   const list = [...keys];
-  const [task, sub] = await Promise.all([
+  const [task, sub, output] = await Promise.all([
     prisma.smartTask.findFirst({ where: { projectId, assignedKey: { in: list } }, select: { id: true } }),
     prisma.reviewSubmission.findFirst({ where: { projectId, submittedByKey: { in: list } }, select: { id: true } }),
+    // One video may be assigned to a different in-house editor than the job's
+    // primary editor. That saved per-output assignment is real work; without
+    // this, its named owner cannot open the brief they are asked to receive.
+    prisma.deliverableOutput.findFirst({ where: { projectId, ownerKey: { in: list }, removedFromOrderAt: null, waivedAt: null }, select: { id: true } }),
   ]);
-  return !!task || !!sub;
+  return !!task || !!sub || !!output;
 }
 
 /**

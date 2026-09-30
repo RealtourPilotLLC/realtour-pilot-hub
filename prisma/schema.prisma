@@ -5098,6 +5098,25 @@ model EditorWorkEvent {
   @@index([projectId, at])
 }
 
+// Receipt for the exact per-video assignment an in-house editor saw. This is
+// separate from EditorWorkItem: receiving a brief never starts or pauses work.
+// A later brief/script/brand/source/owner change produces a new digest and
+// asks for a new receipt without rewriting the historical one.
+model EditorBriefReceipt {
+  id           String   @id @default(cuid())
+  projectId    String
+  outputId     String
+  editorKey    String
+  digest       String
+  snapshotJson String
+  actorUserId  String
+  actorName    String
+  acceptedAt   DateTime @default(now())
+
+  @@unique([outputId, editorKey, digest])
+  @@index([projectId, editorKey, acceptedAt])
+}
+
 // §8.1: every change of a cut's responsible reviewer, with the reason.
 model CutReviewerEvent {
   id               String   @id @default(cuid())

@@ -44,6 +44,7 @@ import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
 // §7.1: the editor's own Start / Pause / Resume, on the screen they work from.
 import { WorkStateBar } from "@/components/editing/WorkStateBar";
+import { EditorBriefReceiptCard } from "@/components/editing/EditorBriefReceiptCard";
 // §8.1: the ONE person each waiting cut is waiting on, and the desk's doors.
 import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { EditOverridesButton, RushButton } from "@/components/editing/EditOverridesDialog";
@@ -565,6 +566,12 @@ export default async function EditBriefPage({
   // editor, exactly like the notes above.
   const { outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
   const outputBriefs = await outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []);
+  // A receipt belongs to the creative-safe assignment the editor sees. An
+  // owner may see raw customer wording elsewhere, but that must not produce a
+  // different digest for the same editor's brief.
+  const receiptBriefs = canSeeRaw ? await outputBriefsFor(project.id, { scrub: true }).catch(() => []) : outputBriefs;
+  const { assignmentReceiptStates } = await import("@/lib/editorBriefReceipt");
+  const receiptStates = await assignmentReceiptStates(project.id, receiptBriefs, project).catch(() => null);
   const { editorMonthFor } = await import("@/lib/editorMonth");
   const monthRead = await editorMonthFor(project.id, viewer).then((data) => ({ data, failed: false })).catch(() => ({ data: null, failed: true }));
   const editorMonth = monthRead.data;
@@ -998,6 +1005,12 @@ export default async function EditBriefPage({
                     <p><span className="text-muted">Brand:</span> {chosen ? <>{chosen.name}{chosen.versionNo ? ` v${chosen.versionNo}` : ""}{chosen.fileName ? ` · ${chosen.fileName}` : ""}{chosen.state !== "current" ? " · no longer current; Kyle to confirm" : ""}{chosenFile?.url && <> · <a href={chosenFile.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Open chosen file</a></>}</> : "no logo or branding card choice recorded; ask Kyle if this cut needs one"}</p>
                     <p><span className="text-muted">Footage:</span> {o.folder ? <a href={o.folder.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{o.folder.label}</a> : <><a href={rawUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Job raw folder</a>{monthly ? " · topic-specific source not linked; ask Kyle" : ""}</>}</p>
                     {limitation && <p className="text-warning"><span className="font-medium">Limitation:</span> {limitation}</p>}
+                    <EditorBriefReceiptCard
+                      projectId={project.id}
+                      outputId={o.outputId}
+                      state={receiptStates?.get(o.outputId) ?? null}
+                      canAcknowledge={!!viewer && !viewer.impersonating && viewer.role === "EDITOR" && viewer.editorKey === receiptStates?.get(o.outputId)?.editorKey}
+                    />
                     <a href={`#brief-${o.outputId}`} className="mt-1 inline-block font-medium text-brand hover:underline">Open this video&apos;s brief →</a>
                   </div>
                 );
