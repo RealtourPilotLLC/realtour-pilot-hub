@@ -2,7 +2,35 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — W06 pre-shoot brief read
+### Current resume point — W05 delivery-text exception visibility
+
+W06 pre-shoot receipt is committed through `b742421`; see the checkpoint below.
+`916a30c` extends the shared `readyToSend` board used on Home and Review Room
+with delivery-text states from the existing `OutboxMessage` ledger. A queued,
+in-progress, failed or unknown job-level delivery text is distinct from the
+exact video cut. Newer accepted attempts supersede older failed rows, a
+released failed identity is matched through its delivery-text task, cancelled
+jobs are excluded, and an unreadable outbox lane reports unavailable instead
+of all clear. No send, retry, or provider call was added. `e4d79a2` corrects
+the Review Room copy and links an unknown send without a task to Communications
+for a human to inspect its OpenPhone conversation.
+
+Isolated W05 notice drill passed 8/0, including failed/unknown/accepted retry,
+unrelated text exclusion, per-job scope and simulated outbox query failure.
+Node20 typecheck, focused lint and build passed; a later small copy/link fix
+passed typecheck and lint. A synthetic unknown send was written only to the
+provider-fenced TEST demo database and visibly appeared at the Review Room
+exit with Kyle, age and a reconcile instruction. The demo server was stopped.
+No real provider call, client send, production write, push or deployment.
+
+W05 remains partial for per-job monthly portal versus Aryeo-copy policy, real
+provider-outcome reconciliation and normal auth, plus a direct unconfirmed
+send settlement flow in Communications. W06 still needs fresh raw-file reads
+and normal photographer browser testing. Four additive local tables remain
+unapplied to production. Continue the audit execution order and U0–U6; do
+not describe client release or operational acceptance as complete.
+
+### Previous checkpoint — W06 pre-shoot brief read
 
 W06 upload/handoff code and notes are committed through `24eb0ab`.
 `3ba7982` adds `ShootBriefRead`, a durable per-project/per-photographer
