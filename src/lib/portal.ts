@@ -1451,6 +1451,9 @@ export async function openMonthForEnrollment(enrollmentId: string, monthId: stri
 }
 
 export type PortalInterviewView = {
+  clientId: string;
+  enrollmentId: string;
+  monthId: string;
   interviewId: string;
   topicId: string;
   topicTitle: string;
@@ -1557,6 +1560,7 @@ export async function portalInterview(enrollment: { id: string; clientId: string
     changedSince: changed,
   };
   return {
+    clientId: enrollment.clientId, enrollmentId: enrollment.id, monthId: row.monthId,
     interviewId, topicId: row.topicId, topicTitle: topic?.title ?? "Topic", monthKey: month?.monthKey ?? "", status: st.status,
     next: { kind: st.next.kind, prompt: st.next.kind === "done" ? null : st.next.prompt, isFollowUp: st.next.kind === "follow-up" }, nextKey: st.nextKey,
     progress: { answered: st.answeredCount, substantiveAnswered: st.sufficiency.substantiveAnswered, substantiveTotal: st.sufficiency.substantiveTotal },
