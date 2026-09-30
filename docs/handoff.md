@@ -2,10 +2,38 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — W05 shared delivery exit
+
+W04 is committed at `b1622b1`. Its isolated desktop and 390px form check passed:
+the TEST listing showed the exact cut, and a fenced Aryeo read produced a clear
+error with the record button disabled. No provider or production delivery was
+changed. W05's first local commit, `07d25d1`, adds a shared read-only delivery
+exit on the Review Room index and each job's cut view. It uses Home's existing
+reader and labels finishing 1080p, exact ready file, delivery-record repair,
+and client notice pending. The global view follows Review Room's TEST toggle;
+the per-job view stays on that job. A monthly row says portal release does not
+settle access or any legacy Aryeo copy until the job's route is reconciled.
+Home's long card introduction is shortened.
+
+Node 20 typecheck, focused lint, build and isolated B4 delivery drill (120/0)
+passed. Isolated desktop/390px browser showed the global and per-cut views;
+normal Review Room hid TEST rows and `?test=1` showed them. One follow-up copy
+edit after the visual check changes the monthly row's action link from Home to
+the job page; rerun typecheck/lint before committing it with this handoff.
+The demo server is stopped. No production mutation, push or deployment.
+
+W05 remains partial: surface failed/unknown notification and provider outcomes
+from existing outbox readers; decide monthly portal/Aryeo obligations per
+affected job, without bulk clearing; verify normal authenticated roles and
+production rows after the additive schema gate. W06 photographer handoff and
+U0–U6 remain. The monthly portal release question sent to the user is still
+unanswered; continue independent work. Current production schema still lacks
+the C05/C06/W04 additive tables.
+
 ### Current resume point — W04 listing delivery verification
 
-W03 is committed through `9a3c9d5`. W04 now has an isolated listing-specific
-implementation pending its local commit. `FinalRenditionCheck` is a third
+W03 is committed through `9a3c9d5`. W04 is committed at `b1622b1`.
+`FinalRenditionCheck` is a third
 additive, unapplied table. Staff select the actual Aryeo video after upload and
 record a named check of its playback, audio, first/last frames, title, output
 identity and client access. The exact cut/source fingerprint and provider ID/URL
@@ -17,8 +45,8 @@ separately and never claims the checklist proves a full watch.
 
 Isolated W04 drill passes 18/0, including negative and positive send/task
 actions in PGlite with a fake Aryeo listing and fenced network. TypeScript,
-focused lint and build passed before the last narrow task-route adjustments;
-rerun final checks. A read-only Prisma diff against live Neon lists only
+focused lint and build passed after the last narrow task-route adjustments.
+A read-only Prisma diff against live Neon lists only
 `ClientBrandReceipt`, `DeliveryFollowUpHealth`, and `FinalRenditionCheck` plus
 their indexes/FKs. No `db:push`, production mutation, real provider write,
 client send, push or deployment happened. The isolated demo server was stopped

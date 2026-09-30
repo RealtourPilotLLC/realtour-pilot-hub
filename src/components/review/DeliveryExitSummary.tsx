@@ -21,8 +21,8 @@ function rowsFor(board: ReadyBoard): Row[] {
         ? `${r.monthlyPortalReleased ? "Portal release is recorded, but client access or the Aryeo copy is unresolved." : "Portal release is still pending."} Keep this delivery open until the route for this job is confirmed. Exact file: ${r.file.fileName}`
         : `${r.file.fileName} · ${r.aryeoUrl ? "Aryeo listing" : "Aryeo destination missing"}`,
       owner: "Kyle", at: r.approvedAtISO,
-      action: r.monthlyProgram ? "Confirm portal access and whether Aryeo is required" : "Check the final file, upload and record delivery",
-      href: "/#video-review", cutHref: r.reviewHref,
+      action: r.monthlyProgram ? "Review this job’s delivery route" : "Check the final file, upload and record delivery",
+      href: r.monthlyProgram ? `/projects/${r.projectId}` : "/#video-review", cutHref: r.reviewHref,
     })),
     ...board.needsFinishing.map((r) => ({
       id: r.submissionId, label: r.street,
