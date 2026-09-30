@@ -2,7 +2,26 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — UX15 Editing Room URL context
+### Current resume point — client script scope in Your Month
+
+`a9743fe` makes the client Plan subviews name their actual scope. The guided
+month says it is the current month's plan; Scripts says it is a review queue
+across all program months; Topic bank and Strategy identify their wider
+account scope. Script cards and previously answered rows name their own month,
+or say no month is assigned. The phone tab now says “Topics” in full. This
+changes presentation only; script version/approval and month planning rules
+are unchanged.
+
+Node20 TypeScript, focused lint and production build passed. The isolated
+Avery TEST client browser showed the all-month heading, September/version on
+the pending script, and readable phone navigation at 390px. No approval or
+request was submitted. The provider-fenced demo server was stopped, and its
+clean worktree is at `a9743fe`. UX15 remains partial: appointment/library
+month context and a normal client seat journey still require testing; no
+client portal layout gate was changed. No production write, client send,
+provider call, push or deployment occurred.
+
+### Previous checkpoint — UX15 Editing Room URL context
 
 `8eb9754` and `6d0a463` finish the queue's first U3 phone layout batch:
 the same rows become stacked cards below `sm`, with visible stage, due,
