@@ -252,7 +252,7 @@ export function TeamMessagesPanel({
             </Link>
           </div>
           <div className="rounded-b-2xl border border-border bg-surface p-4 sm:p-5">
-            <ProjectMessages projectId={selected.id} team={thread.team} messages={thread.messages} readOnly={readOnly} />
+            <ProjectMessages projectId={selected.id} team={thread.team} messages={thread.messages} readOnly={readOnly} canRequestRevision={open.pathname === "/projects"} />
           </div>
         </div>
       ) : (

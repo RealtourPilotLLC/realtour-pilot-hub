@@ -6,6 +6,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/utils";
 import { closeConversation, markProjectMessagesRead, postProjectMessage, reopenConversation } from "@/app/projects/messageActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { StaffCutRevisionForm } from "@/components/review/StaffCutRevisionForm";
 
 export type ProjectMsg = {
   id: string;
@@ -52,18 +53,21 @@ export function ProjectMessages({
   team,
   compact = false,
   readOnly = false,
+  canRequestRevision = false,
 }: {
   projectId: string;
   messages: ProjectMsg[];
   team: Member[];
   compact?: boolean;
   readOnly?: boolean;
+  canRequestRevision?: boolean;
 }) {
   const [body, setBody] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string | null; body: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
+  const [revisionFrom, setRevisionFrom] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const lastMessageRef = useRef<HTMLDivElement>(null);
@@ -167,6 +171,14 @@ export function ProjectMessages({
                 </div>
               )}
               <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">{renderBody(m.body, team)}</p>
+              {canRequestRevision && !readOnly && (
+                <div className="mt-1.5 space-y-2">
+                  <button type="button" onClick={() => setRevisionFrom((v) => v === m.id ? null : m.id)} className="text-[11px] font-medium text-brand hover:underline">
+                    {revisionFrom === m.id ? "Close revision form" : "Turn this into a revision request"}
+                  </button>
+                  {revisionFrom === m.id && <StaffCutRevisionForm projectId={projectId} sourceMessage={{ id: m.id, body: m.body }} />}
+                </div>
+              )}
             </div>
           </div>
         ))}

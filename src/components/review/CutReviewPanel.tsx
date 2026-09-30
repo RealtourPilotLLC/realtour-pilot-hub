@@ -11,6 +11,7 @@ import { addCutNote, approveCut, askCutChange, replyCutNote, requestCutChanges, 
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
 import { byLine, statusLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
+import { StaffCutRevisionForm } from "./StaffCutRevisionForm";
 import type { CutTakeBackInfo } from "./types";
 import { fmtClock, parseClock } from "./types";
 
@@ -122,6 +123,7 @@ export function CutReviewPanel({
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [staffRevisionOpen, setStaffRevisionOpen] = useState(false);
 
   const src = submission.assetUrl;
   // Uploaded cuts stream from the hub's own store; legacy rows stream through
@@ -265,6 +267,16 @@ export function CutReviewPanel({
           </>
         )}
       </div>
+      {canDecide && submission.status === "APPROVED" && submission.deliverableId && (
+        <div className="space-y-2">
+          <button type="button" onClick={() => setStaffRevisionOpen((v) => !v)} className="text-xs font-medium text-brand hover:underline">
+            {staffRevisionOpen ? "Close revision form" : "Request changes to this video"}
+          </button>
+          {staffRevisionOpen && (
+            <StaffCutRevisionForm projectId={projectId} fixedTarget={{ submissionId: submission.id, label: cutLabel ?? "this video", round: submission.round, fileName: submission.fileName }} />
+          )}
+        </div>
+      )}
       {/* Somebody other than the chain took this version (gap 15) — say who
           and when, not just "covering". */}
       {canDecide && submission.reviewerMove && (

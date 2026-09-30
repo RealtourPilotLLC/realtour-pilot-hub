@@ -642,12 +642,14 @@ function OneBrief({
             </Fold>
           )}
           {brief.references.length > 0 && (
-            <Fold label={`They're sending (${brief.references.length})`} icon={Paperclip} tone="brand">
+            <Fold label={`References (${brief.references.length})`} icon={Paperclip} tone="brand">
               <ul className="space-y-0.5">
                 {brief.references.map((r, i) => (
                   <li key={i} className="text-[12px] leading-relaxed text-foreground/85">
-                    {r.what}
-                    {r.where && <span className="text-muted"> — {r.where}</span>}
+                    {r.where.startsWith("/api/file?path=") || /^\/projects\/[^/?#]+#msg-[^/?#]+$/.test(r.where) ? (
+                      <a href={r.where} className="text-brand underline underline-offset-2">{r.what}</a>
+                    ) : r.what}
+                    {r.where && !r.where.startsWith("/api/file?path=") && !/^\/projects\/[^/?#]+#msg-[^/?#]+$/.test(r.where) && <span className="text-muted"> — {r.where}</span>}
                   </li>
                 ))}
               </ul>

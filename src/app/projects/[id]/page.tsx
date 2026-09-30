@@ -749,6 +749,7 @@ export default async function ProjectPage({
           <ProjectMessages
             projectId={project.id}
             readOnly={!!viewer?.impersonating}
+            canRequestRevision={!viewer?.impersonating}
             team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
             messages={project.messages.map((m) => ({
               id: m.id,

@@ -393,7 +393,7 @@ async function standDownNonRevision(briefId: string): Promise<void> {
 /** The exact cut a portal ask is about (comms.RevisionPin, minus the bell's
  *  needs). `cutKey` is slotKeyOf(deliverableId, slot), or null for a legacy
  *  folder cut — which keeps the job-level brief it always had. */
-export type BriefPin = { submissionId: string; outputId: string | null; cutKey: string | null; decisionId: string; roundId: string | null; label?: string | null };
+export type BriefPin = { submissionId: string; outputId: string | null; cutKey: string | null; decisionId: string | null; roundId: string | null; label?: string | null };
 
 /**
  * PINNED ITEMS, WITH NO MODEL (CP-03). The portal knows the cut, so every note
@@ -419,6 +419,9 @@ export async function createRevisionBrief(opts: {
   propertyAddress?: string | null;
   deliverables?: string[];
   pin?: BriefPin;
+  /** Staff-supplied files or references for a pinned request. Kept separate
+   *  from originalText so the client's words stay byte-for-byte intact. */
+  references?: { what: string; where: string }[];
   /** No model call: a portal ADDENDUM joins a request the editor already has,
    *  its pinned items are the work order, and a client re-sending notes must
    *  not be able to buy a model call per submit. */
@@ -428,11 +431,13 @@ export async function createRevisionBrief(opts: {
    *  that shows the work order can say whose it is. */
   requestedBy?: Requester | null;
 }): Promise<string | null> {
-  const text = (opts.text ?? "").trim();
-  if (!text) return null;
+  // A staff conversion from team chat is a receipt of the stored message.
+  // Keep its whitespace too; the work items may trim for display separately.
+  const text = opts.source === "review_room_staff" ? (opts.text ?? "") : (opts.text ?? "").trim();
+  if (!text.trim()) return null;
   // Don't spend a model call on "can you brighten the kitchen photo" — a short
   // ask is already a work order. The card renders it as one item.
-  const worthAnalyzing = text.length >= 240 && !opts.skipAnalysis;
+  const worthAnalyzing = text.length >= 240 && !opts.skipAnalysis && !opts.pin;
   const pin = opts.pin;
   const items = pin?.cutKey ? pinnedItems(text, pin.cutKey) : null;
   // THE ROUND'S CLOCK (A52, §3): written once, here, and never by a re-read.
@@ -458,7 +463,7 @@ export async function createRevisionBrief(opts: {
           ? {
               submissionId: pin.submissionId, decisionId: pin.decisionId, roundId: pin.roundId,
               ...(pin.cutKey ? { outputId: pin.outputId } : {}),
-              ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: [], questions: [] }), analyzedAt: new Date() } : {}),
+              ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: opts.references ?? [], questions: [] }), analyzedAt: new Date() } : {}),
             }
           : {}),
       },

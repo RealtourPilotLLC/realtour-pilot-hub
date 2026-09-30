@@ -539,6 +539,8 @@ export type RaiseRevisionOpts = {
    *  kind comes from the source and NOBODY is named — the account client is
    *  not assumed to be the one who wrote. */
   requestedBy?: Requester | null;
+  /** References attached by staff to an exact-cut request. */
+  references?: { what: string; where: string }[];
 };
 
 /** The channel a revision's source implies, for a caller that did not say. */
@@ -558,7 +560,8 @@ export type RevisionPin = {
   /** slotKeyOf(deliverableId, slot) — null for a legacy folder cut, which
    *  keeps today's job-level brief (documented limit). */
   cutKey: string | null;
-  decisionId: string;
+  /** Portal decision for a client-submitted round; null for a staff-recorded ask. */
+  decisionId: string | null;
   roundId: string | null;
   /** "Video 2 of 4" — how the editor's card names this video. */
   videoLabel: string;
@@ -801,7 +804,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     // A pinned brief says which decision it answers: the first ask is
     // `decision:<id>`, each set of notes added to it `decision:<id>:addendum:<n>`
     // (with the browser's request key, so a retried submit is recognised).
-    const pinnedDetail = opts.pin
+    const pinnedDetail = opts.pin?.decisionId
       ? `decision:${opts.pin.decisionId}${opts.addendum ? `:addendum:${opts.addendum.n}${opts.addendum.requestKey ? `:rk:${opts.addendum.requestKey}` : ""}` : ""}`
       : null;
     briefId = await createRevisionBrief({
@@ -817,6 +820,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       pin: opts.pin ? { submissionId: opts.pin.submissionId, outputId: opts.pin.outputId, cutKey: opts.pin.cutKey, decisionId: opts.pin.decisionId, roundId: opts.pin.roundId, label: opts.pin.videoLabel } : undefined,
       skipAnalysis: !!opts.addendum,
       requestedBy: requester,
+      references: opts.references,
     });
   } catch { /* the revision itself already landed */ }
 
@@ -846,7 +850,9 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
         body: clip(askedBy ? `${askedBy}: ${taskNote}` : taskNote, 140),
         href: `/projects/${project.id}`,
         targets,
-        dedupeKey: opts.addendum ? `portal-addendum-${opts.pin.decisionId}-${opts.addendum.n}` : `portal-round-${opts.pin.roundId ?? opts.pin.decisionId}`,
+        dedupeKey: opts.pin.decisionId
+          ? (opts.addendum ? `portal-addendum-${opts.pin.decisionId}-${opts.addendum.n}` : `portal-round-${opts.pin.roundId ?? opts.pin.decisionId}`)
+          : `staff-cut-${opts.threadRef ?? opts.pin.submissionId}`,
       });
     } catch { /* non-fatal */ }
   }

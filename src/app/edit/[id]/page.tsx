@@ -1772,6 +1772,7 @@ export default async function EditBriefPage({
               <ProjectMessages
                 projectId={project.id}
                 readOnly={!!viewer?.impersonating}
+                canRequestRevision={quality.canReview}
                 team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
                 messages={project.messages.map((m) => ({
                   id: m.id,
