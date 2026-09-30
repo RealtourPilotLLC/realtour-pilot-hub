@@ -2,7 +2,28 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — written-answer suggestion safety
+### Current resume point — readable action and status colors
+
+`9f9213f` adds a separate filled-action orange while retaining the decorative
+brand accent, moves portal white-on-orange controls and the Editing Room/ready
+delivery first consumers onto it, raises secondary text contrast, and gives
+the Editing Room filter and ready-file Download 44px targets. `SimpleQueue`
+status/type pills now use the same theme-aware colors as `Badge`. A browser
+check found light amber status ink still short of the normal-text target, so
+`a65a6de` raises the light badge mix from 42% to 50%.
+
+Node20 TypeScript, changed-file lint and production build passed. Rendered
+client Approve script measured white on `#b94008` (about 5.53:1, 44px); staff
+dark uses `#c2450c` (about 5.06:1). Secondary text token pairs calculate
+about 5.46:1 on light white and 5.47:1 on dark surface. The light Editing
+Room amber pill measured about 5.05:1 after the second commit; the dark pill
+uses its original 18% lift. At 390px the Editing Room had no horizontal
+overflow and its active filter measured 44px. The demo is stopped and clean at
+`a65a6de`. This is a sampled contrast fix, not a full accessibility pass:
+remaining typography, dialogs, form feedback, role views and U1–U6 acceptance
+are tracked below.
+
+### Previous checkpoint — written-answer suggestion safety
 
 `bc44dbf` keeps a suggestion's source pointer with the scoped, browser-local
 answer draft. The pointer is restored only for that client/enrollment/month/
