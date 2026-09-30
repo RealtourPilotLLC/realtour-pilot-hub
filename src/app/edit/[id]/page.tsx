@@ -9,6 +9,7 @@ import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { BrandUpdatesBanner, BrandKitBlock } from "@/components/editing/BrandUpdatesBanner";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
+import { queueReturnHref } from "@/lib/editingQueueUrl";
 import { Section } from "@/components/ui/Section";
 import { Avatar } from "@/components/ui/Avatar";
 import { getProject, getTeam } from "@/lib/queries";
@@ -135,12 +136,12 @@ export default async function EditBriefPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ cut?: string; slots?: string; notice?: string }>;
+  searchParams: Promise<{ cut?: string; slots?: string; notice?: string; queue?: string }>;
 }) {
   const { id } = await params;
   // `slots=all` opens the empty cut slots a big job collapses by default
   // (Jordan, Sep 16 — see the Send to Review block below).
-  const { cut, slots: slotsParam, notice } = await searchParams;
+  const { cut, slots: slotsParam, notice, queue } = await searchParams;
   const showAllSlots = slotsParam === "all";
 
   const viewer = await getCurrentUser();
@@ -905,11 +906,10 @@ export default async function EditBriefPage({
 
   return (
     <div>
-      {/* Back to where they came from — BackLink walks the in-app history
-          (the Editing Room queue for an editor, Ops Day or the project page
-          for the owner) and falls back to the queue on a cold deep link. */}
+      {/* Queue links carry their validated filters, including for cold/new-tab
+          visits. Other entrances use in-app history or the Editing Room. */}
       <div className="border-b border-border px-4 py-3 sm:px-6">
-        <BackLink href="/editing" label="Editing Room" />
+        <BackLink href={queueReturnHref(queue)} label="Editing Room" preferHref={!!queue} />
       </div>
       <PageHeader
         eyebrow="Editor brief"

@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronDown,
   FolderOpen,
@@ -19,6 +19,7 @@ import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
 import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
 import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefaults";
+import { editingQueueFilters, editingQueueHref, type EditingDueFilter } from "@/lib/editingQueueUrl";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
 // just like our Slack. It's been working, so I don't want to fix what isn't
@@ -207,6 +208,11 @@ const MENU_H = 244;
 // One id per status click (§7.1) — the server's idempotency key.
 const newRequestId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function rememberQueueScroll(queueHref: string) {
+  try { sessionStorage.setItem(`rtp_queue_scroll:${queueHref}`, JSON.stringify({ y: window.scrollY, at: Date.now() })); }
+  catch { /* private browsing can refuse session storage */ }
+}
 
 // office: the viewer is owner/admin (not the editor's scoped view) — unlocks
 // the two undo options, "Ready for editing" and "Waiting". The server rule is
@@ -479,7 +485,7 @@ function LinkChip({
 // Sep 18), because the hour-quoted tiers (video_48h and friends) land at
 // shoot-time + N hours and an evening deadline crosses midnight in UTC first.
 // ---------------------------------------------------------------------------
-export type DueFilter = "any" | "overdue" | "today" | "week" | "undated";
+export type DueFilter = EditingDueFilter;
 
 // Day-KEY arithmetic, the shape src/lib/datetime.ts settled on (its
 // addBusinessDayKeysET and businessDaysBetweenET walk keys, never milliseconds):
@@ -551,19 +557,44 @@ export function SimpleQueue({
   hideEditor?: boolean;
 }) {
   const router = useRouter();
-  const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
+  const searchParams = useSearchParams();
+  const editorKeys = new Set([...notDone, ...upcoming, ...done].map((r) => r.editorKey ?? "__none__"));
+  const { view, editor: who, due: dueWanted } = editingQueueFilters(
+    new URLSearchParams(searchParams.toString()), editorKeys, hideEditor);
+  const queueHref = editingQueueHref(new URLSearchParams(searchParams.toString()), editorKeys, hideEditor);
+  const jobHref = (id: string) => {
+    const query = queueHref.split("?")[1];
+    return `/edit/${encodeURIComponent(id)}${query ? `?queue=${encodeURIComponent(query)}` : ""}`;
+  };
+  const updateFilters = (change: { view?: string; editor?: string | null; due?: DueFilter }) => {
+    const next = new URLSearchParams(window.location.search);
+    if (change.view !== undefined) next.set("view", change.view);
+    if (change.editor !== undefined) {
+      if (change.editor) next.set("editor", change.editor);
+      else next.delete("editor");
+    }
+    if (change.due !== undefined) next.set("due", change.due);
+    window.history.replaceState(null, "", editingQueueHref(next, editorKeys, hideEditor));
+  };
+  useEffect(() => {
+    try {
+      const key = `rtp_queue_scroll:${queueHref}`;
+      const saved = sessionStorage.getItem(key);
+      if (!saved) return;
+      sessionStorage.removeItem(key);
+      const { y, at } = JSON.parse(saved) as { y: number; at: number };
+      if (Number.isFinite(y) && Number.isFinite(at) && Date.now() - at < 10 * 60_000)
+        requestAnimationFrame(() => window.scrollTo(0, y));
+    } catch { /* native browser scroll restoration remains available */ }
+  }, [queueHref]);
   // WHOSE WORK AM I LOOKING AT (Jordan, Sep 17). The queue is every job in the
   // shop; most questions about it are about one person's share of it. Null is
-  // everyone. It filters the view you are on rather than switching you to a
-  // different screen, so the tabs, the counts and the row controls all keep
-  // working exactly as they did.
-  const [who, setWho] = useState<string | null>(null);
-  // WHEN IS IT DUE (Jordan, Sep 18) — see the DueFilter block above. Remembered
-  // across tab switches, but the TAB decides what can be applied: `when` below
+  // everyone. The validated URL makes this choice shareable and refresh-safe.
+  // WHEN IS IT DUE (Jordan, Sep 18) — see the DueFilter block above. Preserved
+  // in the URL across tab switches, but the TAB decides what can be applied: `when` below
   // is what is actually in force and what the select shows, so carrying an
   // Overdue off Not Done onto Upcoming (where nothing can be late) can't leave
   // the table empty under a control claiming otherwise.
-  const [dueWanted, setDueWanted] = useState<DueFilter>("any");
   // The last thing a status click did beyond writing the label (see StatusPill).
   const [receipt, setReceipt] = useState<string | null>(null);
   const all = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
@@ -699,7 +730,7 @@ export function SimpleQueue({
       {/* Slack's saved views, as pills. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {VIEWS.map((v) => (
-          <button key={v.key} onClick={() => setView(v.key)}
+          <button key={v.key} onClick={() => updateFilters({ view: v.key })}
             className={cn("rounded-lg px-3 py-1.5 text-sm font-medium",
               view === v.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2")}>
             {v.label}
@@ -721,7 +752,7 @@ export function SimpleQueue({
               Editor
               <select
                 value={who ?? ""}
-                onChange={(e) => setWho(e.target.value || null)}
+                onChange={(e) => updateFilters({ editor: e.target.value || null })}
                 className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
               >
                 <option value="">Everyone ({forEditors.length})</option>
@@ -737,7 +768,7 @@ export function SimpleQueue({
               <select
                 value={when}
                 title={dueTitle(when)}
-                onChange={(e) => setDueWanted(e.target.value as DueFilter)}
+                onChange={(e) => updateFilters({ due: e.target.value as DueFilter })}
                 className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
               >
                 <option value="any">{DUE_LABEL.any[word]} ({forDue.length})</option>
@@ -761,7 +792,7 @@ export function SimpleQueue({
             <>
               Nothing on this tab matches the filters above.{" "}
               <button
-                onClick={() => { setWho(null); setDueWanted("any"); }}
+                onClick={() => updateFilters({ editor: null, due: "any" })}
                 className="font-medium text-brand underline underline-offset-2"
               >
                 Clear filters
@@ -791,7 +822,7 @@ export function SimpleQueue({
                 return (
                   <tr
                     key={r.id}
-                    onClick={() => router.push(`/edit/${r.id}`)}
+                    onClick={() => { rememberQueueScroll(queueHref); router.push(jobHref(r.id)); }}
                     // No row-wide tooltip: it followed the cursor across every
                     // cell and sat on top of the controls underneath it.
                     className="cursor-pointer align-top hover:bg-surface-2/50"
@@ -805,7 +836,7 @@ export function SimpleQueue({
                       <span className="flex items-start gap-1.5">
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
-                        <Link href={`/edit/${r.id}`} onClick={swallow} title="Open the edit page" className="block min-w-0 flex-1">
+                        <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
                           <span className="font-semibold">{r.street}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
@@ -1030,7 +1061,7 @@ export function SimpleQueue({
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-center" onClick={swallow}>
-                      <Link href={`/edit/${r.id}`} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
+                      <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
                         {r.comments}
                       </Link>
                     </td>

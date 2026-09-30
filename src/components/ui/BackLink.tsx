@@ -11,16 +11,16 @@ import { cn } from "@/lib/utils";
 // page instead of bouncing them out of the app. Renders a real anchor to that
 // fallback so middle/cmd-click and no-JS still work.
 //
-// In-app navigation is detected via the `rtp_nav` counter the Shell bumps on
-// every route change (Next 16's App Router doesn't expose a history index).
-export function BackLink({ href, label, className }: { href: string; label: string; className?: string }) {
+// An explicit queue return target can take priority over history; otherwise
+// in-app navigation is detected via the `rtp_nav` counter the Shell bumps.
+export function BackLink({ href, label, className, preferHref = false }: { href: string; label: string; className?: string; preferHref?: boolean }) {
   const router = useRouter();
   return (
     <a
       href={href}
       onClick={(e) => {
         // Let the browser handle modified clicks (open in new tab, etc.).
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0 || preferHref) return;
         let inApp = false;
         try {
           inApp = Number(sessionStorage.getItem("rtp_nav") || "0") > 1;
