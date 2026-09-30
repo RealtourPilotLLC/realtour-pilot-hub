@@ -181,6 +181,21 @@ export default async function EditBriefPage({
     }),
   ]);
   if (!project) notFound();
+  // The brief is long and the conversation is near its end. A read-only cue
+  // gives the editor a direct path without advancing ThreadRead just because
+  // they opened the brief to inspect footage or download a file.
+  let unreadTeamMessages: number | null = 0;
+  if (viewer && !viewer.impersonating && project.messages.length > 0) {
+    try {
+      const receipt = await prisma.threadRead.findUnique({
+        where: { userKey_projectId: { userKey: viewer.id, projectId: id } },
+        select: { seenAt: true },
+      });
+      unreadTeamMessages = project.messages.filter((m) => !receipt || m.createdAt > receipt.seenAt).length;
+    } catch {
+      unreadTeamMessages = null;
+    }
+  }
 
   // The cuts this job owes (deliverable × slot) with the newest version of
   // each — the editor's upload panel and the cut switcher both hang off it.
@@ -973,6 +988,20 @@ export default async function EditBriefPage({
       />
 
       {showTracker && workBar && <div className="px-4 pt-4 sm:px-6"><WorkStateBar bar={workBar} tz={deskTz} /></div>}
+
+      {viewer && !viewer.impersonating && (unreadTeamMessages === null || unreadTeamMessages > 0) && (
+        <div className="px-4 pt-4 sm:px-6">
+          <Link href="#messages" className="flex min-h-11 items-center gap-2 rounded-xl border border-brand/40 bg-brand/10 px-4 py-2.5 text-sm font-medium text-foreground hover:bg-brand/15">
+            <MessageSquare className="size-4 shrink-0 text-brand" />
+            <span className="min-w-0 flex-1">
+              {unreadTeamMessages === null
+                ? "Couldn’t check new team messages. Open the conversation."
+                : `${unreadTeamMessages} new team message${unreadTeamMessages === 1 ? "" : "s"} on this job. Read the conversation.`}
+            </span>
+            <span className="shrink-0 text-brand">Open →</span>
+          </Link>
+        </div>
+      )}
 
       {outputBriefs.length > 0 && (
         <div className="px-4 pt-4 sm:px-6">
