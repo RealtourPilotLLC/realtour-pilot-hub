@@ -15,7 +15,12 @@ lint and production build pass. Initial browser replay caught that legacy cuts
 without output submission pointers made the new submitted/approved summary
 read zero. The follow-up reads exact cut slot/round rows and warns about
 unpaired cuts; the drill covers that legacy shape and the build passes again.
-Final browser replay of this correction remains at this point.
+Final browser replay passed: Avery TEST now reads 4 submitted and 3 approved,
+matching the review panel; desktop and 390px layout passed. A disposable
+unlinked TEST video job was linked through the staff form, confirmed in the
+session list with its missing Aryeo appointment still marked unverified, then
+the isolated demo was reset. The normal authenticated editor/office route
+replay and Sarina's actual business reconciliation remain open.
 
 Read-only live Sarina evidence: September month allowance 4; two explicitly
 linked jobs hold 5 and 4 video output rows; two output rows are delivered;
@@ -25,10 +30,10 @@ changed. The month view reports the conflict instead of changing counts or
 combining folders. Kyle should confirm actual scope, appointment-to-topic
 source, and which outputs remain owed before any live repair.
 
-The isolated demo is running on managed worktree `63d6eef` at ports 3200/5599
-in unified exec session 22615. Stop only that owned demo process, check out
-the next local commit in that worktree, and
-restart with `scripts/demo/run-demo-dev.sh`; it has no `.env` and uses PGlite.
+The isolated demo is running on managed worktree `a7f8d03` at ports 3200/5599
+in unified exec session 87432 after `--reset`; its seeded IDs changed. Stop
+only that owned demo process before switching commits. The checkout has no
+`.env` and uses PGlite.
 Production schema remains unapplied for the C05/C06 additive tables. No push,
 deployment, production mutation, client send, booking, or automation change.
 
