@@ -24,6 +24,7 @@ export function ModalDialog({
     if (!dialog) return;
     const prior = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialog.showModal();
+    dialog.querySelector<HTMLElement>("[data-modal-initial-focus]")?.focus();
     return () => {
       if (dialog.open) dialog.close();
       if (prior?.isConnected) prior.focus();

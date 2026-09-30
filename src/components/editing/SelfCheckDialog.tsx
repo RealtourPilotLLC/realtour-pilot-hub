@@ -80,7 +80,7 @@ export function SelfCheckDialog({
     <ModalDialog label="Send-for-review check" busy={pending} onCancel={onCancel}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="flex items-center gap-1.5 text-sm font-semibold">
+            <div tabIndex={-1} data-modal-initial-focus className="flex items-center gap-1.5 text-sm font-semibold">
               <ClipboardCheck className="size-4 text-brand" /> {title ?? "Before it goes to review"}
             </div>
             <p className="mt-0.5 text-[12px] leading-snug text-muted">
@@ -88,7 +88,7 @@ export function SelfCheckDialog({
               {onBehalfOf ? <> · you are checking it on behalf of <span className="font-medium text-foreground">{onBehalfOf}</span>, and it is recorded that way</> : null}
             </p>
           </div>
-          <button type="button" autoFocus onClick={onCancel} disabled={pending} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Close">
+          <button type="button" onClick={onCancel} disabled={pending} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Close">
             <X className="size-4" />
           </button>
         </div>

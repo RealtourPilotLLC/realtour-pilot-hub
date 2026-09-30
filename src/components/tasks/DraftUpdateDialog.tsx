@@ -75,7 +75,7 @@ export function DraftUpdateDialog({
               {mode === "newTime" ? "The delivery time you have confirmed (Eastern)" : "When you will confirm the new time by (Eastern)"}
               <input
                 type="datetime-local"
-                autoFocus
+                data-modal-initial-focus
                 disabled={busy}
                 value={when}
                 onChange={(e) => { setWhen(e.target.value); setRes(null); }}
