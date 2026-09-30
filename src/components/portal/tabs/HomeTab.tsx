@@ -62,6 +62,12 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
   const readyWithFile = d.attention ? d.attention.readyWithFile > 0 : readyRows.some((v) => v.hasFinalFile);
   const currentMonth = d.topics?.months.find((m) => m.monthKey === d.monthKey) ?? d.topics?.months[0] ?? null;
   const selectedTopics = d.topics ? d.topics.groups.flatMap((g) => g.topics).filter((t) => t.selection && currentMonth && t.selection.monthId === currentMonth.id) : [];
+  const selectedCount = currentMonth?.selected ?? 0;
+  const filmedWork = !!d.progress && (d.progress.sessions.cards.some((s) => s.state === "FILMED") || d.progress.production.delivered > 0 || d.progress.production.approved > 0 || d.progress.production.awaitingYou > 0);
+  const topicHistoryNeedsReview = !!currentMonth && (
+    (filmedWork && selectedCount === 0) ||
+    (selectedCount > selectedTopics.length && filmedWork)
+  );
   // R01: the planning reader's owed answers — the month's allowance only, and
   // never a topic the call covered or a script already in review.
   const interviewsToFinish = selectedTopics.filter((t) => t.plan?.step === "NEEDS_ANSWERS" || t.plan?.step === "NEEDS_MORE");
@@ -79,7 +85,7 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
   if (!d.readOnly) {
     if (p && p.planningMode !== "WRITTEN" && p.callStatus === "NOT_SCHEDULED") actions.push({ href: href("schedule"), icon: CalendarClock, text: "Book your strategy call — we plan the month on it", tone: "brand" });
     if (needReviewCount) actions.push({ href: href("videos"), icon: PlayCircle, text: `Review ${needReviewCount} video${needReviewCount === 1 ? "" : "s"} waiting on you`, tone: "brand" });
-    if (currentMonth && currentMonth.selected < currentMonth.owed && d.perms.suggest) actions.push({ href: href("topics"), icon: Lightbulb, text: `Choose ${currentMonth.owed - currentMonth.selected} more topic${currentMonth.owed - currentMonth.selected === 1 ? "" : "s"} for ${monthLabel(currentMonth.monthKey)}` });
+    if (currentMonth && selectedCount < currentMonth.owed && d.perms.suggest && !topicHistoryNeedsReview) actions.push({ href: href("topics"), icon: Lightbulb, text: `Choose ${currentMonth.owed - selectedCount} more topic${currentMonth.owed - selectedCount === 1 ? "" : "s"} for ${monthLabel(currentMonth.monthKey)}` });
     if (interviewsToFinish.length && d.perms.suggest) actions.push({ href: href("topics"), icon: PenLine, text: `Answer the questions for ${interviewsToFinish.length === 1 ? `“${interviewsToFinish[0].title}”` : `${interviewsToFinish.length} topics`}` });
     if (sv.offerBooking) actions.push({ href: href("schedule"), icon: Camera, text: sv.required > 1 && sv.missing < sv.required ? `Book your next filming session (${sv.required - sv.missing} of ${sv.required} booked)` : "Book your filming session" });
     if (readyCount && readyWithFile) actions.push({ href: href("videos"), icon: Download, text: `Download and post ${readyCount === 1 && readyRows.length === 1 ? `“${readyRows[0].title}”` : `${readyCount} finished video${readyCount === 1 ? "" : "s"}`}` });
@@ -159,6 +165,8 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
         )}
         {d.topicsFailed ? (
           <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your topics — refresh to try again.</p>
+        ) : topicHistoryNeedsReview ? (
+          <p className="mt-3 text-sm text-muted">Your filming and video work is on file. We&rsquo;re checking how earlier topics connect to this month; you don&rsquo;t need to choose those topics again.</p>
         ) : selectedTopics.length > 0 ? (
           <div className="mt-3">
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Selected topics</div>
@@ -434,6 +442,11 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
   const month = d.topics?.months.find((m) => m.monthKey === d.monthKey) ?? d.topics?.months[0] ?? null;
   const selected = d.topics && month ? d.topics.groups.flatMap((g) => g.topics).filter((t) => !t.declined && t.selection?.monthId === month.id) : [];
   const prod = d.progress?.production ?? null;
+  const filmedWork = !!d.progress && (d.progress.sessions.cards.some((s) => s.state === "FILMED") || d.progress.production.delivered > 0 || d.progress.production.approved > 0 || d.progress.production.awaitingYou > 0);
+  const topicHistoryNeedsReview = filmedWork && !!month && (
+    month.selected === 0 ||
+    selected.length < month.selected
+  );
   return (
     <Card>
       <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
@@ -458,6 +471,8 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
       )}
       {d.topicsFailed ? (
         <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your topics — refresh to try again.</p>
+      ) : topicHistoryNeedsReview ? (
+        <p className="mt-3 text-sm text-muted">Your filming and video work is on file. We&rsquo;re checking how earlier topics connect to this month; you don&rsquo;t need to choose those topics again.</p>
       ) : selected.length > 0 ? (
         <div className="mt-3">
           {/* The heading counts within the allowance; the surplus is said out
@@ -482,4 +497,3 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
     </Card>
   );
 }
-

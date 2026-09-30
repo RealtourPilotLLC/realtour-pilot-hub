@@ -34,11 +34,12 @@ import type { JourneyInput } from "@/lib/contentStatus";
 // ---------------------------------------------------------------------------
 
 export type OverviewFilterKey =
-  | "needs_approval" | "missing_planning" | "missing_appointment" | "awaiting_client"
+  | "needs_approval" | "needs_reconciliation" | "missing_planning" | "missing_appointment" | "awaiting_client"
   | "ready_to_film" | "in_production" | "awaiting_review" | "failed_automation" | "overdue";
 
 export const OVERVIEW_FILTERS: { key: OverviewFilterKey; label: string; hint: string }[] = [
   { key: "needs_approval", label: "Needs my approval", hint: "a strategy or script version sitting in review" },
+  { key: "needs_reconciliation", label: "Reconcile month", hint: "filming or a video exists, but its planning history is incomplete" },
   { key: "missing_planning", label: "Missing planning", hint: "no call booked and no written path chosen" },
   // The hint says exactly what the flag tests. It used to promise "preparation
   // is moving", which the flag never checked — Jordan clicked it expecting a
@@ -537,6 +538,13 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       awaitingInternalReview: pp?.awaitingInternalReview ?? 0,
     };
     const topicsNeeded = Math.max(0, production.owed - topicsSelected);
+    // Legacy projects and videos may be linked to this month without the
+    // corresponding planning fields. A client must not be asked to start over
+    // because those fields are empty. Keep partially filmed months actionable
+    // when their remaining topics are genuinely unplanned.
+    const downstreamWork = (ps?.filmedConfirmed ?? 0) > 0 || production.filmed > 0;
+    const missingPlanningRoute = callMode !== "NOT_INCLUDED" && !callHeld && !callSkipped && !bookedCall && planningMode === "UNDECIDED";
+    const needsReconciliation = downstreamWork && (topicsSelected === 0 || production.filmed > topicsSelected || missingPlanningRoute);
 
     // ---- communication — read only, empty is honest --------------------------------
     const myReminders = reminders.filter((r) => r.enrollmentId === e.id && (r.monthKey ? r.monthKey === key : true));
@@ -587,6 +595,12 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
       next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: "Fix the transcript" };
+    } else if (needsReconciliation) {
+      next = {
+        text: `Filming or video work exists, but ${topicsSelected === 0 || production.filmed > topicsSelected ? "the topic links" : "the planning route"} for ${monthLabel(key)} need checking before asking the client to plan again`,
+        owner: owner.STRATEGY.label, ownerDuty: "month reconciliation", blocked: "us", deadlineISO: deadline,
+        href: href("plan", "topics"), cta: "Check month history",
+      };
     } else if (callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall && m.strategyCallStatus !== "SCHEDULED" && !planningInWriting) {
       next = { text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Chase the booking" };
     } else if (callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" && !callHeld && !callSkipped && !bookedCall) {
@@ -606,8 +620,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (reviewNeeded > 0) {
       next = { text: `${reviewNeeded} script${reviewNeeded === 1 ? "" : "s"} waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
     } else if (drafting > 0 || (approved < production.owed && myScripts.length < production.owed)) {
-      const missing = Math.max(drafting, production.owed - myScripts.length);
-      next = { text: `${missing} script${missing === 1 ? "" : "s"} still to be written`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
+      const notStarted = Math.max(0, production.owed - myScripts.length);
+      const parts = [drafting > 0 ? `${drafting} draft script${drafting === 1 ? "" : "s"} need work` : null, notStarted > 0 ? `${notStarted} script${notStarted === 1 ? "" : "s"} not started` : null].filter(Boolean);
+      next = { text: parts.join(" · "), owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
     } else if (sessionState === "REQUESTED") {
       next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
     } else if (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED") {
@@ -638,13 +653,14 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 
     // ---- filters ------------------------------------------------------------------
     const flags: OverviewFilterKey[] = [];
+    if (needsReconciliation) flags.push("needs_reconciliation");
     if (reviewNeeded > 0 || strategyReviewNeeded > 0) flags.push("needs_approval");
     // Both planning flags are obligations, so they only apply to a LIVE
     // enrollment: a paused or ended client has no planning to be missing and
     // no appointment to book, and listing them here made the first filter
     // Jordan reaches for on his morning page mostly false alarms.
     const live = e.status === "ACTIVE";
-    if (live && (!m || (callMode !== "NOT_INCLUDED" && !callHeld && !callSkipped && !bookedCall && planningMode === "UNDECIDED") || !!blockingCallProblem)) flags.push("missing_planning");
+    if (live && (!m || (!needsReconciliation && missingPlanningRoute) || !!blockingCallProblem)) flags.push("missing_planning");
     // Compared with the PACKAGE (CP-10): a half-booked Pro month is missing an appointment.
     if (live && m && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED" || (ps?.missing ?? 0) > 0)) flags.push("missing_appointment");
     if (next.blocked === "client") flags.push("awaiting_client");
@@ -667,6 +683,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     else if (flags.includes("overdue")) priority = 10;
     else if (blockingCallProblem) priority = 20;
     else if (flags.includes("failed_automation")) priority = 30;
+    else if (flags.includes("needs_reconciliation")) priority = 35;
     else if (flags.includes("needs_approval")) priority = 40;
     else if (flags.includes("missing_planning")) priority = 50;
     else if (flags.includes("missing_appointment")) priority = 60;
@@ -719,7 +736,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 }
 
 function emptyCounts(): Record<OverviewFilterKey, number> {
-  return { needs_approval: 0, missing_planning: 0, missing_appointment: 0, awaiting_client: 0, ready_to_film: 0, in_production: 0, awaiting_review: 0, failed_automation: 0, overdue: 0 };
+  return { needs_approval: 0, needs_reconciliation: 0, missing_planning: 0, missing_appointment: 0, awaiting_client: 0, ready_to_film: 0, in_production: 0, awaiting_review: 0, failed_automation: 0, overdue: 0 };
 }
 
 // ---------------------------------------------------------------------------

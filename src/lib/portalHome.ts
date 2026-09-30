@@ -122,6 +122,10 @@ export type HomeActionsInput = {
   /** `noCallEligible`: the month may be planned in writing or on a call — an undecided month is asked which (§6.4). */
   planning: { planningMode: string; callStatus: string; noCallEligible?: boolean } | null;
   month: { monthKey: string; label: string; owed: number; selected: number } | null;
+  /** Downstream filming is evidence this month began, even if a legacy planning row is missing. */
+  filmingStarted?: boolean;
+  /** Staff must connect historical topic rows before the client is asked to select them again. */
+  topicHistoryNeedsReview?: boolean;
   /** The planning reader's owed answers (planModel.toAnswer): never an extra, never a topic the call covered. `missing` = its known gaps. */
   toAnswer: { title: string; missing?: number }[];
   /** `deferred` (A21): the client chose "Schedule later" for the session still to book — the action stays, and says so.
@@ -176,14 +180,14 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       });
     }
     const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;
-    if (undecided && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session) {
+    if (undecided && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "CHOOSE_ROUTE", count: 1, title: `How would you like to plan ${i.month?.label ?? "this month"}?`, detail: "Choose your topics here, or talk them through on a call.", cta: "Choose", dest: "plan", step: "route" });
-    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session) {
+    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "BOOK_CALL", count: 1, title: "Book your strategy call", detail: "We plan the month on it.", cta: "Book the call", dest: "plan", step: "call" });
     }
     // On the call route the topics are chosen together on the call — browsing
     // first is optional (§6.4), so it is not a to-do for the client.
-    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL") {
+    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview) {
       const n = i.month.owed - i.month.selected;
       add({ kind: "PICK_TOPICS", count: n, title: `Choose ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Choose topics", dest: "plan", extra: "pv=bank" });
     }

@@ -339,6 +339,10 @@ async function main() {
     c.ok("ACTIVE, call month, everything true: every kind in HOME_PRIORITY order", kinds(active) === home.HOME_PRIORITY.filter((k) => k !== "ANSWER_QUESTIONS" && k !== "CHOOSE_ROUTE" && k !== "PICK_TOPICS").join(","), kinds(active));
     const written = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "WRITTEN", callStatus: "NOT_REQUIRED" }, toAnswer: [{ title: "Kitchen" }] });
     c.ok("…a written month asks for the answers instead of the call", kinds(written) === home.HOME_PRIORITY.filter((k) => k !== "BOOK_CALL" && k !== "READ_REPLY" && k !== "CHOOSE_ROUTE").join(","), kinds(written));
+    const filmedLegacy = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "UNDECIDED", callStatus: "NOT_SCHEDULED", noCallEligible: true }, month: { monthKey, label: "x", owed: 4, selected: 0 }, filmingStarted: true, topicHistoryNeedsReview: true });
+    c.ok("C13: filmed legacy month does not ask for a fresh route or topic selection", !/CHOOSE_ROUTE|BOOK_CALL|PICK_TOPICS/.test(kinds(filmedLegacy)), kinds(filmedLegacy));
+    const partialPro = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "WRITTEN", callStatus: "NOT_REQUIRED" }, month: { monthKey, label: "x", owed: 8, selected: 5 }, filmingStarted: true, topicHistoryNeedsReview: false, session: { offerBooking: true, required: 2, missing: 1 } });
+    c.ok("C13: partial Pro month still offers its remaining topics and session", /PICK_TOPICS/.test(kinds(partialPro)) && /BOOK_SESSION/.test(kinds(partialPro)), kinds(partialPro));
     const viewerSeat = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, perms: { session: false, suggest: false, request: false, approve: false, profile: false } });
     c.ok("a view-only seat is never asked to review, approve, book or set up — only to download", [viewerSeat.primary, ...viewerSeat.more].filter(Boolean).map((a) => a!.kind).join(",") === "DOWNLOAD");
     await prisma.contentEnrollment.update({ where: { id: T.enrollmentId }, data: { status: "ENDED" } });

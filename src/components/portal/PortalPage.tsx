@@ -435,6 +435,13 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       const readyCount = home.attention?.readyToUse ?? readyPage.length;
       const sv = homeSessionView(home.progress, home.schedule, { canBook: perms.session, readOnly });
       const hp = home.topics ? planModel(home.topics, monthKey) : plan;
+      const filmedWork = !!home.progress && (home.progress.sessions.cards.some((s) => s.state === "FILMED") || home.progress.production.delivered > 0 || home.progress.production.approved > 0 || home.progress.production.awaitingYou > 0);
+      const visibleSelected = home.topics && hp?.month
+        ? home.topics.groups.flatMap((g) => g.topics).filter((t) => !t.declined && t.selection?.monthId === hp.month?.id).length
+        : 0;
+      const topicHistoryNeedsReview = filmedWork && !!hp?.month && (
+        hp.month.selected === 0 || visibleSelected < hp.month.selected
+      );
       actions = homeActions({
         status: enrollment.status, readOnly, perms,
         review: { count: reviewCount, single: reviewCount === 1 && waiting.length === 1 ? { id: waiting[0].id, title: waiting[0].title } : null, soonestDeadlineLabel: soonest?.label ?? null },
@@ -442,6 +449,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         unread: messagesUnread,
         planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
         month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
+        filmingStarted: filmedWork, topicHistoryNeedsReview,
         toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
         session: {
           offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing,

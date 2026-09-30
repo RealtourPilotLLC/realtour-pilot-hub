@@ -22,7 +22,7 @@ Status terms: **done in code** still requires its named acceptance check; **part
 | C10 | Locally committed before takeover; targeted test passed | Same rollout implementation; test normal named-client sign-in, excluded client and preview through the portal. |
 | C11 | Partial | Current readiness code already names `transcript_jobs` as a dependency; old Stage A runbook omits it. Correct release package and inspect 5-job backlog before any activation. Real-model journey requires authorized spend. |
 | C12 | Locally committed before takeover; targeted test passed | `c52d4a2` + `8654acb` + `77fa13d`; `isolation-boundary` 131/0. Build failure from `process.argv` in Edge graph repaired locally; production build passes. |
-| C13 | Open | Reconcile month/output linkage and next-owner ladder for the named cases; test partial Pro, extra output, next month and reminders without rewriting history. |
+| C13 | Partial | Staff ladder now routes filmed months with no topic links or planning route to staff reconciliation, and calls existing drafts drafts. Client Home suppresses a fresh planning/topic ask when filmed work contradicts its topic history; partial Pro with consistent topic history still offers remaining topics/session. Isolated checks cover filmed legacy and partial Pro, but the named live records, extra output, next month, and reminder readers still require replay. No historical link has been rewritten. |
 | C14 | Open | Exclude durable synthetic identities from normal counts, retain test mode; review comms identity and reset a separate realistic demo. |
 | C15 | Partial | Review Room now scopes its empty headline to cuts and labels mixed `media_qa` as delivery checks. Add the shared approved-but-undelivered summary and visual verification. |
 | C16 | Partial | Home and Review Room now label optional unticked QC boxes as **not recorded**, and later reopening as cause unclassified. Replace legacy metric with confirmed, attributed revision-issue reporting before using staff KPIs. |
@@ -60,5 +60,6 @@ Status terms: **done in code** still requires its named acceptance check; **part
 - `npm run build` passed on Node 20 after the Edge-compatible drill backstop correction.
 - Focused lint and TypeScript passed for changed files; existing unrelated lint warnings remain in older code.
 - Five isolated drills passed, 479 checks total: delivery truth 22, real Postgres Start 76, draft topics 138, rollout scope 112, isolation boundary 131. No skips or failures.
+- C13 follow-up: isolated UI-01 and CP-10 drills passed 215 checks including three new assertions; B2 planning passed 151 existing checks. Production build and focused lint passed after this patch.
 - A normal `next dev` began on port 3000 during the work (PID 193/196, Sep 30 11:30 ET) and holds `.next/dev/lock`. The isolated demo refused to start in this checkout; it was not terminated. Visual acceptance is pending in an isolated checkout.
 - No schema diff on this branch, no database write, no provider write, no deployment. Before a schema change, verify live migration state and fresh backup coverage; never reset or seed the shared database.

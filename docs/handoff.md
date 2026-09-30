@@ -23,6 +23,18 @@ primary `.next/dev/lock`; it was left running. Use an isolated checkout for
 demo/visual work. No schema change, production write, push, deployment, client
 send, booking, or automation activation was made in this takeover batch.
 
+The next local batch addresses C13 conservatively: staff see a reconciliation
+task for filmed work with missing topic/route history, and client Home avoids
+asking for that work again. Draft scripts are called drafts. This is partial:
+named live records and reminder/extra-output replay remain. Isolated UI-01 and
+CP-10 drills passed 215 checks; B2 planning passed 151. No historical row was
+relinked or generated. The isolated demo runs in a managed worktree at
+`~/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard` on ports
+3200/5599; it has its own `node_modules` and no `.env`, with provider network
+fencing. It must be stopped through `scripts/demo/run-demo-dev.sh --stop` from
+that worktree when no longer needed. The separate normal server on port 3000
+was no longer running at 12:20 ET; no process was terminated by this task.
+
 The previously reported deployed version is still `bf2e0b4`; read the live
 deployment stamp before any later release. September 28 full-backup files were
 present at takeover, but verify current migration state and backup coverage

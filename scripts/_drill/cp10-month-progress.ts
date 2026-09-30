@@ -249,6 +249,7 @@ async function main() {
     c.ok("NEW: the Shoot node is NOT done", shootOf(p).state !== "done", shootOf(p).state);
     const o = (await programOverview({ monthKey: MK, now })).rows.find((x) => x.enrollmentId === P1.enrollmentId)!;
     c.ok("NEW (overview): missing_appointment raised, not COMPLETED", o.flags.includes("missing_appointment") && o.session.state !== "COMPLETED", `${o.session.state} ${o.flags} · ${o.session.detail}`);
+    c.ok("C13: filmed session with no topic links asks staff to reconcile, not client to start over", o.flags.includes("needs_reconciliation") && o.nextAction.blocked === "us" && /topic links/.test(o.nextAction.text), `${o.nextAction.text} · ${o.nextAction.blocked}`);
     const { sv } = await homeOf(P1);
     c.ok("NEW (portal Home): 'Book your filming session' offered", sv.offerBooking === true, JSON.stringify({ missing: sv.missing, remaining: sched?.capacity.remaining }));
     c.ok("NEW (portal Home): the held session reads 'Filmed' because it was confirmed", sv.cards.length === 1 && sv.cards[0].state === "FILMED");
