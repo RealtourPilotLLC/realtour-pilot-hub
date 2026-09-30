@@ -2,7 +2,25 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — team conversation filters
+### Current resume point — notification read feedback
+
+`ce2a027` repairs the bell's optimistic Mark all read behavior. The button
+shows Saving, changes the count/highlight only after a confirmed JSON response,
+and shows an inline error with the prior unread count if the request fails or
+its outcome is uncertain. The API now uses a conditional monotonic watermark
+write, so an older tab closing cannot replace a later explicit all-read mark.
+No notification kind, audience, channel preference or source task changed.
+
+The isolated `journey-comms` drill passed 170/0, including a stale-tab request
+against the newer saved mark. Node20 TypeScript, focused lint and production
+build passed. In the signed, provider-fenced demo at 390px, a temporary forced
+POST 503 preserved six unread and showed the error. The temporary override was
+then removed; the next request returned 200 and the badge cleared only after
+that response. The demo server was stopped and its worktree is clean at
+`ce2a027`. These are TEST notifications, not a live staff read mark. No live
+database write, provider send, push or deployment.
+
+### Previous checkpoint — team conversation filters
 
 `19e7a00` extends the existing two-pane team message center in Communications
 and Editing Room with URL-backed All, Mine, Unread and Active work filters.
