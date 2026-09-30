@@ -667,7 +667,7 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const owedRaw = p.videosOwed;
   const owed = Math.max(owedRaw, 1);
   const deliveredDone = owedRaw > 0 && p.production.delivered >= owedRaw;
-  if (p.muted || deliveredDone || !p.monthId) return null;
+  if (p.muted || !p.monthId) return null;
   const monthShort = new Date(Date.UTC(Number(p.monthKey.slice(0, 4)), Number(p.monthKey.slice(5, 7)) - 1, 15)).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
   const callDone = !p.call.required || ["COMPLETED", "SKIPPED", "NOT_REQUIRED"].includes(p.call.status);
   const topicsDone = p.topics.clientSupplies || p.topics.selected >= owed;
@@ -675,6 +675,19 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const scriptsDone = p.scripts.ready >= owed && awaiting === 0;
   const s = p.sessions;
   const filmedDone = s.filmedConfirmed >= s.required;
+  // A legacy month can have confirmed filming without its planning/topic links.
+  // Keep that discrepancy on the office's desk before the ladder asks the
+  // client to plan work already filmed. A partially filmed Pro month with
+  // consistent links still follows the ordinary remaining-work ladder.
+  const downstreamWork = s.filmedConfirmed > 0 || p.production.filmed > 0;
+  const routeUnresolved = p.call.mode !== "NOT_INCLUDED" &&
+    p.planning?.route === "UNDECIDED" &&
+    !["COMPLETED", "SKIPPED", "SCHEDULED"].includes(p.call.status);
+  if (downstreamWork && (p.topics.selected === 0 || p.production.filmed > p.topics.selected || routeUnresolved)) {
+    const missingLinks = p.topics.selected === 0 || p.production.filmed > p.topics.selected;
+    return { text: `Filming or video work exists, but the ${missingLinks ? "topic links" : "planning route"} for ${monthShort} need checking before asking the client to plan again`, cta: "Check month history", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "month reconciliation", blocked: "us" };
+  }
+  if (deliveredDone) return null;
 
   if (!callDone) {
     return p.call.status === "SCHEDULED"
@@ -692,9 +705,9 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const proposed = p.planning?.counts.CONFIRMING ?? 0;
   if (proposed > 0) return { text: `${plural(proposed, "topic")} proposed on the call — keep or drop ${proposed === 1 ? "it" : "them"}`, cta: "Reconcile topics", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "us" };
   if (!scriptsDone) {
-    return awaiting > 0
-      ? { text: `${plural(awaiting, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" }
-      : { text: `${p.scripts.ready} of ${owed} scripts ready — the rest are being drafted`, cta: "See the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "scripts", blocked: "us" };
+    if (p.scripts.needsJordan > 0) return { text: `${plural(p.scripts.needsJordan, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" };
+    if (p.scripts.drafting > 0) return { text: `${plural(p.scripts.drafting, "draft script")} ${p.scripts.drafting === 1 ? "needs" : "need"} work`, cta: "Open scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "scripts", blocked: "us" };
+    return { text: `${p.scripts.ready} of ${owed} scripts ready — the rest are being drafted`, cta: "See the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "scripts", blocked: "us" };
   }
   if (!filmedDone) {
     const unverified = s.list.find((f) => f.state === "UNVERIFIED");

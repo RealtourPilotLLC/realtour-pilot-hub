@@ -83,7 +83,7 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
   // is something to read, not something to start.
   if (d.messages && d.messages.unread > 0) actions.push({ href: d.messages.href, icon: MessageSquare, text: `${d.messages.unread === 1 ? "A new reply" : `${d.messages.unread} new replies`} from the team`, tone: "brand" });
   if (!d.readOnly) {
-    if (p && p.planningMode !== "WRITTEN" && p.callStatus === "NOT_SCHEDULED") actions.push({ href: href("schedule"), icon: CalendarClock, text: "Book your strategy call — we plan the month on it", tone: "brand" });
+    if (p && p.planningMode !== "WRITTEN" && p.callStatus === "NOT_SCHEDULED" && !filmedWork) actions.push({ href: href("schedule"), icon: CalendarClock, text: "Book your strategy call — we plan the month on it", tone: "brand" });
     if (needReviewCount) actions.push({ href: href("videos"), icon: PlayCircle, text: `Review ${needReviewCount} video${needReviewCount === 1 ? "" : "s"} waiting on you`, tone: "brand" });
     if (currentMonth && selectedCount < currentMonth.owed && d.perms.suggest && !topicHistoryNeedsReview) actions.push({ href: href("topics"), icon: Lightbulb, text: `Choose ${currentMonth.owed - selectedCount} more topic${currentMonth.owed - selectedCount === 1 ? "" : "s"} for ${monthLabel(currentMonth.monthKey)}` });
     if (interviewsToFinish.length && d.perms.suggest) actions.push({ href: href("topics"), icon: PenLine, text: `Answer the questions for ${interviewsToFinish.length === 1 ? `“${interviewsToFinish[0].title}”` : `${interviewsToFinish.length} topics`}` });

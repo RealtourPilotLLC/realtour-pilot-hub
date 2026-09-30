@@ -222,6 +222,7 @@ async function main() {
     const o = (await programOverview({ monthKey: MK, now })).rows.find((x) => x.enrollmentId === S.enrollmentId)!;
     c.ok("NEW (overview): NOT_SCHEDULED and missing_appointment", o.session.state === "NOT_SCHEDULED" && o.flags.includes("missing_appointment"), `${o.session.state} ${o.flags}`);
     c.ok("NEW (client file): 0/1", mp.staffMonthView(p).sessionsCount === "0/1");
+    c.ok("C13: a new, unfilmed month still has a planning step", !!p.nextAction && !/reconcil|topic links|planning route/.test(`${p.nextAction.ownerDuty} ${p.nextAction.text}`), p.nextAction?.text ?? "null");
     const { cm, sv } = await homeOf(S);
     c.ok("NEW (portal): no session card, one missing", cm.sessions.cards.length === 0 && sv.missing === 1 && !sv.sessionBooked);
     const prev = await previewReminders(S.monthId, { now });
@@ -250,10 +251,53 @@ async function main() {
     const o = (await programOverview({ monthKey: MK, now })).rows.find((x) => x.enrollmentId === P1.enrollmentId)!;
     c.ok("NEW (overview): missing_appointment raised, not COMPLETED", o.flags.includes("missing_appointment") && o.session.state !== "COMPLETED", `${o.session.state} ${o.flags} · ${o.session.detail}`);
     c.ok("C13: filmed session with no topic links asks staff to reconcile, not client to start over", o.flags.includes("needs_reconciliation") && o.nextAction.blocked === "us" && /topic links/.test(o.nextAction.text), `${o.nextAction.text} · ${o.nextAction.blocked}`);
+    c.ok("C13: client-file next step agrees that missing legacy links are staff work", p.nextAction?.blocked === "us" && p.nextAction.ownerDuty === "month reconciliation" && /topic links/.test(p.nextAction.text), p.nextAction?.text ?? "null");
+    const reminder = await previewReminders(P1.monthId, { now });
+    c.ok("C13: reminder does not send a filmed legacy month back to planning", reminder.lanes.every((l) => !["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS"].includes(l.candidate.action ?? "")), reminder.lanes.map((l) => l.candidate.action).join(","));
     const { sv } = await homeOf(P1);
     c.ok("NEW (portal Home): 'Book your filming session' offered", sv.offerBooking === true, JSON.stringify({ missing: sv.missing, remaining: sched?.capacity.remaining }));
     c.ok("NEW (portal Home): the held session reads 'Filmed' because it was confirmed", sv.cards.length === 1 && sv.cards[0].state === "FILMED");
   }
+
+  // C13: a partial Pro month with real topic links still has remaining work.
+  // An extra output has a separate identity and cannot consume an allowance
+  // slot or make the staff reader invent missing topic links.
+  const C13P = await month("C13 Partial Pro", {
+    package: "Pro", appointments: [{ startAt: PAST, durationMin: 240 }],
+    topics: Array.from({ length: 5 }, (_, i) => ({ title: `C13 topic ${i + 1}`, selection: "SELECTED" as const })),
+  });
+  await prisma.appointment.update({ where: { id: C13P.appointmentIds[0] }, data: { completedAt: at(PAST.getTime() + 4 * HOUR) } });
+  await prisma.contentVideo.create({ data: {
+    enrollmentId: C13P.enrollmentId, clientId: C13P.clientId, monthId: C13P.monthId, monthKey: MK,
+    kind: "PROGRAM", countsTowardAllowance: false, title: "C13 extra TEST", status: "FILMED", filmedConfirmedAt: PAST, source: "manual",
+  } });
+  {
+    const p = await progressOf(C13P);
+    c.ok("C13: partial Pro keeps its five selected allowance topics and missing session", p.topics.selected === 5 && p.sessions.filmedConfirmed === 1 && p.sessions.missing === 1, `${p.topics.selected} · ${p.sessions.filmedConfirmed}/${p.sessions.required}`);
+    c.ok("C13: extra filmed output stays outside the allowance", p.filming.extras === 1 && p.production.filmed === 0, `${p.filming.extras} · ${p.production.filmed}`);
+    c.ok("C13: remaining Pro topics are still actionable", p.nextAction?.ownerDuty === "strategy" && /Pick .*topics/.test(p.nextAction.text), p.nextAction?.text ?? "null");
+  }
+
+  const C13D = await month("C13 Linked Draft", {
+    package: "Starter", appointments: [{ startAt: PAST, durationMin: 240 }],
+    topics: [{ title: "C13 first", selection: "SELECTED" }, { title: "C13 second", selection: "SELECTED" }],
+  });
+  await prisma.appointment.update({ where: { id: C13D.appointmentIds[0] }, data: { completedAt: at(PAST.getTime() + 4 * HOUR) } });
+  const c13Script = await prisma.contentScript.create({ data: {
+    enrollmentId: C13D.enrollmentId, clientId: C13D.clientId, monthId: C13D.monthId,
+    topicId: C13D.topicIds[0], title: "C13 linked TEST", body: "draft", status: "DRAFT",
+  } });
+  {
+    const p = await progressOf(C13D);
+    c.ok("C13: an existing draft is named as draft work, never unwritten or awaiting approval", p.scripts.drafting === 1 && p.nextAction?.ownerDuty === "scripts" && /draft script needs work/.test(p.nextAction.text), p.nextAction?.text ?? "null");
+    await prisma.contentScript.update({ where: { id: c13Script.id }, data: { status: "INTERNAL_REVIEW" } });
+    const review = await progressOf(C13D);
+    c.ok("C13: only an internal-review script asks for approval", review.scripts.needsJordan === 1 && review.nextAction?.ownerDuty === "script approval" && /waiting on your OK/.test(review.nextAction.text), review.nextAction?.text ?? "null");
+  }
+  const nextMonthKey = new Date(Date.UTC(Number(MK.slice(0, 4)), Number(MK.slice(5, 7)), 1)).toISOString().slice(0, 7);
+  const C13N = await buildContentMonth(prisma, { name: "C13 New Month TEST", monthKey: nextMonthKey, package: "Starter", project: false, topics: [] });
+  const fresh = await mp.monthProgress(C13N.enrollmentId, C13N.monthId, { now });
+  c.ok("C13: an unfilmed next month can still ask for planning", !!fresh?.nextAction && fresh.sessions.filmedConfirmed === 0 && fresh.nextAction.ownerDuty !== "month reconciliation", fresh?.nextAction?.text ?? "null");
 
   // =========================================================================
   c.head("4 · P2 — both Pro sessions booked on ONE order is fully scheduled");
