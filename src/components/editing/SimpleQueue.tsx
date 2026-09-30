@@ -801,9 +801,9 @@ export function SimpleQueue({
           ) : view === "upcoming" ? "No upcoming video shoots on the schedule." : view === "done" ? "Nothing completed in the last 60 days." : "Nothing open — new jobs add themselves when a video shoot is booked."}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-border bg-surface">
-          <table className="w-full min-w-[700px] text-sm">
-            <thead>
+        <div className="sm:overflow-x-auto sm:rounded-2xl sm:border sm:border-border sm:bg-surface">
+          <table className="block w-full min-w-0 text-sm sm:table sm:min-w-[700px]">
+            <thead className="sr-only sm:not-sr-only sm:table-header-group">
               <tr className="border-b border-border text-left text-[11px] font-semibold uppercase tracking-wide text-muted-2">
                 <th className="px-3 py-2">Task</th>
                 <th className="px-3 py-2">Video type</th>
@@ -816,7 +816,7 @@ export function SimpleQueue({
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
+            <tbody className="block space-y-3 sm:table-row-group sm:space-y-0 sm:divide-y sm:divide-border">
               {rows.map((r) => {
                 const t = TIER[r.tier];
                 return (
@@ -825,14 +825,14 @@ export function SimpleQueue({
                     onClick={() => { rememberQueueScroll(queueHref); router.push(jobHref(r.id)); }}
                     // No row-wide tooltip: it followed the cursor across every
                     // cell and sat on top of the controls underneath it.
-                    className="cursor-pointer align-top hover:bg-surface-2/50"
+                    className="block cursor-pointer rounded-2xl border border-border bg-surface p-3 align-top hover:bg-surface-2/50 sm:table-row sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0"
                   >
                     {/* min-w-52, up from 44: the copy glyph took the width the
                         address used to have, and streets like "2051 Old
                         Sumneytown Pike" started wrapping onto a second line —
                         every row a little taller, which is the opposite of
                         what Jordan asked for. */}
-                    <td className="min-w-52 px-3 py-2.5">
+                    <td className="block min-w-0 px-0 py-1 sm:table-cell sm:min-w-52 sm:px-3 sm:py-2.5">
                       <span className="flex items-start gap-1.5">
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
@@ -892,7 +892,8 @@ export function SimpleQueue({
                         column folded in here): "Premium" or "Premium · 4
                         videos". The deliverable labels, and an office-set
                         count, are on hover. */}
-                    <td className="px-3 py-2.5">
+                    <td className="block px-0 py-1 sm:table-cell sm:px-3 sm:py-2.5">
+                      <span className="mr-2 text-xs font-medium text-muted sm:hidden">Video</span>
                       <span
                         className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
                         style={{ backgroundColor: `${t.color}26`, color: t.color }}
@@ -905,7 +906,8 @@ export function SimpleQueue({
                         {r.videos > 1 ? ` · ${r.videos} videos` : ""}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5" onClick={swallow}>
+                    <td className="block border-t border-border px-0 pt-3 pb-1 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5" onClick={swallow}>
+                      <span className="mb-1 block text-xs font-medium text-muted sm:hidden">Stage</span>
                       <span className="inline-flex items-center gap-1">
                         {view === "upcoming" ? (
                           // An Upcoming row reads Waiting — unless the office
@@ -1017,16 +1019,18 @@ export function SimpleQueue({
                       )}
                     </td>
                     <td
-                      className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}
+                      className={cn("block px-0 py-1 text-xs font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
                     >
+                      <span className="mr-2 text-muted sm:hidden">{view === "upcoming" ? "Shoot" : "Due"}</span>
                       {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
                       {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
                     </td>
                     {!hideEditor && (
-                      <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                      <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5" onClick={swallow}>
+                        <span className="mr-2 text-xs font-medium text-muted sm:hidden">Editor</span>
                         {view === "done" ? (
                           // Delivered = credit, not live work — no reassign here
                           // (the server refuses too). A new cut on a finished
@@ -1038,7 +1042,8 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                    <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5" onClick={swallow}>
+                      <span className="mr-2 text-xs font-medium text-muted sm:hidden">Files</span>
                       <span className="inline-flex items-center gap-1">
                         {r.rawUrl && (
                           <LinkChip
@@ -1060,7 +1065,8 @@ export function SimpleQueue({
                         )}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-center" onClick={swallow}>
+                    <td className="block px-0 py-1 text-left sm:table-cell sm:px-3 sm:py-2.5 sm:text-center" onClick={swallow}>
+                      <span className="mr-2 text-xs font-medium text-muted sm:hidden">Messages</span>
                       <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
                         {r.comments}
                       </Link>
