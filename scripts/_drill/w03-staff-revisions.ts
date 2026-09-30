@@ -44,11 +44,18 @@ async function main() {
   const issue = first.briefId ? await prisma.revisionIssue.findFirst({ where: { sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${first.briefId}:` } } }) : null;
   const task = brief?.taskId ? await prisma.smartTask.findUnique({ where: { id: brief.taskId } }) : null;
   const project = await prisma.project.findUnique({ where: { id: projectId } });
+  const { revisionAskerLabel } = await import("@/lib/reviewAttribution");
   c.ok("staff request records original words and exact version", first.ok && brief?.originalText === words && brief.submissionId === one.id && brief.outputId === o1.id && brief.requestedByKind === "CLIENT_STAFF");
   c.ok("issue keeps output, version and timestamp, unclassified cause", issue?.outputId === o1.id && issue.raisedOnSubmissionId === one.id && issue.timeSec === 83 && issue.cause === "UNCLASSIFIED");
   c.ok("task and revision clock are created without changing approved cut", !!task && !!brief?.dueAt && project?.status === "REVISION" && (await prisma.reviewSubmission.findUnique({ where: { id: one.id } }))?.status === "APPROVED");
+  c.ok("staff attribution does not claim the client portal", !!brief && revisionAskerLabel({ askedAt: project?.revisionRequestedAt ?? null, client: f.clientName, bounces: [], briefs: [{ source: brief.source, createdAt: brief.createdAt, requestedBy: brief.requestedBy, requestedByKind: brief.requestedByKind }] })?.includes("in the Review Room") === true);
   const same = await requestApprovedCutRevision(form);
   c.ok("same request key returns one brief", same.ok && same.briefId === brief?.id && await prisma.revisionBrief.count({ where: { projectId } }) === 1);
+  const { startCutUpload } = await import("@/app/review/actions");
+  const unrelatedUpload = await startCutUpload({ projectId, deliverableId, slot: 2, fileName: "other-v3.mp4", sizeBytes: 100 });
+  const requestedUpload = await startCutUpload({ projectId, deliverableId, slot: 1, fileName: "requested-v2.mp4", sizeBytes: 100 });
+  c.ok("unrelated approved video still requires an explicit replacement reason", !unrelatedUpload.ok && unrelatedUpload.needsReason === true);
+  c.ok("named approved video passes version gate into self-check", !requestedUpload.ok && requestedUpload.needsSelfCheck === true);
 
   const msg = await prisma.projectMessage.create({ data: { projectId, authorName: "Kyle", body: "Client said: change the music, leave the title card.\nUse her exact wording." } });
   const chat = await requestApprovedCutRevision(makeForm(projectId, two.id, "Tampered text", msg.id));

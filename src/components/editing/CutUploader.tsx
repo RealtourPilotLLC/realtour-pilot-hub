@@ -311,11 +311,8 @@ function CutMessage({
   );
 }
 
-// revisionOpen: the client has a VIDEO-lane revision open on this job. An
-// approved cut normally takes no more versions; with a revision open the
-// corrected cut goes in as the next version of the same slot (the server's
-// startCutUpload allows exactly that — Sep 8 review: without it the editor
-// had no button for the one scenario the revision flow exists for).
+// reopenedSlotKeys: approved videos whose own slot has a newer named ask.
+// A job-level revision does not say every approved video needs replacing.
 // canOverrideExport: OWNER/ADMIN. Jordan or Kyle will occasionally have a
 // reason to send an over-spec file anyway, and a hard wall at 6pm with a client
 // waiting is its own kind of failure. An EDITOR never sees that button — and
@@ -334,9 +331,9 @@ function CutMessage({
 // while other videos are still owed here. Asked, never assumed: this panel
 // calls no work action itself, and "No" writes nothing.
 export function CutUploader({
-  projectId, cuts, canUpload, revisionOpen = false, officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null,
+  projectId, cuts, canUpload, reopenedSlotKeys = [], officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null,
 }: {
-  projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean;
+  projectId: string; cuts: CutRow[]; canUpload: boolean; reopenedSlotKeys?: string[];
   /** Every open video-lane ask is the office's reopen (officeReopenOf). */
   officeReopen?: { by: string | null } | null;
   canOverrideExport?: boolean;
@@ -579,7 +576,7 @@ export function CutUploader({
         {cuts.map((c) => {
           const key = `${c.deliverableId}:${c.slot}`;
           const b = busy[key];
-          const reopened = revisionOpen && c.latest?.status === "APPROVED";
+          const reopened = c.latest?.status === "APPROVED" && reopenedSlotKeys.includes(key);
           // A withdrawn version FREES its number (Sep 16): the next upload is
           // that same version, not the one after it.
           const withdrawn = c.latest?.status === "WITHDRAWN";

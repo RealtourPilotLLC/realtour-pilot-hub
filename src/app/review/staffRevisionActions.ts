@@ -9,6 +9,7 @@ import { raiseRevisionDetailed } from "@/lib/comms";
 import { saveUpload } from "@/lib/storage";
 import { ingestBriefItems } from "@/lib/revisionIssues";
 import { LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
+import { editorMeta } from "@/lib/editors";
 
 export type ApprovedRevisionTarget = {
   submissionId: string;
@@ -122,10 +123,12 @@ export async function requestApprovedCutRevision(data: FormData): Promise<Result
     if (at !== null) await prisma.revisionIssue.updateMany({
       where: { projectId, sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${revision.briefId}:` } }, data: { timeSec: at },
     });
+    const assigned = revision.taskId ? await prisma.smartTask.findUnique({ where: { id: revision.taskId }, select: { assignedKey: true } }) : null;
+    const owner = assigned?.assignedKey === "kyle" ? "Kyle for routing" : assigned?.assignedKey ? `${editorMeta(assigned.assignedKey)?.name ?? assigned.assignedKey}'s queue` : "the office for assignment";
     revalidatePath(`/review/${projectId}`);
     revalidatePath(`/edit/${projectId}`);
     revalidatePath(`/projects/${projectId}`);
-    return { ok: true, message: `Recorded for ${target.label}, version ${target.cut.round}. The editor has a revision task and the original words are saved.`, briefId: revision.briefId };
+    return { ok: true, message: `Recorded for ${target.label}, version ${target.cut.round}. The original words are saved; the revision task is with ${owner}.`, briefId: revision.briefId };
   } catch (e) {
     return reject(e instanceof Error ? e.message : "Could not record this revision. Try again.");
   }

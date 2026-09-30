@@ -1681,21 +1681,10 @@ export default async function EditBriefPage({
               // only for real: the server checks the role again and puts their
               // name on it (startCutUpload).
               canOverrideExport={!viewer?.impersonating && isOwnerAdmin}
-              // The client has asked for changes on the VIDEO lane, so an
-              // approved cut takes the correction as an ordinary next round —
-              // startCutUpload has allowed exactly that since Sep 8, and this
-              // page computed the flag from Sep 8 to Sep 18 without ever
-              // handing it over: left at its default the panel called an
-              // approved cut finished and asked the editor to justify replacing
-              // it. THE SEP 18 COMMIT SAID that happened "on the one job where
-              // the client had already done the asking" — it does not: the
-              // drill finds four open revision tasks on the board and not one
-              // of them sits on a job with an approved cut, so no row was in
-              // this state at the time and none is now. It is a shape that can
-              // occur, not a job that did. The flag itself now comes from
-              // videoLaneRevisionWhere, the same question the server asks, so
-              // the panel and startCutUpload can no longer disagree about it.
-              revisionOpen={revisionOpen}
+              // Only a named ask raised AFTER this slot's approval reopens its
+              // upload door. Another video's revision is not permission to
+              // treat this approved cut as the client's change request.
+              reopenedSlotKeys={openSlotKeys}
               officeReopen={officeReopen}
               cuts={shownCutRows}
               stillWorking={stillWorking}

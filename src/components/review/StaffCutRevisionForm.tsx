@@ -51,7 +51,7 @@ export function StaffCutRevisionForm({
     <form action={submit} className="space-y-3 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm" onFocus={loadTargets}>
       <div>
         <p className="font-semibold text-foreground">Record the client’s change request</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted">This creates an exact-video revision record and an editor task. It keeps the approved file and the client’s wording intact.</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted">This creates an exact-video revision record and an assigned task. It keeps the approved file and the client’s wording intact.</p>
       </div>
       {fixedTarget ? (
         <p className="rounded-lg bg-surface px-2.5 py-2 text-xs font-medium">{fixedTarget.label} · Version {fixedTarget.round}{fixedTarget.fileName ? ` · ${fixedTarget.fileName}` : ""}</p>

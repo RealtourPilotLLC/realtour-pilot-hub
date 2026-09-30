@@ -89,9 +89,10 @@ export function requesterLine(r: { requestedBy?: string | null; requestedByKind?
  *  that reads "<who> asked for changes" (the project page's status card, which
  *  adds " after delivery"). Null when nobody was recorded, and for the hub's
  *  own reopen rows (SYSTEM): nobody asked. */
-export function askedForChangesWords(kind: string | null | undefined, name: string | null | undefined): string | null {
+export function askedForChangesWords(kind: string | null | undefined, name: string | null | undefined, source?: string | null): string | null {
   const who = (name ?? "").trim();
   if (kind === "SYSTEM" || !who) return null;
+  if (source === "review_room_staff" && kind === "CLIENT_STAFF") return `${who} recorded the client's changes in the Review Room`;
   switch (kind) {
     case "EMAIL": return `${who} asked for changes by email`;
     case "TEXT": return `${who} asked for changes by text`;
@@ -252,7 +253,7 @@ export function revisionAskerLabel(o: {
   }
   for (const b of o.briefs) {
     if (!near(b.createdAt)) continue;
-    const named = askedForChangesWords(b.requestedByKind, b.requestedBy);
+    const named = askedForChangesWords(b.requestedByKind, b.requestedBy, b.source);
     if (b.source === "office") {
       if (named && b.requestedByKind === "OFFICE") officeHits.push({ at: b.createdAt, label: named });
       continue;

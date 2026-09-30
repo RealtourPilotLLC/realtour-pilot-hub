@@ -1743,16 +1743,28 @@ export async function startCutUpload(input: {
   const last = await prisma.reviewSubmission.findFirst({
     where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } },
     orderBy: { round: "desc" },
-    select: { round: true, status: true },
+    select: { round: true, status: true, decidedAt: true, completedAt: true },
   });
   // An approved cut takes no more versions — UNLESS the client has since asked
-  // for changes on the video lane (Sep 8 review): that is exactly the case
+  // for changes on this exact video (Sep 8 review): that is exactly the case
   // this rule used to lock out, and the corrected cut then had no way in
   // but a new file name in 05-Final-Video. The next round rides the same
   // slot; approval of the new version closes the ask (correctedCutApproved).
   if (last?.status === "APPROVED") {
     const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
-    const revisionOpen = (await prisma.smartTask.count({ where: videoLaneRevisionWhere(input.projectId) })) > 0;
+    const tasks = await prisma.smartTask.findMany({
+      where: videoLaneRevisionWhere(input.projectId),
+      select: { id: true, outputId: true, createdAt: true },
+    });
+    const rounds = tasks.length ? await prisma.reviewSubmission.findMany({
+      where: { projectId: input.projectId, deliverableId: { not: null } },
+      select: { id: true, deliverableId: true, slot: true },
+    }) : [];
+    const asked = tasks.length
+      ? (await (await import("@/lib/videoAsks")).slotsAskedAgain(input.projectId, tasks, rounds)).get(`${input.deliverableId}:${slot.slot}`)
+      : null;
+    const approvedAt = last.decidedAt ?? last.completedAt;
+    const askedThisVideo = !!asked && (!approvedAt || asked > approvedAt);
     // A DELIBERATE REPLACEMENT, AFTER EVERYTHING (Jordan, Sep 18: "they need a
     // way to re upload content after it was already approved submitted and
     // delivered").
@@ -1772,7 +1784,7 @@ export async function startCutUpload(input: {
     // deliver, does not re-deliver, and does not message anybody outside the
     // hub. If the client already has the old file, somebody still has to send
     // the new one, and the Ready-to-send card is where that happens.
-    if (!revisionOpen && !reason) {
+    if (!askedThisVideo && !reason) {
       return {
         ok: false,
         message: `${slot.label} is already approved. If you need to replace it, say why and upload again — the approved version is kept.`,
