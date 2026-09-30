@@ -2,7 +2,30 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — client script scope in Your Month
+### Current resume point — W05 focused delivery text check
+
+`35819c0` gives every job-level delivery-text incident an opaque outbox ID
+link from Home and Review Room. Communications resolves that ID server-side,
+admits only delivery texts, shows the exact intended text and recorded state,
+and narrows the OpenPhone inbox to conversations with the recipient. Phone
+numbers and draft words are not put in the URL. The focused view has no
+send/retry/settle control; an unknown result remains unknown.
+
+The isolated W05 drill passed 10/0, including rejection of an unrelated
+failed text and bad ID. Node20 TypeScript, focused lint and production build
+passed. A synthetic Avery TEST unknown outbox row in the provider-fenced demo
+appeared at the Review Room exit and opened the correct Communications card
+on desktop and 390px. OpenPhone is deliberately disconnected there, so live
+thread matching and a normal signed-role route remain release checks. The
+demo server was stopped; its clean worktree is at `35819c0`. The fixture is
+disposable demo data. No production write, provider send, push or deployment.
+
+One genuine policy decision is pending with Jordan: whether Kyle may mark an
+unknown delivery text as found in OpenPhone with attributed evidence, or
+whether only automated provider reconciliation may settle it. Until then the
+UI gives direct context but does not clear the unknown row or offer a retry.
+
+### Previous checkpoint — client script scope in Your Month
 
 `a9743fe` makes the client Plan subviews name their actual scope. The guided
 month says it is the current month's plan; Scripts says it is a review queue
