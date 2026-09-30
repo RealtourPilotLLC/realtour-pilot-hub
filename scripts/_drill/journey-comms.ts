@@ -780,6 +780,23 @@ async function main() {
   check("a stale window cannot retire them", (stale.body?.unread ?? 0) > 0, `${stale.body?.unread} still unread`);
   check("they are reachable on the next open", (await get()).items.some((r) => r.title.includes("Priya Raghavan")), (await get()).items[0]?.title ?? "none");
 
+  console.log("\n3e2. Explicit all-read must save before the badge clears; an older tab cannot rewind it");
+  const allMarked = await post({ all: true });
+  check("the server confirms all-read with its saved watermark and count", allMarked.status === 200 && allMarked.body?.ok === true && allMarked.body.unread === 0);
+  const allSaved = (await prisma.appUser.findUniqueOrThrow({ where: { id: kyleLogin.id }, select: { notificationsSeenAt: true } })).notificationsSeenAt;
+  check("all-read is durable", !!allSaved && allSaved > (new RealDate(page1.items[0].createdAt)));
+  // Simulate a request that captured an old user snapshot before all-read in
+  // another tab. Its supplied window covers the old unread span, but cannot
+  // write its older newest timestamp over the newer explicit mark.
+  setUser(null);
+  const staleTab = await notificationsRoute.POST(new NextRequest("http://drill.invalid/api/notifications", {
+    method: "POST", body: JSON.stringify({ newestId: page1.items[0].id, oldestId: oldestVisible?.id }),
+    headers: { "content-type": "application/json" },
+  }));
+  const staleTabBody = (await staleTab.json()) as { unread?: number; advanced?: boolean };
+  const afterOldTab = (await prisma.appUser.findUniqueOrThrow({ where: { id: kyleLogin.id }, select: { notificationsSeenAt: true } })).notificationsSeenAt;
+  check("the older tab cannot move the watermark backward", staleTab.status === 200 && staleTabBody.advanced === false && staleTabBody.unread === 0 && afterOldTab?.getTime() === allSaved?.getTime());
+
   console.log("\n3f. A cursor the 90-day trim deleted returns an honest empty page");
   const doomed = await prisma.notification.findFirstOrThrow({
     where: { dedupeKey: { startsWith: "drill-backlog-" } },

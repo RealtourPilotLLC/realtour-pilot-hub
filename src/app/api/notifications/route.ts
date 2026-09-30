@@ -112,6 +112,20 @@ function olderThan(
   };
 }
 
+// Two tabs can close their bells out of order. Never let an older partial
+// window replace a later Mark all read (or another tab's newer window).
+async function advanceSeenAt(userId: string, candidate: Date): Promise<{ seenAt: Date | null; advanced: boolean }> {
+  const changed = await prisma.appUser.updateMany({
+    where: {
+      id: userId,
+      OR: [{ notificationsSeenAt: null }, { notificationsSeenAt: { lt: candidate } }],
+    },
+    data: { notificationsSeenAt: candidate },
+  });
+  const saved = await prisma.appUser.findUniqueOrThrow({ where: { id: userId }, select: { notificationsSeenAt: true } });
+  return { seenAt: saved.notificationsSeenAt, advanced: changed.count > 0 };
+}
+
 export async function GET(req: NextRequest) {
   const u = await getCurrentUser();
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -184,12 +198,9 @@ export async function POST(req: NextRequest) {
   // because a person pressed a button that says so. Everything else has to earn
   // it by having shown the rows.
   if (body?.all === true) {
-    const next = new Date();
-    await prisma.appUser.update({
-      where: { id: u.id },
-      data: { notificationsSeenAt: next },
-    });
-    return NextResponse.json({ ok: true, unread: 0, seenAt: next, advanced: true });
+    const saved = await advanceSeenAt(u.id, new Date());
+    const unread = await prisma.notification.count({ where: { ...where, createdAt: { gt: saved.seenAt ?? new Date(0) } } });
+    return NextResponse.json({ ok: true, unread, seenAt: saved.seenAt, advanced: saved.advanced });
   }
 
   const newestId = typeof body?.newestId === "string" ? body.newestId : null;
@@ -215,13 +226,12 @@ export async function POST(req: NextRequest) {
   if (!newest || !oldest) {
     // The rows went away under us (the 90-day trim in the daily cron deletes
     // them). Nothing to be sure of, so nothing moves.
-    const unread = await prisma.notification.count({
-      where: { ...where, createdAt: { gt: seenAt } },
-    });
+    const actual = await prisma.appUser.findUniqueOrThrow({ where: { id: u.id }, select: { notificationsSeenAt: true } });
+    const unread = await prisma.notification.count({ where: { ...where, createdAt: { gt: actual.notificationsSeenAt ?? new Date(0) } } });
     return NextResponse.json({
       ok: true,
       unread,
-      seenAt: u.notificationsSeenAt,
+      seenAt: actual.notificationsSeenAt,
       advanced: false,
     });
   }
@@ -238,12 +248,12 @@ export async function POST(req: NextRequest) {
   let next = u.notificationsSeenAt;
   let advanced = false;
   if (uncovered === 0 && newest.createdAt > seenAt) {
-    next = newest.createdAt;
-    advanced = true;
-    await prisma.appUser.update({
-      where: { id: u.id },
-      data: { notificationsSeenAt: next },
-    });
+    const saved = await advanceSeenAt(u.id, newest.createdAt);
+    next = saved.seenAt;
+    advanced = saved.advanced;
+  } else {
+    const actual = await prisma.appUser.findUniqueOrThrow({ where: { id: u.id }, select: { notificationsSeenAt: true } });
+    next = actual.notificationsSeenAt;
   }
 
   const remaining = await prisma.notification.count({

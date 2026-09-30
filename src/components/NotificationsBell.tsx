@@ -107,6 +107,8 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
   const [loadingList, setLoadingList] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [markingAll, setMarkingAll] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
   // The PRE-open watermark rows are highlighted against (see header comment).
   const [seenAt, setSeenAt] = useState<string | null>(null);
   const openRef = useRef(open);
@@ -127,6 +129,7 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
   // Only a list that actually arrived may move the watermark. A swallowed fetch
   // error must leave it exactly where it was.
   const listLoadedRef = useRef(false);
+  const markAllPendingRef = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null); // portaled on mobile — checked separately for outside-click
 
@@ -204,17 +207,21 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
   // open the poll must not touch the highlight watermark or the list the person
   // is reading (they may have loaded older pages under it).
   useEffect(() => {
-    fetchCount(true);
+    let mounted = true;
+    queueMicrotask(() => { if (mounted) void fetchCount(true); });
     const t = setInterval(() => {
       if (document.visibilityState === "visible" && !openRef.current) fetchCount(true);
     }, 60_000);
-    return () => clearInterval(t);
+    return () => { mounted = false; clearInterval(t); };
   }, [fetchCount]);
 
   // Advance the watermark over what was actually on screen. The server re-checks
   // that this window covers the whole unread span and refuses to move otherwise,
   // so the worst this can do is leave rows unread.
   const markShownSeen = useCallback(() => {
+    // An explicit all-read request is still unresolved. A concurrent partial
+    // watermark write could otherwise land after it and move the mark backward.
+    if (markAllPendingRef.current) return;
     if (!listLoadedRef.current) return;
     const rows = itemsRef.current;
     if (rows.length === 0) return;
@@ -232,15 +239,35 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
       .catch(() => {});
   }, []);
 
-  const markAllRead = useCallback(() => {
-    setUnread(0);
-    setSeenAt(new Date().toISOString());
-    fetch("/api/notifications", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ all: true }),
-    }).catch(() => {});
-  }, []);
+  const markAllRead = useCallback(async () => {
+    if (markAllPendingRef.current) return;
+    markAllPendingRef.current = true;
+    setMarkingAll(true);
+    setMarkError(null);
+    try {
+      const res = await fetch("/api/notifications", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      if (!res.ok || res.status === 204) throw new Error("Read status was not saved");
+      const data = (await res.json()) as Feed & { ok?: boolean };
+      if (data.ok !== true || typeof data.unread !== "number" || typeof data.seenAt !== "string") {
+        throw new Error("Read status was not confirmed");
+      }
+      // The response is the saved watermark. Never set it to a browser clock
+      // value or claim the badge cleared while the request is still in flight.
+      setUnread(data.unread);
+      setSeenAt(data.seenAt);
+      listLoadedRef.current = false;
+    } catch {
+      setMarkError("Couldn’t confirm that notifications were marked read. Check the count and try again.");
+      void fetchCount(true);
+    } finally {
+      markAllPendingRef.current = false;
+      setMarkingAll(false);
+    }
+  }, [fetchCount]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -253,6 +280,7 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
       return;
     }
     setOpen(true);
+    setMarkError(null);
     // Refresh the list, but keep the pre-open watermark so the rows you came to
     // read still carry their dots. Nothing is marked seen until you close.
     setItems([]);
@@ -310,12 +338,14 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
             {unread > 0 && <span className="ml-1.5 font-normal text-muted-2">{unread} unread</span>}
           </div>
           <button
-            onClick={markAllRead}
-            className="text-xs font-medium text-muted-2 hover:text-foreground"
+            onClick={() => void markAllRead()}
+            disabled={markingAll || unread === 0}
+            className="min-h-11 rounded-lg px-2 text-sm font-medium text-muted-2 hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Mark all read
+            {markingAll ? "Saving…" : "Mark all read"}
           </button>
         </div>
+        {markError && <p role="alert" className="pb-1 text-sm leading-snug text-danger">{markError}</p>}
         {/* hasMore, not just behind > 0: toggle() clears it before the fetch, so
             this cannot flash "887 of them are further down" over an empty panel
             while the list is still in flight, and the line never points at a
