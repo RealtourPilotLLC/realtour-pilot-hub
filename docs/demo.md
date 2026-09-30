@@ -63,7 +63,8 @@ password shown. The demo hub is open without signing in, but signing in
 records your name on what you do.
 
 **1. The office's view of the month.** Open the **Content Program** page
-(`/content`). Avery and Parker each have a card showing their month:
+(`/content`) and choose **Show test records**. The normal operations view
+excludes these fixtures. Avery and Parker each have a card showing their month:
 Call → Topics → Scripts → Shoot → Delivered, and how many videos have been
 delivered. Press **Show ended clients** to bring in Morgan.
 *This proves the office sees every client's month in one place, all worked out
@@ -119,7 +120,8 @@ filmed. Press it to open the **editor's brief** for the job. It shows the
 shoot, the deadline, which topic each video is, and every cut sent to review,
 each with its state (approved, changes requested, with Jordan).
 
-**9. Internal review.** Open the **Review Room** (`/review`), or the printed
+**9. Internal review.** Open the **Review Room** (`/review`) and choose
+**Show test records**, or open the printed
 *Review Room: video B, round 2* link. The client's revision note sits above
 the player. The office either approves the cut, which sends it to the client,
 or sends it back to the editor. After an approval the demo also shows

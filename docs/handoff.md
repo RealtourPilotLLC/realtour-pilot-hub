@@ -51,10 +51,12 @@ destination (C19) needs Jordan's policy answer; other work can continue.
 C14 is in progress after the C18 commit. The normal Content roster and Review
 Room now omit synthetic client rows by the existing durable identity, with an
 explicit `?test=1` view; Review Room QC pattern numbers use the same scope.
-Node 20 TypeScript, focused lint, and production build pass. Browser comparison
-in the isolated demo is next. Global failure/workload readers, communication
+Node 20 TypeScript, focused lint, and production build pass. Isolated browser
+comparison on `c17f4a2`: normal September roster has 0 fixture clients/videos,
+test mode has 2 and 4/12; normal Review Room has 0 fixture cuts/checks, test
+mode has 3 cuts/3 checks. Global failure/workload readers, communication
 identity and the realistic demo remain open; do not call C14 complete. The
-isolated demo's current checkout is older than this change until restarted.
+isolated demo was restarted on this commit, ports 3200/5599, session 45353.
 
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
