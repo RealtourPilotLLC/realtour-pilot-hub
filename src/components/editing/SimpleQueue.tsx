@@ -321,7 +321,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
       <button
         onClick={toggle}
         title={note ?? pinTitle ?? undefined}
-        className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
+        className="inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-xs"
         style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
       >
         {pending ? <Loader2 className="size-3 animate-spin" /> : null}
@@ -393,7 +393,7 @@ function EditorSelect({ row }: { row: QueueRow }) {
         disabled={pending}
         onChange={(e) => pick(e.target.value)}
         className={cn(
-          "cursor-pointer rounded-md border border-transparent bg-transparent py-0.5 pl-1 pr-5 text-xs font-medium",
+          "min-h-11 cursor-pointer rounded-md border border-transparent bg-transparent py-1 pl-2 pr-5 text-sm font-medium sm:min-h-0 sm:py-0.5 sm:pl-1 sm:text-xs",
           "hover:border-border hover:bg-surface-2 disabled:opacity-60",
           err ? "text-danger" : key ? "text-foreground" : "text-muted-2",
         )}
@@ -441,7 +441,7 @@ function LinkChip({
 }) {
   const external = href.startsWith("http");
   const classes = cn(
-    "inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+    "inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-medium sm:min-h-0 sm:px-1.5 sm:py-0.5 sm:text-[11px]",
     brand
       ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
       : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
@@ -753,7 +753,7 @@ export function SimpleQueue({
               <select
                 value={who ?? ""}
                 onChange={(e) => updateFilters({ editor: e.target.value || null })}
-                className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
+                className="min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
               >
                 <option value="">Everyone ({forEditors.length})</option>
                 {people.map((p) => (
@@ -769,7 +769,7 @@ export function SimpleQueue({
                 value={when}
                 title={dueTitle(when)}
                 onChange={(e) => updateFilters({ due: e.target.value as DueFilter })}
-                className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
+                className="min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
               >
                 <option value="any">{DUE_LABEL.any[word]} ({forDue.length})</option>
                 {dueOptions.map((o) => (
@@ -837,7 +837,7 @@ export function SimpleQueue({
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
                         <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
-                          <span className="font-semibold">{r.street}</span>
+                          <span className="text-base font-semibold sm:text-sm">{r.street}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
                               Video-type cell beside it — the row doesn't grow. */}
@@ -883,7 +883,7 @@ export function SimpleQueue({
                           <CopyButton
                             value={r.url}
                             title={`Copy this job's link to send to an editor — ${r.url}`}
-                            className="text-muted-2 hover:text-brand"
+                            className="min-h-11 min-w-11 justify-center text-muted-2 hover:text-brand sm:min-h-0 sm:min-w-0"
                           />
                         </span>
                       </span>
@@ -906,7 +906,7 @@ export function SimpleQueue({
                         {r.videos > 1 ? ` · ${r.videos} videos` : ""}
                       </span>
                     </td>
-                    <td className="block border-t border-border px-0 pt-3 pb-1 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5" onClick={swallow}>
+                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5 sm:[&_button]:min-h-0 sm:[&_button]:min-w-0" onClick={swallow}>
                       <span className="mb-1 block text-xs font-medium text-muted sm:hidden">Stage</span>
                       <span className="inline-flex items-center gap-1">
                         {view === "upcoming" ? (
@@ -974,13 +974,13 @@ export function SimpleQueue({
                           arithmetic under it. Never rendered on a one-video
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
-                        <span className="mt-1 block text-[11px] text-muted-2">{r.videoBreakdown}</span>
+                        <span className="mt-1 block text-xs text-muted-2 sm:text-[11px]">{r.videoBreakdown}</span>
                       )}
                       {/* WHAT THE HANDOFF IS WAITING ON (O01) — the engine's
                           stored sentence, the one the edit card and Kyle's
                           board quote too. */}
                       {r.blocker && (
-                        <span className="mt-1 block max-w-64 whitespace-normal text-[11px] leading-snug text-warning">{r.blocker}</span>
+                        <span className="mt-1 block max-w-64 whitespace-normal text-xs leading-snug text-warning sm:text-[11px]">{r.blocker}</span>
                       )}
                       {/* TODAY'S EVIDENCE (Sep 28) — what an editor who is not
                           on this job right now DID to it today, labelled as
@@ -1019,7 +1019,7 @@ export function SimpleQueue({
                       )}
                     </td>
                     <td
-                      className={cn("block px-0 py-1 text-xs font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5", r.late ? "text-danger" : "")}
+                      className={cn("block px-0 py-1 text-sm font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5 sm:text-xs", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
@@ -1067,8 +1067,8 @@ export function SimpleQueue({
                     </td>
                     <td className="block px-0 py-1 text-left sm:table-cell sm:px-3 sm:py-2.5 sm:text-center" onClick={swallow}>
                       <span className="mr-2 text-xs font-medium text-muted sm:hidden">Messages</span>
-                      <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
-                        {r.comments}
+                      <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-semibold sm:min-h-0 sm:text-xs", r.comments > 0 ? "text-brand" : "text-muted-2")}>
+                        {r.comments}<span className="sm:hidden">Open chat</span>
                       </Link>
                     </td>
                   </tr>
