@@ -151,6 +151,10 @@ export type ReadyVideo = {
   submissionId: string;
   projectId: string;
   monthlyProgram: boolean;
+  /** Resolved from the linked month, never parsed from the project title. */
+  monthKey: string | null;
+  /** The output's linked topic title, if one is recorded. */
+  topicTitle: string | null;
   /** A monthly cut can be portal-visible before an owner can actually review it. */
   monthlyPortalReleased: boolean;
   /** null for cases (b)/(c) — there is no 1080p job to stamp */
@@ -780,7 +784,7 @@ function listingFactsOf(ev: ParsedEvidence | null, raw: string | null): ListingF
 /** One definition of the columns this module reads, so the query and the
  *  helpers below can never drift apart. */
 const CANDIDATE_SELECT = {
-  id: true, projectId: true, round: true, fileName: true, deliverableId: true, slot: true,
+  id: true, projectId: true, round: true, fileName: true, deliverableId: true, outputId: true, slot: true,
   assetPath: true, blobUrl: true, finalPath: true,
   decidedAt: true, decidedBy: true, completedAt: true, createdAt: true,
   downloadedAt: true, downloadedBy: true,
@@ -890,6 +894,21 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   // deliverable.
   const { winners, others } = collapseReExports(liveCuts);
 
+  // Monthly rows lead with the real month and the exact output's topic. A
+  // missing topic stays missing; the project title or slot label cannot stand
+  // in for a content topic the team has not linked yet.
+  const monthIds = [...new Set(winners.map((s) => s.project.contentMonthId).filter((id): id is string => !!id))];
+  const outputIds = [...new Set(winners.map((s) => s.outputId).filter((id): id is string => !!id))];
+  const [months, outputs] = await Promise.all([
+    monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
+    outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
+  ]);
+  const monthById = new Map(months.map((m) => [m.id, m.monthKey]));
+  const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((id): id is string => !!id))];
+  const topics = topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : [];
+  const topicById = new Map(topics.map((t) => [t.id, t.title]));
+  const outputById = new Map(outputs.map((o) => [o.id, o]));
+
   // Only read the settings when a row actually needs them to explain itself —
   // case (c) is the only branch that asks WHY no pass ever ran.
   const needSettings = winners.some((s) => !s.topazJob);
@@ -935,6 +954,8 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
       submissionId: sub.id,
       projectId: sub.projectId,
       monthlyProgram: Boolean(sub.project.contentMonthId),
+      monthKey: sub.project.contentMonthId ? monthById.get(sub.project.contentMonthId) ?? null : null,
+      topicTitle: sub.outputId ? topicById.get(outputById.get(sub.outputId)?.topicId ?? "")?.trim() || null : null,
       monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })),
       topazJobId: sub.topazJob?.id ?? null,
       street: cut.street,

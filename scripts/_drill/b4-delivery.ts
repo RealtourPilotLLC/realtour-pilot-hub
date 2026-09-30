@@ -543,6 +543,12 @@ async function main() {
     await mkJob(bo.projectId!, b1, { state: "done", finalPath: `/x/Bo reel - FINAL (Topaz).mp4`, savedAt: new Date(), outputCheck: "verified" });
     const bb = await rts.readyToSend({ projectId: bo.projectId! });
     c.ok("a client who cannot sign in: the render is a ready row with the 1080p file", bb.ready.some((r) => r.submissionId === b1 && r.file.source === "topaz-1080p"));
+    c.ok("monthly ready row names the linked month without inventing a topic", bb.ready.some((r) => r.submissionId === b1 && r.monthKey === "2026-09" && r.topicTitle === null));
+    const topic = await prisma.contentTopic.create({ data: { enrollmentId: bo.enrollmentId, clientId: bo.clientId, monthId: bo.monthId, title: "Bo's market update" }, select: { id: true } });
+    const output = await prisma.deliverableOutput.create({ data: { deliverableId: bo.deliverableId!, projectId: bo.projectId!, slot: 1, category: "VIDEO", topicId: topic.id }, select: { id: true } });
+    await prisma.reviewSubmission.update({ where: { id: b1 }, data: { outputId: output.id } });
+    const linked = await rts.readyToSend({ projectId: bo.projectId! });
+    c.ok("monthly ready row resolves the cut's own linked topic", linked.ready.some((r) => r.submissionId === b1 && r.monthKey === "2026-09" && r.topicTitle === "Bo's market update"));
   }
 
   // =========================================================================

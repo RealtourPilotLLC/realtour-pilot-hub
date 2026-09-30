@@ -69,6 +69,13 @@ function waited(hours: number): string {
   return `${d} day${d === 1 ? "" : "s"}`;
 }
 
+function monthName(monthKey: string): string {
+  const [year, month] = monthKey.split("-").map(Number);
+  return year && month >= 1 && month <= 12
+    ? new Date(Date.UTC(year, month - 1, 1, 12)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
+    : monthKey;
+}
+
 const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
   "topaz-1080p": "1080p",
   "editor-hub-copy": "Editor's file",
@@ -121,10 +128,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
       <NeedsFinishing rows={needsFinishing ?? []} />
       <NotTold rows={notTold} />
       <DeliveryTextIncidents rows={board.noticeIncidents ?? []} />
-      <p className="text-xs leading-relaxed text-muted">
-        Check the exact file and destination on each row. A download is not delivery; an older video on the listing
-        may be a different cut. For monthly work, confirm portal access and whether this job still needs an Aryeo copy.
-      </p>
+      <p className="text-sm text-muted">Each ready file still needs delivery proof. A download only starts the handoff.</p>
       {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
       <Rendering rows={rendering} />
     </div>
@@ -221,11 +225,11 @@ function Running({ rows }: { rows: RenderingVideo[] }) {
 const IN_HAND_HOURS = 4;
 
 function ReadyRow({ v }: { v: ReadyVideo }) {
-  // SOMEBODY IS DOING THIS RIGHT NOW — so stop shouting at them (Jordan, Sep
-  // 21). A row pulled ten minutes ago rendered identically to one nobody had
+  // SOMEBODY STARTED THE HANDOFF — so stop shouting at them briefly (Jordan,
+  // Sep 21). A row pulled ten minutes ago rendered identically to one nobody had
   // ever opened, both in red, both reading "ready 3 days". The red goes away
-  // while the file is freshly in hand and comes straight back after that,
-  // because "downloaded three days ago and still not sent" is a WORSE fact
+  // while the download is fresh and comes straight back after that,
+  // because "download started three days ago and still not sent" is a WORSE fact
   // than "nobody has touched it", not a better one.
   const inHand = v.downloadedHoursAgo != null && v.downloadedHoursAgo < IN_HAND_HOURS;
   const stale = v.waitingHours >= 24 && !inHand;
@@ -234,143 +238,140 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
     // name and the buttons stack instead of pushing the page sideways.
     <div className="min-w-0 rounded-xl border border-border px-3.5 py-2.5">
       <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm leading-snug">
-        <Link href={`/projects/${v.projectId}`} className="font-semibold hover:text-brand">{v.street}</Link>
-        <span className="min-w-0 text-muted">· {v.cutLabel}</span>
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">v{v.round}</span>
+        <Link href={`/projects/${v.projectId}`} className="font-semibold hover:text-brand">
+          {v.monthlyProgram ? v.clientName : v.street}
+        </Link>
+        {v.monthlyProgram && <span className="text-muted">· {v.monthKey ? monthName(v.monthKey) : "Month link unverified"}</span>}
+        {v.monthlyProgram && <span className="min-w-0 font-medium">· {v.topicTitle ?? "Topic not linked"}</span>}
         <span className={cn(
-          "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+          "rounded px-1.5 py-0.5 text-xs font-semibold",
           v.file.source === "topaz-1080p" ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning",
         )}>
           {SOURCE_CHIP[v.file.source]}
         </span>
         {v.overdue && (
-          <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold text-danger">
+          <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-bold text-danger">
             <AlertTriangle className="size-2.5" /> past due
           </span>
         )}
       </div>
 
-      <p className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] text-muted">
-        <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
-          <Avatar name={v.clientName} src={v.clientAvatarUrl} size={16} />
-          <span className="truncate">{v.clientName}</span>
-        </span>
-        <span>· approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}</span>
-        <span>·</span>
-        <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span>
+      <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-sm text-muted">
+        {!v.monthlyProgram && <span className="inline-flex items-center gap-1"><Avatar name={v.clientName} src={v.clientAvatarUrl} size={16} />{v.clientName} ·</span>}
+        <span className="font-medium text-foreground">{v.cutLabel} · version {v.round}</span>
+        <span>· Kyle · <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span></span>
       </p>
-      {v.monthlyProgram && (
-        <p className="mt-1 rounded-lg border border-warning/30 bg-warning/5 px-2.5 py-2 text-xs text-warning">
-          {v.monthlyPortalReleased ? "Portal release is recorded, but this client’s access or the Aryeo copy is unresolved." : "Portal release is still pending."} Confirm this job&rsquo;s
-          delivery route before marking it sent; the row stays open until then.
-        </p>
-      )}
+      <p className="mt-1 text-sm text-foreground/85">
+        {v.monthlyProgram
+          ? v.monthlyPortalReleased
+            ? "Portal review available under the current release rule; Aryeo copy requirement unresolved. Next: confirm this client's access and required delivery route."
+            : "Portal review pending; Aryeo copy requirement unresolved. Next: confirm the required delivery route and client access."
+          : "Destination: Aryeo listing. Next: verify this exact file, deliver the listing, then record the send."}
+      </p>
 
-      {/* WHO HAS THE FILE, AND SINCE WHEN.
-          Written by the download route once the file has actually been handed
-          over, not by the press — a 409, a 404 on a moved file or a 502 leaves
-          this line off the row, because nobody has anything. It is the
-          difference between "nobody has looked at this in three days" and "Kyle
-          is on it" — and on Sep 21, when 5 Raymond Cir, 453 Cardigan Terrace
-          and 5642 Limeport Rd had all been sitting for days, the card could not
-          tell those two apart on any row.
-
-          IT SAYS OUT LOUD THAT IT IS NOT DELIVERY. Having the file is one step
-          of three. The row is still here, still owed, and still needs Mark as
-          sent or the hourly Aryeo check — and the sentence says so rather than
-          letting a green tick imply otherwise. */}
+      {/* The route records a successful handoff of a link or start of a stream.
+          That cannot prove the device saved the complete file or the client
+          received it. A route error leaves the row unstamped. */}
       {v.downloadedAtISO && (
-        <p className={cn("mt-0.5 text-[11px]", inHand ? "text-success" : "font-medium text-warning")}>
-          Downloaded{v.downloadedBy ? ` by ${v.downloadedBy}` : ""} {etDateTime(new Date(v.downloadedAtISO))} ET
+        <p className={cn("mt-1 text-sm", inHand ? "text-muted" : "font-medium text-warning")}>
+          Download started{v.downloadedBy ? ` by ${v.downloadedBy}` : ""} {etDateTime(new Date(v.downloadedAtISO))} ET
           {inHand
-            ? " — still needs uploading to Aryeo and marking sent."
-            : ` — that was ${waited(v.downloadedHoursAgo ?? 0)} ago and it still hasn’t been marked sent.`}
+            ? " — receipt on the device and client delivery are not verified."
+            : ` — ${waited(v.downloadedHoursAgo ?? 0)} ago; client delivery is still unverified.`}
         </p>
       )}
 
-      {/* Which file, and why it is that one rather than the other. */}
-      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-2">
-        <span className="font-medium text-foreground">{v.file.says}</span>
-        {/* break-all: a real file name is "Done_322 N 62nd St_Stephen
-            Kennedy_1_prob4.mp4" and would otherwise run off a phone. */}
-        <span className="mt-0.5 block break-all font-mono text-[10px]">{v.file.fileName}</span>
-        {/* A DOOR, NOT A STRING (Jordan, Sep 21 2026: "I dont think we need to
-            show the file path on dropbox, a link to the dropbox would be
-            better"). The path was four lines of
-            /AutoHDR/2026/Q3/September/… that nobody reads and nobody can
-            click. This opens the file itself, previewed in the folder it lives
-            in, where Kyle already works.
+      {v.listing && (v.listing.contested || v.listing.couldBeThisCut) && (
+        <p className={cn("mt-2 flex items-start gap-1 text-sm", v.listing.contested ? "font-medium text-danger" : "text-warning")}>
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {v.listing.says}
+        </p>
+      )}
 
-            THE LABEL SAYS WHAT THE LINK DOES. It read "Open the Dropbox folder"
-            while the URL was built from the file's own path (review, Sep 21):
-            two different promises, neither of them kept. dropboxFileUrl in
-            lib/readyToSend now builds the one form Dropbox honours for a file —
-            the parent folder, with the file named in ?preview= — and the words
-            here match it.
+      {/* Technical file identity and provider evidence stay available without
+          making Kyle read them before he can see the next action. */}
+      <details className="mt-2 rounded-lg border border-border bg-surface-2/40">
+        <summary className="min-h-11 cursor-pointer px-3 py-2.5 text-sm font-medium">File and delivery evidence</summary>
+        <div className="px-3 pb-3">
+          <p className="text-sm leading-relaxed text-muted">
+            <span className="block">Approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}.</span>
+            <span className="mt-1 block font-medium text-foreground">{v.file.says}</span>
+            {/* break-all: a real file name is "Done_322 N 62nd St_Stephen
+                Kennedy_1_prob4.mp4" and would otherwise run off a phone. */}
+            <span className="mt-0.5 block break-all font-mono text-xs">{v.file.fileName}</span>
+            {/* A DOOR, NOT A STRING (Jordan, Sep 21 2026: "I dont think we need to
+                show the file path on dropbox, a link to the dropbox would be
+                better"). The path was four lines of
+                /AutoHDR/2026/Q3/September/… that nobody reads and nobody can
+                click. This opens the file itself, previewed in the folder it lives
+                in, where Kyle already works.
 
-            The full path is still on the row, as the link's title: a deep
-            link into a folder that has since been reorganised lands somewhere
-            unhelpful, and the string is what you search with when it does —
-            322 N 62nd St's Final Video folder was emptied out from under this
-            very pointer. Shown on hover, not in the layout. */}
-        {v.file.dropboxUrl && (
-          <a
-            href={v.file.dropboxUrl}
-            target="_blank"
-            rel="noreferrer"
-            title={v.file.dropboxPath ?? undefined}
-            className="mt-0.5 inline-flex items-center gap-1 text-muted hover:text-brand hover:underline"
-          >
-            <FileVideo className="size-3 shrink-0" />
-            Open this file in Dropbox
-          </a>
-        )}
-        {/* Only when the bytes come from the hub's own store AND no filed copy
-            is on record. Saying "it's in Dropbox" when it is not is how this
-            morning happened — and saying it is NOT there when it is sends Kyle
-            hunting for a file he is standing on. */}
-        {v.file.source === "editor-hub-copy" && !v.file.dropboxPath && (
-          <span className="mt-0.5 block">The hub is holding this file — it isn&rsquo;t in the job&rsquo;s Final Video folder.</span>
-        )}
-        {v.file.why && <span className="mt-1 block italic">Why the 1080p pass didn&rsquo;t produce it: {v.file.why}</span>}
-        {/* WHAT ARYEO IS ALREADY SHOWING ON THIS LISTING.
-            The card cannot prove that the video up there is this file — a
-            re-cut looks exactly like a first cut from the outside — so it
-            stops pretending the question isn't there and answers the half it
-            can. A row that is really done becomes one look and one tap with the
-            evidence beside it instead of a trip to Aryeo to find out; a row
-            that is really owed gets the listing saying so out loud.
+                THE LABEL SAYS WHAT THE LINK DOES. It read "Open the Dropbox folder"
+                while the URL was built from the file's own path (review, Sep 21):
+                two different promises, neither of them kept. dropboxFileUrl in
+                lib/readyToSend now builds the one form Dropbox honours for a file —
+                the parent folder, with the file named in ?preview= — and the words
+                here match it.
 
-            THREE COLOURS, BECAUSE THEY ARE THREE DIFFERENT SITUATIONS and
-            colour is what gets scanned first. Muted: the listing supports the
-            row, or nobody has looked — nothing to decide. Warning: something up
-            there could be this file, so somebody has to play it before the
-            button. Danger: the client has complained about this job SINCE this
-            file was ready, so what is up there may be the very thing they are
-            complaining about — 322 N 62nd St, where clearing the row costs a
-            client their video. Until Sep 17 these last two rendered
-            identically, in the same colour, with the same closing words. */}
-        {v.listing && (
-          <span
-            className={cn(
-              "mt-1 flex items-start gap-1",
-              v.listing.contested ? "font-medium text-danger" : v.listing.couldBeThisCut ? "text-warning" : "text-muted-2",
+                The full path is still on the row, as the link's title: a deep
+                link into a folder that has since been reorganised lands somewhere
+                unhelpful, and the string is what you search with when it does —
+                322 N 62nd St's Final Video folder was emptied out from under this
+                very pointer. Shown on hover, not in the layout. */}
+            {v.file.dropboxUrl && (
+              <a
+                href={v.file.dropboxUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={v.file.dropboxPath ?? undefined}
+                className="mt-0.5 inline-flex items-center gap-1 text-muted hover:text-brand hover:underline"
+              >
+                <FileVideo className="size-3 shrink-0" />
+                Open this file in Dropbox
+              </a>
             )}
-          >
-            {v.listing.contested ? <AlertTriangle className="mt-0.5 size-3 shrink-0" /> : <ExternalLink className="mt-0.5 size-3 shrink-0" />}
-            {v.listing.says}
-          </span>
-        )}
-        {/* Two approved exports of one video. The newest is above; the others
-            are NAMED rather than dropped, so "which file did I send?" has an
-            answer on screen. */}
-        {v.alsoOnFile.length > 0 && (
-          <span className="mt-1 flex items-start gap-1 break-all">
-            <Files className="mt-0.5 size-3 shrink-0" />
-            Also approved on this job, older: {v.alsoOnFile.join(", ")} — the newest is the one offered here.
-          </span>
-        )}
-      </p>
+            {/* Only when the bytes come from the hub's own store AND no filed copy
+                is on record. Saying "it's in Dropbox" when it is not is how this
+                morning happened — and saying it is NOT there when it is sends Kyle
+                hunting for a file he is standing on. */}
+            {v.file.source === "editor-hub-copy" && !v.file.dropboxPath && (
+              <span className="mt-0.5 block">The hub is holding this file — it isn&rsquo;t in the job&rsquo;s Final Video folder.</span>
+            )}
+            {v.file.why && <span className="mt-1 block italic">Why the 1080p pass didn&rsquo;t produce it: {v.file.why}</span>}
+            {/* WHAT ARYEO IS ALREADY SHOWING ON THIS LISTING.
+                The card cannot prove that the video up there is this file — a
+                re-cut looks exactly like a first cut from the outside — so it
+                stops pretending the question isn't there and answers the half it
+                can. A row that is really done becomes one look and one tap with the
+                evidence beside it instead of a trip to Aryeo to find out; a row
+                that is really owed gets the listing saying so out loud.
+
+                THREE COLOURS, BECAUSE THEY ARE THREE DIFFERENT SITUATIONS and
+                colour is what gets scanned first. Muted: the listing supports the
+                row, or nobody has looked — nothing to decide. Warning: something up
+                there could be this file, so somebody has to play it before the
+                button. Danger: the client has complained about this job SINCE this
+                file was ready, so what is up there may be the very thing they are
+                complaining about — 322 N 62nd St, where clearing the row costs a
+                client their video. Until Sep 17 these last two rendered
+                identically, in the same colour, with the same closing words. */}
+            {v.listing && !v.listing.contested && !v.listing.couldBeThisCut && (
+              <span className="mt-1 flex items-start gap-1 text-muted-2">
+                <ExternalLink className="mt-0.5 size-3 shrink-0" />
+                {v.listing.says}
+              </span>
+            )}
+            {/* Two approved exports of one video. The newest is above; the others
+                are NAMED rather than dropped, so "which file did I send?" has an
+                answer on screen. */}
+            {v.alsoOnFile.length > 0 && (
+              <span className="mt-1 flex items-start gap-1 break-all">
+                <Files className="mt-0.5 size-3 shrink-0" />
+                Also approved on this job, older: {v.alsoOnFile.join(", ")} — the newest is the one offered here.
+              </span>
+            )}
+          </p>
+        </div>
+      </details>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
