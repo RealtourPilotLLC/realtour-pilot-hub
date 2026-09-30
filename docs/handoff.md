@@ -2,7 +2,38 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — W06 photographer handoff
+### Current resume point — W06 pre-shoot brief read
+
+W06 upload/handoff code and notes are committed through `24eb0ab`.
+`3ba7982` adds `ShootBriefRead`, a durable per-project/per-photographer
+snapshot of what the field brief showed. The shoot page compares the last read
+with current released scripts, topic choices, field direction, per-video
+briefs/chosen assets, pronunciation and references. The assigned photographer
+can mark the current version read; the server re-reads it and refuses a stale
+page digest. Owner previews and unassigned photographers cannot mark it read.
+`967390c` adjusts the prompt for office viewers who cannot acknowledge.
+
+The isolated W06 brief drill passed 13/0, including actual signed session
+cookies, assignment/preview authorization, stale version refusal, idempotent
+repeat, exact script/shot-list delta and preserved prior snapshot. Node20
+typecheck, focused lint and build passed; the small viewer-copy follow-up
+passed typecheck/lint. The isolated demo showed the pre-shoot card, current
+released scripts, expanded script readability and mobile layout at 390px.
+The fenced demo server was stopped and its clean worktree now points at
+`967390c`. No production mutation, provider call, client message, financial
+change, push or deployment occurred.
+
+W06 remains partial: actual raw location/fresh Dropbox verification, a normal
+photographer browser journey, and any final grouping of game-plan/must-get/
+avoid content remain. `ShootBriefRead` is a **fourth** additive local schema
+table; none of the four tables has been pushed to live Neon. Production backup
+and schema-diff evidence from this takeover remain valid; recheck the live
+diff before a schema rollout and obtain deployment approval. W05's failed or
+unknown notification/provider states and monthly policy are still open; then
+continue Kyle/James operating work and U0–U6. This is a checkpoint, not
+release acceptance.
+
+### Previous checkpoint — W06 photographer handoff
 
 W05 is committed at `07d25d1` plus `d68b99c` (verification and a monthly
 route link correction). W06's first commits are `895601a` and `13b0d77`.
