@@ -88,7 +88,7 @@ export function SelfCheckDialog({
               {onBehalfOf ? <> · you are checking it on behalf of <span className="font-medium text-foreground">{onBehalfOf}</span>, and it is recorded that way</> : null}
             </p>
           </div>
-          <button type="button" onClick={onCancel} disabled={pending} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Close">
+          <button type="button" onClick={onCancel} disabled={pending} className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2" aria-label="Close">
             <X className="size-4" />
           </button>
         </div>
@@ -108,7 +108,7 @@ export function SelfCheckDialog({
                       <button
                         type="button"
                         onClick={() => set(it.key, "YES")}
-                        className={cn("inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-semibold", a?.answer === "YES" ? "border-success bg-success text-white" : "border-border hover:bg-surface-2")}
+                        className={cn("inline-flex min-h-11 items-center gap-1 rounded-lg border px-3 text-sm font-semibold", a?.answer === "YES" ? "border-success bg-success text-white" : "border-border hover:bg-surface-2")}
                       >
                         <CheckCircle2 className="size-3.5" /> Yes
                       </button>
@@ -116,7 +116,7 @@ export function SelfCheckDialog({
                         <button
                           type="button"
                           onClick={() => set(it.key, "NA", a?.reason ?? it.naHint ?? "")}
-                          className={cn("rounded-lg border px-2.5 py-1 text-xs font-medium", a?.answer === "NA" ? "border-brand bg-brand-soft text-brand" : "border-border text-muted hover:bg-surface-2")}
+                          className={cn("min-h-11 rounded-lg border px-3 text-sm font-medium", a?.answer === "NA" ? "border-brand bg-brand-soft text-brand" : "border-border text-muted hover:bg-surface-2")}
                         >
                           Not for this video
                         </button>
@@ -127,7 +127,7 @@ export function SelfCheckDialog({
                         value={a.reason ?? ""}
                         onChange={(e) => set(it.key, "NA", e.target.value)}
                         placeholder={it.naHint ?? "Why it doesn't apply"}
-                        className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs outline-none focus:border-brand"
+                        className="mt-2 min-h-11 w-full rounded-lg border border-border bg-surface-2 px-3 text-sm outline-none focus:border-brand"
                       />
                     )}
                     {a?.answer === "NA" && (a.reason ?? "").trim().length < SELF_CHECK_REASON_MIN && (
@@ -159,14 +159,14 @@ export function SelfCheckDialog({
                     <button
                       type="button"
                       onClick={() => setDone((d) => ({ ...d, [i.id]: true }))}
-                      className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", done[i.id] === true ? "border-success bg-success text-white" : "border-border hover:bg-surface-2")}
+                      className={cn("min-h-11 rounded-lg border px-3 text-sm font-semibold", done[i.id] === true ? "border-success bg-success text-white" : "border-border hover:bg-surface-2")}
                     >
                       Done in this version
                     </button>
                     <button
                       type="button"
                       onClick={() => setDone((d) => ({ ...d, [i.id]: false }))}
-                      className={cn("rounded-lg border px-2.5 py-1 text-xs font-medium", done[i.id] === false ? "border-warning bg-warning-soft text-warning" : "border-border text-muted hover:bg-surface-2")}
+                      className={cn("min-h-11 rounded-lg border px-3 text-sm font-medium", done[i.id] === false ? "border-warning bg-warning-soft text-warning" : "border-border text-muted hover:bg-surface-2")}
                     >
                       Not done
                     </button>
@@ -176,7 +176,7 @@ export function SelfCheckDialog({
                       value={why[i.id] ?? ""}
                       onChange={(e) => setWhy((w) => ({ ...w, [i.id]: e.target.value }))}
                       placeholder="Why — e.g. the client said to leave it, waiting on their logo file"
-                      className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs outline-none focus:border-brand"
+                      className="mt-2 min-h-11 w-full rounded-lg border border-border bg-surface-2 px-3 text-sm outline-none focus:border-brand"
                     />
                   )}
                 </li>
@@ -188,7 +188,7 @@ export function SelfCheckDialog({
         {err && <p className="mt-3 text-xs text-danger">{err}</p>}
         {!verdict.ok && <p className="mt-3 text-[11px] text-muted">{verdict.message}</p>}
         <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-          <button type="button" onClick={onCancel} disabled={pending} className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted hover:bg-surface-2">
+          <button type="button" onClick={onCancel} disabled={pending} className="min-h-11 rounded-lg border border-border px-3 text-sm text-muted hover:bg-surface-2">
             Not yet
           </button>
           <button
@@ -207,7 +207,7 @@ export function SelfCheckDialog({
                 }
               });
             }}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />} Checked — send it
           </button>

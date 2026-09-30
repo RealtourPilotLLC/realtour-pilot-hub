@@ -36,7 +36,7 @@ export function DraftUpdateDialog({
       <button
         type="button"
         onClick={() => { setOpen(true); setRes(null); setCopied(false); }}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/20"
+        className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-brand/10 px-3 text-sm font-medium text-brand hover:bg-brand/20"
       >
         <Sparkles className="size-3.5" /> Draft update
       </button>
@@ -47,7 +47,7 @@ export function DraftUpdateDialog({
                 <p className="text-sm font-semibold">Draft a client update</p>
                 <p className="truncate text-xs text-muted">{label}</p>
               </div>
-              <button type="button" aria-label="Close" disabled={busy} onClick={() => setOpen(false)} className="rounded-md p-1 text-muted hover:bg-surface-2">
+              <button type="button" aria-label="Close" disabled={busy} onClick={() => setOpen(false)} className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2">
                 <X className="size-4" />
               </button>
             </div>
@@ -65,7 +65,7 @@ export function DraftUpdateDialog({
                   type="button"
                   disabled={busy}
                   onClick={() => { setMode(k); setRes(null); }}
-                  className={cn("rounded-lg px-2.5 py-1 text-xs font-medium", mode === k ? "bg-surface-2 ring-1 ring-border" : "text-muted hover:bg-surface-2")}
+                  className={cn("min-h-11 rounded-lg px-3 text-sm font-medium", mode === k ? "bg-surface-2 ring-1 ring-border" : "text-muted hover:bg-surface-2")}
                 >
                   {words}
                 </button>
@@ -79,7 +79,7 @@ export function DraftUpdateDialog({
                 disabled={busy}
                 value={when}
                 onChange={(e) => { setWhen(e.target.value); setRes(null); }}
-                className="mt-1 block w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-brand"
+                className="mt-1 block min-h-11 w-full rounded-lg border border-border bg-surface-2 px-3 text-sm outline-none focus:border-brand"
               />
             </label>
             <button
@@ -98,7 +98,7 @@ export function DraftUpdateDialog({
                   }
                 });
               }}
-              className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-action px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Draft it
             </button>
@@ -111,7 +111,7 @@ export function DraftUpdateDialog({
                   <button
                     type="button"
                     onClick={() => { navigator.clipboard?.writeText(res.draft ?? ""); setCopied(true); }}
-                    className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
+                    className="inline-flex min-h-11 items-center gap-1 px-2 text-sm text-muted hover:text-foreground"
                   >
                     <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
                   </button>
