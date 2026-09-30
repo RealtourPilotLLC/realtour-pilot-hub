@@ -16,6 +16,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { ReplyQueue } from "@/components/comms/ReplyQueue";
 import { replyQueue, replyWaitingSummary } from "@/lib/replyQueue";
 import { formatDistanceToNow } from "date-fns";
+import { deliveryNoticeFocus } from "@/lib/deliveryNoticeIncidents";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +82,7 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
   );
 }
 
-export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string }> }) {
+export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string; incident?: string }> }) {
   await requirePageAccess("communications");
   const sp = await searchParams;
   const tab: CommsTab =
@@ -200,12 +201,37 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
     );
   }
 
+  // A delivery exception links here by opaque outbox id. Resolve its phone
+  // server-side, never in the URL, and refuse unrelated outbox identities.
+  const incident = await deliveryNoticeFocus(sp.incident);
+  const incidentProject = incident?.projectId
+    ? await prisma.project.findUnique({ where: { id: incident.projectId }, select: { title: true } }).catch(() => null)
+    : null;
+  const incidentPhone = incident ? phoneKey(incident.toRef) : null;
+  const incidentCard = incident ? (
+    <section className="mb-4 rounded-2xl border border-warning/40 bg-warning/5 p-4" aria-label="Delivery text check">
+      <p className="text-sm font-semibold">Delivery text check · {incidentProject?.title ?? "Job"}</p>
+      <p className="mt-1 text-sm text-muted">
+        {incident.state === "accepted" ? "The provider later accepted this text." : incident.state === "unknown" ? "The provider outcome is unconfirmed. It may already have sent." : incident.state === "failed" ? "The send failed before provider acceptance." : "The send is still pending or in progress."}
+        {" "}Queued {formatDistanceToNow(incident.createdAt, { addSuffix: true })}. {incident.state === "accepted" ? "The provider accepted it; no retry is needed." : "Compare the exact text and time with the conversation below before any retry."}
+      </p>
+      <blockquote className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-surface p-3 text-sm">{incident.body}</blockquote>
+      <div className="mt-2 flex flex-wrap gap-3 text-sm">
+        <Link href={`/projects/${incident.projectId}`} className="font-medium text-brand underline">Open job</Link>
+        <Link href="/communications" className="font-medium text-muted underline">All conversations</Link>
+      </div>
+    </section>
+  ) : sp.incident ? (
+    <p role="alert" className="mb-4 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning">That delivery text could not be identified. Open the job from Home and check its latest delivery state.</p>
+  ) : null;
+
   const connected = await getSecret("openphone");
   if (!connected) {
     return (
       <div>
         <PageHeader title="Communications" subtitle="Calls & texts from OpenPhone" />
         <div className="p-6">
+          {incidentCard}
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <Phone className="mx-auto mb-2 size-6 text-muted-2" />
             <p className="text-sm text-muted">
@@ -291,6 +317,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
       const groupName = isGroup ? (conv.name || others.map(nameFor).join(", ")) : "";
       return { conv, phone, others, isGroup, groupName, client, contact };
     })
+    .filter((r) => !incident || (incidentPhone?.length === 10 && r.others.some((p) => phoneKey(p) === incidentPhone)))
     .sort((a, b) => new Date(b.conv.lastActivityAt ?? 0).getTime() - new Date(a.conv.lastActivityAt ?? 0).getTime())
     .slice(0, DISPLAY_CAP);
 
@@ -298,14 +325,15 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
     <div>
       <PageHeader
         title="Communications"
-        subtitle={totalConversations > rows.length ? `${rows.length} most recent of ${totalConversations} conversations` : `${rows.length} conversations`}
+        subtitle={incident ? `${rows.length} matching conversation${rows.length === 1 ? "" : "s"}` : totalConversations > rows.length ? `${rows.length} most recent of ${totalConversations} conversations` : `${rows.length} conversations`}
         actions={<Badge soft="var(--surface-2)">Live from OpenPhone</Badge>}
       />
       <div className="p-6">
         <CommsTabs tab="inbox" pending={pendingTexts} waiting={waiting} />
+        {incidentCard}
         {error && <div className="mb-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         {rows.length === 0 && !error ? (
-          <p className="text-sm text-muted">No conversations found.</p>
+          <p className="text-sm text-muted">{incident ? "No matching OpenPhone conversation was returned. Check the provider directly before deciding whether this text needs a retry." : "No conversations found."}</p>
         ) : (
           <div className="overflow-hidden rounded-2xl border bg-surface">
             {rows.map(({ conv, phone, others, isGroup, groupName, client, contact }) => {

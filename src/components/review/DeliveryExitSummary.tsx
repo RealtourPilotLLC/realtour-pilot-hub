@@ -48,7 +48,7 @@ function rowsFor(board: ReadyBoard): Row[] {
           : "The job-level text is queued or being sent; provider acceptance is not recorded yet.",
       owner: "Kyle", at: r.queuedAtISO,
       action: r.state === "unknown" ? "Check the OpenPhone conversation" : r.state === "failed" ? "Review the failed text" : "Check the pending text",
-      href: r.taskId ? `/tasks?tab=other&task=${r.taskId}` : "/communications",
+      href: r.state === "unknown" ? `/communications?incident=${encodeURIComponent(r.outboxId)}` : r.taskId ? `/tasks?tab=other&task=${r.taskId}` : `/communications?incident=${encodeURIComponent(r.outboxId)}`,
       cutHref: `/projects/${r.projectId}`,
     })),
   ];

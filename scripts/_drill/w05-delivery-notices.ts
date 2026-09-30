@@ -14,7 +14,7 @@ async function main() {
   const c = makeChecker();
   try {
     const { prisma } = await import("@/lib/prisma");
-    const { deliveryNoticeIncidents } = await import("@/lib/deliveryNoticeIncidents");
+    const { deliveryNoticeIncidents, deliveryNoticeFocus } = await import("@/lib/deliveryNoticeIncidents");
     const { readyToSend } = await import("@/lib/readyToSend");
     const client = await prisma.client.create({ data: { name: "W05 Delivery TEST" } });
     const failedProject = await prisma.project.create({ data: { clientId: client.id, title: "1 Failed St, TEST", status: "DELIVERED" } });
@@ -22,12 +22,14 @@ async function main() {
     const unrelatedProject = await prisma.project.create({ data: { clientId: client.id, title: "3 Other St, TEST", status: "DELIVERED" } });
     const task = await prisma.smartTask.create({ data: { projectId: failedProject.id, taskType: "delivery_text", title: "Delivery text" } });
     const otherTask = await prisma.smartTask.create({ data: { projectId: unrelatedProject.id, taskType: "confirmation_text", title: "Confirmation" } });
-    await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5550000001", body: "TEST delivery", projectId: failedProject.id, taskId: task.id, state: "failed", providerError: "rejected", dedupeKey: null } });
-    await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5550000002", body: "TEST delivery", projectId: unknownProject.id, state: "unknown", dedupeKey: `delivery:${unknownProject.id}` } });
-    await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5550000003", body: "TEST confirmation", projectId: unrelatedProject.id, taskId: otherTask.id, state: "failed", dedupeKey: null } });
+    const failedText = await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5550000001", body: "TEST delivery", projectId: failedProject.id, taskId: task.id, state: "failed", providerError: "rejected", dedupeKey: null } });
+    const unknownText = await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5550000002", body: "TEST delivery", projectId: unknownProject.id, state: "unknown", dedupeKey: `delivery:${unknownProject.id}` } });
+    const unrelatedText = await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5550000003", body: "TEST confirmation", projectId: unrelatedProject.id, taskId: otherTask.id, state: "failed", dedupeKey: null } });
     let incidents = await deliveryNoticeIncidents();
     c.ok("failed delivery task and unknown delivery identity appear", incidents.length === 2 && incidents.some((r) => r.projectId === failedProject.id && r.state === "failed" && r.taskId === task.id) && incidents.some((r) => r.projectId === unknownProject.id && r.state === "unknown"));
     c.ok("failed confirmation text is not mislabeled a delivery", !incidents.some((r) => r.projectId === unrelatedProject.id));
+    c.ok("incident links carry opaque outbox ids", incidents.some((r) => r.outboxId === failedText.id) && incidents.some((r) => r.outboxId === unknownText.id));
+    c.ok("focused communications read admits only delivery texts", !!(await deliveryNoticeFocus(unknownText.id)) && !!(await deliveryNoticeFocus(failedText.id)) && !(await deliveryNoticeFocus(unrelatedText.id)) && !(await deliveryNoticeFocus("bad")));
     c.ok("per-job read does not show another project's outcome", (await deliveryNoticeIncidents(failedProject.id)).length === 1);
     let board = await readyToSend({ includeNoticeIncidents: true });
     c.ok("shared delivery board carries incidents even with no unsent cuts", board.ready.length === 0 && board.noticeIncidents?.length === 2 && !!board.noticeIncidentCheck);

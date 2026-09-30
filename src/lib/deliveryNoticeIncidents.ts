@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 
 export type DeliveryNoticeIncident = {
+  outboxId: string;
   projectId: string;
   street: string;
   state: "pending" | "attempting" | "failed" | "unknown";
@@ -41,8 +42,24 @@ export async function deliveryNoticeIncidents(projectId?: string): Promise<Deliv
   return active.flatMap((m) => {
     const title = titleOf.get(m.projectId!);
     return title ? [{
+      outboxId: m.id,
       projectId: m.projectId!, street: title.split(",")[0].trim() || title,
       state: m.state as DeliveryNoticeIncident["state"], queuedAtISO: m.createdAt.toISOString(), taskId: m.taskId,
     }] : [];
   });
+}
+
+/** Resolve a focused Communications link without putting a phone or draft in
+ * the URL. Refuse arbitrary outbox ids, including unrelated failed texts. */
+export async function deliveryNoticeFocus(id: unknown) {
+  if (typeof id !== "string" || !/^[a-z0-9]{10,40}$/i.test(id)) return null;
+  const row = await prisma.outboxMessage.findUnique({
+    where: { id },
+    select: { id: true, channel: true, toRef: true, body: true, state: true, createdAt: true, projectId: true, taskId: true, dedupeKey: true },
+  }).catch(() => null);
+  if (!row || row.channel !== "sms" || !row.projectId) return null;
+  if (row.dedupeKey?.startsWith("delivery:")) return row;
+  if (!row.taskId) return null;
+  const task = await prisma.smartTask.findFirst({ where: { id: row.taskId, taskType: "delivery_text" }, select: { id: true } }).catch(() => null);
+  return task ? row : null;
 }

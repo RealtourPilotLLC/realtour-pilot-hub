@@ -141,6 +141,7 @@ function DeliveryTextIncidents({ rows }: { rows: DeliveryNoticeIncident[] }) {
           <li key={r.projectId} className="text-xs leading-relaxed">
             <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.street}</Link>
             <span className="text-muted"> · {r.state === "unknown" ? "provider outcome unknown — check OpenPhone before retrying" : r.state === "failed" ? "send failed — review the task and client thread" : "send queued or in progress — no acceptance recorded"} · queued {etDateTime(new Date(r.queuedAtISO))}</span>
+            <Link href={`/communications?incident=${encodeURIComponent(r.outboxId)}`} className="ml-2 font-medium text-brand underline">Check conversation</Link>
             {r.taskId && <Link href={`/tasks?tab=other&task=${r.taskId}`} className="ml-2 font-medium text-brand underline">Open task</Link>}
           </li>
         ))}
