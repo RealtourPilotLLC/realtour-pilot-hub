@@ -154,10 +154,13 @@ fixture rules while the switches are on. The dry run stops at one missing
 piece: **"Jordan Spackman TEST" has no Aryeo customer.** Aryeo's API can create
 one (`POST /customers`, operationId customers-post). Kept for a sitting where
 Jordan or Kyle is present because the test (a) books James (Aryeo notifies our
-team, so James gets a test booking notice), (b) leaves an order balance and
-possibly a QuickBooks invoice that must be voided by hand — a money action that
-stays Jordan's — and (c) must link the new Aryeo customer to the existing TEST
-client rather than let the hourly sync create a duplicate.
+team, so James gets a test booking notice), (b) leaves a $0 test order with a
+cancelled appointment on the TEST customer, which a person closes in Aryeo; if
+Aryeo shows any balance on it, clearing that balance in Aryeo is a money action
+that stays Jordan's (the hub never voids, refunds or edits an order), and (c)
+must link the new Aryeo customer to the existing TEST client rather than let the
+hourly sync create a duplicate. **No QuickBooks step** (review, Sep 28: Jordan
+does not use QuickBooks; nothing here assumes an accounting sync).
 
 **Update (Sep 28):** Jordan confirmed "Bobby TEST Michael TEST" is his test
 account ("you can do whatever you need to with it"). It already has an Aryeo
@@ -181,20 +184,24 @@ done AT the sitting: set Bobby's enrollment package Starter → Accelerator (the
 test books 240 minutes), and arm `session_booking` + `address_sync` for Bobby
 only. Step 1 below is superseded.
 
-The sitting, in order (about 20 minutes):
-1. ~~Jordan/Kyle in Aryeo: change Bobby TEST Michael TEST's email to~~
-   `info+bobbytest@realtourpilot.com`. Then the hub side (main session): the
-   same email on the hub client, the unverified phone (…9038) cleared, the old
-   values backed up first.
-2. Dry run: `aryeo-supervised-test.ts --fixture cmtl98xl90008jl04yt5zawnv
+The sitting, in order (about 30–40 minutes; one run PER PACKAGE, because one
+Accelerator booking proves nothing about Starter's 120 minutes or Pro's two
+separate 240-minute sessions — review, Sep 28):
+1. Set Bobby's enrollment package for the run (Starter → 120 min; Accelerator →
+   240 min; Pro → two 240-min sessions booked as the Pro product twice). Backup
+   first, restore Starter at the end.
+2. Dry run: `NODE_OPTIONS=--conditions=react-server npx tsx scripts/_ops/aryeo-supervised-test.ts --fixture cmtl98xl90008jl04yt5zawnv
    --address "117 Kyle Lane|West Chester|PA|19382" --new-address "42 Oak
-   Street|West Chester|PA|19380"` — it refuses unless the Accelerator is $0 in
-   Aryeo and the fixture's identity is proven.
+   Street|West Chester|PA|19380"` — it refuses unless the package's product is
+   $0 in Aryeo and the fixture's identity is proven.
 3. Arm `session_booking` and `address_sync` for the fixture only
-   (`hub-write-fixture.ts … --on --apply`), run `--apply`, disarm.
-4. Jordan/Kyle in Aryeo: the order's balance and payment status, whether the
-   customer was emailed, whether the address change moved the order title and
-   pin; void the balance / QuickBooks invoice by hand; tell James it was a test.
+   (`hub-write-fixture.ts … --on --apply`), run `--apply` (it books, moves the
+   address, re-checks conflicts and cancels), disarm. Repeat 1–3 per package.
+4. Jordan/Kyle in Aryeo, per order: read the total, balance and payment status
+   (expected $0 / $0), whether the customer was emailed, and whether the
+   address change moved the order title and pin; close or cancel the test
+   order; if it shows any balance, clear it in Aryeo by hand; tell James it was
+   a test.
 5. The script's measurement decides `travelSource` (does Aryeo's
    appointment-scoped availability see drive time?).
 
