@@ -4,6 +4,16 @@
 
 ### Current resume point — UX15 Editing Room URL context
 
+`8eb9754` and `6d0a463` finish the queue's first U3 phone layout batch:
+the same rows become stacked cards below `sm`, with visible stage, due,
+editor, files and chat labels. Phone controls and essential text are larger;
+desktop remains a comparison table. Node20 TypeScript, focused lint and final
+production build passed. The isolated Avery Kim/overdue row was visually
+checked at 390px and desktop without horizontal card scrolling. This is not
+a whole-site touch or accessibility pass, and the assignment/status controls
+still need a normal signed-role replay. The demo server was stopped and its
+clean worktree is at `6d0a463`.
+
 `530d43c` saves the Editing Room tab, editor and due filters in a validated,
 shareable URL. Job links carry only those choices back to the queue; the edit
 page's return link prefers that explicit context, including in a new tab.
@@ -15,14 +25,12 @@ Node20 TypeScript, focused lint, production build and four pure URL checks
 passed. A provider-fenced isolated demo fixture put one Avery TEST row with
 Kim and an overdue office due date. Browser replay: select Kim + Overdue,
 open job, return, refresh and open the copied queue URL in a new tab; all
-showed the same single row and selected filters. Controls stayed readable at
-390px; the wide table still requires U3 phone layout work. The fixture was
-only in the disposable demo database. The demo server was stopped and its
-clean worktree is at `530d43c`. No production write, provider call, push or
+showed the same single row and selected filters. The fixture was
+only in the disposable demo database. No production write, provider call, push or
 deployment occurred.
 
 UX15 remains partial for client month context through plan/scripts/sessions/
-library and a normal authenticated queue replay. Continue U3 phone layout
+library and a normal authenticated queue replay. Continue U3 role/touch checks
 and the open functional/operating work. Five additive tables remain local;
 none has been applied to live Neon.
 
