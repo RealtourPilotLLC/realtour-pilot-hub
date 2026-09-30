@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Upload,
   CheckCircle2,
@@ -517,6 +518,7 @@ export function UploadPortal({
   /** one note's limit (deliverableOutputs.ON_SITE_NOTE_CAP; the server checks it again) */
   briefNoteCap?: number;
 }) {
+  const router = useRouter();
   // §7.5: the briefs live here, not in the card, so a note added before the
   // submit is still on the card the submitted page shows (and the other way round).
   const [briefs, setBriefs] = useState<PortalOutputBrief[]>(outputBriefs);
@@ -1247,6 +1249,10 @@ export function UploadPortal({
           if (done) setLastEdited({ by: "you", atISO: new Date().toISOString() });
           setDone(true);
           setReopened(false); // collapse back to the confirmation after a re-submit
+          // The read-back card uses the server's submitted values and time.
+          // Without a refresh it could say "never submitted" beside the new
+          // success banner until the photographer manually reloaded the page.
+          router.refresh();
         }
         resumeAutosave();
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2435,7 +2441,7 @@ export function UploadPortal({
               : "Once submitted, this shoot is added to your payroll."}
           </p>
         )}
-        {splitMode ? (
+        {!ask && (splitMode ? (
           // O05: one button per half, each with its own checks. A half that is
           // already in can be re-submitted to correct its notes.
           <div className="space-y-2">
@@ -2491,7 +2497,7 @@ export function UploadPortal({
           {done ? "Re-submit to editors" : "Everything's uploaded — submit"}
         </button>
         </div>
-        )}
+        ))}
       </div>
     </div>
   );
