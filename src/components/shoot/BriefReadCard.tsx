@@ -28,7 +28,7 @@ export function BriefReadCard({ projectId, digest, readAtISO, changes, canAcknow
       {unavailable ? (
         <p className="text-sm text-warning">Read receipts are unavailable until this update is released. Review the brief below before filming.</p>
       ) : !readAtISO ? (
-        <p className="text-sm">Review the latest scripts, shot direction, client preferences and chosen assets below, then mark this version read.</p>
+        <p className="text-sm">Review the latest scripts, shot direction, client preferences and chosen assets below{canAcknowledge ? ", then mark this version read." : "."}</p>
       ) : changes.length ? (
         <>
           <p className="text-sm font-medium text-warning">{changes.length} brief item{changes.length === 1 ? " has" : "s have"} changed since you read it {readDate}.</p>
