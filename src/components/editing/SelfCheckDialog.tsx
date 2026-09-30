@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { CheckCircle2, ClipboardCheck, Loader2, X } from "lucide-react";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 import { cn } from "@/lib/utils";
 import {
   itemsFor,
@@ -60,6 +61,7 @@ export function SelfCheckDialog({
   const [why, setWhy] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const submitting = useRef(false);
 
   const input: SelfCheckInput = {
     checklistKey: profile.checklistKey,
@@ -75,14 +77,7 @@ export function SelfCheckDialog({
   const set = (key: string, a: "YES" | "NA", reason?: string) => setAnswers((s) => ({ ...s, [key]: { answer: a, reason: reason ?? s[key]?.reason ?? null } }));
 
   return (
-    <>
-      <div className="fixed inset-0 z-[60] bg-black/50" onClick={() => !pending && onCancel()} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Send-for-review check"
-        className="fixed left-1/2 top-1/2 z-[70] max-h-[90vh] w-[min(94vw,40rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:p-5"
-      >
+    <ModalDialog label="Send-for-review check" busy={pending} onCancel={onCancel}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-1.5 text-sm font-semibold">
@@ -93,7 +88,7 @@ export function SelfCheckDialog({
               {onBehalfOf ? <> · you are checking it on behalf of <span className="font-medium text-foreground">{onBehalfOf}</span>, and it is recorded that way</> : null}
             </p>
           </div>
-          <button type="button" onClick={onCancel} disabled={pending} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Close">
+          <button type="button" autoFocus onClick={onCancel} disabled={pending} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Close">
             <X className="size-4" />
           </button>
         </div>
@@ -199,13 +194,19 @@ export function SelfCheckDialog({
           <button
             type="button"
             disabled={pending || !verdict.ok}
-            onClick={() =>
+            onClick={() => {
+              if (submitting.current) return;
+              submitting.current = true;
               start(async () => {
                 setErr(null);
-                const r = await onSubmit(input).catch((e: unknown) => ({ ok: false, message: e instanceof Error ? e.message : "That didn't go through — try again." }));
-                if (!r.ok) setErr(r.message);
-              })
-            }
+                try {
+                  const r = await onSubmit(input).catch((e: unknown) => ({ ok: false, message: e instanceof Error ? e.message : "That didn't go through — try again." }));
+                  if (!r.ok) setErr(r.message);
+                } finally {
+                  submitting.current = false;
+                }
+              });
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />} Checked — send it
@@ -214,7 +215,6 @@ export function SelfCheckDialog({
         <p className="mt-2 text-right text-[11px] text-muted-2">
           Recorded against this exact file ({profile.checklistKey}). A different export needs a fresh check.
         </p>
-      </div>
-    </>
+    </ModalDialog>
   );
 }

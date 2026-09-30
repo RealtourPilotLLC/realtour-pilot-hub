@@ -45,6 +45,22 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
   const drawerRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
+  function containDrawerFocus(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== "Tab") return;
+    const links = [...(drawerRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])]
+      .filter((element) => element.getClientRects().length > 0);
+    if (!links.length) { e.preventDefault(); return; }
+    const first = links[0];
+    const last = links[links.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !drawerRef.current?.contains(document.activeElement))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || !drawerRef.current?.contains(document.activeElement))) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   // Escape closes it, as every dialog on the web does.
   useEffect(() => {
     if (!open) return;
@@ -108,6 +124,9 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <a href="#staff-main" inert={open} className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[1400] focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:shadow-lg">
+        Skip to content
+      </a>
       {/* Desktop sidebar */}
       <div className="hidden lg:block">
         <Sidebar user={user} scriptingUrl={scriptingUrl} />
@@ -130,16 +149,20 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         aria-modal="true"
         aria-label="Menu"
         inert={!open}
+        onKeyDown={containDrawerFocus}
         className={cn(
           "fixed inset-y-0 left-0 z-[1300] transition-transform duration-200 ease-out lg:hidden",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
+        <button type="button" onClick={() => setOpen(false)} className="ml-3 mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border bg-surface px-3 text-sm font-medium">
+          <X className="size-4" /> Close menu
+        </button>
         <Sidebar user={user} scriptingUrl={scriptingUrl} onNavigate={() => setOpen(false)} />
       </div>
 
       {/* Main column */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div inert={open} className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
         <header className="flex items-center gap-3 border-b border-border bg-surface/80 px-4 py-2.5 backdrop-blur-xl lg:hidden">
           <button
@@ -165,11 +188,11 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         </header>
 
         {user?.impersonating && <ViewAsBanner name={user.name} />}
-        <main className="flex-1 overflow-y-auto scroll-thin">{children}</main>
+        <main id="staff-main" tabIndex={-1} className="flex-1 overflow-y-auto scroll-thin">{children}</main>
       </div>
 
       {/* Always-on feedback launcher (Kyle → review board) */}
-      <FeedbackWidget />
+      <div inert={open}><FeedbackWidget /></div>
     </div>
   );
 }

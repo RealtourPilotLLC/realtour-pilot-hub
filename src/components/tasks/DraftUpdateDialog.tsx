@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { Copy, Loader2, Sparkles, X } from "lucide-react";
 import { draftAtRiskUpdateAction } from "@/app/tasks/atRiskActions";
 import { cn } from "@/lib/utils";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 
 // The "Draft update" dialog on a promise at risk (AU-24 / F5, Sep 26 2026).
 // The person types ONE time — the new delivery time they have confirmed, or
@@ -28,6 +29,7 @@ export function DraftUpdateDialog({
   const [busy, start] = useTransition();
   const [res, setRes] = useState<{ ok: boolean; message: string; draft?: string; taskId?: string; warning?: string | null } | null>(null);
   const [copied, setCopied] = useState(false);
+  const submitting = useRef(false);
 
   return (
     <>
@@ -39,14 +41,13 @@ export function DraftUpdateDialog({
         <Sparkles className="size-3.5" /> Draft update
       </button>
       {open && (
-        <div role="dialog" aria-modal="true" aria-label="Draft a client update" className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
-          <div className="w-full max-w-md rounded-2xl border bg-surface p-4 shadow-xl">
+        <ModalDialog label="Draft a client update" busy={busy} onCancel={() => setOpen(false)} className="max-w-md">
             <div className="mb-2 flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-sm font-semibold">Draft a client update</p>
                 <p className="truncate text-xs text-muted">{label}</p>
               </div>
-              <button type="button" aria-label="Close" onClick={() => setOpen(false)} className="rounded-md p-1 text-muted hover:bg-surface-2">
+              <button type="button" aria-label="Close" disabled={busy} onClick={() => setOpen(false)} className="rounded-md p-1 text-muted hover:bg-surface-2">
                 <X className="size-4" />
               </button>
             </div>
@@ -62,6 +63,7 @@ export function DraftUpdateDialog({
                 <button
                   key={k}
                   type="button"
+                  disabled={busy}
                   onClick={() => { setMode(k); setRes(null); }}
                   className={cn("rounded-lg px-2.5 py-1 text-xs font-medium", mode === k ? "bg-surface-2 ring-1 ring-border" : "text-muted hover:bg-surface-2")}
                 >
@@ -73,6 +75,8 @@ export function DraftUpdateDialog({
               {mode === "newTime" ? "The delivery time you have confirmed (Eastern)" : "When you will confirm the new time by (Eastern)"}
               <input
                 type="datetime-local"
+                autoFocus
+                disabled={busy}
                 value={when}
                 onChange={(e) => { setWhen(e.target.value); setRes(null); }}
                 className="mt-1 block w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-brand"
@@ -81,11 +85,19 @@ export function DraftUpdateDialog({
             <button
               type="button"
               disabled={busy || !when}
-              onClick={() => start(async () => {
-                setCopied(false);
-                const r = await draftAtRiskUpdateAction({ projectId, outputId, mode, when }).catch(() => ({ ok: false, message: "Could not draft — try again." }));
-                setRes(r);
-              })}
+              onClick={() => {
+                if (submitting.current) return;
+                submitting.current = true;
+                start(async () => {
+                  setCopied(false);
+                  try {
+                    const r = await draftAtRiskUpdateAction({ projectId, outputId, mode, when }).catch(() => ({ ok: false, message: "Could not draft — try again." }));
+                    setRes(r);
+                  } finally {
+                    submitting.current = false;
+                  }
+                });
+              }}
               className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Draft it
@@ -111,8 +123,7 @@ export function DraftUpdateDialog({
                 </p>
               </div>
             )}
-          </div>
-        </div>
+        </ModalDialog>
       )}
     </>
   );
