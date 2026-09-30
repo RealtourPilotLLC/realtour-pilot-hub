@@ -420,6 +420,7 @@ export default async function UploadProjectPage({
         sessionTopics={sessionTopics}
         topicsUnavailable={topicsUnavailable}
         foldersSlot={<DropboxFolders state={folderState} photoTarget={photoTarget} />}
+        handoffFolders={folderState?.folders.filter((f) => f.key === "rawPhotos" || f.key === "rawVideo").map((f) => ({ key: f.key, label: f.label, url: f.url })) ?? []}
         project={{
           id: project.id,
           title: project.title,

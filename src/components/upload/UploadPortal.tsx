@@ -55,7 +55,7 @@ type AskAction =
   // scope: O05 — which half this submit hands off (absent = the whole page).
   // baseHash: O04 — "submit mine anyway" after a conflict re-sends with the
   // fingerprint the server just reported, so it lands on purpose.
-  | { kind: "submit"; force: boolean; scope?: HandoffCategory; baseHash?: string }
+  | { kind: "submit"; force: boolean; scope?: HandoffCategory; baseHash?: string; reviewFingerprint?: string }
   | { kind: "toggle"; id: string; next: boolean; prevReason: string | undefined };
 
 type FieldReportView = { id: string; body: string; status: string; scope: string; basis: "client_said" | "observation" | null; createdAtISO: string };
@@ -367,6 +367,7 @@ export function UploadPortal({
   policy,
   script,
   foldersSlot,
+  handoffFolders,
   submission,
   viewerIsOffice,
   payGateFromMs,
@@ -447,6 +448,8 @@ export function UploadPortal({
   script: { body: string; hook: string | null; url: string | null } | null;
   /** the Dropbox folders card, rendered by the server page */
   foldersSlot: React.ReactNode;
+  /** Destination links only. A folder link is not evidence that files arrived. */
+  handoffFolders: { key: string; label: string; url: string }[];
   /** the read-back of a submitted page (Sep 15) — who, when, add-ons, files */
   submission: {
     submittedBy: string | null;
@@ -761,7 +764,7 @@ export function UploadPortal({
   // would capture the render it was created in, so anything typed while the
   // panel was open got silently dropped from the submit (review HIGH). The
   // yes button dispatches from the CURRENT render instead.
-  const [ask, setAsk] = useState<{ body: string; yes: string; action: AskAction } | null>(null);
+  const [ask, setAsk] = useState<{ body: string; yes: string; action: AskAction; review?: boolean } | null>(null);
 
   // ---- O04: THE DRAFT AUTOSAVE -------------------------------------------
   // Every answer below is saved as the person types (1.2 s after they pause,
@@ -1000,6 +1003,7 @@ export function UploadPortal({
   // "Remaining" = truly unanswered — a "couldn't complete + reason" item is
   // accounted for, so it doesn't nag on submit.
   const remaining = deliverables.filter((d) => !uploaded[d.id] && !notDone[d.id] && !d.waivedAt);
+  const reviewFingerprint = JSON.stringify({ payloadJson, uploaded, notDone, flags, evidence });
 
   function toggle(id: string) {
     const next = !uploaded[id];
@@ -1116,6 +1120,7 @@ export function UploadPortal({
     // video over — it would go without a filming report (no list, no ticks).
     // A reload brings the list back; the photos half is unaffected.
     if (vOn && topicsUnavailable) missing.push("reload the page (this job's topic list didn't load)");
+    if (vOn && liveExtras.some((x) => !x.note.trim())) missing.push("a note for each extra video filmed on site");
     if (vOn && !topicsUnavailable && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
       missing.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
     }
@@ -1137,17 +1142,14 @@ export function UploadPortal({
       return;
     }
     const rem = scope ? remaining.filter((d) => handoffCategoryOf(d.type) === scope) : remaining;
-    if (rem.length > 0) {
-      setAsk({
-        body:
-          `${rem.length} item${rem.length === 1 ? " isn’t" : "s aren’t"} checked off yet ` +
-          `(${rem.map((d) => DELIVERABLE_META[d.type].label).join(", ")}). Submit to editors anyway?`,
-        yes: "Submit anyway",
-        action: { kind: "submit", force: false, scope },
-      });
-      return;
-    }
-    runSubmit(false, scope);
+    setAsk({
+      body: rem.length
+        ? `${rem.length} item${rem.length === 1 ? " is" : "s are"} still unchecked. Review exactly what is going to the editor and what is still owed before you submit.`
+        : "Review what is going to the editor. A checked box reports an upload; only a fresh Dropbox read confirms files.",
+      yes: rem.length ? "Submit with these items still owed" : "Confirm handoff to editor",
+      action: { kind: "submit", force: false, scope, reviewFingerprint },
+      review: true,
+    });
   }
 
   /** What the page showed as submitted when it loaded — what a conflict is described against. */
@@ -1264,6 +1266,52 @@ export function UploadPortal({
   // word; Dropbox showing the files is evidence; an unreadable folder is
   // neither, and "Submit anyway" past an empty-folder warning is not proof.
   const filesSentence = receiptSentence(evidence, forcedSubmit);
+  const handoffReceipt = (scope?: HandoffCategory) => {
+    const photosIn = photosLive && scope !== "video";
+    const videoIn = videoLive && scope !== "photos";
+    const chosen = filmedTopicIds.map((id) => sessionTopics?.topics.find((t) => t.topicId === id)?.title ?? id);
+    const unfilmed = (sessionTopics?.topics ?? [])
+      .filter((t) => !confirmedElsewhere(t) && !filmedTopicIds.includes(t.topicId))
+      .map((t) => t.title);
+    const owed = remaining.filter((d) => !scope || handoffCategoryOf(d.type) === scope);
+    const exceptions = deliverables.filter((d) => !uploaded[d.id] && notDone[d.id] && (!scope || handoffCategoryOf(d.type) === scope));
+    const fileRows = evidence.filter((e) => (e.category === "photos" ? photosIn : videoIn));
+    const notes = videoIn ? VID_SECTIONS.filter((s) => vidSections[s.key]?.trim()).map((s) => `${s.title}: ${vidSections[s.key].trim()}`) : [];
+    return (
+      <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed text-foreground/85" aria-label="Handoff details">
+        <p><strong>Handing over:</strong> {photosIn && videoIn ? "Photos and video" : photosIn ? "Photos" : "Video"}</p>
+        {videoIn && <p><strong>Filmed topics ({topicCount || videosFilmedNum || 0}):</strong> {answersByTopic
+          ? [...chosen, ...liveExtras.map((x) => `${x.title} (off script: ${x.note.trim()})`)].join(" · ") || "none reported"
+          : `${videosFilmedNum ?? "unknown"} videos reported; no topic list was available`}</p>}
+        {videoIn && unfilmed.length > 0 && <p><strong>Not filmed at this session:</strong> {unfilmed.join(" · ")}. These are separate from missing file uploads; the office will plan any carryover.</p>}
+        <div>
+          <strong>File locations:</strong>
+          {handoffFolders.filter((f) => (f.key === "rawPhotos" && photosIn) || (f.key === "rawVideo" && videoIn)).length ? (
+            <ul className="ml-4 list-disc">
+              {handoffFolders.filter((f) => (f.key === "rawPhotos" && photosIn) || (f.key === "rawVideo" && videoIn)).map((f) => (
+                <li key={f.key}><a href={f.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{f.label} in Dropbox</a></li>
+              ))}
+            </ul>
+          ) : <span> Dropbox folder link unavailable.</span>}
+          {fileRows.map((e) => <p key={e.category} className="text-muted">{e.category === "photos" ? "Photos" : "Video"}: {e.stale || e.filesDetected === "unknown"
+            ? "Dropbox read unavailable or stale — files not confirmed"
+            : e.filesDetected === "yes"
+              ? `Dropbox showed ${e.fileCount ?? "some"} file${e.fileCount === 1 ? "" : "s"} when this page loaded`
+              : "Dropbox showed no files when this page loaded"}. A checked upload box is a report, not file verification.</p>)}
+          {fileRows.length === 0 && <p className="text-muted">Dropbox file evidence was unavailable when this page loaded; files are not confirmed.</p>}
+        </div>
+        {(notes.length > 0 || editorBrief.trim() || (videoIn && scriptChoice)) && <div>
+          <strong>Editing instructions:</strong>
+          {notes.map((n) => <p key={n} className="whitespace-pre-wrap">{n}</p>)}
+          {editorBrief.trim() && <p className="whitespace-pre-wrap">For the editor: {editorBrief.trim()}</p>}
+          {videoIn && scriptChoice && <p className="whitespace-pre-wrap">Script {scriptChoice === "edited" ? "edited on site" : "delivered as written"}: {scriptChoice === "edited" ? scriptText.trim() : script?.body?.trim() || "the confirmed on-site text"}</p>}
+        </div>}
+        {exceptions.length > 0 && <p><strong>Could not complete:</strong> {exceptions.map((d) => `${DELIVERABLE_META[d.type].label} — ${notDone[d.id]}`).join(" · ")}</p>}
+        {flags.length > 0 && <p><strong>Field flags:</strong> {flags.join(" · ")}</p>}
+        <p><strong>Still owed:</strong> {owed.length ? owed.map((d) => DELIVERABLE_META[d.type].label).join(" · ") : "No unchecked deliverables in this handoff"}{scope && (scope === "photos" ? videoLive && !halfAt.video : photosLive && !halfAt.photos) ? `; the ${scope === "photos" ? "video" : "photos"} half is still owed` : ""}.</p>
+      </div>
+    );
+  };
   // Where the size came from, said plainly: the ordered band is a range the
   // client picked, not a measurement, so the page never prints it as one.
   const sizeNote = bandText
@@ -1423,6 +1471,7 @@ export function UploadPortal({
               {filesSentence} <strong>This shoot is on your payroll</strong> — you&rsquo;ll see it in My Pay.
             </p>
           )}
+          {handoffReceipt()}
           <div className="mt-3 flex flex-wrap gap-2">
             {pdfPath && (
               <a href={pdfPath} target="_blank" rel="noopener noreferrer"
@@ -2129,7 +2178,7 @@ export function UploadPortal({
                           maxLength={1000}
                           minRows={1}
                           aria-label={`Note for the editor about extra topic ${i + 1}`}
-                          placeholder="Note for the editor (optional)"
+                          placeholder="Describe the take, what changed from the plan, and anything the editor needs (required)"
                           className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                         />
                       </li>
@@ -2350,19 +2399,25 @@ export function UploadPortal({
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
               <span>{ask.body}</span>
             </p>
+            {ask.review && ask.action.kind === "submit" && handoffReceipt(ask.action.scope)}
             <div className="mt-2.5 flex flex-wrap gap-2">
               <button
+                type="button"
+                disabled={isPending}
                 onClick={() => {
                   const a = ask.action;
                   setAsk(null);
                   // Dispatched from THIS render, so it carries whatever the
                   // photographer has typed up to the moment they confirm.
-                  if (a.kind === "submit") runSubmit(a.force, a.scope, a.baseHash);
+                  if (a.kind === "submit") {
+                    if (a.reviewFingerprint && a.reviewFingerprint !== reviewFingerprint) { finalize(a.scope); return; }
+                    runSubmit(a.force, a.scope, a.baseHash);
+                  }
                   else applyToggle(a.id, a.next, a.prevReason);
                 }}
-                className="rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
+                className="rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
               >
-                {ask.yes}
+                {isPending ? "Submitting…" : ask.yes}
               </button>
               <button
                 onClick={() => setAsk(null)}

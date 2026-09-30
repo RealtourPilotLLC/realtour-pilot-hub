@@ -595,6 +595,15 @@ export async function finalizeUpload(
   // never a second number the browser sends that could disagree with it.
   // O05: the photos half carries no filmed topics — only the video half (or
   // the whole page) writes a filming report.
+  // An off-script video needs a named take AND usable direction. Keep this
+  // guard on the server as well as the portal, so an old tab cannot hand an
+  // editor a generic extra folder with no explanation. Blank draft rows are
+  // ignored; a titled row is an intentional new video.
+  if (scope !== "photos" && Array.isArray(data.extraTopics) && data.extraTopics.some((x) =>
+    x && typeof x.title === "string" && x.title.trim() && (typeof x.note !== "string" || !x.note.trim())
+  )) {
+    return { blocked: "Add a note for every extra video filmed on site — tell the editor what changed from the plan and what to use." };
+  }
   const filming = Array.isArray(data.filmedTopicIds) && scope !== "photos"
     ? await (await import("@/lib/filmedTopics")).prepareFilmingReport(
         projectId,

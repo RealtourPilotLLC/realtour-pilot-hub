@@ -700,20 +700,27 @@ async function main() {
   c.head("14 · a session with no planned topics: what was filmed is added on the page");
   // =========================================================================
   const f10 = await month("Unplanned", { topics: [] });
+  const noNote = await finalizeUpload(f10.projectId!, {
+    editorBrief: "x", force: true, cullingConfirmed: true,
+    videoInstructions: "VISION FOR THE EDIT\nfast cuts", filmedTopicIds: [],
+    extraTopics: [{ key: "u1", title: "Neighborhood coffee" }],
+  });
+  c.ok("an off-script video without direction is held before the filming report", !!noNote.blocked && /note for every extra video/.test(noNote.blocked)
+    && (await prisma.contentFilmingReport.count({ where: { projectId: f10.projectId! } })) === 0, JSON.stringify(noNote).slice(0, 160));
   const res14 = await finalizeUpload(f10.projectId!, {
     editorBrief: "x",
     force: true,
     cullingConfirmed: true,
     videoInstructions: "VISION FOR THE EDIT\nfast cuts",
     filmedTopicIds: [],
-    extraTopics: [{ key: "u1", title: "Kitchen reveal", note: "the island shot" }, { key: "u2", title: "Neighborhood coffee" }],
+    extraTopics: [{ key: "u1", title: "Kitchen reveal", note: "the island shot" }, { key: "u2", title: "Neighborhood coffee", note: "include the storefront arrival" }],
   });
   c.ok("the submit lands with nothing pending", !res14.blocked && !res14.needsConfirm && !res14.topicsPending, JSON.stringify(res14).slice(0, 160));
   c.ok("the editor cuts two — the server's count from the added topics", (await prisma.project.findUniqueOrThrow({ where: { id: f10.projectId! } })).videosFilmed === 2);
   const tp10 = await prisma.contentTopic.findMany({ where: { enrollmentId: f10.enrollmentId }, select: { title: true, sourceRef: true, status: true } });
   c.ok("both became topics on the month, filmed, traceable to the report", tp10.length === 2 && tp10.every((t) => t.sourceRef?.startsWith("FilmingReport:") && t.status === "FILMED"), JSON.stringify(tp10));
   const fb10 = await filmingBriefFor(f10.projectId!);
-  c.ok("…each on its own owed video, marked filmed on site, with its note", fb10?.rows.length === 2 && fb10.rows.every((r) => r.extra === "added_on_site" && r.slot != null) && fb10.rows.find((r) => r.topicTitle === "Kitchen reveal")?.note === "the island shot", JSON.stringify(fb10?.rows.map((r) => [r.topicTitle, r.slot, r.extra, r.note])));
+  c.ok("…each on its own owed video, marked filmed on site, with its note", fb10?.rows.length === 2 && fb10.rows.every((r) => r.extra === "added_on_site" && r.slot != null && !!r.note) && fb10.rows.find((r) => r.topicTitle === "Kitchen reveal")?.note === "the island shot", JSON.stringify(fb10?.rows.map((r) => [r.topicTitle, r.slot, r.extra, r.note])));
   c.ok("…and the third owed video says it has no topic yet", fb10?.slotsWithoutTopic === 1);
 
   // =========================================================================
