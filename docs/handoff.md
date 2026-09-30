@@ -2,6 +2,42 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — C13 month next-action reconciliation
+
+`759d2fb` repairs the second staff next-action ladder (`monthProgress`), which
+still told filmed legacy clients to plan or called existing drafts ready for
+approval even after the roster had been corrected. Confirmed filming with
+missing topic/route links now stays with staff reconciliation. A draft says it
+needs work; only a current internal-review script asks for approval. The v1
+portal Home also stops offering a new planning call after filmed work.
+
+The read-only Neon replay `scripts/_recon/c13-current.ts` on Sep 30 checked
+Erica Walker, John Collins, Mike Ciunci, Mike Flatley and Rick Schultz. Both
+staff readers now assign the first four to topic-link reconciliation; Rick's
+four existing drafts are described as draft work. It made no database write.
+The isolated CP-10 drill passed 132/0, including a filmed legacy Pro reminder
+that offered the remaining session without a planning chase, a partial Pro
+with five selected topics, a separately counted filmed extra, a next-month
+planning step and draft versus internal-review script wording. Final Node20
+TypeScript and focused lint passed; production build passed after the source
+repair, before the small delivered-done ordering change and final test-only
+assertion. The isolated Avery client file rendered at desktop and 390px with
+the script owner/action readable and no document overflow. The demo is stopped
+and its worktree is clean at `759d2fb`.
+
+The broader UI-01 drill reports 91/1: its v1 page must exactly match the old
+`7d0d5c9` tree, and later action styling already changed that tree. The same
+91/1 occurs on clean `808f6fe` before this batch; the C13 action checks pass.
+Do not treat that old full-tree snapshot as proof that current v1 behavior is
+unchanged. Refresh or replace that assertion in a separate, focused UI-01
+test-maintenance batch if needed.
+
+C13 stays partial: inspect the exact month/topic/video links for the named
+records without rewriting history, replay normal signed client v1/v2 and
+provider-backed reminder outcomes, and determine any genuine policy choices
+before client rollout. No client send, invitation, provider booking, automation,
+production DB mutation, push or deployment was performed.
+
 ### Current resume point — staff keyboard dialogs and mobile menu
 
 `dc33727` adds an explicit leave/keep choice when an editor has unsaved
