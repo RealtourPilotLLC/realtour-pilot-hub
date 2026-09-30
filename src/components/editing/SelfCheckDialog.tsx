@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { CheckCircle2, ClipboardCheck, Loader2, X } from "lucide-react";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import { cn } from "@/lib/utils";
@@ -60,8 +60,32 @@ export function SelfCheckDialog({
   const [done, setDone] = useState<Record<string, boolean | undefined>>({});
   const [why, setWhy] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [pending, start] = useTransition();
   const submitting = useRef(false);
+  const keepEditing = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const hadClosePrompt = useRef(false);
+
+  useEffect(() => {
+    if (confirmClose) {
+      hadClosePrompt.current = true;
+      keepEditing.current?.focus();
+    } else if (hadClosePrompt.current) {
+      hadClosePrompt.current = false;
+      closeButton.current?.focus();
+    }
+  }, [confirmClose]);
+
+  function requestClose() {
+    if (submitting.current) return;
+    if (confirmClose) { setConfirmClose(false); return; }
+    if (Object.keys(answers).length || Object.keys(done).length || Object.values(why).some(Boolean)) {
+      setConfirmClose(true);
+      return;
+    }
+    onCancel();
+  }
 
   const input: SelfCheckInput = {
     checklistKey: profile.checklistKey,
@@ -77,7 +101,7 @@ export function SelfCheckDialog({
   const set = (key: string, a: "YES" | "NA", reason?: string) => setAnswers((s) => ({ ...s, [key]: { answer: a, reason: reason ?? s[key]?.reason ?? null } }));
 
   return (
-    <ModalDialog label="Send-for-review check" busy={pending} onCancel={() => { if (!submitting.current) onCancel(); }}>
+    <ModalDialog label="Send-for-review check" busy={pending} onCancel={requestClose}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <div tabIndex={-1} data-modal-initial-focus className="flex items-center gap-1.5 text-sm font-semibold">
@@ -88,10 +112,18 @@ export function SelfCheckDialog({
               {onBehalfOf ? <> · you are checking it on behalf of <span className="font-medium text-foreground">{onBehalfOf}</span>, and it is recorded that way</> : null}
             </p>
           </div>
-          <button type="button" onClick={() => { if (!submitting.current) onCancel(); }} disabled={pending} className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2" aria-label="Close">
+          <button ref={closeButton} type="button" onClick={requestClose} disabled={pending} className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2" aria-label="Close">
             <X className="size-4" />
           </button>
         </div>
+
+        {confirmClose && <div role="alert" className="mt-3 rounded-lg border border-warning/40 bg-warning-soft/40 p-3 text-sm">
+          <p className="font-medium">This check has unsaved answers. Leave and start it over?</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button ref={keepEditing} type="button" onClick={() => setConfirmClose(false)} className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold">Keep checking</button>
+            <button type="button" disabled={pending} onClick={() => { if (!submitting.current) onCancel(); }} className="min-h-11 rounded-lg border border-warning/50 px-3 font-medium">Discard answers</button>
+          </div>
+        </div>}
 
         {notice && <p className="mt-3 rounded-lg border border-warning/40 bg-warning-soft/40 px-3 py-2 text-xs">{notice}</p>}
         <ol className="mt-4 space-y-2.5">
@@ -188,7 +220,7 @@ export function SelfCheckDialog({
         {err && <p className="mt-3 text-xs text-danger">{err}</p>}
         {!verdict.ok && <p className="mt-3 text-[11px] text-muted">{verdict.message}</p>}
         <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-          <button type="button" onClick={() => { if (!submitting.current) onCancel(); }} disabled={pending} className="min-h-11 rounded-lg border border-border px-3 text-sm text-muted hover:bg-surface-2">
+          <button type="button" onClick={requestClose} disabled={pending} className="min-h-11 rounded-lg border border-border px-3 text-sm text-muted hover:bg-surface-2">
             Not yet
           </button>
           <button
