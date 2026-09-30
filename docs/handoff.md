@@ -58,6 +58,20 @@ mode has 3 cuts/3 checks. Global failure/workload readers, communication
 identity and the realistic demo remain open; do not call C14 complete. The
 isolated demo was restarted on this commit, ports 3200/5599, session 45353.
 
+Sep 30 C04 reliability batch: `brandProfile` now has recoverable claim states
+for both the first alert and the later pending-message sweep. Kyle's task and
+the change-to-task links commit together, and retries keep the same task and
+hourly notification dedupe. Historical claims with uncertain message delivery
+are marked `delivery_unknown` for office verification. Isolated
+`c04-brand-alert-recovery` passes 8/0. `cp06-brand-setup` is 121/3: its alert
+checks pass; three pre-existing invitation/auth fixture checks fail. A provider
+interruption at the `notifyInApp` boundary remains to test before C04 closes.
+Node 20 typecheck, lint and build passed. No live automation switch changed.
+Read-only live migration check found no Prisma migration history and no schema
+diff. A fresh 0600 full backup at
+`~/rtp-backup-2026-09-30-pre-brand-reliability.json` covers 144/144 models,
+117,762 rows in a single snapshot. No schema push or production write was made.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.

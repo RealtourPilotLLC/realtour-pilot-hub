@@ -4837,7 +4837,7 @@ model ClientBrandChange {
   staffUserId     String?
   actorLabel      String?
   alertClaim      String?
-  alertedAt       DateTime?
+  alertedAt       DateTime? // alert claim/lease timestamp while preparing or sending; final settlement time afterward
   alertEditorKeys String?
   alertChannel    String? // slack | sms | bell | none | no_editor | skipped_test
   taskId          String?

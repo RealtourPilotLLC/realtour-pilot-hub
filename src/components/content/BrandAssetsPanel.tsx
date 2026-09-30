@@ -55,7 +55,7 @@ const day = (isoStr: string) => new Date(isoStr).toLocaleDateString("en-US", { t
 const TEXT_TYPES = new Set(["COLOR_PALETTE", "PRONUNCIATION", "CONTACT_CARD", "EDITING_INSTRUCTIONS", "PRODUCTION_PREFERENCE", "FONT", "EXAMPLE_VIDEO", "WEBSITE", "SOCIAL_LINKS", "MUSIC_PREFERENCE"]);
 const ALERT_WORDS: Record<string, string> = {
   slack: "editor messaged on Slack", sms: "editor texted", bell: "editor's bell only", deduped: "covered by this hour's message",
-  pending: "editor not messaged (alerts off) — on their brief", sending: "sending…", none: "editor not reachable", no_editor: "no editor on their work",
+  pending: "editor not messaged (alerts off) — on their brief", preparing: "alert being prepared — on their brief", sending: "sending — delivery not yet confirmed", delivery_unknown: "delivery unknown — office should verify before resending", none: "editor not reachable", no_editor: "no editor on their work",
   skipped_test: "test client — nobody told",
   // Sep 26 2026: the editor's message is waiting for their quiet time to end
   // (notify.ts reports a held ping as "quiet", never as "slack").

@@ -9,7 +9,7 @@ import {
 } from "@/lib/clientAssets";
 import { can, actorLabel, refusalMessage } from "@/lib/portalAccess";
 import type { PortalViewer } from "@/lib/portal";
-import { isTestClientName } from "@/lib/testClients";
+import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
 import { TEXT_KYLE } from "@/lib/portalWords";
@@ -494,6 +494,7 @@ const ACK_TASK_PREFIX = (clientId: string) => `brand-ack:${clientId}:`;
 /** How far back the catch-up reaches once the switch is turned on. Older
  *  unacknowledged changes still sit on the brief's banner. */
 export const BRAND_ALERT_CATCHUP_DAYS = 7;
+const BRAND_ALERT_LEASE_MS = 5 * 60_000;
 
 type ChangeRow = { id: string; label: string; kind: string; fromText: string | null; toText: string | null; actorLabel: string | null; source: string; createdAt: Date };
 
@@ -527,12 +528,18 @@ export type BrandAlertOutcome = { claimed: number; channel: string | null; edito
 export async function alertBrandChanges(clientId: string, opts: { now?: Date } = {}): Promise<BrandAlertOutcome> {
   const now = opts.now ?? new Date();
   const claim = randomUUID();
-  const won = await prisma.clientBrandChange.updateMany({ where: { clientId, alertedAt: null }, data: { alertClaim: claim, alertedAt: now } });
+  const won = await prisma.clientBrandChange.updateMany({ where: { clientId, alertedAt: null }, data: { alertClaim: claim, alertedAt: now, alertChannel: "preparing" } });
   if (won.count === 0) return { claimed: 0, channel: null, editors: [], taskId: null };
+  return finishBrandAlertClaim(clientId, claim, now);
+}
+
+/** A claimed batch stays recoverable until its task and delivery result are settled. */
+async function finishBrandAlertClaim(clientId: string, claim: string, now: Date, legacyUnknown = false): Promise<BrandAlertOutcome> {
   const rows: ChangeRow[] = await prisma.clientBrandChange.findMany({ where: { alertClaim: claim }, orderBy: { createdAt: "asc" }, select: { id: true, label: true, kind: true, fromText: true, toText: true, actorLabel: true, source: true, createdAt: true } });
-  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { name: true } });
+  if (!rows.length) return { claimed: 0, channel: null, editors: [], taskId: null };
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, name: true } });
   const clientName = client?.name ?? "A client";
-  if (isTestClientName(client?.name)) {
+  if (client && isSyntheticClientRow(client)) {
     // Ledger rows only — the programReminders escalate rule: a synthetic client
     // never puts work on a real person's desk or in their DMs.
     await prisma.clientBrandChange.updateMany({ where: { alertClaim: claim }, data: { alertChannel: "skipped_test" } });
@@ -540,8 +547,12 @@ export async function alertBrandChanges(clientId: string, opts: { now?: Date } =
   }
   const editors = await assignedEditorsForClient(clientId);
   const alertsOn = await isAutomationEnabled("brand_change_alerts");
+  // The task and every row's taskId commit together. A retry after this point
+  // reuses the task instead of appending the same change a second time.
   const taskId = await ensureAckTask(clientId, clientName, rows, editors, alertsOn, now);
-  const channel = editors.length === 0 ? "no_editor" : alertsOn ? await deliverEditorAlert(clientId, clientName, rows, editors, now) : "pending";
+  const channel = legacyUnknown ? "delivery_unknown" : editors.length === 0 ? "no_editor" : alertsOn
+    ? await deliverEditorAlert(clientId, clientName, rows, editors, `brand-updated-${clientId}-${etHourKey(rows[0].createdAt)}`)
+    : "pending";
   await prisma.clientBrandChange.updateMany({
     where: { alertClaim: claim },
     data: { alertChannel: channel, alertEditorKeys: editors.map((e) => e.key).join(",") || null, taskId },
@@ -559,40 +570,47 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
   const lines = rows.map((r) => `• ${describeBrandChange(r)}`);
   const how = !editorWords
     ? "No editor is on their work right now, so nobody has been told. When a job is assigned, make sure its editor reads the brief's brand section."
-    : `${editorWords} ${who.length > 1 ? "see" : "sees"} it as a banner on the brief${projectId ? ` (/edit/${projectId})` : ""} until they press “Got it”, which closes this task. ${alertsOn ? "They were also messaged on Slack." : "Brand-change alerts to editors are switched off, so they have NOT been messaged — tell them, or wait for them to open the brief."}`;
+    : `${editorWords} ${who.length > 1 ? "see" : "sees"} it as a banner on the brief${projectId ? ` (/edit/${projectId})` : ""} until they press “Got it”, which closes this task. ${alertsOn ? "A Slack alert is enabled; check the recorded delivery result before assuming it arrived." : "Brand-change alerts to editors are switched off, so they have NOT been messaged — tell them, or wait for them to open the brief."}`;
   return prisma.$transaction(async (tx) => {
     await lockAdvisory(tx, `brand-ack|${clientId}`);
+    const untaskedIds = (await tx.clientBrandChange.findMany({ where: { id: { in: rows.map((r) => r.id) }, taskId: null }, select: { id: true } })).map((r) => r.id);
+    if (!untaskedIds.length) {
+      const prior = await tx.clientBrandChange.findFirst({ where: { id: rows[0].id }, select: { taskId: true } });
+      if (prior?.taskId) return prior.taskId;
+    }
+    const newRows = rows.filter((r) => untaskedIds.includes(r.id));
     const open = await tx.smartTask.findFirst({
       where: { dedupeKey: { startsWith: ACK_TASK_PREFIX(clientId) }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       orderBy: { createdAt: "desc" }, select: { id: true, description: true },
     });
     const title = editorWords ? `Confirm ${editorWords} has ${clientName}'s brand update` : `Brand update for ${clientName} — no editor on their work yet`;
     if (open) {
-      const description = `${open.description ?? ""}\n\nAlso changed (${at}, by ${by}):\n${lines.join("\n")}`.slice(0, 6000);
+      const description = `${open.description ?? ""}\n\nAlso changed (${at}, by ${by}):\n${newRows.map((r) => `• ${describeBrandChange(r)}`).join("\n")}`.slice(0, 6000);
       await tx.smartTask.update({ where: { id: open.id }, data: { title, description } });
+      await tx.clientBrandChange.updateMany({ where: { id: { in: untaskedIds }, taskId: null }, data: { taskId: open.id } });
       return open.id;
     }
     const task = await tx.smartTask.create({
       data: {
         taskType: "todo", title,
-        summary: clip(rows.map((r) => describeBrandChange(r)).join(" · "), 200),
+        summary: clip(newRows.map((r) => describeBrandChange(r)).join(" · "), 200),
         description: [`${clientName} changed their brand profile (${at}, by ${by}):`, ...lines, "", how].join("\n").slice(0, 6000),
         reasonCreated: "A brand profile or brand asset changed (CP-06)",
         source: rows.some((r) => r.source === "client_portal") ? "portal" : "content_program",
         priority: "MEDIUM", dueAt: new Date(now.getTime() + 24 * 3600_000), assignedKey: "kyle",
-        clientId, projectId, dedupeKey: `${ACK_TASK_PREFIX(clientId)}${rows[0].id}`,
+        clientId, projectId, dedupeKey: `${ACK_TASK_PREFIX(clientId)}${newRows[0]?.id ?? rows[0].id}`,
       },
       select: { id: true },
     });
+    await tx.clientBrandChange.updateMany({ where: { id: { in: untaskedIds }, taskId: null }, data: { taskId: task.id } });
     return task.id;
   });
 }
 
 /** The editor's bell + Slack DM (their "Job pings" switch decides the channel). */
-async function deliverEditorAlert(clientId: string, clientName: string, rows: ChangeRow[], editors: AssignedEditor[], now: Date): Promise<string> {
+async function deliverEditorAlert(clientId: string, clientName: string, rows: ChangeRow[], editors: AssignedEditor[], dedupeKey: string): Promise<string> {
   const { notifyInApp } = await import("@/lib/notify");
   const { appBase } = await import("@/lib/appUrl");
-  const dedupeKey = `brand-updated-${clientId}-${etHourKey(now)}`;
   const existedBefore = !!(await prisma.notification.findUnique({ where: { dedupeKey: `${dedupeKey}-0` }, select: { id: true } }).catch(() => null));
   const summary = rows.map((r) => describeBrandChange(r)).join("; ");
   const hrefOf = (e: AssignedEditor) => (e.projectId ? `/edit/${e.projectId}#brand-updates` : "/editing");
@@ -621,34 +639,86 @@ async function deliverEditorAlert(clientId: string, clientName: string, rows: Ch
  */
 export async function sweepBrandChangeAlerts(opts: { now?: Date; limit?: number } = {}): Promise<{ clients: number; rows: number; caughtUp: number }> {
   const now = opts.now ?? new Date();
+  const leaseExpired = new Date(now.getTime() - BRAND_ALERT_LEASE_MS);
   const stale = await prisma.clientBrandChange.findMany({
     where: { alertedAt: null, createdAt: { lt: new Date(now.getTime() - 2 * 60_000) } },
     distinct: ["clientId"], take: opts.limit ?? 50, select: { clientId: true },
   });
   let rows = 0;
   for (const s of stale) rows += (await alertBrandChanges(s.clientId, { now }).catch(() => ({ claimed: 0 }))).claimed;
+  // A process can die after claiming, after creating Kyle's task, or after a
+  // provider accepted the message. Reclaim only an expired batch, preserving
+  // its original claim and the notification's stable dedupe key.
+  const stranded = await prisma.clientBrandChange.findMany({
+    where: { OR: [
+      { alertChannel: "preparing", alertedAt: { lt: leaseExpired } },
+      { alertChannel: null, alertedAt: { lt: leaseExpired } }, // older interrupted claims
+    ] },
+    distinct: ["alertClaim"], take: opts.limit ?? 50,
+    select: { clientId: true, alertClaim: true, alertChannel: true },
+  });
+  for (const s of stranded) {
+    if (!s.alertClaim) continue;
+    const won = await prisma.clientBrandChange.updateMany({
+      where: { clientId: s.clientId, alertClaim: s.alertClaim, alertChannel: s.alertChannel, alertedAt: { lt: leaseExpired } },
+      data: { alertedAt: now, alertChannel: "preparing" },
+    });
+    if (!won.count) continue;
+    const result = await finishBrandAlertClaim(s.clientId, s.alertClaim, now, s.alertChannel === null).catch(() => null);
+    rows += result?.claimed ?? 0;
+  }
   let caughtUp = 0;
   if (await isAutomationEnabled("brand_change_alerts")) {
+    const strandedSends = await prisma.clientBrandChange.findMany({
+      where: { alertChannel: "sending", alertedAt: { lt: leaseExpired } },
+      distinct: ["alertClaim"], take: opts.limit ?? 50,
+      select: { clientId: true, alertClaim: true },
+    });
+    for (const s of strandedSends) {
+      if (!s.alertClaim) continue;
+      const won = await prisma.clientBrandChange.updateMany({
+        where: { clientId: s.clientId, alertClaim: s.alertClaim, alertChannel: "sending", alertedAt: { lt: leaseExpired } },
+        data: { alertedAt: now },
+      });
+      if (won.count) caughtUp += await finishBrandCatchup(s.clientId, s.alertClaim, now).catch(() => 0);
+    }
     const pending = await prisma.clientBrandChange.findMany({
       where: { alertChannel: "pending", ackAt: null, createdAt: { gte: new Date(now.getTime() - BRAND_ALERT_CATCHUP_DAYS * 86_400_000) } },
       distinct: ["clientId"], take: opts.limit ?? 50, select: { clientId: true },
     });
     for (const p of pending) {
-      const claim = randomUUID();
+      // Retain the hour in the recoverable claim so a retry tomorrow still
+      // uses today's notification dedupe key, and a second save this hour
+      // does not send another DM.
+      const claim = `${etHourKey(now)}:${randomUUID()}`;
       const won = await prisma.clientBrandChange.updateMany({
         where: { clientId: p.clientId, alertChannel: "pending", ackAt: null, createdAt: { gte: new Date(now.getTime() - BRAND_ALERT_CATCHUP_DAYS * 86_400_000) } },
-        data: { alertChannel: "sending", alertClaim: claim },
+        data: { alertChannel: "sending", alertClaim: claim, alertedAt: now },
       });
       if (!won.count) continue;
-      const batch = await prisma.clientBrandChange.findMany({ where: { alertClaim: claim }, orderBy: { createdAt: "asc" }, select: { id: true, label: true, kind: true, fromText: true, toText: true, actorLabel: true, source: true, createdAt: true } });
-      const client = await prisma.client.findUnique({ where: { id: p.clientId }, select: { name: true } });
-      const editors = await assignedEditorsForClient(p.clientId);
-      const channel = editors.length ? await deliverEditorAlert(p.clientId, client?.name ?? "A client", batch, editors, now).catch(() => "pending") : "no_editor";
-      await prisma.clientBrandChange.updateMany({ where: { alertClaim: claim }, data: { alertChannel: channel, alertEditorKeys: editors.map((e) => e.key).join(",") || null } });
-      caughtUp += batch.length;
+      caughtUp += await finishBrandCatchup(p.clientId, claim, now).catch(() => 0);
     }
   }
   return { clients: stale.length, rows, caughtUp };
+}
+
+async function finishBrandCatchup(clientId: string, claim: string, now: Date): Promise<number> {
+  const batch = await prisma.clientBrandChange.findMany({ where: { alertClaim: claim, alertChannel: "sending" }, orderBy: { createdAt: "asc" }, select: { id: true, label: true, kind: true, fromText: true, toText: true, actorLabel: true, source: true, createdAt: true } });
+  if (!batch.length) return 0;
+  const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, name: true } });
+  const editors = await assignedEditorsForClient(clientId);
+  // The prior implementation's UUID-only sending claims have no durable
+  // notification key. Its provider call may have succeeded before the crash;
+  // surface unknown delivery for a person rather than risk a repeat DM.
+  const knownDedupe = /^\d{10}:/.test(claim);
+  const dedupeHour = knownDedupe ? claim.slice(0, 10) : "";
+  const channel = client && isSyntheticClientRow(client) ? "skipped_test" : editors.length
+    ? knownDedupe
+      ? await deliverEditorAlert(clientId, client?.name ?? "A client", batch, editors, `brand-updated-${clientId}-${dedupeHour}`)
+      : "delivery_unknown"
+    : "no_editor";
+  await prisma.clientBrandChange.updateMany({ where: { alertClaim: claim, alertChannel: "sending" }, data: { alertChannel: channel, alertEditorKeys: editors.map((e) => e.key).join(",") || null, alertedAt: now } });
+  return batch.length;
 }
 
 // ---- the banner and the acknowledgement ----------------------------------------------------
