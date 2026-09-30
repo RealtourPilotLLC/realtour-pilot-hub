@@ -19,6 +19,10 @@ import { ShootMapCard, ShootMapCardSkeleton } from "@/components/shoot/ShootMapC
 import { ShootFeedback } from "@/components/shoot/ShootFeedback";
 import { ClientPraiseCard } from "@/components/shoot/ClientPraiseCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
+import { BriefReadCard } from "@/components/shoot/BriefReadCard";
+import { assetRegistry, type AssetRow } from "@/lib/clientAssets";
+import { shootBriefLines, briefSnapshot, briefDigest, briefChanges, parseBriefSnapshot } from "@/lib/shootBriefRead";
+import { stripMoneySentences } from "@/lib/text";
 
 export const dynamic = "force-dynamic";
 
@@ -119,6 +123,25 @@ export default async function ShootDetailPage({
     </Suspense>
   ) : null;
 
+  // The receipt is scoped to the real photographer. Owner previews and other
+  // staff may inspect this brief but cannot make it look read by the shooter.
+  let briefAssets: AssetRow[] = [];
+  let briefUnavailable = false;
+  if (view.session || view.outputBriefs.length) {
+    try { briefAssets = await assetRegistry(view.client.id, { links: false }); }
+    catch { briefUnavailable = true; }
+  }
+  const briefLines = shootBriefLines(view, briefAssets);
+  const briefDigestNow = briefDigest(briefSnapshot(briefLines));
+  const canReadBrief = user?.role === "PHOTOGRAPHER" && !user.impersonating && !!viewerMemberId;
+  let lastBriefRead: { snapshotJson: string; readAt: Date } | null = null;
+  if (canReadBrief) {
+    try {
+      lastBriefRead = await prisma.shootBriefRead.findFirst({ where: { projectId: id, readerUserId: user.id }, orderBy: { readAt: "desc" }, select: { snapshotJson: true, readAt: true } });
+    } catch { briefUnavailable = true; }
+  }
+  const briefDelta = lastBriefRead ? briefChanges(parseBriefSnapshot(lastBriefRead.snapshotJson), briefLines) : [];
+
   // Day's shoots + driving route — streams in (one OSRM call) so the screen
   // paints first. ShootScreen owns the page layout; this top slot carries
   // client praise, then review feedback (when either exists the shoot is past
@@ -133,11 +156,12 @@ export default async function ShootDetailPage({
       <Suspense fallback={<ShootMapCardSkeleton />}>
         <ShootMapCard projectId={id} memberId={payMemberId} />
       </Suspense>
+      <BriefReadCard projectId={id} digest={briefDigestNow} readAtISO={lastBriefRead?.readAt.toISOString() ?? null} changes={briefDelta} canAcknowledge={!!canReadBrief} unavailable={briefUnavailable} />
       {/* §6.8 / A28 (Sep 25): what this session is FOR, straight under the
           route — the topics, the words the client was shown and the direction
           written with them, and any video with a brief of its own. The same
           readers the editor's page and printed brief use. */}
-      <SessionBriefCard session={view.session} outputs={view.outputBriefs} />
+      <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} />
     </>
   );
 
@@ -200,7 +224,7 @@ export default async function ShootDetailPage({
 // it lives (the scripts in the content workspace, a video's brief on its edit
 // page). Everything in it arrived money-scrubbed from lib/shoot.
 // ---------------------------------------------------------------------------
-function SessionBriefCard({ session, outputs }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"] }) {
+function SessionBriefCard({ session, outputs, assets }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"]; assets: AssetRow[] }) {
   if (!session && outputs.length === 0) return null;
   const toFilm = session?.topics.filter((t) => !t.filmedElsewhere) ?? [];
   const elsewhere = session?.topics.filter((t) => t.filmedElsewhere) ?? [];
@@ -258,6 +282,14 @@ function SessionBriefCard({ session, outputs }: { session: ShootView["session"];
               {brand.acceptedPreferences.map((x, i) => <li key={i}>{x}</li>)}
             </ul>
           )}
+        </div>
+      )}
+      {assets.filter((a) => ["PRONUNCIATION", "APPROVED_PHOTO", "EXAMPLE_VIDEO"].includes(a.type) && a.active && !a.active.cleared).length > 0 && (
+        <div className="rounded-xl border border-border bg-surface-2/40 p-3 text-xs leading-relaxed">
+          <div className="mb-1 font-semibold">Pronunciation and references</div>
+          {assets.filter((a) => ["PRONUNCIATION", "APPROVED_PHOTO", "EXAMPLE_VIDEO"].includes(a.type) && a.active && !a.active.cleared).map((a) => (
+            <p key={a.id} className="whitespace-pre-wrap"><span className="text-muted">{a.type === "PRONUNCIATION" ? "Pronunciation" : a.type === "EXAMPLE_VIDEO" ? "Video reference" : "Approved photo"}: </span>{stripMoneySentences(a.name)} · v{a.active?.versionNo}{a.active?.valueText ? ` — ${stripMoneySentences(a.active.valueText)}` : a.active?.fileName ? ` — ${stripMoneySentences(a.active.fileName)} on file` : ""}</p>
+          ))}
         </div>
       )}
       {outputs.map((o) => (

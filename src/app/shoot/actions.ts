@@ -7,6 +7,36 @@ import { prisma } from "@/lib/prisma";
 import { shootStatusText, SHOOT_STATUS_META, type ShootStatusKind } from "@/lib/statusTexts";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 
+// Reading is an explicit act. Opening the route (including an owner's preview)
+// must never clear the changed-brief warning on the photographer's behalf.
+export async function acknowledgeShootBrief(projectId: string, expectedDigest: string): Promise<{ ok: boolean; message: string }> {
+  await requireShootAccess(projectId);
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const user = await getCurrentUser();
+  if (!user || user.impersonating || user.realRole !== "PHOTOGRAPHER") return { ok: false, message: "Only the assigned photographer can mark this brief read." };
+  if (!/^[a-f0-9]{64}$/.test(expectedDigest)) return { ok: false, message: "Reload the brief before marking it read." };
+
+  const { getShoot } = await import("@/lib/shoot");
+  const { assetRegistry } = await import("@/lib/clientAssets");
+  const { shootBriefLines, briefSnapshot, briefDigest } = await import("@/lib/shootBriefRead");
+  const view = await getShoot(projectId);
+  if (!view) return { ok: false, message: "Shoot not found." };
+  // A released session read that failed must not become a false all-clear.
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true } });
+  if (project?.contentMonthId && !view.session) return { ok: false, message: "The session brief could not be read. Reload and try again." };
+  const assets = view.session || view.outputBriefs.length ? await assetRegistry(view.client.id, { links: false }) : [];
+  const lines = shootBriefLines(view, assets);
+  const snapshot = briefSnapshot(lines);
+  const digest = briefDigest(snapshot);
+  if (digest !== expectedDigest) return { ok: false, message: "The brief changed while this page was open. Reload to review the latest version." };
+  const previous = await prisma.shootBriefRead.findFirst({ where: { projectId, readerUserId: user.id }, orderBy: { readAt: "desc" }, select: { digest: true } });
+  if (previous?.digest !== digest) {
+    await prisma.shootBriefRead.create({ data: { projectId, readerUserId: user.id, digest, snapshotJson: snapshot } });
+  }
+  revalidatePath(`/shoot/${projectId}`);
+  return { ok: true, message: previous?.digest === digest ? "This version was already marked read." : "Brief marked read. You will see what changes before the shoot." };
+}
+
 // Server actions for the guided photographer experience (/shoot). Client texts
 // are DRAFT-then-SEND: the photographer always reviews the wording and taps Send
 // — nothing here auto-sends. Every send is logged to the project timeline + the

@@ -4902,6 +4902,20 @@ model ClientBrandReceipt {
   @@index([editorKey, ackAt])
 }
 
+// W06: an explicit photographer read of the creative brief as it was shown.
+// Keep each snapshot so a later script, topic, direction or asset change can
+// be compared with the last read without rewriting that earlier evidence.
+model ShootBriefRead {
+  id           String   @id @default(cuid())
+  projectId    String
+  readerUserId String
+  digest       String
+  snapshotJson String
+  readAt       DateTime @default(now())
+
+  @@index([projectId, readerUserId, readAt])
+}
+
 // CP-04: one attempt to create / cancel / reschedule a session in Aryeo. The
 // marker is written into the Aryeo order's internal notes, so a timeout after
 // Aryeo accepted can be recovered by finding the order rather than booking twice.
