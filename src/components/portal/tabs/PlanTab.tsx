@@ -62,15 +62,21 @@ export function PlanTab({ d }: { d: PlanTabData }) {
   const plan = d.topics ? planModel(d.topics, d.monthKey) : null;
   const tabs = [
     { key: "month" as const, label: plan?.month ? `${monthLabel(plan.month.monthKey).split(" ")[0]}` : "This month", short: "Month" },
-    { key: "scripts" as const, label: "Scripts", short: "Scripts", count: plan?.scripts.length ?? 0, countLabel: "waiting on you" },
-    { key: "bank" as const, label: "Topic bank", short: "Bank" },
+    { key: "scripts" as const, label: "Scripts", short: "Scripts", count: plan?.scripts.length ?? 0, countLabel: "waiting across all months" },
+    { key: "bank" as const, label: "Topic bank", short: "Topics" },
     { key: "strategy" as const, label: "Strategy", short: "Strategy" },
   ];
+  const intro = {
+    month: { title: "Your Month", detail: "Plan this month's videos step by step, then book the filming time that fits." },
+    scripts: { title: "Scripts to review", detail: "All program months. Each script shows the month it belongs to and the version waiting for your decision." },
+    bank: { title: "Topic bank", detail: "Ideas not yet placed on an open month. Choose one when your monthly plan has room." },
+    strategy: { title: "Content strategy", detail: "Your account-wide direction for future topics and videos." },
+  }[d.view];
   return (
     <div className="mt-6 space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Your Month</h1>
-        <p className="mt-0.5 text-xs text-muted">Plan this month&rsquo;s videos step by step, read the scripts waiting on you, browse your bank of ideas and the strategy behind them.</p>
+        <h1 className="text-xl font-semibold tracking-tight">{intro.title}</h1>
+        <p className="mt-0.5 text-sm text-muted">{intro.detail}</p>
       </div>
       <SubNav label="Your Month" items={tabs.map((t) => ({ href: d.hrefs[t.key], label: t.label, short: t.short, active: d.view === t.key, count: t.count, countLabel: t.countLabel }))} />
 
@@ -137,7 +143,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
                 <StatusChip word={t.script?.decision === "APPROVED" ? SCRIPT_WORDS.APPROVED : t.script?.decision ? SCRIPT_WORDS.CHANGES_REQUESTED : SCRIPT_WORDS.AWAITING} />
               </div>
               <p className="mt-0.5 text-[11px] text-muted-2">
-                {t.selection ? `For ${monthLabel(t.selection.monthKey)}` : t.pillarName}
+                {t.selection ? `For ${monthLabel(t.selection.monthKey)}` : `No month assigned · ${t.pillarName}`}
                 {t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}
               </p>
               {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2"><ScriptBody body={t.scriptText.body} size="xs" /></div>}
@@ -156,7 +162,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
           <ul className="mt-2 space-y-1.5">
             {earlier.map((t) => (
               <li key={t.id} className="flex flex-wrap items-center gap-1.5">
-                <span className="min-w-0 flex-1 basis-40 break-words">{t.title}</span>
+                <span className="min-w-0 flex-1 basis-40 break-words">{t.title}<span className="ml-1 text-xs text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}</span></span>
                 {t.script?.decision === "APPROVED" ? <StatusChip word={SCRIPT_WORDS.APPROVED} /> : <StatusChip word={SCRIPT_WORDS.CHANGES_REQUESTED} />}
                 {t.script?.decidedAtISO && <span className="text-[11px] text-muted-2">{fmtShort(t.script.decidedAtISO)}</span>}
               </li>
