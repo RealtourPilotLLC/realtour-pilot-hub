@@ -115,6 +115,19 @@ remains U3 work. The demo DB's routing setting was changed only in isolated
 PGlite; production settings remain untouched. Demo process is on ports
 3200/5599, session 46045, checkout `ac8e6a8`.
 
+Sep 30 C11 dependency batch: the Stage A release recipe now includes
+`transcript_jobs` only for the queued call path, and Monitoring shows current
+queue states, the off-switch blocker, historical-backlog, rollout and handler
+holds, plus Jordan's review/Re-run location. A direct read-only live
+`transcriptQueueBatch()` found 5 queued (3 INGEST, 2 ANALYZE), 0 running,
+failed or needing review; the worker is off, all 5 predate first switch-on
+and are excluded by default, and 2 are AI jobs. No configuration or job row
+was changed. TypeScript, focused lint and production build pass. The isolated
+demo's six-job fixture shows the blocker/backlog/credit copy and Settings link
+at desktop and 390px phone width. The demo checkout was `f17a1b0` with a
+one-line spacing follow-up copied in for hot reload. Prove TEST discovery and
+monthly-call results with authorized model spend before closing C11.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.

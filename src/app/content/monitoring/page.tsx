@@ -12,7 +12,7 @@ import { canAccess } from "@/lib/auth/access";
 import { cn } from "@/lib/utils";
 import { aiRunLedger, aiQuotaUse, failedAutomations, sessionRequestState, reminderLedger, importOverview } from "@/lib/programMonitoring";
 import { allAutomations } from "@/lib/programAutomation";
-import { transcriptJobsSnapshot } from "@/lib/transcriptJobs";
+import { transcriptJobsSnapshot, transcriptQueueBatch } from "@/lib/transcriptJobs";
 import { listCallRecords, callReviewQueue } from "@/lib/contentCallRecords";
 import { CallReviewQueue } from "@/components/content/CallReviewQueue";
 import { deployStamp, lastRunDeploy } from "@/lib/cron";
@@ -36,10 +36,11 @@ export default async function ContentMonitoringPage() {
   if (me && !canAccess(me, "content")) redirect("/");
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
 
-  const [runs, quota, jobs, calls, queue, sessions, reminders, failures, switches, imports, months, lastSync] = await Promise.all([
+  const [runs, quota, jobs, jobBatch, calls, queue, sessions, reminders, failures, switches, imports, months, lastSync] = await Promise.all([
     aiRunLedger({ take: 60 }).catch(() => []),
     aiQuotaUse().catch(() => null),
     transcriptJobsSnapshot().catch(() => null),
+    transcriptQueueBatch().catch(() => null),
     listCallRecords({ onlyReview: true, limit: 40 }).catch(() => []),
     callReviewQueue().catch(() => ({ aliases: [], unlinkedTranscripts: [] })),
     sessionRequestState().catch(() => ({ counts: [], stuck: [] })),
@@ -157,6 +158,28 @@ export default async function ContentMonitoringPage() {
                     Driver: <span className={jobs.enabled ? "font-medium text-success" : "font-medium text-muted"}>{jobs.enabled ? "enabled" : "disabled"}</span>
                     {offNote("transcript_jobs", "queued jobs will sit where they are")}
                   </p>
+                  {jobBatch ? (
+                    <div className="space-y-1 rounded-lg border border-border bg-surface-2 p-3">
+                      <p className="font-medium">Current work</p>
+                      <p>
+                        <span className={jobBatch.queued && !jobs.enabled ? "text-warning" : ""}>Queued: {jobBatch.queued}{jobBatch.queued && !jobs.enabled ? " · blocked while transcript processing is off" : ""}</span>
+                        {" · "}Running: {jobBatch.running}
+                        {" · "}<span className={jobBatch.failed ? "text-warning" : ""}>Failed: {jobBatch.failed}</span>
+                        {" · "}<span className={jobBatch.needsReview ? "text-warning" : ""}>Needs human review: {jobBatch.needsReview}</span>
+                      </p>
+                      {jobBatch.queued > 0 && (
+                        <p className="text-muted">
+                          {jobBatch.queuedNowLine}.
+                          {jobBatch.heldBacklog > 0 && <> {" "}{jobBatch.heldBacklog} older job{jobBatch.heldBacklog === 1 ? " is" : "s are"} excluded by the current backlog rule; including them requires an explicit owner choice and {jobBatch.aiJobs} queued AI job{jobBatch.aiJobs === 1 ? " may" : "s may"} spend credit.</>}
+                          {jobBatch.heldScope > 0 && <> {" "}{jobBatch.heldScope} job{jobBatch.heldScope === 1 ? " waits" : "s wait"} for client rollout scope.</>}
+                          {jobBatch.waitingForHandler > 0 && <> {" "}{jobBatch.waitingForHandler} job{jobBatch.waitingForHandler === 1 ? " waits" : "s wait"} for a handler in this build.</>}
+                          {jobBatch.ownerOff.map((o) => <span key={o.kind}> {" "}{o.jobs} {o.kind} job{o.jobs === 1 ? " waits" : "s wait"} for <code>{o.owner}</code>.</span>)}
+                        </p>
+                      )}
+                      {(jobBatch.failed > 0 || jobBatch.needsReview > 0) && <p className="text-warning">Jordan reviews the call and error in Settings before using Re-run. Re-running a job does not bypass an off switch or a rollout hold.</p>}
+                      <p className="text-muted">Review the clients, backlog choice and switches in <Link href="/settings#calendly" className="font-medium text-brand hover:underline">Calendly &amp; calls</Link> before any activation. Manual drafting buttons use a separate path.</p>
+                    </div>
+                  ) : <p className="text-warning">Current queue blockers could not be checked. Review the queue in Settings before changing a switch.</p>}
                   <p className="text-muted">
                     Handlers present: {Object.entries(jobs.handlers).map(([k, v]) => `${k}${v ? "" : " (none)"}`).join(" · ")}.
                     A job of a kind with no handler is left QUEUED rather than failed — it is work nobody has written yet, not work that went wrong.

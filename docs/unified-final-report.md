@@ -321,10 +321,12 @@ Read from production at 4:22 PM ET on Sep 28, after the final deploy, by the rea
 
 | Stage | Turn on | Reaches | Undo |
 |---|---|---|---|
-| A — internal AI help | `ai_runs`, `script_drafting`, `strategy_generation`, `topic_refresh` | nobody; drafts wait for Jordan (AI credit per run) | switch off in Settings |
+| A — internal AI help | `ai_runs`, `script_drafting`, `strategy_generation`, `topic_refresh`; `transcript_jobs` only after reviewing the selected call path and its queued backlog | nobody; drafts wait for Jordan (AI credit per run). The transcript worker processes confirmed calls only within its rollout and backlog gates. | switch off in Settings |
 | B — TEST clients end to end | `reminders`, `script_share_email`, `portal_invites`, `portal_login_email`, `program_message_notice`, `revision_policy` (the TEST-only lock stays on) | Jordan's test inboxes only | switch off |
 | C — pilot (Jordan names 1–3 clients) | stage B's switches for the named clients; `session_booking` + `address_sync` for them after #1 | those clients by email; their Aryeo bookings | remove from the pilot list or switch off; nothing further goes out |
 | D — everyone | lift the TEST-only lock; `portal_layout_v2` | every client with a program | switch off / restore the lock |
+
+**September 30 correction to Stage A:** the queued call path also needs `transcript_jobs`; the manual Draft strategy now, Draft owed scripts and Re-analyse buttons do not. Before approving the worker, use Settings → Calendly & content-program calls to inspect queued clients, job kinds, rollout scope, and the explicit choice to skip or include work queued before its first switch-on. The default skips that older work. Including it can process real clients' historical calls and spend AI credit. On September 30 the read-only queue had five older jobs (three INGEST, two ANALYZE), oldest September 18; `transcript_jobs` was off. A TEST discovery/monthly-call proof and its model spend remain separate approval and acceptance steps. No switch was changed by this correction.
 
 **Stays OFF whatever the stage:**
 - `script_auto_share` (Jordan's decision);
