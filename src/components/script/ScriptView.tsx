@@ -29,6 +29,8 @@ export type ScriptViewProps = {
   size?: "lg" | "sm" | "xs";
   /** "staff" also marks a script that has no pillar; the client never sees that note. */
   audience?: "client" | "staff";
+  /** Suppress the missing-pillar claim when the caller has not loaded pillar linkage. */
+  showMissingPillar?: boolean;
   /** Copy + Download (default on). */
   actions?: boolean;
   /** The script's title is usually the card's heading already. */
@@ -57,7 +59,7 @@ function Lines({ lines, textCls }: { lines: ScriptLine[]; textCls: string }) {
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "script";
 
-export function ScriptView({ body, parts, pillarName, size = "sm", audience = "client", actions = true, showTitle = false, fileTitle }: ScriptViewProps) {
+export function ScriptView({ body, parts, pillarName, size = "sm", audience = "client", showMissingPillar = true, actions = true, showTitle = false, fileTitle }: ScriptViewProps) {
   const layout = useMemo(
     () => {
       if (!parts) return scriptBlocksFromText(body);
@@ -96,11 +98,11 @@ export function ScriptView({ body, parts, pillarName, size = "sm", audience = "c
 
   return (
     <div className="mt-2">
-      {(category || audience === "staff" || actions) && (
+      {(category || (audience === "staff" && showMissingPillar) || actions) && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           {category ? (
             <span className="inline-block max-w-full truncate rounded-md bg-brand-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand">{category}</span>
-          ) : audience === "staff" ? (
+          ) : audience === "staff" && showMissingPillar ? (
             <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-muted-2">No pillar linked</span>
           ) : null}
           {actions && (

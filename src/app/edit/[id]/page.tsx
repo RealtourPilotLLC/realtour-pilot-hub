@@ -19,6 +19,7 @@ import { parseClientProfile } from "@/lib/clientProfile";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
+import { ScriptView } from "@/components/script/ScriptView";
 import { EditInstructionsCard } from "@/components/editing/EditInstructionsCard";
 import { MusicCard } from "@/components/editing/MusicCard";
 import { epidemicSoundConnected } from "@/lib/integrations/epidemicSound";
@@ -536,6 +537,12 @@ export default async function EditBriefPage({
   // else on this screen (owner/admin see raw — they're also the only ones who
   // can edit, so the editor never rewrites over a scrubbed value).
   const scrub = (s: string | null) => (s == null ? null : canSeeRaw ? s : stripMoneySentences(s) || null);
+  const editorScriptWords = (text: string) => {
+    const safeText = scrub(text);
+    return safeText
+      ? <ScriptView body={safeText} audience="staff" showMissingPillar={false} actions={false} />
+      : <p className="mt-1 text-xs text-muted">No editor-safe script words available.</p>;
+  };
   const showOrderNote = scrub(orderNote);
   // THE customer note: generalNotes (mirrors Aryeo's customer internal_notes,
   // the only note anyone can still write) with the retired editingPreferences
@@ -1337,7 +1344,7 @@ export default async function EditBriefPage({
                           Script: {r.script.title}{r.script.versionNo ? ` · v${r.script.versionNo}` : ""}{" "}
                           <span className={r.script.clientApproved ? "text-success" : "text-muted"}>— {r.script.standing}</span>
                         </summary>
-                        {r.script.text && <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">{scrub(r.script.text)}</p>}
+                        {r.script.text && editorScriptWords(r.script.text)}
                         {/* §6.8 (Sep 25): the direction written WITH these words. */}
                         {r.script.direction && (
                           <div className="mt-1 space-y-0.5 text-xs leading-relaxed text-foreground/85">
