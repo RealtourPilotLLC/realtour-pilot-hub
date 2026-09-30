@@ -377,6 +377,8 @@ async function main() {
     const ymTreeR = planTabR?.props.d.yourMonth ? YourMonth({ d: { ...planTabR.props.d.yourMonth, topics: planTabR.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } }) : null;
     const currentR = ymTreeR ? find(ymTreeR, "li").filter((e) => e.props["aria-current"] === "step") : [];
     c.ok("Your Month opens on the prompt: one current step, #step-route, with the two route cards", currentR.length === 1 && currentR[0].props.id === "step-route" && find(ymTreeR, "RouteChoice").length === 1, currentR.map((e) => e.props.id).join(","));
+    const routeTopics = find(ymTreeR, "section").find((e) => e.props.id === "this-month");
+    c.ok("the full topic work area stays folded while the route choice is current", !!routeTopics && find(routeTopics, "details")[0]?.props.open === false);
     const progR = await mp.monthProgress(R.enrollmentId, R.monthId);
     c.ok("staff: month 2 is not call-required, and the next step is the client's route choice", progR?.call.required === false && progR.call.mode === "OPTIONAL_WRITTEN" && progR.nextAction?.blocked === "client" && /haven't chosen how to plan/.test(progR.nextAction.text), progR?.nextAction?.text);
     const gateR = await portal.sessionGate(R.enrollmentId, R.monthId, { now: NOW });
@@ -472,6 +474,8 @@ async function main() {
     const ymT = ptT?.props.d.yourMonth ? YourMonth({ d: { ...ptT.props.d.yourMonth, topics: ptT.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } }) : null;
     const curT = ymT ? find(ymT, "li").filter((e) => e.props["aria-current"] === "step") : [];
     c.ok("the page: one current step (#step-filming) with the embedded picker and the saved choice", curT.length === 1 && curT[0].props.id === "step-filming" && find(ymT, "PortalScheduler")[0]?.props.embedded === true && find(ymT, "ScheduleLaterButton")[0]?.props.deferred === true);
+    const filmingTopics = find(ymT, "section").find((e) => e.props.id === "this-month");
+    c.ok("filming opens one work area and folds the topic bank", !!filmingTopics && find(filmingTopics, "details")[0]?.props.open === false);
     await prisma.contentEnrollment.update({ where: { id: T.enrollmentId }, data: { status: "ENDED" } });
     const endedLater = await actions.portalScheduleLater({ token: T.portalToken }, T.monthId);
     c.ok("an ended (read-only) account gets no Schedule later", !endedLater.ok, endedLater.message);

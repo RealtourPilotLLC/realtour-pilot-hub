@@ -77,6 +77,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
   const route = p.planningMode === "WRITTEN" ? "WRITTEN" : p.planningMode === "CALL" ? "CALL" : "UNDECIDED";
   const canChoose = p.noCallEligible && d.can.session && !d.readOnly;
   const current = steps.find((x) => x.state === "current") ?? null;
+  const topicsAreCurrent = current?.key === "topics" || current?.key === "answers" || (current?.key === "call" && planning.call === "HELD");
 
   return (
     <div className="space-y-4">
@@ -92,7 +93,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         {current?.cta && (
           current.cta.external
             ? <a href={current.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ExternalLink className="size-4" aria-hidden /></a>
-            : <Link href={current.cta.href} className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ChevronRight className="size-4" aria-hidden /></Link>
+            : <Link href={current.key === "topics" ? "#this-month" : current.cta.href} className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ChevronRight className="size-4" aria-hidden /></Link>
         )}
       </section>
 
@@ -100,40 +101,51 @@ export function YourMonth({ d }: { d: YourMonthData }) {
       <ol aria-label="Your month, step by step" className="space-y-2">
         {steps.map((step, i) => (
           <li key={step.key} id={`step-${step.key}`} aria-current={step.state === "current" ? "step" : undefined}
-            className={cn("scroll-mt-24 rounded-2xl border bg-surface/70 p-4 backdrop-blur", step.state === "current" ? "border-brand/40 shadow-sm" : "border-border")}>
+            className={cn("scroll-mt-24 rounded-2xl border bg-surface/70 backdrop-blur", step.state === "current" ? "border-brand/40 p-4 shadow-sm" : "border-border px-4 py-3")}>
             <div className="flex items-start gap-3">
               <StepIcon step={step} n={i + 1} />
               <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-2">{STATE_WORD[step.state]}</div>
-                <h3 className="break-words text-sm font-semibold leading-snug">{step.title}</h3>
-                {step.detail && <p className="mt-0.5 text-xs text-muted">{step.detail}</p>}
-                {step.cta && step.state !== "current" && step.key !== "filming" && !(step.key === "call" && d.callBooking) && (
-                  step.cta.external
-                    ? <a href={step.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-brand hover:underline sm:min-h-0", focusRing)}>{step.cta.label} <ExternalLink className="size-3" aria-hidden /></a>
-                    : <Link href={step.cta.href} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-brand hover:underline sm:min-h-0", focusRing)}>{step.cta.label} <ChevronRight className="size-3" aria-hidden /></Link>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">{step.state === "todo" && step.cta ? "Also ready for you" : STATE_WORD[step.state]}</div>
+                <h3 className={cn("break-words font-semibold leading-snug", step.state === "current" ? "text-base" : "text-sm")}>{step.title}</h3>
+                {step.detail && <p className="mt-1 text-sm text-muted">{step.detail}</p>}
+                {step.state === "current" && step.cta && (step.key === "topics" || step.key === "answers" || step.key === "scripts") && (
+                  <Link href={step.key === "topics" ? "#this-month" : step.cta.href} className={cn("mt-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-brand hover:underline", focusRing)}>{step.cta.label} <ChevronRight className="size-4" aria-hidden /></Link>
                 )}
+                {step.cta && step.state !== "current" && step.key !== "filming" && !(step.key === "call" && !!d.callBooking?.booked) && (
+                  step.cta.external
+                    ? <a href={step.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>{step.cta.label} <ExternalLink className="size-4" aria-hidden /></a>
+                    : <Link href={step.cta.href} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>{step.cta.label} <ChevronRight className="size-4" aria-hidden /></Link>
+                )}
+
+                {step.state === "done" && step.key === "topics" && <Link href={d.hrefs.bank} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Browse more ideas <ChevronRight className="size-4" aria-hidden /></Link>}
+                {step.state === "done" && step.key === "scripts" && <Link href={d.hrefs.scripts} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>View scripts <ChevronRight className="size-4" aria-hidden /></Link>}
 
                 {/* The opening prompt: two equal cards while the month is
                     undecided; afterwards, folded, for a change of mind. */}
-                {step.key === "route" && canChoose && (route === "UNDECIDED" ? (
+                {step.key === "route" && canChoose && (route === "UNDECIDED" && step.state === "current" ? (
                   <div className="mt-3"><RouteChoice monthId={p.monthId} current={route} /></div>
-                ) : (
+                ) : route !== "UNDECIDED" ? (
                   <details className="mt-2">
-                    <summary className={cn("flex min-h-11 cursor-pointer items-center text-xs font-medium text-muted hover:text-foreground sm:min-h-0", focusRing)}>Change how you plan this month</summary>
+                    <summary className={cn("flex min-h-11 cursor-pointer items-center text-sm font-medium text-brand hover:underline", focusRing)}>Change how you plan this month</summary>
                     <div className="mt-2"><RouteChoice monthId={p.monthId} current={route} /></div>
                   </details>
-                ))}
+                ) : null)}
 
                 {/* W03: book (or change) the strategy call right here — never
                     once the call has been held. */}
                 {step.key === "call" && d.callBooking && planning.call !== "HELD" && step.state !== "done" && (
-                  <PortalCallPicker view={d.callBooking} />
+                  d.callBooking.booked ? (
+                    <details className="mt-1">
+                      <summary className={cn("flex min-h-11 cursor-pointer items-center text-sm font-medium text-brand hover:underline", focusRing)}>Manage your strategy call</summary>
+                      <PortalCallPicker view={d.callBooking} />
+                    </details>
+                  ) : step.state === "current" ? <PortalCallPicker view={d.callBooking} /> : null
                 )}
 
                 {/* Book filming — the Schedule page's own picker, embedded. */}
                 {step.key === "filming" && (d.scheduleFailed ? (
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
-                ) : s && step.state !== "done" && !s.locked ? (
+                ) : s && step.state === "current" && !s.locked ? (
                   <div className="mt-3">
                     <PortalScheduler months={[s]} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={p.timezone} embedded />
                     {d.can.session && !d.readOnly && s.sessionsMissing > 0 && s.capacity.remaining > 0 && (
@@ -141,7 +153,9 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                     )}
                   </div>
                 ) : step.state === "done" ? (
-                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-xs font-medium text-muted hover:underline sm:min-h-0", focusRing)}>Reschedule or cancel <ChevronRight className="size-3" aria-hidden /></Link>
+                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Reschedule or cancel <ChevronRight className="size-4" aria-hidden /></Link>
+                ) : s && !s.locked ? (
+                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Manage filming in Appointments <ChevronRight className="size-4" aria-hidden /></Link>
                 ) : null)}
               </div>
             </div>
@@ -149,14 +163,20 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         ))}
       </ol>
 
-      {/* This month's topics — each with its own next action and its step. */}
-      <section id="this-month" aria-labelledby="this-month-title" className="scroll-mt-24 space-y-2">
-        <h2 id="this-month-title" className="text-base font-semibold">This month&rsquo;s topics</h2>
-        <TopicBank
-          groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
-          canAct={d.can.suggest} readOnly={d.readOnly} initialFilter={d.filter}
-          tabHref={d.hrefs.month} view="month" initialMonthId={month.id} scriptsHref={d.hrefs.scripts}
-        />
+      {/* Keep the full bank in reach when choosing or answering, then fold it
+          so a later action does not compete with a second work area. */}
+      <section id="this-month" aria-label="This month's topics" className="scroll-mt-24">
+        <details open={topicsAreCurrent} className="rounded-2xl border border-border bg-surface/70 px-4 py-3">
+          <summary className={cn("min-h-11 cursor-pointer py-2 text-sm font-semibold", focusRing)}>This month&rsquo;s topics · {month.selected} of {month.owed} chosen</summary>
+          <div className="mt-3 space-y-3">
+            <Link href={d.hrefs.bank} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Browse the full topic bank <ChevronRight className="size-4" aria-hidden /></Link>
+            <TopicBank
+              groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
+              canAct={d.can.suggest} readOnly={d.readOnly} initialFilter={d.filter}
+              tabHref={d.hrefs.month} view="month" initialMonthId={month.id} scriptsHref={d.hrefs.scripts}
+            />
+          </div>
+        </details>
       </section>
     </div>
   );

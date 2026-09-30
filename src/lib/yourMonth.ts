@@ -139,9 +139,9 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
         cta: actSuggest ? { label: answerCta(oneGap), href: i.hrefs.month } : null,
       });
     } else if (inputsReady && m.counts.CHOSEN === 0 && route === "WRITTEN") {
-      steps.push({ key: "answers", status: "done", title: "Your answers are in", detail: null, cta: null });
+      steps.push({ key: "answers", status: "done", title: "Your answers are in", detail: "Our team uses your answers to write the scripts. You'll review each released version here.", cta: null });
     } else {
-      steps.push({ key: "answers", status: "todo", title: "Answer a few questions for each topic", detail: route === "UNDECIDED" ? "If you plan here, we'll ask a few short questions per topic." : null, cta: null });
+      steps.push({ key: "answers", status: "todo", title: "Answer a few questions for each topic", detail: route === "UNDECIDED" ? "If you plan here, we'll ask a few short questions per topic." : "Choose your topics first; then answer their questions.", cta: null });
     }
   }
 
