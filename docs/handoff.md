@@ -2,7 +2,30 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — editor brief script presentation
+### Current resume point — written-answer suggestion safety
+
+`bc44dbf` keeps a suggestion's source pointer with the scoped, browser-local
+answer draft. The pointer is restored only for that client/enrollment/month/
+interview/question, survives edits and refresh, and is removed with a saved
+answer or emptied draft. The server still re-resolves it and treats edited
+words as a typed answer based on a suggestion, never as verbatim call text.
+Choosing a suggestion over existing words now previews the current draft and
+suggested replacement; Add preserves both, Replace offers Undo, and switching
+questions cannot carry the prior question's source. Editing clears stale save
+errors. No submission, drafting or clock rule changed.
+
+The CP08 isolated drill passed 80/0; Node20 TypeScript, focused lint and build
+passed. In the fenced browser, a synthetic invalid-interview fixture showed
+Add, replacement preview/Undo, refresh recovery of words and source, and
+question separation. The rejected Save retained the edited text and source;
+the server log showed the correct suggestion ID on the failed request. Demo
+DB answer and script-version counts stayed 42/18. At 390px the preview had no
+horizontal overflow. The temporary route was removed; demo stopped and its
+worktree clean at `bc44dbf`. A normal signed client route was also opened,
+but its existing topic had no suggestions. UX08 still needs a normal
+suggestion-bearing account and storage-denial/retry check before closure.
+
+### Previous checkpoint — editor brief script presentation
 
 `ae07289` replaces the editor brief's separate plain-text per-topic script
 display with `ScriptView`. The same Hook, Talking Points and Close structure
