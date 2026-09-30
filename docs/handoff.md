@@ -2,6 +2,38 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — W03 staff revisions (Sep 30 night)
+
+The local branch is `codex/audit-2026-09-30`. W03 commits `dc5aea7`,
+`7d2b28b`, and `35a4a04` add a staff request on an exact current approved
+cut/version, conversion of a stored team message with an explicit output match,
+and exact-slot reopening for the editor and server upload gate. The brief keeps
+the client's exact words, source link, timestamp and optional file reference;
+the existing revision writer creates the task, weekday clock and internal
+notification. The approved file is not replaced by the request, and another
+approved video on the same job remains closed. A follow-up improves source
+language in the brief/issue/task and gives monthly video work a delivery step
+that asks for destination confirmation rather than assuming Aryeo.
+
+Isolated `w03-staff-revisions` passes 13/0; related B1/CP03/C2 drills pass
+141/0, 52/0 and 140/0. TypeScript, focused ESLint and build passed for this
+batch. In the provider-fenced PGlite demo, direct and team-chat synthetic TEST
+requests were submitted. The editor brief showed the exact issues and original
+chat link; Video 1 and Video 3 reopened, while Video 4 stayed approved.
+Desktop and 390px form checks passed. W03 remains partial for a normal
+authenticated role replay, concurrent duplicate submission, the delivered-cut
+journey and distinct per-cut stage wording. No production request, client send,
+push or deployment was made.
+
+The isolated demo worktree is at
+`/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`,
+on ports 3200/5599 with provider fencing, no `.env`, and synthetic TEST rows.
+It was running in owned exec session 11397 at this handoff update; check the
+process before starting another or changing that checkout. Production schema
+still lacks the two additive C05/C06 tables. See
+[`audit-2026-09-30-checklist.md`](audit-2026-09-30-checklist.md) for the full
+backlog; W04 final-rendition verification is next.
+
 ### Current resume point — W01 month scope (Sep 30 evening)
 
 `f3b8007` pinned the chosen brand version per output and showed the editor's

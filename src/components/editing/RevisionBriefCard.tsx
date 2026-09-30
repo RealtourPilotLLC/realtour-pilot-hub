@@ -68,6 +68,7 @@ const SOURCE_LABEL: Record<string, string> = {
   slack: "From Slack",
   manual: "Added by hand",
   review_room: "From the review notes",
+  review_room_staff: "Recorded by staff in the Review Room",
   // Sep 28: three sources that reached this card as "From portal" / "From
   // office" / nothing sensible.
   portal: "From the client portal",

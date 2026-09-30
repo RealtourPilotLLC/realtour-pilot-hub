@@ -581,10 +581,11 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   // assistant's or a coordinator's ask read "Asked by <the agent>" (review,
   // Sep 28). The channel still comes from the source.
   const requester: Requester = opts.requestedBy ?? { name: null, kind: requesterKindOfSource(opts.source) };
+  const sourceWords = opts.source === "review_room_staff" ? "staff in the Review Room" : opts.source;
   const askedBy = requester.name?.trim() || null;
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, statusPinnedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
+    select: { id: true, status: true, title: true, clientId: true, contentMonthId: true, revisionRequestedAt: true, statusPinnedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
   });
   if (!project) return none;
 
@@ -620,6 +621,10 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   const primaryIsVideo = primary?.type === "VIDEO" || primary?.type === "SOCIAL_REEL";
   // The work this ask actually IS — used for the per-medium work order below.
   const primaryIsVideoWork = primaryIsVideo;
+  const monthlyVideo = primaryIsVideoWork && !!project.contentMonthId;
+  const deliveryStep = monthlyVideo
+    ? "Submit the corrected cut for review, then confirm the portal or other delivery destination before notifying the client"
+    : "Re-upload to Aryeo and re-deliver to the client";
   // A job pinned to nobody or to the outside shop must not bounce a revision
   // back onto John's or Kim's board — Kyle relays it (review, Sep 7).
   const pin = primaryIsVideo ? pinnedEditorFor(project) : { pinned: false, key: null };
@@ -663,7 +668,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       projectId: project.id,
       type: "FLAG",
       // Still starts with REVISION_FLAG_PREFIX — the field-flag filters key off it.
-      body: `${REVISION_FLAG_PREFIX}${opts.source}${askedBy ? `, ${askedBy}` : ""}): ${note}`,
+      body: `${REVISION_FLAG_PREFIX}${sourceWords}${askedBy ? `, ${askedBy}` : ""}): ${note}`,
     },
   });
 
@@ -687,16 +692,16 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   const data = {
     taskType: "revision",
     title: `${photoLane ? "Photo revision" : primaryIsVideoWork ? "Video revision" : "Revision"} — ${project.title}`,
-    summary: `Client asked for changes after delivery: “${clip(taskNote, 240)}” — confirm exactly what needs to change, make the edits/reshoot, then re-upload to Aryeo and re-deliver.`,
+    summary: `Client asked for changes${project.status === "DELIVERED" ? " after delivery" : ""}: “${clip(taskNote, 240)}” — confirm exactly what needs to change, make the edits/reshoot, then ${deliveryStep.toLowerCase()}.`,
     description: tagged,
-    reasonCreated: `Client requested changes via ${opts.source} after delivery`,
+    reasonCreated: `Client requested changes via ${sourceWords}${project.status === "DELIVERED" ? " after delivery" : ""}`,
     checklist: JSON.stringify([
       // "…in Communications" pointed editors at a page their role can't open
       // (audit crack #38) — the request is right on the card.
       "Read the client's request below",
       "Confirm exactly what needs to change",
       "Make the edits / reshoot if needed",
-      "Re-upload to Aryeo + re-deliver to client",
+      deliveryStep,
       "Mark the revision resolved",
     ]),
     source: opts.source,

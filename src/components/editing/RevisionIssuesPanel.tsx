@@ -73,7 +73,7 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
       </div>
       {issue.summary && issue.summary !== issue.text && <p className="mt-1 text-xs italic text-muted">&ldquo;{issue.text.slice(0, 400)}&rdquo;</p>}
       <p className="mt-1 text-[11px] text-muted-2">
-        {issue.category} · {issue.severity.toLowerCase()} · {issue.sourceKind === "BRIEF_ITEM" ? `client ask${issue.sourceChannel ? ` (${issue.sourceChannel})` : ""}` : issue.sourceKind === "MANUAL" ? "split out" : issue.raisedByName ?? "review note"}
+        {issue.category} · {issue.severity.toLowerCase()} · {issue.sourceKind === "BRIEF_ITEM" ? issue.sourceChannel === "review_room_staff" ? "staff recorded client ask" : `client ask${issue.sourceChannel ? ` (${issue.sourceChannel})` : ""}` : issue.sourceKind === "MANUAL" ? "split out" : issue.raisedByName ?? "review note"}
         {issue.raisedOnRound ? ` · on v${issue.raisedOnRound}` : ""}
         {issue.addressedInRound ? ` · editor says fixed in v${issue.addressedInRound}` : ""}
         {issue.verifiedInRound ? ` · verified on v${issue.verifiedInRound}` : ""}
