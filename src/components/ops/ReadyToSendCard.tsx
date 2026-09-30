@@ -454,9 +454,9 @@ function DownloadFile({ href, taken }: { href: string; taken: boolean }) {
         if (taken) return;
         window.setTimeout(() => router.refresh(), REPAINT_AFTER_MS);
       }}
-      className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
     >
-      <Download className="size-3.5" /> Download
+      <Download className="size-4" /> Download
     </a>
   );
 }

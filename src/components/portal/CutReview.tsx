@@ -233,7 +233,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               {replyTo === c.id && (
                 <div className="mt-1.5 flex items-start gap-2">
                   <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Your reply…" aria-label="Reply" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                  <button type="button" onClick={() => sendReply(c.id)} disabled={busy || !reply.trim()} className="min-h-11 shrink-0 rounded-lg bg-brand px-3 text-sm font-semibold text-white disabled:opacity-50">Reply</button>
+                  <button type="button" onClick={() => sendReply(c.id)} disabled={busy || !reply.trim()} className="min-h-11 shrink-0 rounded-lg bg-brand-action px-3 text-sm font-semibold text-white disabled:opacity-50">Reply</button>
                 </div>
               )}
             </li>
@@ -296,7 +296,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 <p className="text-xs text-warning">This would be an extra revision round for this video, which may carry a fee. Please sign in with your own account to send it, so we know who agreed.</p>
               )}
               <div className="flex items-center gap-2">
-                <button type="button" onClick={submitChanges} disabled={busy || (needsAck && !(feeAck && (review?.mayAcknowledge ?? perms.approve)))} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Send to the editor</button>
+                <button type="button" onClick={submitChanges} disabled={busy || (needsAck && !(feeAck && (review?.mayAcknowledge ?? perms.approve)))} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Send to the editor</button>
                 <button type="button" onClick={() => setAsking(false)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
               </div>
             </div>

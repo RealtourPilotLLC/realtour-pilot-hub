@@ -178,7 +178,7 @@ export function PortalAccessControls(props: {
               {ROLES.map((r) => <option key={r} value={r}>{r.toLowerCase()}</option>)}
             </select>
           </label>
-          <button type="submit" disabled={busy || inviteBlocked} className={cn(btn, "bg-brand text-white hover:opacity-90 disabled:opacity-50")}>
+          <button type="submit" disabled={busy || inviteBlocked} className={cn(btn, "bg-brand-action text-white hover:opacity-90 disabled:opacity-50")}>
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <UserPlus className="size-3.5" />} {switches.invites ? "Invite" : "Add person"}
           </button>
         </form>

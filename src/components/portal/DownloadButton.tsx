@@ -189,7 +189,7 @@ export function DownloadButton({ videoId, href, plan, label, title }: {
   };
 
   const btn = "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
-  const primary = `${btn} bg-brand text-white hover:opacity-90`;
+  const primary = `${btn} bg-brand-action text-white hover:opacity-90`;
   const secondary = `${btn} border border-border text-foreground hover:bg-surface-2`;
   const openInstead = (
     <a href={href} download={fileName} target="_blank" rel="noopener noreferrer" onClick={() => setState({ kind: "started" })} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">

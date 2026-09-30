@@ -37,7 +37,7 @@ export function MessageComposer({ replyToId, ownerFirst, hint }: { replyToId: st
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="min-w-0 flex-1 text-[11px] text-muted-2">{hint}</p>
         <button type="button" onClick={send} disabled={pending || !body.trim()}
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+          className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
           {pending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send
         </button>
       </div>

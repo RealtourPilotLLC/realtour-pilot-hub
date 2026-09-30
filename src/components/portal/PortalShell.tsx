@@ -81,7 +81,7 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
               const Icon = ICON[i.dest];
               const on = active === i.dest;
               return (
-                <Link key={i.dest} href={i.href} aria-current={on ? "page" : undefined} className={cn("flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-[13px] font-semibold", focus, on ? "bg-brand text-white shadow" : "text-muted hover:text-foreground")}>
+                <Link key={i.dest} href={i.href} aria-current={on ? "page" : undefined} className={cn("flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-[13px] font-semibold", focus, on ? "bg-brand-action text-white shadow" : "text-muted hover:text-foreground")}>
                   <Icon className="size-4" aria-hidden /> {i.short}
                   <CountBadge n={i.badge} label={i.dest === "more" ? "unread" : "waiting"} className={on ? "bg-white text-brand" : ""} />
                 </Link>
@@ -125,7 +125,7 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
 function RailLink({ i, active, small = false }: { i: Linked; active: boolean; small?: boolean }) {
   const Icon = ICON[i.dest];
   return (
-    <Link href={i.href} aria-current={active ? "page" : undefined} className={cn("flex min-h-11 items-center gap-2.5 rounded-xl px-3 font-semibold", small ? "text-[13px]" : "text-sm", focus, active ? "bg-brand text-white shadow" : "text-muted hover:bg-surface hover:text-foreground")}>
+    <Link href={i.href} aria-current={active ? "page" : undefined} className={cn("flex min-h-11 items-center gap-2.5 rounded-xl px-3 font-semibold", small ? "text-[13px]" : "text-sm", focus, active ? "bg-brand-action text-white shadow" : "text-muted hover:bg-surface hover:text-foreground")}>
       <Icon className="size-4 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1 truncate">{i.label}</span>
       <CountBadge n={i.badge} label={i.dest === "messages" ? "unread" : "waiting"} className={active ? "bg-white text-brand" : ""} />
@@ -144,7 +144,7 @@ function Notices({ n, clientName }: { n: ShellNotices; clientName: string | null
             <div className="font-semibold">{n.readOnly.title}</div>
             <div className="text-xs text-muted">{n.readOnly.body}</div>
           </div>
-          <a href={n.readOnly.cta.href} target="_blank" rel="noopener noreferrer" className={cn("inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand px-3 text-xs font-semibold text-white", focus)}>{n.readOnly.cta.label}</a>
+          <a href={n.readOnly.cta.href} target="_blank" rel="noopener noreferrer" className={cn("inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-action px-3 text-xs font-semibold text-white", focus)}>{n.readOnly.cta.label}</a>
         </div>
       )}
       {n.staff && (
@@ -161,7 +161,7 @@ function Notices({ n, clientName }: { n: ShellNotices; clientName: string | null
         <div className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-3.5 text-sm">
           <KeyRound className="size-4 shrink-0 text-brand" aria-hidden />
           <span className="min-w-0 flex-1 basis-48 text-xs">Set up your sign-in — a personal link by email, so this page is yours wherever you open it. This link keeps working too.</span>
-          <Link href="/portal/login" className={cn("inline-flex min-h-11 items-center rounded-lg bg-brand px-3 text-xs font-semibold text-white", focus)}>Sign in with email</Link>
+          <Link href="/portal/login" className={cn("inline-flex min-h-11 items-center rounded-lg bg-brand-action px-3 text-xs font-semibold text-white", focus)}>Sign in with email</Link>
         </div>
       )}
       {n.viewOnlySeat && (

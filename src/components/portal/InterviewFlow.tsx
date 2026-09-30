@@ -216,7 +216,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
             </div>
           )}
           <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" disabled={busy || !visibleText.trim()} onClick={() => answer("TYPED")} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3.5 animate-spin" /> : null} {editKey ? "Save new answer" : "Save & next"}</button>
+            <button type="button" disabled={busy || !visibleText.trim()} onClick={() => answer("TYPED")} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3.5 animate-spin" /> : null} {editKey ? "Save new answer" : "Save & next"}</button>
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("SKIPPED")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Skip</button>}
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
             {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>}
@@ -234,7 +234,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           <p className={cn("text-sm font-medium", iv.ready ? "text-success" : "text-warning")}>{iv.ready ? "That's everything we need to draft this script." : "Not quite enough to write this one yet:"}</p>
           {!iv.ready && iv.gaps.length > 0 && <ul className="mt-1 list-inside list-disc text-xs text-muted">{iv.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>}
           {canAct && !submitted && iv.ready && (
-            <button type="button" onClick={() => submit(false)} disabled={busy} className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send my answers</button>
+            <button type="button" onClick={() => submit(false)} disabled={busy} className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send my answers</button>
           )}
           {canAct && !iv.ready && iv.canSendWithGaps && (
             <>
@@ -289,7 +289,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
         <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
           <div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Your script is ready</div>
           <p className="mt-0.5 text-[11px] text-muted-2">It&rsquo;s under this topic, with everything you need to film it.</p>
-          <Link href={`${backHref}#topic-${iv.topicId}`} className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+          <Link href={`${backHref}#topic-${iv.topicId}`} className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
             Read my script <ArrowRight className="size-3.5" />
           </Link>
         </div>

@@ -101,7 +101,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
               <>
                 <div className="text-muted">Not booked yet — we plan {monthLabel(p.monthKey)} on this call, then film it.</div>
                 {!readOnly && (
-                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
+                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
                 )}
                 <p className="text-xs text-muted-2">Times show in your timezone on Calendly; it lands here as Booked once it&rsquo;s on the calendar.</p>
                 {routeHref ? switchLink("Or choose your topics here instead") : p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked={false} />}

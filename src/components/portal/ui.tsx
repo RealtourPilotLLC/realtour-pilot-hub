@@ -85,7 +85,7 @@ export function StatusChip({ word, className }: { word: Word; className?: string
 export function CountBadge({ n, label, className }: { n: number; label: string; className?: string }) {
   if (!n) return null;
   return (
-    <span className={cn("inline-flex min-w-5 items-center justify-center rounded-full bg-brand px-1.5 text-[11px] font-bold leading-5 text-white tabular-nums", className)}>
+    <span className={cn("inline-flex min-w-5 items-center justify-center rounded-full bg-brand-action px-1.5 text-[11px] font-bold leading-5 text-white tabular-nums", className)}>
       {n > 99 ? "99+" : n}<span className="sr-only"> {label}</span>
     </span>
   );
@@ -102,7 +102,7 @@ export function SubNav({ items, label }: { items: { href: string; label: string;
       <ul className="flex gap-1 rounded-2xl border border-border bg-surface/70 p-1">
         {items.map((i) => (
           <li key={i.href} className="min-w-0 flex-auto">
-            <Link href={i.href} aria-current={i.active ? "page" : undefined} className={cn("flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-xl px-2 text-[13px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", i.active ? "bg-brand text-white shadow" : "text-muted hover:text-foreground")}>
+            <Link href={i.href} aria-current={i.active ? "page" : undefined} className={cn("flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-xl px-2 text-[13px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", i.active ? "bg-brand-action text-white shadow" : "text-muted hover:text-foreground")}>
               <span className="truncate sm:hidden">{i.short ?? i.label}</span>
               <span className="hidden truncate sm:inline">{i.label}</span>
               {!!i.count && <CountBadge n={i.count} label={i.countLabel ?? "waiting"} className={i.active ? "bg-white text-brand" : ""} />}

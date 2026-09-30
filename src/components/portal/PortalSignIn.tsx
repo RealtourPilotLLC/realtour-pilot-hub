@@ -53,7 +53,7 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
             <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-xs">
               <span className="min-w-0 flex-1 truncate text-muted">Signed in as <span className="font-semibold text-foreground">{signedIn.who}</span></span>
               {signedIn.canEnter && (
-                <Link href="/portal/me" className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 font-semibold text-white">
+                <Link href="/portal/me" className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1.5 font-semibold text-white">
                   Open your portal <ArrowRight className="size-3.5" />
                 </Link>
               )}
@@ -93,7 +93,7 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
                 />
               </label>
               <button type="submit" disabled={busy || !email.trim()}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40">
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40">
                 {busy && <Loader2 className="size-4 animate-spin" />} Email me a sign-in link
               </button>
               <p className="text-center text-[11px] text-muted-2">No password — we send a one-time link that works for 15 minutes.</p>

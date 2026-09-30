@@ -37,7 +37,7 @@ const STATE: Record<ClientVideoState, { label: string; cls: string; action: stri
   IN_PRODUCTION: { label: "In production", cls: "bg-surface-2 text-muted", action: "Details" },
 };
 
-const chip = (on: boolean) => cn("rounded-full border px-2.5 py-1 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", on ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted");
+const chip = (on: boolean) => cn("rounded-full border px-2.5 py-1 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", on ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted");
 
 function VideoRow({ v, to, previous }: { v: VideoListRow; to: string; previous: boolean }) {
   const st = STATE[v.state];
@@ -66,7 +66,7 @@ function VideoRow({ v, to, previous }: { v: VideoListRow; to: string; previous: 
             {!previous && v.format && <span>{v.format.replace(/_/g, " ")}</span>}
           </div>
         </div>
-        <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold", v.needsDecision ? "bg-brand text-white" : "border border-border text-muted")}>{st.action} <ChevronRight className="size-3.5" /></span>
+        <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold", v.needsDecision ? "bg-brand-action text-white" : "border border-border text-muted")}>{st.action} <ChevronRight className="size-3.5" /></span>
       </Link>
     </li>
   );
@@ -340,7 +340,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
           <nav aria-label="Filter by status" className="flex flex-wrap gap-1.5">
             {LIBRARY_FILTERS.map((f) => (
               <Link key={f.key} href={q({ q: view.q, st: f.key })} aria-current={view.st === f.key ? "page" : undefined}
-                className={cn("inline-flex min-h-11 items-center rounded-full border px-3 text-xs font-semibold sm:min-h-9", focus, view.st === f.key ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+                className={cn("inline-flex min-h-11 items-center rounded-full border px-3 text-xs font-semibold sm:min-h-9", focus, view.st === f.key ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
                 {f.label} · {view.counts[f.key]}
               </Link>
             ))}

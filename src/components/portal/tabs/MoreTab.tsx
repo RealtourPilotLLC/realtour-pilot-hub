@@ -70,7 +70,7 @@ export function MoreTab({ d }: { d: MoreTabData }) {
               <button type="submit" className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border bg-surface px-3 text-sm font-semibold text-muted hover:text-foreground ${focus}`}><LogOut className="size-4" aria-hidden /> Sign out</button>
             </form>
           )}
-          {d.offerSignIn && <Link href="/portal/login" className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand px-3 text-sm font-semibold text-white ${focus}`}><KeyRound className="size-4" aria-hidden /> Sign in with email</Link>}
+          {d.offerSignIn && <Link href="/portal/login" className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-3 text-sm font-semibold text-white ${focus}`}><KeyRound className="size-4" aria-hidden /> Sign in with email</Link>}
         </div>
       </Card>
     </div>

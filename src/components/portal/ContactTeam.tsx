@@ -58,7 +58,7 @@ export function ContactTeam({ contact, messagesHref, note, className }: {
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         {messagesHref && (
-          <Link href={messagesHref} className={cn(btn, "border-brand/30 bg-brand text-white hover:opacity-90")}>
+          <Link href={messagesHref} className={cn(btn, "border-brand/30 bg-brand-action text-white hover:opacity-90")}>
             <MessageSquare className="size-4" /> Message {contact.name}
           </Link>
         )}

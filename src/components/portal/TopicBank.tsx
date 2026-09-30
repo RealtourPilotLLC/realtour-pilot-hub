@@ -216,7 +216,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
             {months.length > 1 && (
               <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
                 {months.map((m) => (
-                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
+                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
                 ))}
               </div>
             )}
@@ -254,7 +254,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                 {t.recommended?.reason && <p className="mt-1 text-xs text-foreground/80"><span className="font-semibold">Why this one: </span>{t.recommended.reason}</p>}
                 {canAct && !readOnly && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> Choose this topic</button>
+                    <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> Choose this topic</button>
                   </div>
                 )}
                 {cardStatus(t.id)}
@@ -276,7 +276,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                           {t.recommended?.reason && <div className="text-[11px] text-muted">{t.recommended.reason}</div>}
                           {cardStatus(t.id)}
                         </div>
-                        <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("shrink-0 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Choose this topic</button>
+                        <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("shrink-0 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Choose this topic</button>
                       </li>
                     ))}
                   </ul>
@@ -294,7 +294,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       {view !== "month" && (
       <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter topics">
         {filters.map((f) => (
-          <button key={f.key} type="button" role="tab" aria-selected={effFilter === f.key} onClick={() => { setFilter(f.key); setFilterTouched(true); setMsg(null); }} className={cn("rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", effFilter === f.key ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>
+          <button key={f.key} type="button" role="tab" aria-selected={effFilter === f.key} onClick={() => { setFilter(f.key); setFilterTouched(true); setMsg(null); }} className={cn("rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", effFilter === f.key ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>
             {/* Every chip carries its count, zero included — one chip without
                 a number beside five with one reads as "unknown", not "none". */}
             {f.label} · {counts[f.key] ?? 0}
@@ -313,7 +313,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       {/* v1: every result here. v2: only results that have no topic card to sit in. */}
       {msg && (!v2 || !msg.topicId) && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
       {justAdded && canAct && !readOnly && (
-        <button type="button" onClick={answerJustAdded} disabled={busy} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>{CTA_WORDS.ANSWER} for it now <ChevronRight className="size-3.5" /></button>
+        <button type="button" onClick={answerJustAdded} disabled={busy} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>{CTA_WORDS.ANSWER} for it now <ChevronRight className="size-3.5" /></button>
       )}
 
       {/* SCRIPTED, NOT FILMED — first, because each one is a decision: film it
@@ -343,13 +343,13 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                           <option value="">Swap it for…</option>
                           {swapOptions.map((o) => <option key={o.id} value={o.id}>{o.title}{o.mine ? " (your idea)" : ""}</option>)}
                         </select>
-                        <button type="button" onClick={() => swap(t.swappable!, t.id)} disabled={busy || !swapTo} className={cn("rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Swap</button>
+                        <button type="button" onClick={() => swap(t.swappable!, t.id)} disabled={busy || !swapTo} className={cn("rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Swap</button>
                         <button type="button" onClick={() => { setSwapping(null); setSwapTo(""); }} className={cn("rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Cancel</button>
                       </>
                     ) : (
                       <button type="button" onClick={() => { setSwapping(t.swappable); setSwapTo(""); }} disabled={busy || swapOptions.length === 0} className={cn("inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ArrowLeftRight className="size-3" /> {CTA_WORDS.SWAP}</button>
                     ))}
-                    {!t.carried && month && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
+                    {!t.carried && month && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
                   </div>
                 )}
                 {cardStatus(t.id)}
@@ -446,7 +446,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                         )}
                         {/* Actions */}
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
+                          {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
                           {t.selection && t.selection.removable && canAct && !readOnly && <button type="button" onClick={() => remove(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-danger disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><X className="size-3" /> Remove from {shortMonth(t.selection.monthKey)}</button>}
                           {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> {v2 ? "committed — send us a message to change it" : `committed — ${TEXT_KYLE} to change it`}</span>}
                           {/* R01: no questions offered for what nobody owes — an extra waiting
@@ -460,19 +460,19 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                           {canAct && !readOnly && <button type="button" onClick={() => { setOpenTopic(openTopic === t.id ? null : t.id); setNote(""); }} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><MessageSquare className="size-3" /> Discuss</button>}
                           {canAct && !readOnly && t.state === "SUGGESTED" && !t.selection && <button type="button" onClick={() => { setDeclining(declining === t.id ? null : t.id); setDeclineReason(""); }} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Ban className="size-3" /> Not interested</button>}
                           {/* v2: a script waiting on them is answered in My Plan › Scripts, with the words in front of them. */}
-                          {v2 && scriptsHref && awaitingScript(t) && canAct && !readOnly && <Link href={`${scriptsHref}#script-${t.id}`} className={cn("inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ScrollText className="size-3" /> {CTA_WORDS.REVIEW}</Link>}
+                          {v2 && scriptsHref && awaitingScript(t) && canAct && !readOnly && <Link href={`${scriptsHref}#script-${t.id}`} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ScrollText className="size-3" /> {CTA_WORDS.REVIEW}</Link>}
                         </div>
                         {cardStatus(t.id)}
                         {declining === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
                             <input value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="Why not? (optional — it helps us suggest better)" aria-label="Why this topic isn't for you (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                            <button type="button" onClick={() => decline(t.id)} disabled={busy} className={cn("shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11 sm:min-h-0")}>Set aside</button>
+                            <button type="button" onClick={() => decline(t.id)} disabled={busy} className={cn("shrink-0 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11 sm:min-h-0")}>Set aside</button>
                           </div>
                         )}
                         {openTopic === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
                             <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="A thought on this topic — an angle, a story, a doubt…" aria-label="Note on this topic" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                            <button type="button" onClick={() => discuss(t.id)} disabled={busy || note.trim().length < 2} className={cn("shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11 sm:min-h-0")}>Send</button>
+                            <button type="button" onClick={() => discuss(t.id)} disabled={busy || note.trim().length < 2} className={cn("shrink-0 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11 sm:min-h-0")}>Send</button>
                           </div>
                         )}
                       </div>
@@ -526,7 +526,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                 </label>
               )}
               <div className="flex gap-2">
-                <button type="button" onClick={suggest} disabled={busy || idea.title.trim().length < 3} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>{busy && <Loader2 className="size-3.5 animate-spin" />} {useForMonth && month ? `Add it for ${shortMonth(month.monthKey)}` : "Add to my bank"}</button>
+                <button type="button" onClick={suggest} disabled={busy || idea.title.trim().length < 3} className={cn("inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>{busy && <Loader2 className="size-3.5 animate-spin" />} {useForMonth && month ? `Add it for ${shortMonth(month.monthKey)}` : "Add to my bank"}</button>
                 <button type="button" onClick={() => setSuggesting(false)} className={cn("rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", v2 && "min-h-11")}>Cancel</button>
               </div>
             </div>

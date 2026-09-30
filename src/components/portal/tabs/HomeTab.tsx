@@ -227,7 +227,7 @@ export function AppointmentCards({ d, href, quiet = false, plan = null }: {
 }) {
   const bookCls = quiet
     ? "mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"
-    : "mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
+    : "mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
   const p = d.planning;
   const tz = p?.timezone ?? "America/New_York";
   // Each time is labelled with its own date's zone (EST in late November),
@@ -370,14 +370,14 @@ export function HomeV2({ d, actions, href }: {
           <>
             <h2 id="home-next-step" className="mt-1 break-words text-lg font-semibold leading-snug">{primary.title}</h2>
             {primary.detail && <p className="mt-0.5 text-sm text-muted">{primary.detail}</p>}
-            <Link href={primary.href} className={`mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto ${focusRing}`}>{primary.cta} <ChevronRight className="size-4" aria-hidden /></Link>
+            <Link href={primary.href} className={`mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-action px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto ${focusRing}`}>{primary.cta} <ChevronRight className="size-4" aria-hidden /></Link>
           </>
         ) : notice ? (
           // CP-12: the paused/ended state and the way back, in the same words as the banner.
           <>
             <h2 id="home-next-step" className="mt-1 text-lg font-semibold leading-snug">{notice.title}</h2>
             <p className="mt-0.5 text-sm text-muted">Everything we&rsquo;ve delivered stays here for you to watch and download.</p>
-            <a href={notice.cta.href} target="_blank" rel="noopener noreferrer" className={`mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow sm:w-auto ${focusRing}`}>{notice.cta.label} <ChevronRight className="size-4" aria-hidden /></a>
+            <a href={notice.cta.href} target="_blank" rel="noopener noreferrer" className={`mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-action px-5 text-sm font-semibold text-white shadow sm:w-auto ${focusRing}`}>{notice.cta.label} <ChevronRight className="size-4" aria-hidden /></a>
           </>
         ) : (
           <>

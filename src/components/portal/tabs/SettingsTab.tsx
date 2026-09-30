@@ -73,7 +73,7 @@ export function SettingsTab({ d }: { d: SettingsData }) {
             d.signInEmailOn ? (
               <div className="mt-2 text-sm">
                 <p className="text-muted">To add an assistant or teammate, sign in with your email first. The shared link doesn&rsquo;t carry a name, and every invitation records who sent it.</p>
-                <Link href="/portal/login" className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white"><KeyRound className="size-3.5" /> Sign in with email</Link>
+                <Link href="/portal/login" className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white"><KeyRound className="size-3.5" /> Sign in with email</Link>
               </div>
             ) : (
               <p className="mt-2 text-sm text-muted">Adding teammates opens when email sign-in is switched on for your account. Until then, {d.contactLine ?? contactLine()} with their name and email and we&rsquo;ll add them for you.</p>

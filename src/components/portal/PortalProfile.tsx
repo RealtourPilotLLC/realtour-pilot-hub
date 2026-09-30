@@ -167,7 +167,7 @@ function SaveRow({ onSave, onClear, busy, status, canClear, readOnly }: { onSave
   if (readOnly) return null;
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2">
-      <button onClick={onSave} disabled={busy} className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
+      <button onClick={onSave} disabled={busy} className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
         {busy && <Loader2 className="size-3.5 animate-spin" />} Save
       </button>
       {onClear && canClear && <button onClick={onClear} disabled={busy} className={quiet}><X className="size-3" /> Clear</button>}

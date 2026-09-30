@@ -46,7 +46,7 @@ export function PortalSuggestBox({ scriptId }: { scriptId: string }) {
             })
           }
           disabled={busy || text.trim().length < 3}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
         >
           {busy && <Loader2 className="size-3 animate-spin" />} Send suggestion
         </button>

@@ -20,12 +20,13 @@
   --surface-2: #171a22; /* insets, hovers, chips */
   --foreground: #f4f5f7;
   --muted: #9aa0ab;
-  --muted-2: #676d78;
+  --muted-2: #858b96;
   --border: rgba(214, 222, 240, 0.09);
   --border-strong: rgba(214, 222, 240, 0.18);
 
   /* Brand: burnt orange / copper */
   --brand: #e96320;
+  --brand-action: #c2450c; /* white text: 5.06:1; brand remains the accent */
   --brand-fg: #ffffff;
   --brand-soft: rgba(233, 99, 32, 0.14);
 
@@ -61,11 +62,12 @@ html.light {
   --surface-2: #eeedeb;
   --foreground: #17181b;
   --muted: #585c63;
-  --muted-2: #878c95;
+  --muted-2: #646a72;
   --border: rgba(23, 24, 27, 0.1);
   --border-strong: rgba(23, 24, 27, 0.2);
 
-  --brand: #d95816; /* a touch deeper so white-on-brand stays readable */
+  --brand: #d95816;
+  --brand-action: #b94008; /* white text: 5.53:1 */
   --brand-soft: rgba(217, 88, 22, 0.12);
 
   --accent: #d95816;
@@ -93,10 +95,11 @@ html.light {
   --surface-2: #eeedeb;
   --foreground: #17181b;
   --muted: #585c63;
-  --muted-2: #878c95;
+  --muted-2: #646a72;
   --border: rgba(23, 24, 27, 0.1);
   --border-strong: rgba(23, 24, 27, 0.2);
   --brand: #d95816;
+  --brand-action: #b94008;
   --brand-soft: rgba(217, 88, 22, 0.12);
   --accent: #d95816;
   --success: #059669;
@@ -120,6 +123,7 @@ html.light {
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-brand: var(--brand);
+  --color-brand-action: var(--brand-action);
   --color-brand-fg: var(--brand-fg);
   --color-brand-soft: var(--brand-soft);
   --color-accent: var(--accent);

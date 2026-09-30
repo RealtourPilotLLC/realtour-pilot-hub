@@ -116,7 +116,7 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
         <button
           disabled={busy || name.trim().length < 2 || !email.trim()}
           onClick={() => run(() => portalInviteTeammate(auth(), { name, email, role }), () => { setName(""); setEmail(""); setRole("OWNER"); })}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Mail className="size-3.5" />} {invitationsOn ? "Send invitation" : "Save — invite later"}
         </button>

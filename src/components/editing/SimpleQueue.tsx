@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { etDayKey, etMonthDay } from "@/lib/datetime";
 import { Avatar } from "@/components/ui/Avatar";
+import { badgeColors } from "@/components/ui/Badge";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
@@ -322,7 +323,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
         onClick={toggle}
         title={note ?? pinTitle ?? undefined}
         className="inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-xs"
-        style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
+        style={badgeColors(meta.color)}
       >
         {pending ? <Loader2 className="size-3 animate-spin" /> : null}
         {pinned && <Pin className="size-3" aria-label="Pinned by the office" />}
@@ -731,8 +732,8 @@ export function SimpleQueue({
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {VIEWS.map((v) => (
           <button key={v.key} onClick={() => updateFilters({ view: v.key })}
-            className={cn("rounded-lg px-3 py-1.5 text-sm font-medium",
-              view === v.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2")}>
+            className={cn("min-h-11 rounded-lg px-3 py-1.5 text-sm font-medium",
+              view === v.key ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2")}>
             {v.label}
             {/* A zero is worth printing while a filter is on: "Done 0" is the
                 answer to "is there any of Kim's in there", and a bare pill
@@ -896,7 +897,7 @@ export function SimpleQueue({
                       <span className="mr-2 text-xs font-medium text-muted sm:hidden">Video</span>
                       <span
                         className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
-                        style={{ backgroundColor: `${t.color}26`, color: t.color }}
+                        style={badgeColors(t.color)}
                         title={[
                           r.typeDetail || null,
                           r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : null,
@@ -916,7 +917,7 @@ export function SimpleQueue({
                           // with the pin the same way the live pill does.
                           <span
                             className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
-                            style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}
+                            style={badgeColors("#94a3b8")}
                             title={r.overrides.statusPinned ? `Pinned by the office — the hub won't move it${r.overrides.by ? ` (override by ${r.overrides.by})` : ""}` : undefined}
                           >
                             {r.overrides.statusPinned && <Pin className="size-3" aria-label="Pinned by the office" />}

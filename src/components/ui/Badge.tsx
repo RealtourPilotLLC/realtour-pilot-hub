@@ -18,6 +18,17 @@ export function ink(color: string): string {
   return `color-mix(in srgb, ${c}, var(--chip-ink, #fff) var(--hue-ink-mix, 0%))`;
 }
 
+/** Theme-aware ink and tint for status controls that cannot wrap a Badge. */
+export function badgeColors(color?: string, soft?: string) {
+  const isHex = !!color && /^#?[0-9a-f]{6}$/i.test(color);
+  return {
+    backgroundColor: isHex ? tint(color!, 0.15) : soft ?? "var(--surface-2)",
+    color: isHex
+      ? `color-mix(in srgb, ${color!.startsWith("#") ? color : `#${color}`}, var(--chip-ink, #fff) var(--chip-ink-mix, 18%))`
+      : color ?? "var(--muted)",
+  };
+}
+
 export function Badge({
   children,
   color,
@@ -32,13 +43,6 @@ export function Badge({
   className?: string;
 }) {
   const isHex = !!color && /^#?[0-9a-f]{6}$/i.test(color);
-  const bg = isHex ? tint(color!, 0.15) : soft ?? "var(--surface-2)";
-  // Mix the text toward the theme ink (white lift on dark — same 18% as the
-  // old `lighten` — a stronger sink toward black on light) so it stays
-  // readable on the tint in both themes.
-  const fg = isHex
-    ? `color-mix(in srgb, ${color!.startsWith("#") ? color : `#${color}`}, var(--chip-ink, #fff) var(--chip-ink-mix, 18%))`
-    : color ?? "var(--muted)";
   return (
     <span
       className={cn(
@@ -46,8 +50,7 @@ export function Badge({
         className,
       )}
       style={{
-        color: fg,
-        backgroundColor: bg,
+        ...badgeColors(color, soft),
         // @ts-expect-error CSS custom prop for the inset ring
         "--tw-ring-color": isHex ? tint(color!, 0.24) : "var(--border)",
       }}

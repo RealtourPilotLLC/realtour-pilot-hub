@@ -65,7 +65,7 @@ export function PortalCallPicker({ view }: { view: PortalCallBookingView }) {
               const r = await portalRefreshCall(portalAuthFromLocation(), view.monthId).catch(() => ({ ok: false, message: "We couldn't reach the calendar. Your change will show here within the hour." }));
               setMsg({ ok: r.ok, text: r.message });
               if (r.ok) { setPanel(null); router.refresh(); }
-            })} className={cn(btn, "bg-brand text-white hover:opacity-90 disabled:opacity-50")}>{busy && <Loader2 className="size-3.5 animate-spin" />} I&rsquo;ve cancelled it. Update my page</button>
+            })} className={cn(btn, "bg-brand-action text-white hover:opacity-90 disabled:opacity-50")}>{busy && <Loader2 className="size-3.5 animate-spin" />} I&rsquo;ve cancelled it. Update my page</button>
           </div>
         )}
         {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
@@ -165,7 +165,7 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {slots.map((s) => (
                   <button key={s.startISO} type="button" onClick={() => setPick(s)} aria-pressed={pick?.startISO === s.startISO}
-                    className={cn("min-h-11 rounded-lg border px-3 text-sm tabular-nums sm:min-h-8", focusRing, pick?.startISO === s.startISO ? "border-brand bg-brand text-white" : "border-border bg-surface hover:border-brand/50")}>
+                    className={cn("min-h-11 rounded-lg border px-3 text-sm tabular-nums sm:min-h-8", focusRing, pick?.startISO === s.startISO ? "border-brand bg-brand-action text-white" : "border-border bg-surface hover:border-brand/50")}>
                     {time(s.startISO)}
                   </button>
                 ))}
@@ -179,7 +179,7 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
           <div className="flex items-center gap-1.5 font-medium"><CalendarClock className="size-4 text-brand" aria-hidden /> {when(pick.startISO)}</div>
           <p className="mt-0.5 text-xs text-muted">With this call, filming can be booked for {when(pick.filmingFromISO)} or later.</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" onClick={book} disabled={busy} className={cn(btn, "bg-brand text-white hover:opacity-90 disabled:opacity-50")}>{busy ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-4" aria-hidden />} Book this time</button>
+            <button type="button" onClick={book} disabled={busy} className={cn(btn, "bg-brand-action text-white hover:opacity-90 disabled:opacity-50")}>{busy ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-4" aria-hidden />} Book this time</button>
             <button type="button" onClick={() => setPick(null)} className={cn(btn, "border border-border text-muted hover:bg-surface")}>Pick another</button>
           </div>
         </div>

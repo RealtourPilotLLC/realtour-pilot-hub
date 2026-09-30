@@ -195,7 +195,7 @@ function AddressForm({ sessionKey, onDone }: { sessionKey: string; onDone: () =>
       <input aria-label="State" placeholder="State" maxLength={2} value={f.state} onChange={set("state")} className={cn(input, "sm:col-span-1")} />
       <input aria-label="ZIP" placeholder="ZIP" inputMode="numeric" maxLength={10} value={f.zip} onChange={set("zip")} className={cn(input, "sm:col-span-2")} />
       <div className="flex items-center gap-2 sm:col-span-6">
-        <button type="button" onClick={go} disabled={busy || !f.street.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+        <button type="button" onClick={go} disabled={busy || !f.street.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
           {busy && <Loader2 className="size-3 animate-spin" />} Save the address
         </button>
         {msg && <span role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</span>}
@@ -227,7 +227,7 @@ function PlanAddressStep({ monthId, sessionIndex, lead, onSaved, onCancel }: { m
         <input aria-label="State" placeholder="State" maxLength={2} autoComplete="address-level1" value={f.state} onChange={set("state")} className={cn(input, "sm:col-span-1")} />
         <input aria-label="ZIP" placeholder="ZIP" inputMode="numeric" maxLength={10} autoComplete="postal-code" value={f.zip} onChange={set("zip")} className={cn(input, "sm:col-span-2")} />
         <div className="flex flex-wrap items-center gap-2 sm:col-span-6">
-          <button type="button" onClick={go} disabled={busy || !f.street.trim() || !f.city.trim() || !f.zip.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+          <button type="button" onClick={go} disabled={busy || !f.street.trim() || !f.city.trim() || !f.zip.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
             {busy && <Loader2 className="size-3 animate-spin" />} Save and see times
           </button>
           {onCancel && <button type="button" onClick={onCancel} className="text-xs text-muted hover:text-foreground">Keep the saved address</button>}
@@ -370,7 +370,7 @@ export function PortalScheduler({
           <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
             {months.map((m) => (
               <button key={m.monthId} type="button" role="tab" aria-selected={m.monthId === month?.monthId} onClick={() => pickMonth(m.monthId)}
-                className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", m.monthId === month?.monthId ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+                className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", m.monthId === month?.monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
                 {monthLabel(m.monthKey)}
               </button>
             ))}
@@ -418,7 +418,7 @@ export function PortalScheduler({
                   <CalendarClock className="size-4 shrink-0 text-brand" /> We plan your month on a strategy call. Book it first.
                 </div>
                 <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
                   Book the call <ChevronRight className="size-4" />
                 </a>
               </div>
@@ -482,7 +482,7 @@ export function PortalScheduler({
                     {Array.from({ length: required }, (_, i) => i + 1).filter((i) => !bookedIndexes.has(i)).map((i) => (
                       <button key={i} type="button" role="tab" aria-selected={pickIdx === i}
                         onClick={() => { setSessionPick(i); setEditAddress(false); setDay(null); setSlot(null); setCreative(null); setErr(null); }}
-                        className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", pickIdx === i ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+                        className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", pickIdx === i ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
                         Session {i} of {required}
                       </button>
                     ))}
@@ -525,7 +525,7 @@ export function PortalScheduler({
                             <button key={d.date} type="button" onClick={() => { setDay(d.date); setSlot(null); setCreative(null); }}
                               className={cn(
                                 "rounded-xl border px-3.5 py-2 text-sm font-semibold transition-colors",
-                                activeDay?.date === d.date ? "border-brand bg-brand text-white shadow" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
+                                activeDay?.date === d.date ? "border-brand bg-brand-action text-white shadow" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
                               )}>
                               {dayLabel(d.date)}
                             </button>
@@ -589,7 +589,7 @@ export function PortalScheduler({
                           type="button"
                           disabled={busy || (monthDays.length > 0 ? !slot || needsCreativePick : !when.trim() || !!moving)}
                           onClick={send}
-                          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40"
+                          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40"
                         >
                           {busy && <Loader2 className="size-4 animate-spin" />}
                           {slot && activeDay ? `${moving ? "Move to" : selfBooking && chosenTravel !== "UNCHECKED" ? "Book" : "Request"} ${dayLabel(activeDay.date)} at ${timeLabel(slot, tz)}` : "Send my request"}

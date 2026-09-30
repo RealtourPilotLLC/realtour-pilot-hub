@@ -49,7 +49,7 @@ export function MessagesTab({ d, failed }: { d: MessagesTabData | null; failed: 
               return (
                 <li key={m.id} id={`m-${m.id}`} className={cn("flex flex-col", office ? "items-start" : "items-end")}>
                   {m.id === firstNew && <div className="mb-2 w-full border-t border-brand/40 pt-1 text-center text-[10px] font-semibold uppercase tracking-widest text-brand">New</div>}
-                  <div className={cn("max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm", office ? "rounded-tl-md border border-border bg-surface" : "rounded-tr-md bg-brand text-white")}>
+                  <div className={cn("max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm", office ? "rounded-tl-md border border-border bg-surface" : "rounded-tr-md bg-brand-action text-white")}>
                     {m.body}
                   </div>
                   <div className="mt-1 px-1 text-[11px] text-muted-2">

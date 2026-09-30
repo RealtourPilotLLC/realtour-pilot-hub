@@ -46,7 +46,7 @@ const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:o
 function StepIcon({ step, n }: { step: YourMonthStep; n: number }) {
   if (step.state === "done") return <CheckCircle2 className="size-6 shrink-0 text-success" aria-hidden />;
   if (step.state === "waiting") return <Clock className="size-6 shrink-0 text-muted-2" aria-hidden />;
-  if (step.state === "current") return <span aria-hidden className="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-bold text-white">{n}</span>;
+  if (step.state === "current") return <span aria-hidden className="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand-action text-xs font-bold text-white">{n}</span>;
   return <Circle className="size-6 shrink-0 text-muted-2" aria-hidden />;
 }
 
@@ -92,8 +92,8 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         </p>
         {current?.cta && (
           current.cta.external
-            ? <a href={current.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ExternalLink className="size-4" aria-hidden /></a>
-            : <Link href={current.key === "topics" ? "#this-month" : current.cta.href} className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ChevronRight className="size-4" aria-hidden /></Link>
+            ? <a href={current.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-action px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ExternalLink className="size-4" aria-hidden /></a>
+            : <Link href={current.key === "topics" ? "#this-month" : current.cta.href} className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-action px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ChevronRight className="size-4" aria-hidden /></Link>
         )}
       </section>
 
