@@ -2,6 +2,32 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — W01 month scope (Sep 30 evening)
+
+`f3b8007` pinned the chosen brand version per output and showed the editor's
+exact assignment. Isolated A28/A33 checks, TypeScript, lint and build passed;
+the Avery TEST editor page was visually checked at desktop and 390px. The
+latest local W01 batch is being completed on the same branch: an exact,
+permission-scoped month/session overview, package-versus-job-slot mismatch
+warning, and an explicit staff repair control for unlinked video jobs. The
+isolated `w01-editor-month` drill passes 15/0, and Node 20 typecheck, focused
+lint and production build pass. Visual replay and commit remain at this point.
+
+Read-only live Sarina evidence: September month allowance 4; two explicitly
+linked jobs hold 5 and 4 video output rows; two output rows are delivered;
+none of the `ContentVideo` rows has a filmed confirmation or output/topic
+link. This is a reconciliation task, **not** nine owed videos. No live row was
+changed. The month view reports the conflict instead of changing counts or
+combining folders. Kyle should confirm actual scope, appointment-to-topic
+source, and which outputs remain owed before any live repair.
+
+The isolated demo was running on managed worktree `f3b8007` at ports 3200/5599
+in unified exec session 13081 before this W01 visual replay. Stop only that
+owned demo process, check out the new local commit in that worktree, and
+restart with `scripts/demo/run-demo-dev.sh`; it has no `.env` and uses PGlite.
+Production schema remains unapplied for the C05/C06 additive tables. No push,
+deployment, production mutation, client send, booking, or automation change.
+
 The current working branch is `codex/audit-2026-09-30`. Resume the full audit from
 [`audit-2026-09-30-checklist.md`](audit-2026-09-30-checklist.md). This addendum
 supersedes any "all done" wording below for the new audit scope; it does not

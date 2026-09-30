@@ -8,6 +8,8 @@ import { staffMonthView } from "@/lib/monthProgress";
 import { stageMeta } from "@/lib/pipeline";
 import { SessionMonthMover } from "@/components/content/MonthControls";
 import { SessionsPanel } from "@/components/content/SessionsPanel";
+import { UnlinkedSessionLinker } from "@/components/content/UnlinkedSessionLinker";
+import { prisma } from "@/lib/prisma";
 import { ReassessmentBanner } from "@/components/content/ReassessmentBanner";
 import { ContentLibraryPanel } from "@/components/content/ContentLibraryPanel";
 import { loadContentTab, loadRevisionsView, loadSessionGates, loadSessionsView } from "../workspaceData";
@@ -102,6 +104,12 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
   const sessionIds = new Set(view?.sessionRows.map((r) => r.projectId).filter((x): x is string => !!x) ?? []);
   const shells = projects.filter((p) => !sessionIds.has(p.id));
   const monthKeys = ctx.months.map((m) => m.monthKey);
+  const unlinkedJobs = month && ctx.staffEyes ? await prisma.project.findMany({
+    where: { clientId: client.id, contentMonthId: null, status: { not: "CANCELLED" }, deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, waivedAt: null } } },
+    orderBy: [{ shootDate: "desc" }, { createdAt: "desc" }],
+    take: 25,
+    select: { id: true, title: true, shootDate: true },
+  }) : [];
   return (
     <div className="space-y-5">
       {sub}
@@ -168,6 +176,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
               )}
             </div>
           </Section>
+          {ctx.staffEyes && <UnlinkedSessionLinker monthId={month.id} monthKey={month.monthKey} jobs={unlinkedJobs.map((p) => ({ id: p.id, title: p.title, date: fmtDay(p.shootDate?.toISOString() ?? null) }))} />}
           {/* CP-04/CP-05: the requests behind these sessions (confirm, decline,
               retry the hub's booking) and each exact address. */}
           <SessionsPanel enrollmentId={id} monthId={month.id} />

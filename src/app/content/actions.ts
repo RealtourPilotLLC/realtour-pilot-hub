@@ -687,6 +687,35 @@ export async function moveSessionToMonth(projectId: string, targetMonthKey: stri
   return { ok: true, message: `Moved to ${targetMonthKey} — the portal follows.` };
 }
 
+/** An explicit staff repair for a job with no month link. No title/date matching. */
+export async function attachUnlinkedSessionToMonth(projectId: string, monthId: string, reason: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const why = reason.trim();
+  if (why.length < 8 || why.length > 500) return { ok: false, message: "Say why this job belongs to this package month (8–500 characters)." };
+  const [month, project, who] = await Promise.all([
+    prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, clientId: true, enrollmentId: true, monthKey: true } }),
+    prisma.project.findUnique({ where: { id: projectId }, select: { id: true, clientId: true, contentMonthId: true, status: true, deliverables: { where: { removedFromOrderAt: null, waivedAt: null }, select: { type: true } } } }),
+    actor(),
+  ]);
+  if (!month || !project || project.clientId !== month.clientId) return { ok: false, message: "The month and job must belong to the same client." };
+  if (project.contentMonthId) return { ok: false, message: "This job already has a month link. Use the month selector on its session row." };
+  if (project.status === "CANCELLED" || !project.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")) return { ok: false, message: "Choose an active video job." };
+  const conflictingLibrary = await prisma.portalVideo.count({ where: { projectId, monthId: { not: null, notIn: [month.id] } } });
+  const conflictingVideo = await prisma.contentVideo.count({ where: { projectId, monthId: { not: null, notIn: [month.id] } } });
+  if (conflictingLibrary || conflictingVideo) return { ok: false, message: "This job has video records assigned to another month. Reconcile those identities first; nothing was changed." };
+  try {
+    await prisma.$transaction(async (tx) => {
+      const changed = await tx.project.updateMany({ where: { id: projectId, clientId: month.clientId, contentMonthId: null }, data: { contentMonthId: month.id } });
+      if (changed.count !== 1) throw new Error("The job's month link changed while you were working. Reload before trying again.");
+      await tx.activity.create({ data: { projectId, type: "SYSTEM", body: `${who.name ?? who.email} linked this job to ${month.monthKey} content month. Reason: ${why}`.slice(0, 1000) } });
+    });
+  } catch (e) { return fail(e); }
+  revalidatePath(`/content/${month.enrollmentId}`);
+  revalidatePath(`/edit/${projectId}`);
+  revalidatePath("/content");
+  return { ok: true, message: `Linked to ${month.monthKey}. Review each video's topic and library month separately.` };
+}
+
 export async function setMonthSkipped(monthId: string, skipped: boolean): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, status: true } });

@@ -565,6 +565,9 @@ export default async function EditBriefPage({
   // editor, exactly like the notes above.
   const { outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
   const outputBriefs = await outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []);
+  const { editorMonthFor } = await import("@/lib/editorMonth");
+  const monthRead = await editorMonthFor(project.id, viewer).then((data) => ({ data, failed: false })).catch(() => ({ data: null, failed: true }));
+  const editorMonth = monthRead.data;
   const canWriteBriefs = canSeeRaw && !viewer?.impersonating;
   // §7.6: the gaps raised off a video's brief, so its card says so instead of
   // offering the button again. A failed read shows no line and keeps the button
@@ -1004,6 +1007,38 @@ export default async function EditBriefPage({
           </Section>
         </div>
       )}
+
+      {editorMonth && (
+        <div className="px-4 pt-4 sm:px-6">
+          <Section icon={Film} title={`This client's month · ${editorMonth.monthKey}`} count={editorMonth.sessions.length}>
+            {editorMonth.allSessionsVisible && editorMonth.counts ? (
+              <>
+                <p className="text-sm">Package allowance: <strong>{editorMonth.allowance}</strong> video{editorMonth.allowance === 1 ? "" : "s"} · <strong>{editorMonth.counts.filmedConfirmed}</strong> confirmed filmed · <strong>{editorMonth.counts.submitted}</strong> submitted · <strong>{editorMonth.counts.approved}</strong> approved · <strong>{editorMonth.counts.delivered}</strong> delivered</p>
+                {editorMonth.counts.slotsOnJobs !== editorMonth.allowance && <p className="mt-1 text-xs text-warning">These jobs record {editorMonth.counts.slotsOnJobs} video slots, which differs from the package allowance. Kyle needs to reconcile the actual scope; the slots have not been changed.</p>}
+                {editorMonth.counts.filmedConfirmed < editorMonth.counts.delivered && <p className="mt-1 text-xs text-warning">Filming confirmation is incomplete in the Hub. Delivered files do not prove which session or topic was filmed.</p>}
+              </>
+            ) : <p className="text-sm text-muted">Only sessions you can open are shown. Ask Kyle for the full month scope.</p>}
+            <div className="mt-3 grid gap-2 lg:grid-cols-2">
+              {editorMonth.sessions.map((session) => (
+                <div key={session.key} className={`rounded-xl border p-3 text-xs leading-relaxed ${session.id === project.id ? "border-brand/40 bg-brand/5" : "border-border bg-surface-2/40"}`}>
+                  <p className="text-sm font-semibold">{session.id === project.id ? "This brief · " : "Other job · "}{session.title}{session.appointmentsOnJob > 1 ? ` · appointment ${session.appointmentIndex} of ${session.appointmentsOnJob}` : ""}</p>
+                  <p className="text-muted">{session.dateISO ? new Date(session.dateISO).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Date not recorded"} · {session.status.toLowerCase().replace(/_/g, " ")} · {session.jobSlots} video slot{session.jobSlots === 1 ? "" : "s"} on this job{session.appointmentsOnJob > 1 ? " (shared across these appointments)" : ""}</p>
+                  <p>Address: {session.address}</p>
+                  <p>Topics: {session.topics.length ? session.topics.join("; ") : "none linked to this job"}</p>
+                  {session.appointmentsOnJob > 1 && <p className="text-warning">These topics and the raw folder belong to the job; the Hub does not identify which appointment supplied each shot.</p>}
+                  {session.noTopicLinks && <p className="text-warning">Topic/source pairing needs Kyle&apos;s check.</p>}
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-medium text-brand">
+                    {session.id !== project.id && <Link href={`/edit/${session.id}`} className="hover:underline">Open session brief →</Link>}
+                    <a href={session.rawUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">Open this session&apos;s raw folder ↗</a>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {isOwnerAdmin && <p className="mt-2 text-xs text-muted">{editorMonth.unlinkedClientJobs > 0 ? `${editorMonth.unlinkedClientJobs} other client video job${editorMonth.unlinkedClientJobs === 1 ? " has" : "s have"} no month link. ` : ""}Repair a missing or wrong month link in <Link href={`/content/${editorMonth.enrollmentId}?tab=production&view=sessions&month=${editorMonth.monthKey}`} className="font-medium text-brand hover:underline">Content Program → Sessions</Link> after confirming the appointment and package.</p>}
+          </Section>
+        </div>
+      )}
+      {monthRead.failed && project.contentMonthId && <div className="px-4 pt-4 sm:px-6"><p role="alert" className="rounded-xl border border-warning/50 bg-warning/10 p-3 text-sm text-warning">This client&apos;s month could not be loaded. The video brief below is still available; reload to try the month view again.</p></div>}
 
       {/* The tracker — where this edit stands, at a glance (stage timeline,
           order facts incl. the deadline + live countdown, the client's
