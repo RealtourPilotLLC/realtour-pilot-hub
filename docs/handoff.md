@@ -48,6 +48,14 @@ present at takeover, but verify current migration state and backup coverage
 before any necessary schema change. The general listing welcome consultation
 destination (C19) needs Jordan's policy answer; other work can continue.
 
+C14 is in progress after the C18 commit. The normal Content roster and Review
+Room now omit synthetic client rows by the existing durable identity, with an
+explicit `?test=1` view; Review Room QC pattern numbers use the same scope.
+Node 20 TypeScript, focused lint, and production build pass. Browser comparison
+in the isolated demo is next. Global failure/workload readers, communication
+identity and the realistic demo remain open; do not call C14 complete. The
+isolated demo's current checkout is older than this change until restarted.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.

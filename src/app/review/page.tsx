@@ -100,8 +100,9 @@ function CutRow({ s, decided, viewerTeamMemberId = null }: { s: QueueSubmission;
   );
 }
 
-export default async function ReviewRoomPage() {
+export default async function ReviewRoomPage({ searchParams }: { searchParams: Promise<{ test?: string }> }) {
   await requirePageAccess("review");
+  const includeTest = (await searchParams).test === "1";
   const me = await getCurrentUser().catch(() => null);
   // THE SAME QUESTION THE ACTIONS ASK (§8.1, review fix Sep 25): owner/admin,
   // or a login seated as one of the three reviewers. It used to be the
@@ -134,7 +135,11 @@ export default async function ReviewRoomPage() {
   }
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const [q, patterns, qcStats] = await Promise.all([getReviewQueue(), getFixPatterns(60), getQcStats(30)]);
+  const [q, patterns, qcStats] = await Promise.all([
+    getReviewQueue({ includeTest }),
+    getFixPatterns(60, { includeTest }),
+    getQcStats(30, { includeTest }),
+  ]);
   // "Waiting on YOUR verdict" counts only the cuts that are yours (§8.1) —
   // Kyle's Room must not tell him James's cuts are his to rule on.
   // A cut nobody holds (no chain configured, or everyone away) is the
@@ -168,6 +173,11 @@ export default async function ReviewRoomPage() {
       />
 
       <div className="space-y-6 p-4 sm:p-6">
+        <div className="flex justify-end">
+          <Link href={includeTest ? "/review" : "/review?test=1"} className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+            {includeTest ? "Hide test records" : "Show test records"}
+          </Link>
+        </div>
         {/* ————— VIDEO LANE ————— */}
         <div className="flex items-center gap-2 px-1 pt-1">
           <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: "#a78bfa22", color: "#a78bfa" }}>

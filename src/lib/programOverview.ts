@@ -7,6 +7,7 @@ import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonit
 import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } from "@/lib/monthProgress";
 import { contentHref, type StaffTab } from "@/lib/contentNav";
 import type { JourneyInput } from "@/lib/contentStatus";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // THE MONTHLY PORTFOLIO OVERVIEW (spec §16). One row per (client, program
@@ -199,6 +200,8 @@ export type OverviewOptions = {
   /** UI-02: only these enrollments — the client file's Overview reads its ONE
    *  row through here, so it cannot say something the roster does not. */
   enrollmentIds?: string[];
+  /** False on the normal operations board; true for an explicit test-record view and isolated drills. */
+  includeTest?: boolean;
 };
 
 export const ALL_OPEN = "ALL_OPEN";
@@ -220,13 +223,18 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   const monthKey = allOpen ? ALL_OPEN : opts.monthKey && /^\d{4}-\d{2}$/.test(opts.monthKey) ? opts.monthKey : thisMonth;
 
   const statuses = opts.includeEnded ? ["ACTIVE", "PAUSED", "ENDED"] : ["ACTIVE", "PAUSED"];
-  const enrollments = await prisma.contentEnrollment.findMany({
+  const allEnrollments = await prisma.contentEnrollment.findMany({
     where: { status: { in: statuses }, ...(opts.enrollmentIds ? { id: { in: opts.enrollmentIds } } : {}) },
     select: {
       id: true, clientId: true, package: true, status: true, videosPerMonth: true, sessionsPerMonth: true,
       strategyCallRequired: true, callMode: true, noCallEligible: true, clientSuppliesTopics: true, billingType: true, notes: true, overridesJson: true,
     },
   });
+  const allClients = allEnrollments.length
+    ? await prisma.client.findMany({ where: { id: { in: allEnrollments.map((e) => e.clientId) } }, select: { id: true, name: true } })
+    : [];
+  const syntheticIds = new Set(allClients.filter(isSyntheticClientRow).map((c) => c.id));
+  const enrollments = opts.includeTest === false ? allEnrollments.filter((e) => !syntheticIds.has(e.clientId)) : allEnrollments;
   if (enrollments.length === 0) {
     return { rows: [], monthKey: allOpen ? ALL_OPEN : monthKey, monthKeys: [], counts: emptyCounts(), endedCount: 0, globalFailures: [] };
   }
@@ -278,7 +286,6 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   }
 
   const monthIds = rowsSpec.map((r) => r.month?.id).filter((x): x is string => !!x);
-  const clientIds = [...new Set(rowsSpec.map((r) => r.enrollment.clientId))];
   const keysInScope = [...new Set(rowsSpec.map((r) => r.key))];
 
   // SESSIONS, PRODUCTION AND TOPICS come from the one month-progress reader
@@ -292,10 +299,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   const toRead = pairs.filter((p) => !given.has(progressKey(p.enrollmentId, p.monthId, p.monthKey)));
 
   const [
-    clients, owners, progressRead, interviews, scripts, strategyVersions,
+    owners, progressRead, interviews, scripts, strategyVersions,
     calls, sessionRequests, reminders, failures, jobs,
   ] = await Promise.all([
-    prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true } }),
     ownersForMany(rowsSpec.map((r) => ({ enrollmentId: r.enrollment.id, monthId: r.month?.id ?? null }))),
     toRead.length ? monthProgressMany(toRead, { now }) : Promise.resolve(new Map<string, MonthProgress>()),
     monthIds.length ? prisma.contentInterview.findMany({ where: { monthId: { in: monthIds } }, select: { monthId: true, status: true, answeredCount: true, submittedAt: true } }) : [],
@@ -312,7 +318,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     monthIds.length ? prisma.programTranscriptJob.findMany({ where: { enrollmentId: { in: enrollmentIds } }, select: { callRecordId: true, kind: true, state: true, reviewReason: true, lastError: true }, orderBy: { updatedAt: "desc" }, take: 300 }) : [],
   ]);
 
-  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  const nameOf = new Map(allClients.map((c) => [c.id, c.name]));
   // CP-13: waiting client messages per enrollment — one grouped read, and a
   // failed read says 0 rather than breaking the roster.
   const waiting = new Map(

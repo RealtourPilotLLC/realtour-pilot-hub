@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { parseChecklist } from "@/lib/checklist";
 import { countQcMisses } from "@/lib/tasks";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // The owner's QC quality dial — reads the QcRecord log (one row per completed QC
 // pass, written from both completion paths in src/lib/tasks.ts + actions.ts).
@@ -23,12 +24,13 @@ export type QcStats = {
 // Aggregate QC quality over the last `days` (default 30). Pure read; safe to call
 // from any server context. Never throws on bad rows — a corrupt itemsChecked JSON
 // just contributes nothing.
-export async function getQcStats(days = 30): Promise<QcStats> {
+export async function getQcStats(days = 30, opts: { includeTest?: boolean } = {}): Promise<QcStats> {
   const since = new Date(Date.now() - days * 24 * 3600_000);
-  const records = await prisma.qcRecord.findMany({
+  const readRecords = await prisma.qcRecord.findMany({
     where: { completedAt: { gte: since } },
-    select: { itemsChecked: true, missCount: true, reopenedByRevisionAt: true },
+    select: { itemsChecked: true, missCount: true, reopenedByRevisionAt: true, project: { select: { client: { select: { id: true, name: true } } } } },
   });
+  const records = opts.includeTest === false ? readRecords.filter((r) => !isSyntheticClientRow(r.project.client)) : readRecords;
 
   const qcPasses = records.length;
   const totalMisses = records.reduce((sum, r) => sum + (r.missCount ?? 0), 0);
@@ -80,20 +82,23 @@ export type FixPatterns = {
   captureByPhotographer: { name: string; count: number }[]; // PHOTOGRAPHER-lane root notes
 };
 
-export async function getFixPatterns(days = 60): Promise<FixPatterns> {
+export async function getFixPatterns(days = 60, opts: { includeTest?: boolean } = {}): Promise<FixPatterns> {
   const since = new Date(Date.now() - days * 24 * 3600_000);
-  const [flags, editNotes, capRoll] = await Promise.all([
+  const [readFlags, readEditNotes, readCaptureNotes] = await Promise.all([
     prisma.imageFlag.findMany({
       where: { createdAt: { gte: since } },
-      select: { tags: true, status: true },
+      select: { tags: true, status: true, project: { select: { client: { select: { id: true, name: true } } } } },
     }),
-    prisma.mediaNote.count({ where: { lane: "EDIT", parentId: null, createdAt: { gte: since } } }),
-    prisma.mediaNote.groupBy({
-      by: ["photographerId"],
+    prisma.mediaNote.findMany({ where: { lane: "EDIT", parentId: null, createdAt: { gte: since } }, select: { project: { select: { client: { select: { id: true, name: true } } } } } }),
+    prisma.mediaNote.findMany({
       where: { lane: "PHOTOGRAPHER", parentId: null, photographerId: { not: null }, createdAt: { gte: since } },
-      _count: true,
+      select: { photographerId: true, project: { select: { client: { select: { id: true, name: true } } } } },
     }),
   ]);
+  const visible = (row: { project: { client: { id: string; name: string } } }) => opts.includeTest !== false || !isSyntheticClientRow(row.project.client);
+  const flags = readFlags.filter(visible);
+  const editNotes = readEditNotes.filter(visible).length;
+  const captureNotes = readCaptureNotes.filter(visible);
 
   // Tags are a JSON string array per flag; a bad row just contributes nothing.
   const byTagMap = new Map<string, number>();
@@ -110,13 +115,15 @@ export async function getFixPatterns(days = 60): Promise<FixPatterns> {
     .map(([label, count]) => ({ label, count }))
     .sort((a, b) => b.count - a.count);
 
-  const memberIds = capRoll.map((r) => r.photographerId).filter((id): id is string => !!id);
+  const memberIds = [...new Set(captureNotes.map((r) => r.photographerId).filter((id): id is string => !!id))];
   const members = memberIds.length
     ? await prisma.teamMember.findMany({ where: { id: { in: memberIds } }, select: { id: true, name: true } })
     : [];
   const nameOf = new Map(members.map((m) => [m.id, m.name]));
-  const captureByPhotographer = capRoll
-    .map((r) => ({ name: nameOf.get(r.photographerId!) ?? "Unknown", count: r._count }))
+  const captureCounts = new Map<string, number>();
+  for (const r of captureNotes) if (r.photographerId) captureCounts.set(r.photographerId, (captureCounts.get(r.photographerId) ?? 0) + 1);
+  const captureByPhotographer = [...captureCounts.entries()]
+    .map(([id, count]) => ({ name: nameOf.get(id) ?? "Unknown", count }))
     .sort((a, b) => b.count - a.count);
 
   return {

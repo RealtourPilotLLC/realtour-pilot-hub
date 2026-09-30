@@ -36,7 +36,7 @@ export const dynamic = "force-dynamic";
 export default async function ContentProgramPage({
   searchParams,
 }: {
-  searchParams: Promise<{ month?: string; view?: string; filter?: string; ended?: string }>;
+  searchParams: Promise<{ month?: string; view?: string; filter?: string; ended?: string; test?: string }>;
 }) {
   const sp = await searchParams;
   // House auth pattern: strict in prod (enforced), open in local dev.
@@ -51,6 +51,7 @@ export default async function ContentProgramPage({
   // A bookmarked ?view= keeps winning while you click around the page.
   const explicitView = sp.view ? view : null;
   const includeEnded = sp.ended === "1";
+  const includeTest = sp.test === "1";
   const monthParam = sp.month === ALL_OPEN ? ALL_OPEN : sp.month;
   const filter = OVERVIEW_FILTERS.some((f) => f.key === sp.filter) ? (sp.filter as OverviewFilterKey) : null;
 
@@ -67,7 +68,7 @@ export default async function ContentProgramPage({
   // THE one read, for both views, plus the automation switches (a banner when
   // ANY is on, so nobody is surprised that something is acting on its own).
   const [overview, switches] = await Promise.all([
-    programOverview({ monthKey: monthParam, includeEnded, now }),
+    programOverview({ monthKey: monthParam, includeEnded, includeTest, now }),
     allAutomations().catch(() => []),
   ]);
   const switchedOn = switches.filter((s) => s.enabled);
@@ -86,7 +87,7 @@ export default async function ContentProgramPage({
   const hrefFor = (patch: Record<string, string | null>) => {
     const q = new URLSearchParams();
     const base: Record<string, string | null> = {
-      month: monthParam ?? null, view: explicitView, filter, ended: includeEnded ? "1" : null, ...patch,
+      month: monthParam ?? null, view: explicitView, filter, ended: includeEnded ? "1" : null, test: includeTest ? "1" : null, ...patch,
     };
     for (const [k, v] of Object.entries(base)) if (v) q.set(k, v);
     const qs = q.toString();
@@ -226,6 +227,9 @@ export default async function ContentProgramPage({
             )}
           >
             {includeEnded ? "Hide ended clients" : "Show ended clients"}
+          </Link>
+          <Link href={hrefFor({ test: includeTest ? null : "1" })} className={cn("rounded-lg px-2.5 py-1 text-xs font-medium", includeTest ? "bg-surface-2 text-foreground" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground")}>
+            {includeTest ? "Hide test records" : "Show test records"}
           </Link>
         </div>
 

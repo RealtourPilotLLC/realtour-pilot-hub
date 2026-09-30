@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { videoTier } from "@/lib/projectStatus";
 import { isHeldForSelfCheck } from "@/lib/selfCheck";
 import { verdictOf, type Verdict } from "@/lib/reviewAttribution";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // Read layer for the STANDALONE Review Room (/review) — the owner's quality
@@ -163,13 +164,13 @@ const projectsWithLiveReview = (since: Date) => ({
   },
 });
 
-export async function getReviewQueue(): Promise<ReviewQueue> {
+export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Promise<ReviewQueue> {
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
   // Editor-authored notes are context for the reviewer, not owed fixes —
   // they must not inflate "open notes" badges or the follow-up tallies.
   // (One filter: the rollup and the follow-through rows' cut links read it.)
   const liveNoteWhere = { parentId: null, status: { in: ["OPEN", "FIXED"] }, NOT: { authorKey: { startsWith: "editor:" } } };
-  const [subs, qcTasks, noteRollup, threadReplies] = await Promise.all([
+  const [readSubs, readQcTasks, readNoteRollup, readThreadReplies] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: {
         // Every live round of the cut, at any age — see inWindow above for why
@@ -205,6 +206,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       select: {
         id: true,
         projectId: true,
+        client: { select: { id: true, name: true } },
         dueAt: true,
         assignedKey: true,
         propertyAddress: true,
@@ -231,6 +233,24 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       },
     }),
   ]);
+  const projectIdsForScope = [...new Set([
+    ...readSubs.map((s) => s.projectId),
+    ...readQcTasks.map((t) => t.projectId).filter((id): id is string => !!id),
+    ...readNoteRollup.map((r) => r.projectId),
+    ...readThreadReplies.map((r) => r.parent?.projectId).filter((id): id is string => !!id),
+  ])];
+  const scopeProjects = projectIdsForScope.length
+    ? await prisma.project.findMany({ where: { id: { in: projectIdsForScope } }, select: { id: true, title: true, client: { select: { id: true, name: true } } } })
+    : [];
+  const syntheticProjectIds = new Set(scopeProjects.filter((p) => isSyntheticClientRow(p.client)).map((p) => p.id));
+  const visibleProject = (id: string) => opts.includeTest !== false || !syntheticProjectIds.has(id);
+  const subs = readSubs.filter((s) => visibleProject(s.projectId));
+  const qcTasks = readQcTasks.filter((t) =>
+    (!t.projectId || visibleProject(t.projectId)) &&
+    (opts.includeTest !== false || !t.client || !isSyntheticClientRow(t.client))
+  );
+  const noteRollup = readNoteRollup.filter((r) => visibleProject(r.projectId));
+  const threadReplies = readThreadReplies.filter((r) => !r.parent || visibleProject(r.parent.projectId));
 
   // Open editor-note counts per project (badges the pending rows so the owner
   // sees at a glance whether he already started marking a cut up).
@@ -333,10 +353,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   // a fix) or FIXED (the owner owes a re-review). Rollup by project+lane.
   const followMap = new Map<string, QueueFollowUp>();
   const projectIds = [...new Set(noteRollup.map((r) => r.projectId))];
-  const titles = projectIds.length
-    ? await prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, title: true } })
-    : [];
-  const titleOf = new Map(titles.map((t) => [t.id, t.title]));
+  const titleOf = new Map(scopeProjects.map((p) => [p.id, p.title]));
   for (const r of noteRollup) {
     const lane = (["EDIT", "PHOTOGRAPHER", "EDITOR"].includes(r.lane) ? r.lane : "EDIT") as QueueFollowUp["lane"];
     const key = `${r.projectId}:${lane}`;
