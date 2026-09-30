@@ -83,6 +83,8 @@ export type PacketVideo = {
   versionLabel: string;
   directionSource: OutputBrief["directionSource"];
   sections: { label: string; text: string }[];
+  /** Added after schema 1 packets existed; absent in a frozen historical send. */
+  brandChoice?: string;
   topicTitle: string | null;
   note: string | null;
   script: { title: string; versionNo: number | null; standing: string; text: string | null; direction: ScriptDirection | null } | null;
@@ -190,6 +192,7 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
     versionLabel: o.versionLabel,
     directionSource: o.directionSource,
     sections: o.sections.map((x) => ({ label: x.label, text: x.text })),
+    brandChoice: o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; confirm with Kyle" : ""}` : "No logo or branding card chosen for this video",
     topicTitle: o.topicTitle,
     note: o.note,
     script: o.script
@@ -636,6 +639,7 @@ export async function buildEditorPacketPdf(
     text(`${v.index}. ${v.label}${v.format !== v.label ? ` - ${v.format}` : ""}`, { size: 11, f: bold });
     text(v.versionLabel, { size: 8, color: MUTED, x: M + 12 });
     for (const s of v.sections) text(`${s.label}: ${s.text}`, { x: M + 12 });
+    if (v.brandChoice) text(`Chosen logo / branding card: ${v.brandChoice}`, { x: M + 12 });
     if (v.note) text(`From the shoot: ${v.note}`, { x: M + 12 });
     if (v.script) {
       text(`Script: ${v.script.title}${v.script.versionNo ? ` (v${v.script.versionNo})` : ""} - ${v.script.standing}`, { x: M + 12 });

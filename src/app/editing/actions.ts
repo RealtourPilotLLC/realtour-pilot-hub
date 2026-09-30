@@ -2834,6 +2834,7 @@ export async function saveVideoBrief(
   outputId: string,
   sections: Record<string, string | null>,
   expectedVersion: number | null,
+  brandAssetVersionId?: string | null,
 ): Promise<{ ok: boolean; changed: boolean; message: string; version: number | null; reason?: string }> {
   try {
     await requireAdmin();
@@ -2842,7 +2843,7 @@ export async function saveVideoBrief(
   }
   const { saveOutputBrief } = await import("@/lib/deliverableOutputs");
   const actor = await staffActor();
-  const res = await saveOutputBrief({ outputId, projectId, sections, expectedVersion, actor: actor.name });
+  const res = await saveOutputBrief({ outputId, projectId, sections, brandAssetVersionId, expectedVersion, actor: actor.name });
   if (!res.ok) return { ok: false, changed: false, message: res.message, version: res.version, reason: res.reason };
   revalidatePath(`/edit/${projectId}`);
   revalidatePath(`/shoot/${projectId}`);
@@ -2912,10 +2913,10 @@ export async function saveVideoBriefForm(form: FormData): Promise<void> {
   const sections: Record<string, string | null> = {};
   for (const f of OUTPUT_BRIEF_FIELDS) if (form.has(`s_${f.key}`)) sections[f.key] = formText(form, `s_${f.key}`);
   const ev = formText(form, "expectedVersion");
-  const res = await saveVideoBrief(projectId, outputId, sections, ev === "" ? null : Number(ev));
+  const res = await saveVideoBrief(projectId, outputId, sections, ev === "" ? null : Number(ev), form.has("brandAssetVersionId") ? formText(form, "brandAssetVersionId") || null : undefined);
   await backToJob(
     projectId,
-    res.ok ? (res.changed ? "brief-saved" : "brief-unchanged") : res.reason === "conflict" ? "brief-conflict" : res.reason === "too_long" ? "brief-too-long" : "brief-error",
+    res.ok ? (res.changed ? "brief-saved" : "brief-unchanged") : res.reason === "conflict" ? "brief-conflict" : res.reason === "too_long" ? "brief-too-long" : res.reason === "invalid_brand" ? "brief-brand-invalid" : "brief-error",
     `brief-${outputId}`,
   );
 }

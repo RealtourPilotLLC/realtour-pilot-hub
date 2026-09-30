@@ -833,7 +833,7 @@ export async function recentBrandChanges(clientId: string, take = 30) {
 
 // ---- the editor's brief ------------------------------------------------------------------
 
-export type BrandBriefFile = { assetId: string; type: string; typeWord: string; name: string; fileName: string | null; url: string | null; versionNo: number; updatedAtISO: string };
+export type BrandBriefFile = { assetId: string; versionId: string; type: string; typeWord: string; name: string; fileName: string | null; url: string | null; versionNo: number; updatedAtISO: string };
 export type BrandBrief = {
   colors: string[];
   /** Words saved alongside the hex codes in older data ("navy, gold"). */
@@ -882,7 +882,7 @@ export async function brandBriefFor(clientId: string, opts: { projectId?: string
   const colorWords = raw.replace(HEX_RE, "").replace(/[,\s]+/g, " ").trim() || null;
   const files: BrandBriefFile[] = registry
     .filter((a) => BRIEF_FILE_TYPES.has(a.type) && a.status === "ACTIVE" && !a.profileKey && a.active?.fileRef && !a.active.cleared)
-    .map((a) => ({ assetId: a.id, type: a.type, typeWord: ASSET_TYPE_WORDS[a.type], name: a.name, fileName: a.active!.fileName, url: a.active!.url, versionNo: a.active!.versionNo, updatedAtISO: a.active!.createdAt.toISOString() }));
+    .map((a) => ({ assetId: a.id, versionId: a.active!.id, type: a.type, typeWord: ASSET_TYPE_WORDS[a.type], name: s(a.name) ?? "Brand file", fileName: s(a.active!.fileName), url: a.active!.url, versionNo: a.active!.versionNo, updatedAtISO: a.active!.createdAt.toISOString() }));
   return {
     colors, colorWords: s(colorWords),
     fontNames: s(slots.fonts), files, website: s(slots.website), social: s(slots.social), music: s(slots.music),

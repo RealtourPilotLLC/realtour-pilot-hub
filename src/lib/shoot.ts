@@ -10,7 +10,7 @@ import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
-import type { SessionBrief } from "@/lib/deliverableOutputs";
+import type { SessionBrief, OutputBrief } from "@/lib/deliverableOutputs";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
 // clean, serializable view model per shoot — appointment access brief, customer
@@ -235,6 +235,7 @@ export type ShootOutputBrief = {
   format: string;
   versionLabel: string;
   sections: { label: string; text: string }[];
+  brandAsset: OutputBrief["brandAsset"];
 };
 
 export async function getShoot(projectId: string): Promise<ShootView | null> {
@@ -390,8 +391,8 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
     zillowTourUrl: extractZillowUrl(primary?.description),
     session,
     outputBriefs: outputBriefs
-      .filter((o) => o.directionSource === "own")
-      .map((o) => ({ outputId: o.outputId, label: o.label, format: o.format, versionLabel: o.versionLabel, sections: o.sections.map((x) => ({ label: x.label, text: x.text })) })),
+      .filter((o) => o.directionSource === "own" || !!o.brandAsset)
+      .map((o) => ({ outputId: o.outputId, label: o.label, format: o.format, versionLabel: o.versionLabel, sections: o.sections.map((x) => ({ label: x.label, text: x.text })), brandAsset: o.brandAsset })),
   };
 }
 

@@ -1235,20 +1235,20 @@ const OUTPUT_BRIEF_KEYS = new Set<string>(OUTPUT_BRIEF_FIELDS.map((f) => f.key))
 /** Per section. A brief longer than this is a document, and belongs in the job's files. */
 export const OUTPUT_BRIEF_FIELD_CAP = 2000;
 
-export type StoredOutputBrief = { version: number; sections: Partial<Record<OutputBriefKey, string>> };
+export type StoredOutputBrief = { version: number; sections: Partial<Record<OutputBriefKey, string>>; brandAssetVersionId: string | null };
 
 /** The stored brief, or null when there is none (or it cannot be read — then the next save starts it over at v1). */
 export function readOutputBrief(json: string | null | undefined): StoredOutputBrief | null {
   if (!json) return null;
   try {
-    const o = JSON.parse(json) as { version?: unknown; sections?: unknown };
+    const o = JSON.parse(json) as { version?: unknown; sections?: unknown; brandAssetVersionId?: unknown };
     const version = typeof o.version === "number" && Number.isInteger(o.version) && o.version > 0 ? o.version : null;
     if (!version || !o.sections || typeof o.sections !== "object") return null;
     const sections: Partial<Record<OutputBriefKey, string>> = {};
     for (const [k, v] of Object.entries(o.sections as Record<string, unknown>)) {
       if (OUTPUT_BRIEF_KEYS.has(k) && typeof v === "string" && v.trim()) sections[k as OutputBriefKey] = v;
     }
-    return { version, sections };
+    return { version, sections, brandAssetVersionId: typeof o.brandAssetVersionId === "string" && o.brandAssetVersionId.trim() ? o.brandAssetVersionId : null };
   } catch {
     return null;
   }
@@ -1263,7 +1263,7 @@ function orderedSections(s: Partial<Record<OutputBriefKey, string>>): Partial<Re
 
 export type SaveOutputBriefResult =
   | { ok: true; changed: boolean; version: number }
-  | { ok: false; reason: "not_found" | "wrong_project" | "not_owed" | "too_long" | "conflict"; message: string; version: number | null };
+  | { ok: false; reason: "not_found" | "wrong_project" | "not_owed" | "too_long" | "conflict" | "invalid_brand"; message: string; version: number | null };
 
 /**
  * Save this video's brief. `sections` merges: a key left out keeps its text,
@@ -1277,6 +1277,8 @@ export async function saveOutputBrief(input: {
   outputId: string;
   projectId?: string | null;
   sections: Partial<Record<OutputBriefKey, string | null>>;
+  /** Omitted by older callers to preserve the selected asset. Null clears it. */
+  brandAssetVersionId?: string | null;
   expectedVersion?: number | null;
   actor: string;
 }): Promise<SaveOutputBriefResult> {
@@ -1313,12 +1315,27 @@ export async function saveOutputBrief(input: {
     if (t) next[k as OutputBriefKey] = t;
     else delete next[k as OutputBriefKey];
   }
-  if (JSON.stringify(orderedSections(current?.sections ?? {})) === JSON.stringify(orderedSections(next))) {
+  const brandAssetVersionId = input.brandAssetVersionId === undefined ? current?.brandAssetVersionId ?? null : input.brandAssetVersionId?.trim() || null;
+  if (brandAssetVersionId && brandAssetVersionId !== current?.brandAssetVersionId) {
+    const version = await prisma.clientAssetVersion.findUnique({ where: { id: brandAssetVersionId }, select: { assetId: true, fileRef: true } });
+    const [asset, project] = await Promise.all([
+      version ? prisma.clientAsset.findUnique({ where: { id: version.assetId }, select: { clientId: true, type: true, status: true, activeVersionId: true } }) : Promise.resolve(null),
+      prisma.project.findUnique({ where: { id: row.projectId }, select: { clientId: true } }),
+    ]);
+    // The registry treats the newest version as active for legacy assets that
+    // have no activeVersionId; validate against that same rule.
+    const latest = asset && !asset.activeVersionId ? await prisma.clientAssetVersion.findFirst({ where: { assetId: version!.assetId }, orderBy: { versionNo: "desc" }, select: { id: true } }) : null;
+    const activeVersionId = asset?.activeVersionId ?? latest?.id ?? null;
+    if (!version?.fileRef || !asset || !project || asset.clientId !== project.clientId || asset.status !== "ACTIVE" || !["LOGO", "BRANDING_CARD"].includes(asset.type) || activeVersionId !== brandAssetVersionId) {
+      return { ok: false, reason: "invalid_brand", message: "That logo or branding card is not a current file for this client. Reload the brand kit and choose an active version.", version: curVersion };
+    }
+  }
+  if (JSON.stringify(orderedSections(current?.sections ?? {})) === JSON.stringify(orderedSections(next)) && brandAssetVersionId === (current?.brandAssetVersionId ?? null)) {
     return { ok: true, changed: false, version: curVersion ?? 0 };
   }
   const version = (curVersion ?? 0) + 1;
   const actor = (input.actor || "the office").trim().slice(0, 120);
-  const json = JSON.stringify({ version, sections: orderedSections(next) });
+  const json = JSON.stringify({ version, sections: orderedSections(next), brandAssetVersionId });
   // Compare-and-set on what was READ: a save that raced this one wins, and
   // this one is refused rather than overwriting it.
   const res = await prisma.deliverableOutput.updateMany({
@@ -1420,6 +1437,8 @@ export type OutputBrief = {
   format: string;
   /** this video's own direction, in field order; empty when it has none */
   sections: OutputBriefSection[];
+  /** The exact asset version chosen for this video, or null until the office chooses. */
+  brandAsset: { versionId: string; assetId: string | null; name: string; fileName: string | null; versionNo: number | null; type: string | null; state: "current" | "outdated" | "missing" } | null;
   /** this video's brief version; null = none has ever been written */
   version: number | null;
   updatedAtISO: string | null;
@@ -1457,7 +1476,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
     }),
     cutSlots(projectId).catch(() => [] as CutSlot[]),
     filmingBriefFor(projectId).catch(() => null),
-    prisma.project.findUnique({ where: { id: projectId }, select: { videoInstructions: true } }),
+    prisma.project.findUnique({ where: { id: projectId }, select: { videoInstructions: true, clientId: true } }),
     prisma.reviewSubmission.findMany({
       where: { projectId, deliverableId: { not: null }, withdrawnAt: null, status: { notIn: [...NOT_A_ROUND] }, reviewerTeamMemberId: { not: null } },
       orderBy: { round: "desc" },
@@ -1466,6 +1485,15 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
   ]);
   const scrub = (t: string) => (opts.scrub ? stripMoneySentences(t).trim() : t.trim());
   const storedOf = new Map(stored.map((r) => [r.id, r]));
+  const selectedVersionIds = [...new Set(stored.map((r) => readOutputBrief(r.briefJson)?.brandAssetVersionId).filter((id): id is string => !!id))];
+  const selectedVersions = selectedVersionIds.length ? await prisma.clientAssetVersion.findMany({ where: { id: { in: selectedVersionIds } }, select: { id: true, assetId: true, versionNo: true, fileName: true, fileRef: true } }) : [];
+  const selectedAssets = selectedVersions.length ? await prisma.clientAsset.findMany({ where: { id: { in: selectedVersions.map((v) => v.assetId) } }, select: { id: true, clientId: true, type: true, name: true, activeVersionId: true, status: true } }) : [];
+  const legacyAssetIds = selectedAssets.filter((a) => !a.activeVersionId).map((a) => a.id);
+  const legacyVersions = legacyAssetIds.length ? await prisma.clientAssetVersion.findMany({ where: { assetId: { in: legacyAssetIds } }, orderBy: { versionNo: "desc" }, select: { id: true, assetId: true } }) : [];
+  const legacyActive = new Map<string, string>();
+  for (const v of legacyVersions) if (!legacyActive.has(v.assetId)) legacyActive.set(v.assetId, v.id);
+  const versionOf = new Map(selectedVersions.map((v) => [v.id, v]));
+  const assetOf = new Map(selectedAssets.map((a) => [a.id, a]));
   const formatOf = new Map(slots.map((sl) => [slotKeyOf(sl.deliverableId, sl.slot), sl.deliverableLabel]));
   const filmedOf = new Map((filming?.rows ?? []).map((r) => [r.key, r]));
   const { meaningfulBrief } = await import("@/lib/handoff");
@@ -1492,6 +1520,18 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       const t = brief?.sections[f.key] ? scrub(brief.sections[f.key]!) : "";
       return t ? [{ key: f.key, label: f.label, text: t }] : [];
     });
+    const selectedVersionId = brief?.brandAssetVersionId ?? null;
+    const selectedVersion = selectedVersionId ? versionOf.get(selectedVersionId) : null;
+    const selectedAsset = selectedVersion ? assetOf.get(selectedVersion.assetId) : null;
+    const brandAsset: OutputBrief["brandAsset"] = selectedVersionId ? {
+      versionId: selectedVersionId,
+      assetId: selectedAsset?.id ?? null,
+      name: selectedAsset && selectedAsset.clientId === project?.clientId ? scrub(selectedAsset.name) : "Selected brand file unavailable",
+      fileName: selectedAsset && selectedAsset.clientId === project?.clientId ? selectedVersion?.fileName ? scrub(selectedVersion.fileName) : null : null,
+      versionNo: selectedVersion?.versionNo ?? null,
+      type: selectedAsset && selectedAsset.clientId === project?.clientId ? selectedAsset.type : null,
+      state: !selectedVersion || !selectedAsset || selectedAsset.clientId !== project?.clientId ? "missing" : selectedAsset.status === "ACTIVE" && !!selectedVersion.fileRef && ["LOGO", "BRANDING_CARD"].includes(selectedAsset.type) && (selectedAsset.activeVersionId ?? legacyActive.get(selectedAsset.id)) === selectedVersionId ? "current" : "outdated",
+    } : null;
     const directionSource: OutputBrief["directionSource"] = sections.length ? "own" : jobHas ? "job" : "none";
     const by = st?.briefUpdatedBy ?? null;
     const at = st?.briefUpdatedAt ?? null;
@@ -1501,7 +1541,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       directionSource === "own"
         ? `Brief ${saved}`
         : saved
-          ? `Brief ${saved} (emptied); goes by ${shared}`
+          ? brandAsset ? `Brand choice in Brief ${saved}; direction goes by ${shared}` : `Brief ${saved} (emptied); goes by ${shared}`
           : directionSource === "job"
             ? `No brief of its own; goes by ${shared}`
             : "No brief of its own, and the job has no instructions yet";
@@ -1520,6 +1560,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       total: o.total,
       format: formatOf.get(o.key) ?? o.label,
       sections,
+      brandAsset,
       version: brief?.version ?? null,
       updatedAtISO: at?.toISOString() ?? null,
       updatedBy: by,

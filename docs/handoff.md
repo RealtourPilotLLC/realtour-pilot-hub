@@ -124,9 +124,24 @@ failed or needing review; the worker is off, all 5 predate first switch-on
 and are excluded by default, and 2 are AI jobs. No configuration or job row
 was changed. TypeScript, focused lint and production build pass. The isolated
 demo's six-job fixture shows the blocker/backlog/credit copy and Settings link
-at desktop and 390px phone width. The demo checkout was `f17a1b0` with a
-one-line spacing follow-up copied in for hot reload. Prove TEST discovery and
+at desktop and 390px phone width. The demo worktree is clean at `47ea1d1`
+after the one-line spacing replay, with its server stopped. Prove TEST discovery and
 monthly-call results with authorized model spend before closing C11.
+
+Sep 30 W02 first local batch: the existing `DeliverableOutput.briefJson`
+now pins an exact active client logo/branding-card version per video, with
+the same optimistic version check as the rest of the brief. Kyle/Jordan can
+choose; editors cannot. The reader flags a replaced/retired/missing choice
+without silently switching it. New agency packets, the printable editor
+brief and the photographer's brief include the choice; old frozen agency
+packet JSON is still rendered as it was. On `/edit/[id]`, the editor sees
+each video's identity, cut/brief version, script standing, owner, deadline,
+brand and source after the manual Start/Pause bar; large sets stay collapsed
+until opened. Listing video source falls back to its job raw folder, while
+an unmapped monthly topic explicitly asks Kyle. Isolated A28 61/0 and A33
+48/0 pass; Node 20 TypeScript, focused lint and build pass. No schema or live
+data changed. Browser replay, explicit in-house acceptance, intentional
+no-brand choice and a real multi-output reconciliation are still open.
 
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's

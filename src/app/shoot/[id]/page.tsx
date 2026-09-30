@@ -267,6 +267,7 @@ function SessionBriefCard({ session, outputs }: { session: ShootView["session"];
             {o.format !== o.label && <span className="text-[11px] text-muted">{o.format}</span>}
           </div>
           <p className="text-[11px] text-muted-2">{o.versionLabel}</p>
+          <p className="mt-1 text-xs"><span className="text-muted">Chosen logo / branding card: </span>{o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; ask Kyle" : ""}` : "not recorded for this video"}</p>
           <dl className="mt-1 space-y-1 text-xs leading-relaxed">
             {o.sections.map((x) => (
               <div key={x.label}>

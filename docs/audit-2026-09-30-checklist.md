@@ -35,7 +35,7 @@ Status terms: **done in code** still requires its named acceptance check; **part
 | ID | State | Next evidence |
 |---|---|---|
 | W01 | Open | Per-client, permission-scoped sibling-session and output-source overview; reconcile real conflicting counts before write. |
-| W02 | Open | Exact output/version/approved script/logo/source/owner/deadline at the brief top; preserve existing asset decision gates. |
+| W02 | Partial; per-video brand pin and assignment summary in code | An office save can pin the exact active logo/branding-card asset version in the existing versioned output brief; cross-client/stale files are rejected, historical pins remain visible after replacement, and editor writes are refused. `/edit/[id]` shows output/cut/brief version, script standing, owner, deadline, brand choice, source folder, purpose/treatment and limitation near the top, after manual Start/Pause. Shoot, printable brief and new frozen agency packets carry the choice. Existing packet snapshots remain unchanged. Isolated A28 61/0 and A33 48/0; TypeScript, focused lint and build pass. Still verify UI in browser, add a separate in-house acceptance receipt, decide how to record an intentional no-brand output, and replay a real multi-output job without changing its current choice. |
 | W03 | Open | One confirmed formal revision path from each cut and chat; exact-version issue and clock proof. |
 | W04 | Open | Final rendition verification attestation, without equating checkboxes with playback. |
 | W05 | Open | Compact shared delivery summary at Review Room exit; distinct destination and notification states. |
@@ -48,7 +48,7 @@ Status terms: **done in code** still requires its named acceptance check; **part
 | U0 | In progress | Current disposition and isolated comparison set; C13/C14/C17 truth, per-client inventory and baseline screenshots. UX08's false autosave promise is removed; drafts survive a refresh in the current tab until explicit Save. |
 | U1 | Open | Shared text/action/status/dialog patterns; contrast, keyboard and touch checks. |
 | U2 | Open | One current monthly step, script/video review, client brand and schedule journey. UX08 suggestion replacement now requires a choice and has Undo; still needs browser and failure tests. |
-| U3 | Open | Editing, upload, Review Room and delivery workspaces; W01–W06. |
+| U3 | In progress | W02 puts a compact per-video assignment/source/brand summary on the editor brief after Start/Pause. Editing queue phone layout, sibling sessions, upload, Review Room, delivery and W01/W03–W06 remain. |
 | U4 | Open | Role-first Home, tasks, communications, nav and notification failure feedback. |
 | U5 | Open | Settings summaries/search, validated reminders form, secondary-page consistency. |
 | U6 | Open | UA01–UA14 evidence, actual team/phone tests, screenshot set and release matrix. |
@@ -64,4 +64,4 @@ Status terms: **done in code** still requires its named acceptance check; **part
 - C18 guard: isolated Postgres drill 11/0 and existing per-property reply drill 108/0. The named live record was inspected read-only; no private access text was printed or changed.
 - The earlier normal `next dev` on port 3000 was gone by 12:20 ET, without this task terminating it. An isolated demo is running in a managed worktree on ports 3200/5599 with provider fencing; it was restarted on `c17f4a2` for the C14 visual replay.
 - C05/C06 now have a local additive schema diff for `ClientBrandReceipt` and `DeliveryFollowUpHealth`; neither table has been applied to the live database. The last read-only backup and migration-state checks preceded these local edits. No production database write, provider write, or deployment was made. Recheck the diff and backup immediately before an approved release; never reset or seed the shared database.
-- C11 read-only live `transcriptQueueBatch()` verified the five-job backlog, off switch, default historical hold and two AI jobs. Stage A and monitoring changes passed Node 20 TypeScript, focused lint and production build. Isolated browser on commit `f17a1b0` with a six-job fixture verified the off-switch/backlog/AI-credit text and Settings link at desktop and 390px phone width; a spacing follow-up was visually replayed. Real-model result remains open.
+- C11 read-only live `transcriptQueueBatch()` verified the five-job backlog, off switch, default historical hold and two AI jobs. Stage A and monitoring changes passed Node 20 TypeScript, focused lint and production build. Isolated browser on the `47ea1d1` batch with a six-job fixture verified the off-switch/backlog/AI-credit text and Settings link at desktop and 390px phone width; a spacing follow-up was visually replayed. Real-model result remains open.

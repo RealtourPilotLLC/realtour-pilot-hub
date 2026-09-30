@@ -597,6 +597,7 @@ export default async function EditBriefPage({
     "brief-unchanged": { where: "brief", ok: true, text: "Nothing changed, so no new version was made." },
     "brief-conflict": { where: "brief", ok: false, text: "Someone else saved that brief while you were editing, so yours was not saved. What you see now is the newest version." },
     "brief-too-long": { where: "brief", ok: false, text: `A section was over ${OUTPUT_BRIEF_FIELD_CAP} characters, so nothing was saved.` },
+    "brief-brand-invalid": { where: "brief", ok: false, text: "That brand file is no longer current for this client. Nothing was saved. Choose an active file from their brand kit." },
     "brief-error": { where: "brief", ok: false, text: "That brief could not be saved. Reload and try again." },
     "gap-raised": { where: "brief", ok: true, text: "Raised as missing work. It is on the delivery board until the office plans the recovery." },
     "gap-exists": { where: "brief", ok: true, text: "Already raised as missing work, so nothing new was added." },
@@ -961,13 +962,55 @@ export default async function EditBriefPage({
         }
       />
 
+      {showTracker && workBar && <div className="px-4 pt-4 sm:px-6"><WorkStateBar bar={workBar} tz={deskTz} /></div>}
+
+      {outputBriefs.length > 0 && (
+        <div className="px-4 pt-4 sm:px-6">
+          <Section icon={Film} title="Your edit assignment" count={outputBriefs.length}>
+            <p className="mb-2 text-xs text-muted">Each video keeps its own brief and file version. James owns creative questions; Kyle owns missing assets and scheduling. Start and Pause above record only the editor&apos;s own work.</p>
+            <details open={outputBriefs.length <= 3}>
+              <summary className="cursor-pointer text-xs font-medium text-brand">Show the video assignments, source files and brand choices</summary>
+            <div className="mt-2 grid gap-2 lg:grid-cols-2">
+              {outputBriefs.map((o) => {
+                const latest = cutRows.find((r) => `${r.deliverableId}:${r.slot}` === o.key)?.latest ?? null;
+                const chosen = o.brandAsset;
+                const chosenFile = chosen?.state === "current" ? brandBrief?.files.find((f) => f.versionId === chosen.versionId) : null;
+                const due = o.promisedAtISO ? new Date(o.promisedAtISO) : trackerDue;
+                const briefLine = (key: string) => {
+                  const line = o.sections.find((s) => s.key === key)?.text;
+                  return line && line.length > 180 ? `${line.slice(0, 179).trimEnd()}…` : line;
+                };
+                const purpose = briefLine("purpose");
+                const direction = briefLine("direction");
+                const limitation = briefLine("limitations");
+                return (
+                  <div key={o.outputId} className="rounded-xl border border-border bg-surface-2/40 p-3 text-xs leading-relaxed">
+                    <p className="text-sm font-semibold">Video {o.index} · {o.topicTitle || o.label}</p>
+                    <p className="text-muted">{o.format} · {latest ? `cut round ${latest.round} (${latest.status.toLowerCase().replace(/_/g, " ")})` : "no cut submitted yet"} · {o.version ? `brief v${o.version}` : "no video brief yet"}</p>
+                    {o.version && <p className="text-muted">Last brief change: {o.updatedBy ?? "the office"}{o.updatedAtISO ? ` · ${new Date(o.updatedAtISO).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}</p>}
+                    <p><span className="text-muted">Editor:</span> {o.ownerName || editorName || "not assigned"} <span className="text-muted">· Due:</span> {due ? due.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Kyle to set"}{o.promisedAtISO ? " (this video)" : trackerDue ? " (job deadline)" : ""}</p>
+                    {purpose && <p><span className="text-muted">Purpose:</span> {purpose}</p>}
+                    {direction && <p><span className="text-muted">Treatment:</span> {direction}</p>}
+                    <p><span className="text-muted">Script:</span> {o.script ? `${o.script.title}${o.script.versionNo ? ` v${o.script.versionNo}` : ""} · ${o.script.standing}` : "none released for this video"}</p>
+                    <p><span className="text-muted">Brand:</span> {chosen ? <>{chosen.name}{chosen.versionNo ? ` v${chosen.versionNo}` : ""}{chosen.fileName ? ` · ${chosen.fileName}` : ""}{chosen.state !== "current" ? " · no longer current; Kyle to confirm" : ""}{chosenFile?.url && <> · <a href={chosenFile.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Open chosen file</a></>}</> : "no logo or branding card choice recorded; ask Kyle if this cut needs one"}</p>
+                    <p><span className="text-muted">Footage:</span> {o.folder ? <a href={o.folder.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{o.folder.label}</a> : <><a href={rawUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Job raw folder</a>{monthly ? " · topic-specific source not linked; ask Kyle" : ""}</>}</p>
+                    {limitation && <p className="text-warning"><span className="font-medium">Limitation:</span> {limitation}</p>}
+                    <a href={`#brief-${o.outputId}`} className="mt-1 inline-block font-medium text-brand hover:underline">Open this video&apos;s brief →</a>
+                  </div>
+                );
+              })}
+            </div>
+            </details>
+          </Section>
+        </div>
+      )}
+
       {/* The tracker — where this edit stands, at a glance (stage timeline,
           order facts incl. the deadline + live countdown, the client's
           revision asks, every round sent to review). Video jobs only — a
           photos-only or cancelled job has no edit lifecycle to narrate. */}
       {showTracker && (
         <div className="px-4 pt-4 sm:px-6">
-          {workBar && <WorkStateBar bar={workBar} tz={deskTz} />}
           <EditTracker
             stage={stage}
             statusLine={statusLine}
@@ -1274,6 +1317,9 @@ export default async function EditBriefPage({
                       {o.format !== o.label && <span className="text-[11px] text-muted">{o.format}</span>}
                     </div>
                     <p className="text-[11px] text-muted-2">{o.versionLabel}</p>
+                    <p className={`mt-1 text-xs ${o.brandAsset && o.brandAsset.state !== "current" ? "text-warning" : "text-muted"}`}>
+                      Chosen logo / branding card: {o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; Kyle to confirm" : ""}` : "no choice recorded for this video"}
+                    </p>
                     {o.sections.length > 0 && (
                       <dl className="mt-1.5 space-y-1 text-xs leading-relaxed">
                         {o.sections.map((x) => (
@@ -1321,6 +1367,15 @@ export default async function EditBriefPage({
                           <input type="hidden" name="projectId" value={project.id} />
                           <input type="hidden" name="outputId" value={o.outputId} />
                           <input type="hidden" name="expectedVersion" value={o.version ?? ""} />
+                          {brandBrief ? <label className="block text-[11px] font-medium text-muted">
+                            Logo or branding card for this video
+                            <select name="brandAssetVersionId" defaultValue={o.brandAsset?.versionId ?? ""} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-xs font-normal text-foreground">
+                              <option value="">No logo or branding card choice recorded</option>
+                              {o.brandAsset && !brandBrief.files.some((f) => f.versionId === o.brandAsset?.versionId) && <option value={o.brandAsset.versionId}>{o.brandAsset.name} · previously chosen, check current kit</option>}
+                              {(brandBrief?.files ?? []).filter((f) => f.type === "LOGO" || f.type === "BRANDING_CARD").map((f) => <option key={f.versionId} value={f.versionId}>{f.typeWord} · {f.name} · v{f.versionNo}{f.fileName ? ` · ${f.fileName}` : ""}</option>)}
+                            </select>
+                            <span className="mt-0.5 block text-muted-2">Only a choice saved here selects a file for this video. The client&apos;s asset gallery is reference.</span>
+                          </label> : <p className="text-[11px] text-warning">The brand kit could not be read. This video&apos;s saved brand choice will stay as it is.</p>}
                           {OUTPUT_BRIEF_FIELDS.map((f) => (
                             <label key={f.key} className="block text-[11px] font-medium text-muted">
                               {f.label}

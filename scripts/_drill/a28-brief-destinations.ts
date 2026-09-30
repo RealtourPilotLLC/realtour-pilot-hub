@@ -143,7 +143,7 @@ async function main() {
   const oldPdf = (await import(base.editorPdf)) as { buildEditorBriefPdf: (p: unknown) => Promise<Uint8Array> };
   const { getProject } = await import("@/lib/queries");
   const dout = await import("@/lib/deliverableOutputs");
-  const { createAssetWithVersion } = await import("@/lib/clientAssets");
+  const { createAssetWithVersion, addAssetVersion } = await import("@/lib/clientAssets");
 
   // =========================================================================
   c.head("1 · OLD vs NEW: the photographer's shoot screen for a content session");
@@ -321,6 +321,34 @@ async function main() {
   const oneOld = pdfText(await oldPdf.buildEditorBriefPdf((await getProject(one.id))!));
   const oneNew = pdfText(await buildEditorBriefPdf((await getProject(one.id))!));
   c.ok("…and its printed brief has no per-video section, old and new alike", !oneOld.includes("EACH VIDEO") && !oneNew.includes("EACH VIDEO") && oneNew.includes("VIDEO - INSTRUCTIONS FROM THE SHOOT") && !oneNew.includes("(ALL VIDEOS)"));
+
+  c.head("3b · exact brand file selected per video");
+  const logo = await createAssetWithVersion({ clientId: lc.id, type: "LOGO", name: "Team crest", source: "upload", fileRef: "/RTP/Clients/Two Videos/crest-v1.png", fileName: "crest-v1.png", by: "drill" });
+  const otherClientLogo = await createAssetWithVersion({ clientId: f.clientId, type: "LOGO", name: "Another client's crest", source: "upload", fileRef: "/RTP/Clients/Other/crest.png", fileName: "other-crest.png", by: "drill" });
+  const crossClient = await dout.saveOutputBrief({ outputId: reel.id, projectId: two.id, sections: {}, brandAssetVersionId: otherClientLogo.versionId, expectedVersion: 2, actor: "Kyle Drill" });
+  c.ok("a video cannot select another client's logo", !crossClient.ok && crossClient.reason === "invalid_brand" && dout.readOutputBrief((await prisma.deliverableOutput.findUnique({ where: { id: reel.id } }))?.briefJson)?.version === 2);
+  viewer = as("EDITOR", "Kim Drill");
+  const editorBrand = await saveVideoBrief(two.id, reel.id, {}, 2, logo.versionId);
+  c.ok("an editor cannot pin the brand choice through the server action", !editorBrand.ok && (await dout.outputBriefsFor(two.id))[0]?.brandAsset === null);
+  viewer = as("ADMIN", "Kyle Drill");
+  const pinned = await saveVideoBrief(two.id, reel.id, {}, 2, logo.versionId);
+  const branded = (await dout.outputBriefsFor(two.id, { scrub: true }))[0];
+  c.ok("Kyle pins the exact logo version to only this video", pinned.ok && pinned.version === 3 && branded.brandAsset?.versionId === logo.versionId && branded.brandAsset.state === "current" && branded.brandAsset.versionNo === 1 && (await dout.outputBriefsFor(two.id))[1]?.brandAsset === null);
+  const shootBranded = (await getShoot(two.id))!;
+  c.ok("the photographer's copy carries the selected version", shootBranded.outputBriefs[0]?.brandAsset?.versionId === logo.versionId);
+  const brandedPdf = pdfText(await buildEditorBriefPdf((await getProject(two.id))!));
+  c.ok("the printable brief names the selected version", brandedPdf.includes("Team crest v1") && brandedPdf.includes("crest-v1.png"));
+  const { buildEditorPacket } = await import("@/lib/editorPacket");
+  const packetBefore = await buildEditorPacket(two.id);
+  c.ok("the agency packet carries this video's exact brand choice", !!packetBefore?.manifest.videos[0]?.brandChoice?.includes("Team crest v1") && packetBefore.manifest.videos[1]?.brandChoice === "No logo or branding card chosen for this video");
+  const second = await addAssetVersion(logo.assetId, { source: "upload", fileRef: "/RTP/Clients/Two Videos/crest-v2.png", fileName: "crest-v2.png", by: "drill" });
+  const afterReplacement = (await dout.outputBriefsFor(two.id))[0];
+  c.ok("replacing the active logo preserves the old pin and flags it as outdated", afterReplacement.brandAsset?.versionId === logo.versionId && afterReplacement.brandAsset?.state === "outdated" && afterReplacement.brandAsset?.versionNo === 1);
+  const revisedText = await dout.saveOutputBrief({ outputId: reel.id, projectId: two.id, sections: { music: "Warm acoustic" }, expectedVersion: 3, actor: "Kyle Drill" });
+  c.ok("an unrelated brief edit keeps the historical logo pin", revisedText.ok && revisedText.version === 4 && dout.readOutputBrief((await prisma.deliverableOutput.findUnique({ where: { id: reel.id } }))?.briefJson)?.brandAssetVersionId === logo.versionId);
+  const repinned = await saveVideoBrief(two.id, reel.id, {}, 4, second.versionId);
+  const packetAfter = await buildEditorPacket(two.id);
+  c.ok("Kyle can explicitly choose v2; the packet changes without rewriting v1", repinned.ok && repinned.version === 5 && (await dout.outputBriefsFor(two.id))[0]?.brandAsset?.state === "current" && packetAfter?.hash !== packetBefore?.hash && packetAfter?.manifest.videos[0]?.brandChoice?.includes("Team crest v2") === true && (await prisma.clientAssetVersion.findUnique({ where: { id: logo.versionId } }))?.fileName === "crest-v1.png");
 
   // =========================================================================
   c.head("4 · §6.8 configuration items, confirmed at HEAD");
