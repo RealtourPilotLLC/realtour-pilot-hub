@@ -1861,6 +1861,13 @@ model CronRun {
   @@index([job, startedAt])
 }
 
+// Last successful global delivery follow-up reads. A page refresh can show
+// when each lane was last verified even if its current query fails.
+model DeliveryFollowUpHealth {
+  lane          String   @id // needsFinishing | notTold
+  lastSuccessAt DateTime
+}
+
 // Platform feedback + feature requests submitted by the team from inside the app.
 // Flow: submit → Jordan is notified (email, best-effort) → he Approves/Declines
 // in-app → approved items queue for Claude to implement → marked Done when shipped.

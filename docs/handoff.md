@@ -87,6 +87,16 @@ table, unique key, index and FK. Apply it only at the reviewed release gate
 after rechecking the live diff and backup. The isolated browser has not yet
 exercised the two-editor UI. The demo on ports 3200/5599 remains on `c17f4a2`.
 
+Sep 30 C06 local batch: the global Home delivery card now records the last
+successful read of each follow-up lane in `DeliveryFollowUpHealth`. When one
+lane's current query fails, Kyle sees that lane as unavailable, can retry, and
+sees its previous successful check time. A project-scoped or dry-run read does
+not claim global desk health. Isolated `a02-a04-delivery-truth` passes 27/0,
+including each/both injected query failures and a real waiting row restored
+on retry. Node 20 typecheck, focused lint and build pass. A browser warning
+check remains. The combined read-only live diff now lists only the two
+additive C05/C06 tables; neither was pushed to production.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.

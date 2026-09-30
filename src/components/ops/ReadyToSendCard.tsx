@@ -88,7 +88,13 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
           board.followUpChecks?.notTold === null ? "Client notification" : null,
         ].filter(Boolean).join(" and ") + " could not be checked."} Work may still be waiting.
       </p>
-      {(board.followUpChecks?.needsFinishing || board.followUpChecks?.notTold) && <p className="mt-1 text-xs text-muted">Healthy follow-up lane checked {new Date([board.followUpChecks.needsFinishing, board.followUpChecks.notTold].filter((x): x is string => !!x).sort()[0]).toLocaleString()}. Last successful check for the unavailable lane is unknown.</p>}
+      {!board.boardUnavailable && <div className="mt-1 space-y-0.5 text-xs text-muted">
+        {(["needsFinishing", "notTold"] as const).filter((lane) => board.followUpChecks?.[lane] === null).map((lane) => (
+          <p key={lane}>{lane === "needsFinishing" ? "Delivery records" : "Client notification"}: {board.followUpLastSuccess?.[lane]
+            ? `last successful check ${new Date(board.followUpLastSuccess[lane]).toLocaleString()}`
+            : "no previous successful check recorded"}.</p>
+        ))}
+      </div>}
       <button type="button" onClick={() => router.refresh()} className="mt-2 min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold">Check again</button>
     </div>
   );

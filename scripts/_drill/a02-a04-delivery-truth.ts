@@ -84,6 +84,13 @@ async function main() {
   // C06 (Sep 30): the two follow-up lanes are independent reads. A failed
   // query must not become an empty, checked lane on Kyle's board.
   console.log("\n=== C06: delivery follow-up failures remain visible ===\n");
+  const waitingNotice = await prisma.reviewSubmission.create({ data: {
+    projectId: project.id, status: "APPROVED", fileName: "client-not-told.mp4",
+    sentToClientAt: new Date(), sentToClientBy: "Kyle", clientNoticeVia: "not-yet",
+  }, select: { id: true } });
+  const baseline = await rts.readyToSend({ recordFollowUpHealth: true });
+  ok("both global follow-up lanes persist a successful baseline", !!baseline.followUpLastSuccess?.needsFinishing && !!baseline.followUpLastSuccess?.notTold && baseline.notTold?.some((r) => r.submissionId === waitingNotice.id) === true);
+  let beforeChecks = baseline.followUpLastSuccess!;
   const findMany = prisma.reviewSubmission.findMany;
   for (const failing of ["finishing", "notice", "both"] as const) {
     (prisma.reviewSubmission as unknown as { findMany: unknown }).findMany = (async (args: {
@@ -96,15 +103,21 @@ async function main() {
       return findMany.call(prisma.reviewSubmission, args as never);
     }) as unknown;
     try {
-      const board = await rts.readyToSend({ projectId: project.id });
+      const board = await rts.readyToSend({ recordFollowUpHealth: true });
       const checks = board.followUpChecks;
       ok(`${failing} failure reports its unread lane`,
         (failing === "notice" ? !!checks?.needsFinishing : checks?.needsFinishing === null) &&
         (failing === "finishing" ? !!checks?.notTold : checks?.notTold === null));
+      ok(`${failing} failure keeps the last durable success for unread lanes`,
+        (failing === "notice" || failing === "both" ? board.followUpLastSuccess?.notTold === beforeChecks.notTold : true) &&
+        (failing === "finishing" || failing === "both" ? board.followUpLastSuccess?.needsFinishing === beforeChecks.needsFinishing : true));
+      beforeChecks = board.followUpLastSuccess!;
     } finally {
       (prisma.reviewSubmission as unknown as { findMany: unknown }).findMany = findMany;
     }
   }
+  const retry = await rts.readyToSend({ recordFollowUpHealth: true });
+  ok("a successful retry restores the actual client-not-told row", !!retry.followUpChecks?.notTold && retry.notTold?.some((r) => r.submissionId === waitingNotice.id) === true);
 
   {
     const clean = await rts.clientChangeRequestsFor([project.id]);

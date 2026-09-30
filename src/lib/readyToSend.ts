@@ -300,24 +300,39 @@ export type ReadyBoard = {
   needsFinishing: NeedsFinishing[];
   notTold?: NotTold[];
   followUpChecks?: { needsFinishing: string | null; notTold: string | null };
+  followUpLastSuccess?: { needsFinishing: string | null; notTold: string | null };
   boardUnavailable?: boolean;
 };
 
 // Each recovery lane may fail independently. A failed read is never an empty
-// lane; the timestamp is the latest successful check for this response.
-async function deliveryFollowUps(projectId?: string): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks">> {
+// lane. Only the global office board records durable health; a project-scoped
+// read or a dry-run caller must not claim to have checked the entire desk.
+async function deliveryFollowUps(projectId?: string, recordHealth = false): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess">> {
   const [finishing, notification] = await Promise.allSettled([
     deliveriesNeedingFinishing({ projectId }),
     clientNotToldYet({ projectId }),
   ]);
-  const checkedAt = new Date().toISOString();
+  const checkedAt = new Date();
+  let last: { needsFinishing: string | null; notTold: string | null } | undefined;
+  if (recordHealth && !projectId) {
+    await Promise.allSettled([
+      finishing.status === "fulfilled" ? prisma.deliveryFollowUpHealth.upsert({ where: { lane: "needsFinishing" }, create: { lane: "needsFinishing", lastSuccessAt: checkedAt }, update: { lastSuccessAt: checkedAt } }) : Promise.resolve(),
+      notification.status === "fulfilled" ? prisma.deliveryFollowUpHealth.upsert({ where: { lane: "notTold" }, create: { lane: "notTold", lastSuccessAt: checkedAt }, update: { lastSuccessAt: checkedAt } }) : Promise.resolve(),
+    ]);
+    const saved = await prisma.deliveryFollowUpHealth.findMany({ where: { lane: { in: ["needsFinishing", "notTold"] } } }).catch(() => []);
+    last = {
+      needsFinishing: saved.find((r) => r.lane === "needsFinishing")?.lastSuccessAt.toISOString() ?? null,
+      notTold: saved.find((r) => r.lane === "notTold")?.lastSuccessAt.toISOString() ?? null,
+    };
+  }
   return {
     needsFinishing: finishing.status === "fulfilled" ? finishing.value : [],
     notTold: notification.status === "fulfilled" ? notification.value : [],
     followUpChecks: {
-      needsFinishing: finishing.status === "fulfilled" ? checkedAt : null,
-      notTold: notification.status === "fulfilled" ? checkedAt : null,
+      needsFinishing: finishing.status === "fulfilled" ? checkedAt.toISOString() : null,
+      notTold: notification.status === "fulfilled" ? checkedAt.toISOString() : null,
     },
+    followUpLastSuccess: last,
   };
 }
 
@@ -794,7 +809,7 @@ type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE
  * get that answer from this module rather than re-deriving the eligibility
  * rules beside it — see cutsOnTheCardFor.
  */
-export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyBoard> {
+export async function readyToSend(opts?: { projectId?: string; recordFollowUpHealth?: boolean }): Promise<ReadyBoard> {
   const subs = await prisma.reviewSubmission.findMany({
     where: {
       ...(opts?.projectId ? { projectId: opts.projectId } : {}),
@@ -819,7 +834,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId)) };
+  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId, opts?.recordFollowUpHealth)) };
 
   // Still the live version of its cut, and not already with the client.
   // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
@@ -840,7 +855,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
       : [],
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
-  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId)) };
+  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId, opts?.recordFollowUpHealth)) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -937,7 +952,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
-  return { ready, rendering, ...(await deliveryFollowUps(opts?.projectId)) };
+  return { ready, rendering, ...(await deliveryFollowUps(opts?.projectId, opts?.recordFollowUpHealth)) };
 }
 
 /**
