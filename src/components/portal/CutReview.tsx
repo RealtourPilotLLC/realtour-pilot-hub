@@ -179,11 +179,15 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
         </div>
       )}
 
-      {current.assetUrl ? (
-        <div ref={playerBox} onContextMenu={(e) => e.preventDefault()}>
-          <PortalPlayer ref={player} src={current.assetUrl} poster={poster} onError={() => setPlayerFailed(true)} />
+      <div className="xl:grid xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:items-start xl:gap-5">
+        <div className="min-w-0 xl:sticky xl:top-4">
+          {current.assetUrl ? (
+            <div ref={playerBox} onContextMenu={(e) => e.preventDefault()}>
+              <PortalPlayer ref={player} src={current.assetUrl} poster={poster} onError={() => setPlayerFailed(true)} />
+            </div>
+          ) : <p className="text-sm text-muted">This version has no playable file. {contactLine().replace(/^c/, "C")} and we&rsquo;ll sort it.</p>}
         </div>
-      ) : <p className="text-sm text-muted">This version has no playable file. {contactLine().replace(/^c/, "C")} and we&rsquo;ll sort it.</p>}
+        <div className="mt-3 min-w-0 space-y-3 xl:mt-0">
 
       {/* Receipt — persisted decisions on THIS version. */}
       {current.decisions.length > 0 && (
@@ -229,7 +233,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               {replyTo === c.id && (
                 <div className="mt-1.5 flex items-start gap-2">
                   <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Your reply…" aria-label="Reply" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-                  <button type="button" onClick={() => sendReply(c.id)} disabled={busy || !reply.trim()} className="shrink-0 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Reply</button>
+                  <button type="button" onClick={() => sendReply(c.id)} disabled={busy || !reply.trim()} className="min-h-11 shrink-0 rounded-lg bg-brand px-3 text-sm font-semibold text-white disabled:opacity-50">Reply</button>
                 </div>
               )}
             </li>
@@ -242,7 +246,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
         <div>
           <div className="flex items-start gap-2">
             <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change — or a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
-            <button type="button" onClick={add} disabled={busy || !note.trim()} className="shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+            <button type="button" onClick={add} disabled={busy || !note.trim()} className="min-h-11 shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
               {busy ? <Loader2 className="size-4 animate-spin" /> : "Save note"}
             </button>
           </div>
@@ -259,14 +263,14 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           {!asking && !approving && (
             <div className="flex flex-wrap gap-2">
               {perms.request && !closed && (
-                <button type="button" onClick={() => setAsking(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                <button type="button" onClick={() => setAsking(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                   <Send className="size-3.5" /> Submit change request{open.length ? ` (${open.length} note${open.length === 1 ? "" : "s"})` : ""}
                 </button>
               )}
               {/* Asked for changes on this version? Its approval is the NEW
                   version's to give — the server refuses both verdicts on one cut. */}
               {perms.approve && !requested && (
-                <button type="button" onClick={() => setApproving(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                <button type="button" onClick={() => setApproving(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                   <ThumbsUp className="size-3.5" /> Approve this version
                 </button>
               )}
@@ -292,8 +296,8 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 <p className="text-xs text-warning">This would be an extra revision round for this video, which may carry a fee. Please sign in with your own account to send it, so we know who agreed.</p>
               )}
               <div className="flex items-center gap-2">
-                <button type="button" onClick={submitChanges} disabled={busy || (needsAck && !(feeAck && (review?.mayAcknowledge ?? perms.approve)))} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Send to the editor</button>
-                <button type="button" onClick={() => setAsking(false)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
+                <button type="button" onClick={submitChanges} disabled={busy || (needsAck && !(feeAck && (review?.mayAcknowledge ?? perms.approve)))} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Send to the editor</button>
+                <button type="button" onClick={() => setAsking(false)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
               </div>
             </div>
           )}
@@ -310,8 +314,8 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 </fieldset>
               )}
               <div className="flex items-center gap-2">
-                <button type="button" onClick={approve} disabled={busy || (open.length > 0 && choice === null)} className="inline-flex items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Yes, approve</button>
-                <button type="button" onClick={() => setApproving(false)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Not yet</button>
+                <button type="button" onClick={approve} disabled={busy || (open.length > 0 && choice === null)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Yes, approve</button>
+                <button type="button" onClick={() => setApproving(false)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Not yet</button>
               </div>
             </div>
           )}
@@ -342,6 +346,8 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           )}
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }

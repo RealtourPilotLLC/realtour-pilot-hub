@@ -99,7 +99,7 @@ export const PortalPlayer = forwardRef<PortalPlayerHandle, { src: string; poster
 
     return (
       <div className={className}>
-        <video ref={videoRef} poster={poster ?? undefined} controls playsInline preload="metadata" autoPlay={autoPlay} className="w-full rounded-lg bg-black"
+        <video ref={videoRef} poster={poster ?? undefined} controls playsInline preload="metadata" autoPlay={autoPlay} className="mx-auto block max-h-[min(70vh,760px)] w-full rounded-lg bg-black object-contain"
           onPlay={() => { played.current = true; }} onSeeked={() => { played.current = true; }}
           onTimeUpdate={() => { if ((videoRef.current?.currentTime ?? 0) > 0) played.current = true; }}
           onError={() => { if (!isHls(src)) { setFailed(`This video couldn't be played — reload to try again, or ${contactLine()} and we'll get you the file.`); onError?.("play-error"); } }} />
