@@ -7,11 +7,15 @@
 `f3b8007` pinned the chosen brand version per output and showed the editor's
 exact assignment. Isolated A28/A33 checks, TypeScript, lint and build passed;
 the Avery TEST editor page was visually checked at desktop and 390px. The
-latest local W01 batch is being completed on the same branch: an exact,
+local W01 batch `63d6eef` added an exact,
 permission-scoped month/session overview, package-versus-job-slot mismatch
 warning, and an explicit staff repair control for unlinked video jobs. The
 isolated `w01-editor-month` drill passes 15/0, and Node 20 typecheck, focused
-lint and production build pass. Visual replay and commit remain at this point.
+lint and production build pass. Initial browser replay caught that legacy cuts
+without output submission pointers made the new submitted/approved summary
+read zero. The follow-up reads exact cut slot/round rows and warns about
+unpaired cuts; the drill covers that legacy shape and the build passes again.
+Final browser replay of this correction remains at this point.
 
 Read-only live Sarina evidence: September month allowance 4; two explicitly
 linked jobs hold 5 and 4 video output rows; two output rows are delivered;
@@ -21,9 +25,9 @@ changed. The month view reports the conflict instead of changing counts or
 combining folders. Kyle should confirm actual scope, appointment-to-topic
 source, and which outputs remain owed before any live repair.
 
-The isolated demo was running on managed worktree `f3b8007` at ports 3200/5599
-in unified exec session 13081 before this W01 visual replay. Stop only that
-owned demo process, check out the new local commit in that worktree, and
+The isolated demo is running on managed worktree `63d6eef` at ports 3200/5599
+in unified exec session 22615. Stop only that owned demo process, check out
+the next local commit in that worktree, and
 restart with `scripts/demo/run-demo-dev.sh`; it has no `.env` and uses PGlite.
 Production schema remains unapplied for the C05/C06 additive tables. No push,
 deployment, production mutation, client send, booking, or automation change.

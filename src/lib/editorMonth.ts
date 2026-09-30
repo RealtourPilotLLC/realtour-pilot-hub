@@ -8,21 +8,38 @@ import { filmingBriefFor } from "@/lib/deliverableOutputs";
 
 type Output = {
   projectId: string;
+  deliverableId: string;
+  slot: number;
   category: string;
   currentSubmissionId: string | null;
   approvedSubmissionId: string | null;
   deliveredAt: Date | null;
 };
+type Cut = { projectId: string; deliverableId: string | null; slot: number; round: number; status: string; createdAt: Date };
 
 /** Keep the package promise and job rows separate: old overrides may disagree. */
-export function monthOutputCounts(outputs: Output[], filmedVideoIds: string[]) {
+export function monthOutputCounts(outputs: Output[], filmedVideoIds: string[], cuts: Cut[] = []) {
   const videos = outputs.filter((o) => o.category === "VIDEO" || o.category === "SOCIAL_REEL");
+  const key = (projectId: string, deliverableId: string, slot: number) => `${projectId}:${deliverableId}:${slot}`;
+  const outputKeys = new Set(videos.map((o) => key(o.projectId, o.deliverableId, o.slot)));
+  const newestCut = new Map<string, Cut>();
+  let unpairedCuts = 0;
+  for (const cut of cuts) {
+    if (!cut.deliverableId || !outputKeys.has(key(cut.projectId, cut.deliverableId, cut.slot))) { unpairedCuts++; continue; }
+    const k = key(cut.projectId, cut.deliverableId, cut.slot);
+    const prior = newestCut.get(k);
+    if (!prior || cut.round > prior.round || (cut.round === prior.round && cut.createdAt > prior.createdAt)) newestCut.set(k, cut);
+  }
   return {
     slotsOnJobs: videos.length,
     filmedConfirmed: new Set(filmedVideoIds).size,
-    submitted: videos.filter((o) => !!o.currentSubmissionId).length,
-    approved: videos.filter((o) => !!o.approvedSubmissionId).length,
+    submitted: videos.filter((o) => !!o.currentSubmissionId || newestCut.has(key(o.projectId, o.deliverableId, o.slot))).length,
+    approved: videos.filter((o) => {
+      const latest = newestCut.get(key(o.projectId, o.deliverableId, o.slot));
+      return latest ? latest.status === "APPROVED" : !!o.approvedSubmissionId;
+    }).length,
     delivered: videos.filter((o) => !!o.deliveredAt).length,
+    unpairedCuts,
   };
 }
 
@@ -77,14 +94,18 @@ export async function editorMonthFor(projectId: string, viewer: CurrentUser | nu
   if (!visible.some((p) => p.id === projectId)) return null;
   const allSessionsVisible = visible.length === linked.length;
   const ids = visible.map((p) => p.id);
-  const [outputs, filmed] = await Promise.all([
+  const [outputs, filmed, cuts] = await Promise.all([
     prisma.deliverableOutput.findMany({
       where: { projectId: { in: ids }, waivedAt: null, removedFromOrderAt: null },
-      select: { projectId: true, category: true, currentSubmissionId: true, approvedSubmissionId: true, deliveredAt: true },
+      select: { projectId: true, deliverableId: true, slot: true, category: true, currentSubmissionId: true, approvedSubmissionId: true, deliveredAt: true },
     }),
     prisma.contentVideo.findMany({
       where: { projectId: { in: ids }, clientId: current.clientId, OR: [{ monthId: month.id }, { monthId: null }], filmedConfirmedAt: { not: null }, status: { not: "ARCHIVED" } },
       select: { id: true },
+    }),
+    prisma.reviewSubmission.findMany({
+      where: { projectId: { in: ids }, kind: "video", status: { in: ["PENDING", "CHANGES_REQUESTED", "APPROVED"] } },
+      select: { projectId: true, deliverableId: true, slot: true, round: true, status: true, createdAt: true },
     }),
   ]);
   const briefs = await Promise.all(visible.map((p) => filmingBriefFor(p.id).catch(() => null)));
@@ -93,7 +114,7 @@ export async function editorMonthFor(projectId: string, viewer: CurrentUser | nu
     monthKey: month.monthKey,
     allowance: month.videosOwed,
     allSessionsVisible,
-    counts: allSessionsVisible ? monthOutputCounts(outputs, filmed.map((v) => v.id)) : null,
+    counts: allSessionsVisible ? monthOutputCounts(outputs, filmed.map((v) => v.id), cuts) : null,
     sessions: visible.flatMap((p, index) => {
       const rows = briefs[index]?.rows ?? [];
       const topics = [...new Set(rows.map((r) => r.topicTitle).filter(Boolean))];

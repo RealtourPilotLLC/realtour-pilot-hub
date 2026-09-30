@@ -39,6 +39,9 @@ async function main() {
     projectId: f.projectId!, deliverableId: f.deliverableId!, slot, category: "SOCIAL_REEL",
     ...(slot <= 2 ? { currentSubmissionId: `cut-${slot}`, approvedSubmissionId: `cut-${slot}`, deliveredAt: new Date("2026-09-20T14:00:00Z") } : {}),
   } });
+  await prisma.reviewSubmission.create({ data: { projectId: f.projectId!, deliverableId: f.deliverableId!, slot: 3, round: 1, status: "APPROVED", assetPath: "/fixture/cut-3.mp4" } });
+  await prisma.reviewSubmission.create({ data: { projectId: f.projectId!, deliverableId: f.deliverableId!, slot: 4, round: 1, status: "PENDING", assetPath: "/fixture/cut-4.mp4" } });
+  await prisma.reviewSubmission.create({ data: { projectId: f.projectId!, slot: 1, round: 1, status: "PENDING", assetPath: "/fixture/unpaired.mp4" } });
   const second = await prisma.project.create({ data: { clientId: f.clientId, contentMonthId: f.monthId, title: "Second Pro appointment", status: "SHOT", shootDate: new Date("2026-09-19T14:00:00Z"), editorId: kim.id, dropboxFolder: "/AutoHDR/TEST/second-session" } });
   const d2 = await prisma.deliverable.create({ data: { projectId: second.id, type: "SOCIAL_REEL", quantity: 2, label: "Video Pro" } });
   for (let slot = 1; slot <= 2; slot++) await prisma.deliverableOutput.create({ data: { projectId: second.id, deliverableId: d2.id, slot, category: "SOCIAL_REEL" } });
@@ -49,7 +52,7 @@ async function main() {
   const full = await editorMonthFor(f.projectId!, viewer);
   c.ok("Pro shows two exact linked sessions, with each job's own raw folder", full?.sessions.length === 2 && full.sessions[1].rawUrl.includes("second-session") && full.sessions[0].id === f.projectId);
   c.ok("allowance stays five while seven job slots are reported as a conflict", full?.allowance === 5 && full.counts?.slotsOnJobs === 7);
-  c.ok("filmed is explicit confirmation; submitted, approved and delivered count output identities once", full?.counts?.filmedConfirmed === 1 && full.counts?.submitted === 2 && full.counts?.approved === 2 && full.counts?.delivered === 2);
+  c.ok("filmed is explicit; legacy cuts count by exact slot even without output pointers", full?.counts?.filmedConfirmed === 1 && full.counts?.submitted === 4 && full.counts?.approved === 3 && full.counts?.delivered === 2 && full.counts?.unpairedCuts === 1);
   c.ok("unlinked client jobs are not guessed into the month", full?.sessions.length === 2);
 
   const other = await prisma.project.create({ data: { clientId: f.clientId, title: "Unlinked appointment", status: "SHOT", shootDate: new Date("2026-09-26T14:00:00Z") } });

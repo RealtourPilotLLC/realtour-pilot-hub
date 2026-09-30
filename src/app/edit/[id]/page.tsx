@@ -1015,6 +1015,7 @@ export default async function EditBriefPage({
               <>
                 <p className="text-sm">Package allowance: <strong>{editorMonth.allowance}</strong> video{editorMonth.allowance === 1 ? "" : "s"} · <strong>{editorMonth.counts.filmedConfirmed}</strong> confirmed filmed · <strong>{editorMonth.counts.submitted}</strong> submitted · <strong>{editorMonth.counts.approved}</strong> approved · <strong>{editorMonth.counts.delivered}</strong> delivered</p>
                 {editorMonth.counts.slotsOnJobs !== editorMonth.allowance && <p className="mt-1 text-xs text-warning">These jobs record {editorMonth.counts.slotsOnJobs} video slots, which differs from the package allowance. Kyle needs to reconcile the actual scope; the slots have not been changed.</p>}
+                {editorMonth.counts.unpairedCuts > 0 && <p className="mt-1 text-xs text-warning">{editorMonth.counts.unpairedCuts} cut{editorMonth.counts.unpairedCuts === 1 ? " is" : "s are"} not paired with a current video slot. Kyle needs to confirm the output before it can count here.</p>}
                 {editorMonth.counts.filmedConfirmed < editorMonth.counts.delivered && <p className="mt-1 text-xs text-warning">Filming confirmation is incomplete in the Hub. Delivered files do not prove which session or topic was filmed.</p>}
               </>
             ) : <p className="text-sm text-muted">Only sessions you can open are shown. Ask Kyle for the full month scope.</p>}
