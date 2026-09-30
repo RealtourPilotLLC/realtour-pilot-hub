@@ -30,10 +30,10 @@ export const dynamic = "force-dynamic";
 export default async function MessageCenterPage({
   searchParams,
 }: {
-  searchParams: Promise<{ t?: string; q?: string }>;
+  searchParams: Promise<{ t?: string; q?: string; view?: string }>;
 }) {
   await requirePageAccess("editing");
-  const { t: selectedId, q } = await searchParams;
+  const { t: selectedId, q, view } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
   // A PHOTOGRAPHER holds the `editing` key from Sep 18 (their read-only board
   // of jobs they shot) and this page rides the SAME key. Without this line that
@@ -60,9 +60,10 @@ export default async function MessageCenterPage({
 
   const chat = await loadTeamChat({
     scope: editorScope ? { kind: "editor", editorKey: editorScope } : { kind: "office" },
-    viewer: me ? { id: me.id, impersonating: !!me.impersonating } : null,
+    viewer: me ? { id: me.id, teamMemberId: me.teamMemberId, impersonating: !!me.impersonating } : null,
     selectedId,
     q,
+    view,
   });
 
   return (

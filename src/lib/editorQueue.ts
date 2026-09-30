@@ -767,58 +767,92 @@ export type ChatConversation = {
   status: string;
   /** Sort weight for jobs without a thread: shoot/delivery date, nulls last. */
   sortAt: Date | null;
+  /** A job still in the production pipeline, including work on hold. */
+  activeWork: boolean;
+  /** Explicit program-month and topic links only; never inferred from an address. */
+  monthContext: string | null;
+  topicContext: string[];
+  /** A saved assignment to the viewer's team roster row. */
+  assignedTeamMemberIds: string[];
 };
 
 export type ChatScope = { kind: "editor"; editorKey: string } | { kind: "office" };
 
 export async function teamChatConversations(scope: ChatScope): Promise<ChatConversation[]> {
+  let basic: Omit<ChatConversation, "monthContext" | "topicContext">[];
   if (scope.kind === "editor") {
     const { notDone, upcoming, done } = await buildEditorQueue();
-    return [...notDone, ...upcoming, ...done]
+    basic = [...notDone, ...upcoming, ...done]
       .filter((r) => r.editorKey === scope.editorKey)
-      .map((r) => ({ id: r.id, street: r.street, client: r.client, status: r.status, sortAt: r.dueISO ? new Date(r.dueISO) : null }));
-  }
-  const now = new Date();
-  const [threaded, active] = await Promise.all([
-    prisma.projectMessage.groupBy({ by: ["projectId"] }),
-    prisma.project.findMany({
-      where: {
-        aryeoMissingAt: null,
-        OR: [
-          { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
-          // Booked work close enough to talk about: last week's shoots whose
-          // raws may still be landing, and the next two weeks on the schedule.
-          { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: etAddDays(now, -7), lte: etAddDays(now, 14) } },
-        ],
+      .map((r) => ({ id: r.id, street: r.street, client: r.client, status: r.status, sortAt: r.dueISO ? new Date(r.dueISO) : null, activeWork: !done.some((d) => d.id === r.id), assignedTeamMemberIds: [] }));
+  } else {
+    const now = new Date();
+    const [threaded, active] = await Promise.all([
+      prisma.projectMessage.groupBy({ by: ["projectId"] }),
+      prisma.project.findMany({
+        where: {
+          aryeoMissingAt: null,
+          OR: [
+            { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+            { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: etAddDays(now, -7), lte: etAddDays(now, 14) } },
+          ],
+        },
+        select: { id: true },
+      }),
+    ]);
+    const ids = Array.from(new Set([...threaded.map((t) => t.projectId), ...active.map((p) => p.id)]));
+    if (ids.length === 0) return [];
+    const projects = await prisma.project.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true, title: true, addressLine: true, status: true, shootDate: true,
+        deliveryDue: true, photographerId: true, editorId: true, vaId: true,
+        client: { select: { name: true } },
       },
-      select: { id: true },
-    }),
+    });
+    const work = await workStateFor(projects.filter((p) => p.status === "SHOT" || p.status === "EDITING").map((p) => p.id)).catch(
+      () => new Map<string, ProjectWork>(),
+    );
+    basic = projects.map((p) => ({
+      id: p.id,
+      street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
+      client: p.client.name,
+      status: workLabel(p.status, work.get(p.id), { baseLabel: STATUS_LABEL[p.status] ?? p.status, now }).label,
+      sortAt: p.deliveryDue ?? p.shootDate ?? null,
+      activeWork: p.status !== "DELIVERED" && p.status !== "CANCELLED",
+      assignedTeamMemberIds: [p.photographerId, p.editorId, p.vaId].filter((id): id is string => !!id),
+    }));
+  }
+  if (basic.length === 0) return [];
+  const ids = basic.map((r) => r.id);
+  const [projects, videos] = await Promise.all([
+    prisma.project.findMany({ where: { id: { in: ids }, contentMonthId: { not: null } }, select: { id: true, contentMonthId: true } }),
+    prisma.contentVideo.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, monthKey: true, topicId: true } }),
   ]);
-  const ids = Array.from(new Set([...threaded.map((t) => t.projectId), ...active.map((p) => p.id)]));
-  if (ids.length === 0) return [];
-  const projects = await prisma.project.findMany({
-    where: { id: { in: ids } },
-    select: {
-      id: true,
-      title: true,
-      addressLine: true,
-      status: true,
-      shootDate: true,
-      deliveryDue: true,
-      client: { select: { name: true } },
-    },
-  });
-  // The same two axes as the queue rows: an EDITING job nobody has pressed
-  // Start on does not read "In editing" here either (§7.1).
-  const work = await workStateFor(projects.filter((p) => p.status === "SHOT" || p.status === "EDITING").map((p) => p.id)).catch(
-    () => new Map<string, ProjectWork>(),
-  );
-  return projects.map((p) => ({
-    id: p.id,
-    street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
-    client: p.client.name,
-    status: workLabel(p.status, work.get(p.id), { baseLabel: STATUS_LABEL[p.status] ?? p.status, now }).label,
-    sortAt: p.deliveryDue ?? p.shootDate ?? null,
+  const monthIds = projects.map((p) => p.contentMonthId).filter((id): id is string => !!id);
+  const topicIds = Array.from(new Set(videos.map((v) => v.topicId).filter((id): id is string => !!id)));
+  const [months, topics] = await Promise.all([
+    monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : [],
+    topicIds.length ? prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : [],
+  ]);
+  const monthById = new Map(months.map((m) => [m.id, m.monthKey]));
+  const topicById = new Map(topics.map((t) => [t.id, t.title]));
+  const context = new Map<string, { months: Set<string>; topics: Set<string> }>();
+  for (const p of projects) if (p.contentMonthId && monthById.has(p.contentMonthId)) {
+    const c = context.get(p.id) ?? { months: new Set<string>(), topics: new Set<string>() };
+    c.months.add(monthById.get(p.contentMonthId)!);
+    context.set(p.id, c);
+  }
+  for (const v of videos) if (v.projectId) {
+    const c = context.get(v.projectId) ?? { months: new Set<string>(), topics: new Set<string>() };
+    if (v.monthKey) c.months.add(v.monthKey);
+    if (v.topicId && topicById.has(v.topicId)) c.topics.add(topicById.get(v.topicId)!);
+    context.set(v.projectId, c);
+  }
+  return basic.map((r) => ({
+    ...r,
+    monthContext: context.has(r.id) ? Array.from(context.get(r.id)!.months).sort().join(", ") || null : null,
+    topicContext: context.has(r.id) ? Array.from(context.get(r.id)!.topics) : [],
   }));
 }
 

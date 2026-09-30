@@ -82,7 +82,7 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
   );
 }
 
-export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string; incident?: string }> }) {
+export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string; view?: string; incident?: string }> }) {
   await requirePageAccess("communications");
   const sp = await searchParams;
   const tab: CommsTab =
@@ -174,9 +174,10 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
     const me = await getCurrentUser().catch(() => null);
     const chat = await loadTeamChat({
       scope: { kind: "office" },
-      viewer: me ? { id: me.id, impersonating: !!me.impersonating } : null,
+      viewer: me ? { id: me.id, teamMemberId: me.teamMemberId, impersonating: !!me.impersonating } : null,
       selectedId: sp.t,
       q: sp.q,
+      view: sp.view,
     });
     return (
       <div>

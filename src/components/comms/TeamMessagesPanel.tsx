@@ -37,10 +37,17 @@ export type ChatRow = ChatConversation & {
   lastMsg: LatestMsg | null;
   unread: boolean;
   closed: boolean;
+  mine: boolean;
 };
+
+export type ChatView = "all" | "mine" | "unread" | "active";
+export const chatView = (value: string | undefined): ChatView =>
+  value === "mine" || value === "unread" || value === "active" ? value : "all";
 
 export type TeamChatData = {
   term: string;
+  view: ChatView;
+  counts: Record<ChatView, number>;
   open: ChatRow[];
   closed: ChatRow[];
   selected: ChatRow | null;
@@ -51,14 +58,16 @@ export type TeamChatData = {
 
 export async function loadTeamChat(opts: {
   scope: ChatScope;
-  viewer: { id: string; impersonating: boolean } | null;
+  viewer: { id: string; teamMemberId: string | null; impersonating: boolean } | null;
   selectedId?: string;
   q?: string;
+  view?: string;
 }): Promise<TeamChatData> {
   const { scope, viewer, selectedId, q } = opts;
+  const view = chatView(opts.view);
   const rows = await teamChatConversations(scope);
   const ids = rows.map((r) => r.id);
-  const [latest, reads] = await Promise.all([
+  const [latest, reads, related] = await Promise.all([
     latestMessagePerProject(ids),
     viewer && ids.length
       ? prisma.threadRead.findMany({
@@ -66,8 +75,19 @@ export async function loadTeamChat(opts: {
           select: { projectId: true, seenAt: true, closedAt: true },
         })
       : Promise.resolve([]),
+    scope.kind === "office" && viewer?.teamMemberId && ids.length
+      ? prisma.projectMessage.findMany({
+          where: {
+            projectId: { in: ids },
+            OR: [{ authorId: viewer.teamMemberId }, { mentions: { contains: `"${viewer.teamMemberId}"` } }],
+          },
+          distinct: ["projectId"],
+          select: { projectId: true },
+        })
+      : Promise.resolve([]),
   ]);
   const read = new Map(reads.map((r) => [r.projectId, r]));
+  const relatedIds = new Set(related.map((r) => r.projectId));
 
   // Conversations with messages first (newest activity on top), then the rest
   // by their date — so a job with no thread yet is still one click from
@@ -83,6 +103,7 @@ export async function loadTeamChat(opts: {
         lastMsg: m,
         closed: threadIsClosed(s?.closedAt, m),
         unread: !!m && (!s || m.createdAt > s.seenAt),
+        mine: scope.kind === "editor" || !!viewer?.teamMemberId && (r.assignedTeamMemberIds.includes(viewer.teamMemberId) || relatedIds.has(r.id)),
       };
     })
     .sort((a, b) => {
@@ -93,12 +114,14 @@ export async function loadTeamChat(opts: {
       const bt = b.sortAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
       return at - bt;
     });
-  const open = all.filter((r) => !r.closed);
-  const closed = all.filter((r) => r.closed);
+  const matchesView = (r: ChatRow) => view === "all" || view === "mine" && r.mine || view === "unread" && r.unread && !r.closed || view === "active" && r.activeWork;
+  const visible = all.filter(matchesView);
+  const open = visible.filter((r) => !r.closed);
+  const closed = visible.filter((r) => r.closed);
 
   // The open thread — only a job the viewer's list actually contains (an
   // editor can't open another lane's thread by pasting an id).
-  const selected = selectedId ? all.find((r) => r.id === selectedId) ?? null : null;
+  const selected = selectedId ? visible.find((r) => r.id === selectedId) ?? null : null;
   let thread: TeamChatData["thread"] = null;
   if (selected) {
     const [messages, team] = await Promise.all([loadThread(selected.id), getTeam()]);
@@ -107,11 +130,13 @@ export async function loadTeamChat(opts: {
 
   return {
     term,
+    view,
+    counts: { all: all.length, mine: all.filter((r) => r.mine).length, unread: all.filter((r) => r.unread && !r.closed).length, active: all.filter((r) => r.activeWork).length },
     open,
     closed,
     selected,
     thread,
-    unreadTotal: open.filter((r) => r.unread && r.id !== selected?.id).length,
+    unreadTotal: all.filter((r) => r.unread && !r.closed && r.id !== selected?.id).length,
   };
 }
 
@@ -144,6 +169,11 @@ function hrefFor(base: ChatBase, extra: Record<string, string | undefined>, hash
   return `${base.pathname}${qs ? `?${qs}` : ""}${hash ? `#${hash}` : ""}`;
 }
 
+function monthLabel(value: string): string {
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(value);
+  return m ? new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}-01T12:00:00Z`)) : value;
+}
+
 export function TeamMessagesPanel({
   data,
   base,
@@ -157,15 +187,16 @@ export function TeamMessagesPanel({
   /** "View as" previews: no composer, no close button. */
   readOnly?: boolean;
 }) {
-  const { term, selected, thread } = data;
+  const { term, selected, thread, view } = data;
   const q = term || undefined;
+  const filterHref = (next: ChatView) => hrefFor(base, { q, view: next === "all" ? undefined : next });
 
   const row = (r: ChatRow) => (
     <li key={r.id}>
       <Link
         // Straight to the newest message when there is one (#msg-<id>); the
         // board's :target tint marks it.
-        href={hrefFor(base, { t: r.id, q }, r.lastMsg ? `msg-${r.lastMsg.id}` : undefined)}
+        href={hrefFor(base, { t: r.id, q, view: view === "all" ? undefined : view }, r.lastMsg ? `msg-${r.lastMsg.id}` : undefined)}
         className={cn("block px-4 py-3 hover:bg-surface-2/60", selected?.id === r.id && "bg-surface-2/80")}
       >
         <span className="flex items-center gap-2">
@@ -183,6 +214,12 @@ export function TeamMessagesPanel({
             ? `${r.lastMsg.authorName.split(" ")[0]}: ${r.lastMsg.body}`
             : "No messages yet — start the thread."}
         </span>
+        {(r.monthContext || r.topicContext.length > 0) && (
+          <span className="mt-1 block truncate pl-4 text-[13px] text-muted" title={r.topicContext.join(", ")}>
+            {r.monthContext?.split(", ").map(monthLabel).join(", ")}{r.monthContext && r.topicContext.length > 0 ? " · " : ""}
+            {r.topicContext.length > 0 ? `Topics: ${r.topicContext.join(", ")}` : ""}
+          </span>
+        )}
       </Link>
     </li>
   );
@@ -196,6 +233,7 @@ export function TeamMessagesPanel({
             <input key={k} type="hidden" name={k} value={v} />
           ))}
           {selected && <input type="hidden" name="t" value={selected.id} />}
+          {view !== "all" && <input type="hidden" name="view" value={view} />}
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-2" />
           <input
             name="q"
@@ -204,12 +242,22 @@ export function TeamMessagesPanel({
             className="w-full rounded-xl border border-border bg-surface py-2 pl-8 pr-3 text-sm outline-none focus:border-brand"
           />
         </form>
+        <nav aria-label="Team conversation filters" className="mb-3 flex flex-wrap gap-1.5">
+          {(["all", "mine", "unread", "active"] as const).map((option) => (
+            <Link key={option} href={filterHref(option)} aria-current={view === option ? "page" : undefined}
+              className={cn("inline-flex min-h-11 items-center rounded-lg border px-3 text-sm font-medium", view === option ? "border-brand bg-brand/10 text-brand" : "border-border bg-surface text-muted hover:bg-surface-2")}>
+              {option === "all" ? "All" : option === "mine" ? "Mine" : option === "unread" ? "Unread" : "Active work"}
+              <span className="ml-1.5 text-xs">{data.counts[option]}</span>
+            </Link>
+          ))}
+        </nav>
+        {view === "mine" && <p className="mb-2 text-xs text-muted">Assigned jobs and conversations you posted in or were tagged in.</p>}
         <div className="overflow-hidden rounded-2xl border border-border bg-surface">
           {data.open.length === 0 && data.closed.length === 0 ? (
-            <p className="p-5 text-sm text-muted">{term ? "No jobs match that search." : "No conversations yet."}</p>
+            <p className="p-5 text-sm text-muted">{term || view !== "all" ? "No conversations match these filters." : "No conversations yet."}</p>
           ) : (
             <>
-              {data.open.length === 0 && <p className="p-5 text-sm text-muted">Everything is closed — nice.</p>}
+              {data.open.length === 0 && <p className="p-5 text-sm text-muted">No open conversations match these filters.</p>}
               <ul className="divide-y divide-border/60">{data.open.map(row)}</ul>
               {/* THE CLOSED FOLD — conversations this viewer put away. A new
                   message on any of them moves it back up on its own. */}
@@ -231,7 +279,7 @@ export function TeamMessagesPanel({
       {selected && thread ? (
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border border-b-0 border-border bg-surface px-4 py-3">
-            <Link href={hrefFor(base, { q })} className="lg:hidden">
+            <Link href={hrefFor(base, { q, view: view === "all" ? undefined : view })} className="lg:hidden">
               <ArrowLeft className="size-4 text-muted" />
             </Link>
             <div className="min-w-0 flex-1">
@@ -242,6 +290,10 @@ export function TeamMessagesPanel({
                 {selected.status}
                 {selected.closed && " · closed — a new message reopens it"}
               </div>
+              {(selected.monthContext || selected.topicContext.length > 0) && <div className="text-[13px] text-muted">
+                {selected.monthContext?.split(", ").map(monthLabel).join(", ")}{selected.monthContext && selected.topicContext.length > 0 ? " · " : ""}
+                {selected.topicContext.length > 0 ? `Topics: ${selected.topicContext.join(", ")}` : ""}
+              </div>}
             </div>
             {!readOnly && <ThreadCloseButton projectId={selected.id} closed={selected.closed} />}
             <Link
