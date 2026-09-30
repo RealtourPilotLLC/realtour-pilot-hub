@@ -47,8 +47,8 @@ function rowsFor(board: ReadyBoard): Row[] {
           ? "The job-level text was refused before confirmed delivery. Check the open task and client thread."
           : "The job-level text is queued or being sent; provider acceptance is not recorded yet.",
       owner: "Kyle", at: r.queuedAtISO,
-      action: r.state === "unknown" ? "Reconcile the provider outcome" : r.state === "failed" ? "Review the failed text" : "Check the pending text",
-      href: r.taskId ? `/tasks?tab=other&task=${r.taskId}` : `/projects/${r.projectId}`,
+      action: r.state === "unknown" ? "Check the OpenPhone conversation" : r.state === "failed" ? "Review the failed text" : "Check the pending text",
+      href: r.taskId ? `/tasks?tab=other&task=${r.taskId}` : "/communications",
       cutHref: `/projects/${r.projectId}`,
     })),
   ];
@@ -63,7 +63,7 @@ export function DeliveryExitSummary({ board }: { board: ReadyBoard }) {
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 id="delivery-exit-title" className="flex items-center gap-2 text-base font-semibold"><Send className="size-4 text-brand" /> After review: delivery</h2>
-          <p className="mt-1 text-sm text-muted">The same delivery work Kyle sees on Home. Each video stays tied to its exact version.</p>
+          <p className="mt-1 text-sm text-muted">The same delivery work Kyle sees on Home. Video rows name the exact cut; delivery-text outcomes belong to the whole job.</p>
         </div>
         {rows.length > 0 && <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs font-semibold text-brand">{rows.length} waiting</span>}
       </div>
