@@ -117,8 +117,12 @@ export async function requestApprovedCutRevision(data: FormData): Promise<Result
       pin: { submissionId, outputId: target.outputId, cutKey: target.key, decisionId: null, roundId: null, videoLabel: target.label },
     });
     if (!revision.ok || !revision.briefId) return reject("The job was flagged, but the revision record could not be completed. Ask Kyle to check the revision task before retrying.");
-    await ingestBriefItems(revision.briefId);
-    const issueCount = await prisma.revisionIssue.count({ where: { projectId, sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${revision.briefId}:` } } });
+    const issueWhere = { projectId, sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${revision.briefId}:` } };
+    let issueCount = await prisma.revisionIssue.count({ where: issueWhere });
+    if (!issueCount) {
+      await ingestBriefItems(revision.briefId);
+      issueCount = await prisma.revisionIssue.count({ where: issueWhere });
+    }
     if (!issueCount) return reject("The revision task and the client's words were saved, but the video issue did not appear. Ask Kyle to check the revision record before retrying.");
     if (at !== null) await prisma.revisionIssue.updateMany({
       where: { projectId, sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${revision.briefId}:` } }, data: { timeSec: at },
