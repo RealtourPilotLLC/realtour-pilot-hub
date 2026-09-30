@@ -1404,8 +1404,10 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   clientName?: string;
   contactName?: string | null;
 }): Promise<boolean> {
-  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true } });
+  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true, clientId: true, projectId: true } });
   if (!existing) return false;
+  if (opts.clientId && existing.clientId !== opts.clientId) return false;
+  if (opts.projectId !== undefined && existing.projectId && existing.projectId !== opts.projectId) return false;
   // Never merge an inbound comm into a production task (QC/delivery/confirmation/
   // delivery text) — that would overwrite its title/summary. Refuse so the caller
   // falls back to creating a proper reply task.

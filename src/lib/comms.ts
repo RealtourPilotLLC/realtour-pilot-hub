@@ -2,6 +2,7 @@ import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks, revisionPriority } from "@/lib/tasks";
+import { checkedCommProject } from "@/lib/commProject";
 import { routeCommTask } from "@/lib/brain";
 import type { NotifyTarget } from "@/lib/notify";
 import { clip } from "@/lib/text";
@@ -279,18 +280,31 @@ export async function recordClientCommunication(opts: {
       })
     : null;
 
+  // A router may start with a guessed project. Its explicit "unknown" must
+  // clear that guess, and a named address may contradict either the guess or
+  // the brain's choice. Check against this client's own orders before any task,
+  // activity, feedback or revision can be filed on a property.
+  const clientProjects = opts.clientId
+    ? await prisma.project.findMany({ where: { clientId: opts.clientId }, select: { id: true, title: true, status: true } })
+    : [];
+  // Include the brain's proposed title/detail: it may pull an address from
+  // earlier thread context even when this one message says only "please save
+  // that". The Sep 22 mismatched task had exactly that shape.
+  let checked = checkedCommProject([opts.text, decision?.title, decision?.detail].filter(Boolean).join("\n"), clientProjects, decision ? decision.projectId : opts.projectId ?? null);
+  effProjectId = checked.projectId;
+  const chosen = clientProjects.find((p) => p.id === effProjectId);
+  effProjectStatus = chosen?.status ?? null;
+  effPropertyAddress = chosen?.title ?? null;
+  const taskTitle = (title: string | null) => checked.issue ? `Confirm property — ${title || "review the client message"}` : title;
+  const taskDetail = (detail: string | null) => checked.issue ? `${checked.issue}${detail ? ` ${detail}` : ""}` : detail;
+
   if (decision) {
-    // The brain may correct which order this is about — refresh the project context.
-    if (decision.projectId && decision.projectId !== opts.projectId) {
-      const p = await prisma.project.findUnique({ where: { id: decision.projectId }, select: { status: true, title: true } });
-      if (p) { effProjectId = decision.projectId; effProjectStatus = p.status; effPropertyAddress = p.title; }
-    }
     if (decision.actionable) {
-      if (decision.mergeIntoTaskId) {
+      if (decision.mergeIntoTaskId && !checked.issue) {
         replyTask = await mergeIntoExistingTask(decision.mergeIntoTaskId, {
           title: decision.title, detail: decision.detail, priority: decision.priority,
           projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text,
-          clientName: opts.clientName, contactName: opts.contactName ?? null,
+          clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null,
         });
       }
       // No merge target (or the merge was refused, e.g. it pointed at a production
@@ -301,7 +315,7 @@ export async function recordClientCommunication(opts: {
           projectId: effProjectId, propertyAddress: effPropertyAddress,
           kind: opts.kind === "email" ? "text" : opts.kind,
           snippet: opts.text, source: opts.source,
-          aiTitle: decision.title, aiDetail: decision.detail, priority: decision.priority,
+          aiTitle: taskTitle(decision.title), aiDetail: taskDetail(decision.detail), priority: decision.priority,
           threadRef: opts.threadRef ?? null,
           taskType: decision.taskType,
         });
@@ -309,7 +323,7 @@ export async function recordClientCommunication(opts: {
     }
     // Observability: record what the brain did + any flags, on the chosen order.
     if (effProjectId) {
-      const what = !decision.actionable ? "no action needed" : decision.mergeIntoTaskId ? "merged into an open to-do" : "created a to-do";
+      const what = !decision.actionable ? "no action needed" : replyTask && decision.mergeIntoTaskId && !checked.issue ? "merged into an open to-do" : "created a to-do";
       const note = `Smart Brain: ${what} — ${decision.reason}${decision.flags.length ? ` [${decision.flags.join("; ")}]` : ""}`;
       await prisma.activity.create({ data: { projectId: effProjectId, type: "SYSTEM", body: note.slice(0, 300) } }).catch(() => {});
     }
@@ -332,6 +346,11 @@ export async function recordClientCommunication(opts: {
     } catch {
       /* fall back to the generic task */
     }
+    checked = checkedCommProject([opts.text, aiTitle, aiDetail].filter(Boolean).join("\n"), clientProjects, opts.projectId ?? null);
+    effProjectId = checked.projectId;
+    const fallbackProject = clientProjects.find((p) => p.id === effProjectId);
+    effProjectStatus = fallbackProject?.status ?? null;
+    effPropertyAddress = fallbackProject?.title ?? null;
     const noAction = aiTitle != null && /no action needed/i.test(aiTitle);
     fallbackNoAction = noAction;
     replyTask = noAction
@@ -340,13 +359,13 @@ export async function recordClientCommunication(opts: {
           clientId: opts.clientId,
           clientName: opts.clientName,
           contactName: opts.contactName ?? null,
-          projectId: opts.projectId ?? null,
-          propertyAddress: opts.propertyAddress ?? null,
+          projectId: effProjectId,
+          propertyAddress: effPropertyAddress,
           kind: opts.kind === "email" ? "text" : opts.kind,
           snippet: opts.text,
           source: opts.source,
-          aiTitle,
-          aiDetail,
+          aiTitle: taskTitle(aiTitle),
+          aiDetail: taskDetail(aiDetail),
           threadRef: opts.threadRef ?? null,
         });
   }

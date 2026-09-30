@@ -35,6 +35,13 @@ fencing. It must be stopped through `scripts/demo/run-demo-dev.sh --stop` from
 that worktree when no longer needed. The separate normal server on port 3000
 was no longer running at 12:20 ET; no process was terminated by this task.
 
+C18 source check is recorded in the checklist. The named live task's property
+link is wrong; the source conversation had a guessed project and the generated
+title supplied the other address. Routing now clears unknown/contradicted
+projects and refuses a merge into a different client's or property's task.
+The existing live task is unchanged pending Kyle's source check and a reviewed
+one-row repair. No private access instructions were copied into this handoff.
+
 The previously reported deployed version is still `bf2e0b4`; read the live
 deployment stamp before any later release. September 28 full-backup files were
 present at takeover, but verify current migration state and backup coverage

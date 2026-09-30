@@ -27,7 +27,7 @@ Status terms: **done in code** still requires its named acceptance check; **part
 | C15 | Partial | Review Room now scopes its empty headline to cuts and labels mixed `media_qa` as delivery checks. Add the shared approved-but-undelivered summary and visual verification. |
 | C16 | Partial | Home and Review Room now label optional unticked QC boxes as **not recorded**, and later reopening as cause unclassified. Replace legacy metric with confirmed, attributed revision-issue reporting before using staff KPIs. |
 | C17 | Open | Share assignment display contract across Home, queue and brief without equating prediction to acceptance. |
-| C18 | Open | Inspect the single wrong-property task and source read-only; test contradicted/unknown routing; propose exact repair, no mass relink. |
+| C18 | Code guard done; live one-row repair pending review | Read-only Neon check: task `cmucuidu10005gu04uws9vz24` is OPEN, title names 3826 Fairmount, but project/property address point to 3057 N 10th. The related OpenPhone conversation was filed with `projectGuess=true` on 3057, and the task's matched inbound text did not itself name 3826; the generated task title did. New routing checks the message plus proposed title/detail against the client's own order addresses, clears explicit unknowns and contradictions, and refuses cross-client/cross-property merges. Isolated C18 drill 11/0 plus reply-request regression 108/0. Proposed surgical repair: after Kyle verifies source conversation, relink only this task to project `cmucuivp8000bgu04xf08gzwm` (3826 Fairmount), update its `propertyAddress`, preserve its original title/body/source and audit the correction. No live row was changed. |
 | C19 | Waiting on correct destination | Saved general welcome points at monthly Calendly. Determine the approved listing-client consultation URL or call/text policy; avoid replaying welcomes. User clarification requested. |
 
 ## Operating improvements
@@ -61,5 +61,6 @@ Status terms: **done in code** still requires its named acceptance check; **part
 - Focused lint and TypeScript passed for changed files; existing unrelated lint warnings remain in older code.
 - Five isolated drills passed, 479 checks total: delivery truth 22, real Postgres Start 76, draft topics 138, rollout scope 112, isolation boundary 131. No skips or failures.
 - C13 follow-up: isolated UI-01 and CP-10 drills passed 215 checks including three new assertions; B2 planning passed 151 existing checks. Production build and focused lint passed after this patch.
+- C18 guard: isolated Postgres drill 11/0 and existing per-property reply drill 108/0. The named live record was inspected read-only; no private access text was printed or changed.
 - A normal `next dev` began on port 3000 during the work (PID 193/196, Sep 30 11:30 ET) and holds `.next/dev/lock`. The isolated demo refused to start in this checkout; it was not terminated. Visual acceptance is pending in an isolated checkout.
 - No schema diff on this branch, no database write, no provider write, no deployment. Before a schema change, verify live migration state and fresh backup coverage; never reset or seed the shared database.
