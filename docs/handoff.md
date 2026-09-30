@@ -2,7 +2,31 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — W02 in-house brief receipt
+### Current resume point — UX15 Editing Room URL context
+
+`530d43c` saves the Editing Room tab, editor and due filters in a validated,
+shareable URL. Job links carry only those choices back to the queue; the edit
+page's return link prefers that explicit context, including in a new tab.
+The queue records scroll position for the return in session storage and clears
+it after restoration. No server reader, permission, assignment or database
+schema changed.
+
+Node20 TypeScript, focused lint, production build and four pure URL checks
+passed. A provider-fenced isolated demo fixture put one Avery TEST row with
+Kim and an overdue office due date. Browser replay: select Kim + Overdue,
+open job, return, refresh and open the copied queue URL in a new tab; all
+showed the same single row and selected filters. Controls stayed readable at
+390px; the wide table still requires U3 phone layout work. The fixture was
+only in the disposable demo database. The demo server was stopped and its
+clean worktree is at `530d43c`. No production write, provider call, push or
+deployment occurred.
+
+UX15 remains partial for client month context through plan/scripts/sessions/
+library and a normal authenticated queue replay. Continue U3 phone layout
+and the open functional/operating work. Five additive tables remain local;
+none has been applied to live Neon.
+
+### Previous checkpoint — W02 in-house brief receipt
 
 `6693c47` adds `EditorBriefReceipt`, a fifth additive local table for a named
 in-house editor's receipt of one output's current brief. The snapshot pins
