@@ -2,7 +2,36 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — Kyle's ready-file row
+### Current resume point — staff keyboard dialogs and mobile menu
+
+`5d52526` adds a shared native modal wrapper for the editor's send-for-review
+check and Kyle's draft-update dialog. It opens in the browser top layer so
+background controls are inert and Tab stays inside; Escape closes only when a
+submission is not pending and focus returns to the trigger. `316549e` puts
+initial focus on the self-check heading or the draft time field. `5ac3a52`
+raises their visible decision, close and entry controls to 44px; `40b0d67`
+guards cancellation in the narrow interval before a pending render appears.
+The mobile staff drawer now has its own Close button, traps Tab/Shift+Tab,
+makes the covered main column inert, and returns focus to Open menu. A staff
+Skip to content link targets the existing main area.
+
+Node20 TypeScript, focused lint and production build passed at `5ac3a52`;
+TypeScript and focused lint passed after the final cancellation guard. In a
+temporary, provider-fenced TEST UI fixture, keyboard Enter filled the six
+self-check lines, a simulated refusal left all answers in place, and Escape
+returned to Open self-check. The draft dialog opened with focus on its time
+input and Escape returned to Draft update. At 390px neither dialog caused
+horizontal overflow and the sampled controls measured 44px. The drawer's
+Shift+Tab/Tab wrapped between its last control and Close menu, Escape returned
+to Open menu, and Skip to content focused `staff-main`. The temporary fixture
+was removed; the demo is stopped and clean at `40b0d67`. No form was sent,
+no provider or production write occurred, and nothing was pushed or deployed.
+
+UX14 remains partial: replay the real signed editor and Kyle contexts, test
+pending request timing, ensure unsaved self-check answers are not silently
+lost on cancellation, and finish the custom status menu keyboard pattern.
+
+### Previous checkpoint — Kyle's ready-file row
 
 `2114488` makes the ready row lead with the client and linked month/topic on
 monthly work, or the property and client on listing work. It names the exact
