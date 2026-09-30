@@ -41,8 +41,9 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   /** The call line they started from, if any. Only a pointer — the server re-reads the line itself. */
   const [suggestionId, setSuggestionId] = useState<string | null>(null);
+  const [suggestionKey, setSuggestionKey] = useState<string | null>(null);
   const [suggestionChoice, setSuggestionChoice] = useState<string | null>(null);
-  const [replacedText, setReplacedText] = useState<string | null>(null);
+  const [replacedDraft, setReplacedDraft] = useState<{ text: string; suggestionId: string | null } | null>(null);
   const [draftState, setDraftState] = useState<"empty" | "saved" | "failed">("empty");
   const [textKey, setTextKey] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -51,10 +52,12 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
   // and question. It is never submitted or sent to script generation here.
   const keyFor = (questionKey: string) => `rtp-answer-draft:v2:${iv.clientId}:${iv.enrollmentId}:${iv.monthId}:${iv.interviewId}:${questionKey}`;
   const draftKey = activeKey ? keyFor(activeKey) : null;
+  const suggestionStorageKey = draftKey ? `${draftKey}:suggestion` : null;
   const legacyKey = activeKey ? `rtp-answer-draft:${iv.interviewId}:${iv.monthKey}:${iv.topicId}:${activeKey}` : null;
   // On a question switch, do not show the previous question's unsent words
   // during the render before sessionStorage restores this question's draft.
   const visibleText = draftKey === textKey ? text : "";
+  const visibleSuggestionId = draftKey === suggestionKey ? suggestionId : null;
   const activePrompt = editKey ? iv.answers.find((a) => a.questionKey === editKey)?.questionText ?? "" : iv.next.prompt ?? "";
   const answeredKeys = iv.answers.length;
   useEffect(() => {
@@ -66,23 +69,34 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
         const stored = window.sessionStorage.getItem(draftKey);
         const older = stored === null && legacyKey ? window.sessionStorage.getItem(legacyKey) : null;
         const saved = stored ?? older;
+        const savedSuggestion = suggestionStorageKey ? window.sessionStorage.getItem(suggestionStorageKey) : null;
         if (older !== null && legacyKey) {
           window.sessionStorage.setItem(draftKey, older);
           window.sessionStorage.removeItem(legacyKey);
         }
         setText(saved ?? (editKey ? iv.answers.find((a) => a.questionKey === editKey)?.answerText ?? "" : ""));
         setTextKey(draftKey);
+        setSuggestionId(savedSuggestion && iv.suggestions.some((sg) => sg.id === savedSuggestion) ? savedSuggestion : null);
+        setSuggestionKey(draftKey);
         setDraftState(saved !== null ? "saved" : "empty");
-      } catch { setDraftState("failed"); }
+      } catch { setSuggestionId(null); setSuggestionKey(draftKey); setDraftState("failed"); }
     });
     return () => { current = false; };
-  }, [draftKey, legacyKey, canAct, editKey, iv.answers]);
-  const updateText = (next: string) => {
+  }, [draftKey, legacyKey, suggestionStorageKey, canAct, editKey, iv.answers, iv.suggestions]);
+  const updateText = (next: string, sourceId = visibleSuggestionId) => {
+    setMsg(null);
     setText(next);
     setTextKey(draftKey);
+    const keptSource = next.trim() ? sourceId : null;
+    setSuggestionId(keptSource);
+    setSuggestionKey(draftKey);
     if (!draftKey) return;
     try {
       window.sessionStorage.setItem(draftKey, next);
+      if (suggestionStorageKey) {
+        if (keptSource) window.sessionStorage.setItem(suggestionStorageKey, keptSource);
+        else window.sessionStorage.removeItem(suggestionStorageKey);
+      }
       setDraftState(next ? "saved" : "empty");
     } catch { setDraftState("failed"); }
   };
@@ -92,7 +106,15 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
       const restored = visibleText ? null : window.sessionStorage.getItem(draftKey) ?? (legacyKey ? window.sessionStorage.getItem(legacyKey) : null);
       if (restored !== null) { setText(restored); setTextKey(draftKey); }
       const next = restored ?? visibleText;
+      const storedSuggestion = suggestionStorageKey ? window.sessionStorage.getItem(suggestionStorageKey) : null;
+      const nextSuggestion = restored !== null ? storedSuggestion && iv.suggestions.some((sg) => sg.id === storedSuggestion) ? storedSuggestion : null : visibleSuggestionId;
       window.sessionStorage.setItem(draftKey, next);
+      if (suggestionStorageKey) {
+        if (next.trim() && nextSuggestion) window.sessionStorage.setItem(suggestionStorageKey, nextSuggestion);
+        else window.sessionStorage.removeItem(suggestionStorageKey);
+      }
+      setSuggestionId(nextSuggestion);
+      setSuggestionKey(draftKey);
       if (legacyKey && restored !== null) window.sessionStorage.removeItem(legacyKey);
       setDraftState(next ? "saved" : "empty");
     }
@@ -101,11 +123,11 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
   const run = (fn: () => Promise<{ ok: boolean; message: string }>, onSaved?: () => void) => start(async () => {
     const r = await fn().catch(() => ({ ok: false, message: "That didn't save — try again." }));
     setMsg({ ok: r.ok, text: r.message });
-    if (r.ok) { onSaved?.(); setText(""); setTextKey(null); setEditKey(null); setSuggestionId(null); setSuggestionChoice(null); setReplacedText(null); setDraftState("empty"); router.refresh(); }
+    if (r.ok) { onSaved?.(); setText(""); setTextKey(null); setEditKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); setDraftState("empty"); router.refresh(); }
   });
   const answer = (kind: "TYPED" | "SKIPPED" | "DONT_KNOW") => activeKey && run(
-    () => portalAnswerInterview(portalAuthFromLocation(), iv.interviewId, activeKey, visibleText, kind, activePrompt, kind === "TYPED" ? suggestionId : null),
-    () => { if (draftKey) { try { window.sessionStorage.removeItem(draftKey); } catch { /* local storage may be unavailable */ } } },
+    () => portalAnswerInterview(portalAuthFromLocation(), iv.interviewId, activeKey, visibleText, kind, activePrompt, kind === "TYPED" ? visibleSuggestionId : null),
+    () => { if (draftKey) { try { window.sessionStorage.removeItem(draftKey); if (suggestionStorageKey) window.sessionStorage.removeItem(suggestionStorageKey); } catch { /* local storage may be unavailable */ } } },
   );
   const submit = (acknowledgeGaps = false) => run(() => portalSubmitInterview(portalAuthFromLocation(), iv.interviewId, { acknowledgeGaps }));
   const submitted = iv.status === "SUBMITTED";
@@ -139,7 +161,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
               <div className="text-xs text-muted-2">{a.questionText}</div>
               <div className="mt-0.5 flex items-start gap-2">
                 <div className="min-w-0 flex-1 whitespace-pre-wrap text-sm">{a.answerKind === "SKIPPED" ? <em className="text-muted">skipped</em> : a.answerKind === "DONT_KNOW" ? <em className="text-muted">don&rsquo;t know</em> : a.answerText}</div>
-                {canAct && <button type="button" onClick={() => { setEditKey(a.questionKey); setText(a.answerText ?? ""); setTextKey(keyFor(a.questionKey)); setSuggestionChoice(null); setReplacedText(null); }} aria-label="Edit this answer" className="shrink-0 rounded-md p-1 text-muted-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Pencil className="size-3.5" /></button>}
+                {canAct && <button type="button" onClick={() => { setEditKey(a.questionKey); setText(a.answerText ?? ""); setTextKey(keyFor(a.questionKey)); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} aria-label="Edit this answer" className="shrink-0 rounded-md p-1 text-muted-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Pencil className="size-3.5" /></button>}
               </div>
               {a.version > 1 && <div className="text-[10px] text-muted-2">edited · v{a.version} (earlier answers are kept)</div>}
             </div>
@@ -153,7 +175,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{editKey ? "Change your answer" : iv.nextIsGap || iv.mode === "GAPS_ONLY" ? "One more, so we can write it" : iv.next.isFollowUp ? "One follow-up" : `Question ${Math.min(answeredKeys + 1, iv.progress.substantiveTotal + 1)}`}</div>
           <p className="mt-1 text-base font-medium">{activePrompt}</p>
           {iv.next.isFollowUp && !editKey && <p className="mt-0.5 text-[11px] text-muted-2">{iv.nextIsGap ? "We ask only because nothing we have covers this yet — two at most." : "Asked once, only because something important was missing."}</p>}
-          <textarea autoFocus value={visibleText} onChange={(e) => { updateText(e.target.value); setSuggestionId(null); setReplacedText(null); }} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand" />
+          <textarea autoFocus value={visibleText} onChange={(e) => { updateText(e.target.value); setReplacedDraft(null); }} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand" />
           <p role="status" className={cn("mt-1 text-xs", draftState === "failed" ? "text-danger" : "text-muted")}>
             {draftState === "saved" ? `Draft kept in this tab through a refresh. Use ${editKey ? "Save new answer" : "Save & next"} to send it to the team.` : draftState === "failed" ? `This tab couldn't access your draft. Try again; ${editKey ? "Save new answer" : "Save & next"} sends the words currently shown to the team.` : editKey ? "These are your saved words. Use Save new answer to send a change." : "This answer has not been sent yet."}
           </p>
@@ -168,8 +190,8 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
                   <li key={sg.id}>
                     <button type="button" onClick={() => {
                       if (visibleText.trim()) setSuggestionChoice(sg.id);
-                      else { updateText(sg.text); setSuggestionId(sg.id); setSuggestionChoice(null); }
-                    }} className={cn("w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", suggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
+                      else { updateText(sg.text, sg.id); setSuggestionChoice(null); setReplacedDraft(null); }
+                    }} className={cn("w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", visibleSuggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
                       <span className="text-foreground">&ldquo;{sg.text}&rdquo;</span>
                       <span className="mt-0.5 block text-[10px] text-muted-2">
                         {sg.from === "profile"
@@ -178,22 +200,26 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
                       </span>
                     </button>
                     {suggestionChoice === sg.id && <div className="mt-1 flex flex-wrap gap-2 rounded-lg border border-border bg-surface-2 p-2 text-xs">
-                      <span className="w-full">Keep your draft and add this suggestion, or replace it. You can undo a replacement.</span>
-                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { updateText(`${visibleText.trimEnd()}\n\n${sg.text}`); setSuggestionId(null); setSuggestionChoice(null); }}>Add to answer</button>
-                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { setReplacedText(visibleText); updateText(sg.text); setSuggestionId(sg.id); setSuggestionChoice(null); }}>Replace draft</button>
+                      <span className="w-full font-semibold">Your current draft stays unless you choose Replace.</span>
+                      <p className="w-full whitespace-pre-wrap rounded-md bg-surface px-2 py-1 text-muted">Current draft: {visibleText}</p>
+                      <p className="w-full whitespace-pre-wrap rounded-md bg-surface px-2 py-1">Suggestion: {sg.text}</p>
+                      <span className="w-full text-muted">You can edit either result before Save. A replacement can be undone here.</span>
+                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { updateText(`${visibleText.trimEnd()}\n\n${sg.text}`, sg.id); setSuggestionChoice(null); setReplacedDraft(null); }}>Add to answer</button>
+                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { setReplacedDraft({ text: visibleText, suggestionId: visibleSuggestionId }); updateText(sg.text, sg.id); setSuggestionChoice(null); }}>Replace draft</button>
                       <button type="button" className="min-h-11 px-3 text-muted" onClick={() => setSuggestionChoice(null)}>Cancel</button>
                     </div>}
                   </li>
                 ))}
               </ul>
-              {replacedText !== null && <button type="button" onClick={() => { updateText(replacedText); setReplacedText(null); setSuggestionId(null); }} className="mt-2 text-xs font-semibold text-brand underline">Undo replacement</button>}
+              {visibleSuggestionId && <p className="mt-2 text-xs text-muted">This answer started from a suggestion. Your edits remain your own words.</p>}
+              {replacedDraft && <button type="button" onClick={() => { updateText(replacedDraft.text, replacedDraft.suggestionId); setReplacedDraft(null); }} className="mt-2 min-h-11 text-xs font-semibold text-brand underline">Undo replacement</button>}
             </div>
           )}
           <div className="mt-2 flex flex-wrap gap-2">
             <button type="button" disabled={busy || !visibleText.trim()} onClick={() => answer("TYPED")} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3.5 animate-spin" /> : null} {editKey ? "Save new answer" : "Save & next"}</button>
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("SKIPPED")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Skip</button>}
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
-            {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); }} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>}
+            {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>}
           </div>
           <p className="mt-2 text-xs text-muted">Only {editKey ? "Save new answer" : "Save & next"} records your answer for the team. The draft survives a refresh in this tab, but may be lost when the tab closes. It does not start script writing or the filming preparation clock.</p>
         </div>
