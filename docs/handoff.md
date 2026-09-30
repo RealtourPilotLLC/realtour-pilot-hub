@@ -2,7 +2,33 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — guided Your Month work area
+### Current resume point — client answer draft isolation
+
+`1f2d933` scopes the existing sessionStorage answer draft by client, enrollment,
+month, interview and question. It restores an old-key draft when present,
+prevents a previous question's words appearing during a question switch, and
+adds an explicit retry if browser storage is unavailable. The copy now names
+the actual Save & next or Save new answer action. These are browser-local
+drafts; only that action sends words to the team. No draft storage action
+enqueues a script, submits an interview or changes the preparation clock.
+
+The isolated CP08 drill passed 80/0; Node20 TypeScript, focused lint and
+production build passed. In the provider-fenced Avery TEST interview, an
+unsent draft survived refresh and reopened on the same question. Opening the
+corresponding Parker Pro TEST interview in that tab showed only Parker's
+stored answer. Read-only demo DB checks before and after both showed eight
+answer rows, zero script versions and no preparation timestamp for Avery's
+interview/month. The editor at 390px had no horizontal overflow. The browser
+tab and demo server were closed; the clean demo worktree is at `1f2d933`.
+No client answer was submitted, and no live DB write, provider call, push or
+deployment occurred.
+
+UX08 remains partial: inject a browser storage failure, verify retry and
+retained text, and exercise Add/Replace/Undo on an isolated suggestion.
+The complete written/call route and normal client-seat journeys are still
+required. Five additive tables remain local only.
+
+### Previous checkpoint — guided Your Month work area
 
 `7b07840` keeps the existing one-current-step planning model and changes its
 presentation. The current call booking or filming picker expands in place;
