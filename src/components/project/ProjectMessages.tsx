@@ -1,10 +1,10 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Send, Reply, X, Archive, ArchiveRestore, Loader2 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/utils";
-import { closeConversation, postProjectMessage, reopenConversation } from "@/app/projects/messageActions";
+import { closeConversation, markProjectMessagesRead, postProjectMessage, reopenConversation } from "@/app/projects/messageActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 export type ProjectMsg = {
@@ -63,8 +63,27 @@ export function ProjectMessages({
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string | null; body: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const lastMessageRef = useRef<HTMLDivElement>(null);
+  const lastMessageId = messages.at(-1)?.id ?? null;
+
+  useEffect(() => {
+    if (readOnly || !lastMessageId || !lastMessageRef.current) return;
+    // A brief can be several screens long. Reading its header or downloading
+    // footage does not read this conversation. Only the loaded last message
+    // entering the viewport advances the bounded watermark.
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      void markProjectMessagesRead(projectId, lastMessageId)
+        .then((r) => { if (!r.ok) setReadError(r.message); else setReadError(null); })
+        .catch(() => setReadError("Could not save read state. Try again."));
+    }, { rootMargin: "0px 0px -80px 0px", threshold: 0.1 });
+    observer.observe(lastMessageRef.current);
+    return () => observer.disconnect();
+  }, [projectId, lastMessageId, readOnly]);
   const colorFor = (id: string | null) => team.find((m) => m.id === id)?.avatarColor ?? "#64748b";
 
   const suggestions =
@@ -123,6 +142,7 @@ export function ProjectMessages({
         {messages.map((m) => (
           <div
             key={m.id}
+            ref={m.id === lastMessageId ? lastMessageRef : undefined}
             id={`msg-${m.id}`}
             className="group -mx-2 flex gap-2.5 rounded-lg px-2 py-1 scroll-mt-24 target:bg-brand-soft/60 target:ring-1 target:ring-brand/30"
           >
@@ -150,6 +170,12 @@ export function ProjectMessages({
             </div>
           </div>
         ))}
+        {readError && !readOnly && <p role="alert" className="text-xs text-danger">{readError} <button type="button" className="underline" onClick={() => {
+          if (!lastMessageId) return;
+          void markProjectMessagesRead(projectId, lastMessageId)
+            .then((r) => setReadError(r.ok ? null : r.message))
+            .catch(() => setReadError("Could not save read state. Try again."));
+        }}>Retry</button></p>}
       </div>
 
       {!readOnly && (

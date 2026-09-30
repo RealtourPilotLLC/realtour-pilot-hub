@@ -10,7 +10,11 @@ import { PrismaClient } from "@prisma/client";
 // nothing.
 const drillRun =
   typeof process !== "undefined" &&
-  (process.env.RTP_DRILL_ISOLATION === "1" || /[\\/]scripts[\\/]_drill[\\/]/.test(process.argv?.[1] ?? ""));
+  // Edge bundles this shared module too. Read argv through globalThis so the
+  // Node-only direct-drill backstop survives without a process.argv reference
+  // that Turbopack rejects in the Edge graph.
+  (process.env.RTP_DRILL_ISOLATION === "1" ||
+    /[\\/]scripts[\\/]_drill[\\/]/.test((globalThis as { process?: { argv?: string[] } }).process?.argv?.[1] ?? ""));
 if (drillRun) {
   const boundary = (globalThis as unknown as Record<symbol, { active?: boolean } | undefined>)[Symbol.for("rtp.drillIsolation")];
   if (!boundary?.active) {

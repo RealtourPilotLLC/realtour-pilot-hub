@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, Info, Loader2, Lock, MapPin, MoveRight, Phone, XCircle } from "lucide-react";
+import { CalendarClock, Camera, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Loader2, Lock, MapPin, MoveRight, Phone, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { portalRequestSession, portalRescheduleSession, portalSaveSessionPlanAddress, portalSessionSlots, portalSubmitSessionAddress } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
@@ -267,6 +267,7 @@ export function PortalScheduler({
   const initial = months.find((m) => m.requests.some((r) => OPEN.has(r.status)) || m.capacity.remaining > 0) ?? months[0] ?? null;
   const [monthId, setMonthId] = useState<string | null>(initial?.monthId ?? null);
   const [day, setDay] = useState<string | null>(null);
+  const [dayWindow, setDayWindow] = useState<{ key: string; page: number } | null>(null);
   const [slot, setSlot] = useState<string | null>(null);
   const [creative, setCreative] = useState<string | null>(null);
   const [when, setWhen] = useState("");
@@ -292,8 +293,10 @@ export function PortalScheduler({
   const res = slotsRes && slotsRes.key === slotsKey ? slotsRes.res : null;
   // Slots this session may actually take: the server already applied its gate
   // (which carries the 24-hour floor — those are a phone call, see KyleLine).
-  const monthDays: TravelSlotDay[] = month && !month.locked && res?.ok ? res.days.slice(0, 6) : [];
-  const activeDay = monthDays.find((d) => d.date === day) ?? monthDays[0] ?? null;
+  const monthDays: TravelSlotDay[] = month && !month.locked && res?.ok ? res.days : [];
+  const dayPage = dayWindow?.key === slotsKey ? dayWindow.page : 0;
+  const visibleDays = monthDays.slice(dayPage * 6, dayPage * 6 + 6);
+  const activeDay = visibleDays.find((d) => d.date === day) ?? visibleDays[0] ?? null;
   const slotCreatives = slot && activeDay?.slotCreatives?.[slot] ? activeDay.slotCreatives[slot] : [];
   const chosenCreative = slotCreatives.length === 1 ? slotCreatives[0].teamMemberId : creative;
   const chosenTravel: TravelLabel | null = slot && activeDay ? (chosenCreative ? activeDay.slotCreativeTravel[slot]?.[chosenCreative] ?? null : activeDay.slotTravel[slot] ?? null) : null;
@@ -301,6 +304,12 @@ export function PortalScheduler({
 
   const pickMonth = (id: string) => { setMonthId(id); setSessionPick(null); setEditAddress(false); setDay(null); setSlot(null); setCreative(null); setMoving(null); setDone(null); setErr(null); };
   const pickSlot = (s: string) => { setSlot(s); setCreative(null); };
+  const changeDayPage = (page: number) => {
+    setDayWindow({ key: slotsKey, page });
+    setDay(null);
+    setSlot(null);
+    setCreative(null);
+  };
 
   const send = () =>
     start(async () => {
@@ -512,7 +521,7 @@ export function PortalScheduler({
                       <>
                         <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a day</div>
                         <div className="mt-1.5 flex flex-wrap gap-2">
-                          {monthDays.map((d) => (
+                          {visibleDays.map((d) => (
                             <button key={d.date} type="button" onClick={() => { setDay(d.date); setSlot(null); setCreative(null); }}
                               className={cn(
                                 "rounded-xl border px-3.5 py-2 text-sm font-semibold transition-colors",
@@ -522,6 +531,19 @@ export function PortalScheduler({
                             </button>
                           ))}
                         </div>
+                        {monthDays.length > 6 && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                            <button type="button" disabled={dayPage === 0} onClick={() => changeDayPage(dayPage - 1)}
+                              className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-border px-3 font-medium disabled:opacity-40">
+                              <ChevronLeft className="size-4" /> Previous dates
+                            </button>
+                            <span className="text-muted" aria-live="polite">Dates {dayPage * 6 + 1}–{Math.min((dayPage + 1) * 6, monthDays.length)} of {monthDays.length} available</span>
+                            <button type="button" disabled={(dayPage + 1) * 6 >= monthDays.length} onClick={() => changeDayPage(dayPage + 1)}
+                              className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-border px-3 font-medium disabled:opacity-40">
+                              More dates <ChevronRight className="size-4" />
+                            </button>
+                          </div>
+                        )}
                         {activeDay && (
                           <>
                             <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a time</div>

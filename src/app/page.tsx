@@ -343,6 +343,11 @@ function RushChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?:
 function readyFor(key: string, d: OpsDay): number {
   return key === "video-review" ? d.readySend.ready.length : 0;
 }
+
+function deliveryUnavailable(d: OpsDay): boolean {
+  const b = d.readySend;
+  return !!b.boardUnavailable || b.followUpChecks?.needsFinishing === null || b.followUpChecks?.notTold === null;
+}
 /** The green "📤 N to send" chip — the length of the list the card renders. */
 function ReadyChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?: boolean }) {
   if (n <= 0) return null;
@@ -709,7 +714,7 @@ export default async function HomePage() {
   // border-[var(--brand)] all computed to rgba(214,222,240,0.09). Fixing that
   // globally would restyle every coloured border in the hub at once, which is
   // not a change to make in passing — so this card states its own colour.
-  const readySection = readyCount > 0 ? (
+  const readySection = readyCount > 0 || deliveryUnavailable(d) ? (
     <section
       id="ready-to-send"
       className="panel-shadow scroll-mt-32 overflow-hidden rounded-2xl border-2 bg-brand-soft/40 md:scroll-mt-28"
@@ -718,7 +723,7 @@ export default async function HomePage() {
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-5 py-2.5">
         <Send className="size-4 shrink-0 text-brand" />
         <h2 className="text-[15px] font-semibold text-brand">
-          {readyCount} video{readyCount === 1 ? "" : "s"} ready to send to the client
+          {readyCount > 0 ? `${readyCount} video${readyCount === 1 ? "" : "s"} ready to send to the client` : "Delivery follow-up needs a check"}
         </h2>
         {oldestReady && (
           <span className="text-xs text-muted">
@@ -1115,8 +1120,9 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
   // sent — the exact state 322 N 62nd St was in all morning. Its badge must not
   // go green and say "clear" over the top of them (same rule as Open Loops).
   const readyN = readyFor(def.key, d);
-  const zeroLabel = loopZero?.label ?? (readyN > 0 ? "to send" : "clear");
-  const zeroTitle = loopZero?.title ?? (readyN > 0 ? `No verdicts owed — but ${readyN} finished video${readyN === 1 ? "" : "s"} still to go out` : "Nothing waiting in this block");
+  const followUpFailed = def.key === "video-review" && deliveryUnavailable(d);
+  const zeroLabel = loopZero?.label ?? (followUpFailed ? "check failed" : readyN > 0 ? "to send" : "clear");
+  const zeroTitle = loopZero?.title ?? (followUpFailed ? "Delivery follow-up could not be checked" : readyN > 0 ? `No verdicts owed — but ${readyN} finished video${readyN === 1 ? "" : "s"} still to go out` : "Nothing waiting in this block");
   // scroll-mt clears the sticky PageHeader (~104px with a one-line subtitle,
   // ~124px when it wraps on a phone) so a jump never tucks the block's title
   // under the header.
@@ -1336,7 +1342,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
       // screen. A render that stalls must not be invisible on the only screen
       // that tracks finished video, which is why ReadyToSendCard draws that
       // footnote even with an empty list.
-      return <VideoReviewCard d={d} showReady={d.readySend.ready.length === 0} />;
+      return <VideoReviewCard d={d} showReady={d.readySend.ready.length === 0 && !deliveryUnavailable(d)} />;
 
     case "lunch":
       return <p className="text-sm text-muted">Eat. The hub holds the fort.</p>;

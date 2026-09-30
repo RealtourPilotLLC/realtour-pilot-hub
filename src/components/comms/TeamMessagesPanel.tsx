@@ -25,8 +25,8 @@ import { cn } from "@/lib/utils";
 // is open, what is unread", the component renders it, and each page keeps its
 // own header. Editors see their lane (as before); the office sees every job
 // with a thread plus every job in flight. Opening a thread stamps the
-// viewer's ThreadRead watermark — the same upsert /projects/<id> and
-// /edit/<id> now make, so a thread read anywhere is read everywhere. A
+// viewer's ThreadRead watermark advances when the loaded last message becomes
+// visible, so a thread read anywhere is read everywhere. A
 // conversation the viewer closed sits under the Closed fold until someone
 // posts on it again.
 
@@ -103,18 +103,6 @@ export async function loadTeamChat(opts: {
   if (selected) {
     const [messages, team] = await Promise.all([loadThread(selected.id), getTeam()]);
     thread = { messages, team: team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor })) };
-    // Stamp the read watermark — but never from a "view as" preview (read-only
-    // by contract) and never without a session. seenAt only: reading a
-    // closed thread leaves it closed.
-    if (viewer && !viewer.impersonating) {
-      await prisma.threadRead
-        .upsert({
-          where: { userKey_projectId: { userKey: viewer.id, projectId: selected.id } },
-          update: { seenAt: new Date() },
-          create: { userKey: viewer.id, projectId: selected.id },
-        })
-        .catch(() => {});
-    }
   }
 
   return {

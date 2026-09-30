@@ -74,15 +74,31 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
 };
 
 export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
+  const router = useRouter();
   const { ready, rendering, needsFinishing } = board;
   // 9.2: sent, and the client not told yet — its own short list (NotTold).
   const notTold = board.notTold ?? [];
+  const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null;
+  const recoveryStatus = unavailable && (
+    <div role="alert" className="rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-3 text-sm text-foreground">
+      <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" /> Could not check all delivery follow-up.</p>
+      <p className="mt-1 text-muted">
+        {board.boardUnavailable ? "The delivery board is unavailable." : [
+          board.followUpChecks?.needsFinishing === null ? "Delivery records" : null,
+          board.followUpChecks?.notTold === null ? "Client notification" : null,
+        ].filter(Boolean).join(" and ") + " could not be checked."} Work may still be waiting.
+      </p>
+      {(board.followUpChecks?.needsFinishing || board.followUpChecks?.notTold) && <p className="mt-1 text-xs text-muted">Healthy follow-up lane checked {new Date([board.followUpChecks.needsFinishing, board.followUpChecks.notTold].filter((x): x is string => !!x).sort()[0]).toLocaleString()}. Last successful check for the unavailable lane is unknown.</p>}
+      <button type="button" onClick={() => router.refresh()} className="mt-2 min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold">Check again</button>
+    </div>
+  );
   if (ready.length === 0) {
     return (
       <div className="space-y-2">
-        <p className="flex items-center gap-1.5 text-sm text-success">
-          <CheckCircle2 className="size-4" /> Nothing waiting to go out.
-        </p>
+        {recoveryStatus}
+        {!board.boardUnavailable && <p className="flex items-center gap-1.5 text-sm text-muted">
+          <CheckCircle2 className="size-4" /> No new files ready to send.
+        </p>}
         <NeedsFinishing rows={needsFinishing ?? []} />
         <NotTold rows={notTold} />
         <Rendering rows={rendering} />
@@ -91,6 +107,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
   }
   return (
     <div className="space-y-2">
+      {recoveryStatus}
       <NeedsFinishing rows={needsFinishing ?? []} />
       <NotTold rows={notTold} />
       <p className="text-[11px] text-muted">

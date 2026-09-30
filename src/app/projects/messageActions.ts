@@ -7,6 +7,38 @@ import { prisma } from "@/lib/prisma";
 
 export type MsgResult = { ok: boolean; message: string };
 
+// The client sends the ID of the last message it actually displayed. Resolve
+// its timestamp on the server so a newer message arriving during page load
+// remains unread. Never trust a client-supplied time or another job's ID.
+export async function markProjectMessagesRead(projectId: string, lastMessageId: string): Promise<MsgResult> {
+  await requireThreadAccess(projectId);
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser();
+  if (!me || me.impersonating) return { ok: false, message: "Sign in to mark this conversation read." };
+  const last = await prisma.projectMessage.findUnique({
+    where: { id: lastMessageId },
+    select: { projectId: true, createdAt: true },
+  });
+  if (!last || last.projectId !== projectId) return { ok: false, message: "That message is not in this conversation." };
+  const where = { userKey: me.id, projectId };
+  const existing = await prisma.threadRead.findUnique({ where: { userKey_projectId: where }, select: { seenAt: true } });
+  if (!existing) {
+    try {
+      await prisma.threadRead.create({ data: { ...where, seenAt: last.createdAt } });
+    } catch (e) {
+      // Another tab may create the row first. Only advance an older watermark.
+      if (!(e instanceof Error) || !("code" in e) || e.code !== "P2002") throw e;
+      await prisma.threadRead.updateMany({ where: { ...where, seenAt: { lt: last.createdAt } }, data: { seenAt: last.createdAt } });
+    }
+  } else if (existing.seenAt < last.createdAt) {
+    await prisma.threadRead.updateMany({ where: { ...where, seenAt: { lt: last.createdAt } }, data: { seenAt: last.createdAt } });
+  }
+  revalidatePath("/editing/messages");
+  revalidatePath("/communications");
+  revalidatePath("/editing");
+  return { ok: true, message: "Conversation marked read." };
+}
+
 // Editors post in the team thread from the editor queue, so allow all staff
 // roles. Photographers too since Sep 16 (Kyle call) — on THEIR OWN shoots
 // only: a tag used to send them to /shoot/<id>, which had no thread to read,

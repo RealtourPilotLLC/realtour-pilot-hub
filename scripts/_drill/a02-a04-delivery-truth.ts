@@ -81,6 +81,31 @@ async function main() {
     select: { id: true },
   });
 
+  // C06 (Sep 30): the two follow-up lanes are independent reads. A failed
+  // query must not become an empty, checked lane on Kyle's board.
+  console.log("\n=== C06: delivery follow-up failures remain visible ===\n");
+  const findMany = prisma.reviewSubmission.findMany;
+  for (const failing of ["finishing", "notice", "both"] as const) {
+    (prisma.reviewSubmission as unknown as { findMany: unknown }).findMany = (async (args: {
+      where?: { sentToClientAt?: unknown; clientNoticeVia?: string };
+    }) => {
+      if (args.where?.sentToClientAt &&
+          (failing === "both" || (failing === "notice") === (args.where.clientNoticeVia === "not-yet"))) {
+        throw new Error("controlled follow-up query failure");
+      }
+      return findMany.call(prisma.reviewSubmission, args as never);
+    }) as unknown;
+    try {
+      const board = await rts.readyToSend({ projectId: project.id });
+      const checks = board.followUpChecks;
+      ok(`${failing} failure reports its unread lane`,
+        (failing === "notice" ? !!checks?.needsFinishing : checks?.needsFinishing === null) &&
+        (failing === "finishing" ? !!checks?.notTold : checks?.notTold === null));
+    } finally {
+      (prisma.reviewSubmission as unknown as { findMany: unknown }).findMany = findMany;
+    }
+  }
+
   {
     const clean = await rts.clientChangeRequestsFor([project.id]);
     ok("a genuinely empty history reports known:true", clean.known === true && clean.all.length === 0);

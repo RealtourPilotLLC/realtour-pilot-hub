@@ -294,7 +294,32 @@ export type NeedsFinishing = { submissionId: string; street: string; sentAtISO: 
  *  proves it). */
 export type NotTold = { submissionId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null };
 
-export type ReadyBoard = { ready: ReadyVideo[]; rendering: RenderingVideo[]; needsFinishing: NeedsFinishing[]; notTold?: NotTold[] };
+export type ReadyBoard = {
+  ready: ReadyVideo[];
+  rendering: RenderingVideo[];
+  needsFinishing: NeedsFinishing[];
+  notTold?: NotTold[];
+  followUpChecks?: { needsFinishing: string | null; notTold: string | null };
+  boardUnavailable?: boolean;
+};
+
+// Each recovery lane may fail independently. A failed read is never an empty
+// lane; the timestamp is the latest successful check for this response.
+async function deliveryFollowUps(projectId?: string): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks">> {
+  const [finishing, notification] = await Promise.allSettled([
+    deliveriesNeedingFinishing({ projectId }),
+    clientNotToldYet({ projectId }),
+  ]);
+  const checkedAt = new Date().toISOString();
+  return {
+    needsFinishing: finishing.status === "fulfilled" ? finishing.value : [],
+    notTold: notification.status === "fulfilled" ? notification.value : [],
+    followUpChecks: {
+      needsFinishing: finishing.status === "fulfilled" ? checkedAt : null,
+      notTold: notification.status === "fulfilled" ? checkedAt : null,
+    },
+  };
+}
 
 const HOUR = 3_600_000;
 
@@ -794,7 +819,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []), notTold: await clientNotToldYet({ projectId: opts?.projectId }).catch(() => []) };
+  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId)) };
 
   // Still the live version of its cut, and not already with the client.
   // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
@@ -815,7 +840,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
       : [],
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
-  if (open.length === 0) return { ready: [], rendering: [], needsFinishing: await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []), notTold: await clientNotToldYet({ projectId: opts?.projectId }).catch(() => []) };
+  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId)) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -912,9 +937,7 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
-  const needsFinishing = await deliveriesNeedingFinishing({ projectId: opts?.projectId }).catch(() => []);
-  const notTold = await clientNotToldYet({ projectId: opts?.projectId }).catch(() => []);
-  return { ready, rendering, needsFinishing, notTold };
+  return { ready, rendering, ...(await deliveryFollowUps(opts?.projectId)) };
 }
 
 /**

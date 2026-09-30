@@ -171,21 +171,6 @@ export default async function ProjectPage({
   const [project, team, assigneeList] = await Promise.all([getProject(id), getTeam(), listAssignees()]);
   if (!project) notFound();
 
-  // Reading the job file reads its thread (Sep 16, Kyle call): the message
-  // centre stamped the ThreadRead watermark, this page and /edit/<id> did not,
-  // so a conversation read HERE stayed bold on Communications → Team and on
-  // the Editing Room's Messages badge forever. Same upsert, seenAt only — a
-  // closed thread stays closed — and never from a "view as" preview, which is
-  // read-only by contract (Jordan looking as Kyle isn't Kyle reading).
-  if (viewer && !viewer.impersonating) {
-    await prisma.threadRead
-      .upsert({
-        where: { userKey_projectId: { userKey: viewer.id, projectId: project.id } },
-        update: { seenAt: new Date() },
-        create: { userKey: viewer.id, projectId: project.id },
-      })
-      .catch(() => {});
-  }
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
   // THE customer note — one list (src/lib/clientNotes.ts). Owner reads it raw;
   // everyone else gets the money-scrubbed cut, LINE BY LINE so a bulleted note
@@ -763,6 +748,7 @@ export default async function ProjectPage({
           {/* Team messages — editor/crew coordination on this job */}
           <ProjectMessages
             projectId={project.id}
+            readOnly={!!viewer?.impersonating}
             team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
             messages={project.messages.map((m) => ({
               id: m.id,
