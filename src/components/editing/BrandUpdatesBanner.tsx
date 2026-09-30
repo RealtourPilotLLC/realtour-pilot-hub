@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { CheckCircle2, FileImage, Globe, Loader2, Music, Palette, Sparkles, Type } from "lucide-react";
-import { acknowledgeBrandChangesAction } from "@/app/edit/[id]/brand.actions";
+import { acknowledgeBrandChangesAction, overrideBrandChangesAction } from "@/app/edit/[id]/brand.actions";
 
 // ---------------------------------------------------------------------------
 // The editor's view of a client's brand (CP-06, Sep 24 2026), two pieces:
@@ -24,9 +24,10 @@ export type BrandBannerItem = { id: string; line: string; actorLabel: string | n
 
 const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-export function BrandUpdatesBanner({ projectId, items, canAck }: { projectId: string; items: BrandBannerItem[]; canAck: boolean }) {
+export function BrandUpdatesBanner({ projectId, items, canAck, canOverride = false }: { projectId: string; items: BrandBannerItem[]; canAck: boolean; canOverride?: boolean }) {
   const [done, setDone] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
   const [busy, start] = useTransition();
   if (items.length === 0 || done) {
     return done ? (
@@ -61,6 +62,16 @@ export function BrandUpdatesBanner({ projectId, items, canAck }: { projectId: st
           </li>
         ))}
       </ul>
+      {canOverride && (
+        <div className="mt-3 space-y-2 border-t border-brand/20 pt-3">
+          <p className="text-xs text-muted">The office can resolve outstanding receipts after checking the change with the team. Record why; this does not say an editor pressed Got it.</p>
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={500} placeholder="Reason for office override (10–500 characters)" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm" />
+          <button type="button" disabled={busy || reason.trim().length < 10} onClick={() => start(async () => {
+            const r = await overrideBrandChangesAction(projectId, reason).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+            if (r.ok) { setDone(r.message); setErr(null); } else setErr(r.message);
+          })} className="min-h-11 rounded-lg border border-brand px-3 text-xs font-semibold text-brand disabled:opacity-50">Record office override</button>
+        </div>
+      )}
       {err && <p className="mt-1.5 text-xs text-danger">{err}</p>}
     </div>
   );

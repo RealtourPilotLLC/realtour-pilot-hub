@@ -4844,11 +4844,31 @@ model ClientBrandChange {
   ackAt           DateTime?
   ackBy           String?
   createdAt       DateTime  @default(now())
+  receipts        ClientBrandReceipt[]
 
   @@index([clientId, createdAt])
   @@index([clientId, ackAt])
   @@index([alertedAt])
   @@index([alertClaim])
+}
+
+// One explicit receipt per change/version and editor. A shared ack on the
+// change remains a compatibility summary, written only after every required
+// recipient has acknowledged or an attributed office override has resolved it.
+model ClientBrandReceipt {
+  id             String            @id @default(cuid())
+  change         ClientBrandChange @relation(fields: [changeId], references: [id], onDelete: Cascade)
+  changeId       String
+  editorKey      String
+  requiredAt     DateTime          @default(now())
+  ackAt          DateTime?
+  ackBy          String?
+  overrideAt     DateTime?
+  overrideBy     String?
+  overrideReason String?
+
+  @@unique([changeId, editorKey])
+  @@index([editorKey, ackAt])
 }
 
 // CP-04: one attempt to create / cancel / reschedule a session in Aryeo. The
@@ -5394,4 +5414,3 @@ model ReworkCost {
   @@unique([evidenceRef, kind])
   @@index([projectId])
 }
-

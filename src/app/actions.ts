@@ -608,6 +608,9 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
     select: { projectId: true, taskType: true, status: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true, sourceDetail: true },
   });
   if (!t) return; // task no longer exists — no-op instead of throw
+  if (t.dedupeKey?.startsWith("brand-ack:") && (status === "COMPLETED" || status === "CANCELLED")) {
+    return { ok: false, message: "This brand confirmation closes when every required editor records Got it, or the office records an override with a reason on the edit brief." };
+  }
   // THE DROPDOWN CAN'T START EDITING (§7.1). "In progress" on an in-house
   // editor's edit card used to be the second way to say "I'm on it", with no
   // record of who or since when, and it paused nothing else they were on.

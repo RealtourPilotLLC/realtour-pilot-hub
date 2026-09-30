@@ -107,6 +107,7 @@ export async function loadBrandTab(clientId: string) {
   const changes: BrandChangeUi[] = changeRows.map((c) => ({
     id: c.id, label: c.label, kind: c.kind, fromText: c.fromText, toText: c.toText, source: c.source, actorLabel: c.actorLabel, createdAtISO: c.createdAt.toISOString(),
     alertChannel: c.alertChannel, alertEditorKeys: c.alertEditorKeys, ackAtISO: iso(c.ackAt), ackBy: c.ackBy,
+    receipts: c.receipts.map((r) => ({ editorKey: r.editorKey, ackAtISO: iso(r.ackAt), overrideAtISO: iso(r.overrideAt), overrideBy: r.overrideBy, overrideReason: r.overrideReason })),
   }));
   return {
     assets, sources: sourcesUi, provenance, changes,

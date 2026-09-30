@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireRole, canViewProject } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { acknowledgeBrandChanges } from "@/lib/brandProfile";
+import { acknowledgeBrandChanges, overrideBrandChanges } from "@/lib/brandProfile";
 
 // ---------------------------------------------------------------------------
 // "Got it" on the brief's brand-update banner (CP-06, Sep 24 2026).
@@ -20,14 +20,29 @@ import { acknowledgeBrandChanges } from "@/lib/brandProfile";
 // ---------------------------------------------------------------------------
 
 export async function acknowledgeBrandChangesAction(projectId: string): Promise<{ ok: boolean; message: string }> {
-  try { await requireRole(["OWNER", "ADMIN", "EDITOR"]); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." }; }
+  try { await requireRole(["EDITOR"]); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." }; }
   const id = String(projectId ?? "");
   if (!/^[a-z0-9]{10,40}$/i.test(id) || !(await canViewProject(id))) return { ok: false, message: "That job isn't on your list." };
   const project = await prisma.project.findUnique({ where: { id }, select: { clientId: true } });
   if (!project) return { ok: false, message: "That job isn't on your list." };
   const me = await getCurrentUser().catch(() => null);
-  const by = me?.editorKey || me?.name || me?.email || "editor";
-  const r = await acknowledgeBrandChanges(project.clientId, by);
+  if (!me?.editorKey || me.impersonating) return { ok: false, message: "Only the assigned editor can record their own receipt." };
+  const r = await acknowledgeBrandChanges(project.clientId, me.editorKey);
   try { revalidatePath(`/edit/${id}`); } catch { /* outside a request */ }
-  return { ok: true, message: r.acked ? `Thanks — ${r.acked === 1 ? "the change is" : `${r.acked} changes are`} marked as seen.` : "Nothing new to acknowledge." };
+  return { ok: true, message: r.acked ? `Your receipt is recorded for ${r.acked} change${r.acked === 1 ? "" : "s"}.` : "Nothing new for you to acknowledge." };
+}
+
+export async function overrideBrandChangesAction(projectId: string, reason: string): Promise<{ ok: boolean; message: string }> {
+  try { await requireRole(["OWNER", "ADMIN"]); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." }; }
+  const id = String(projectId ?? "");
+  if (!/^[a-z0-9]{10,40}$/i.test(id) || !(await canViewProject(id))) return { ok: false, message: "That job isn't on your list." };
+  const me = await getCurrentUser().catch(() => null);
+  if (!me || me.impersonating) return { ok: false, message: "Sign in as yourself to record an office override." };
+  const project = await prisma.project.findUnique({ where: { id }, select: { clientId: true } });
+  if (!project) return { ok: false, message: "That job isn't on your list." };
+  try {
+    const result = await overrideBrandChanges(project.clientId, me.name || me.email || me.id, reason);
+    try { revalidatePath(`/edit/${id}`); } catch { /* outside a request */ }
+    return { ok: true, message: result.overridden ? `Office override recorded with your reason for ${result.overridden} receipt${result.overridden === 1 ? "" : "s"}.` : "No unresolved brand changes remain." };
+  } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "The override did not save." }; }
 }

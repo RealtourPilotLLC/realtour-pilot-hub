@@ -38,6 +38,7 @@ export type AssetUi = { id: string; type: string; typeWord: string; name: string
 export type BrandChangeUi = {
   id: string; label: string; kind: string; fromText: string | null; toText: string | null; source: string; actorLabel: string | null; createdAtISO: string;
   alertChannel: string | null; alertEditorKeys: string | null; ackAtISO: string | null; ackBy: string | null;
+  receipts: { editorKey: string; ackAtISO: string | null; overrideAtISO: string | null; overrideBy: string | null; overrideReason: string | null }[];
 };
 export type SourcesUi = {
   client: { brandColors: string | null; brandAssetsPath: string | null; avatarUrl: string | null; portalVideoStyle: string | null; portalPreferences: string | null; generalNotes: string | null };
@@ -116,8 +117,9 @@ export function BrandAssetsPanel({
                 <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-2">
                   <span>{day(c.createdAtISO)} · {c.source === "client_portal" ? "client portal" : c.source === "fact" ? "applied from a call" : "staff"}{c.actorLabel ? ` · ${c.actorLabel}` : ""}</span>
                   <span className="rounded-full bg-surface-2 px-1.5 py-0.5">{c.alertChannel ? ALERT_WORDS[c.alertChannel] ?? c.alertChannel : "alert pending"}{c.alertEditorKeys ? ` (${c.alertEditorKeys})` : ""}</span>
-                  {c.ackAtISO ? <span className="rounded-full bg-success/15 px-1.5 py-0.5 font-medium text-success">editor has it · {c.ackBy}</span> : <span className="rounded-full bg-warning/15 px-1.5 py-0.5 font-medium text-warning">not acknowledged yet</span>}
+                  {c.ackAtISO ? <span className="rounded-full bg-success/15 px-1.5 py-0.5 font-medium text-success">{c.receipts.length === 0 ? `legacy shared acknowledgment${c.ackBy ? ` by ${c.ackBy}` : ""} — individual receipts not recorded` : c.ackBy?.startsWith("office override") ? c.ackBy : "all required receipts complete"}</span> : <span className="rounded-full bg-warning/15 px-1.5 py-0.5 font-medium text-warning">{c.receipts.length ? `waiting on ${c.receipts.filter((r) => !r.ackAtISO && !r.overrideAtISO).map((r) => r.editorKey).join(", ")}` : "no editor receipt recorded yet"}</span>}
                 </p>
+                {c.receipts.some((r) => r.overrideAtISO) && <p className="mt-1 text-[11px] text-muted">Office override: {c.receipts.filter((r) => r.overrideAtISO).map((r) => `${r.editorKey} · ${r.overrideBy ?? "staff"} · ${r.overrideReason ?? "reason not recorded"}`).join("; ")}</p>}
               </div>
             ))}
           </div>

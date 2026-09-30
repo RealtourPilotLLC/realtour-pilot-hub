@@ -573,6 +573,10 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
     : `${editorWords} ${who.length > 1 ? "see" : "sees"} it as a banner on the brief${projectId ? ` (/edit/${projectId})` : ""} until they press “Got it”, which closes this task. ${alertsOn ? "A Slack alert is enabled; check the recorded delivery result before assuming it arrived." : "Brand-change alerts to editors are switched off, so they have NOT been messaged — tell them, or wait for them to open the brief."}`;
   return prisma.$transaction(async (tx) => {
     await lockAdvisory(tx, `brand-ack|${clientId}`);
+    if (editors.length) await tx.clientBrandReceipt.createMany({
+      data: rows.flatMap((r) => editors.map((e) => ({ changeId: r.id, editorKey: e.key, requiredAt: now }))),
+      skipDuplicates: true,
+    });
     const untaskedIds = (await tx.clientBrandChange.findMany({ where: { id: { in: rows.map((r) => r.id) }, taskId: null }, select: { id: true } })).map((r) => r.id);
     if (!untaskedIds.length) {
       const prior = await tx.clientBrandChange.findFirst({ where: { id: rows[0].id }, select: { taskId: true } });
@@ -729,18 +733,24 @@ export type PendingBrandChange = {
 };
 const PENDING_DAYS = 45;
 
-/** What the editor has not yet said "Got it" to: unacknowledged, recent, and
- *  not already closed by Kyle by hand (completing his task counts). */
-export async function pendingBrandChanges(clientId: string, opts: { now?: Date } = {}): Promise<PendingBrandChange[]> {
+/** Pending changes for one editor, or all unresolved receipts on the office
+ *  desk. Closing a task by hand never impersonates an editor's receipt. */
+export async function pendingBrandChanges(clientId: string, opts: { now?: Date; editorKey?: string | null } = {}): Promise<PendingBrandChange[]> {
   const now = opts.now ?? new Date();
   const rows = await prisma.clientBrandChange.findMany({
     where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) } },
     orderBy: { createdAt: "asc" }, take: 60,
+    include: { receipts: { select: { editorKey: true, ackAt: true, overrideAt: true } } },
   });
-  const taskIds = [...new Set(rows.map((r) => r.taskId).filter((x): x is string => !!x))];
-  const closed = new Set(taskIds.length ? (await prisma.smartTask.findMany({ where: { id: { in: taskIds }, status: { in: ["COMPLETED", "CANCELLED"] } }, select: { id: true } })).map((t) => t.id) : []);
   return rows
-    .filter((r) => !r.taskId || !closed.has(r.taskId))
+    .filter((r) => {
+      if (!opts.editorKey) return r.receipts.length === 0 || r.receipts.some((x) => !x.ackAt && !x.overrideAt);
+      const mine = r.receipts.find((x) => x.editorKey === opts.editorKey);
+      // A newly assigned editor still sees an unresolved change, and their
+      // explicit receipt is added on acknowledgment. Older recipients remain
+      // pending until they respond or the office records why they need not.
+      return !mine || (!mine.ackAt && !mine.overrideAt);
+    })
     .map((r) => ({
       id: r.id, label: r.label, kind: r.kind, fromText: r.fromText, toText: r.toText, assetId: r.assetId, assetVersionId: r.assetVersionId,
       actorLabel: r.actorLabel, source: r.source, createdAtISO: r.createdAt.toISOString(), line: describeBrandChange(r),
@@ -748,29 +758,77 @@ export async function pendingBrandChanges(clientId: string, opts: { now?: Date }
 }
 
 /**
- * The editor (or the office) has the change. Stamps every pending row and
- * completes each of Kyle's confirmation tasks that has nothing left open.
+ * A named editor acknowledges only their own change/version receipts. The
+ * change-wide compatibility stamp and Kyle's task settle only when all
+ * required recipients have acknowledged or received an attributed override.
  */
-export async function acknowledgeBrandChanges(clientId: string, by: string, opts: { now?: Date } = {}): Promise<{ acked: number; tasksClosed: number }> {
+export async function acknowledgeBrandChanges(clientId: string, editorKey: string, opts: { now?: Date } = {}): Promise<{ acked: number; tasksClosed: number }> {
   const now = opts.now ?? new Date();
-  const pending = await pendingBrandChanges(clientId, { now });
-  if (!pending.length) return { acked: 0, tasksClosed: 0 };
-  const ids = pending.map((p) => p.id);
-  const n = await prisma.clientBrandChange.updateMany({ where: { id: { in: ids }, ackAt: null }, data: { ackAt: now, ackBy: clip(by, 120) } });
-  const touched = await prisma.clientBrandChange.findMany({ where: { id: { in: ids } }, select: { taskId: true } });
-  let tasksClosed = 0;
-  for (const taskId of new Set(touched.map((t) => t.taskId).filter((x): x is string => !!x))) {
-    const open = await prisma.clientBrandChange.count({ where: { taskId, ackAt: null } });
-    if (open > 0) continue;
-    const c = await prisma.smartTask.updateMany({ where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: now } });
-    tasksClosed += c.count;
+  return prisma.$transaction(async (tx) => {
+    await lockAdvisory(tx, `brand-ack|${clientId}`);
+    const changes = await tx.clientBrandChange.findMany({ where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) } }, select: { id: true, taskId: true, alertEditorKeys: true } });
+    if (!changes.length) return { acked: 0, tasksClosed: 0 };
+    const required = changes.flatMap((r) => [...new Set([...(r.alertEditorKeys ?? "").split(",").filter(Boolean), editorKey])].map((key) => ({ changeId: r.id, editorKey: key, requiredAt: now })));
+    await tx.clientBrandReceipt.createMany({ data: required, skipDuplicates: true });
+    const n = await tx.clientBrandReceipt.updateMany({ where: { changeId: { in: changes.map((r) => r.id) }, editorKey, ackAt: null, overrideAt: null }, data: { ackAt: now, ackBy: editorKey } });
+    const tasksClosed = await settleBrandReceipts(tx, changes.map((r) => r.id), now);
+    return { acked: n.count, tasksClosed };
+  });
+}
+
+async function settleBrandReceipts(tx: Db, changeIds: string[], now: Date): Promise<number> {
+  const changes = await tx.clientBrandChange.findMany({ where: { id: { in: changeIds } }, include: { receipts: true } });
+  const taskIds = new Set<string>();
+  for (const r of changes) {
+    if (r.taskId) taskIds.add(r.taskId);
+    if (!r.receipts.length || r.receipts.some((x) => !x.ackAt && !x.overrideAt)) continue;
+    const who = r.receipts.some((x) => x.overrideAt) ? r.ackBy ?? "office override recorded" : "all required editors";
+    await tx.clientBrandChange.updateMany({ where: { id: r.id, ackAt: null }, data: { ackAt: now, ackBy: who } });
   }
-  return { acked: n.count, tasksClosed };
+  let tasksClosed = 0;
+  for (const taskId of taskIds) {
+    const open = await tx.clientBrandChange.count({ where: { taskId, ackAt: null } });
+    if (open) {
+      const remaining = await tx.clientBrandReceipt.findMany({ where: { change: { taskId }, ackAt: null, overrideAt: null }, select: { editorKey: true } });
+      const keys = [...new Set(remaining.map((r) => r.editorKey))];
+      if (keys.length) await tx.smartTask.updateMany({ where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { summary: `Still waiting on ${keys.join(", ")} for the brand update.` } });
+      continue;
+    }
+    const closed = await tx.smartTask.updateMany({ where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: now } });
+    tasksClosed += closed.count;
+  }
+  return tasksClosed;
+}
+
+/** Office-only exception: record who made the call and why on each remaining
+ *  editor receipt. This is never represented as an editor clicking Got it. */
+export async function overrideBrandChanges(clientId: string, by: string, reason: string, opts: { now?: Date } = {}): Promise<{ overridden: number; tasksClosed: number }> {
+  const why = reason.trim();
+  if (why.length < 10 || why.length > 500) throw new Error("Give a reason (10–500 characters) for the office override.");
+  const now = opts.now ?? new Date();
+  return prisma.$transaction(async (tx) => {
+    await lockAdvisory(tx, `brand-ack|${clientId}`);
+    const rows = await tx.clientBrandChange.findMany({ where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) } }, select: { id: true, taskId: true, alertEditorKeys: true, receipts: { select: { editorKey: true } } } });
+    if (!rows.length) return { overridden: 0, tasksClosed: 0 };
+    await tx.clientBrandReceipt.createMany({ data: rows.flatMap((r) => {
+      const keys = [...new Set([...(r.alertEditorKeys ?? "").split(",").filter(Boolean), ...r.receipts.map((x) => x.editorKey)])];
+      return (keys.length ? keys : ["office:unassigned"]).map((editorKey) => ({ changeId: r.id, editorKey, requiredAt: now }));
+    }), skipDuplicates: true });
+    const n = await tx.clientBrandReceipt.updateMany({ where: { changeId: { in: rows.map((r) => r.id) }, ackAt: null, overrideAt: null }, data: { overrideAt: now, overrideBy: clip(by, 120), overrideReason: why } });
+    // A change with no assigned editor still needs an attributed resolution.
+    await tx.clientBrandChange.updateMany({ where: { id: { in: rows.map((r) => r.id) }, ackAt: null }, data: { ackBy: `office override by ${clip(by, 80)}` } });
+    for (const taskId of new Set(rows.map((r) => r.taskId).filter((id): id is string => !!id))) {
+      const task = await tx.smartTask.findUnique({ where: { id: taskId }, select: { description: true } });
+      await tx.smartTask.updateMany({ where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { description: `${task?.description ?? ""}\n\nOffice override by ${by}: ${why}`.slice(0, 6000) } });
+    }
+    const tasksClosed = await settleBrandReceipts(tx, rows.map((r) => r.id), now);
+    return { overridden: n.count, tasksClosed };
+  });
 }
 
 /** Recent history for the staff Brand tab, newest first. */
 export async function recentBrandChanges(clientId: string, take = 30) {
-  return prisma.clientBrandChange.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take });
+  return prisma.clientBrandChange.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take, include: { receipts: { select: { editorKey: true, ackAt: true, overrideAt: true, overrideBy: true, overrideReason: true } } } });
 }
 
 // ---- the editor's brief ------------------------------------------------------------------
@@ -804,7 +862,7 @@ const BRIEF_FILE_TYPES = new Set(["LOGO", "HEADSHOT", "FONT", "BRANDING_CARD"]);
  * production defaults and the accepted call preferences, plus the changes not
  * yet acknowledged. `scrub` money-scrubs every free-text value for a creative.
  */
-export async function brandBriefFor(clientId: string, opts: { projectId?: string | null; scrub?: boolean; links?: boolean } = {}): Promise<BrandBrief> {
+export async function brandBriefFor(clientId: string, opts: { projectId?: string | null; scrub?: boolean; links?: boolean; editorKey?: string | null } = {}): Promise<BrandBrief> {
   const s = (v: string | null | undefined): string | null => {
     const t = (v ?? "").trim();
     if (!t) return null;
@@ -817,7 +875,7 @@ export async function brandBriefFor(clientId: string, opts: { projectId?: string
     assetRegistry(clientId, { links: opts.links !== false }),
     productionDefaults(clientId).catch(() => []),
     productionFactsForProject(clientId, opts.projectId ?? null).catch(() => [] as string[]),
-    pendingBrandChanges(clientId),
+    pendingBrandChanges(clientId, { editorKey: opts.editorKey }),
   ]);
   const raw = client?.brandColors ?? "";
   const colors = [...new Set((raw.match(HEX_RE) ?? []).map((c) => c.toLowerCase()))];

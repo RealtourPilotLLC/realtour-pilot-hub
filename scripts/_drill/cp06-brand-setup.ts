@@ -25,8 +25,8 @@
 //   5-6. Clearing is real (NULL vs ""), and a mixed save reports both halves.
 //   7. Nothing of anyone else's changes; staff-owned notes are untouched.
 //   8. Permissions: collaborator / paused refused; the link seat allowed.
-//   9. The brief reads the registry; "Got it" closes Kyle's task; Kyle
-//      closing it by hand clears the banner too.
+//   9. The brief reads the registry; each editor's "Got it" is their own
+//      receipt; closing Kyle's task by hand is not an editor receipt.
 //  10. A TEST client writes ledger rows only.
 //  11. No job → the personal-branding route (Kim); no program → "no editor".
 //  12-13. The team: a real client's invitation is HELD, listed and
@@ -429,18 +429,22 @@ async function main() {
     const left = await bp.pendingBrandChanges(N.clientId);
     const tasks = await kyleTasks(N.clientId);
     c.ok("acknowledge → every row stamped by kim, Kyle's task COMPLETED, nothing pending", ack.acked === pending.length && ack.tasksClosed === 1 && left.length === 0 && tasks.every((t) => t.status === "COMPLETED"), JSON.stringify(ack));
-    c.ok("  …the rows say who and when", (await changesOf(N.clientId)).every((r) => r.ackAt && r.ackBy === "kim"));
+    c.ok("  …the rows summarize full receipt completion and retain Kim's exact receipts", (await changesOf(N.clientId)).every((r) => r.ackAt && r.ackBy === "all required editors") && (await prisma.clientBrandReceipt.findMany({ where: { change: { clientId: N.clientId } } })).every((r) => r.editorKey === "kim" && !!r.ackAt && r.ackBy === "kim"));
 
     // A new change → a NEW Kyle task (the completed one is not reopened), and
-    // Kyle closing it by hand clears the banner.
+    // Kyle closing it by hand does not pretend the editor saw the change.
     await bp.saveClientBrandProfile(N.viewer, { slots: { music: "Soft house" } });
     const t2 = (await kyleTasks(N.clientId)).filter((t) => t.status === "OPEN");
     c.ok("a new change opens a new Kyle task", t2.length === 1);
     await prisma.smartTask.update({ where: { id: t2[0].id }, data: { status: "COMPLETED", completedAt: new Date() } });
-    c.ok("Kyle completing it by hand also empties the banner", (await bp.pendingBrandChanges(N.clientId)).length === 0);
+    c.ok("Kyle completing a task by hand does not forge an editor receipt", (await bp.pendingBrandChanges(N.clientId)).length === 1);
+    await bp.overrideBrandChanges(N.clientId, "Kyle", "Task closed manually after a direct conversation with Kim.");
+    c.ok("an attributed office override resolves that change", (await bp.pendingBrandChanges(N.clientId)).length === 0);
     await bp.saveClientBrandProfile(N.viewer, { slots: { music: "Lo-fi beats" } });
     const viaAction = await brandAck.acknowledgeBrandChangesAction(N.projectId!);
-    c.ok("the /edit 'Got it' action acknowledges and closes the task", viaAction.ok && (await bp.pendingBrandChanges(N.clientId)).length === 0 && (await kyleTasks(N.clientId)).every((t) => t.status === "COMPLETED"), viaAction.message);
+    c.ok("the /edit action refuses an anonymous receipt in this isolated no-session drill", !viaAction.ok && (await bp.pendingBrandChanges(N.clientId)).length === 1, viaAction.message);
+    await bp.acknowledgeBrandChanges(N.clientId, "kim");
+    c.ok("Kim's named receipt closes the latest task", (await bp.pendingBrandChanges(N.clientId)).length === 0 && (await kyleTasks(N.clientId)).every((t) => t.status === "COMPLETED"));
     const refused = await brandAck.acknowledgeBrandChangesAction("not-a-real-id");
     c.ok("the action refuses a job id that isn't one", !refused.ok);
   }

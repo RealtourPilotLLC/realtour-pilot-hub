@@ -542,7 +542,7 @@ export default async function EditBriefPage({
   // until now), and the changes the editor has not yet said "Got it" to.
   // Money-scrubbed exactly like the notes above.
   const { brandBriefFor } = await import("@/lib/brandProfile");
-  const brandBrief = await brandBriefFor(project.client.id, { projectId: project.id, scrub: !canSeeRaw }).catch(() => null);
+  const brandBrief = await brandBriefFor(project.client.id, { projectId: project.id, scrub: !canSeeRaw, editorKey: viewer?.role === "EDITOR" ? viewer.editorKey : null }).catch(() => null);
   // §7.8 (Sep 25): what the client ASKED for on site, for this job, that the
   // office has not confirmed yet. Shown to the editor as exactly that — never
   // as a preference (a photographer's own guess is not listed here at all).
@@ -551,7 +551,8 @@ export default async function EditBriefPage({
     .filter((f) => f.status === "PROPOSED" && f.basis === "client_said" && f.scope === "PROJECT")
     .map((f) => ({ id: f.id, body: scrub(f.body) ?? "", by: f.speaker }))
     .filter((f) => f.body);
-  const canAckBrand = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
+  const canAckBrand = !!viewer && !viewer.impersonating && viewer.role === "EDITOR" && !!viewer.editorKey;
+  const canOverrideBrand = !!viewer && !viewer.impersonating && isOwnerAdmin;
   // CP-09: WHICH topic each owed video is — the note from the shoot, the
   // script the client approved and the topic's raw folder. The same rows the
   // printed brief and the project summary read (filmingBriefFor), so the three
@@ -1016,6 +1017,7 @@ export default async function EditBriefPage({
             projectId={project.id}
             items={brandBrief.pending.map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }))}
             canAck={canAckBrand}
+            canOverride={canOverrideBrand}
           />
         </div>
       )}

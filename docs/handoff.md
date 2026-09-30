@@ -72,6 +72,21 @@ diff. A fresh 0600 full backup at
 `~/rtp-backup-2026-09-30-pre-brand-reliability.json` covers 144/144 models,
 117,762 rows in a single snapshot. No schema push or production write was made.
 
+Sep 30 C05 local batch: `ClientBrandReceipt` now records one required receipt
+per change/version and assigned editor. An editor's Got it only stamps their
+own receipt. Kyle's confirmation task closes when all required receipts are
+resolved, or an owner/admin records a named office override with a reason;
+generic task completion is refused. Newly assigned editors can acknowledge
+unresolved changes; reassignment does not erase old recipients, so the office
+must explicitly override an obsolete recipient. Legacy shared stamps remain
+visible as unproven individual receipts. The isolated two-editor drill passes
+12/0, and Node 20 build/typecheck/focused lint pass. `cp06-brand-setup` is
+123/3; the same three historical invitation/auth fixture checks fail.
+The live schema is still unchanged. The local Prisma diff is one additive
+table, unique key, index and FK. Apply it only at the reviewed release gate
+after rechecking the live diff and backup. The isolated browser has not yet
+exercised the two-editor UI. The demo on ports 3200/5599 remains on `c17f4a2`.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.
