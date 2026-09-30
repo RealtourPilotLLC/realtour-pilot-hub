@@ -293,6 +293,16 @@ async function main() {
     await prisma.contentScript.update({ where: { id: c13Script.id }, data: { status: "INTERNAL_REVIEW" } });
     const review = await progressOf(C13D);
     c.ok("C13: only an internal-review script asks for approval", review.scripts.needsJordan === 1 && review.nextAction?.ownerDuty === "script approval" && /waiting on your OK/.test(review.nextAction.text), review.nextAction?.text ?? "null");
+    const unlinked = await prisma.contentVideo.create({ data: {
+      enrollmentId: C13D.enrollmentId, clientId: C13D.clientId, monthId: C13D.monthId, monthKey: MK,
+      kind: "PROGRAM", countsTowardAllowance: true, title: "C13 delivered TEST", status: "DELIVERED", deliveredAt: now, source: "manual",
+    } });
+    const unknownLink = await progressOf(C13D);
+    const unknownRoster = (await programOverview({ monthKey: MK, now })).rows.find((x) => x.enrollmentId === C13D.enrollmentId);
+    c.ok("C13: filmed output without a topic link takes precedence over draft/review work in both staff readers", unknownLink.nextAction?.ownerDuty === "month reconciliation" && /topic links/.test(unknownLink.nextAction.text) && unknownRoster?.nextAction.ownerDuty === "month reconciliation" && unknownRoster.flags.includes("needs_reconciliation"), `${unknownLink.nextAction?.text} · ${unknownRoster?.nextAction.text}`);
+    await prisma.contentVideo.update({ where: { id: unlinked.id }, data: { topicId: C13D.topicIds[0] } });
+    const linked = await progressOf(C13D);
+    c.ok("C13: linking the existing output returns to the actual script review", linked.nextAction?.ownerDuty === "script approval" && !/topic links/.test(linked.nextAction.text), linked.nextAction?.text ?? "null");
   }
   const nextMonthKey = new Date(Date.UTC(Number(MK.slice(0, 4)), Number(MK.slice(5, 7)), 1)).toISOString().slice(0, 7);
   const C13N = await buildContentMonth(prisma, { name: "C13 New Month TEST", monthKey: nextMonthKey, package: "Starter", project: false, topics: [] });
@@ -538,6 +548,8 @@ async function main() {
     }
     const p2 = await progressOf(DA);
     c.ok("NEW: the next step says it waits on the CLIENT (not 'Sync now', not the editor)", p2.nextAction?.blocked === "client" && /4 videos released and awaiting the client's approval/.test(p2.nextAction.text), p2.nextAction?.text ?? "null");
+    const daRoster = (await programOverview({ monthKey: MK, now })).rows.find((x) => x.enrollmentId === DA.enrollmentId);
+    c.ok("C13: the roster keeps the live cut decision ahead of missing video-topic links", daRoster?.nextAction.blocked === "client" && /4 videos released/.test(daRoster.nextAction.text), daRoster?.nextAction.text ?? "null");
     const { cm } = await homeOf(DA);
     c.ok("NEW (portal Home): known, and 4 waiting on YOUR approval — not 'will catch up'", cm.production.known && cm.production.awaitingYou === 4, JSON.stringify(cm.production));
     const r = (await getProgramRoster({ now })).find((x) => x.enrollmentId === DA.enrollmentId)!;

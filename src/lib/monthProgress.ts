@@ -675,16 +675,25 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const scriptsDone = p.scripts.ready >= owed && awaiting === 0;
   const s = p.sessions;
   const filmedDone = s.filmedConfirmed >= s.required;
+  // A released cut has a live review clock. Keep that decision visible even
+  // when its older video/topic link also needs office reconciliation.
+  if (p.production.awaitingClient > 0 && !p.portalApprover) {
+    return { text: `${plural(p.production.awaitingClient, "video")} approved and ready to send — this client has no portal access`, cta: "Open Ready to send", href: "/", owner: o.DELIVERY.label, ownerDuty: "delivery", blocked: "us" };
+  }
+  if (p.production.awaitingClient > 0) {
+    return { text: `${plural(p.production.awaitingClient, "video")} released and awaiting the client's approval`, cta: "See the videos", href: `/content/${p.enrollmentId}?tab=content`, owner: o.DELIVERY.label, ownerDuty: "delivery", blocked: "client" };
+  }
   // A legacy month can have confirmed filming without its planning/topic links.
   // Keep that discrepancy on the office's desk before the ladder asks the
   // client to plan work already filmed. A partially filmed Pro month with
   // consistent links still follows the ordinary remaining-work ladder.
   const downstreamWork = s.filmedConfirmed > 0 || p.production.filmed > 0;
+  const unlinkedFilmedOutput = p.production.videos.some((v) => v.countsTowardAllowance && v.stage !== "PLANNED" && !v.topicId);
   const routeUnresolved = p.call.mode !== "NOT_INCLUDED" &&
     p.planning?.route === "UNDECIDED" &&
     !["COMPLETED", "SKIPPED", "SCHEDULED"].includes(p.call.status);
-  if (downstreamWork && (p.topics.selected === 0 || p.production.filmed > p.topics.selected || routeUnresolved)) {
-    const missingLinks = p.topics.selected === 0 || p.production.filmed > p.topics.selected;
+  if (downstreamWork && (p.topics.selected === 0 || p.production.filmed > p.topics.selected || unlinkedFilmedOutput || routeUnresolved)) {
+    const missingLinks = p.topics.selected === 0 || p.production.filmed > p.topics.selected || unlinkedFilmedOutput;
     return { text: `Filming or video work exists, but the ${missingLinks ? "topic links" : "planning route"} for ${monthShort} need checking before asking the client to plan again`, cta: "Check month history", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "month reconciliation", blocked: "us" };
   }
   if (deliveredDone) return null;
@@ -741,15 +750,6 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   }
   if (p.production.awaitingInternalReview > 0) {
     return { text: `${plural(p.production.awaitingInternalReview, "video")} waiting in the Review Room`, cta: "Open the Review Room", href: "/review", owner: o.DELIVERY.label, ownerDuty: "delivery", blocked: "us" };
-  }
-  if (p.production.awaitingClient > 0 && !p.portalApprover) {
-    // Nobody on their side can approve in the portal (it has not been issued to
-    // them, or the program is paused/ended), so "waiting on the client" would
-    // wait for ever. The cut stays on the Ready-to-send card until it is sent.
-    return { text: `${plural(p.production.awaitingClient, "video")} approved and ready to send — this client has no portal access`, cta: "Open Ready to send", href: "/", owner: o.DELIVERY.label, ownerDuty: "delivery", blocked: "us" };
-  }
-  if (p.production.awaitingClient > 0) {
-    return { text: `${plural(p.production.awaitingClient, "video")} released and awaiting the client's approval`, cta: "See the videos", href: `/content/${p.enrollmentId}?tab=content`, owner: o.DELIVERY.label, ownerDuty: "delivery", blocked: "client" };
   }
   return { text: `${p.production.delivered} of ${owedRaw} videos delivered — the rest are in editing`, cta: "See the sessions", href: "#sessions", owner: o.DELIVERY.label, ownerDuty: "delivery", blocked: "us" };
 }

@@ -549,8 +549,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // because those fields are empty. Keep partially filmed months actionable
     // when their remaining topics are genuinely unplanned.
     const downstreamWork = (ps?.filmedConfirmed ?? 0) > 0 || production.filmed > 0;
+    const unlinkedFilmedOutput = !!progress?.production.videos.some((v) => v.countsTowardAllowance && v.stage !== "PLANNED" && !v.topicId);
     const missingPlanningRoute = callMode !== "NOT_INCLUDED" && !callHeld && !callSkipped && !bookedCall && planningMode === "UNDECIDED";
-    const needsReconciliation = downstreamWork && (topicsSelected === 0 || production.filmed > topicsSelected || missingPlanningRoute);
+    const needsReconciliation = downstreamWork && (topicsSelected === 0 || production.filmed > topicsSelected || unlinkedFilmedOutput || missingPlanningRoute);
 
     // ---- communication — read only, empty is honest --------------------------------
     const myReminders = reminders.filter((r) => r.enrollmentId === e.id && (r.monthKey ? r.monthKey === key : true));
@@ -601,9 +602,17 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
       next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: "Fix the transcript" };
+    } else if ((pp?.awaitingClient ?? 0) > 0) {
+      // The entitlement reader, not a stale video status, says these exact
+      // cuts are released. Their live decision or send takes priority over
+      // reconciling older month/video topic links.
+      const n = pp!.awaitingClient;
+      next = progress?.portalApprover
+        ? { text: `${n} video${n === 1 ? "" : "s"} released and awaiting the client's approval`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: href("production", "videos"), cta: "See the videos" }
+        : { text: `${n} video${n === 1 ? "" : "s"} approved and ready to send — this client has no portal access`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: "/", cta: "Open Ready to send" };
     } else if (needsReconciliation) {
       next = {
-        text: `Filming or video work exists, but ${topicsSelected === 0 || production.filmed > topicsSelected ? "the topic links" : "the planning route"} for ${monthLabel(key)} need checking before asking the client to plan again`,
+        text: `Filming or video work exists, but ${topicsSelected === 0 || production.filmed > topicsSelected || unlinkedFilmedOutput ? "the topic links" : "the planning route"} for ${monthLabel(key)} need checking before asking the client to plan again`,
         owner: owner.STRATEGY.label, ownerDuty: "month reconciliation", blocked: "us", deadlineISO: deadline,
         href: href("plan", "topics"), cta: "Check month history",
       };
