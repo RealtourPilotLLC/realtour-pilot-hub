@@ -2,7 +2,31 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — readable action and status colors
+### Current resume point — Kyle's ready-file row
+
+`2114488` makes the ready row lead with the client and linked month/topic on
+monthly work, or the property and client on listing work. It names the exact
+cut/version, Kyle, age, portal/Aryeo state and next action. A missing topic
+remains explicitly unlinked; it is not guessed from the property placeholder.
+Filenames, source explanation, Dropbox link and noncritical listing evidence
+sit under File and delivery evidence. Contested or possibly matching listing
+media remain visible on the row. The download stamp now reads **Download
+started**, because the route only proves a link handoff or stream start, not
+complete device receipt or client delivery. Monthly rows say the Aryeo-copy
+requirement is unresolved; the existing send action and gates were preserved.
+
+Node20 TypeScript, focused lint and production build passed. The isolated B4
+delivery drill passed 122/0, including two new checks for the real month and
+the exact output's linked topic, with null left null. In the fenced TEST Home,
+the two Morgan rows showed the month, missing topic, version and route warning;
+Details expanded to the file evidence. At 390px the page had no horizontal
+overflow. Download and Mark as sent were not used. The demo is stopped and
+its worktree is clean at `2114488`. No live DB write, provider action, push or
+deployment occurred. UX10 and W05 remain partial: resolve portal versus Aryeo
+policy per affected monthly job, then test actual provider outcomes, a partial
+download, normal staff roles, and a listing row with contested evidence.
+
+### Previous checkpoint — readable action and status colors
 
 `9f9213f` adds a separate filled-action orange while retaining the decorative
 brand accent, moves portal white-on-orange controls and the Editing Room/ready
