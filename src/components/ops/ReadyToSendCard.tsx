@@ -117,13 +117,9 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
       {recoveryStatus}
       <NeedsFinishing rows={needsFinishing ?? []} />
       <NotTold rows={notTold} />
-      <p className="text-[11px] text-muted">
-        Download the file, upload it to Aryeo and deliver the listing — then mark it sent. Aryeo has no way for
-        another program to do that step, so this card is the record that it happened. Each row also says what Aryeo
-        is showing on that listing: the hub re-checks every hour, so a row that says it can&rsquo;t tell yet will
-        name the video shortly. Downloading the file is noted on the row so nobody doubles up on it, but it
-        isn&rsquo;t delivery &mdash; a row leaves this card when it&rsquo;s marked sent, or when the hourly check
-        finds it live on Aryeo.
+      <p className="text-xs leading-relaxed text-muted">
+        Check the exact file and destination on each row. A download is not delivery; an older video on the listing
+        may be a different cut. For monthly work, confirm portal access and whether this job still needs an Aryeo copy.
       </p>
       {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
       <Rendering rows={rendering} />
@@ -240,6 +236,12 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         <span>·</span>
         <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span>
       </p>
+      {v.monthlyProgram && (
+        <p className="mt-1 rounded-lg border border-warning/30 bg-warning/5 px-2.5 py-2 text-xs text-warning">
+          {v.monthlyPortalReleased ? "Portal release is recorded, but this client’s access or the Aryeo copy is unresolved." : "Portal release is still pending."} Confirm this job&rsquo;s
+          delivery route before marking it sent; the row stays open until then.
+        </p>
+      )}
 
       {/* WHO HAS THE FILE, AND SINCE WHEN.
           Written by the download route once the file has actually been handed

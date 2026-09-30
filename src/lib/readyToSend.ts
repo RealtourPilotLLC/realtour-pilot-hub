@@ -150,6 +150,9 @@ export type ReadyFileSource =
 export type ReadyVideo = {
   submissionId: string;
   projectId: string;
+  monthlyProgram: boolean;
+  /** A monthly cut can be portal-visible before an owner can actually review it. */
+  monthlyPortalReleased: boolean;
   /** null for cases (b)/(c) — there is no 1080p job to stamp */
   topazJobId: string | null;
   /** "322 N 62nd St" — the same street the rest of the day uses */
@@ -287,12 +290,12 @@ export type RenderingVideo = {
 };
 
 /** R5: a cut recorded as SENT whose own records did not finish. Survives a refresh. */
-export type NeedsFinishing = { submissionId: string; street: string; sentAtISO: string; sentBy: string | null; why: string };
+export type NeedsFinishing = { submissionId: string; projectId: string; street: string; sentAtISO: string; sentBy: string | null; why: string };
 
 /** 9.2: a cut marked sent with "the client hasn't been told yet". Stays listed
  *  until somebody records how they were told (or the hub's own delivery text
  *  proves it). */
-export type NotTold = { submissionId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null };
+export type NotTold = { submissionId: string; projectId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null };
 
 export type ReadyBoard = {
   ready: ReadyVideo[];
@@ -918,6 +921,8 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     ready.push({
       submissionId: sub.id,
       projectId: sub.projectId,
+      monthlyProgram: Boolean(sub.project.contentMonthId),
+      monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })),
       topazJobId: sub.topazJob?.id ?? null,
       street: cut.street,
       clientName: cut.clientName,
@@ -1674,12 +1679,13 @@ export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: n
       clientNoticeVia: "not-yet",
       project: { status: { not: "CANCELLED" } },
     },
-    select: { id: true, fileName: true, assetPath: true, sentToClientAt: true, sentToClientBy: true, clientNoticeBy: true, project: { select: { title: true } } },
+    select: { id: true, projectId: true, fileName: true, assetPath: true, sentToClientAt: true, sentToClientBy: true, clientNoticeBy: true, project: { select: { title: true } } },
     orderBy: { sentToClientAt: "asc" },
     take: opts.max ?? 40,
   });
   return rows.map((r) => ({
     submissionId: r.id,
+    projectId: r.projectId,
     street: streetOf(r.project?.title) || (r.project?.title ?? "a job"),
     fileName: r.fileName ?? r.assetPath?.split("/").pop() ?? "video",
     sentAtISO: r.sentToClientAt!.toISOString(),
@@ -2046,7 +2052,7 @@ export async function deliveriesNeedingFinishing(opts: { projectId?: string; sin
   const sent = await prisma.reviewSubmission.findMany({
     where: { ...(opts.projectId ? { projectId: opts.projectId } : {}), sentToClientAt: { not: null, gte: since } },
     select: {
-      id: true, slot: true, deliverableId: true, sentToClientAt: true, sentToClientBy: true,
+      id: true, projectId: true, slot: true, deliverableId: true, sentToClientAt: true, sentToClientBy: true,
       project: { select: { title: true } },
       topazJob: { select: { id: true, deliveredAt: true, taskId: true } },
     },
@@ -2078,6 +2084,7 @@ export async function deliveriesNeedingFinishing(opts: { projectId?: string; sin
     if (!why.length) continue;
     out.push({
       submissionId: s.id,
+      projectId: s.projectId,
       street: streetOf(s.project?.title) || (s.project?.title ?? "a job"),
       sentAtISO: s.sentToClientAt!.toISOString(),
       sentBy: s.sentToClientBy,

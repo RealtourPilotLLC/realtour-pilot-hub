@@ -18,6 +18,9 @@ import { BackLink } from "@/components/ui/BackLink";
 // hand-on doors — the same strip /edit/<id> carries, here where review happens.
 import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
+import { reviewDeliveryBoard } from "@/lib/reviewDelivery";
+import { DeliveryExitSummary } from "@/components/review/DeliveryExitSummary";
+import type { ReadyBoard } from "@/lib/readyToSend";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +78,8 @@ export default async function CutReviewPage({
   const clientNoteCount = clientNoteGroups.reduce((n, g) => n + g.notes.length, 0);
   // The client's own words to the office are not the photographer's to read.
   if (!w) notFound();
+  const deliveryBoard = shotThis ? null : await reviewDeliveryBoard({ includeTest: true, projectId: id })
+    .catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard);
 
   // Sep 16: a withdrawn cut is history, not the thing to rule on — getCutWorkspace
   // skips past it when nothing asked for it by id. That choice lives THERE, with
@@ -296,6 +301,7 @@ export default async function CutReviewPage({
                 heldForCheck={active.heldForCheck}
                 fixesToCheck={fixesToCheck}
               />
+              {deliveryBoard && <DeliveryExitSummary board={deliveryBoard} />}
             </>
           ) : (
             <Section icon={Film} title="No cut uploaded yet">

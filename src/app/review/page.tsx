@@ -14,6 +14,9 @@ import { homeFor } from "@/lib/auth/access";
 import { followUpHref, getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
 import { getFixPatterns, getQcStats } from "@/lib/qc";
 import { verdictLine } from "@/lib/reviewAttribution";
+import { reviewDeliveryBoard } from "@/lib/reviewDelivery";
+import { DeliveryExitSummary } from "@/components/review/DeliveryExitSummary";
+import type { ReadyBoard } from "@/lib/readyToSend";
 
 export const dynamic = "force-dynamic";
 
@@ -135,10 +138,11 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   }
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const [q, patterns, qcStats] = await Promise.all([
+  const [q, patterns, qcStats, deliveryBoard] = await Promise.all([
     getReviewQueue({ includeTest }),
     getFixPatterns(60, { includeTest }),
     getQcStats(30, { includeTest }),
+    reviewDeliveryBoard({ includeTest }).catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard),
   ]);
   // "Waiting on YOUR verdict" counts only the cuts that are yours (§8.1) —
   // Kyle's Room must not tell him James's cuts are his to rule on.
@@ -215,6 +219,8 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
             <ul className="space-y-2.5">{q.waitingOnEditor.map((s) => <CutRow key={s.id} s={s} decided />)}</ul>
           </Section>
         )}
+
+        <DeliveryExitSummary board={deliveryBoard} />
 
         {/* media_qa is a mixed-media task type. Do not present a video-only
             program job as a photo set. */}
