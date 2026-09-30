@@ -108,7 +108,12 @@ Home resolver's uncapped, exact filtering. The named 4600 Newburg project has
 no saved editor, vendor or open edit task; its saved route suggests Kim. No
 live assignment changed. In-house acknowledgment is not inferred from
 assignment or Start and remains to implement under W02. The browser dropdown
-still needs desktop/phone acceptance replay.
+was replayed in the isolated demo with Kim routing: desktop shows “Suggested:
+Kim · not assigned,” Home says Kyle should confirm, and phone width 390px
+requires horizontal table scrolling to reach the select. That mobile layout
+remains U3 work. The demo DB's routing setting was changed only in isolated
+PGlite; production settings remain untouched. Demo process is on ports
+3200/5599, session 46045, checkout `ac8e6a8`.
 
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
