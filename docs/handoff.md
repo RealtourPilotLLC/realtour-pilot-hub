@@ -2,7 +2,30 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — client video review layout
+### Current resume point — editor brief script presentation
+
+`ae07289` replaces the editor brief's separate plain-text per-topic script
+display with `ScriptView`. The same Hook, Talking Points and Close structure
+now appears in the brief. The script standing and version still come from the
+same filmed/shared/draft reader, and the existing role-based money scrub runs
+before text crosses into the client component. The brief has no pillar-link
+data, so it suppresses the renderer's missing-pillar claim; a category in the
+safe script text still appears. An all-scrubbed script gives a truthful
+placeholder. Copy/Download are off because this brief carries clipped text.
+
+The isolated CP09 handoff drill passed 139/0. Node20 TypeScript, focused lint
+and production build passed. In the provider-fenced Avery TEST editor brief,
+the approved version-1 script and an unapproved draft expanded into structured
+sections. The 390px page had no horizontal overflow and displayed the script
+readably. No Start, script decision, provider action or production write was
+made. The demo is stopped; its clean worktree is at `ae07289`.
+
+UX09 remains partial: verify signed editor money filtering, normal client
+roles, injected comment/revision failures, real portrait/landscape files and
+phone download. Then finish the U2 planning, brand and booking journeys.
+U0–U6 and the five-table release gate remain open as tracked below.
+
+### Previous checkpoint — client video review layout
 
 `2162186` caps the portal video player at the available 70vh/760px bound
 with `object-contain`, preserving portrait and landscape aspect ratios. On
