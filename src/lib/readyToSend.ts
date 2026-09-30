@@ -305,6 +305,8 @@ export type ReadyBoard = {
   followUpChecks?: { needsFinishing: string | null; notTold: string | null };
   followUpLastSuccess?: { needsFinishing: string | null; notTold: string | null };
   boardUnavailable?: boolean;
+  noticeIncidents?: import("@/lib/deliveryNoticeIncidents").DeliveryNoticeIncident[];
+  noticeIncidentCheck?: string | null;
 };
 
 // Each recovery lane may fail independently. A failed read is never an empty
@@ -337,6 +339,17 @@ async function deliveryFollowUps(projectId?: string, recordHealth = false): Prom
     },
     followUpLastSuccess: last,
   };
+}
+
+async function deliveryExitExtras(projectId?: string, recordHealth = false, includeNoticeIncidents = false): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck">> {
+  const followUps = await deliveryFollowUps(projectId, recordHealth);
+  if (!includeNoticeIncidents) return followUps;
+  try {
+    const { deliveryNoticeIncidents } = await import("@/lib/deliveryNoticeIncidents");
+    return { ...followUps, noticeIncidents: await deliveryNoticeIncidents(projectId), noticeIncidentCheck: new Date().toISOString() };
+  } catch {
+    return { ...followUps, noticeIncidents: [], noticeIncidentCheck: null };
+  }
 }
 
 const HOUR = 3_600_000;
@@ -812,7 +825,7 @@ type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE
  * get that answer from this module rather than re-deriving the eligibility
  * rules beside it — see cutsOnTheCardFor.
  */
-export async function readyToSend(opts?: { projectId?: string; recordFollowUpHealth?: boolean }): Promise<ReadyBoard> {
+export async function readyToSend(opts?: { projectId?: string; recordFollowUpHealth?: boolean; includeNoticeIncidents?: boolean }): Promise<ReadyBoard> {
   const subs = await prisma.reviewSubmission.findMany({
     where: {
       ...(opts?.projectId ? { projectId: opts.projectId } : {}),
@@ -837,7 +850,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId, opts?.recordFollowUpHealth)) };
+  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents)) };
 
   // Still the live version of its cut, and not already with the client.
   // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
@@ -858,7 +871,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
       : [],
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
-  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryFollowUps(opts?.projectId, opts?.recordFollowUpHealth)) };
+  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents)) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -957,7 +970,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
-  return { ready, rendering, ...(await deliveryFollowUps(opts?.projectId, opts?.recordFollowUpHealth)) };
+  return { ready, rendering, ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents)) };
 }
 
 /**

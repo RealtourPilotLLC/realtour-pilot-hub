@@ -6,7 +6,7 @@ import { isSyntheticClientRow } from "@/lib/testClients";
 
 /** The Review Room uses the Home delivery reader, then applies its own TEST toggle. */
 export async function reviewDeliveryBoard(opts: { includeTest: boolean; projectId?: string }): Promise<ReadyBoard> {
-  const board = await readyToSend({ projectId: opts.projectId });
+  const board = await readyToSend({ projectId: opts.projectId, includeNoticeIncidents: true });
   if (opts.includeTest || opts.projectId) return board;
 
   const ids = [...new Set([
@@ -14,6 +14,7 @@ export async function reviewDeliveryBoard(opts: { includeTest: boolean; projectI
     ...board.rendering.map((r) => r.projectId),
     ...board.needsFinishing.map((r) => r.projectId),
     ...(board.notTold ?? []).map((r) => r.projectId),
+    ...(board.noticeIncidents ?? []).map((r) => r.projectId),
   ])];
   if (!ids.length) return board;
   const projects = await prisma.project.findMany({
@@ -27,5 +28,6 @@ export async function reviewDeliveryBoard(opts: { includeTest: boolean; projectI
     rendering: board.rendering.filter((r) => !hidden.has(r.projectId)),
     needsFinishing: board.needsFinishing.filter((r) => !hidden.has(r.projectId)),
     notTold: (board.notTold ?? []).filter((r) => !hidden.has(r.projectId)),
+    noticeIncidents: (board.noticeIncidents ?? []).filter((r) => !hidden.has(r.projectId)),
   };
 }

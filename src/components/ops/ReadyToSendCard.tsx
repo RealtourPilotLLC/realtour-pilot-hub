@@ -12,6 +12,7 @@ import { NotTold } from "@/components/ops/NotTold";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
 import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
+import type { DeliveryNoticeIncident } from "@/lib/deliveryNoticeIncidents";
 
 // ---------------------------------------------------------------------------
 // READY TO SEND — the delivery half of Kyle's afternoon.
@@ -79,7 +80,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
   const { ready, rendering, needsFinishing } = board;
   // 9.2: sent, and the client not told yet — its own short list (NotTold).
   const notTold = board.notTold ?? [];
-  const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null;
+  const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
   const recoveryStatus = unavailable && (
     <div role="alert" className="rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-3 text-sm text-foreground">
       <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" /> Could not check all delivery follow-up.</p>
@@ -87,6 +88,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
         {board.boardUnavailable ? "The delivery board is unavailable." : [
           board.followUpChecks?.needsFinishing === null ? "Delivery records" : null,
           board.followUpChecks?.notTold === null ? "Client notification" : null,
+          board.noticeIncidentCheck === null ? "Delivery-text outcomes" : null,
         ].filter(Boolean).join(" and ") + " could not be checked."} Work may still be waiting.
       </p>
       {!board.boardUnavailable && <div className="mt-1 space-y-0.5 text-xs text-muted">
@@ -108,6 +110,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
         </p>}
         <NeedsFinishing rows={needsFinishing ?? []} />
         <NotTold rows={notTold} />
+        <DeliveryTextIncidents rows={board.noticeIncidents ?? []} />
         <Rendering rows={rendering} />
       </div>
     );
@@ -117,12 +120,31 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
       {recoveryStatus}
       <NeedsFinishing rows={needsFinishing ?? []} />
       <NotTold rows={notTold} />
+      <DeliveryTextIncidents rows={board.noticeIncidents ?? []} />
       <p className="text-xs leading-relaxed text-muted">
         Check the exact file and destination on each row. A download is not delivery; an older video on the listing
         may be a different cut. For monthly work, confirm portal access and whether this job still needs an Aryeo copy.
       </p>
       {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
       <Rendering rows={rendering} />
+    </div>
+  );
+}
+
+function DeliveryTextIncidents({ rows }: { rows: DeliveryNoticeIncident[] }) {
+  if (!rows.length) return null;
+  return (
+    <div className="rounded-xl border border-warning/40 bg-warning/5 px-3.5 py-3">
+      <p className="flex items-center gap-2 text-xs font-semibold text-warning"><AlertTriangle className="size-4" /> Delivery texts needing a check</p>
+      <ul className="mt-2 space-y-2">
+        {rows.map((r) => (
+          <li key={r.projectId} className="text-xs leading-relaxed">
+            <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.street}</Link>
+            <span className="text-muted"> · {r.state === "unknown" ? "provider outcome unknown — check OpenPhone before retrying" : r.state === "failed" ? "send failed — review the task and client thread" : "send queued or in progress — no acceptance recorded"} · queued {etDateTime(new Date(r.queuedAtISO))}</span>
+            {r.taskId && <Link href={`/tasks?tab=other&task=${r.taskId}`} className="ml-2 font-medium text-brand underline">Open task</Link>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

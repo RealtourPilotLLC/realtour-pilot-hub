@@ -346,7 +346,7 @@ function readyFor(key: string, d: OpsDay): number {
 
 function deliveryUnavailable(d: OpsDay): boolean {
   const b = d.readySend;
-  return !!b.boardUnavailable || b.followUpChecks?.needsFinishing === null || b.followUpChecks?.notTold === null;
+  return !!b.boardUnavailable || b.followUpChecks?.needsFinishing === null || b.followUpChecks?.notTold === null || b.noticeIncidentCheck === null;
 }
 /** The green "📤 N to send" chip — the length of the list the card renders. */
 function ReadyChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?: boolean }) {

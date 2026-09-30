@@ -38,13 +38,26 @@ function rowsFor(board: ReadyBoard): Row[] {
       action: "Record how the client was notified", href: "/#video-review",
       cutHref: `/review/${r.projectId}?cut=${r.submissionId}`,
     })),
+    ...(board.noticeIncidents ?? []).map((r) => ({
+      id: `notice-${r.projectId}`, label: r.street,
+      stage: r.state === "unknown" ? "Delivery text outcome unconfirmed" : r.state === "failed" ? "Delivery text failed" : "Delivery text pending",
+      detail: r.state === "unknown"
+        ? "OpenPhone may have sent the job-level text. Check its thread before any retry; this is not proof the client saw a specific video."
+        : r.state === "failed"
+          ? "The job-level text was refused before confirmed delivery. Check the open task and client thread."
+          : "The job-level text is queued or being sent; provider acceptance is not recorded yet.",
+      owner: "Kyle", at: r.queuedAtISO,
+      action: r.state === "unknown" ? "Reconcile the provider outcome" : r.state === "failed" ? "Review the failed text" : "Check the pending text",
+      href: r.taskId ? `/tasks?tab=other&task=${r.taskId}` : `/projects/${r.projectId}`,
+      cutHref: `/projects/${r.projectId}`,
+    })),
   ];
 }
 
 /** Read-only handoff beside creative review. Home owns the delivery controls. */
 export function DeliveryExitSummary({ board }: { board: ReadyBoard }) {
   const rows = rowsFor(board);
-  const incomplete = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null;
+  const incomplete = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
   return (
     <section id="delivery-exit" className="rounded-2xl border border-border bg-surface p-4 sm:p-5" aria-labelledby="delivery-exit-title">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -55,7 +68,7 @@ export function DeliveryExitSummary({ board }: { board: ReadyBoard }) {
         {rows.length > 0 && <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs font-semibold text-brand">{rows.length} waiting</span>}
       </div>
       {incomplete && <p role="alert" className="mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" /> Some delivery follow-up could not be checked. Work may still be waiting; check Home again.
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" /> Some delivery follow-up or delivery-text outcomes could not be checked. Work may still be waiting; check Home again.
       </p>}
       {!rows.length && !incomplete ? (
         <p className="mt-4 text-sm text-muted">No delivery action is currently waiting in this view.</p>
