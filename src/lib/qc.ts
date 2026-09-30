@@ -6,20 +6,18 @@ import { countQcMisses } from "@/lib/tasks";
 // The owner's QC quality dial — reads the QcRecord log (one row per completed QC
 // pass, written from both completion paths in src/lib/tasks.ts + actions.ts).
 //
-// NOT WIRED YET: this is a ready-to-adopt data source. The dashboard owns
-// src/app/page.tsx + src/lib/queries.ts (a different agent), so to surface this,
-// that page can `import { getQcStats } from "@/lib/qc"` and render one owner-only
-// tile — e.g. "Revision-after-delivery rate {reopenedRate}% · avg {avgMisses}
-// misses/pass" with the top byMiss labels beneath. Owner-gate it at the call site
-// (requireOwner / role check) — this function does no auth itself.
+// The stored `missCount` is a legacy name for optional boxes left unticked.
+// Neither this count nor a later revision proves a quality defect or fault.
+// The Review Room labels them as recording gaps; verified revision issues
+// carry responsibility separately. This function does no auth itself.
 
 export type QcMissBucket = { label: string; count: number };
 export type QcStats = {
   windowDays: number;
   qcPasses: number; // completed QC passes in the window
-  avgMisses: number; // mean Kyle-tick items left unchecked at completion
-  reopenedRate: number; // % of passes a revision later bounced (the real QC-miss rate)
-  byMiss: QcMissBucket[]; // which failure-mode items got missed most, desc
+  avgMisses: number; // legacy name: mean optional items not recorded
+  reopenedRate: number; // % later reopened, with cause not established
+  byMiss: QcMissBucket[]; // legacy name: optional items not recorded, desc
 };
 
 // Aggregate QC quality over the last `days` (default 30). Pure read; safe to call

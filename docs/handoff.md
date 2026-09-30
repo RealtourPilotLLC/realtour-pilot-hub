@@ -1,5 +1,34 @@
 # Progress record — unified implementation handoff (Sep 25 2026)
 
+## Sep 30 takeover addendum
+
+The current working branch is `codex/audit-2026-09-30`. Resume the full audit from
+[`audit-2026-09-30-checklist.md`](audit-2026-09-30-checklist.md). This addendum
+supersedes any "all done" wording below for the new audit scope; it does not
+change the historical Sep 25–28 delivery record. At takeover local `main` was
+`77fa13d`, eight commits ahead of `origin/main` (`1075a5b`). The audit branch
+retains them. `codex/pre-audit-2026-09-30` preserves the original HEAD, and
+`.git/recovery-2026-09-30/` holds a copy and patch of the only original tracked
+edit. `2004657` committed that handoff/runbook correction. No Claude worktree
+source edit was overwritten; each Claude worktree only had an untracked tool
+dependency directory.
+
+Current local batch stabilizes edit-route authorization, message read state,
+schedule date paging, follow-up query failure visibility, interview draft copy
+and preservation, and truthful review/QC wording. The focused checklist gives
+per-finding status and next test. Node 20 build and typecheck pass; five isolated
+drills pass with 479 checks. Browser/real-route acceptance remains pending. A
+separate normal `next dev` started at 11:30 ET on port 3000 and holds the
+primary `.next/dev/lock`; it was left running. Use an isolated checkout for
+demo/visual work. No schema change, production write, push, deployment, client
+send, booking, or automation activation was made in this takeover batch.
+
+The previously reported deployed version is still `bf2e0b4`; read the live
+deployment stamp before any later release. September 28 full-backup files were
+present at takeover, but verify current migration state and backup coverage
+before any necessary schema change. The general listing welcome consultation
+destination (C19) needs Jordan's policy answer; other work can continue.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.

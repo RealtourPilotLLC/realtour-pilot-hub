@@ -162,8 +162,8 @@ export default async function ReviewRoomPage() {
             : mine
               ? `${mine} cut${mine === 1 ? "" : "s"} waiting on you${withOthers ? ` · ${withOthers} with someone else` : ""}`
               : withOthers
-                ? `Nothing waiting on you — ${withOthers} cut${withOthers === 1 ? "" : "s"} with someone else`
-                : "Nothing waiting on you — all clear"
+                ? `No cuts awaiting your verdict · ${withOthers} cut${withOthers === 1 ? "" : "s"} with someone else`
+                : "No cuts awaiting your verdict · check revisions and delivery below"
         }
       />
 
@@ -206,16 +206,17 @@ export default async function ReviewRoomPage() {
           </Section>
         )}
 
-        {/* ————— PHOTO LANE ————— */}
+        {/* media_qa is a mixed-media task type. Do not present a video-only
+            program job as a photo set. */}
         <div className="flex items-center gap-2 px-1 pt-3">
           <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: "#34d39922", color: "#34d399" }}>
             <ClipboardCheck className="size-3.5" />
           </span>
-          <h2 className="text-sm font-semibold">Photos</h2>
-          <span className="text-[11px] text-muted-2">· the same QC cards as Tasks — deep-link into the gallery to pin issues</span>
+          <h2 className="text-sm font-semibold">Delivery checks</h2>
+          <span className="text-[11px] text-muted-2">· photo and video work awaiting a media check</span>
         </div>
         {q.photoQc.length > 0 && (
-          <Section icon={ClipboardCheck} title="Photo sets in QC" count={q.photoQc.length}>
+          <Section icon={ClipboardCheck} title="Media checks to finish" count={q.photoQc.length}>
             <ul className="divide-y divide-border">
               {q.photoQc.map((t) => (
                 <li key={t.taskId}>
@@ -321,10 +322,10 @@ export default async function ReviewRoomPage() {
               </div>
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-2">
-                  QC checklist misses — last {qcStats.windowDays} days
+                  Optional QC checks not recorded — last {qcStats.windowDays} days
                 </h3>
                 {qcStats.byMiss.length === 0 ? (
-                  <p className="mt-2 text-sm text-muted">No checklist items missed across {qcStats.qcPasses} QC passes.</p>
+                  <p className="mt-2 text-sm text-muted">No unrecorded checklist items found across {qcStats.qcPasses} QC passes. This does not measure defects.</p>
                 ) : (
                   <ul className="mt-2 space-y-1.5">
                     {qcStats.byMiss.slice(0, 6).map((m) => (
@@ -340,7 +341,7 @@ export default async function ReviewRoomPage() {
                 {qcStats.qcPasses > 0 && (
                   <p className="mt-2 text-[11px] text-muted-2">
                     {qcStats.qcPasses} QC pass{qcStats.qcPasses === 1 ? "" : "es"} · {qcStats.reopenedRate}% later
-                    reopened by a revision
+                    reopened after a revision (cause not assigned)
                   </p>
                 )}
               </div>

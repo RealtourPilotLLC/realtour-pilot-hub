@@ -1462,8 +1462,9 @@ function isAutoCheckRow(label: string): boolean {
   return false;
 }
 
-// How many Kyle-tick items were left unchecked at completion (the auto-check
-// evidence rows don't count as misses — they're not his to verify).
+// Legacy count of optional Kyle-tick items left unchecked at completion.
+// This is recording coverage, NOT a confirmed defect or editor error. Keep
+// the stored value for old records; presentation must call it "not recorded".
 export function countQcMisses(items: ChecklistItem[]): number {
   return items.filter((i) => !isAutoCheckRow(i.label) && !i.done).length;
 }

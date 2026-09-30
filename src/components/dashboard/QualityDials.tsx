@@ -51,20 +51,17 @@ export function QualityDials({ dials }: { dials: OwnerDials }) {
       {qc.qcPasses > 0 ? (
         <>
           <span>
-            <span className="text-muted">Revisions after delivery</span>{" "}
-            {/* reopenedRate rising = worse, so it reads as a plain number the
-                owner watches trend down over the coming weeks. */}
+            <span className="text-muted">Reopened after revision (cause unclassified)</span>{" "}
             <b className="tabular-nums">{qc.reopenedRate}%</b>
           </span>
           <span>
-            <span className="text-muted">QC misses/job</span>{" "}
+            <span className="text-muted">Optional QC checks not recorded/job</span>{" "}
             <b className="tabular-nums">{qc.avgMisses}</b>
           </span>
-          {/* The single most-skipped checklist item — the owner's "what keeps
-              slipping" pointer. Only when we actually have a miss on record. */}
+          {/* An unticked optional box is unknown, not a confirmed defect. */}
           {qc.byMiss[0] && (
             <span className="text-muted-2">
-              most-missed: <span className="text-muted">{qc.byMiss[0].label}</span>
+              most often not recorded: <span className="text-muted">{qc.byMiss[0].label}</span>
             </span>
           )}
         </>

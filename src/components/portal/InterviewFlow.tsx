@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, MessageSquareQuote, Pencil, Send, Sparkles } from "lucide-react";
@@ -41,16 +41,46 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   /** The call line they started from, if any. Only a pointer — the server re-reads the line itself. */
   const [suggestionId, setSuggestionId] = useState<string | null>(null);
+  const [suggestionChoice, setSuggestionChoice] = useState<string | null>(null);
+  const [replacedText, setReplacedText] = useState<string | null>(null);
+  const [draftState, setDraftState] = useState<"empty" | "saved" | "failed">("empty");
   const [busy, start] = useTransition();
   const activeKey = editKey ?? iv.nextKey;
+  // Interview IDs are unique to one enrollment. The month, topic and question
+  // keep a restored draft from crossing stages or another client's account.
+  const draftKey = activeKey ? `rtp-answer-draft:${iv.interviewId}:${iv.monthKey}:${iv.topicId}:${activeKey}` : null;
   const activePrompt = editKey ? iv.answers.find((a) => a.questionKey === editKey)?.questionText ?? "" : iv.next.prompt ?? "";
   const answeredKeys = iv.answers.length;
-  const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => {
+  useEffect(() => {
+    if (!draftKey || !canAct) return;
+    let current = true;
+    queueMicrotask(() => {
+      if (!current) return;
+      try {
+        const saved = window.sessionStorage.getItem(draftKey);
+        if (saved !== null) { setText(saved); setDraftState("saved"); }
+        else setDraftState("empty");
+      } catch { setDraftState("failed"); }
+    });
+    return () => { current = false; };
+  }, [draftKey, canAct]);
+  const updateText = (next: string) => {
+    setText(next);
+    if (!draftKey) return;
+    try {
+      window.sessionStorage.setItem(draftKey, next);
+      setDraftState(next ? "saved" : "empty");
+    } catch { setDraftState("failed"); }
+  };
+  const run = (fn: () => Promise<{ ok: boolean; message: string }>, onSaved?: () => void) => start(async () => {
     const r = await fn().catch(() => ({ ok: false, message: "That didn't save — try again." }));
     setMsg({ ok: r.ok, text: r.message });
-    if (r.ok) { setText(""); setEditKey(null); setSuggestionId(null); router.refresh(); }
+    if (r.ok) { onSaved?.(); setText(""); setEditKey(null); setSuggestionId(null); setSuggestionChoice(null); setReplacedText(null); setDraftState("empty"); router.refresh(); }
   });
-  const answer = (kind: "TYPED" | "SKIPPED" | "DONT_KNOW") => activeKey && run(() => portalAnswerInterview(portalAuthFromLocation(), iv.interviewId, activeKey, text, kind, activePrompt, kind === "TYPED" ? suggestionId : null));
+  const answer = (kind: "TYPED" | "SKIPPED" | "DONT_KNOW") => activeKey && run(
+    () => portalAnswerInterview(portalAuthFromLocation(), iv.interviewId, activeKey, text, kind, activePrompt, kind === "TYPED" ? suggestionId : null),
+    () => { if (draftKey) { try { window.sessionStorage.removeItem(draftKey); } catch { /* local storage may be unavailable */ } } },
+  );
   const submit = (acknowledgeGaps = false) => run(() => portalSubmitInterview(portalAuthFromLocation(), iv.interviewId, { acknowledgeGaps }));
   const submitted = iv.status === "SUBMITTED";
   const sentWithGaps = iv.status === "SUBMITTED_WITH_GAPS";
@@ -83,7 +113,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
               <div className="text-xs text-muted-2">{a.questionText}</div>
               <div className="mt-0.5 flex items-start gap-2">
                 <div className="min-w-0 flex-1 whitespace-pre-wrap text-sm">{a.answerKind === "SKIPPED" ? <em className="text-muted">skipped</em> : a.answerKind === "DONT_KNOW" ? <em className="text-muted">don&rsquo;t know</em> : a.answerText}</div>
-                {canAct && <button type="button" onClick={() => { setEditKey(a.questionKey); setText(a.answerText ?? ""); }} aria-label="Edit this answer" className="shrink-0 rounded-md p-1 text-muted-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Pencil className="size-3.5" /></button>}
+                {canAct && <button type="button" onClick={() => { setEditKey(a.questionKey); setText(a.answerText ?? ""); setSuggestionChoice(null); setReplacedText(null); }} aria-label="Edit this answer" className="shrink-0 rounded-md p-1 text-muted-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Pencil className="size-3.5" /></button>}
               </div>
               {a.version > 1 && <div className="text-[10px] text-muted-2">edited · v{a.version} (earlier answers are kept)</div>}
             </div>
@@ -97,7 +127,10 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{editKey ? "Change your answer" : iv.nextIsGap || iv.mode === "GAPS_ONLY" ? "One more, so we can write it" : iv.next.isFollowUp ? "One follow-up" : `Question ${Math.min(answeredKeys + 1, iv.progress.substantiveTotal + 1)}`}</div>
           <p className="mt-1 text-base font-medium">{activePrompt}</p>
           {iv.next.isFollowUp && !editKey && <p className="mt-0.5 text-[11px] text-muted-2">{iv.nextIsGap ? "We ask only because nothing we have covers this yet — two at most." : "Asked once, only because something important was missing."}</p>}
-          <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
+          <textarea autoFocus value={text} onChange={(e) => { updateText(e.target.value); setSuggestionId(null); setReplacedText(null); }} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand" />
+          <p role="status" className={cn("mt-1 text-xs", draftState === "failed" ? "text-danger" : "text-muted")}>
+            {draftState === "saved" ? "Draft kept in this tab through a refresh. Use Save & next to send it to the team." : draftState === "failed" ? "Draft not saved in this tab. Use Save & next before leaving." : "This answer has not been sent yet."}
+          </p>
           {/* WHAT THEY ALREADY SAID ON A CALL — optional and editable, with its
               source. Never pre-filled: they choose to start from it. */}
           {iv.suggestions.length > 0 && (
@@ -106,7 +139,10 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
               <ul className="mt-1 space-y-1">
                 {iv.suggestions.map((sg) => (
                   <li key={sg.id}>
-                    <button type="button" onClick={() => { setText(sg.text); setSuggestionId(sg.id); }} className={cn("w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", suggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
+                    <button type="button" onClick={() => {
+                      if (text.trim()) setSuggestionChoice(sg.id);
+                      else { updateText(sg.text); setSuggestionId(sg.id); setSuggestionChoice(null); }
+                    }} className={cn("w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", suggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
                       <span className="text-foreground">&ldquo;{sg.text}&rdquo;</span>
                       <span className="mt-0.5 block text-[10px] text-muted-2">
                         {sg.from === "profile"
@@ -114,9 +150,16 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
                           : `you said this on your call${callDay(sg.callDateISO) ? ` of ${callDay(sg.callDateISO)}` : ""}`}
                       </span>
                     </button>
+                    {suggestionChoice === sg.id && <div className="mt-1 flex flex-wrap gap-2 rounded-lg border border-border bg-surface-2 p-2 text-xs">
+                      <span className="w-full">Keep your draft and add this suggestion, or replace it. You can undo a replacement.</span>
+                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { updateText(`${text.trimEnd()}\n\n${sg.text}`); setSuggestionId(null); setSuggestionChoice(null); }}>Add to answer</button>
+                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { setReplacedText(text); updateText(sg.text); setSuggestionId(sg.id); setSuggestionChoice(null); }}>Replace draft</button>
+                      <button type="button" className="min-h-11 px-3 text-muted" onClick={() => setSuggestionChoice(null)}>Cancel</button>
+                    </div>}
                   </li>
                 ))}
               </ul>
+              {replacedText !== null && <button type="button" onClick={() => { updateText(replacedText); setReplacedText(null); setSuggestionId(null); }} className="mt-2 text-xs font-semibold text-brand underline">Undo replacement</button>}
             </div>
           )}
           <div className="mt-2 flex flex-wrap gap-2">
@@ -125,7 +168,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
             {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); }} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>}
           </div>
-          <p className="mt-2 text-[11px] text-muted-2">Everything saves as you go — close this and come back any time.</p>
+          <p className="mt-2 text-xs text-muted">Only Save &amp; next records your answer for the team. The draft survives a refresh in this tab, but may be lost when the tab closes. It does not start script writing or the filming preparation clock.</p>
         </div>
       )}
 
