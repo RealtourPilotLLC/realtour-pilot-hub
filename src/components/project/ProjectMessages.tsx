@@ -47,21 +47,29 @@ function renderBody(text: string, team: Member[]) {
 // id="msg-<id>", so a Slack DM / text / bell link opens the page scrolled to
 // the words that rang (the :target row is tinted). readOnly hides the
 // composer for look-don't-touch views ("view as" previews).
-export function ProjectMessages({
-  projectId,
-  messages,
-  team,
-  compact = false,
-  readOnly = false,
-  canRequestRevision = false,
-}: {
+type ProjectMessagesProps = {
   projectId: string;
   messages: ProjectMsg[];
   team: Member[];
   compact?: boolean;
   readOnly?: boolean;
   canRequestRevision?: boolean;
-}) {
+};
+
+export function ProjectMessages(props: ProjectMessagesProps) {
+  // A conversation switch is a new reading visit. A same-project refresh is
+  // not: it must not silently acknowledge a message that arrived after open.
+  return <ProjectMessagesForProject key={props.projectId} {...props} />;
+}
+
+function ProjectMessagesForProject({
+  projectId,
+  messages,
+  team,
+  compact = false,
+  readOnly = false,
+  canRequestRevision = false,
+}: ProjectMessagesProps) {
   const [body, setBody] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string | null; body: string } | null>(null);
@@ -71,7 +79,7 @@ export function ProjectMessages({
   const [pending, start] = useTransition();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const lastMessageRef = useRef<HTMLDivElement>(null);
-  const lastMessageId = messages.at(-1)?.id ?? null;
+  const [lastMessageId] = useState(() => messages.at(-1)?.id ?? null);
 
   useEffect(() => {
     if (readOnly || !lastMessageId || !lastMessageRef.current) return;
