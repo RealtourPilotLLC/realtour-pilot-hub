@@ -7,6 +7,8 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, evidenceTone, type EvidenceTone } from "@/lib/statusEvidence";
 import { dueSetTimesFor, outstandingPromise, reopenedClocksFor } from "@/lib/deliveryBoard";
 import { turnaroundRules } from "@/lib/settings";
+import { editorRouting } from "@/lib/settings";
+import { resolveEditorAssignment } from "@/lib/editorAssignment";
 
 // ---------------------------------------------------------------------------
 // ONE SUMMARY OF A JOB (R08, review Sep 18).
@@ -93,7 +95,8 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       // O05: each half's own handoff (null on jobs submitted the old way).
       photosHandoffAt: true, videoHandoffAt: true,
       reelScript: true, reelHook: true, scriptConfirmedAt: true,
-      editor: { select: { name: true } }, editorVendorKey: true,
+      editor: { select: { name: true } }, editorId: true, editorManual: true, editorVendorKey: true,
+      smartTasks: { where: { taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { taskType: true, assignedKey: true, assignedManually: true }, orderBy: { updatedAt: "desc" } },
       photographer: { select: { name: true } },
       // ONE PROMISE (F05, review Sep 20 2026) — the extra columns below are
       // exactly deliveryBoard's PromiseInput, so this card can ask the promise
@@ -127,11 +130,12 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   });
   if (!p) return null;
 
-  const [allOutputs, filming] = await Promise.all([
+  const [allOutputs, filming, routing] = await Promise.all([
     outputsForProject(projectId).catch(() => [] as OutputRowView[]),
     // A summary that cannot read the filming brief still answers everything
     // else it is asked; the brief is one more line, not a precondition.
     filmingBriefFor(projectId).catch(() => null),
+    editorRouting(),
   ]);
   const outputs = allOutputs.filter((o) => o.state !== "removed");
   const live = outputs.filter((o) => o.state !== "waived");
@@ -463,7 +467,19 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   // WHOSE MOVE, AND THE ONE THING TO DO. Ordered by what actually blocks
   // progress: a missing handoff beats an unstarted edit, an open client ask
   // beats a verdict, and an owed send beats everything that is already done.
-  const editorName = p.editor?.name ?? (p.editorVendorKey ? "the outside shop" : null);
+  const editTask = p.smartTasks.find((t) => t.taskType === "edit_video" && t.assignedKey)
+    ?? p.smartTasks.find((t) => t.taskType === "revision" && t.assignedKey)
+    ?? null;
+  const videoForRouting = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const assignment = resolveEditorAssignment({
+    taskKey: editTask?.assignedKey,
+    taskUnassignedManually: p.smartTasks.some((t) => t.assignedManually && !t.assignedKey),
+    projectEditorName: p.editor?.name, projectVendorKey: p.editorVendorKey,
+    projectManual: p.editorManual && !p.editorId,
+    deliverableType: videoForRouting?.type, deliverableLabel: videoForRouting?.label,
+    monthly: isMonthlyContentJob(p.deliverables, p.packageName), rules: routing,
+  });
+  const editorName = assignment.state === "assigned" ? assignment.name : null;
   let owner: BriefOwner;
   let nextAction: string;
   let blocker: string | null = handoff?.blockedReason ?? null;
@@ -484,8 +500,9 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     nextAction = `Send ${awaitingSend.length === live.length ? "the finished video" : `${awaitingSend.length} finished video${awaitingSend.length === 1 ? "" : "s"}`} and press Mark as sent`;
     blocker = blocker ?? null;
   } else if (inRevisions.length > 0) {
-    owner = { who: editorName ?? "Nobody yet", whose: editorName ? "editor" : "nobody" };
-    nextAction = `Hand in the next version of ${inRevisions.length === 1 ? "the video" : `${inRevisions.length} videos`}`;
+    owner = { who: editorName ?? "Kyle", whose: editorName ? "editor" : "office" };
+    nextAction = editorName ? `Hand in the next version of ${inRevisions.length === 1 ? "the video" : `${inRevisions.length} videos`}` : "Assign an editor for the revision in the Editing Room";
+    if (!editorName && assignment.state === "predicted") blocker = blocker ?? `Routing suggests ${assignment.name}; assignment has not been saved.`;
   } else if (inReview.length > 0) {
     owner = { who: "The office", whose: "office" };
     nextAction = `Give ${inReview.length === 1 ? "the cut" : `${inReview.length} cuts`} a verdict in the Review Room`;
@@ -536,8 +553,12 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   } else if (editorName) {
     owner = { who: editorName, whose: "editor" };
     nextAction = live.length > 1 ? `Edit and hand in ${live.length} videos` : "Edit and hand it in";
+  } else if (assignment.state === "predicted") {
+    owner = { who: "Kyle", whose: "office" };
+    nextAction = `Confirm or change the suggested editor (${assignment.name}) in the Editing Room`;
+    blocker = blocker ?? `Routing suggests ${assignment.name}; assignment has not been saved.`;
   } else {
-    owner = { who: "Nobody yet", whose: "nobody" };
+    owner = { who: "Kyle", whose: "office" };
     nextAction = "Pick an editor on the row in the Editing Room";
     blocker = blocker ?? "No editor is on this job";
   }

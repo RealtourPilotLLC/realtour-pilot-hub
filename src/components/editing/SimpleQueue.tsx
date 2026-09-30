@@ -104,6 +104,8 @@ export type QueueRow = {
   startableBy: string[] | null;
   editor: string | null;
   editorKey: string | null; // key behind the name, drives the reassign select
+  savedEditorKey: string | null; // null for a routing suggestion, even when editorKey scopes the desk
+  assignmentState: "assigned" | "predicted" | "unassigned";
   auto: boolean;
   dueISO: string | null;
   late: boolean;
@@ -192,6 +194,7 @@ const VIDEO_EDITORS = [
 // server pins it so no engine routes a name back on). UNASSIGN is the empty
 // string because that's what an unset <select> already carries.
 const UNASSIGN = "";
+const SUGGESTED = "__routing_suggestion__";
 const EXTERNAL = "external_agency";
 
 const fmtDay = (iso: string | null) =>
@@ -355,7 +358,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
 // Optimistic with snap-back, same contract as the status pill; a refusal keeps
 // the server's reason on the control's tooltip instead of failing silently.
 function EditorSelect({ row }: { row: QueueRow }) {
-  const [key, setKey] = useState(row.editorKey ?? UNASSIGN);
+  const [key, setKey] = useState(row.assignmentState === "predicted" ? SUGGESTED : row.savedEditorKey ?? UNASSIGN);
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
   const known = key === EXTERNAL || VIDEO_EDITORS.some((e) => e.key === key);
@@ -379,9 +382,7 @@ function EditorSelect({ row }: { row: QueueRow }) {
       {pending && <Loader2 className="size-3 animate-spin text-muted" />}
       <select
         aria-label="Assign editor"
-        // The routing rules' pick used to wear a visible "auto" chip beside
-        // the name (Sep 28: one less word per row); it says so on hover now.
-        title={err ?? (row.auto && key === (row.editorKey ?? UNASSIGN) ? "Assigned by the routing rules — pick a name to override" : undefined)}
+        title={err ?? (key === SUGGESTED ? `Routing suggests ${row.editor}; choose an editor to save the assignment.` : undefined)}
         value={key}
         disabled={pending}
         onChange={(e) => pick(e.target.value)}
@@ -393,10 +394,11 @@ function EditorSelect({ row }: { row: QueueRow }) {
       >
         {/* Selectable, not a disabled placeholder: taking a job OFF an editor
             is the point of this control now. */}
+        {key === SUGGESTED && <option value={SUGGESTED} disabled>Suggested: {row.editor ?? "editor"} · not assigned</option>}
         <option value={UNASSIGN}>Unassigned</option>
         {/* A historical editor (Luma / Remar) still shows by name, but new work
             can only go to the current video editors or the outside shop. */}
-        {!known && key && <option value={key} disabled>{row.editor ?? key}</option>}
+        {!known && key && key !== SUGGESTED && <option value={key} disabled>{row.editor ?? key}</option>}
         <optgroup label="Our editors">
           {VIDEO_EDITORS.map((o) => (
             <option key={o.key} value={o.key}>
@@ -1001,7 +1003,7 @@ export function SimpleQueue({
                           <span className="text-xs font-medium">{r.editor ?? "—"}</span>
                         ) : (
                           // key = server truth, same deal as the status pill.
-                          <EditorSelect key={r.editorKey ?? "none"} row={r} />
+                          <EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} />
                         )}
                       </td>
                     )}

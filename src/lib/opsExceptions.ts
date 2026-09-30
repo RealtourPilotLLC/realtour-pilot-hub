@@ -4,6 +4,9 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { assigneeName, listAssignees, type Assignee } from "@/lib/assignees";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
+import { editorRouting } from "@/lib/settings";
+import { isMonthlyContentJob } from "@/lib/pipeline";
+import { resolveEditorAssignment } from "@/lib/editorAssignment";
 
 // ---------------------------------------------------------------------------
 // THE EXCEPTIONS BOARD (R08, review Sep 18).
@@ -110,7 +113,7 @@ export function emptyExceptionBoard(): OpsExceptionBoard {
 }
 
 export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
-  unassigned: "Nobody assigned",
+  unassigned: "Editing assignment to confirm",
   "aging-review": "Waiting on a verdict",
   "overdue-followup": "Follow-up date passed",
   "stalled-render": "Render stuck at the provider",
@@ -234,12 +237,13 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // The roster is read WITH the approver rather than after it: resolving the
   // key an engine wrote on a task ("john", "kim", "cubicasa") to a person costs
   // one read of the team table for the whole card.
-  const [approver, roster, coverage] = await Promise.all([
+  const [approver, roster, coverage, routing] = await Promise.all([
     creativeApprover(),
     listAssignees().catch((): Assignee[] => []),
     // The rota the review clock is measured on (§8.1). Read with the rest; a
     // failed read falls back to the shipped Mon–Fri 9–6.
     import("@/lib/coverage").then((m) => m.coverageRules()).catch(() => ({ weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null })),
+    editorRouting(),
   ]);
   const { coveredHoursBetween } = await import("@/lib/coverage");
   const agingCoveredHours = EXCEPTION_RULES.reviewAgingCoveredDays * (coverage.toHour - coverage.fromHour);
@@ -262,13 +266,11 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // builders below apply in memory, written once in SQL so the header's "worth
   // doing today" can be about the pile rather than about the page.
 
-  // 1. NOBODY ASSIGNED. A job in the editing lane whose editor is neither a
-  // person nor the outside shop. The routing rules usually fill this in; a
-  // row that reaches here is one they could not.
+  // 1. NO SAVED ASSIGNMENT. Read the eligible pool, then apply the same
+  // task → project/vendor → routing distinction as the Editing Room. A rule
+  // prediction is visible context for Kyle, never proof somebody accepted.
   const unassignedWhere: Prisma.ProjectWhereInput = {
     status: { in: ["SHOT", "EDITING", "REVISION"] },
-    editorId: null,
-    editorVendorKey: null,
     // OWED, not merely ordered. This carried half the shared rule — waivedAt
     // and not removedFromOrderAt — so a job whose video line had been PULLED
     // off the Aryeo order could still be listed as "ready for editing with no
@@ -277,8 +279,6 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     // off the order (Sep 20).
     deliverables: { some: { ...OWED_DELIVERABLE_WHERE, type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
   };
-  // High = the delivery date has already gone by. Same test as the row builder.
-  const unassignedHighWhere: Prisma.ProjectWhereInput = { ...unassignedWhere, deliveryDue: { lt: new Date(now) } };
 
   // 2. WAITING ON A VERDICT. Uploaded, nobody has ruled, and the clock has
   // been running. The editor is finished; this one is the office's.
@@ -344,16 +344,16 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     decidedAt: { lt: new Date(now - EXCEPTION_RULES.unsentDays * DAY) },
   };
 
-  const [unassignedRows, agingRows, followUpRows, liveRenders, unsentRows] = await Promise.all([
+  const [assignmentCandidates, agingRows, followUpRows, liveRenders, unsentRows] = await Promise.all([
     prisma.project.findMany({
       where: unassignedWhere,
-      select: { id: true, title: true, status: true, shootDate: true, deliveryDue: true, updatedAt: true },
+      select: {
+        id: true, title: true, status: true, shootDate: true, deliveryDue: true, updatedAt: true,
+        editorManual: true, editorId: true, editorVendorKey: true, editor: { select: { name: true } },
+        deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
+        smartTasks: { where: { taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { taskType: true, assignedKey: true, assignedManually: true }, orderBy: { updatedAt: "desc" } },
+      },
       orderBy: { deliveryDue: "asc" },
-      // One MORE than we keep — the open-loops idiom (opsDay.ts): the extra row
-      // is how we know the list was really truncated, so a viewer with exactly
-      // four does not get a "+" and a viewer with nine is not told there are
-      // four. Only an overflow pays for the count below.
-      take: cap + 1,
     }),
     prisma.reviewSubmission.findMany({
       where: agingReviewWhere,
@@ -468,13 +468,10 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     }
   }
 
-  // The real size of each pile, and how much of it is urgent. Three of the five
-  // are capped in SQL, so they are counted — but ONLY when the over-fetch proved
-  // there was an overflow; below the cap the rows in hand are the whole pile and
-  // the severity rule can simply be applied to them. So a quiet day pays for
-  // nothing and a bad day pays for six cheap indexed counts.
+  // The follow-up pool is capped in SQL, so count it only when over-fetch
+  // proves overflow. Assignment gaps are filtered from the eligible pool
+  // below and counted from those exact rows.
   const overflowed = {
-    unassigned: unassignedRows.length > cap,
     followUp: followUpRows.length > cap,
   };
   // WAITING ON A VERDICT, by covered hours (§8.1, Sep 25). The clock starts
@@ -498,11 +495,22 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
         .catch(() => [] as { id: string; name: string }[])
     ).map((t) => [t.id, t.name]),
   );
-  const [unassignedAll, unassignedHigh, agingAll, agingHigh, followUpAll, followUpHigh] = await Promise.all([
-    overflowed.unassigned ? prisma.project.count({ where: unassignedWhere }) : unassignedRows.length,
-    overflowed.unassigned
-      ? prisma.project.count({ where: unassignedHighWhere })
-      : unassignedRows.filter((p) => p.deliveryDue && p.deliveryDue.getTime() < now).length,
+  const assignmentGaps = assignmentCandidates.map((p) => {
+    const task = p.smartTasks.find((t) => t.taskType === "edit_video" && t.assignedKey)
+      ?? p.smartTasks.find((t) => t.taskType === "revision" && t.assignedKey)
+      ?? null;
+    const manuallyUnassigned = p.smartTasks.some((t) => t.assignedManually && !t.assignedKey);
+    const video = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    return { project: p, assignment: resolveEditorAssignment({
+      taskKey: task?.assignedKey, taskUnassignedManually: manuallyUnassigned,
+      projectEditorName: p.editor?.name, projectVendorKey: p.editorVendorKey,
+      projectManual: p.editorManual && !p.editorId,
+      deliverableType: video?.type, deliverableLabel: video?.label,
+      monthly: isMonthlyContentJob(p.deliverables), rules: routing,
+    }) };
+  }).filter((x) => x.assignment.state !== "assigned");
+  const unassignedRows = assignmentGaps.slice(0, cap + 1);
+  const [agingAll, agingHigh, followUpAll, followUpHigh] = await Promise.all([
     agingQualified.length,
     agingQualified.filter((x) => agingIsHigh(x.hours)).length,
     overflowed.followUp ? prisma.smartTask.count({ where: followUpWhere }) : followUpRows.length,
@@ -513,17 +521,19 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
 
   const out: OpsException[] = [];
 
-  for (const p of unassignedRows.slice(0, cap)) {
+  for (const { project: p, assignment } of unassignedRows.slice(0, cap)) {
     out.push({
       id: `unassigned:${p.id}`,
       kind: "unassigned",
       severity: p.deliveryDue && p.deliveryDue.getTime() < now ? "high" : "medium",
       title: streetOf(p.title),
-      why: p.deliveryDue && p.deliveryDue.getTime() < now
-        ? `Ready for editing, past its date, and no editor on it`
-        : `Ready for editing with no editor on it`,
-      owner: "Nobody yet",
-      nextAction: "Pick an editor on the row in the Editing Room",
+      why: assignment.state === "predicted"
+        ? `Routing suggests ${assignment.name}, but no assignment was saved${p.deliveryDue && p.deliveryDue.getTime() < now ? " and the due date passed" : ""}`
+        : p.deliveryDue && p.deliveryDue.getTime() < now
+          ? "Ready for editing, past its date, and no editor on it"
+          : "Ready for editing with no editor on it",
+      owner: "Kyle",
+      nextAction: assignment.state === "predicted" ? "Confirm or change the suggested editor in the Editing Room" : "Pick an editor in the Editing Room",
       href: `/edit/${p.id}`,
       ageDays: ageOf(p.shootDate ?? p.updatedAt, now),
     });
@@ -845,7 +855,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
       return b.ageDays - a.ageDays;
     }),
     totals: {
-      unassigned: { all: unassignedAll, high: unassignedHigh },
+      unassigned: { all: assignmentGaps.length, high: assignmentGaps.filter((x) => x.project.deliveryDue && x.project.deliveryDue.getTime() < now).length },
       "aging-review": { all: agingAll, high: agingHigh },
       "overdue-followup": { all: followUpAll, high: followUpHigh },
       // These two are never truncated by SQL, so the rows in hand ARE the pile.

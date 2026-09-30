@@ -97,6 +97,19 @@ on retry. Node 20 typecheck, focused lint and build pass. A browser warning
 check remains. The combined read-only live diff now lists only the two
 additive C05/C06 tables; neither was pushed to production.
 
+Sep 30 C17 local batch: a shared assignment resolver now distinguishes a
+task or project/vendor assignment, deliberate unassignment, and a routing
+suggestion across Home exceptions, Editing Room and the project summary.
+The queue select shows “Suggested: … · not assigned” until Kyle saves a choice;
+Home sends Kyle to confirm the suggestion instead of saying an editor owns it.
+The five-state isolated drill passes 11/0 and three related regressions pass
+285/0. A read-only live count found only 8 active video candidates for the
+Home resolver's uncapped, exact filtering. The named 4600 Newburg project has
+no saved editor, vendor or open edit task; its saved route suggests Kim. No
+live assignment changed. In-house acknowledgment is not inferred from
+assignment or Start and remains to implement under W02. The browser dropdown
+still needs desktop/phone acceptance replay.
+
 > The handoff asked for `handoff.md`. This Mac's filesystem is case-insensitive,
 > so a root `handoff.md` would overwrite `HANDOFF.md` (the Aug 19 session's
 > record) — which happened once already. This file is that progress record.

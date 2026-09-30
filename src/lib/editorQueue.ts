@@ -1,7 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { editorRouting } from "@/lib/settings";
-import { type EditorKey, editorForDeliverable, editorKeyForTeamName, editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
+import { VIDEO_LANE_KEYS } from "@/lib/editors";
+import { resolveEditorAssignment } from "@/lib/editorAssignment";
 import { appBase } from "@/lib/appUrl";
 import { cutKeyOf } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
@@ -402,18 +403,13 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
     // dialog can show what "Use the hub's value" hands back.
     const computedTier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
     const tier: QueueRow["tier"] = effectiveTier(p, computedTier);
-    const assigned = taskEditor.get(p.id) ?? null;
-    // "Nobody" is a real answer, not a gap: an owner who unassigned this job
-    // (task pin, or the project pinned to no editor) means it, so the routing
-    // rules do not get to guess a name back onto the row.
-    const takenOff = unpinned.has(p.id) || (p.editorManual && !p.editorId);
-    const routeKey =
-      assigned ??
-      editorKeyForTeamName(p.editor?.name) ??
-      // An upcoming job handed to the outside shop has no task and no
-      // TeamMember — the vendor key on the project is the only record of it.
-      ((p.editorVendorKey ?? null) as EditorKey | null) ??
-      (takenOff ? null : editorForDeliverable(v?.type, v?.label, monthly, rules));
+    const assignment = resolveEditorAssignment({
+      taskKey: taskEditor.get(p.id), taskUnassignedManually: unpinned.has(p.id),
+      projectEditorName: p.editor?.name, projectVendorKey: p.editorVendorKey,
+      projectManual: p.editorManual && !p.editorId,
+      deliverableType: v?.type, deliverableLabel: v?.label, monthly, rules,
+    });
+    const routeKey = assignment.key;
     const videos = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     // The BATCH size, not the number of order rows: a monthly plan is ONE
     // deliverable whose quantity is the batch (Starter 2 / Accelerator 4 /
@@ -618,11 +614,13 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
       // Who startEditing would let press Start here; null = not read (an
       // upcoming or delivered row, or the read failed).
       startableBy: holders && inflightIds.has(p.id) && !upcoming ? [...(holders.get(p.id) ?? [])].sort() : null,
-      editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
+      editor: assignment.name,
       // The key behind the name, for the row's reassign select. Same truth
       // ladder as the display: open task → Project.editor → routing rules.
       editorKey: routeKey,
-      auto: !assigned && !p.editor && !!routeKey,
+      savedEditorKey: assignment.savedKey,
+      assignmentState: assignment.state,
+      auto: assignment.state === "predicted",
       // Upcoming rows show the shoot date here (no clock has started); every
       // other row shows the delivery due — the office's date when set.
       dueISO: due?.toISOString() ?? null,
