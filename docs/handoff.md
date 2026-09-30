@@ -2,7 +2,30 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — W05 focused delivery text check
+### Current resume point — team conversation filters
+
+`19e7a00` extends the existing two-pane team message center in Communications
+and Editing Room with URL-backed All, Mine, Unread and Active work filters.
+Mine includes explicit team-roster assignments, authored messages and direct
+mentions; an unlinked login does not acquire guessed ownership. The rail and
+thread header show month and topic only from saved program/project/video links,
+and opening a thread preserves its filter. No message-send or assignment rule
+changed. Node20 TypeScript, focused lint and production build passed.
+
+The provider-fenced demo was signed in as the demo owner after adding three
+clearly marked TEST messages and a TEST roster link to its isolated PGlite
+database. All/Mine/Unread/Active counts were 4/1/3/3; reading the tagged
+thread lowered Unread to 2. Active excluded the delivered August job; the
+month/topic labels and same filters appeared in both routes. The 390px phone
+layout had no horizontal overflow. The demo server was stopped; its worktree
+is clean at `19e7a00`. Normal Kyle/James/editor accounts and message volume
+remain untested. No production DB write, provider send, push or deployment.
+
+The C15 tracker was corrected: Review Room already has `DeliveryExitSummary`
+and labels mixed media checks accurately. Its no-cuts/other-work state remains
+to verify before closing C15.
+
+### Previous checkpoint — W05 focused delivery text check
 
 `35819c0` gives every job-level delivery-text incident an opaque outbox ID
 link from Home and Review Room. Communications resolves that ID server-side,
