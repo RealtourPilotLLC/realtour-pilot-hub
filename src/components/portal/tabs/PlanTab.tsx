@@ -139,14 +139,14 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
           <section key={t.id} id={`script-${t.id}`} aria-labelledby={`script-title-${t.id}`} className="scroll-mt-24">
             <Card tone="brand">
               <div className="flex flex-wrap items-center gap-1.5">
-                <h2 id={`script-title-${t.id}`} className="min-w-0 flex-1 basis-48 break-words text-base font-semibold">{t.title}</h2>
+                <h2 id={`script-title-${t.id}`} className="min-w-0 flex-1 basis-48 break-words text-lg font-semibold">{t.title}</h2>
                 <StatusChip word={t.script?.decision === "APPROVED" ? SCRIPT_WORDS.APPROVED : t.script?.decision ? SCRIPT_WORDS.CHANGES_REQUESTED : SCRIPT_WORDS.AWAITING} />
               </div>
-              <p className="mt-0.5 text-[11px] text-muted-2">
+              <p className="mt-1 text-sm text-muted">
                 {t.selection ? `For ${monthLabel(t.selection.monthKey)}` : `No month assigned · ${t.pillarName}`}
                 {t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}
               </p>
-              {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2"><ScriptBody body={t.scriptText.body} size="xs" /></div>}
+              {t.scriptText && <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
               {canAct && !readOnly && t.script ? (
                 <ScriptApprovalCard script={t.script} large />
               ) : (
@@ -172,8 +172,9 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
       )}
       {plan.monthTopics.length > 0 && (
         <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-          <CheckCheck className="size-3.5" aria-hidden /> This month:
-          {plan.month ? `${plan.month.selected} of ${plan.month.owed}` : plan.monthTopics.length} topic{(plan.month?.owed ?? plan.monthTopics.length) === 1 ? "" : "s"} chosen — <Link href={monthHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">open the month <ChevronRight className="size-3" aria-hidden /></Link>
+          <CheckCheck className="size-3.5" aria-hidden />
+          <span>This month: {plan.month ? `${plan.month.selected} of ${plan.month.owed}` : plan.monthTopics.length} topic{(plan.month?.owed ?? plan.monthTopics.length) === 1 ? "" : "s"} chosen —</span>
+          <Link href={monthHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">open the month <ChevronRight className="size-3" aria-hidden /></Link>
           {plan.toAnswer.length > 0 && <span className="inline-flex items-center gap-1"><PencilLine className="size-3" aria-hidden /> {plan.toAnswer.length} still need{plan.toAnswer.length === 1 ? "s" : ""} your answers</span>}
         </p>
       )}

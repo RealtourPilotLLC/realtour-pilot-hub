@@ -26,7 +26,7 @@ export type ScriptViewProps = {
   parts?: ScriptParts | null;
   /** The pillar's CURRENT name (resolved by id); falls back to the category in the text. */
   pillarName?: string | null;
-  size?: "sm" | "xs";
+  size?: "lg" | "sm" | "xs";
   /** "staff" also marks a script that has no pillar; the client never sees that note. */
   audience?: "client" | "staff";
   /** Copy + Download (default on). */
@@ -70,8 +70,8 @@ export function ScriptView({ body, parts, pillarName, size = "sm", audience = "c
   );
   const category = parts ? layout.category : (realCategory(pillarName) ?? layout.category);
   const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
-  const textCls = size === "xs" ? "text-xs" : "text-sm";
-  const headCls = size === "xs" ? "text-[11px]" : "text-xs";
+  const textCls = size === "xs" ? "text-xs" : size === "lg" ? "text-base leading-7" : "text-sm";
+  const headCls = size === "xs" ? "text-[11px]" : size === "lg" ? "text-sm" : "text-xs";
 
   const copy = async () => {
     try {
@@ -130,7 +130,7 @@ export function ScriptView({ body, parts, pillarName, size = "sm", audience = "c
       {showTitle && layout.title && <div className={cn("mb-1 font-semibold", textCls)}>{layout.title}</div>}
       {layout.lead.length > 0 && <Lines lines={layout.lead} textCls={textCls} />}
       {layout.sections.map((s, i) => (
-        <section key={i} className={cn(i > 0 || layout.lead.length ? "mt-3" : "")} aria-label={s.label}>
+        <section key={i} className={cn(i > 0 || layout.lead.length ? size === "lg" ? "mt-5" : "mt-3" : "")} aria-label={s.label}>
           <h4 className={cn("mb-1 font-bold uppercase tracking-wider text-brand", headCls)}>{s.label}</h4>
           {s.lines.length ? <Lines lines={s.lines} textCls={textCls} /> : <p className={cn("italic text-muted-2", textCls)}>(empty)</p>}
         </section>

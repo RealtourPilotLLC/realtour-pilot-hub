@@ -10,6 +10,6 @@
 // they have them.
 import { ScriptView, type ScriptViewProps } from "@/components/script/ScriptView";
 
-export function ScriptBody({ body, size = "sm", ...rest }: { body: string; size?: "sm" | "xs" } & Omit<ScriptViewProps, "body" | "size">) {
+export function ScriptBody({ body, size = "sm", ...rest }: { body: string; size?: "lg" | "sm" | "xs" } & Omit<ScriptViewProps, "body" | "size">) {
   return <ScriptView body={body} size={size} {...rest} />;
 }
