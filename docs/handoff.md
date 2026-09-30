@@ -2,7 +2,34 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — W05 delivery-text exception visibility
+### Current resume point — W06 fresh handoff evidence
+
+`18a3d94` adds a read-only Dropbox check when the photographer opens the final
+handoff review. It uses the job's recorded current folder, counts RAW-Photos
+and searches video under the listing (matching the existing submit gate),
+records the check time, shows where video was found, and keeps a failed read
+unknown. The review waits for the check before its final button is available;
+if the reviewer leaves it open for over two minutes, confirmation reopens a
+new check. A checked deliverable remains the photographer's report. The saved
+receipt's older status count is now described as a recorded check, never as a
+fresh read on submit. No schema or provider write was added.
+
+Isolated handoff drill passed 119/0, B4 upload regression 69/0, Node20
+typecheck, focused lint and final production build passed. The demo browser
+showed the synthetic Avery TEST review at desktop
+and 390px, with 4 filmed, 1 unfilmed, 1 still owed, editor vision and an
+explicit unknown Dropbox result. No final submit was clicked. The demo server
+was stopped; its clean worktree is at `18a3d94`.
+
+W06 remains partial: normal authenticated photographer browser journey,
+current production file locations and field-use acceptance. The demo had no
+Dropbox connection, so the live found/zero path is verified by the stubbed
+isolated drill only. The `ShootBriefRead` table and the other three additive
+tables remain unapplied to live Neon. No production database write, provider
+write, send, push or deployment occurred. Continue W02 acceptance and the
+other open operating/UI work; do not mark the journeys client-visible.
+
+### Previous checkpoint — W05 delivery-text exception visibility
 
 W06 pre-shoot receipt is committed through `b742421`; see the checkpoint below.
 `916a30c` extends the shared `readyToSend` board used on Home and Review Room
