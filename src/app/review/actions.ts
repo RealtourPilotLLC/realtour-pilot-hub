@@ -3071,9 +3071,21 @@ export async function markTopazDeliveredAction(jobId: string): Promise<{ ok: boo
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
-  const { markTopazDelivered } = await import("@/lib/topazJobs");
   const me = await getCurrentUser().catch(() => null);
-  const r = await markTopazDelivered(jobId, await displayNameFor(me));
+  if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording delivery." };
+  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true, deliveredAt: true, submission: { select: { status: true } } } });
+  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job.deliveredAt) {
+    const { manualListingCheckReady } = await import("@/lib/finalRendition");
+    const checked = await manualListingCheckReady(job.submissionId);
+    if (!checked.ok) return checked;
+  }
+  const by = await displayNameFor(me);
+  const r = job.submission.status === "APPROVED"
+    ? await import("@/lib/readyToSend").then((m) => m.markVideoSent(job.submissionId, by))
+    : job.deliveredAt
+      ? await import("@/lib/topazJobs").then((m) => m.markTopazDelivered(jobId, by))
+      : { ok: false, message: "This cut is no longer approved. Reconcile its delivery before closing the task." };
   revalidatePath("/tasks");
   revalidatePath("/review");
   return r;

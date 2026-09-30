@@ -242,6 +242,7 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
     },
   });
   if (!task) return { ok: false, message: "That follow-up no longer exists." };
+  if (task.dedupeKey?.startsWith("topaz-deliver-")) return { ok: false, message: "Complete this video from its delivery card after checking the final Aryeo file." };
   if (task.status === "COMPLETED") return { ok: true, message: "Already handled." };
 
   const me = await getCurrentUser().catch(() => null);
@@ -323,6 +324,10 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
     return { ok: false, message: (e as Error).message };
   }
   const me = await getCurrentUser().catch(() => null);
+  if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording delivery." };
+  const { manualListingCheckReady } = await import("@/lib/finalRendition");
+  const checked = await manualListingCheckReady(submissionId);
+  if (!checked.ok) return { ok: false, message: checked.message };
   const { markVideoSent, isNoticeChoice } = await import("@/lib/readyToSend");
   // 9.2: HOW THE CLIENT WAS TOLD rides on the same press — the card asks it
   // before the stamp. A value that is not one of the card's choices is refused

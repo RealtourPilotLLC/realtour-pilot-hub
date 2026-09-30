@@ -611,6 +611,35 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
   if (t.dedupeKey?.startsWith("brand-ack:") && (status === "COMPLETED" || status === "CANCELLED")) {
     return { ok: false, message: "This brand confirmation closes when every required editor records Got it, or the office records an override with a reason on the edit brief." };
   }
+  if (t.dedupeKey?.startsWith("topaz-deliver-") && status === "COMPLETED") {
+    const jobId = t.dedupeKey.slice("topaz-deliver-".length);
+    const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true, taskId: true, deliveredAt: true, submission: { select: { status: true } } } });
+    if (!job) return { ok: false, message: "This delivery task has no matching 1080p job. Ask Kyle to reconcile it." };
+    if (job.taskId !== taskId) return { ok: false, message: "This task is no longer the 1080p job's delivery card. Ask Kyle to reconcile it." };
+    if (!job.deliveredAt) {
+      const { manualListingCheckReady } = await import("@/lib/finalRendition");
+      const checked = await manualListingCheckReady(job.submissionId);
+      if (!checked.ok) return checked;
+    }
+    // The per-cut writer closes this task through the Topaz settlement, and
+    // stamps the exact output. A bare Topaz stamp would hide the Home row
+    // while leaving the owed output unrecorded.
+    const actor = await import("@/lib/auth/user").then((m) => m.getCurrentUser()).catch(() => null);
+    if (actor?.impersonating) return { ok: false, message: "Leave preview mode before recording delivery." };
+    const who = actor?.realName ?? actor?.name ?? actor?.email ?? null;
+    const result = job.submission.status === "APPROVED"
+      ? await import("@/lib/readyToSend").then((m) => m.markVideoSent(job.submissionId, who))
+      : job.deliveredAt
+        ? await import("@/lib/topazJobs").then((m) => m.markTopazDelivered(jobId, who))
+        : { ok: false, message: "This cut is no longer approved. Reconcile its delivery before closing the task." };
+    revalidatePath("/");
+    revalidatePath("/ops");
+    revalidatePath("/queue");
+    revalidatePath("/tasks");
+    revalidatePath("/history");
+    if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
+    return result;
+  }
   // THE DROPDOWN CAN'T START EDITING (§7.1). "In progress" on an in-house
   // editor's edit card used to be the second way to say "I'm on it", with no
   // record of who or since when, and it paused nothing else they were on.
@@ -768,22 +797,6 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
     await resolveRevisionForTask(taskId, t.projectId, status === "CANCELLED" ? "dismissed" : "resolved");
     revalidatePath("/pipeline");
     revalidatePath("/");
-  }
-  // Ticking the "upload the 1080p video to Aryeo" card IS the delivery mark
-  // (Sep 16 review). The card tells Kyle to press Done when it is delivered,
-  // and pressing Done has to be the whole answer: the only other button wired
-  // to markTopazDelivered lives on /connections, which is owner-only, so the
-  // job stayed "waiting for Kyle" for every video he had already delivered and
-  // the count on the dashboard only ever climbed. Aryeo gives us no way to
-  // observe the upload, so his tick is the only evidence that exists — which
-  // makes it worth carrying properly.
-  if (status === "COMPLETED" && t?.dedupeKey?.startsWith("topaz-deliver-")) {
-    try {
-      const { markTopazDelivered } = await import("@/lib/topazJobs");
-      const { getCurrentUser } = await import("@/lib/auth/user");
-      const me = await getCurrentUser().catch(() => null);
-      await markTopazDelivered(t.dedupeKey.slice("topaz-deliver-".length), me?.name ?? me?.email ?? null);
-    } catch { /* the tick itself already stands — this only closes the loop */ }
   }
   // Closing an @mention companion task rings the TAGGER's bell — shared with
   // the Ops Day / Dashboard "Handled" button (src/lib/mentionDone.ts).
@@ -1110,7 +1123,7 @@ export async function toggleTaskChecklistItem(
     where: { id: taskId },
     // taskType/assignedKey + the client's segment let us log a QcRecord when a
     // media_qa card completes via ticking (the owner's quality dial).
-    select: { checklist: true, status: true, projectId: true, taskType: true, assignedKey: true, sourceDetail: true, client: { select: { segment: true } } },
+    select: { checklist: true, status: true, projectId: true, taskType: true, assignedKey: true, sourceDetail: true, dedupeKey: true, client: { select: { segment: true } } },
   });
   if (!t) return { ok: false, items: [], completed: false };
   const items = parseChecklist(t.checklist);
@@ -1130,8 +1143,12 @@ export async function toggleTaskChecklistItem(
       const c = qcCategoryOfRow(i.label);
       return !i.done && !!c && reopenedFor.has(c);
     });
+  // The final tick on a Topaz upload card cannot claim delivery. The explicit
+  // Complete action verifies the client-viewable Aryeo file and writes the
+  // Topaz delivery stamp together with the task close.
   const completed =
-    t.taskType === "media_qa" ? qcGateComplete(items) && !reopenedWorkLeft : checklistComplete(items);
+    t.dedupeKey?.startsWith("topaz-deliver-") ? false
+    : t.taskType === "media_qa" ? qcGateComplete(items) && !reopenedWorkLeft : checklistComplete(items);
   // Log a QC pass when this tick is the one that finishes a media_qa card (and it
   // wasn't already complete). recordQcCompletion snapshots the ticks, counts the
   // misses, and is deduped/best-effort so it can't double-write vs the reconciler

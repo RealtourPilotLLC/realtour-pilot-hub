@@ -1785,6 +1785,7 @@ model ReviewSubmission {
   clientNoticeVia      String?
   clientNoticeBy       String?
   clientNoticeRef      String?
+  finalRenditionChecks FinalRenditionCheck[]
   @@unique([projectId, assetPath, round])
   @@index([status])
   @@index([projectId, round])
@@ -1793,6 +1794,29 @@ model ReviewSubmission {
   @@index([clientReleasedAt])
   @@index([outputId])
   @@index([reviewerTeamMemberId, status])
+}
+
+// W04: a human's check of the exact client-viewable rendition, after upload.
+// A new check is appended if the source or provider file changes; an old pass
+// never validates a replacement. It is an attributed attestation, not evidence
+// that the video was watched all the way through by the software.
+model FinalRenditionCheck {
+  id                    String           @id @default(cuid())
+  submission            ReviewSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  submissionId          String
+  projectId             String
+  destination           String // aryeo-listing | client-portal
+  destinationMediaId    String
+  destinationUrl        String
+  sourceFingerprint     String
+  checksJson            String
+  metadataJson          String?
+  checkedBy             String
+  checkedByUserId       String?
+  checkedAt             DateTime         @default(now())
+
+  @@index([submissionId, checkedAt])
+  @@index([destination, destinationMediaId])
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.

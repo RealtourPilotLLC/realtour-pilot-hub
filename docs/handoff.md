@@ -2,6 +2,32 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — W04 listing delivery verification
+
+W03 is committed through `9a3c9d5`. W04 now has an isolated listing-specific
+implementation pending its local commit. `FinalRenditionCheck` is a third
+additive, unapplied table. Staff select the actual Aryeo video after upload and
+record a named check of its playback, audio, first/last frames, title, output
+identity and client access. The exact cut/source fingerprint and provider ID/URL
+are stored. Older provider videos, changed files, a newer cut, missing media or
+an undelivered listing cannot satisfy manual delivery. The Home Mark sent,
+Topaz action and Topaz task Complete paths use this gate; task completion now
+settles via the per-cut send writer. The software displays browser metadata
+separately and never claims the checklist proves a full watch.
+
+Isolated W04 drill passes 18/0, including negative and positive send/task
+actions in PGlite with a fake Aryeo listing and fenced network. TypeScript,
+focused lint and build passed before the last narrow task-route adjustments;
+rerun final checks. A read-only Prisma diff against live Neon lists only
+`ClientBrandReceipt`, `DeliveryFollowUpHealth`, and `FinalRenditionCheck` plus
+their indexes/FKs. No `db:push`, production mutation, real provider write,
+client send, push or deployment happened. The isolated demo server was stopped
+gracefully after the W03 visual replay; ports 3200/5599 were free on check.
+Remaining W04: normal-auth/visual check, live-provider behavior after approval,
+monthly portal final-file verification and its release policy. A question about
+whether to hold monthly portal release before verification is pending with the
+user. Continue W05's shared delivery summary independently.
+
 ### Current resume point — W03 staff revisions (Sep 30 night)
 
 The local branch is `codex/audit-2026-09-30`. W03 commits `dc5aea7`,
@@ -28,9 +54,9 @@ push or deployment was made.
 The isolated demo worktree is at
 `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`,
 on ports 3200/5599 with provider fencing, no `.env`, and synthetic TEST rows.
-It was running in owned exec session 11397 at this handoff update; check the
-process before starting another or changing that checkout. Production schema
-still lacks the two additive C05/C06 tables. See
+It was stopped gracefully after the W03 replay; check processes before
+starting another or changing that checkout. Production schema
+still lacks the C05/C06/W04 additive tables. See
 [`audit-2026-09-30-checklist.md`](audit-2026-09-30-checklist.md) for the full
 backlog; W04 final-rendition verification is next.
 

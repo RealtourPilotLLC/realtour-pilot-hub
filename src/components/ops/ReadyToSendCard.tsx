@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
+import { FinalRenditionCheck } from "@/components/ops/FinalRenditionCheck";
 import { RetryRender } from "@/components/ops/RetryRender";
 import { HeldRender } from "@/components/ops/HeldRender";
 import { NotTold } from "@/components/ops/NotTold";
@@ -376,6 +377,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>
+      <div className="mt-2"><FinalRenditionCheck submissionId={v.submissionId} label={v.cutLabel} round={v.round} /></div>
     </div>
   );
 }
