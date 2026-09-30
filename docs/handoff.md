@@ -4,6 +4,18 @@
 
 ### Current resume point — staff keyboard dialogs and mobile menu
 
+`dc33727` adds an explicit leave/keep choice when an editor has unsaved
+self-check answers. The first Escape or Not yet opens it; Keep checking
+preserves the answers, and Discard answers closes by deliberate choice.
+`8f47f43`/`808f6fe` keep a repeated Escape inside that choice: the first
+replay exposed a native-dialog close that left the React form mounted but
+unopenable, so the modal now intercepts Escape while the choice is present.
+In the fenced TEST fixture, repeated Escape kept the choice and the answer,
+Keep checking returned focus to Close with the answer intact, and Discard
+answers closed and returned focus to Open self-check. Node20 TypeScript,
+focused lint and the final production build passed. The
+temporary fixture was removed and the demo stopped, clean at `808f6fe`.
+
 `5d52526` adds a shared native modal wrapper for the editor's send-for-review
 check and Kyle's draft-update dialog. It opens in the browser top layer so
 background controls are inert and Tab stays inside; Escape closes only when a
@@ -28,8 +40,7 @@ was removed; the demo is stopped and clean at `40b0d67`. No form was sent,
 no provider or production write occurred, and nothing was pushed or deployed.
 
 UX14 remains partial: replay the real signed editor and Kyle contexts, test
-pending request timing, ensure unsaved self-check answers are not silently
-lost on cancellation, and finish the custom status menu keyboard pattern.
+pending request timing, and finish the custom status menu keyboard pattern.
 
 ### Previous checkpoint — Kyle's ready-file row
 
