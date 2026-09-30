@@ -2,7 +2,27 @@
 
 ## Sep 30 takeover addendum
 
-### Current resume point — notification read feedback
+### Current resume point — bounded project chat reads
+
+`ede6acf` puts a read-only team-message cue near the editor brief's work
+controls, linking to the conversation far below. A read failure is shown as
+unknown, never as zero. `4729c87` fixes a race found during verification:
+ProjectMessages now freezes the last message ID present when that conversation
+opened, including its Retry control. Same-project server refreshes do not
+silently acknowledge a message that arrived later; switching to another
+project begins a new reading visit. Page load alone still writes no receipt.
+
+Node20 TypeScript, focused lint and production build passed. In the signed
+owner, provider-fenced Parker TEST route, opening the brief left ThreadRead
+null. After adding a new TEST message to PGlite, opening the chat saved the
+timestamp of the second previously loaded message, while the new third one
+remained unread. A fresh 390px load showed one new-message cue beside the
+unchanged manual Start/Pause bar. Normal editor-role, read-only preview and
+read-save failure checks are still open. The demo server was stopped; its
+worktree is clean at `4729c87`. No production DB write, provider send, push
+or deployment.
+
+### Previous checkpoint — notification read feedback
 
 `ce2a027` repairs the bell's optimistic Mark all read behavior. The button
 shows Saving, changes the count/highlight only after a confirmed JSON response,
