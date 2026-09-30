@@ -80,7 +80,7 @@ html.light {
 
   /* Chip text sinks toward near-black on the light canvas (see :root note). */
   --chip-ink: #1f1f1f;
-  --chip-ink-mix: 42%;
+  --chip-ink-mix: 50%;
   --hue-ink-mix: 40%;
 }
 
@@ -109,7 +109,7 @@ html.light {
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.1);
   --chip-ink: #1f1f1f;
-  --chip-ink-mix: 42%;
+  --chip-ink-mix: 50%;
   --hue-ink-mix: 40%;
 }
 
