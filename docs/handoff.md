@@ -2,6 +2,40 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — W06 photographer handoff
+
+W05 is committed at `07d25d1` plus `d68b99c` (verification and a monthly
+route link correction). W06's first commits are `895601a` and `13b0d77`.
+Before submitting an upload page, the photographer now reviews the actual
+photo/video half, filmed and unfilmed topics separately, off-script titles and
+notes, raw folder destinations, Dropbox read status, instructions, field
+exceptions and work still owed. The same details remain on the success screen.
+A titled off-script video without a note is refused by the client and server;
+the existing filming report still owns the exact topic/version data. The
+confirmation hides the second submit button. A successful submit refreshes
+the server read-back: isolated replay caught the old contradiction where it
+said "never submitted" beside the success banner, and the second replay
+showed the saved submit time and vision after refresh.
+
+Node 20 typecheck, focused lint (two pre-existing unused-symbol warnings on
+the upload page) and build passed after the final refresh/confirmation
+change. Isolated CP09 filming drill passes 139/0 (including
+missing off-script note refusal) and B4 upload drill passes 69/0. Isolated
+desktop and 390px browser review passed; one synthetic monthly handoff was
+submitted in the fenced demo database only. The demo server is stopped. No
+production mutation, client message, provider booking, financial change,
+push or deployment.
+
+W06 remains partial for a pre-shoot brief read receipt and changed-brief
+delta, the complete latest script/game plan/must-get/avoid/pronunciation/
+references/chosen-assets view, fresh file-location verification and normal
+photographer auth. W05 still needs failed/unknown notification and provider
+outcomes; monthly release policy and per-job portal/Aryeo obligation are
+unresolved. U0–U6 and other checklist rows remain active. Production still
+lacks the three additive C05/C06/W04 tables. Continue the checklist in audit
+order with the independent notification/exception work, preserving the
+deployment gate.
+
 ### Current resume point — W05 shared delivery exit
 
 W04 is committed at `b1622b1`. Its isolated desktop and 390px form check passed:
@@ -17,9 +51,9 @@ Home's long card introduction is shortened.
 
 Node 20 typecheck, focused lint, build and isolated B4 delivery drill (120/0)
 passed. Isolated desktop/390px browser showed the global and per-cut views;
-normal Review Room hid TEST rows and `?test=1` showed them. One follow-up copy
-edit after the visual check changes the monthly row's action link from Home to
-the job page; rerun typecheck/lint before committing it with this handoff.
+normal Review Room hid TEST rows and `?test=1` showed them. The follow-up copy
+edit changed the monthly row's action link from Home to the job page; typecheck
+and lint passed before its commit.
 The demo server is stopped. No production mutation, push or deployment.
 
 W05 remains partial: surface failed/unknown notification and provider outcomes
