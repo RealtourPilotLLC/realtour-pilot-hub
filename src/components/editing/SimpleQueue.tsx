@@ -25,6 +25,7 @@ import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/edi
 import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
 import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefaults";
 import { editingQueueFilters, editingQueueHref, type EditingDueFilter } from "@/lib/editingQueueUrl";
+import { EDITING_STAGES, matchesEditingStage, type EditingStageFilter } from "@/lib/editingQueueStage";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
 // just like our Slack. It's been working, so I don't want to fix what isn't
@@ -561,14 +562,14 @@ export function SimpleQueue({
   const router = useRouter();
   const searchParams = useSearchParams();
   const editorKeys = new Set([...notDone, ...upcoming, ...done].map((r) => r.editorKey ?? "__none__"));
-  const { view, editor: who, due: dueWanted } = editingQueueFilters(
+  const { view, editor: who, due: dueWanted, stage } = editingQueueFilters(
     new URLSearchParams(searchParams.toString()), editorKeys, hideEditor);
   const queueHref = editingQueueHref(new URLSearchParams(searchParams.toString()), editorKeys, hideEditor);
   const jobHref = (id: string) => {
     const query = queueHref.split("?")[1];
     return `/edit/${encodeURIComponent(id)}${query ? `?queue=${encodeURIComponent(query)}` : ""}`;
   };
-  const updateFilters = (change: { view?: string; editor?: string | null; due?: DueFilter }) => {
+  const updateFilters = (change: { view?: string; editor?: string | null; due?: DueFilter; stage?: EditingStageFilter }) => {
     const next = new URLSearchParams(window.location.search);
     if (change.view !== undefined) next.set("view", change.view);
     if (change.editor !== undefined) {
@@ -576,6 +577,7 @@ export function SimpleQueue({
       else next.delete("editor");
     }
     if (change.due !== undefined) next.set("due", change.due);
+    if (change.stage !== undefined) next.set("stage", change.stage);
     window.history.replaceState(null, "", editingQueueHref(next, editorKeys, hideEditor));
   };
   useEffect(() => {
@@ -630,7 +632,8 @@ export function SimpleQueue({
 
   const byWho = (r: QueueRow) => who === null || (r.editorKey ?? "__none__") === who;
   const byWhen = (r: QueueRow) => matchesDue(when, r.late, dueKeys.get(r.id) ?? null, todayKey, week);
-  const rows = all.filter((r) => byWho(r) && byWhen(r));
+  const byStage = (r: QueueRow) => matchesEditingStage(stage, r.status);
+  const rows = all.filter((r) => byWho(r) && byWhen(r) && byStage(r));
 
   // CROSS-FILTERED, both ways: each select counts inside what the OTHER one has
   // already narrowed to, so every number on offer is exactly the number of rows
@@ -639,8 +642,12 @@ export function SimpleQueue({
   // morning Kim had 7 open jobs and not one of them due today, due this week or
   // late, so a tab-wide "Due today (3)" sitting on her view would have emptied
   // the table (probe, Sep 18).
-  const forEditors = all.filter(byWhen);
-  const forDue = all.filter(byWho);
+  const forEditors = all.filter((r) => byWhen(r) && byStage(r));
+  const forDue = all.filter((r) => byWho(r) && byStage(r));
+  const forStage = all.filter((r) => byWho(r) && byWhen(r));
+  const stageOptions = EDITING_STAGES.map((option) => ({
+    ...option, n: forStage.filter((r) => matchesEditingStage(option.key, r.status)).length,
+  })).filter((option) => option.n > 0 || option.key === stage);
 
   // Built from the rows ON THIS TAB, so a name never offers itself and then
   // shows nothing. "Nobody assigned" earns a place the moment a row has no
@@ -700,7 +707,7 @@ export function SimpleQueue({
   // widen the board again. The OPTIONS stay cross-filtered; only the control
   // itself now survives an editor pick.
   const dueOnTab = DUE_CHOICES.some((f) => all.some((r) => matchesDue(f, r.late, dueKeys.get(r.id) ?? null, todayKey, week)));
-  const filtering = who !== null || when !== "any";
+  const filtering = who !== null || when !== "any" || stage !== "all";
   // THE PILLS COUNT WHAT CLICKING THEM SHOWS (review, Sep 18). They were the
   // one number on this screen that ignored the filters, so with Kim picked and
   // Overdue on, the live board offered "Not Done 19" and "Done 32" and handed
@@ -710,7 +717,7 @@ export function SimpleQueue({
   // no due filter there, exactly as `when` does once you are on it.
   const countOn = (tab: typeof view, rows: QueueRow[]) => {
     const w: DueFilter = choicesFor(tab).includes(dueWanted) ? dueWanted : "any";
-    return rows.filter((r) => byWho(r) && matchesDue(w, r.late, dueKeys.get(r.id) ?? null, todayKey, week)).length;
+    return rows.filter((r) => byWho(r) && byStage(r) && matchesDue(w, r.late, dueKeys.get(r.id) ?? null, todayKey, week)).length;
   };
   const VIEWS = [
     { key: "notdone" as const, label: "Open work", n: countOn("notdone", notDone) },
@@ -749,10 +756,23 @@ export function SimpleQueue({
             one stays — "what's due today" is exactly the question an editor
             opens this page with. */}
         <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            Stage
+            <select
+              aria-label="Filter by project stage"
+              value={stage}
+              onChange={(e) => updateFilters({ stage: e.target.value as EditingStageFilter })}
+              className="min-h-11 max-w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
+            >
+              <option value="all">All stages ({forStage.length})</option>
+              {stageOptions.map((option) => <option key={option.key} value={option.key}>{option.label} ({option.n})</option>)}
+            </select>
+          </label>
           {!hideEditor && (editorKeysOnTab.size > 1 || who !== null) && (
             <label className="flex items-center gap-1.5 text-xs text-muted">
               Editor
               <select
+                aria-label="Filter by editor"
                 value={who ?? ""}
                 onChange={(e) => updateFilters({ editor: e.target.value || null })}
                 className="min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
@@ -768,6 +788,7 @@ export function SimpleQueue({
             <label className="flex items-center gap-1.5 text-xs text-muted">
               {upcomingTab ? "Shoot" : "Due"}
               <select
+                aria-label={upcomingTab ? "Filter by shoot date" : "Filter by due date"}
                 value={when}
                 title={dueTitle(when)}
                 onChange={(e) => updateFilters({ due: e.target.value as DueFilter })}
@@ -782,6 +803,7 @@ export function SimpleQueue({
           )}
         </div>
       </div>
+      {stage !== "all" && <p className="mb-3 text-sm text-muted">Filtered by the project&rsquo;s shown status. Individual videos may be at different stages; their counts stay on the row.</p>}
 
       {rows.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted">
@@ -794,7 +816,7 @@ export function SimpleQueue({
             <>
               Nothing on this tab matches the filters above.{" "}
               <button
-                onClick={() => updateFilters({ editor: null, due: "any" })}
+                onClick={() => updateFilters({ editor: null, due: "any", stage: "all" })}
                 className="font-medium text-brand underline underline-offset-2"
               >
                 Clear filters

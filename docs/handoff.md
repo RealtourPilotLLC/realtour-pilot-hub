@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### U3 checkpoint — persistent Editing stage filters
+
+The queue now filters by the project status it already displays: Ready for
+editing, Changes requested, Awaiting review, Blocked / waiting, and distinct
+choices for other recorded states. A project with mixed video stages is labelled
+as such; this presentation filter does not infer manual Start, approval or delivery.
+Stage/editor/due/view intersect consistently, survive the URL and brief return
+link, and preserve canonical copied job links. Clear filters resets all dimensions.
+
+Focused drill passed 14/0, including 1,903 rendered filter/count transitions
+(`/tmp/u3-editing-stage-filters-logs/u3-editing-stage-filters.ts.log`). Lint,
+diff check and one focused review passed. An HTML attribute-order assertion was
+corrected during verification. Full TypeScript found only a concurrent W03 drill
+typing error; the stable candidate needs the next integrated gate. Mounted browser
+and visual acceptance remain blocked. No work state or provider was changed.
+
 ### U5 checkpoint — call recovery in the existing operations queue
 
 Settings links to Content → Monitoring → Calls when the viewer has content

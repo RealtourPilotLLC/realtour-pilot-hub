@@ -1,4 +1,5 @@
 /** Only these non-sensitive queue choices belong in a shareable URL. */
+import { editingStageFilter } from "@/lib/editingQueueStage";
 export type EditingQueueView = "notdone" | "upcoming" | "done";
 export type EditingDueFilter = "any" | "overdue" | "today" | "week" | "undated";
 
@@ -12,17 +13,19 @@ export function editingQueueFilters(params: URLSearchParams, editorKeys?: Readon
   return {
     view: rawView && VIEWS.has(rawView) ? rawView : "notdone" as EditingQueueView,
     due: rawDue && DUE.has(rawDue) ? rawDue : "any" as EditingDueFilter,
+    stage: editingStageFilter(params.get("stage")),
     editor: !hideEditor && rawEditor && /^[a-z0-9_-]{1,40}$/.test(rawEditor) &&
       (!editorKeys || editorKeys.has(rawEditor)) ? rawEditor : null,
   };
 }
 
 export function editingQueueHref(params: URLSearchParams, editorKeys?: ReadonlySet<string>, hideEditor = false) {
-  const { view, due, editor } = editingQueueFilters(params, editorKeys, hideEditor);
+  const { view, due, editor, stage } = editingQueueFilters(params, editorKeys, hideEditor);
   const clean = new URLSearchParams();
   if (view !== "notdone") clean.set("view", view);
   if (editor) clean.set("editor", editor);
   if (due !== "any") clean.set("due", due);
+  if (stage !== "all") clean.set("stage", stage);
   const query = clean.toString();
   return `/editing${query ? `?${query}` : ""}`;
 }
