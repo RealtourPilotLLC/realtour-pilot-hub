@@ -2,6 +2,20 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 resume point — C14 Home exception scope
+
+The normal Home exception board now excludes synthetic client rows at each
+source query, before its row caps and totals are computed. It covers editing
+assignment, review, follow-up, render, library, reopened delivery, order scope,
+AutoHDR and at-risk promises. An explicit full board read still includes test
+records. The filter uses `isSyntheticClientRow` on client ID and name, so a
+real job titled TEST Avenue and the protected real Jordan client are retained.
+The isolated `c14-home-counts` drill passed 8/0 across four count categories,
+including a synthetic follow-up pile larger than the display cap; the older
+scope-exceptions regression passed 28/0. Node20 TypeScript, focused lint and
+production build passed. No provider call or production write. Next, verify
+the signed browser identity and remaining C14 normal Home surfaces.
+
 ### Current resume point — C14 demo and communication identity
 
 The loopback demo's existing representative month already has believable

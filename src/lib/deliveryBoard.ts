@@ -1401,7 +1401,7 @@ export type ReopenedWorkRow = {
   holderKey: string | null;
 };
 
-export async function reopenedWork(opts: { now?: Date; max?: number } = {}): Promise<ReopenedWorkRow[]> {
+export async function reopenedWork(opts: { now?: Date; max?: number; excludeClientIds?: string[] } = {}): Promise<ReopenedWorkRow[]> {
   const now = opts.now ?? new Date();
   const extraIds = [
     ...new Set(
@@ -1410,6 +1410,7 @@ export async function reopenedWork(opts: { now?: Date; max?: number } = {}): Pro
   ];
   const rows = await prisma.project.findMany({
     where: {
+      ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}),
       deliveredAt: { not: null },
       aryeoMissingAt: null,
       OR: [

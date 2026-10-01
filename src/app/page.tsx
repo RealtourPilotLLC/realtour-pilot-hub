@@ -530,7 +530,7 @@ export default async function HomePage() {
       // The five quiet failures (R08). Reporting only, and a failed read is an
       // empty card rather than a page that will not render. The BOARD, not the
       // bare rows: the card has to be able to say how many it is not showing.
-      opsExceptionsBoard().catch((e: unknown): OpsExceptionBoard => {
+      opsExceptionsBoard({ includeTest: false }).catch((e: unknown): OpsExceptionBoard => {
         console.warn("opsExceptions failed", (e as Error).message);
         return emptyExceptionBoard();
       }),

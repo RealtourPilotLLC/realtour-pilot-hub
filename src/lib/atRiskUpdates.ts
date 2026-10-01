@@ -66,10 +66,15 @@ export function atRiskTaskKey(r: { outputId: string | null; projectId: string; p
 
 /** Everything owed to a client whose recorded promise is inside AT_RISK_HOURS
  *  or already past (up to LOOKBACK_DAYS). Read-only. */
-export async function atRiskOutputs(now: Date = new Date()): Promise<AtRiskRow[]> {
+export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClientIds?: string[] } = {}): Promise<AtRiskRow[]> {
   const horizon = new Date(now.getTime() + AT_RISK_HOURS * HOUR);
   const floor = new Date(now.getTime() - LOOKBACK_DAYS * 86_400_000);
   const live = { status: { notIn: ["DELIVERED", "CANCELLED"] as ("DELIVERED" | "CANCELLED")[] } };
+  // Output rows carry a plain projectId, so exclude synthetic projects before
+  // the 200-row safety cap rather than trimming their rows after pagination.
+  const excludedProjectIds = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
   const [outputs, projects] = await Promise.all([
     // Per video: the pinned client deadline, still owed — not delivered, not
     // waived, not dropped from the order — on a job that is still live.
@@ -77,6 +82,7 @@ export async function atRiskOutputs(now: Date = new Date()): Promise<AtRiskRow[]
       where: {
         promisedAt: { not: null, lte: horizon, gte: floor },
         deliveredAt: null, waivedAt: null, removedFromOrderAt: null,
+        ...(excludedProjectIds.length ? { projectId: { notIn: excludedProjectIds } } : {}),
       },
       select: { id: true, projectId: true, slot: true, category: true, title: true, promisedAt: true, promiseSource: true },
       orderBy: { promisedAt: "asc" },
@@ -86,7 +92,7 @@ export async function atRiskOutputs(now: Date = new Date()): Promise<AtRiskRow[]
     // frozen promise, read the way every reader must (pinnedPromise — a
     // rebooked visit voids a pin, nothing else does).
     prisma.project.findMany({
-      where: { ...live, deliveredAt: null, promisedDueAt: { not: null, lte: horizon, gte: floor } },
+      where: { ...live, deliveredAt: null, promisedDueAt: { not: null, lte: horizon, gte: floor }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
       select: { id: true, title: true, clientId: true, promisedDueAt: true, shootDate: true, statusEvidence: true, promisedTierKey: true, client: { select: { name: true } } },
       take: 200,
     }),
@@ -94,7 +100,7 @@ export async function atRiskOutputs(now: Date = new Date()): Promise<AtRiskRow[]
   const projectIds = [...new Set(outputs.map((o) => o.projectId))];
   const outputProjects = projectIds.length
     ? await prisma.project.findMany({
-        where: { id: { in: projectIds }, ...live },
+        where: { id: { in: projectIds }, ...live, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
         select: { id: true, title: true, clientId: true, client: { select: { name: true } } },
       })
     : [];
@@ -302,12 +308,12 @@ export const promiseWords = (d: Date) => `${etDateTime(d)} ET`;
  *  "at-risk-promise"): an at-risk promise with NO update drafted for it yet.
  *  Once one is drafted the task on Kyle's list is the record, and the board
  *  stops repeating it. `total` is the real pile, `rows` the capped page. */
-export async function atRiskExceptionRows(opts: { now?: Date; cap: number }): Promise<{
+export async function atRiskExceptionRows(opts: { now?: Date; cap: number; excludeClientIds?: string[] }): Promise<{
   rows: import("@/lib/opsExceptions").OpsException[];
   total: { all: number; high: number };
 }> {
   const now = opts.now ?? new Date();
-  const undrafted = (await atRiskOutputs(now)).filter((r) => !r.taskId);
+  const undrafted = (await atRiskOutputs(now, { excludeClientIds: opts.excludeClientIds })).filter((r) => !r.taskId);
   const rows = undrafted.slice(0, opts.cap).map((r) => ({
     id: `at-risk:${r.key}`,
     kind: "at-risk-promise" as const,

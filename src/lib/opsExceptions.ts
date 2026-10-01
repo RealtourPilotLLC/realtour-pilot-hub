@@ -7,6 +7,7 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { editorRouting } from "@/lib/settings";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { resolveEditorAssignment } from "@/lib/editorAssignment";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // THE EXCEPTIONS BOARD (R08, review Sep 18).
@@ -231,9 +232,13 @@ export async function creativeApprover(): Promise<CreativeApprover | null> {
   return { id: row.id, name: row.name, from: picked ? "designated" : "creative-manager-flag", canApprove: !!login };
 }
 
-export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<OpsExceptionBoard> {
+export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boolean } = {}): Promise<OpsExceptionBoard> {
   const now = (opts.now ?? new Date()).getTime();
   const cap = EXCEPTION_RULES.perKind;
+  const excludedClientIds = opts.includeTest === false
+    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    : [];
+  const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
   // The roster is read WITH the approver rather than after it: resolving the
   // key an engine wrote on a task ("john", "kim", "cubicasa") to a person costs
   // one read of the team table for the whole card.
@@ -270,6 +275,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // task → project/vendor → routing distinction as the Editing Room. A rule
   // prediction is visible context for Kyle, never proof somebody accepted.
   const unassignedWhere: Prisma.ProjectWhereInput = {
+    ...clientScope,
     status: { in: ["SHOT", "EDITING", "REVISION"] },
     // OWED, not merely ordered. This carried half the shared rule — waivedAt
     // and not removedFromOrderAt — so a job whose video line had been PULLED
@@ -308,7 +314,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     // the editor's card and in the Editing Room — and because the carve-out
     // would mean a second copy of MONTHLY_PLAN_RE written in SQL, which is the
     // same drift that put half of OWED_DELIVERABLE_WHERE in the query above.
-    project: { status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] } },
+    project: { status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] }, ...clientScope },
   };
 
   // 3. A CHASE DATE THAT PASSED. SmartTask.followUpAt is the date somebody
@@ -327,6 +333,10 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     // A task with no job at all (a personal to-do) is nobody's hold, so it
     // stays — a bare relation filter would silently drop every one of them.
     OR: [{ projectId: null }, { project: { is: { status: { notIn: ["ON_HOLD", "CANCELLED"] } } } }],
+    ...(excludedClientIds.length ? { AND: [
+      { OR: [{ clientId: null }, { clientId: { notIn: excludedClientIds } }] },
+      { OR: [{ projectId: null }, { project: { is: clientScope } }] },
+    ] } : {}),
   };
   // High = three days past the date somebody set, as the row builder has it.
   const followUpHighWhere: Prisma.SmartTaskWhereInput = {
@@ -339,6 +349,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // have already replaced. This is the R03 shape, on a card rather than
   // waiting to be noticed.
   const unsentWhere: Prisma.ReviewSubmissionWhereInput = {
+    ...(excludedClientIds.length ? { project: clientScope } : {}),
     status: "APPROVED",
     sentToClientAt: null,
     decidedAt: { lt: new Date(now - EXCEPTION_RULES.unsentDays * DAY) },
@@ -388,6 +399,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
     // are none at all today, so the ceiling below is a seatbelt, not a page.
     prisma.topazJob.findMany({
       where: {
+        ...(excludedClientIds.length ? { project: clientScope } : {}),
         state: { in: ["queued", "estimated", "uploading", "processing", "saving"] },
         // A job parked ON PURPOSE is not a job stuck at the provider. hold()
         // pushes nextAttemptAt up to six hours out when the daily or monthly
@@ -635,7 +647,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // three failed reads of Topaz AND a failed read of Dropbox).
   const heldRenders = await prisma.topazJob
     .findMany({
-      where: { state: "held" },
+      where: { state: "held", ...(excludedClientIds.length ? { project: clientScope } : {}) },
       select: {
         id: true, projectId: true, heldAt: true, createdAt: true,
         project: { select: { title: true } },
@@ -684,7 +696,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // survived at least one retry. One row per client; its own small read.
   const libraryFailures = await prisma.contentEnrollment
     .findMany({
-      where: { librarySyncFailedAt: { not: null } },
+      where: { librarySyncFailedAt: { not: null }, ...clientScope },
       select: { id: true, clientId: true, librarySyncFailedAt: true, librarySyncError: true },
       orderBy: { librarySyncFailedAt: "asc" },
       take: SAFETY_CEILING,
@@ -726,9 +738,12 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // Library tab does: a row re-keyed by URL (portalLibrary.rekeyIndexedLibraryRows)
   // is settled even while its old source row lingers.
   const LEGACY_KEY = /^aryeo:[^:]+:\d+$/;
+  const excludedEnrollmentIds = excludedClientIds.length
+    ? (await prisma.contentEnrollment.findMany({ where: { clientId: { in: excludedClientIds } }, select: { id: true } })).map((e) => e.id)
+    : [];
   const positional = (
     await prisma.portalVideo
-      .findMany({ where: { source: "aryeo", externalKey: { startsWith: "aryeo:" } }, select: { id: true, externalKey: true }, take: 5_000 })
+      .findMany({ where: { source: "aryeo", externalKey: { startsWith: "aryeo:" }, ...(excludedEnrollmentIds.length ? { enrollmentId: { notIn: excludedEnrollmentIds } } : {}) }, select: { id: true, externalKey: true }, take: 5_000 })
       .catch(() => [] as { id: string; externalKey: string }[])
   ).filter((r) => LEGACY_KEY.test(r.externalKey));
   const legacySources = positional.length
@@ -739,7 +754,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   const legacyVideos = legacySources.length
     ? new Map(
         (await prisma.contentVideo
-          .findMany({ where: { id: { in: [...new Set(legacySources.map((x) => x.videoId))] }, status: { not: "ARCHIVED" } }, select: { id: true, enrollmentId: true } })
+          .findMany({ where: { id: { in: [...new Set(legacySources.map((x) => x.videoId))] }, status: { not: "ARCHIVED" }, ...clientScope }, select: { id: true, enrollmentId: true } })
           .catch(() => [] as { id: string; enrollmentId: string }[])).map((v) => [v.id, v.enrollmentId]),
       )
     : new Map<string, string>();
@@ -780,7 +795,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // Overdue first: that is work owed now. Read whole under the ceiling — the
   // pool is jobs currently reopened, a handful.
   const reopened = await import("@/lib/deliveryBoard")
-    .then((m) => m.reopenedWork({ now: new Date(now) }))
+    .then((m) => m.reopenedWork({ now: new Date(now), excludeClientIds: excludedClientIds }))
     .then((rows) => rows.filter((r) => r.overdue || r.due.undated))
     .catch(() => [] as import("@/lib/deliveryBoard").ReopenedWorkRow[]);
   {
@@ -824,7 +839,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
 
   // 10–12. WHAT THE ORDER ACTUALLY ASKED FOR (§10 AU-01, Sep 26 2026). Its own
   // function below; a failed read costs these three kinds, never the board.
-  const scope = await orderScopeExceptions({ now: new Date(now), cap }).catch((e: unknown) => {
+  const scope = await orderScopeExceptions({ now: new Date(now), cap, excludeClientIds: excludedClientIds }).catch((e: unknown) => {
     console.warn("orderScopeExceptions failed", (e as Error).message);
     return null;
   });
@@ -835,7 +850,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // uploaded twice. Built in photoEditBatches.ts; a failed read costs this
   // kind, never the board.
   const photoBatches = await import("@/lib/photoEditBatches")
-    .then((m) => m.photoBatchExceptionRows({ now: new Date(now), cap }))
+    .then((m) => m.photoBatchExceptionRows({ now: new Date(now), cap, excludeClientIds: excludedClientIds }))
     .catch(() => null);
   if (photoBatches) out.push(...photoBatches.rows);
 
@@ -844,7 +859,7 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   // drafted for that promise. Built in atRiskUpdates.ts; drafting is a button
   // on Tasks → Comms (the AI runs on the click, never here).
   const atRisk = await import("@/lib/atRiskUpdates")
-    .then((m) => m.atRiskExceptionRows({ now: new Date(now), cap }))
+    .then((m) => m.atRiskExceptionRows({ now: new Date(now), cap, excludeClientIds: excludedClientIds }))
     .catch(() => null);
   if (atRisk) out.push(...atRisk.rows);
 
@@ -918,7 +933,7 @@ const SCOPE_CEILING = 1_000;
 
 type ScopeKind = "unmapped-scope" | "other-output" | "missing-prerequisite";
 
-export async function orderScopeExceptions(opts: { now?: Date; cap?: number } = {}): Promise<{
+export async function orderScopeExceptions(opts: { now?: Date; cap?: number; excludeClientIds?: string[] } = {}): Promise<{
   rows: OpsException[];
   totals: Record<ScopeKind, ExceptionTotal>;
 }> {
@@ -931,7 +946,7 @@ export async function orderScopeExceptions(opts: { now?: Date; cap?: number } = 
   await loadManualProductMap(true);
 
   const projects = await prisma.project.findMany({
-    where: { status: { in: [...SCOPE_LIVE_STATUSES] }, aryeoMissingAt: null },
+    where: { status: { in: [...SCOPE_LIVE_STATUSES] }, aryeoMissingAt: null, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     select: {
       id: true, title: true, status: true, createdAt: true, clientId: true,
       shootDate: true, addressLine: true, lat: true, lng: true, photographerId: true, reelScript: true, reelHook: true,

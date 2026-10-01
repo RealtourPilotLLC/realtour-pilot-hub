@@ -452,10 +452,14 @@ export async function batchesForProject(projectId: string): Promise<BatchView[]>
 
 /** Batches that need a person, for the exceptions board. Latest attempt per
  *  job on jobs still in production. */
-export async function batchesNeedingAttention(opts: { now?: Date; take?: number } = {}) {
+export async function batchesNeedingAttention(opts: { now?: Date; take?: number; excludeClientIds?: string[] } = {}) {
+  const excludedProjectIds = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
   const rows = await prisma.photoEditBatch.findMany({
     where: {
       vendorKey: AUTOHDR,
+      ...(excludedProjectIds.length ? { projectId: { notIn: excludedProjectIds } } : {}),
       OR: [{ state: { in: ["PARTIAL", "MISSING"] } }, { duplicateUploadSuspected: true }],
       updatedAt: { gte: new Date((opts.now ?? new Date()).getTime() - 30 * DAY) },
     },
@@ -472,7 +476,7 @@ export async function batchesNeedingAttention(opts: { now?: Date; take?: number 
   const live = [...latest.values()].filter((r) => (maxOf.get(r.projectId) ?? r.attempt) === r.attempt);
   const projects = live.length
     ? await prisma.project.findMany({
-        where: { id: { in: live.map((r) => r.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] } },
+        where: { id: { in: live.map((r) => r.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
         select: {
           id: true, title: true, statusEvidence: true,
           deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: { in: ["PHOTOS", "DRONE"] } }, select: { status: true } },
@@ -492,8 +496,8 @@ export async function batchesNeedingAttention(opts: { now?: Date; take?: number 
  * The exceptions board's "photo-batch" rows (opsExceptions.ts), built here so
  * the board only has to ask. Kyle owns them: chasing AutoHDR is his routine.
  */
-export async function photoBatchExceptionRows(opts: { now: Date; cap: number }) {
-  const rows = await batchesNeedingAttention({ now: opts.now });
+export async function photoBatchExceptionRows(opts: { now: Date; cap: number; excludeClientIds?: string[] }) {
+  const rows = await batchesNeedingAttention({ now: opts.now, excludeClientIds: opts.excludeClientIds });
   const ageDays = (d: Date | null) => (d ? Math.max(0, Math.floor((opts.now.getTime() - d.getTime()) / DAY)) : 0);
   const built = rows.map((b) => {
     const street = streetOf(b.title);
