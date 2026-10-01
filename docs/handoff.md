@@ -2,6 +2,18 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 C19 approved-link follow-up — local checkpoint
+
+`src/lib/settings.ts` separates the approved general strategy-call welcome URL
+from monthly Content Program booking. `scripts/_drill/c19-general-welcome.ts`
+passed26/0 with the actual resolver/sweep/template and monthly classifier behind
+fenced providers/Prisma. Scoped lint and root review passed; saved custom text,
+URLs and switches remain. Log `/tmp/ops-hub-c19-general-welcome/c19-general-welcome.ts.log`.
+Fresh guarded read-only production check found no `auto_texts` row; no default
+overlay was inserted and no setting/message/outbox/automation write occurred.
+The new default is local until release. Stable combined types/build will cover
+the receipt/monthly batch once its source freezes; deployed candidate remains3c3c2d7.
+
 ### Oct 1 production release — exact reviewed candidate deployed
 
 Jordan explicitly authorized deployment. Candidate3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3

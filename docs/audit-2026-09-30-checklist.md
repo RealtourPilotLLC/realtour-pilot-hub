@@ -8,6 +8,19 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Follow-up C19 — approved general welcome link (local)
+
+- The welcome default/fallback now uses Jordan's approved
+  `https://calendly.com/realtourpilot-info/strategy-call`. The dedicated monthly
+  Content Program constant, event mapping and classifiers are unchanged.
+- Actual fenced resolver/sweep/template and monthly-link fixture:26/0;
+  scoped lint and root source review pass. Saved custom URLs, messages, switches,
+  send windows, opt-outs and dedupe are preserved. No real message was sent.
+- Fresh read-only live settings check found no `auto_texts` row. No row was
+  inserted or changed; production will use the new default only after this
+  source is released. Combined stable types/build remain pending for the new
+  policy batch. Production still serves3c3c2d7.
+
 | Stage | Verified fact / next step |
 |---|---|
 | Candidate | `3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3`; existing source/test/build evidence below remains applicable. |

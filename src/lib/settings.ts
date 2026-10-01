@@ -1,6 +1,5 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import type { EditorKey } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
@@ -187,13 +186,13 @@ export const DEFAULT_WELCOME_TEXT =
   // their account there, view invoices, content, and place orders, and reschedule."
   "Hey {first}, welcome to RealTour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. Your client portal is {portal}: that's your account, where you can see invoices and your content, place orders and reschedule. You can also book a free strategy call any time: {strategyCallLink}. Everything about what we do is at {website}.";
 
-// Where the free strategy call is booked. The default is the one live event
-// type (lib/integrations/calendly is the source of truth); it is stored on the
-// settings row so Jordan can move the link without a deploy and so the Settings
-// preview can render the real thing.
+// Jordan, Oct 1 2026: the general welcome offers this strategy call. Monthly
+// content planning keeps its dedicated event type in integrations/calendly.
+// A saved welcome URL still wins, so this can be changed in Settings.
+export const GENERAL_STRATEGY_CALL_BOOKING_URL = "https://calendly.com/realtourpilot-info/strategy-call";
 export const DEFAULT_WELCOME: WelcomeTextRule = {
   enabled: true,
-  strategyCallUrl: STRATEGY_CALL_BOOKING_URL,
+  strategyCallUrl: GENERAL_STRATEGY_CALL_BOOKING_URL,
   message: DEFAULT_WELCOME_TEXT,
 };
 
@@ -431,7 +430,7 @@ export async function autoTextRules(): Promise<ResolvedAutoTextRules> {
     welcome: {
       enabled: r.welcome?.enabled !== false,
       // A booking link is the POINT of this text, so a blank or malformed one
-      // falls back to the live Calendly event rather than sending a client a
+      // falls back to the approved general strategy call rather than sending a client a
       // sentence that offers a call and then names nowhere to book it.
       strategyCallUrl:
         typeof r.welcome?.strategyCallUrl === "string" && /^https?:\/\/[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(r.welcome.strategyCallUrl.trim())

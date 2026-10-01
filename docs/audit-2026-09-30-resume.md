@@ -126,6 +126,12 @@ These decisions are approved but not yet implemented in3c3c2d7. Next batch must
 align exact final/backup evidence and receipt generations, preserving property
 Aryeo delivery and dedicated monthly Calendly mapping. Do not send or activate.
 
+C19 source is now prepared locally: approved general default/fallback, fixture26/0,
+scoped lint and root review. Fresh guarded production read found no `auto_texts`
+row, so no stored settings write was needed or performed. The new default takes
+effect only with its release. W02 and monthly source work are still in progress;
+preserve their dirty files and do not repeat completed C19 verification.
+
 ## Earlier source checkpoint
 
 Upload reconciliation now has exact actor/project/payload-bound AuditLog

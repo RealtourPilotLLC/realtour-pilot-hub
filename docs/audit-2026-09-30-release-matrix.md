@@ -74,7 +74,7 @@ for normal authorized client/editor access.
 |---|---|---|
 | Monthly delivery destination | Engineering; Jordan decision received | Portal plus backup in final Dropbox folder. Implement exact dual evidence for monthly outputs; preserve property Aryeo routing. Not implemented in3c3c2d7. |
 | Editor brand/brief receipt policy | Engineering; Jordan decision received | Intentional no-brand requires acknowledgment; returning to an editor after reassignment requires a fresh receipt. Implement explicit choice/generation; preserve historical receipts and manual Start/Pause. |
-| General welcome destination | Engineering; Jordan supplied link | Use https://calendly.com/realtourpilot-info/strategy-call. Prepare targeted default/config correction; retain monthly appointment mapping and never replay welcomes. |
+| General welcome destination | Engineering; local source prepared | Approved general default/fallback implemented; actual fenced fixture26/0, lint and root review pass. Fresh live read found no `auto_texts` row, so no stored write. New source not yet deployed; retain monthly mapping and never replay welcomes. |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |
 | Client identities | Kyle/Jordan | Resolve Janice/Arielle and other named conflicts using source evidence; investigate Joe/Joseph without assuming they should merge |
 | Intended first client roster | Jordan | Confirm the intended first roster using the private Sep 30 22:33 ET inventory of 13 candidates; then prepare the exact seats, strategy/bank, month and source evidence. No invitations are authorized by the inventory |
