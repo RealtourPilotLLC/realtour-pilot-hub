@@ -1,0 +1,92 @@
+# Ops Hub audit — current resume point
+
+Use this page first. The full backlog is in
+`audit-2026-09-30-checklist.md`; acceptance and release boundaries are in
+`audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.
+Do not restart the audit or repeat green checks without a specific changed risk.
+
+## Checkout and execution boundary
+
+- Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
+- Working branch: `codex/audit-2026-09-30`. Last recorded completed source
+  checkpoint: `4ee68bb`; inspect actual HEAD/status when resuming.
+- Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
+- Local `.env` is live production. No reset/seed, live mutation tests, client
+  messages/invitations, real bookings, financial changes, automation activation,
+  branch push or deployment is authorized.
+- Existing isolated demo uses port 3200 and the main checkout's `.next`. It was
+  left running. Inspect processes before any build/start; do not terminate or
+  overwrite its build files blindly.
+- Build checkout:
+  `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
+  Last observed clean/detached at `c5e619e`, whose build passed. Advance only
+  with an inspected fast-forward to an exact committed candidate; use a clean
+  environment and dead loopback DB. Never copy production env/credentials there.
+- Browser access was rejected by tool policy. Do not bypass with another
+  browser transport/CDP or treat the ambient local tab as fresh authorization.
+
+## Completed since the prior build candidate
+
+| Checkpoint | Scope | Evidence |
+|---|---|---|
+| `f25a7b8` / `967b11b` | W03 receipt retry and immutable intake | Existing W03 real PG 26/0; retry 23/0; intake PG24/0 and PGlite26/0 |
+| `cb6ed54` / `0966195` | Editing queue first; preserved stage URLs | Signed page15/0; stage/context14/0 |
+| `cd0392d` / `afb0f97` | Call recovery/evidence | Signed/action26/0; transcript wording17/0 |
+| `59bdb31` | Compact tasks with retained detail |26/0 and navigation21/0 |
+| `018f22f` / `8d06490` | Native shared controls and typography |9/0, Settings12/0; source/lint for typography |
+| `7d79c3e` / `0cd3d71` | Team/schedule/email save receipts |16/0 and21/0 |
+| `c74db96` / `fcc476a` | C14 Home and Office Editing/Schedule scope |22/0 and23/0; affected15/0 and14/0 |
+| `4a189d4` / `3c6b2d2` | Honest automation/rollout recovery |12/0 and22/0; no actual switches called |
+| `9b506d8` | Exact review stages/drafts/recovery |15/0 fake action/SSR |
+| `7cb9e03` | Connected client journey; exact cut/issue approval guards |19/0 connected; PostgreSQL11/0 |
+| `d57cbe9` / `9e04cd3` | Secondary screens and delivery/readiness type/focus |Focused lint/diff/source review; browser open |
+| `625b1c6` | Office ad hoc task date CAS/audit/recovery |49/0; retained details26/0 |
+| `dc925a3` | Workspace tab/AI/copy/partial note receipts |21/0; non-incremental typecheck/lint |
+| `fde699a` | Newer task notes and reply drafts |16/0; retained details26/0 |
+| `4ee68bb` | Real month-stage destinations, visible unknown evidence |14/0; review caught and removed falsely month-scoped library link |
+
+These are local commits. None is a takeover deployment, activation or new
+client-visible release. Signed action/SSR/fake handler evidence is not mounted
+browser, real provider/model output, real rendition/watch or phone-file proof.
+
+## Active slice and next safe checkpoint
+
+Upload submit reconciliation is in progress in `upload/actions.ts`,
+`UploadPortal.tsx` and a new receipt helper/drill. A lost response must not say
+editors were not notified or invite blind replay. The intended no-schema design
+uses existing AuditLog for opaque exact-attempt/core-commit/terminal receipts,
+guarded read-only checks and retained local draft/attempt identity. Square-foot
+saves must settle pending state, keep newer input and reconcile lost responses
+before another write. Preserve all existing handoff, conflict, pay and clock rules.
+The slice is not yet tested/committed. Complete its focused independent review,
+isolated failure/concurrency evidence, lint and typecheck, then commit it.
+
+After that stable checkpoint, run the combined typecheck/changed-file lint and
+one production build in the separate clean checkout. Record the exact source
+commit, exit codes and logs here. Do not repeat already-passed whole drill suites.
+
+## Required release and business remainders
+
+- Normal browser UA01–UA14, Kyle/James work-finding observations, actual phone
+  upload/download, rendered contrast/zoom/screenshots and provider/media evidence
+  remain open. U0–U5 are partial; U6 is unaccepted.
+- Five additive tables are unapplied: ClientBrandReceipt,
+  DeliveryFollowUpHealth, FinalRenditionCheck, ShootBriefRead, EditorBriefReceipt.
+  Backup/migration state was recorded in the checklist. Recheck current diff and
+  coverage immediately before an approved schema release; no schema was applied.
+- Last guarded private launch inventory (Sep30 22:33 ET) had 13 active candidates,
+  zero active client login seats, zero released strategies and no approved
+  available topic bank. Three October workspaces existed. The export is private
+  outside Git; this is launch preparation evidence, not permission to invite.
+- Jordan: monthly portal/Aryeo destination rule, intentional no-brand/reassignment
+  receipt policy, correct general-welcome destination and intended first roster.
+- Kyle: verify exact C13 historical links, C18 wrong-property source, Sarina's
+  owed scope/topic binding and identity conflicts before any live repair.
+- Generated-task date override policy remains open; ad hoc edits preserve
+  existing creation rules and cannot alter editing/revision/SLA clocks.
+- Transcript worker remains off; five held historical jobs are excluded by its
+  default first-on backlog. No automation, audience, saved settings or activation
+  decision changed.
+
+See each C/W and UA row for the concrete next acceptance step. The platform
+must not be declared finished or ready to onboard while these journeys are open.
