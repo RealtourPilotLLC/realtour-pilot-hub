@@ -132,8 +132,11 @@ row, so no stored settings write was needed or performed. The new default takes
 effect only with its release. W02 source and signed PostgreSQL fixture44/0 are
 complete locally, with affected15/0 and61/0, lint and focused repair review.
 Intentional no-brand and returning-editor receipts are separate from Start/Pause.
-Monthly source work remains in progress; preserve its dirty files. Stable combined
-types/build and mounted acceptance remain open. Do not repeat completed drills.
+Monthly source is now complete locally with backend38/0, UI19/0, affected listing
+34/0 and mixed25/0, lint/diff and focused repair review. Final non-incremental types
+pass (`/tmp/ops-hub-monthly-final-types.log`). Preserve all source and continue to
+the exact clean build/release. Mounted browser/phone/provider acceptance remains
+open. Do not repeat completed drills.
 
 ## Earlier source checkpoint
 

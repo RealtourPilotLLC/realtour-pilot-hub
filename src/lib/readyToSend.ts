@@ -11,6 +11,7 @@ import { topazSettings } from "@/lib/settings";
 import { cutReleasedAt } from "@/lib/contentVideos";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import type { TopazState } from "@/lib/topazJobs";
+import { monthlyOwnerAccess, claimMonthlyFinalDelivery } from "@/lib/monthlyFinal";
 
 // ===========================================================================
 // READY TO SEND — the videos that are finished and have not gone to the client.
@@ -118,12 +119,10 @@ import type { TopazState } from "@/lib/topazJobs";
 //     one tap with the evidence beside it. A row cleared wrongly costs a client
 //     their video.
 //
-//   · One exception on the way in, not the way out: a content-program cut is
-//     published to the client's own portal library the moment it is approved
-//     (portalLibrary.addApprovedCutToLibrary, and portal.ts opens media for any
-//     APPROVED cut), so the client can already watch and download it. There is
-//     no Aryeo upload for Kyle to do and nothing for him to send. Those are not
-//     ready rows.
+//   · Monthly content is delivered through the portal, backed up in the final
+//     Dropbox folder. Release, verified final bytes, owner access, notification
+//     and client approval are separate facts. Its handoff remains visible until
+//     staff records delivery of the checked version.
 //
 // AND IT MUST BE SENDABLE. A cut with no bytes anywhere the hub can reach is
 // not "ready to send" — it is an approval with nothing behind it, which belongs
@@ -157,6 +156,9 @@ export type ReadyVideo = {
   topicTitle: string | null;
   /** A monthly cut can be portal-visible before an owner can actually review it. */
   monthlyPortalReleased: boolean;
+  /** Recorded evidence, not a fresh provider playback/access proof. */
+  monthlyPortalAccess?: boolean;
+  monthlyFinalCheckRecorded?: boolean;
   /** null for cases (b)/(c) — there is no 1080p job to stamp */
   topazJobId: string | null;
   /** "322 N 62nd St" — the same street the rest of the day uses */
@@ -856,25 +858,10 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   });
   if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
 
-  // Still the live version of its cut, and not already with the client.
-  // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
-  // "released to the portal" only closes a row for a client who has a way in —
-  // see wentOut. A membership is the concrete test: it is what a sign-in
-  // resolves to, and it is what will start existing when the portal launches.
-  //
-  // Since the release gate (CP-01, Sep 24 2026) a released cut is only the
-  // client's once someone who CAN APPROVE it is able to: a live OWNER seat on
-  // an ACTIVE program whose access is not revoked. A revoked seat, a
-  // collaborator- or viewer-only account, or a paused/ended program can watch
-  // at most — the cut would sit at "awaiting approval" for good while leaving
-  // this card, the only place Kyle can Mark it sent.
-  const activeEnrollmentIds = (await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", accessRevokedAt: null }, select: { id: true } }).catch(() => [])).map((e) => e.id);
-  const portalClientIds = new Set(
-    activeEnrollmentIds.length
-      ? (await prisma.clientMembership.findMany({ where: { role: "OWNER", revokedAt: null, enrollmentId: { in: activeEnrollmentIds } }, select: { clientId: true } }).catch(() => [])).map((m) => m.clientId)
-      : [],
-  );
-  const open = subs.filter((s) => !wentOut(s, portalClientIds));
+  // Monthly portal release is distinct from final backup/check, notification,
+  // client review and Kyle's delivery handoff. Keep its row until that handoff
+  // is recorded; a seat on some other enrollment must never hide this work.
+  const open = subs.filter((s) => !wentOut(s));
   if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
@@ -903,6 +890,8 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
     outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
   ]);
+  const monthlyAccess = await monthlyOwnerAccess(monthIds).catch(() => new Map());
+  const monthlyChecks = monthIds.length ? await prisma.finalRenditionCheck.findMany({ where: { submissionId: { in: winners.filter((s) => s.project.contentMonthId).map((s) => s.id) }, destination: "client-portal" }, select: { submissionId: true } }) : [];
   const monthById = new Map(months.map((m) => [m.id, m.monthKey]));
   const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((id): id is string => !!id))];
   const topics = topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : [];
@@ -957,6 +946,8 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
       monthKey: sub.project.contentMonthId ? monthById.get(sub.project.contentMonthId) ?? null : null,
       topicTitle: sub.outputId ? topicById.get(outputById.get(sub.outputId)?.topicId ?? "")?.trim() || null : null,
       monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })),
+      monthlyPortalAccess: Boolean(sub.project.contentMonthId && monthlyAccess.get(sub.project.contentMonthId)?.ok && monthlyAccess.get(sub.project.contentMonthId)?.clientId === sub.project.clientId),
+      monthlyFinalCheckRecorded: monthlyChecks.some((c) => c.submissionId === sub.id),
       topazJobId: sub.topazJob?.id ?? null,
       street: cut.street,
       clientName: cut.clientName,
@@ -1219,52 +1210,15 @@ function heldLine(j: { id: string; heldPath: string | null; heldAt: Date | null;
  * here, each one now carrying Aryeo's own answer for Kyle to act on (see
  * listingLine). One decision, in one place, that leaves a record.
  */
-function wentOut(sub: CandidateSub, portalClientIds: ReadonlySet<string>): boolean {
+function wentOut(sub: CandidateSub): boolean {
+  if (sub.project.contentMonthId) return false;
   // A person pressed the button for this cut: the caller has already filtered
   // on `sentToClientAt: null`, so reaching here means nobody has.
 
-  // The hub handed a specific file to a specific person: only their press
-  // closes it — or lib/aryeoDelivery proving the upload that card named, which
-  // stamps the job itself. Aryeo showing "a video" is not evidence about THIS
-  // file: on 322 N 62nd St the video Aryeo shows is 60 seconds long, went up
-  // after the file was ready, and is the silent one the client rejected.
-  // (A job the lane is still working on has not been handed to anybody either;
-  // it is filtered out later, as a rendering row rather than a sent one.)
-  //
-  // TOPAZ BEFORE RELEASE (9.6b, Sep 25 2026) is the one exception, and only
-  // for a program cut whose client can open the portal: there the portal hands
-  // them the verified 1080p file itself (cutEntitlement.clientCutFiles), so a
-  // FINISHED pass is the delivery and Kyle has nothing to upload. A pass still
-  // running or HELD keeps the row here — this card owns a program video until
-  // its finished file exists, because the portal will not show the editor's
-  // export in its place.
+  // Listing delivery retains its existing independently recorded Topaz send.
+  // Monthly release/access alone never closes the handoff (above).
   if (sub.topazJob) {
-    if (sub.project.contentMonthId && !stillRendering(sub.topazJob.state) && cutReleasedAt({ ...sub, status: "APPROVED" })
-      && !!sub.project.clientId && portalClientIds.has(sub.project.clientId)) return true;
     return Boolean(sub.topazJob.deliveredAt);
-  }
-
-  // A content-program cut IS the client's the moment it is approved — IF the
-  // client can actually open the portal (R09, external review, Sep 18).
-  //
-  // The first half of that was already true: the library row is written on
-  // approval and the media gate opens for any APPROVED cut, so Kyle has nothing
-  // to upload and nothing to send. The second half was assumed, and it is not
-  // true of this business: THE PORTAL HAS NEVER BEEN ISSUED TO CLIENTS.
-  // Measured Sep 18 — 29 content enrollments, 3 ClientUser rows, and exactly
-  // ONE client with any portal membership, which is a TEST client. So "released
-  // to the portal" was closing the row on a screen nobody could reach, and
-  // Sarina Spinelli's video left Kyle's card while the delivery reconciliation
-  // was independently flagging the same job as OWED. Two surfaces, two answers,
-  // one video.
-  //
-  // Release and delivery are different facts and this is where they part. A cut
-  // is released for client review on approval; it has REACHED the client only
-  // once there is somebody who can sign in and see it. When the portal launches
-  // and clients get memberships, this reads true on its own — no switch to
-  // remember to flip.
-  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) {
-    return !!sub.project.clientId && portalClientIds.has(sub.project.clientId);
   }
 
   return false;
@@ -1466,10 +1420,10 @@ export async function markVideoSent(submissionId: string, by: string | null, opt
     return { ok: false, message: "The 1080p pass hasn't finished on this one yet — it isn't ready to send." };
   }
 
-  const claimed = await prisma.reviewSubmission.updateMany({
-    where: { id: submissionId, sentToClientAt: null },
-    data: { sentToClientAt: new Date(), sentToClientBy: by },
-  });
+  const claimed = sub.project.contentMonthId
+    ? await claimMonthlyFinalDelivery(submissionId, by)
+    : { ok: true as const, ...await prisma.reviewSubmission.updateMany({ where: { id: submissionId, sentToClientAt: null }, data: { sentToClientAt: new Date(), sentToClientBy: by } }) };
+  if (!claimed.ok) return claimed;
   if (claimed.count === 0) {
     // Somebody else won the race in the milliseconds since the read above.
     const now = await prisma.reviewSubmission.findUnique({
@@ -1525,9 +1479,9 @@ async function settleDeliveryBookkeeping(
     // `by` carries the proof pass's own sentence when the hourly Aryeo reader
     // settled it ("Aryeo — “Cinematic Video”, 60s on the listing since …"), so
     // the channel is read from that rather than guessed: a person pressing the
-    // button is the office sending the file by hand, which is the only way
-    // finished video actually leaves this business (see the header note).
-    const via = by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
+    // button records the office handoff. Monthly content uses the portal and
+    // final Dropbox backup; listing handoffs keep their existing channel.
+    const via = sub.project.contentMonthId ? "client-portal" : by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
     try {
       const r = await prisma.deliverableOutput.updateMany({
         where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null },

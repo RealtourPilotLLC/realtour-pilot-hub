@@ -72,7 +72,7 @@ for normal authorized client/editor access.
 
 | Item | Required owner | Concrete next step |
 |---|---|---|
-| Monthly delivery destination | Engineering; Jordan decision received | Portal plus backup in final Dropbox folder. Implement exact dual evidence for monthly outputs; preserve property Aryeo routing. Not implemented in3c3c2d7. |
+| Monthly delivery destination | Engineering; local source prepared | Portal plus exact final Dropbox backup implemented; backend38/0, UI19/0, affected listing34/0+mixed25/0, lint/types/focused review pass. Atomic current cut/access claim and backup/preview/history recovery verified in fixtures. Clean build/release and real browser/phone/provider acceptance remain; not implemented in deployed3c3c2d7. |
 | Editor brand/brief receipt policy | Engineering; local source prepared | Explicit no-brand and fresh returning-editor generation implemented; signed PG44/0, affected15/0+61/0, lint and focused review pass. Stable combined types/build and mounted browser acceptance open. Not deployed; historical receipts and manual Start/Pause preserved. |
 | General welcome destination | Engineering; local source prepared | Approved general default/fallback implemented; actual fenced fixture26/0, lint and root review pass. Fresh live read found no `auto_texts` row, so no stored write. New source not yet deployed; retain monthly mapping and never replay welcomes. |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |

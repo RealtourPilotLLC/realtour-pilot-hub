@@ -632,8 +632,8 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
     if (!job) return { ok: false, message: "This delivery task has no matching 1080p job. Ask Kyle to reconcile it." };
     if (job.taskId !== taskId) return { ok: false, message: "This task is no longer the 1080p job's delivery card. Ask Kyle to reconcile it." };
     if (!job.deliveredAt) {
-      const { manualListingCheckReady } = await import("@/lib/finalRendition");
-      const checked = await manualListingCheckReady(job.submissionId);
+      const { manualFinalCheckReady } = await import("@/lib/finalRendition");
+      const checked = await manualFinalCheckReady(job.submissionId);
       if (!checked.ok) return checked;
     }
     // The per-cut writer closes this task through the Topaz settlement, and

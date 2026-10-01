@@ -264,9 +264,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
       </p>
       <p className="mt-1 text-sm text-foreground/85">
         {v.monthlyProgram
-          ? v.monthlyPortalReleased
-            ? "Portal review available under the current release rule; Aryeo copy requirement unresolved. Next: confirm this client's access and required delivery route."
-            : "Portal review pending; Aryeo copy requirement unresolved. Next: confirm the required delivery route and client access."
+          ? `Destination: client portal, with backup in the final Dropbox folder. ${v.monthlyPortalReleased ? "Portal release recorded." : "Portal release pending."} ${v.monthlyPortalAccess ? "This program has eligible owner access." : "Owner access to this exact program needs confirmation."} ${v.monthlyFinalCheckRecorded ? "A staff check is recorded; final bytes and access will be rechecked before delivery." : "Next: play and check the exact portal final file and its backup."}`
           : "Destination: Aryeo listing. Next: verify this exact file, deliver the listing, then record the send."}
       </p>
 
@@ -376,7 +374,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
-        {v.aryeoUrl && (
+        {!v.monthlyProgram && v.aryeoUrl && (
           <a
             href={v.aryeoUrl}
             target="_blank"
@@ -404,7 +402,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>
-      <div className="mt-2"><FinalRenditionCheck submissionId={v.submissionId} label={v.cutLabel} round={v.round} /></div>
+      <div className="mt-2"><FinalRenditionCheck submissionId={v.submissionId} label={v.cutLabel} round={v.round} monthly={v.monthlyProgram} /></div>
     </div>
   );
 }

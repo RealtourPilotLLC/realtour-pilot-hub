@@ -325,8 +325,8 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
   }
   const me = await getCurrentUser().catch(() => null);
   if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording delivery." };
-  const { manualListingCheckReady } = await import("@/lib/finalRendition");
-  const checked = await manualListingCheckReady(submissionId);
+  const { manualFinalCheckReady } = await import("@/lib/finalRendition");
+  const checked = await manualFinalCheckReady(submissionId);
   if (!checked.ok) return { ok: false, message: checked.message };
   const { markVideoSent, isNoticeChoice } = await import("@/lib/readyToSend");
   // 9.2: HOW THE CLIENT WAS TOLD rides on the same press — the card asks it

@@ -7,6 +7,7 @@ import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
 import { editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
 import { effectiveSlotCounts } from "@/lib/editOverrides";
+import { backupSourceStamp, completeDropboxBackup, digest, proveOriginalBackup } from "@/lib/finalDropbox";
 
 /** Stamped on a cut row that was auto-approved BECAUSE the job was delivered —
  *  not because anyone reviewed it. The client portal keys off this to keep
@@ -1437,9 +1438,10 @@ async function uploadCutEntered(sub: EnteringCut): Promise<{ ok: boolean; messag
   return { ok: true, message: `Version ${sub.round} is in the Review Room.` };
 }
 
-/** Approved → copy the file into the job's Final folder. Dropbox pulls it
- *  from the store (save_url) so no bytes pass through a function; the
- *  in-flight job id is kept so the hourly sweep can finish it. */
+/** Approved → Dropbox pulls the file into the job's Final folder (save_url).
+ * The first completion reconciles exact source/Dropbox hashes with a bounded
+ * stream; subsequent reads use recorded content provenance. Async job identity
+ * is kept so the hourly sweep can finish without treating a path as proof. */
 export async function startDropboxCopy(submissionId: string, opts: { inline?: boolean } = {}): Promise<{ complete: boolean; finalPath: string | null }> {
   const inline = opts.inline !== false;
   const sub = await prisma.reviewSubmission.findUnique({
@@ -1450,7 +1452,8 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
     },
   });
   if (!sub?.blobUrl || !sub.project) return { complete: false, finalPath: null };
-  if (sub.completedAt) return { complete: true, finalPath: sub.finalPath };
+  if (sub.completedAt && sub.finalPath && await proveOriginalBackup(sub, sub.finalPath)) return { complete: true, finalPath: sub.finalPath };
+  if (sub.dropboxJobId) return { complete: await checkDropboxCopy(sub.id) === "complete", finalPath: sub.finalPath };
   // Bounded: after three failed copies in a day, stop and ring the owner once
   // instead of an Activity row every hour forever (review).
   const failures = await prisma.activity.count({
@@ -1469,35 +1472,6 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
     } catch { /* bell is best-effort */ }
     return { complete: false, finalPath: sub.finalPath };
   }
-  // The previous approved round of this cut, if it was already copied, moves
-  // aside so the Final folder holds ONE file per cut (review: a bounced v1
-  // stayed beside the approved v2).
-  const prior = (await prisma.reviewSubmission.findMany({
-    where: { projectId: sub.projectId, deliverableId: sub.deliverableId, slot: sub.slot, id: { not: sub.id }, finalPath: { not: null } },
-    select: { id: true, finalPath: true },
-  })).filter((p) => !p.finalPath!.includes("/superseded/")); // already aside — never nest superseded/superseded
-  for (const p of prior) {
-    const folder = p.finalPath!.slice(0, p.finalPath!.lastIndexOf("/"));
-    const name = p.finalPath!.split("/").pop()!;
-    await dbx("files/create_folder_v2", { path: `${folder}/superseded`, autorename: false }).catch(() => {});
-    await dbx("files/move_v2", { from_path: p.finalPath, to_path: `${folder}/superseded/${name}`, autorename: true }).catch(() => {});
-    await prisma.reviewSubmission.update({ where: { id: p.id }, data: { finalPath: `${folder}/superseded/${name}`, completedAt: null } }).catch(() => {});
-  }
-  // …and so does any 1080p file the Topaz pass made from an earlier round of
-  // this cut (Sep 16). Without this, a v3 approval left last round's
-  // "… - v2 - 1080p.mp4" sitting in Final beside the new v3 export and Kyle had
-  // two files to choose from — exactly the ambiguity the naming exists to
-  // avoid. Best-effort and independent of Topaz being connected at all: this
-  // is a Dropbox move, not a render.
-  // This cut's OWN 1080p file is excluded by supersedePriorEnhanced (it keys on
-  // the cut and skips the cut's own job), which matters on the stranded-copy
-  // retry below: a cut whose original failed to copy while its Topaz pass
-  // succeeded would otherwise have had its finished 1080p file buried in
-  // superseded/ every hour, after Kyle's card had already named the path.
-  try {
-    const { supersedePriorEnhanced } = await import("@/lib/topazJobs");
-    await supersedePriorEnhanced({ id: sub.id, projectId: sub.projectId, deliverableId: sub.deliverableId, slot: sub.slot, assetPath: sub.assetPath });
-  } catch { /* the folder tidy must never block the copy */ }
   const ext = (sub.fileName ?? "").match(/\.(mp4|mov|m4v|webm|mkv)$/i)?.[0] ?? ".mp4";
   // The slot label (style name + "Video N of M") names the file; the bare
   // style name is the fallback if the row is no longer on the order.
@@ -1538,22 +1512,32 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
   try {
     r = await dbx<SaveUrl>("files/save_url", { path, url: source.url });
   } catch (e) {
-    // The file is already there (an earlier attempt landed after we lost
-    // track of it) → that IS the copy.
+    // An earlier attempt may have landed after its response was lost. The
+    // existing path is accepted only after its bytes match this exact source.
     if (e instanceof DropboxError && /conflict/i.test(e.message)) {
-      const meta = await dbx<{ size?: number }>("files/get_metadata", { path }).catch(() => null);
-      if (meta) {
-        await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { finalPath: path, completedAt: new Date(), dropboxJobId: null } });
+      if (await completeDropboxBackup(sub, path)) {
+        await tidyPriorCopies(sub);
         return { complete: true, finalPath: path };
       }
+      return { complete: false, finalPath: sub.finalPath };
     }
     throw e;
   }
   if (r[".tag"] === "complete") {
-    await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { finalPath: path, completedAt: new Date(), dropboxJobId: null } });
-    return { complete: true, finalPath: path };
+    const complete = await completeDropboxBackup(sub, path);
+    if (complete) await tidyPriorCopies(sub);
+    return { complete, finalPath: complete ? path : sub.finalPath };
   }
-  await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { finalPath: path, dropboxJobId: r.async_job_id ?? null } });
+  if (!r.async_job_id) return { complete: false, finalPath: sub.finalPath };
+  await prisma.$transaction(async (tx) => {
+    const current = await tx.reviewSubmission.findUnique({ where: { id: sub.id } });
+    if (!current || backupSourceStamp(current) !== backupSourceStamp(sub)) return;
+    await tx.auditLog.upsert({ where: { id: `cut-copy-job:${digest(r.async_job_id)}` }, update: {}, create: {
+      id: `cut-copy-job:${digest(r.async_job_id)}`, actor: "system", action: "cut_dropbox_copy_started", target: sub.id,
+      detail: JSON.stringify({ sourceFingerprint: backupSourceStamp(sub) }),
+    } });
+    await tx.reviewSubmission.update({ where: { id: sub.id }, data: { finalPath: path, completedAt: null, dropboxJobId: r.async_job_id } });
+  });
   if (!inline) return { complete: false, finalPath: path };
   // Give it a short inline chance (most files land within seconds).
   for (let i = 0; i < 6; i++) {
@@ -1564,10 +1548,32 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
   return { complete: false, finalPath: path };
 }
 
+/** Tidy only older rounds of this same canonical video, after the new bytes
+ * are confirmed. Failed moves retain truthful historical pointers/timestamps. */
+async function tidyPriorCopies(sub: { id: string; projectId: string; deliverableId: string | null; slot: number; round: number; assetPath: string | null; fileName: string | null }) {
+  const { videoCutKey } = await import("@/lib/contentVideos");
+  const prior = await prisma.reviewSubmission.findMany({ where: { projectId: sub.projectId, deliverableId: sub.deliverableId, slot: sub.slot, round: { lt: sub.round }, finalPath: { not: null } } });
+  for (const p of prior.filter((p) => videoCutKey(p) === videoCutKey(sub) && !p.finalPath!.includes("/superseded/"))) {
+    const folder = p.finalPath!.slice(0, p.finalPath!.lastIndexOf("/"));
+    const name = p.finalPath!.split("/").pop()!;
+    await dbx("files/create_folder_v2", { path: `${folder}/superseded`, autorename: false }).catch(() => {});
+    const moved = await dbx<{ metadata?: { path_display?: string; path_lower?: string } }>("files/move_v2", { from_path: p.finalPath, to_path: `${folder}/superseded/${name}`, autorename: true }).catch(() => null);
+    const actual = moved?.metadata?.path_display ?? moved?.metadata?.path_lower;
+    if (actual && actual.toLowerCase().startsWith(`${folder}/superseded/`.toLowerCase())) {
+      await prisma.reviewSubmission.updateMany({ where: { id: p.id, finalPath: p.finalPath }, data: { finalPath: actual } });
+    }
+  }
+  try {
+    const { supersedePriorEnhanced } = await import("@/lib/topazJobs");
+    await supersedePriorEnhanced(sub);
+  } catch { /* no fabricated successful move */ }
+}
+
 /** Poll one in-flight copy. */
 export async function checkDropboxCopy(submissionId: string): Promise<"complete" | "pending" | "failed"> {
-  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { dropboxJobId: true, finalPath: true, projectId: true, fileName: true } });
-  if (!sub?.dropboxJobId) return sub?.finalPath ? "complete" : "failed";
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId } });
+  if (!sub) return "failed";
+  if (!sub.dropboxJobId) return sub.completedAt && sub.finalPath && await proveOriginalBackup(sub, sub.finalPath) ? "complete" : "failed";
   type Status = { ".tag": "in_progress" | "complete" | "failed"; failed?: { ".tag"?: string } };
   let st: Status;
   try {
@@ -1577,7 +1583,10 @@ export async function checkDropboxCopy(submissionId: string): Promise<"complete"
   }
   if (st[".tag"] === "in_progress") return "pending";
   if (st[".tag"] === "complete") {
-    await prisma.reviewSubmission.update({ where: { id: submissionId }, data: { completedAt: new Date(), dropboxJobId: null } });
+    const started = await prisma.auditLog.findUnique({ where: { id: `cut-copy-job:${digest(sub.dropboxJobId)}` } });
+    const sameSource = started?.target === sub.id && started.detail === JSON.stringify({ sourceFingerprint: backupSourceStamp(sub) });
+    if ((started && !sameSource) || !sub.finalPath || !(await completeDropboxBackup(sub, sub.finalPath))) return "pending";
+    await tidyPriorCopies(sub);
     await prisma.activity.create({
       data: { projectId: sub.projectId, type: "SYSTEM", body: `Approved cut copied to Dropbox — ${sub.finalPath?.split("/").pop() ?? sub.fileName ?? "video"}.` },
     }).catch(() => {});

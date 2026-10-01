@@ -2385,17 +2385,10 @@ function parseCheck(json: string | null | undefined): OutputVerdict | null {
  * Topaz is off or failed — otherwise last round's 1080p file would sit in Final
  * beside the new export and Kyle would have two files to choose from.
  *
- * WHICH JOBS COUNT AS "THIS CUT" is decided by cutKeyOf, the same key the
- * Review Room, the approved-cut count and the Final-folder tidy already use —
- * never by matching (deliverableId, slot) directly. Those two columns do not
- * identify a cut: twelve production rows carry a NULL deliverableId (the folder
- * era, before cuts were tied to an order line) and they all sit on slot 1, so
- * one project has five different videos that a (null, 1) match would call the
- * same cut — and finishing one of them would have moved another client video's
- * finished 1080p file out from under a card that had already named its path.
- * For those legacy rows cutKeyOf falls back to the file path, which means a
- * previous ROUND of a legacy cut is treated as a different cut and is left
- * alone: leaving a file where it is, is the safe half of this trade.
+ * Canonical video identity groups deliverable slots and named legacy rounds.
+ * Only genuinely older rounds may move: a delayed original-copy completion
+ * must never bury a newer enhanced file. Provider autorename paths are read
+ * from the move result, never guessed.
  *
  * The cut's own job is always excluded — the caller is either finishing it or
  * has just re-copied its original, and in both cases it is the file to keep.
@@ -2403,21 +2396,24 @@ function parseCheck(json: string | null | undefined): OutputVerdict | null {
 export async function supersedePriorEnhanced(
   cut: { id: string; projectId: string; deliverableId: string | null; slot: number | null; assetPath: string | null },
 ): Promise<number> {
-  const { cutKeyOf } = await import("@/lib/reviewCuts");
-  const key = cutKeyOf(cut);
+  const { videoCutKey } = await import("@/lib/contentVideos");
+  const current = await prisma.reviewSubmission.findUnique({ where: { id: cut.id }, select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, fileName: true, round: true } });
+  if (!current || current.projectId !== cut.projectId) return 0;
+  const key = videoCutKey(current);
   const candidates = await prisma.topazJob.findMany({
     where: {
       projectId: cut.projectId,
       finalPath: { not: null },
       submissionId: { not: cut.id },
+      submission: { round: { lt: current.round }, projectId: cut.projectId },
     },
     select: {
       id: true,
       finalPath: true,
-      submission: { select: { id: true, deliverableId: true, slot: true, assetPath: true } },
+      submission: { select: { id: true, deliverableId: true, slot: true, assetPath: true, fileName: true } },
     },
   });
-  const prior = candidates.filter((p) => p.submission && cutKeyOf(p.submission) === key);
+  const prior = candidates.filter((p) => p.submission && videoCutKey(p.submission) === key);
   let moved = 0;
   for (const p of prior) {
     if (!p.finalPath || p.finalPath.includes("/superseded/")) continue; // never nest superseded/superseded
@@ -2425,12 +2421,11 @@ export async function supersedePriorEnhanced(
     const name = p.finalPath.split("/").pop()!;
     await dbx("files/create_folder_v2", { path: `${folder}/superseded`, autorename: false }).catch(() => {});
     const to = `${folder}/superseded/${name}`;
-    const ok = await dbx("files/move_v2", { from_path: p.finalPath, to_path: to, autorename: true })
-      .then(() => true)
-      .catch(() => false);
-    if (ok) {
-      await prisma.topazJob.update({ where: { id: p.id }, data: { finalPath: to } }).catch(() => {});
-      moved++;
+    const result = await dbx<{ metadata?: { path_display?: string; path_lower?: string } }>("files/move_v2", { from_path: p.finalPath, to_path: to, autorename: true }).catch(() => null);
+    const actual = result?.metadata?.path_display ?? result?.metadata?.path_lower;
+    if (actual && actual.toLowerCase().startsWith(`${folder}/superseded/`.toLowerCase())) {
+      const changed = await prisma.topazJob.updateMany({ where: { id: p.id, finalPath: p.finalPath }, data: { finalPath: actual } }).catch(() => null);
+      moved += changed?.count ?? 0;
     }
   }
   return moved;

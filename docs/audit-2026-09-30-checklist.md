@@ -8,6 +8,35 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Follow-up W04 — monthly portal plus final Dropbox backup (local)
+
+- Monthly handoffs now require the current approved/released canonical client
+  file, exact final-folder Dropbox proof, an eligible owner on this enrollment
+  under the existing rollout, and a matching staff final-file attestation.
+  Recording delivery is atomic with a fresh cut/access/check comparison; already
+  recorded sends retain repair behavior. Listing delivery remains unchanged.
+- Monthly portal release no longer hides an unrecorded handoff. The board and
+  summary name the portal and final Dropbox backup. Staff can play canonical
+  processed client bytes through an office-only route; Review Room originals
+  retain their existing behavior. Temporary-link metadata must match the check.
+- Copy acknowledgment/path/timestamp alone cannot prove backup content.
+  Verified source hashes and version/file receipts survive normal retention.
+  Prior originals/enhanced files move only after the replacement lands, only
+  older canonical rounds move, and actual autorename paths are recorded by CAS.
+  Failed moves preserve historical paths/timestamps. No live record backfill.
+- Final-check attempts have exact actor/payload-bound receipts and held unknown
+  outcomes. Native answers remain mounted; another file resets only its six
+  attestations, and late reads/metadata cannot replace newer choices.
+- Signed isolated PostgreSQL backend38/0; actual fake UI19/0; affected listing
+  final34/0 and mixed photo/video25/0. Focused review repaired first-claim, copy
+  acknowledgment and preview races plus enhanced-history/checkbox issues;
+  narrow rechecks, changed-file lint, diff check and final non-incremental types
+  pass. Logs `/tmp/monthly-final-complete/`, `/tmp/monthly-final-check-ui-identity/`,
+  `/tmp/ops-hub-policy-listing-regression/`, `/tmp/ops-hub-monthly-final-types.log`.
+- No new schema, real provider operation, client message, approval, invitation or
+  automation/rollout change. Clean build/deployment remain pending; browser,
+  phone and real media/provider acceptance remain open.
+
 ### Follow-up C19 — approved general welcome link (local)
 
 - The welcome default/fallback now uses Jordan's approved

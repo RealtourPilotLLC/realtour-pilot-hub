@@ -2,6 +2,35 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 monthly destination follow-up — local source ready
+
+Jordan's portal + final Dropbox decision is implemented. Exact canonical client
+bytes, final-folder content proof, this enrollment's owner/rollout access and
+staff final attestation gate monthly first delivery; a Serializable claim locks
+and rereads cut/access/check before its stamp. Existing sent-record repair and
+property/listing delivery remain. Portal release, notice and client verdict are
+separate facts; no client verdict, send or automation is fabricated.
+
+Original copy completion hashes source bytes; conflict/acknowledged-copy races
+cannot turn wrong same-size files into provenance. Exact version/hash receipts
+survive pruning. Only older canonical originals/enhanced copies are tidied after
+the new backup lands, with actual returned rename paths and old-path CAS;
+failed moves retain their prior pointers/timestamps. Office final preview serves
+canonical processed/original client bytes and binds temporary-link metadata;
+Review Room originals remain unchanged. Unknown final checks have exact receipt
+recovery and UUID-only device holds; same-file answers survive, different-file
+attestations reset, and newer choices survive late reads.
+
+Backend signed PostgreSQL38/0 `/tmp/monthly-final-complete/`; fake actual UI19/0
+`/tmp/monthly-final-check-ui-identity/`; affected listing34/0 and mixed25/0
+`/tmp/ops-hub-policy-listing-regression/`. Final non-incremental types0 and scoped
+lint0 (`/tmp/ops-hub-monthly-final-types.log`, `/tmp/ops-hub-monthly-final-lint.log`).
+One focused peer review and named repair rechecks complete. Fixture setup keys,
+relay200-vs302 expectation and Buffer BodyInit typing were corrected; no product
+defect was concealed or assertion skipped. No new schema/live mutation or
+client/provider send. Source is ready for exact clean build/release; production
+is still3c3c2d7. Browser/phone/provider/real-media acceptance remains open.
+
 ### Oct 1 W02 approved-receipt follow-up — local checkpoint
 
 Intentional no-brand is explicit in the existing versioned brief and exact
