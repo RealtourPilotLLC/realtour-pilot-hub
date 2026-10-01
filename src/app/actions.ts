@@ -890,6 +890,49 @@ export async function createManualTask(input: {
   return { ok: true, message: "Task added." };
 }
 
+/** Read only, exact-row reconciliation after an uncertain deadline save. It
+ * does not reload the page or discard any unsent task draft. */
+export async function readTaskDeadline(taskId: string): Promise<{ ok: true; dueAt: string | null; editable: boolean; message: string } | { ok: false; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Office access is required." }; }
+  const { canEditTaskDeadline } = await import("@/lib/taskDeadline");
+  const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { dueAt: true, status: true, taskType: true, source: true, dedupeKey: true } });
+  if (!task) return { ok: false, message: "This task no longer exists. Your chosen date has been kept." };
+  return { ok: true, dueAt: task.dueAt?.toISOString() ?? null, editable: canEditTaskDeadline(task), message: "Current task date checked." };
+}
+
+/** Office date editing follows the two human-requested creation paths only.
+ * No priority, follow-up, assignment, project/output promise or work clock is
+ * changed. A concurrent save/close is refused and the audit receipt is atomic. */
+export async function setTaskDeadline(taskId: string, dueDate: string, expectedDueAt: string | null): Promise<import("@/lib/taskDeadline").TaskDeadlineReceipt> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Office access is required." }; }
+  const { canEditTaskDeadline, editableTaskDeadlineWhere, parseTaskDeadlineDate } = await import("@/lib/taskDeadline");
+  const date = parseTaskDeadlineDate(dueDate);
+  if (!date.ok) return date;
+  if (expectedDueAt !== null && (typeof expectedDueAt !== "string" || !Number.isFinite(new Date(expectedDueAt).getTime()))) return { ok: false, message: "The loaded date is invalid. Check the current task date before saving.", needsRefresh: true };
+  const oldDate = expectedDueAt === null ? null : new Date(expectedDueAt);
+  const me = await import("@/lib/auth/user").then((m) => m.getCurrentUser());
+  const result = await prisma.$transaction(async (tx) => {
+    const task = await tx.smartTask.findUnique({ where: { id: taskId }, select: { dueAt: true, status: true, taskType: true, source: true, dedupeKey: true, projectId: true } });
+    if (!task) return { ok: false, message: "This task no longer exists.", needsRefresh: true };
+    if (!canEditTaskDeadline(task)) return { ok: false, message: "This date follows its workflow, or the task is closed. Edit the relevant brief or rule instead.", needsRefresh: true };
+    if (task.dueAt?.getTime() !== oldDate?.getTime()) return { ok: false, message: "The date changed since you loaded this task. Check the current date before saving.", needsRefresh: true };
+    const dueAt = date.dueAt?.toISOString() ?? null;
+    if (dueAt === (task.dueAt?.toISOString() ?? null)) return { ok: true, message: "This task date is already saved.", dueAt, projectId: task.projectId };
+    const changed = await tx.smartTask.updateMany({ where: { id: taskId, ...editableTaskDeadlineWhere(), dueAt: oldDate }, data: { dueAt: date.dueAt } });
+    if (changed.count !== 1) return { ok: false, message: "The task changed during this save. Check the current date before saving again.", needsRefresh: true };
+    await tx.auditLog.create({ data: {
+      actor: me?.email ?? "local-dev", action: "task_deadline_change", target: taskId,
+      detail: JSON.stringify({ from: task.dueAt?.toISOString() ?? null, to: dueAt }),
+    } });
+    return { ok: true, message: dueAt ? "Task date saved for 5pm Eastern." : "Task date cleared.", dueAt, projectId: task.projectId };
+  });
+  if (result.ok) {
+    revalidatePath("/tasks"); revalidatePath("/queue"); revalidatePath("/");
+    if (result.projectId) revalidatePath(`/projects/${result.projectId}`);
+  }
+  return result;
+}
+
 // "Look into this" for TASKS — DM a teammate on Slack about one task, with the
 // description and a deep link that lands on (and highlights) the card. Sent AS
 // the logged-in person (Jordan pings as Jordan); Slack id resolves from email

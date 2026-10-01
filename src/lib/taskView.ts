@@ -2,6 +2,7 @@ import type { QueueTask, DeliverableStatus, QcClientContext } from "@/components
 import { parseChecklist } from "@/lib/checklist";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { customerNote as clientCustomerNote } from "@/lib/clientNotes";
+import { canEditTaskDeadline } from "@/lib/taskDeadline";
 
 // One place that turns a SmartTask row (with its client) into the shape the
 // TaskCard renders — used by both the Daily Tasks queue and the project page so
@@ -17,6 +18,7 @@ export type TaskRow = {
   status: string;
   priority: string;
   dueAt: Date | null;
+  dedupeKey?: string | null;
   createdAt: Date | null;
   reasonCreated: string | null;
   summary: string | null;
@@ -85,6 +87,7 @@ export function taskToView(t: TaskRow): QueueTask {
     status: t.status,
     priority: t.priority,
     dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+    canEditDeadline: canEditTaskDeadline(t),
     createdAt: t.createdAt ? t.createdAt.toISOString() : null,
     reasonCreated: t.reasonCreated,
     summary: t.summary,

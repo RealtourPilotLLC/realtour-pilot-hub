@@ -2,6 +2,32 @@
 
 ## Sep 30 takeover addendum
 
+### U4 checkpoint — office ad hoc task dates
+
+OWNER/ADMIN may change or clear an active ad hoc task date using the same 5pm
+Eastern convention as its existing creation path. Eligibility requires an
+undeduped manual todo or explicit assistant internal instruction; field flags,
+editing/revision/QC/send/program/SLA tasks retain their workflow clocks. The
+action re-reads eligibility and repeats it with the loaded-date CAS; one atomic
+audit records actor, task ID and exact before/after dates. No priority, assignment,
+follow-up, project/output deadline, Start/Pause or financial field is changed.
+
+The retained task detail editor freezes its exact submit, reports unknown
+responses and requires a read-only exact-task check before another save. Drafts
+survive changed/closed eligibility; conflicting same-card status actions are
+blocked during the request. Explicit office role composition fails closed even
+when another role has a Tasks page override. Existing ADMIN money scrubbing and
+preview/read/write guards remain.
+
+Signed isolated date/role/CAS/audit rollback/uncertain receipt checks passed 49/0
+(`/tmp/u4-task-deadlines-roles/`); retained compact row/drawer regression 26/0,
+focused lint/diff and source review passed. Independent review identified the
+unmount/pending-status defects; both were repaired and covered. Browser date
+picker, pending timing, focus and task close/reopen interaction remain open.
+Generated-task deadline overrides need an explicit policy about which underlying
+clock moves and how sweeps treat it; this slice does not invent that policy.
+No production, schema, provider, client send or financial action was executed.
+
 ### U3/U5 checkpoint — readable delivery and readiness evidence
 
 Delivery follow-up, held/rendering rows and file evidence now use the shared
@@ -160,8 +186,8 @@ their behavior. Server actions, defaults, permissions and activation are intact.
 
 Isolated receipt-race/first-paint fixture passed 21/0
 (`/tmp/ops-u5-normalized-settings-save/`); lint/diff and focused review passed.
-The shared typecheck identified only the in-progress integration test's fixture
-typing errors, which its owner is correcting; final stable gate follows. Browser
+The integration test's temporary fixture typing errors were corrected; its
+final typecheck passed. The final stable combined build gate follows. Browser
 late-save/refresh acceptance remains open. No production state or provider changed.
 
 ### C14 checkpoint — explicit Home test view and supported return links
@@ -176,8 +202,8 @@ Signed isolated Home/count/link fixture passed 22/0
 (`/tmp/c14-home-test-view-reviewed/`), focused lint/diff and root source review
 passed. The initial fixture needed only a Link traversal and router stub repair.
 Normal-browser identity and scope acceptance remain open. Office Editing and
-Schedule still use unfiltered destinations; their concrete normal/test mismatch
-is the next bounded C14 slice. Counts with different status/date definitions must
+Schedule were subsequently scoped in `fcc476a` (23/0); see the newer checkpoint
+above. The normal/test destination mismatch is closed in code. Counts with different status/date definitions must
 not be claimed equal. No test or provider mutation reached production.
 
 ### U5 checkpoint — per-person notification save receipts

@@ -17,7 +17,7 @@ import { taskWorkCounts, taskWorkHref, taskWorkOwner } from "@/lib/taskNavigatio
 import { boardWhere, BOARD_ACTIVE_STATUSES as ACTIVE, type TaskClientScope } from "@/lib/taskBoard";
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
-import { editorScopeOf, isUnmappedEditor, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
+import { authEnforced, editorScopeOf, isUnmappedEditor, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
 import { scrubMoney } from "@/lib/text";
 import { cn } from "@/lib/utils";
 
@@ -95,9 +95,9 @@ function scrubTaskMoney<T extends QueueTask>(v: T): T {
 
 // Compact work rows stay visible initially; native disclosure keeps each
 // group's count and overdue evidence visible when a person folds it away.
-function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt, editorView, focusTaskId }: {
+function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt, editorView, deadlineOffice, focusTaskId }: {
   icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
-  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean; editorView?: boolean; focusTaskId?: string;
+  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean; editorView?: boolean; deadlineOffice?: boolean; focusTaskId?: string;
 }) {
   return (
     <details open={defaultOpen ?? true} className="group/task-group panel-shadow overflow-hidden rounded-2xl border bg-surface">
@@ -113,7 +113,7 @@ function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees
       <div className="border-t border-border">
         {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
         <div className="divide-y divide-border">
-          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} editorView={editorView} compact initialDetailOpen={focusTaskId === t.id} />)}
+          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} editorView={editorView} deadlineOffice={deadlineOffice} compact initialDetailOpen={focusTaskId === t.id} />)}
         </div>
       </div>
     </details>
@@ -138,6 +138,7 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
 export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClientIds, showTest = false }: { sp: { who?: string; task?: string; source?: string; type?: string }; tabs: ReactNode; excludeClientIds?: string[]; excludeRelatedClientIds?: string[]; showTest?: boolean }) {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = editorScopeOf(me);
+  const deadlineOffice = me ? !me.impersonating && (me.role === "OWNER" || me.role === "ADMIN") : !authEnforced();
   const scope = { excludeClientIds };
   const boardHref = (who: string) => taskWorkHref({ who, showTest, source: sp.source, type: sp.type });
   // An EDITOR login that maps to no editor profile gets NOTHING, and is told
@@ -293,23 +294,23 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
           <span className="text-xs text-muted-2">· {set.length}</span>
         </div>
         {comms.length > 0 && (
-          <GroupCard focusTaskId={sp.task} icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} deadlineOffice={deadlineOffice} icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Messages to reply to, new leads, and decisions." />
         )}
         {confirmations.length > 0 && (
-          <GroupCard focusTaskId={sp.task} icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} deadlineOffice={deadlineOffice} icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
         )}
         {deliveries.length > 0 && (
-          <GroupCard focusTaskId={sp.task} icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} deadlineOffice={deadlineOffice} icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="The “your gallery is ready” text to the client after delivery — pre-drafted, just review and send." />
         )}
         {revisions.length > 0 && (
-          <GroupCard focusTaskId={sp.task} icon={PencilLine} title="Edits & revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} deadlineOffice={deadlineOffice} icon={PencilLine} title="Edits & revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Client change requests after delivery — auto-routed to the deliverable's editor; reassign if it should go to someone else." />
         )}
         {qc.length > 0 && (
-          <GroupCard focusTaskId={sp.task} icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} deadlineOffice={deadlineOffice} icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Quality-check content as it lands, then deliver." />
         )}
       </div>
@@ -330,7 +331,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
         <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#d97706" }}>Needs assignment</h2>
         <span className="text-xs text-muted-2">· {triage.length}</span>
       </div>
-      <GroupCard focusTaskId={sp.task} icon={UserPlus} title="Pick who owns each" accent="#f59e0b" items={triage.slice().sort(cmp)} overdue={oc(triage)} assignees={assigneeChips} defaultOpen assignPrompt
+      <GroupCard focusTaskId={sp.task} deadlineOffice={deadlineOffice} icon={UserPlus} title="Pick who owns each" accent="#f59e0b" items={triage.slice().sort(cmp)} overdue={oc(triage)} assignees={assigneeChips} defaultOpen assignPrompt
         blurb="Assign each task to the right person and it moves to their work list." />
     </div>
   );

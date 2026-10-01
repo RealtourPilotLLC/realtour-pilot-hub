@@ -22,6 +22,7 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import { TaskCompactRow } from "@/components/queue/TaskCompactRow";
 import type { TaskRowAction } from "@/lib/taskRowPresentation";
+import { TaskDeadlineEditor } from "@/components/queue/TaskDeadlineEditor";
 
 // Friendly display label per task type (QA → QC, etc.) — the one shared map in
 // src/lib/taskSource.ts, so this chip and the Done ledger can't drift apart.
@@ -71,6 +72,8 @@ export type QueueTask = {
   status: string;
   priority: string;
   dueAt: string | null;
+  /** Server-composed eligibility; absent source/dedupe evidence fails closed. */
+  canEditDeadline?: boolean;
   createdAt: string | null;
   reasonCreated: string | null;
   summary: string | null;
@@ -521,7 +524,7 @@ function EditWorkChip({ task }: { task: QueueTask }) {
 // own surfaces instead: the project goes to /edit/<id> (the editor brief), and
 // the client chip renders unlinked (audit crack #38). Admin-only actions that
 // would bounce them (AI draft / OpenPhone send) are hidden too.
-export function TaskCard({ task, assignees, assignPrompt, editorView, compact = false, initialDetailOpen = false }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean; compact?: boolean; initialDetailOpen?: boolean }) {
+export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOffice = false, compact = false, initialDetailOpen = false }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean; deadlineOffice?: boolean; compact?: boolean; initialDetailOpen?: boolean }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [draftText, setDraftText] = useState("");
@@ -540,12 +543,16 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
   const [assigning, startAssign] = useTransition();
   const [assignmentNote, setAssignmentNote] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(compact && initialDetailOpen);
-  const [detailFocus, setDetailFocus] = useState<TaskRowAction["focus"]>("details");
+  const [detailFocus, setDetailFocus] = useState<TaskRowAction["focus"] | "deadline">("details");
+  const [deadlineBusy, setDeadlineBusy] = useState(false);
+  const deadlineBusyRef = useRef(false);
+  const [deadlineWasEligible, setDeadlineWasEligible] = useState(task.canEditDeadline === true && deadlineOffice && !editorView);
+  const [confirmedDeadline, setConfirmedDeadline] = useState<{ loaded: string | null; dueAt: string | null } | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
-  const busy = pending || emailing || drafting || sending || savingNote || assigning;
+  const busy = pending || emailing || drafting || sending || savingNote || assigning || deadlineBusy;
   useEffect(() => {
     if (!compact || !detailOpen || detailFocus === "details") return;
-    const target = detailFocus === "assign" ? "[data-task-assignee]" : "[data-task-draft]";
+    const target = detailFocus === "assign" ? "[data-task-assignee]" : detailFocus === "deadline" ? "[data-task-deadline-input]" : "[data-task-draft]";
     detailRef.current?.querySelector<HTMLElement>(target)?.focus();
   }, [compact, detailOpen, detailFocus]);
   // A status the server refused (an edit card's "In progress" — §7.1): its
@@ -557,9 +564,12 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
   const roster = assignees ?? FALLBACK_ASSIGNEES;
   const assigneeName = roster.find((a) => a.key === task.assignedKey)?.name ?? assignee?.name ?? null;
   const p = PRIORITY[task.priority] ?? PRIORITY.MEDIUM;
-  const due = dueLabel(task.dueAt);
+  const currentDueAt = confirmedDeadline?.loaded === task.dueAt ? confirmedDeadline.dueAt : task.dueAt;
+  const due = dueLabel(currentDueAt);
   const cameIn = cameInLabel(task.createdAt);
   const done = task.status === "COMPLETED";
+  const canEditDeadline = task.canEditDeadline === true && deadlineOffice && !editorView && !done && task.status !== "CANCELLED";
+  if (canEditDeadline && !deadlineWasEligible) setDeadlineWasEligible(true);
   const canDraft = DRAFTABLE.includes(task.taskType) && !editorView;
   const predrafted = PREDRAFTED.includes(task.taskType) && !!task.description;
   const canSend = (task.taskType === "delivery_text" || task.taskType === "confirmation_text") && !editorView;
@@ -604,7 +614,8 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
   // Drafted-message tasks open expanded so the message is visible to review/send.
   const [open, setOpen] = useState(compact || predrafted);
 
-  const run = (status: string) =>
+  const run = (status: string) => {
+    if (deadlineBusyRef.current) return;
     start(async () => {
       setStatusNote(null);
       try {
@@ -612,6 +623,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
         if (r && !r.ok) setStatusNote(r.message);
       } catch { setStatusNote("The status change was not confirmed. Reload to check this task before trying again."); }
     });
+  };
   const isEditCard = task.taskType === "edit_video";
   const assign = (key: string) => startAssign(async () => {
     setAssignmentNote(null);
@@ -683,6 +695,9 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
           <span className="ml-auto inline-flex items-center gap-0.5 whitespace-nowrap text-xs text-muted-2"><Clock className="size-3" />No due date</span>
         )}
       </div>
+
+      {(canEditDeadline || deadlineWasEligible) && deadlineOffice && !editorView && <TaskDeadlineEditor taskId={task.id} title={task.title} dueAt={currentDueAt} editable={canEditDeadline} disabled={busy && !deadlineBusy}
+        onBusyChange={(value) => { deadlineBusyRef.current = value; setDeadlineBusy(value); }} onConfirmed={(dueAt) => setConfirmedDeadline({ loaded: task.dueAt, dueAt })} />}
 
       {/* Title — clickable to expand when there's a body to reveal. */}
       <button
@@ -831,21 +846,21 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
         {!done ? (
           <button
             onClick={() => run("COMPLETED")}
-            disabled={pending}
+            disabled={pending || deadlineBusy}
             className="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-2.5 py-1.5 text-xs font-medium text-success hover:bg-success/20 disabled:opacity-60"
           >
             {pending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
             Complete
           </button>
         ) : (
-          <button onClick={() => run("OPEN")} disabled={pending} className="text-xs text-muted hover:underline">
+          <button onClick={() => run("OPEN")} disabled={pending || deadlineBusy} className="text-xs text-muted hover:underline">
             Reopen
           </button>
         )}
         {!done && (
           <select
             value={task.status}
-            disabled={pending}
+            disabled={pending || deadlineBusy}
             onChange={(e) => run(e.target.value)}
             aria-label="Task status"
             title="Set status"
@@ -1049,7 +1064,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, compact = 
   if (!compact) return card;
   return (
     <>
-      <TaskCompactRow task={task} assignees={roster} editorView={editorView} busy={busy} dueInfo={due} assignmentNote={assignmentNote} onAssign={assign} onOpen={(focus) => { setDetailFocus(focus); setDetailOpen(true); }} />
+      <TaskCompactRow task={task} assignees={roster} editorView={editorView} deadlineOffice={deadlineOffice} busy={busy} dueInfo={due} assignmentNote={assignmentNote} onAssign={assign} onOpen={(focus) => { setDetailFocus(focus); setDetailOpen(true); }} />
       <ModalDialog open={detailOpen} label={`Task details: ${task.title}`} busy={busy} onCancel={() => setDetailOpen(false)} className="left-auto right-0 top-0 h-dvh max-h-dvh w-[min(100vw,48rem)] translate-x-0 translate-y-0 rounded-none p-0 sm:p-0">
         <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3">
           <div><h2 className="font-semibold">Task details</h2><p className="text-sm text-muted">{busy ? "Updating… keep this task open until the result arrives." : "Closing keeps your unsent draft and note on this page."}</p></div>

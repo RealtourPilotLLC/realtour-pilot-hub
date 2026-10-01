@@ -376,7 +376,7 @@ export default async function ProjectPage({
             <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {project.smartTasks.map((t) => (
-                  <TaskCard key={t.id} task={taskToView(t)} assignees={assignees} />
+                  <TaskCard key={t.id} task={taskToView(t)} assignees={assignees} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
                 ))}
               </div>
             </Section>

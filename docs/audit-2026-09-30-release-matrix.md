@@ -13,7 +13,7 @@ instructions and batch evidence remain in `handoff.md`.
 | Brand alert recovery and individual receipts | Local corrections | Recovery 8/0 + 12/0; receipts 12/0; signed setup 130/0 | Yes | No; schema required | Alerts remain off | No new release |
 | Editing, revision, filming and final delivery handoffs | Substantial local implementation; named W remainders open | Connected signed journey 19/0; exact approval/issue race PostgreSQL 11/0; real media, phone and provider paths open | Yes for completed batches; active work in handoff | No; schema required | No new automation activation | No new release |
 | Truthful workload, revision causes and empty queues | Local corrections | C14 scoped drills; C15 12/0; C16 17/0 + 141/0 + 5/0 | Yes | No | No switch changes | No new release |
-| Home, task ownership and Sidebar grouping | Local implementation | Home 15/0; Tasks 21/0; Sidebar 41/0 | Yes | No | Not applicable | No new release |
+| Home, task ownership and Sidebar grouping | Local implementation; guarded office ad hoc date editing | Home 15/0; Tasks 21/0; Sidebar 41/0; dates/role/CAS/receipt 49/0 and retained detail 26/0 | Yes | No | Not applicable | No new release |
 | Settings reminder fields and search | Local implementation | Policy 27/0; navigation 21/0; signed Settings 56/0 | Yes | No | Policy save does not activate | No new release |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | No | No | No |
 
@@ -77,7 +77,7 @@ decision after deployment and acceptance.
 ## Scope still deliberately open
 
 U0–U5 are partial and U6 is not accepted. Remaining work includes complete normal
-client journeys, task deadline override design, consistent feedback across remaining
+client journeys, generated-task deadline override policy, consistent feedback across remaining
 panels, operational recovery navigation, broader typography and secondary-page
 consistency, team usability sessions and the fixed screenshot set. Finance
 calculations and pay rules are outside visual cleanup. No efficiency or

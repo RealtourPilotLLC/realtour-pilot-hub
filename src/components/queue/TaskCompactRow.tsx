@@ -9,15 +9,16 @@ import type { QueueTask } from "@/components/queue/TaskCard";
 
 const control = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 
-export function TaskCompactRow({ task, assignees, editorView, busy, dueInfo, assignmentNote, onAssign, onOpen }: {
+export function TaskCompactRow({ task, assignees, editorView, deadlineOffice = false, busy, dueInfo, assignmentNote, onAssign, onOpen }: {
   task: QueueTask;
   assignees: { key: string; name: string }[];
   editorView?: boolean;
+  deadlineOffice?: boolean;
   busy: boolean;
   dueInfo: { text: string; overdue: boolean } | null;
   assignmentNote: string | null;
   onAssign: (key: string) => void;
-  onOpen: (focus: TaskRowAction["focus"]) => void;
+  onOpen: (focus: TaskRowAction["focus"] | "deadline") => void;
 }) {
   const action = taskRowAction(task, editorView);
   const owner = taskWorkOwner(task) ?? "";
@@ -55,6 +56,7 @@ export function TaskCompactRow({ task, assignees, editorView, busy, dueInfo, ass
               </select>
             </label>
           )}
+          {task.canEditDeadline === true && deadlineOffice && !editorView && task.status !== "COMPLETED" && task.status !== "CANCELLED" && <button type="button" disabled={busy} aria-haspopup="dialog" onClick={() => onOpen("deadline")} className={`${control} border border-border bg-surface hover:bg-surface-2`}>Edit due date</button>}
           {action.href ? <Link href={action.href} className={`${control} bg-brand-action text-brand-fg`}>{action.label}</Link> : (
             <button type="button" aria-haspopup="dialog" disabled={busy} onClick={() => onOpen(action.focus)} className={`${control} bg-brand-action text-brand-fg`}>{busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : null}{action.label}</button>
           )}
