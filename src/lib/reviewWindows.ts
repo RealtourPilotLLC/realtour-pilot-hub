@@ -798,7 +798,7 @@ export async function repairReviewWindows(opts: { max?: number; now?: Date } = {
 
 // ---- the office's controls -------------------------------------------------------
 
-type Ok = { ok: boolean; message: string };
+type Ok = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 
 /**
  * CHARGE or WAIVE an extra round's fee. Records the decision and closes the
@@ -814,7 +814,7 @@ export async function decideRevisionFee(roundId: string, decision: "CHARGE" | "W
     data: { feeDecision: decision, feeDecidedAt: now, feeDecidedBy: by.slice(0, 120), feeDecisionNote: note?.trim().slice(0, 500) || null },
   });
   const round = await prisma.contentRevisionRound.findUnique({ where: { id: roundId } });
-  if (!round) return { ok: false, message: "That revision round no longer exists." };
+  if (!round) return { ok: false, outcome: won.count > 0 ? "unknown" : "refused", message: "That revision round no longer exists." };
   if (won.count === 0) {
     return round.feeDecision === "CHARGE" || round.feeDecision === "WAIVE"
       ? { ok: false, message: `Already decided: ${round.feeDecision === "CHARGE" ? "charge" : "waive"}${round.feeDecidedBy ? ` (${round.feeDecidedBy})` : ""}. Nothing changed.` }

@@ -74,6 +74,23 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 month/library and office review receipts:** month refusals now show their
+  exact result; unconfirmed/partial moves retain the selected month without a
+  false rollback. Identity fields merge untouched refreshed values before
+  constructing corrections; exact edited words/reason/destinations stay after
+  late receipts. Existing identity/domain/role/allowance rules are unchanged.
+  Actual fake UI/action38/0 and root review/lint/diff pass
+  (`/tmp/u5-month-identity-recovery-final/`). Office fee/clock/hold controls share
+  pending guards, show exact results, retain moneyEyes visibility and hold
+  uncertainty with exact-record opaque markers. Actual fake handlers/wrappers/
+  role visibility plus actual fee-writer CAS/read regression25/0 pass
+  (`/tmp/u5-client-review-controls-cas/`). One review found a won fee write
+  followed by a missing read mislabeled as refused; only its outcome annotation
+  changed, repaired and narrowly rechecked. No billing, fee/clock policy,
+  scripts/version or provider behavior changed. Browser acceptance remains open;
+  month/identity drafts and holds are mounted-state, office markers are device
+  guards rather than server receipts/cross-tab serialization.
+
 - **U3 take-back recovery:** existing two-step cut removal/move now uses the
   native dialog, pending-aware close and retained mounted reason/search/message.
   Read failures are separate from no matching jobs. Shared exact-cut opaque

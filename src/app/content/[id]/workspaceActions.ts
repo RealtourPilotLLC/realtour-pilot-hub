@@ -29,7 +29,9 @@ import type { CallMode } from "@/lib/programMonths";
 // ---------------------------------------------------------------------------
 
 type Result = { ok: boolean; message: string };
+type IdentityActionResult = Result & { outcome?: "confirmed" | "refused" | "unknown" };
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
+const identityFailure = (e: unknown, beforeWrite = false): IdentityActionResult => ({ ...fail(e), outcome: beforeWrite ? "refused" : "unknown" });
 
 async function actor(): Promise<{ email: string; id: string | null }> {
   const { getCurrentUser } = await import("@/lib/auth/user");
@@ -355,46 +357,46 @@ export async function correctVideoIdentityAction(
   videoId: string,
   patch: { title?: string | null; topicId?: string | null; scriptId?: string | null; kind?: string | null; confirmMonth?: boolean },
   reason?: string | null,
-): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+): Promise<IdentityActionResult> {
+  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
   try {
     const { correctVideoIdentity } = await import("@/lib/contentVideos");
     const r = await correctVideoIdentity(enrollmentId, videoId, patch, (await actor()).email, reason);
     if (r.ok) touch(enrollmentId);
-    return { ok: r.ok, message: r.message };
-  } catch (e) { return fail(e); }
+    return { ok: r.ok, message: r.message, outcome: r.ok ? "confirmed" : "refused" };
+  } catch (e) { return identityFailure(e); }
 }
 
-export async function relinkDeliveredFileAction(enrollmentId: string, sourceId: string, targetVideoId: string, reason: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+export async function relinkDeliveredFileAction(enrollmentId: string, sourceId: string, targetVideoId: string, reason: string): Promise<IdentityActionResult> {
+  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
   // It changes which file a client downloads: the reason is not optional.
-  if (!reason?.trim()) return { ok: false, message: "Say why first — moving a file changes what the client downloads." };
+  if (!reason?.trim()) return { ok: false, outcome: "refused", message: "Say why first — moving a file changes what the client downloads." };
   try {
     const { relinkDeliveredFile } = await import("@/lib/contentVideos");
     const r = await relinkDeliveredFile(enrollmentId, sourceId, targetVideoId, (await actor()).email, reason);
     if (r.ok) touch(enrollmentId);
-    return { ok: r.ok, message: r.message };
-  } catch (e) { return fail(e); }
+    return { ok: r.ok, message: r.message, outcome: r.ok ? "confirmed" : "refused" };
+  } catch (e) { return identityFailure(e); }
 }
 
-export async function confirmPairingAction(enrollmentId: string, sourceId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+export async function confirmPairingAction(enrollmentId: string, sourceId: string): Promise<IdentityActionResult> {
+  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
   try {
     const { confirmPairing } = await import("@/lib/contentVideos");
     const r = await confirmPairing(enrollmentId, sourceId, (await actor()).email);
     if (r.ok) touch(enrollmentId);
-    return { ok: r.ok, message: r.message };
-  } catch (e) { return fail(e); }
+    return { ok: r.ok, message: r.message, outcome: r.ok ? "confirmed" : "refused" };
+  } catch (e) { return identityFailure(e); }
 }
 
-export async function adoptTopicVideoAction(enrollmentId: string, chainVideoId: string, topicVideoId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+export async function adoptTopicVideoAction(enrollmentId: string, chainVideoId: string, topicVideoId: string): Promise<IdentityActionResult> {
+  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
   try {
     const { adoptTopicVideo } = await import("@/lib/contentVideos");
     const r = await adoptTopicVideo(enrollmentId, chainVideoId, topicVideoId, (await actor()).email);
     if (r.ok) touch(enrollmentId);
-    return { ok: r.ok, message: r.message };
-  } catch (e) { return fail(e); }
+    return { ok: r.ok, message: r.message, outcome: r.ok ? "confirmed" : "refused" };
+  } catch (e) { return identityFailure(e); }
 }
 
 // ---- the program conversation (CP-13) ---------------------------------------------------

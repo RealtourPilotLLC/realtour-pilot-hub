@@ -3,7 +3,7 @@ import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers, TriangleAlert }
 import { Section } from "@/components/ui/Section";
 import { badgeColors } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
-import { decideRevisionFeeForm, holdReviewWindowForm, restartReviewClockForm } from "@/app/content/actions";
+import { ReviewMutationControls } from "@/components/content/ReviewMutationControls";
 import { LibraryIdentityEditor } from "@/components/content/LibraryIdentityEditor";
 
 // ---------------------------------------------------------------------------
@@ -231,8 +231,8 @@ const WINDOW_TONE: Record<string, string> = {
  * it opened, its deadline, whether they were told and whether they looked,
  * and how it closed — and every revision round on the ledger. The office's
  * controls live here: restart a client's clock, hold a window from automatic
- * approval, and (OWNER/ADMIN) charge or waive an extra round. Plain forms:
- * nothing on this panel needs the browser to do more than submit.
+ * approval, and (OWNER/ADMIN) charge or waive an extra round. Client controls
+ * display the exact server receipt; moneyEyes visibility remains unchanged.
  */
 function ClientReview({ v }: { v: LibraryVideoUi }) {
   const windows = v.reviewWindows ?? [];
@@ -240,8 +240,8 @@ function ClientReview({ v }: { v: LibraryVideoUi }) {
   if (windows.length === 0 && rounds.length === 0) return null;
   const used = rounds.filter((r) => r.state !== "CANCELLED").length;
   return (
-    <div className="space-y-2 rounded-lg border border-border/70 bg-surface px-3 py-2">
-      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+    <div className="space-y-2 rounded-lg border border-border/70 bg-surface px-3 py-2 text-ui-secondary leading-relaxed">
+      <p className="flex flex-wrap items-center gap-1.5 text-ui-status font-semibold text-muted">
         <CalendarClock className="size-3" /> Client review · rounds used {used}{rounds[0] ? ` of ${rounds[0].includedRounds} included` : ""}
       </p>
       {windows.length > 0 && (
@@ -256,27 +256,18 @@ function ClientReview({ v }: { v: LibraryVideoUi }) {
               {w.decidedBy && <span className="text-muted">· {w.decidedBy}</span>}
               {w.heldReason && <span className="text-warning">on hold: {w.heldReason}</span>}
               {w.expiryOutcome && <span className="text-muted-2">expiry: {w.expiryOutcome.toLowerCase()}</span>}
-              {w.evidence && <span className="basis-full text-[11px] text-muted-2">evidence — {w.evidence}</span>}
+              {w.evidence && <span className="basis-full break-words text-ui-status text-muted">evidence — {w.evidence}</span>}
               {w.state === "OPEN" && v.moneyEyes && (
-                <span className="flex gap-1.5">
-                  <form action={restartReviewClockForm}>
-                    <input type="hidden" name="windowId" value={w.id} />
-                    <button type="submit" className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">Restart clock</button>
-                  </form>
-                  <form action={holdReviewWindowForm}>
-                    <input type="hidden" name="windowId" value={w.id} />
-                    <input type="hidden" name="hold" value={w.heldReason ? "0" : "1"} />
-                    <button type="submit" className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">{w.heldReason ? "Release hold" : "Hold"}</button>
-                  </form>
-                </span>
+                <ReviewMutationControls key={w.id} mode="window" id={w.id} held={!!w.heldReason} />
               )}
             </li>
           ))}
         </ul>
       )}
       {rounds.length > 0 && (
+        <div role="region" aria-label={`Revision rounds for ${v.title}`} tabIndex={0} className="overflow-x-auto rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
         <table className="w-full text-left">
-          <thead className="text-[10px] uppercase tracking-wide text-muted-2">
+          <thead className="text-ui-status text-muted">
             <tr><th className="py-1 pr-2">Round</th><th className="pr-2">Asked by</th><th className="pr-2">State</th><th>Extra round</th></tr>
           </thead>
           <tbody>
@@ -287,33 +278,26 @@ function ClientReview({ v }: { v: LibraryVideoUi }) {
                 <td className="pr-2">{r.state.toLowerCase()}{r.answeredAtISO ? ` ${day(r.answeredAtISO)}` : ""}</td>
                 <td>
                   {r.included ? <span className="text-muted-2">included</span> : (
-                    <span className="space-y-1">
+                    <div className="space-y-1">
                       <span className="block text-muted">
                         {r.feeAckBy ? `acknowledged by ${r.feeAckBy} ${day(r.feeAckAtISO)}` : "no acknowledgement (policy was off)"}
                         {v.moneyEyes && r.feeCents != null ? ` · $${(r.feeCents / 100).toFixed(0)} may apply` : ""}
                       </span>
                       {r.feeDecision && r.feeDecision !== "PENDING" && <span className="block font-semibold">{r.feeDecision.toLowerCase()}{r.feeDecidedBy ? ` (${r.feeDecidedBy})` : ""}</span>}
                       {r.feeDecision === "PENDING" && v.moneyEyes && (
-                        <span className="flex gap-1.5">
-                          {(["CHARGE", "WAIVE"] as const).map((d) => (
-                            <form key={d} action={decideRevisionFeeForm}>
-                              <input type="hidden" name="roundId" value={r.id} />
-                              <input type="hidden" name="decision" value={d} />
-                              <button type="submit" className={cn("rounded-md px-2 py-0.5 text-[11px] font-semibold", d === "CHARGE" ? "bg-warning/15 text-warning hover:bg-warning/25" : "border border-border text-muted hover:bg-surface-2")}>{d === "CHARGE" ? "Charge" : "Waive"}</button>
-                            </form>
-                          ))}
-                        </span>
+                        <ReviewMutationControls key={r.id} mode="fee" id={r.id} />
                       )}
                       {r.feeDecision === "PENDING" && !v.moneyEyes && <span className="block text-muted-2">waiting on the office</span>}
-                    </span>
+                    </div>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
-      {v.moneyEyes && rounds.some((r) => r.feeDecision === "PENDING") && <p className="text-[11px] text-muted-2">Charge records the decision only — the hub bills nothing. Invoice it the usual way.</p>}
+      {v.moneyEyes && rounds.some((r) => r.feeDecision === "PENDING") && <p className="text-ui-secondary text-muted">Charge records the decision only — the hub bills nothing. Invoice it the usual way.</p>}
     </div>
   );
 }

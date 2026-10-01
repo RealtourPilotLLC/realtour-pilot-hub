@@ -17,7 +17,7 @@ async function actor(): Promise<{ email: string; id: string | null; realRole: st
   return { email: me?.email ?? "dev@local", id: me?.id ?? null, realRole: me?.realRole ?? me?.role ?? null, name: me?.name ?? null };
 }
 
-type Result = { ok: boolean; message: string };
+type Result = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
 
@@ -645,24 +645,24 @@ export async function dismissScriptSuggestion(suggestionId: string): Promise<Res
 // month records "the client missed this one" so nothing nags about it.
 // ---------------------------------------------------------------------------
 export async function moveSessionToMonth(projectId: string, targetMonthKey: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  if (!/^\d{4}-\d{2}$/.test(targetMonthKey)) return { ok: false, message: "Pick a month." };
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (!/^\d{4}-\d{2}$/.test(targetMonthKey)) return { ok: false, outcome: "refused", message: "Pick a month." };
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { id: true, contentMonthId: true },
   });
-  if (!project?.contentMonthId) return { ok: false, message: "That session isn't attached to a content month." };
+  if (!project?.contentMonthId) return { ok: false, outcome: "refused", message: "That session isn't attached to a content month." };
   const from = await prisma.contentMonth.findUnique({
     where: { id: project.contentMonthId },
     select: { id: true, enrollmentId: true, monthKey: true },
   });
-  if (!from) return { ok: false, message: "That session isn't attached to a content month." };
-  if (from.monthKey === targetMonthKey) return { ok: true, message: "Already on that month." };
+  if (!from) return { ok: false, outcome: "refused", message: "That session isn't attached to a content month." };
+  if (from.monthKey === targetMonthKey) return { ok: true, outcome: "confirmed", message: "Already on that month." };
   const enrollment = await prisma.contentEnrollment.findUnique({
     where: { id: from.enrollmentId },
     select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true },
   });
-  if (!enrollment) return { ok: false, message: "Enrollment not found." };
+  if (!enrollment) return { ok: false, outcome: "refused", message: "Enrollment not found." };
   // Find-or-create the target month WITHIN the same enrollment — a session can
   // never move to another client's month.
   const target = await prisma.contentMonth.upsert({
@@ -681,10 +681,13 @@ export async function moveSessionToMonth(projectId: string, targetMonthKey: stri
   await prisma.project.update({ where: { id: projectId }, data: { contentMonthId: target.id } });
   // The library follows the session — the portal groups by month, and "her
   // July content" must sit under July however late it was filmed.
-  await prisma.portalVideo.updateMany({ where: { projectId }, data: { monthId: target.id } }).catch(() => {});
+  let libraryConfirmed = true;
+  await prisma.portalVideo.updateMany({ where: { projectId }, data: { monthId: target.id } }).catch(() => { libraryConfirmed = false; });
   revalidatePath(`/content/${enrollment.id}`);
   revalidatePath("/content");
-  return { ok: true, message: `Moved to ${targetMonthKey} — the portal follows.` };
+  return libraryConfirmed
+    ? { ok: true, outcome: "confirmed", message: `Moved to ${targetMonthKey} — the portal follows.` }
+    : { ok: false, outcome: "unknown", message: `The session moved to ${targetMonthKey}, but the library update was not confirmed. Ask staff to inspect this session and its exact video records before another move.` };
 }
 
 /** An explicit staff repair for a job with no month link. No title/date matching. */
@@ -717,16 +720,16 @@ export async function attachUnlinkedSessionToMonth(projectId: string, monthId: s
 }
 
 export async function setMonthSkipped(monthId: string, skipped: boolean): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, status: true } });
-  if (!month) return { ok: false, message: "Month not found." };
+  if (!month) return { ok: false, outcome: "refused", message: "Month not found." };
   await prisma.contentMonth.update({
     where: { id: monthId },
     data: { status: skipped ? "SKIPPED" : "OPEN" },
   });
   revalidatePath(`/content/${month.enrollmentId}`);
   revalidatePath("/content");
-  return { ok: true, message: skipped ? "Marked skipped — no more nagging about this month." : "Reopened." };
+  return { ok: true, outcome: "confirmed", message: skipped ? "Marked skipped — no more nagging about this month." : "Reopened." };
 }
 
 // Scripts slip months too (Jordan, Aug 28: "her July scripts were for the
@@ -1539,39 +1542,39 @@ export async function runProgramMigrations(): Promise<Result> {
 // ---------------------------------------------------------------------------
 
 export async function decideRevisionFeeAction(roundId: string, decision: "CHARGE" | "WAIVE", note?: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
   try {
     const me = await actor();
     const { decideRevisionFee } = await import("@/lib/reviewWindows");
     const r = await decideRevisionFee(roundId, decision, me.name ?? me.email, note ?? null);
     const round = await prisma.contentRevisionRound.findUnique({ where: { id: roundId }, select: { enrollmentId: true } });
     if (round) path(round.enrollmentId);
-    return r;
-  } catch (e) { return fail(e); }
+    return { ...r, outcome: r.outcome ?? (r.ok ? "confirmed" : "refused") };
+  } catch (e) { return { ...fail(e), outcome: "unknown" }; }
 }
 
 export async function restartReviewClockAction(windowId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
   try {
     const me = await actor();
     const { restartReviewClock } = await import("@/lib/reviewWindows");
     const r = await restartReviewClock(windowId, me.name ?? me.email);
     const w = await prisma.contentReviewWindow.findUnique({ where: { id: windowId }, select: { enrollmentId: true } });
     if (w) path(w.enrollmentId);
-    return r;
-  } catch (e) { return fail(e); }
+    return { ...r, outcome: r.ok ? "confirmed" : "refused" };
+  } catch (e) { return { ...fail(e), outcome: "unknown" }; }
 }
 
 export async function holdReviewWindowAction(windowId: string, hold: boolean, reason?: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
   try {
     const me = await actor();
     const { holdReviewWindow, releaseReviewHold } = await import("@/lib/reviewWindows");
     const r = hold ? await holdReviewWindow(windowId, me.name ?? me.email, reason ?? "") : await releaseReviewHold(windowId);
     const w = await prisma.contentReviewWindow.findUnique({ where: { id: windowId }, select: { enrollmentId: true } });
     if (w) path(w.enrollmentId);
-    return r;
-  } catch (e) { return fail(e); }
+    return { ...r, outcome: r.ok ? "confirmed" : "refused" };
+  } catch (e) { return { ...fail(e), outcome: "unknown" }; }
 }
 
 /** Form variants: <form action={…}> with hidden inputs. */

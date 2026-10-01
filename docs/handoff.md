@@ -2,6 +2,39 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — month/library and office review receipts
+
+Month picker/mover/skip controls use labeled44px native controls and readable
+receipt text. Existing month guards add confirmed/refused metadata; thrown
+requests remain unknown. A partial library update reports that the session moved
+but the library result is unconfirmed, preserving mutation order. Unknown moves
+retain the requested month and hold further writes rather than rolling back a
+possibly committed move. Stable ID-scoped mounted sessions survive prop ID round
+trips. Identity refresh merges untouched title/topic/script/kind before building
+the patch; divergent edited words, reasons and destination choices remain.
+Existing domain refusals precede transactions; wrappers annotate their outcomes
+and hold thrown/post-refresh failures. No identity/allowance/publication/role
+policy or script version changes. Actual fake handler/wrapper/month fixture38/0
+at `/tmp/u5-month-identity-recovery-final/`; lint/diff and root review pass.
+
+Library office review now displays exact fee/clock/hold results in native shared
+controls. One per-record pending guard covers competing buttons; moneyEyes and
+open/PENDING visibility stay unchanged. Exact opaque device markers hold unknown
+results across refresh; only their own known response clears them. No billing
+was added. Independent review found a subtle fee CAS/read result: a won pending
+decision followed by a missing round was not a known no-write refusal. The fee
+writer now annotates that unknown, and the wrapper preserves it; mutation/CAS/
+task/routing/activity policy remains unchanged. Actual handlers/wrappers/library
+role visibility and actual fee-writer in-memory CAS cases25/0 at
+`/tmp/u5-client-review-controls-cas/`; lint and narrow review repair check pass.
+Earlier fake failures were module namespace and unrelated Promise.all ordering,
+fixed in the fixture. No live financial, clock or provider action occurred.
+
+Month/identity drafts and holds are mounted-state, not reload-persisted; office
+device markers are retry guards, not server terminal receipts or cross-tab locks.
+Unknown results need exact record inspection. Normal browser/keyboard/phone
+acceptance and a new combined stable candidate gate remain open.
+
 ### Oct 1 U3 checkpoint — take-back dialog and exact-cut recovery
 
 CutTakeBack uses existing native ModalDialog for focus containment/return and

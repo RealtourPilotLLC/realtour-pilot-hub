@@ -19,6 +19,7 @@ instructions and batch evidence remain in `handoff.md`.
 | Upload and appointment uncertain-write recovery | Local implementation; named recovery limits retained | Upload PG26/0 + UI18/0, CP09 142/0, B4 69/0; appointment signed action13/0 + fake UI23/0 | Yes | No | No provider/automation activation | No new release |
 | Resources drafts and uncertain-write recovery | Local implementation; current-tab retention | Actual handler/action/page fixture33/0 and focused review, including group/removal remounts; browser open | Yes | No | No publishing or automation change | No new release |
 | Exact-cut removal/move dialog and recovery | Local correction; preserved destructive confirmation and file rules | Actual fake UI/action30/0; lint/types/review; native browser/provider open | Yes | No | No provider operation activated | No new release |
+| Month/library corrections and office review controls | Local correction; preserved fee/clock/identity rules | Fake actual UI/action38/0; office handler/wrapper/CAS25/0; lint/review; browser open | Yes | No | No switch or billing changes | No new release |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | No | No | No |
 
 Latest known deployment before takeover: `bf2e0b4`. This is historical evidence,

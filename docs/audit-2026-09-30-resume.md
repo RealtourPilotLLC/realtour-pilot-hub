@@ -58,6 +58,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | Access commit containing this update | Privacy-generic sign-in and newer invitation drafts |Actual fake UI29/0 + wrapper10/0; typecheck/lint/root review |
 | `8f708b7` | Client access recovery |See exact29/0+10/0 evidence above |
 | Take-back commit containing this update | Native exact-cut dialog and retry recovery |Actualfake30/0; typecheck/lint/review and narrow remount recheck |
+| `aab1f99` | Take-back recovery |Exact30/0 evidence above |
+| Month/review commit containing this update | Identity/month and office fee/clock/hold receipts |Actualfake38/0+25/0; lint/review; fee CAS/read ambiguity repaired |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
