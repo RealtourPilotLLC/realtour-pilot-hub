@@ -2,6 +2,26 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U1/U3 checkpoint — shared clipboard and Markdown controls
+
+Shared CopyButton awaits a supported clipboard write, reports denied/unavailable
+copy visibly and accessibly, and binds success/error to the exact requested
+value. Synchronous pending guards prevent duplicate taps; older receipt timers
+cannot clear a newer copy, and unmount clears the timer. Visible labels remain
+in the accessible name; icon-only callers also show Copy failed. Native event
+isolation and callsite values/context are retained; no sensitive value is logged.
+MarkdownEditor's existing formatting and selection handlers are unchanged; its
+toolbar wraps, uses labeled 44px native controls, exposes Write/Preview pressed
+state and gives the existing text input readable type/focus.
+
+Actual CopyButton handlers with fake clipboard promises passed 12/0
+(`/tmp/u1-copy-receipts-reviewed/`). The first fixture had an incorrect click
+count assertion (9/1), corrected without changing behavior. Focused lint/diff
+and independent source review passed; review exposed label-in-name and touch
+failure visibility, both repaired/covered. No real clipboard, provider or DB
+operation occurred. Actual clipboard permissions, toolbar focus/selection,
+narrow/zoom layout and browser acceptance remain open. Combined types/build next.
+
 ### Oct 1 U1/U5 checkpoint — month and library controls
 
 SubNav native links and MonthHeader's existing picker/Skip controls have readable

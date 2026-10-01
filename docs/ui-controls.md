@@ -14,6 +14,8 @@ actions. The migration is incremental.
 | `ModalDialog` | Existing native dialog, browser top layer, initial focus, contained focus, pending dismissal guard and focus return. Controlled `open` can keep drafts mounted. |
 | `ActionMenu` | Existing queue menu with arrow/Home/End keys, Escape/Tab dismissal, disabled reasons and focus return. |
 | `Badge` | Existing theme-aware status words. Color alone does not communicate status. |
+| `CopyButton` | Native 44px control; supported clipboard completion is required for an exact-value receipt. Denied/unavailable copies show failure, including icon-only callers. Pending blocks duplicate taps; labels match visible words. |
+| `MarkdownEditor` | Existing formatting/selection logic; wrapping labeled native toolbar and Write/Preview pressed state. 44px controls and 16px native input with visible focus. |
 
 Initial consumers are core Settings save rows and numeric controls, notification
 switch targets, and client planning/cancellation controls. Server actions, input

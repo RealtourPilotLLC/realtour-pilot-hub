@@ -74,6 +74,13 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U1/U3 shared copy/editor controls:** exact supported clipboard receipts,
+  visible denied/unavailable failures, native label/pending guard/timer cleanup,
+  wrapping labeled Markdown toolbar and readable focused input. Fake actual
+  CopyButton handlers 12/0, lint/diff and independent review passed. Existing
+  formatting/selection/callsite values remain. Real clipboard/browser/zoom and
+  combined type/build gate remain open; no sensitive values logged or real copied.
+
 - **U1/U5 month/library controls:** native SubNav/MonthHeader picker/Skip targets,
   readable library identity/status/release text, shared badge ink and focused cut
   history overflow region; routes/all-month scope/rows/roles/pay/handlers retained.

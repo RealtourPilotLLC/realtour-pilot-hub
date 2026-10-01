@@ -75,20 +75,20 @@ export function MarkdownEditor({
     });
   }
 
-  const btn = "rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-foreground";
+  const btn = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md p-2 text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   const tabBtn = (active: boolean) =>
-    cn("rounded-md px-2 py-1 text-[11px] font-semibold", active ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground");
+    cn("min-h-11 rounded-md px-3 py-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", active ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground");
   return (
     <div className={cn("rounded-lg border border-border bg-surface", className)}>
-      <div className="flex items-center gap-0.5 border-b border-border px-1.5 py-1">
-        <button type="button" title="Bold" onClick={() => doWrap("**", "bold text")} className={btn}><Bold className="size-3.5" /></button>
-        <button type="button" title="Italic" onClick={() => doWrap("*", "italic text")} className={btn}><Italic className="size-3.5" /></button>
-        <button type="button" title="Heading" onClick={() => doLines(() => "## ")} className={btn}><Heading2 className="size-3.5" /></button>
-        <button type="button" title="Bullet list" onClick={() => doLines(() => "- ")} className={btn}><List className="size-3.5" /></button>
-        <button type="button" title="Numbered list" onClick={() => doLines((i) => `${i + 1}. `)} className={btn}><ListOrdered className="size-3.5" /></button>
-        <div className="ml-auto flex items-center gap-0.5">
-          <button type="button" onClick={() => setTab("write")} className={tabBtn(tab === "write")}>Write</button>
-          <button type="button" onClick={() => setTab("preview")} className={tabBtn(tab === "preview")}>Preview</button>
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-1.5 py-1">
+        <button type="button" title="Bold" aria-label="Bold" onClick={() => doWrap("**", "bold text")} className={btn}><Bold className="size-3.5" /></button>
+        <button type="button" title="Italic" aria-label="Italic" onClick={() => doWrap("*", "italic text")} className={btn}><Italic className="size-3.5" /></button>
+        <button type="button" title="Heading" aria-label="Heading" onClick={() => doLines(() => "## ")} className={btn}><Heading2 className="size-3.5" /></button>
+        <button type="button" title="Bullet list" aria-label="Bullet list" onClick={() => doLines(() => "- ")} className={btn}><List className="size-3.5" /></button>
+        <button type="button" title="Numbered list" aria-label="Numbered list" onClick={() => doLines((i) => `${i + 1}. `)} className={btn}><ListOrdered className="size-3.5" /></button>
+        <div className="ml-auto flex flex-wrap items-center gap-0.5">
+          <button type="button" aria-pressed={tab === "write"} onClick={() => setTab("write")} className={tabBtn(tab === "write")}>Write</button>
+          <button type="button" aria-pressed={tab === "preview"} onClick={() => setTab("preview")} className={tabBtn(tab === "preview")}>Preview</button>
         </div>
       </div>
       {tab === "write" ? (
@@ -99,7 +99,7 @@ export function MarkdownEditor({
           minRows={minRows}
           maxRows={maxRows}
           placeholder={placeholder}
-          className="w-full rounded-b-lg bg-surface-2/60 px-3 py-2 text-sm leading-relaxed outline-none focus:bg-surface-2"
+          className="w-full rounded-b-lg bg-surface-2/60 px-3 py-2 text-base leading-relaxed outline-none focus:bg-surface-2 focus-visible:ring-2 focus-visible:ring-brand"
         />
       ) : (
         <div className="min-h-24 px-3 py-2">
