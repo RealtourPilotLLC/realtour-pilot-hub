@@ -802,7 +802,7 @@ export default async function HomePage({ searchParams }: { searchParams?: Promis
             <div className="px-4 py-3.5">
               <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
             </div>
-            <WeekStrip week={shoots.week} />
+            <WeekStrip week={shoots.week} includeTest={includeTest} />
           </section>
     </>
   );
@@ -819,7 +819,7 @@ export default async function HomePage({ searchParams }: { searchParams?: Promis
         actions={<Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>}
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
-        {includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months and delivery lists keep this view when opened. Editing Room and Schedule use their existing lists without a test-record switch. Figures from the books keep Finance’s existing definitions.</p></div>}
+        {includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months, Editing Room, Schedule and delivery lists keep this view when opened. Figures from the books keep Finance’s existing definitions.</p></div>}
         <section aria-labelledby="home-focus-title" className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -952,7 +952,7 @@ export default async function HomePage({ searchParams }: { searchParams?: Promis
         {/* 9 · Quality dials — a compact video-SLA roll-up (links to the Editor
             Queue; NOT a re-list of the stuck jobs above) + the QC quality dial.
             Self-hides when there's no video in flight AND no QC history yet. */}
-        {isOwner && dials && <QualityDials dials={dials} />}
+        {isOwner && dials && <QualityDials dials={dials} includeTest={includeTest} />}
 
         {/* How the day is meant to run — the standing rules, not a queue. */}
         <section className="rounded-2xl border border-border bg-surface p-5">
@@ -975,7 +975,7 @@ export default async function HomePage({ searchParams }: { searchParams?: Promis
         <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
           <Link href={scopeHref("/tasks")} className="hover:text-foreground">All tasks</Link>
           <Link href={scopeHref("/review")} className="hover:text-foreground">Review Room</Link>
-          <Link href="/schedule" className="hover:text-foreground">Schedule</Link>
+          <Link href={scopeHref("/schedule")} className="hover:text-foreground">Schedule</Link>
         </div>
       </div>
     </div>
@@ -1263,7 +1263,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
               <h4 className="flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-muted-2">
                 In production right now
                 <span className="flex flex-wrap gap-1.5 text-[11px] font-medium normal-case tracking-normal">
-                  <Pill warn={false} label={`${d.pipeline.editing} being edited now`} href="/editing" />
+                  <Pill warn={false} label={`${d.pipeline.editing} being edited now`} href={scopeHref("/editing")} />
                   <Pill warn={d.pipeline.review > 0} label={`${d.pipeline.review} in review`} href={scopeHref("/review")} />
                   <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} in revision`} href={scopeHref("/tasks?tab=revisions")} />
                 </span>

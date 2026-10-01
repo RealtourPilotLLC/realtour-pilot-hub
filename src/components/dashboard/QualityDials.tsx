@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Clapperboard } from "lucide-react";
 import type { OwnerDials } from "@/lib/queries";
+import { homeRecordHref } from "@/lib/homeRecordScope";
 
 // Two already-built quality dials, surfaced on the owner dashboard as ONE quiet
 // strip beneath the pulse. Owner-only (rendered behind the same gate as the
@@ -19,7 +20,7 @@ import type { OwnerDials } from "@/lib/queries";
 //      30 days of completed QC passes. GUARDED: with zero passes on record (the
 //      launch state — QcRecords only accrue as Kyle completes guided-QC cards)
 //      we show a muted "tracking starts" hint instead of a misleading 0%/NaN.
-export function QualityDials({ dials }: { dials: OwnerDials }) {
+export function QualityDials({ dials, includeTest = false }: { dials: OwnerDials; includeTest?: boolean }) {
   const { video, qc } = dials;
   // Nothing to say at all (no video in the pipeline AND no QC history) → render
   // nothing rather than an empty shell.
@@ -30,13 +31,13 @@ export function QualityDials({ dials }: { dials: OwnerDials }) {
       {/* Video SLA — the editing bench, one line. Amber-emphasis only when at
           least one job is past its window. */}
       {video.inEditing > 0 && (
-        <Link href="/editing" className="inline-flex items-center gap-1.5 hover:opacity-80">
+        <Link href={homeRecordHref("/editing", includeTest)} title="The SLA sample covers video projects with a shoot date in production. Editing Room also includes waiting and upcoming projects." className="inline-flex items-center gap-1.5 hover:opacity-80">
           <Clapperboard className="size-3.5 text-muted-2" />
           <span className="text-muted">Video</span>{" "}
           <b className="tabular-nums">{video.inEditing}</b>
           {/* Work owed across production, not work happening (§7.1, A64): the
               "being edited now" figure is the editors' own Start. */}
-          <span className="text-muted">video job{video.inEditing === 1 ? "" : "s"} in production</span>
+          <span className="text-muted">video job{video.inEditing === 1 ? "" : "s"} in the SLA sample</span>
           {video.editingNow > 0 && <span className="text-muted">· {video.editingNow} being edited now</span>}
           {video.pastSla > 0 && (
             <span className="ml-0.5 rounded-md bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning tabular-nums">

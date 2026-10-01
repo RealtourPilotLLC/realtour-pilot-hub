@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### C14 checkpoint — matching office Editing and Schedule record scopes
+
+Office Editing normal/test scope now filters all project rails before their caps,
+plus active/paused/claimed work, today's activity and removal undo. Optional
+reader arguments preserve every creative job/chat/photographer caller's prior
+assigned work, including fixtures and manual Start/Pause. Schedule List/Map share
+the normal/test client scope while preserving their original status, location and
+time windows. Home, WeekStrip, filters, view switches and exact job-return context
+retain the choice. Team availability remains shared and is labeled accordingly;
+the Home SLA reader retains its separate recorded-shoot/production definition.
+
+New isolated signed boundary/count/return fixture passed 23/0
+(`/tmp/c14-editing-schedule-scope-final/`); affected Home 22/0, U3 layout 15/0 and
+stage/URL 14/0 passed (`/tmp/c14-editing-schedule-scope-logs/`). Lint/diff and root
+focused source review passed. The new fixture needed a Node CSS stub and explicit
+SCHEDULED appointment status; SQL's existing null-status exclusion was retained.
+Final stable gate follows. C14 still requires signed normal-browser identity and
+scope/filtered-empty acceptance; no provider identity or live state was changed.
+
 ### U5 checkpoint — truthful automation confirmation failures
 
 Automation confirmation catches thrown action responses and names the exact

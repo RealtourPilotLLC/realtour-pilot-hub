@@ -107,8 +107,11 @@ export const WAITING_ON_INSTRUCTIONS = "Waiting on instructions";
  *  Null on every other row, whose date is the delivery promise as before. */
 export type EditorQueueRow = QueueRow & { dueNote: string | null };
 
-export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; upcoming: EditorQueueRow[]; done: EditorQueueRow[] }> {
+export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {}): Promise<{ notDone: EditorQueueRow[]; upcoming: EditorQueueRow[]; done: EditorQueueRow[] }> {
   const rules = await editorRouting();
+  // The office's normal view hides fixtures; creative job/chat callers keep
+  // the existing full assigned queue unless their caller explicitly scopes it.
+  const clientScope = opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {};
   const now = new Date();
   const deliveredCutoff = etAddDays(now, -60);
   // Jobs the office put back to Waiting (Sep 11, queueWaiting.ts) stay in Not
@@ -135,6 +138,7 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
       // four monthly jobs actively being shot were invisible). 7-day window
       // so ancient stale bookings don't pile up — except a held one (above).
       where: {
+        ...clientScope,
         OR: [
           { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
           { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { lt: now, gte: etAddDays(now, -7) } },
@@ -170,12 +174,12 @@ export async function buildEditorQueue(): Promise<{ notDone: EditorQueueRow[]; u
     // an upcoming edits tab". Every future-dated booked/scheduled job with a
     // video deliverable, however far out.
     prisma.project.findMany({
-      where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now }, aryeoMissingAt: null },
+      where: { ...clientScope, status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now }, aryeoMissingAt: null },
       orderBy: { shootDate: "asc" },
       include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
     prisma.project.findMany({
-      where: { status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
+      where: { ...clientScope, status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
       orderBy: { deliveredAt: "desc" },
       take: 60,
       include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },

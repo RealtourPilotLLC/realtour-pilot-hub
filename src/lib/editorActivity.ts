@@ -124,25 +124,26 @@ async function messageAuthorIds(keys: readonly string[]): Promise<Map<string, st
  * throws: a failed read comes back ok:false and the panel says it could not
  * read — it never turns into "Nothing in the hub today".
  */
-export async function editorActivityToday(opts: { now?: Date } = {}): Promise<ActivityToday> {
+export async function editorActivityToday(opts: { now?: Date; excludeProjectIds?: string[] } = {}): Promise<ActivityToday> {
   const now = opts.now ?? new Date();
   const readAt = now.toISOString();
   try {
     const keys = [...DESK_EDITOR_KEYS];
     const since = dayStartOf(now);
     const inWindow = { gte: since, lte: now };
+    const projectScope = opts.excludeProjectIds?.length ? { projectId: { notIn: opts.excludeProjectIds } } : {};
     type Raw = Omit<ActivityItem, "street"> & { key: string };
     const raw: Raw[] = [];
 
     // E1 — the editor's own uploads.
     const uploads = await prisma.reviewSubmission.findMany({
-      where: { source: "upload", submittedByKey: { in: keys }, createdAt: inWindow },
+      where: { ...projectScope, source: "upload", submittedByKey: { in: keys }, createdAt: inWindow },
       select: { id: true, projectId: true, status: true, round: true, slot: true, submittedByKey: true, createdAt: true },
     });
     // E2 — the editor's own Dropbox "Send to Review", told apart from the
     // office's send by the bound check.
     const buttons = await prisma.reviewSubmission.findMany({
-      where: { source: "button", submittedByKey: { in: keys }, createdAt: inWindow, selfCheckId: { not: null } },
+      where: { ...projectScope, source: "button", submittedByKey: { in: keys }, createdAt: inWindow, selfCheckId: { not: null } },
       select: { id: true, projectId: true, round: true, slot: true, submittedByKey: true, createdAt: true, selfCheckId: true },
     });
     const buttonChecks = buttons.length
@@ -173,7 +174,7 @@ export async function editorActivityToday(opts: { now?: Date } = {}): Promise<Ac
 
     // E3 — a check the editor finished on a held cut.
     const checks = await prisma.cutSelfCheck.findMany({
-      where: { editorKey: { in: keys }, onBehalfOf: null, actorUserId: { not: null }, checklistKey: { not: "none" }, createdAt: inWindow },
+      where: { ...projectScope, editorKey: { in: keys }, onBehalfOf: null, actorUserId: { not: null }, checklistKey: { not: "none" }, createdAt: inWindow },
       select: { submissionId: true, projectId: true, round: true, slot: true, editorKey: true, createdAt: true },
     });
     for (const ch of checks) {
@@ -184,7 +185,7 @@ export async function editorActivityToday(opts: { now?: Date } = {}): Promise<Ac
 
     // E4 — notes and replies under the editor's own author key.
     const notes = await prisma.mediaNote.findMany({
-      where: { authorKey: { in: keys.map((k) => `editor:${k}`) }, createdAt: inWindow },
+      where: { ...projectScope, authorKey: { in: keys.map((k) => `editor:${k}`) }, createdAt: inWindow },
       select: { projectId: true, parentId: true, authorKey: true, createdAt: true },
     });
     for (const n of notes) {
@@ -196,7 +197,7 @@ export async function editorActivityToday(opts: { now?: Date } = {}): Promise<Ac
     const authors = await messageAuthorIds(keys);
     if (authors.size) {
       const msgs = await prisma.projectMessage.findMany({
-        where: { authorId: { in: [...authors.keys()] }, createdAt: inWindow },
+        where: { ...projectScope, authorId: { in: [...authors.keys()] }, createdAt: inWindow },
         select: { projectId: true, authorId: true, createdAt: true },
       });
       for (const m of msgs) {
@@ -208,7 +209,7 @@ export async function editorActivityToday(opts: { now?: Date } = {}): Promise<Ac
     // Starts today — the editor's OWN presses only (the office's corrections
     // are the office's). Used for the tail's wording; never for state.
     const starts = await prisma.editorWorkEvent.findMany({
-      where: { editorKey: { in: keys }, kind: { in: ["START", "RESUME", "CONFIRM"] }, actorRole: "EDITOR", onBehalf: false, at: inWindow },
+      where: { ...projectScope, editorKey: { in: keys }, kind: { in: ["START", "RESUME", "CONFIRM"] }, actorRole: "EDITOR", onBehalf: false, at: inWindow },
       orderBy: { at: "desc" },
       select: { editorKey: true, at: true },
     });

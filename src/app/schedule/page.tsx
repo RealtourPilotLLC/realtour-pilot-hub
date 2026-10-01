@@ -10,6 +10,7 @@ import { etDayStartUtc, etAddDays, etFullDate, etTime, etDayKey, isTodayET } fro
 import { ProjectMap, type MapPin, type MapDay } from "@/components/map/ProjectMap";
 import { hasDroneOps } from "@/components/project/DroneBadge";
 import { ScheduleViewToggle, type ScheduleView } from "@/components/schedule/ScheduleViewToggle";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ const WINDOW_DAYS = 60;
 const MAP_LOOKBACK_DAYS = 7;
 
 // ---- List view: appointments grouped by ET day, today onward -----------------
-async function ListView() {
+async function ListView({ excludeClientIds, includeTest }: { excludeClientIds: string[]; includeTest: boolean }) {
   const startToday = etDayStartUtc(new Date());
   const windowEnd = etDayStartUtc(etAddDays(new Date(), WINDOW_DAYS));
 
@@ -33,7 +34,7 @@ async function ListView() {
     where: {
       startAt: { gte: startToday, lt: windowEnd },
       status: { not: "CANCELED" },
-      project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
+      project: { status: { notIn: ["CANCELLED", "DELIVERED"] }, ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) },
     },
     orderBy: { startAt: "asc" },
     include: {
@@ -53,8 +54,8 @@ async function ListView() {
     <div>
       <PageHeader
         title="Schedule"
-        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days`}
-        actions={<ScheduleViewToggle view="list" />}
+        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days · ${includeTest ? "real and test records" : "test records hidden"}`}
+        actions={<ScheduleViewToggle view="list" includeTest={includeTest} />}
       />
       <div className="space-y-6 p-6">
         {appts.length === 0 && <p className="text-sm text-muted">No shoots scheduled in the next {WINDOW_DAYS} days.</p>}
@@ -117,7 +118,7 @@ async function ListView() {
 // ---- Map view: geocoded appointments on the interactive route map -------------
 // (Moved verbatim from the old /map route so the pins/day-picker/route logic is
 // unchanged — only the data window's forward end is now the shared WINDOW_DAYS.)
-async function MapView() {
+async function MapView({ excludeClientIds, includeTest }: { excludeClientIds: string[]; includeTest: boolean }) {
   const now = new Date();
   const from = new Date(now.getTime() - MAP_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   const to = new Date(now.getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -126,7 +127,7 @@ async function MapView() {
     where: {
       startAt: { gte: from, lte: to },
       status: { not: "CANCELED" },
-      project: { status: { notIn: ["CANCELLED"] }, lat: { not: null }, lng: { not: null } },
+      project: { status: { notIn: ["CANCELLED"] }, lat: { not: null }, lng: { not: null }, ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) },
     },
     orderBy: { startAt: "asc" },
     include: {
@@ -192,8 +193,8 @@ async function MapView() {
     <div>
       <PageHeader
         title="Schedule"
-        subtitle={`${days.length} shoot days · pick a day to see the route, weather & drive times`}
-        actions={<ScheduleViewToggle view="map" />}
+        subtitle={`${days.length} shoot days · pick a day to see the route, weather & drive times · ${includeTest ? "real and test records" : "test records hidden"}`}
+        actions={<ScheduleViewToggle view="map" includeTest={includeTest} />}
       />
       <div className="p-4 sm:p-6">
         {pins.length === 0 ? (
@@ -206,11 +207,13 @@ async function MapView() {
   );
 }
 
-export default async function SchedulePage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
+export default async function SchedulePage({ searchParams }: { searchParams: Promise<{ view?: string; test?: string }> }) {
   await requirePageAccess("schedule");
   const sp = await searchParams;
   const view: ScheduleView = sp.view === "map" ? "map" : "list";
+  const includeTest = sp.test === "1";
+  const excludeClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((client) => client.id);
   // Each view early-returns its own query (communications pattern): the List
   // never runs the geocoded/map pull, the Map never runs the grouped-day pull.
-  return view === "map" ? <MapView /> : <ListView />;
+  return view === "map" ? <MapView excludeClientIds={excludeClientIds} includeTest={includeTest} /> : <ListView excludeClientIds={excludeClientIds} includeTest={includeTest} />;
 }

@@ -19,6 +19,9 @@ import { EditingWorkSummary } from "@/components/editing/EditingWorkSummary";
 import { EditorDesk } from "@/components/editing/EditorDesk";
 import { myDesk, workingNow } from "@/lib/editorWork";
 import { editorActivityToday, editorLines, rowEvidence } from "@/lib/editorActivity";
+import { prisma } from "@/lib/prisma";
+import { isSyntheticClientRow } from "@/lib/testClients";
+import { editingQueueHref } from "@/lib/editingQueueUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +73,7 @@ function MessagesButton({ unread }: { unread: number }) {
   );
 }
 
-export default async function EditorQueuePage() {
+export default async function EditorQueuePage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> } = {}) {
   await requirePageAccess("editing");
   const me = await getCurrentUser().catch(() => null);
   // ONE ANSWER, NOT A THIRD COPY (review, Sep 18). This page had its own
@@ -139,7 +142,19 @@ export default async function EditorQueuePage() {
     );
   }
 
-  const { notDone, upcoming: upcomingRows, done } = await buildEditorQueue();
+  // The photographer returned above; every remaining non-editor renders this
+  // office queue, including a login with an explicit page-access override.
+  // Editors retain their full assigned work and manual desk below.
+  const office = me?.role !== "EDITOR";
+  const sp = await searchParams ?? {};
+  const includeTest = office && sp.test === "1";
+  const excludeClientIds = office && !includeTest ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((client) => client.id) : [];
+  const excludeProjectIds = excludeClientIds.length ? (await prisma.project.findMany({ where: { clientId: { in: excludeClientIds } }, select: { id: true } })).map((project) => project.id) : [];
+  const excludedProjects = new Set(excludeProjectIds);
+  const scopeParams = new URLSearchParams(Object.entries(sp).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  if (includeTest) scopeParams.delete("test"); else scopeParams.set("test", "1");
+  const scopeToggleHref = editingQueueHref(scopeParams);
+  const { notDone, upcoming: upcomingRows, done } = await buildEditorQueue({ excludeClientIds });
   // WORKLOAD, NOT A ROW COUNT (R08, Sep 18). The open rows PLUS the upcoming
   // ones, because a job whose footage has not landed is a real thing on the
   // board and the whole point of the lanes is that it is not editing work.
@@ -233,7 +248,7 @@ export default async function EditorQueuePage() {
   // they're on (Start/Pause) and what they did today (evidence). Neither read
   // throws; each says so when it failed.
   const now = new Date();
-  const [wn, act] = await Promise.all([workingNow({ now }), editorActivityToday({ now })]);
+  const [wn, act] = await Promise.all([workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds })]);
   const today = editorLines(wn, act, now);
   const workload = await editingWorkload(workloadRows([...notDone, ...upcomingRows]));
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);
@@ -243,11 +258,12 @@ export default async function EditorQueuePage() {
       <PageHeader
         eyebrow="Video projects only"
         title="Editing Room"
-        subtitle={`${notDone.length} open projects · ${upcomingRows.length} upcoming projects`}
+        subtitle={`${notDone.length} open projects · ${upcomingRows.length} upcoming projects · ${includeTest ? "real and test records" : "test records hidden"}`}
         // Pop-up Style Guide — a draggable floating window (remembers where
         // you put it), so the guide can sit beside the queue while working.
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={scopeToggleHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>
             <MessagesButton unread={unread} />
             <FloatingStyleGuide />
           </div>
@@ -262,6 +278,7 @@ export default async function EditorQueuePage() {
             visible; the panel says when it read and says so when that read
             has gone stale or failed. */}
         <AutoRefresh seconds={60} />
+        <p className="text-sm text-muted">{includeTest ? "Editors today includes real and test projects." : "Editors today shows real projects; test work is hidden."}</p>
         <EditingWorkSummary view={today} />
         {/* THE BACKLOG. Rows click straight through to /edit/<id> — the notes
             (customer + shoot) live there now, not in the table. A row reads
@@ -281,7 +298,7 @@ export default async function EditorQueuePage() {
         </section>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}
-        <RecentlyRemoved rows={await recentlyRemovedFromQueue()} />
+        <RecentlyRemoved rows={(await recentlyRemovedFromQueue()).filter((row) => !excludedProjects.has(row.projectId))} />
         <details className="group rounded-xl border border-border bg-surface" id="editing-capacity">
           <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-brand">
             <span className="font-semibold">Capacity and activity details</span>
@@ -289,6 +306,7 @@ export default async function EditorQueuePage() {
             {capacityNow.length > 0 && <span className="text-warning"> · {capacityNow.length} recorded availability {capacityNow.length === 1 ? "change" : "changes"} in force</span>}
           </summary>
           <div className="space-y-3 border-t border-border p-3">
+            <p className="text-sm text-muted">Project workload follows the record view above. Team availability is shared across both views.</p>
             <WorkloadPanel view={workload} />
             <WorkingNowPanel view={today} />
           </div>

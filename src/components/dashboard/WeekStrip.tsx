@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { etDate, etDayKey, etTime } from "@/lib/datetime";
 import type { ShootWindow } from "@/lib/queries";
+import { homeRecordHref } from "@/lib/homeRecordScope";
 
 type WeekShoot = ShootWindow["week"][number];
 
@@ -10,10 +11,10 @@ type WeekShoot = ShootWindow["week"][number];
 // <details>/<summary> keeps it JS-free (server component): tap a day chip to
 // expand time · street · photographer rows; the amber badge means nobody is
 // assigned to that visit yet. Day headers link into /schedule for the full view.
-export function WeekStrip({ week }: { week: WeekShoot[] }) {
+export function WeekStrip({ week, includeTest = false }: { week: WeekShoot[]; includeTest?: boolean }) {
   if (week.length === 0) {
     return (
-      <Link href="/schedule" className="block border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
+      <Link href={homeRecordHref("/schedule", includeTest)} className="block border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
         No shoots in the next 7 days → Schedule
       </Link>
     );
@@ -44,7 +45,7 @@ export function WeekStrip({ week }: { week: WeekShoot[] }) {
               {/* amber dot = at least one visit that day still has no photographer */}
               {shoots.some((s) => !s.photographer) && <span className="size-1.5 rounded-full bg-warning" />}
             </summary>
-            <Link href="/schedule" className="mt-1 block px-1 text-[10px] font-semibold uppercase tracking-wide text-muted hover:text-foreground">
+            <Link href={homeRecordHref("/schedule", includeTest)} className="mt-1 block px-1 text-[10px] font-semibold uppercase tracking-wide text-muted hover:text-foreground">
               {etDate(shoots[0].shootDate)} → Schedule
             </Link>
             <div className="mb-1 mt-1 divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60">

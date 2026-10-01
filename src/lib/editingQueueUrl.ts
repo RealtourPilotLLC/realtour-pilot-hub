@@ -26,6 +26,7 @@ export function editingQueueHref(params: URLSearchParams, editorKeys?: ReadonlyS
   if (editor) clean.set("editor", editor);
   if (due !== "any") clean.set("due", due);
   if (stage !== "all") clean.set("stage", stage);
+  if (!hideEditor && params.get("test") === "1") clean.set("test", "1");
   const query = clean.toString();
   return `/editing${query ? `?${query}` : ""}`;
 }

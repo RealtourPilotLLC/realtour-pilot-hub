@@ -37,7 +37,9 @@ async function main() {
     const { buildEditorQueue } = await import("@/lib/editorQueue");
     const now = new Date();
     const before = new Date(now.getTime() - 2 * 86_400_000);
-    const client = await prisma.client.create({ data: { name: "Editing focus TEST" } });
+    // This layout/assignment fixture belongs to the normal office scope. The
+    // dedicated C14 drill covers explicit fixture visibility and creative work.
+    const client = await prisma.client.create({ data: { name: "Editing focus Agent" } });
     const kimMember = await prisma.teamMember.create({ data: { name: "Kim Miguel", email: "kim-focus@example.test", role: "EDITOR" } });
     const johnMember = await prisma.teamMember.create({ data: { name: "John Mark", email: "john-focus@example.test", role: "EDITOR" } });
     const shooter = await prisma.teamMember.create({ data: { name: "Photo Fixture", email: "photo-focus@example.test", role: "PHOTOGRAPHER" } });

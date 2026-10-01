@@ -1196,10 +1196,11 @@ export type WorkingNow = { ok: true; readAt: string; editors: EditorDesk[] } | {
  * never comes back as an empty board that reads "nobody is working". Reading it
  * writes nothing (the unconfirmed claims are derived).
  */
-export async function workingNow(opts: { now?: Date } = {}): Promise<WorkingNow> {
+export async function workingNow(opts: { now?: Date; excludeProjectIds?: string[] } = {}): Promise<WorkingNow> {
   const readAt = (opts.now ?? new Date()).toISOString();
   try {
-    const items = await prisma.editorWorkItem.findMany({ where: { state: { in: [WORK_ACTIVE, WORK_PAUSED] } }, select: { projectId: true } });
+    const excluded = new Set(opts.excludeProjectIds ?? []);
+    const items = await prisma.editorWorkItem.findMany({ where: { state: { in: [WORK_ACTIVE, WORK_PAUSED] }, ...(excluded.size ? { projectId: { notIn: [...excluded] } } : {}) }, select: { projectId: true } });
     const ids = [...new Set(items.map((i) => i.projectId))];
     const [work, claims, projects, revisions] = await Promise.all([
       workStateFor(ids),
@@ -1226,7 +1227,7 @@ export async function workingNow(opts: { now?: Date } = {}): Promise<WorkingNow>
       for (const a of w.active) desk(a.editorKey).active = toItem(a);
       for (const x of w.paused) desk(x.editorKey).paused.push(toItem(x));
     }
-    for (const c of claims) desk(c.editorKey).unconfirmed.push({ projectId: c.projectId, street: c.street, claimedAt: c.claimedAt });
+    for (const c of claims) if (!excluded.has(c.projectId)) desk(c.editorKey).unconfirmed.push({ projectId: c.projectId, street: c.street, claimedAt: c.claimedAt });
     for (const d of desks.values()) d.paused.sort((a, b) => (b.sinceISO ?? "").localeCompare(a.sinceISO ?? ""));
     const order = (k: string) => (DESK_EDITOR_KEYS.includes(k) ? DESK_EDITOR_KEYS.indexOf(k) : 99);
     return { ok: true, readAt, editors: [...desks.values()].sort((a, b) => order(a.key) - order(b.key) || a.name.localeCompare(b.name)) };

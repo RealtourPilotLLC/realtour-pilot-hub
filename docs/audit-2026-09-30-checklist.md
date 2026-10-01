@@ -42,8 +42,10 @@ Status terms: **done in code** still requires its named acceptance check; **part
 Latest C14 composition: Home's explicit `?test=1` view and supported scoped
 links/Review Room return passed signed isolated count/link checks 22/0
 (`/tmp/c14-home-test-view-reviewed/`), lint/diff and source review. Office
-Editing/Schedule scope parity is the next concrete slice; browser identity and
-scope acceptance remain open. Exact cut links and Finance definitions are intact.
+Editing/Schedule scope parity now passes 23/0, with before-cap activity/rail scope,
+creative assigned-work/Start/Pause preservation and retained return URLs. Affected
+Home 22/0, U3 layout 15/0 and stage/URL 14/0 pass. Browser identity, filtered-empty
+and scope acceptance remain open. Exact cut links and Finance definitions are intact.
 
 | ID | State | Next evidence |
 |---|---|---|
