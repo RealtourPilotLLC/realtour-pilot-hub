@@ -70,6 +70,7 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `41c8baf` | ID/save conflict and uncertain-DM recovery |Actual fake UI29/0; wrappers15/0; transport13/0; types/lint/review |
 | `4681377` | Exact-pin reads and keyboard/pointer suggestions |Actual fake36/0; lint/diff/root review with narrow skip/scroll repairs |
 | `2b87cc2` | Map fixture type-only boundary; combined candidate |Non-incremental types0; ESLint41 files+repair0; isolated build0 |
+| W04 test commit containing this update | Exact mixed photo/video final-delivery separation |Actual signed/domain fixture25/0; lint/root review; no app changes |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -101,11 +102,11 @@ assertion was repaired in the fake helper. Slack source/targeted checks are
 complete:29/0 UI,15/0 wrapper/CAS doubles,13/0 fake transport and types/lint/review.
 Map's last bounded batch is complete locally with36/0, lint/diff and root review
 including exact skip/scroll repairs. Combined types/changed-file lint/separate
-build passed at2b87cc2. Only the intentionally running demo and one new bounded
-W04 mixed photo/video acceptance fixture remain active. The new fixture closes
-the existing final-rendition fixture's photoCount0 coverage gap; no production
-mutation/provider or app source change is authorized. Finish that fixture,
-checkpoint evidence and align the ledger. Application files have not changed
+build passed at2b87cc2. The bounded W04 mixed photo/video acceptance fixture
+passed25/0, lint and root review; disposable DB5793 stopped. It closes the older
+final-rendition fixture's photoCount0 coverage gap without app changes. Only the
+intentionally running demo remains. Checkpoint this evidence, run the relevant
+type gate for the new test and align the ledger. Application files have not changed
 since the passing build; any later fixture-only change needs its relevant type/
 lint check, not automatic repeats of green app behavioral suites.
 Do not repeat already-passed whole drill suites. Business and browser acceptance

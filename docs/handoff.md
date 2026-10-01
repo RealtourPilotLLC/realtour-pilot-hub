@@ -2,6 +2,29 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 W04 acceptance checkpoint — mixed final-delivery isolation
+
+New `scripts/_drill/w04-mixed-delivery-isolation.ts` closes the exact mixed-job
+gap left by the older photoCount0 final-rendition fixture. Actual signed admin
+final-check/manual send and actual automatic Topaz/Aryeo proof record only the
+exact approved video/output, retaining flagged/unwaived/unremoved photo scope,
+photo revision, image flag, photo QC and original project revision timestamp.
+Converse signed photo-task completion retains open assigned video work, exact
+current/approved cut pointers and unstamped video delivery. No product defect
+was found or app source changed; the prior app candidate build still applies.
+
+Actual-domain fixture25/0 at
+`/tmp/w04-mixed-delivery-isolation-approved/w04-mixed-delivery-isolation.ts.log`;
+scoped ESLint and root review pass. Enforced auth, disposable PGlite5793, fake
+Aryeo only, no escaped provider request, DB stopped. Initial sandbox launch
+stopped on tsx IPC EPERM before fixture execution; the approved rerun was the
+sole actual run. Existing proof/notice/separate-media evidence was read, not
+rerun: prior W04 raw34/0, recorded aryeo-autosent20/20/percut-stamp18/18, B4
+delivery122/0 and upload69/0. Real rendition/watch/provider/phone/browser,
+monthly policy and schema gates remain. Final relevant types for the new test
+and final ledger alignment follow; no new app build is needed unless app/config
+files change.
+
 ### Oct 1 combined application checkpoint — `2b87cc2`
 
 Completed resumed source batches: Users5ae370a, Capacity6972796, Slack41c8baf,
