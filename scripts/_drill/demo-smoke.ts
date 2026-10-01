@@ -90,6 +90,20 @@ async function main() {
   const rep = fs.existsSync(demo.REPRESENTATIVE_MONTH_FILE);
   c.ok("E1's representative month is in the tree", rep, demo.REPRESENTATIVE_MONTH_FILE);
   c.ok("…and seeded every client", Object.values(seed.representative).every((s) => s === "seeded"), JSON.stringify(seed.representative));
+  const pillarRows = await prisma.contentPillar.findMany({ where: { enrollmentId: { in: seed.clients.map((x) => x.enrollmentId) }, status: "ACTIVE" }, select: { enrollmentId: true, name: true, purpose: true } });
+  const expectedPillars = ["Market Authority", "Neighborhood Life", "Seller Playbook"];
+  c.ok("each demo client has three believable pillars with purposes, no Acceptance fixture", seed.clients.every((x) => {
+    const own = pillarRows.filter((p) => p.enrollmentId === x.enrollmentId);
+    return own.length === 3 && expectedPillars.every((name) => own.some((p) => p.name === name && !!p.purpose?.trim()));
+  }), pillarRows.map((p) => p.name).join(", "));
+  const scriptIds = seed.clients.flatMap((x) => Object.values(x.month?.scripts ?? {}));
+  const scriptRows = await prisma.contentScript.findMany({ where: { id: { in: scriptIds } }, select: { id: true, currentVersionId: true } });
+  const scriptVersions = await prisma.contentScriptVersion.findMany({ where: { id: { in: scriptRows.map((s) => s.currentVersionId).filter((id): id is string => !!id) } }, select: { id: true, close: true, pointsJson: true } });
+  c.ok("every current-month demo script's current version has three points and a spoken close", scriptIds.length >= 9 && scriptIds.every((id) => {
+    const v = scriptVersions.find((version) => version.id === scriptRows.find((s) => s.id === id)?.currentVersionId);
+    if (!v?.close.trim()) return false;
+    try { return (JSON.parse(v.pointsJson) as unknown[]).length === 3; } catch { return false; }
+  }), `${scriptIds.length} scripts`);
   c.ok("each month came back with a job and five cuts (A, B, B2, C, D)", seed.clients.every((x) => !!x.month?.projectId && !!x.month.cuts));
   const contact = await prisma.appSetting.findUnique({ where: { key: "portal-contact" } });
   const { portalContact } = await import("@/lib/programMessages");
@@ -129,8 +143,14 @@ async function main() {
   const acc = seed.clients.find((x) => x.variant === "accelerator")!;
   c.ok("the Accelerator month shows a video to review, an approved one and a delivered one", ["FOR_REVIEW", "APPROVED", "DELIVERED"].every((s) => statesOf.accelerator.includes(s)), statesOf.accelerator.join(", "));
   const pro = seed.clients.find((x) => x.variant === "pro")!;
-  const proSessions = await prisma.programSessionRequest.findMany({ where: { enrollmentId: pro.enrollmentId, monthId: pro.month?.monthId ?? undefined }, select: { status: true } });
-  c.ok("the Pro month holds two confirmed sessions", proSessions.filter((s) => s.status === "CONFIRMED").length === 2, proSessions.map((s) => s.status).join(", "));
+  const proSessions = await prisma.programSessionRequest.findMany({ where: { enrollmentId: pro.enrollmentId, monthId: pro.month?.monthId ?? undefined }, select: { id: true, status: true, sessionIndex: true, dedupeKey: true, slotStart: true, slotEnd: true } });
+  c.ok("the Pro month holds two distinct confirmed sessions", proSessions.length === 2 && proSessions.every((s) => s.status === "CONFIRMED") && new Set(proSessions.map((s) => s.sessionIndex)).size === 2 && new Set(proSessions.map((s) => s.dedupeKey)).size === 2, proSessions.map((s) => `${s.sessionIndex}:${s.status}`).join(", "));
+  const secondFlex = proSessions.find((s) => s.sessionIndex === 2 && !s.slotStart);
+  if (secondFlex) {
+    const { createSessionRequest } = await import("@/lib/sessionRequests");
+    const repeat = await createSessionRequest({ enrollmentId: pro.enrollmentId, monthId: pro.month!.monthId!, actor: { kind: "TOKEN" }, sessionIndex: 2, slot: { when: "Any weekday before month end" } });
+    c.ok("repeating the second flexible-time Pro ask reuses its own confirmed row", repeat.ok && repeat.duplicate && repeat.id === secondFlex.id);
+  }
   const proRow = await prisma.contentEnrollment.findUnique({ where: { id: pro.enrollmentId }, select: { package: true } });
   c.ok("…on the Pro package", proRow?.package === "Pro", proRow?.package);
 

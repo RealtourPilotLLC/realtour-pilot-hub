@@ -2,6 +2,31 @@
 
 ## Sep 30 takeover addendum
 
+### Current resume point — C14 demo and communication identity
+
+The loopback demo's existing representative month already has believable
+Market Authority, Neighborhood Life and Seller Playbook pillars, topic-specific
+scripts with three points and a spoken close, and a resettable isolated database.
+The C14 smoke drill now asserts those facts. Its initial Sep 30 run was 85/1:
+Parker Pro had only one confirmed request. Both late-month requests were
+flexible-time asks and collided on the same `<enrollment>:<month>:flex` key.
+`createSessionRequest` now distinguishes explicitly indexed flexible asks;
+unindexed legacy requests keep the old key. The representative fixture passes
+session index 1/2, and the fenced demo drill is 89/0, including a repeated
+second ask resolving to its own confirmed row. TypeScript and focused lint pass.
+The fixture's manual confirmation has no Aryeo appointment and does not prove
+provider-backed booking. No production database or provider write occurred.
+
+C14 communication identity remains open. A read-only Neon inventory
+(`scripts/_recon/c14-identity.ts`) found two real Jordan Spackman client rows,
+one Jordan Spackman TEST row, and **no direct phone collision** between the
+real and TEST rows. The communications inbox currently prioritizes client
+names from a phone map and uses OpenPhone's group name when present. Inspect
+the specific provider group/contact mapping before changing that display or
+filtering any real conversation. Read-only snapshots also found an empty
+global failed-automation index and 11 Home exceptions with no TEST-labeled
+title; those snapshots do not prove all production counts are isolated.
+
 ### Current resume point — C13 month next-action reconciliation
 
 `3ffef4f` adds the missing output-link check to both staff readers. The second

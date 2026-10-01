@@ -147,7 +147,9 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
 /**
  * THE function the portal action (W1-A) and staff call. Duplicate clicks
  * collide on dedupeKey `<enrollment>:<month>:<slot|flex>` and return the
- * existing row. Never writes to Aryeo.
+ * existing row. Two explicitly indexed Pro sessions may each have a distinct
+ * flexible-time ask; an unindexed legacy ask keeps its original key.
+ * Never writes to Aryeo.
  */
 export async function createSessionRequest(input: CreateSessionRequestInput): Promise<CreateSessionRequestResult> {
   const [enrollment, month] = await Promise.all([
@@ -168,7 +170,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   const location = clip((input.slot.locationText ?? "").trim(), 300);
 
   const kind = input.kind ?? "CONTENT_SESSION";
-  const dedupeKey = `${enrollment.id}:${month.id}:${start ? start.toISOString() : "flex"}`;
+  const dedupeKey = `${enrollment.id}:${month.id}:${start ? start.toISOString() : input.sessionIndex != null ? `flex:${input.sessionIndex}` : "flex"}`;
   const now = new Date();
   // WHAT THIS REPLACES (review of CP-04, Sep 24 2026). A new time for a session
   // already on the calendar — or for an ask Kyle may already have booked by

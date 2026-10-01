@@ -762,17 +762,17 @@ export async function seedRepresentativeMonth(prisma: PrismaClient, opts: Repres
     return { start, end: new Date(start.getTime() + (enrollment!.sessionHours || 4) * 3_600_000) };
   };
   const markedRequests = () => prisma.programSessionRequest.findMany({ where: { enrollmentId, monthId: month.id, notes: { contains: REPRESENTATIVE_MARKER } }, orderBy: { createdAt: "asc" }, select: { id: true, status: true, projectId: true } });
-  const requestSession = async (label: string, slot: { start: Date; end: Date } | null, when: string) => {
+  const requestSession = async (label: "1" | "2", slot: { start: Date; end: Date } | null, when: string) => {
     const r = await sr.createSessionRequest({
-      enrollmentId, monthId: month.id, actor: { kind: "CLIENT", clientUserId: owner!.person.id },
+      enrollmentId, monthId: month.id, actor: { kind: "CLIENT", clientUserId: owner!.person.id }, sessionIndex: Number(label),
       slot: {
         ...(slot ? { startISO: slot.start.toISOString(), endISO: slot.end.toISOString() } : { when }),
         timezone: "America/New_York", locationText: "Montgomery County (general area)", notes: `${REPRESENTATIVE_MARKER} ${label}`,
       },
     });
     if (!r.ok) throw new Error(`session request refused — ${r.reason}`);
-    // Two free-text asks in one month are one request (sessionRequests' dedupe
-    // key) — only possible when no weekday of the month is left for a time.
+    // Repeating this session's ask is one request; Pro's other indexed session
+    // can still be asked for when no weekday is left for a picked time.
     if (r.duplicate) log(`  ! session request ${label} is the same ask as ${r.id} — no weekday of ${opts.monthKey} is left for a separate time`);
     else did(`session request ${label} (${slot ? `${slot.start.toISOString().slice(0, 16)}Z` : `"${when}"`}, ${r.status})`);
     return r.id;
