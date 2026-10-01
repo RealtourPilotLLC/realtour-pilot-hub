@@ -25,6 +25,7 @@ import { turnaroundRules } from "@/lib/settings";
 // Light: prisma, the roster and the date helpers.
 import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
 import { overrideLineSetsDue } from "@/lib/editOverrides";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -1162,10 +1163,16 @@ function blockerFor(
 }
 
 /** One query for the whole board — this screen is open all day and must not fan out. */
-export async function deliveryBoard(): Promise<DeliveryBoard> {
+export async function deliveryBoard(opts: { includeTest?: boolean; excludeClientIds?: string[] } = {}): Promise<DeliveryBoard> {
   const now = new Date();
   const todayKey = etDayKey(now);
   const tomorrowKey = etDayKey(etAddDays(now, 1));
+  const excludedClientIds = opts.excludeClientIds ?? (opts.includeTest === false
+    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    : []);
+  const excludedProjectIds = excludedClientIds.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: excludedClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
   // Settings → Turnaround promises, so a category with no line item of its own
   // (328 Columbia's video lives inside "Standard Package") is dated by the same
   // engine as the QC card and never by a stale constant.
@@ -1176,7 +1183,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     ...new Set(
       (
         await prisma.deliverableOutput
-          .findMany({ where: OPEN_EXTRA_SHOOT_OUTPUT_WHERE, select: { projectId: true }, take: 200 })
+          .findMany({ where: { ...OPEN_EXTRA_SHOOT_OUTPUT_WHERE, ...(excludedProjectIds.length ? { projectId: { notIn: excludedProjectIds } } : {}) }, select: { projectId: true }, take: 200 })
           .catch(() => [] as { projectId: string }[])
       ).map((o) => o.projectId),
     ),
@@ -1184,6 +1191,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
 
   const rows = await prisma.project.findMany({
     where: {
+      ...(excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {}),
       status: { not: "CANCELLED" },
       // RTP-04 (Sep 16): the ten-day window ages out FINISHED work only. It
       // used to key on the deliveredAt stamp, so a job with an old delivery

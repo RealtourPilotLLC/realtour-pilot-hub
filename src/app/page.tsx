@@ -500,7 +500,7 @@ export default async function HomePage() {
       // A failed read is NOT a clean board: it is marked unavailable so the
       // Pipeline block says it could not load and the "0 past due" reassurance
       // is withheld (audit, Sep 17).
-      deliveryBoard().catch((e: unknown): DeliveryBoard => {
+      deliveryBoard({ excludeClientIds: excludedClientIds }).catch((e: unknown): DeliveryBoard => {
         console.warn("deliveryBoard failed", (e as Error).message);
         return { today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, unavailable: true };
       }),

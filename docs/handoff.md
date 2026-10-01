@@ -4,6 +4,17 @@
 
 ### Oct 1 resume point — C14 Home exception scope
 
+Home and Project Tracker now read the same normal delivery board with synthetic
+client jobs excluded before the 400-job cap; an explicitly indexed extra-shoot
+source is filtered before its 200-row cap too. `/pipeline?test=1` restores the
+full board and labels that view. Isolated `c14-delivery-board` passed 4/0,
+including a real TEST Avenue title and protected real client. Node20 TypeScript
+and focused lint passed; build and browser presentation for this batch remain
+unverified at this checkpoint. The loopback browser action is still blocked by
+policy, so this is source/fixture evidence only. No production DB/provider
+write, push or deployment. Off-page task badges, ready-to-send follow-ups and
+strategic flags remain open for C14.
+
 Home's Stuck jobs panel and seven-day appointment strip now exclude synthetic
 project/client rows at their database reads. The same client ID list is passed
 into the operating-day reader so this does not add another all-client scan.
