@@ -8,14 +8,19 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 ## Checkout and execution boundary
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
-- Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `2b87cc2` (application build), `953e680` (mixed-handoff test),
-  plus the final handoff commit containing this update;
-  inspect actual HEAD/status when resuming.
+- Working branch: `codex/audit-2026-09-30`. Authorized release candidate:
+  `3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3`; application build evidence is at
+  `2b87cc2`, and the mixed-handoff test/final types are at `953e680`.
+  A fresh main fetch found no main commits missing from the candidate; it was161 commits ahead.
+  Inspect actual HEAD/status when resuming; do not overwrite local work.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
-- Local `.env` is live production. No reset/seed, live mutation tests, client
-  messages/invitations, real bookings, financial changes, automation activation,
-  branch push or deployment is authorized.
+- Local `.env` is live production. On Oct 1 the user explicitly authorized
+  production deployment of the committed work. The reviewed additive schema was
+  applied under that release authorization; remote build and promotion passed.
+  Canonical production now serves3c3c2d741aaf. This supersedes the historical deployment prohibition
+  only. No reset/seed, live mutation tests, client messages/invitations, real
+  bookings, financial changes or automation activation is authorized. A branch
+  push is not part of this release.
 - The prior isolated demo used port 3200 and the main checkout's `.next`. It
   was absent at an earlier resume check. Latest Oct 1 inspection found a new
   `scripts/demo/run-demo-dev.sh` process started at 00:38 ET, with the fenced
@@ -29,7 +34,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
   is0600 and contains synthetic one-time links; never stage/publish it.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
-  Last observed clean/detached at `2b87cc2`, whose clean-environment build passed.
+  Advanced by inspected fast-forward to clean/detached `3c3c2d7` for the
+  successful remote release; its source matches the passing `2b87cc2` build.
   Non-incremental types and changed-file lint (41 files plus type-only fixture
   repair) passed; logs are in the checklist/handoff.
   Advance only
@@ -73,11 +79,54 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `2b87cc2` | Map fixture type-only boundary; combined candidate |Non-incremental types0; ESLint41 files+repair0; isolated build0 |
 | `953e680` | Exact mixed photo/video final-delivery separation |Actual signed/domain fixture25/0; lint/root review; final non-incremental types0; no app changes |
 
-These are local commits. None is a takeover deployment, activation or new
-client-visible release. Signed action/SSR/fake handler evidence is not mounted
+These commits are included in the Oct1 production candidate3c3c2d7.
+No automation or real-client rollout was activated. Signed action/SSR/fake handler evidence is not mounted
 browser, real provider/model output, real rendition/watch or phone-file proof.
 
-## Active slice and next safe checkpoint
+## Oct 1 authorized release — schema applied, candidate deployed
+
+- Exact candidate: `3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3`.
+  Production before release: build `bf2e0b48a0dd`, Vercel deployment
+  `dpl_8Je8ULY9Pf6sy3asVwjtrCKvTXzj`.
+- Fresh private backup:
+  `/Users/jordanspackman/rtp-backup-2026-10-01-predeploy.json`, 144/144 models,
+  118,636 rows, 211,904,272 bytes, mode 0600; snapshot
+  `2026-10-01T13:44:46.972Z`. Full-stream counts, ID hashes and schema coverage
+  were verified; checksum
+  `52ab7390a31cf5eb3762959dcef16df0baef001590e968b575a31f06642fa691`.
+  The backup remains private outside Git.
+- The five additive tables (`ClientBrandReceipt`, `DeliveryFollowUpHealth`,
+  `FinalRenditionCheck`, `ShootBriefRead`, `EditorBriefReceipt`) were applied
+  atomically as 14 DDL statements at `2026-10-01T13:54:34.540Z`.
+  Live postflight verified 149 tables, 12 indexes for these additions
+  (5 primary-key indexes + 7 others), 2 validated foreign keys, all five new
+  tables empty, and schema diff exit 0. No schema ledger, reset, seed or backfill
+  was created or run.
+- Vercel remote compile/types/build passed; staged version and login responses
+  were checked with authenticated Vercel requests, retaining deployment protection.
+  Promotion succeeded: dpl_FaUomN98Qz8EDuFnUopYgtnt55HS (r6ajwlsup), canonical
+  https://hub.realtourpilot.com serves3c3c2d741aaf. HTTP version/login/assets/auth
+  redirects and old-host redirect passed. Anonymous portal uses a verified
+  streamed sign-in redirect. See `audit-2026-10-01-production-release.md`.
+  Normal-role/browser/client visibility and launch acceptance remain open.
+- Before release, the stored automation inventory had 1 row, off, and rollout
+  defaulted to `TEST_ONLY`. Raw totals were 2 active `ClientUser` records and
+  3 unrevoked memberships; these counts do not identify real client seats.
+  The historical 13-candidate launch inventory below has not been refreshed.
+  Deployment authorization does not authorize sends, invitations, bookings,
+  financial changes, automation activation or rollout expansion.
+
+## Next slice after deployment
+
+User decisions received after release: monthly finals go to the portal with a
+backup in the final Dropbox folder; intentional no-brand requires acknowledgment;
+returning an editor after reassignment requires a fresh receipt. General welcome
+strategy calls use https://calendly.com/realtourpilot-info/strategy-call.
+These decisions are approved but not yet implemented in3c3c2d7. Next batch must
+align exact final/backup evidence and receipt generations, preserving property
+Aryeo delivery and dedicated monthly Calendly mapping. Do not send or activate.
+
+## Earlier source checkpoint
 
 Upload reconciliation now has exact actor/project/payload-bound AuditLog
 core/terminal receipts, authorized read-only recovery and retained local drafts.
@@ -93,7 +142,8 @@ Typed known refusals versus unknown outcomes retain native/editor drafts and
 hold replay; guide/owner failures remain explicit. Appointment device markers
 are not provider receipts; Resources retention is current-tab only. Unknown
 requests still require staff inspection. Provider/notify, validation/publication,
-ownership and backfill rules remain intact. No real mutation is authorized.
+ownership and backfill rules remain intact. Those batches used no real mutation;
+the only current production write authorization is the reviewed schema/release.
 
 The Resources checkpoint passed combined gates. Access, month/identity,
 review fee/clock/hold, take-back and Users recovery now have completed local
@@ -107,11 +157,13 @@ build passed at2b87cc2. The bounded W04 mixed photo/video acceptance fixture
 passed25/0, lint and root review; disposable DB5793 stopped. It closes the older
 final-rendition fixture's photoCount0 coverage gap without app changes. Final non-incremental types passed at953e680;
 `git diff 2b87cc2 HEAD` shows no app/schema/config changes after the successful
-build. Only the intentionally running demo remains; no test/build/migration/
-deployment is active or stalled, and no approval is waiting. The working tree
-was clean before this final documentation update. The next required work is the
-blocked normal-role browser/phone/provider acceptance and recorded business/
-release decisions below. Keep broader UI comparison on the checklist. Do not
+build. At that final local checkpoint only the intentionally running demo
+remained; no test/build/migration/deployment was active or stalled, and no
+approval was waiting. That process snapshot is historical. The current Oct 1
+release applied schema, passed the remote build and promoted3c3c2d7 with verified
+canonical HTTP smoke. The next batch is the approved policy alignment. The blocked
+normal-role browser/phone/provider acceptance and business decisions below
+remain. Keep broader UI comparison on the checklist. Do not
 repeat green suites or restart investigation; inspect process/HEAD state first
 on the next resume and act on the specific restored access or decision.
 Do not repeat already-passed whole drill suites. Business and browser acceptance
@@ -122,16 +174,17 @@ remainders below stay open; this continuation is not a new broad audit.
 - Normal browser UA01–UA14, Kyle/James work-finding observations, actual phone
   upload/download, rendered contrast/zoom/screenshots and provider/media evidence
   remain open. U0–U5 are partial; U6 is unaccepted.
-- Five additive tables are unapplied: ClientBrandReceipt,
-  DeliveryFollowUpHealth, FinalRenditionCheck, ShootBriefRead, EditorBriefReceipt.
-  Backup/migration state was recorded in the checklist. Recheck current diff and
-  coverage immediately before an approved schema release; no schema was applied.
+- The five additive tables are applied and their live schema diff is empty;
+  backup and postflight evidence are recorded above and in the checklist.
+  Remote build, promotion, exact-version HTTP smoke and rollback evidence passed.
+  Normal journeys remain open. Preserve additive tables/receipts during code rollback;
+  never reset, seed or replay an ambiguous delivery.
 - Last guarded private launch inventory (Sep30 22:33 ET) had 13 active candidates,
   zero active client login seats, zero released strategies and no approved
   available topic bank. Three October workspaces existed. The export is private
   outside Git; this is launch preparation evidence, not permission to invite.
-- Jordan: monthly portal/Aryeo destination rule, intentional no-brand/reassignment
-  receipt policy, correct general-welcome destination and intended first roster.
+- Jordan resolved monthly destination, no-brand/reassignment and welcome URL
+  above; source/config alignment remains. Intended first real roster still needed.
 - Kyle: verify exact C13 historical links, C18 wrong-property source, Sarina's
   owed scope/topic binding and identity conflicts before any live repair.
 - Generated-task date override policy remains open; ad hoc edits preserve

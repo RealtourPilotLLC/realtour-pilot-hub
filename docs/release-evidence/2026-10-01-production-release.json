@@ -1,0 +1,196 @@
+{
+  "candidateCommit": "3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3",
+  "deploymentId": "dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+  "deploymentUrl": "https://realtour-pilot-r6ajwlsup-realtour-pilot-s-projects.vercel.app",
+  "canonical": "https://hub.realtourpilot.com",
+  "build": "passed remote compile/types/build; promoted successfully",
+  "schema": {
+    "verifiedAt": "2026-10-01T13:56:05.358Z",
+    "tables": 149,
+    "newTables": [
+      "FinalRenditionCheck",
+      "DeliveryFollowUpHealth",
+      "ClientBrandReceipt",
+      "ShootBriefRead",
+      "EditorBriefReceipt"
+    ],
+    "indexes": 12,
+    "foreignKeys": 2,
+    "foreignKeysValidated": true,
+    "counts": {
+      "FinalRenditionCheck": 0,
+      "DeliveryFollowUpHealth": 0,
+      "ClientBrandReceipt": 0,
+      "ShootBriefRead": 0,
+      "EditorBriefReceipt": 0
+    },
+    "diffExitCode": 0
+  },
+  "backup": {
+    "models": 144,
+    "rows": 118636,
+    "sha256": "52ab7390a31cf5eb3762959dcef16df0baef001590e968b575a31f06642fa691",
+    "mode": "600",
+    "verifiedAt": "2026-10-01T13:52:44.466Z",
+    "method": "full stream parse, schema coverage, per-model counts and primary-key hashes"
+  },
+  "stagedVersion": {
+    "at": "2026-10-01T14:04:52.571Z",
+    "stagedDeploy": "3c3c2d741aaf",
+    "canonicalStill": "bf2e0b48a0dd",
+    "method": "authenticated Vercel CLI read-only GET /api/cron/version; project protection retained"
+  },
+  "stagedPublic": {
+    "at": "2026-10-01T14:07:28.916Z",
+    "method": "authenticated Vercel CLI GET availability/headers only",
+    "checks": [
+      {
+        "path": "/login",
+        "exit": 0,
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": true
+      },
+      {
+        "path": "/portal/login",
+        "exit": 0,
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": true
+      }
+    ],
+    "ok": true
+  },
+  "productionHttp": {
+    "phase": "production",
+    "base": "https://hub.realtourpilot.com",
+    "at": "2026-10-01T14:09:29.098Z",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "3c3c2d741aaf"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "location": null,
+        "contentType": "text/html; charset=utf-8",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "location": null,
+        "contentType": "text/html; charset=utf-8",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/",
+        "status": 307,
+        "location": "/login?next=%2F",
+        "contentType": "text/plain",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/editing",
+        "status": 307,
+        "location": "/login?next=%2Fediting",
+        "contentType": "text/plain",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/review",
+        "status": 307,
+        "location": "/login?next=%2Freview",
+        "contentType": "text/plain",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/tasks",
+        "status": 307,
+        "location": "/login?next=%2Ftasks",
+        "contentType": "text/plain",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/me",
+        "status": 200,
+        "location": null,
+        "contentType": "text/html; charset=utf-8",
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      }
+    ],
+    "assets": [
+      {
+        "path": "/_next/static/chunks/2-ws8fc9ur3j_.css?dpl=dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+        "status": 200,
+        "contentType": "text/css; charset=utf-8"
+      },
+      {
+        "path": "/_next/static/chunks/3r8h98x5pdyho.css?dpl=dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+        "status": 200,
+        "contentType": "text/css; charset=utf-8"
+      },
+      {
+        "path": "/_next/static/chunks/2gokyol_h_2zh.js?dpl=dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+        "status": 200,
+        "contentType": "application/javascript; charset=utf-8"
+      },
+      {
+        "path": "/_next/static/chunks/2pzafz57-h46r.js?dpl=dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+        "status": 200,
+        "contentType": "application/javascript; charset=utf-8"
+      },
+      {
+        "path": "/_next/static/chunks/2fzkd0kh4cb41.js?dpl=dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+        "status": 200,
+        "contentType": "application/javascript; charset=utf-8"
+      },
+      {
+        "path": "/_next/static/chunks/2g05-lers809t.js?dpl=dpl_FaUomN98Qz8EDuFnUopYgtnt55HS",
+        "status": 200,
+        "contentType": "application/javascript; charset=utf-8"
+      }
+    ],
+    "oldHost": {
+      "status": 307,
+      "location": "https://hub.realtourpilot.com/login"
+    },
+    "failures": [],
+    "initialHarnessFailures": [
+      "/portal/me access gate"
+    ],
+    "portalAnonymousRedirect": {
+      "status": 200,
+      "streamedRedirect": "1;url=/portal/login",
+      "redirectDigestPresent": true,
+      "clientPickerRendered": false,
+      "at": "2026-10-01T14:12:33.003Z",
+      "ok": true
+    },
+    "verificationNote": "Narrow recheck resolved status-only assumption using the documented Next streamed redirect; no application code changed."
+  },
+  "preservation": {
+    "automationUnchanged": true,
+    "storedAutomationRows": 1,
+    "enabled": [],
+    "rollout": "TEST_ONLY (default)",
+    "savedPreferenceValuesUnchanged": true,
+    "advancedOperationalSettingKeys": [
+      "content-video-sweep-cursor",
+      "deliverable_outputs_sweep"
+    ],
+    "activeClientUserCountUnchanged": true,
+    "unrevokedMembershipCountUnchanged": true,
+    "clientCountsAreRawTotalsNotRealSeatEvidence": true
+  },
+  "acceptance": "HTTP deployment smoke only; normal-role browser, phone, provider and real-media journeys remain open"
+}

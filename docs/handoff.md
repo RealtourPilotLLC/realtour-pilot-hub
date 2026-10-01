@@ -2,6 +2,61 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 production release — exact reviewed candidate deployed
+
+Jordan explicitly authorized deployment. Candidate3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3
+was staged, remotely built, version-checked and promoted to
+https://hub.realtourpilot.com. Current deploymentdpl_FaUomN98Qz8EDuFnUopYgtnt55HS
+is Ready; authenticated canonical version reports3c3c2d741aaf. No Git push or
+main merge occurred. The previous rollback target is verified
+dpl_8Je8ULY9Pf6sy3asVwjtrCKvTXzj (iqe17q220, bf2e0b48a0dd).
+
+Fresh backup `/Users/jordanspackman/rtp-backup-2026-10-01-predeploy.json` covers
+all144existing tables,118636rows,211904272bytes in one repeatable-read snapshot,
+0600. Full-stream model counts, primary-key hashes, schema coverage and checksum
+passed; matching schema/verification sidecars are private beside it. Five
+additive tables were applied in one14DDL transaction; fresh postflight149tables,
+12indexes includingPKs,2validatedFKs and empty schema diff passed. No reset,
+seed, backfill, migration ledger or existing-row schema repair was performed.
+
+Remote compile/types/build passed. Staged version/login availability and headers
+passed through authenticated Vercel requests; SSO protection stayed enabled.
+Canonical login/static assets/auth redirects and old-host redirect passed.
+Anonymous portal HTTP200 is a documented streamed sign-in redirect; exact meta
+and redirect digest were verified after the status-only harness assumption
+failed. This is deployment HTTP evidence, not restored browser acceptance.
+
+Before/after hashes preserve saved preferences and automation configuration;
+rollout remains defaultTEST_ONLY. One stored automation row remainsoff (missing
+switches retainoff defaults). RawactiveClientUser2/unrevokedMembership3 counts
+are unchanged and are not proof of real seats. Only two old scheduled sweep
+state keys advanced. No manual cron/webhook/form/send/book/financial/activation
+operation occurred. Intentional isolated preview3200 remains; no build/migration/
+deployment is active or stalled. Vercel login is complete; no release approval
+awaits action. Jordan subsequently supplied the decisions below; their source/
+configuration alignment is the next batch, separate from deployed3c3c2d7.
+
+- Monthly final content goes to the portal, with backup in the final Dropbox folder.
+- Intentional no-brand requires acknowledgment; reassignment back to an earlier
+  editor requires a fresh receipt. Preserve old receipts and manual Start/Pause.
+- General welcome strategy-call URL:
+  https://calendly.com/realtourpilot-info/strategy-call. Preserve the dedicated
+  monthly Content Program event type, and do not send/replay welcome messages.
+
+See `audit-2026-10-01-production-release.md` and sanitized release JSON for exact
+timestamps, hashes, warnings and recovery. Roll back application code using the
+previous deployment if needed, retaining additive tables/receipts and reconciling
+unknown operations before retry. No activation or client-send authorization follows.
+
+C14 source work is complete; normal-role browser identity, empty/read-failure
+states and mounted normal/test return scope remain. W01–W06 are partial;
+U0–U5 partial, U6 unaccepted. Real onboarding still requires the recorded business/
+identity/source decisions, approved roster and strategy/topic readiness, normal
+client/editor/photographer/phone/provider/media acceptance and Kyle/James work
+discovery. No new broad audit or green-suite rerun is required on resume.
+Earlier statements below about unapplied schema/no deployment describe history
+and are superseded by this release only; all send/activation restrictions remain.
+
 ### Oct 1 final safe checkpoint — verified local source, release acceptance open
 
 Source checkpoints: Users5ae370a (26/0), Capacity6972796 (20/0), Slack41c8baf

@@ -1,6 +1,7 @@
-# September 30 release evidence — local candidate only
+# September 30 release evidence — Oct 1 production candidate
 
-This is an acceptance ledger, not release authorization. The detailed C01–C19,
+This is an acceptance ledger. Jordan explicitly authorized the Oct1 deployment;
+reviewed candidate3c3c2d7 is now live, with existing gates unchanged. The detailed C01–C19,
 W01–W06 and U0–U6 backlog remains in `audit-2026-09-30-checklist.md`; the resume
 instructions and batch evidence remain in `handoff.md`.
 
@@ -8,27 +9,30 @@ instructions and batch evidence remain in `handoff.md`.
 
 | Area | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
 |---|---|---|---|---|---|---|
-| Access, manual work state, draft preservation, rollout guards | Local corrections | Targeted isolated signed-role/action tests; normal browser journey open | Yes; see C01–C03/C09/C12 | No takeover deployment | Existing switches unchanged | No new release |
-| Client sign-in and teammate invitation feedback | Local correction; privacy-generic acknowledgement and newer-draft retention | Actual fake UI29/0 + wrapper10/0; typecheck/lint/review; real email/browser open | Yes | No | No invite or login switch changes | No new release |
-| Written and call planning; exact script acceptance | Local corrections | Written 23/0, call 25/0; fake model/provider evidence only | Yes | No | No worker or rollout activation | No new release |
-| Brand alert recovery and individual receipts | Local corrections | Recovery 8/0 + 12/0; receipts 12/0; signed setup 130/0 | Yes | No; schema required | Alerts remain off | No new release |
-| Editing, revision, filming and final delivery handoffs | Substantial local implementation; named W remainders open | Connected signed journey 19/0; exact approval/issue race PostgreSQL 11/0; real media, phone and provider paths open | Yes for completed batches; active work in handoff | No; schema required | No new automation activation | No new release |
-| Truthful workload, revision causes and empty queues | Local corrections | C14 scoped drills; C15 12/0; C16 17/0 + 141/0 + 5/0 | Yes | No | No switch changes | No new release |
-| Home, task ownership and Sidebar grouping | Local implementation; guarded office ad hoc date editing | Home 15/0; Tasks 21/0; Sidebar 41/0; dates/role/CAS/receipt 49/0 and retained detail 26/0 | Yes | No | Not applicable | No new release |
-| Settings reminder fields and search | Local implementation | Policy 27/0; navigation 21/0; signed Settings 56/0 | Yes | No | Policy save does not activate | No new release |
-| Upload and appointment uncertain-write recovery | Local implementation; named recovery limits retained | Upload PG26/0 + UI18/0, CP09 142/0, B4 69/0; appointment signed action13/0 + fake UI23/0 | Yes | No | No provider/automation activation | No new release |
-| Resources drafts and uncertain-write recovery | Local implementation; current-tab retention | Actual handler/action/page fixture33/0 and focused review, including group/removal remounts; browser open | Yes | No | No publishing or automation change | No new release |
-| Exact-cut removal/move dialog and recovery | Local correction; preserved destructive confirmation and file rules | Actual fake UI/action30/0; lint/types/review; native browser/provider open | Yes | No | No provider operation activated | No new release |
-| Month/library corrections and office review controls | Local correction; preserved fee/clock/identity rules | Fake actual UI/action38/0; office handler/wrapper/CAS25/0; lint/review; browser open | Yes | No | No switch or billing changes | No new release |
-| Logins/access conflict and recovery | Local correction; shared account guards and atomic override reset | Fake actual handler/action/CAS26/0; types/lint/review; browser open | `5ae370a` | No | No account/invite change | No new release |
-| Capacity/calendar controls | Local correction; exact newer drafts and unknown guards | Fake actual handlers/wrappers20/0 including all-day count repair; lint/review; browser open | `6972796` | No | No capacity/date/pay change | No new release |
-| Team/Slack identity and DM recovery | Local correction; Find/Sync conditional writes, no fallback after uncertain direct post | Fake UI29/0, wrappers15/0, transport13/0; types/lint/review; real browser/provider/DB concurrency open | `41c8baf` | No | No real Slack call or ID change | No new release |
-| Map read/keyboard recovery | Local correction; exact pin/home/query scopes and native suggestions | Actual fake handlers/read effects36/0; lint/review; Leaflet/normal-role browser/provider open | `4681377` + fixture type repair `2b87cc2` | No | No provider or route changes | No new release |
-| Mixed photo/video final handoff | Existing implementation verified; no app change | New actual signed/domain fixture25/0 with fake Aryeo; manual/automatic video and converse photo-task paths | `953e680` | No | No delivery or switch changes | No new release |
-| Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | No | No | No |
+| Access, manual work state, draft preservation, rollout guards | Local corrections | Targeted isolated signed-role/action tests; normal browser journey open | Yes; see C01–C03/C09/C12 | Yes;3c3c2d7 | Existing switches unchanged | Code live under existing gates; client acceptance open |
+| Client sign-in and teammate invitation feedback | Local correction; privacy-generic acknowledgement and newer-draft retention | Actual fake UI29/0 + wrapper10/0; typecheck/lint/review; real email/browser open | Yes | Yes;3c3c2d7 | No invite or login switch changes | Public login verified; sends remain gated |
+| Written and call planning; exact script acceptance | Local corrections | Written 23/0, call 25/0; fake model/provider evidence only | Yes | Yes;3c3c2d7 | No worker or rollout activation | Code live under existing gates; client acceptance open |
+| Brand alert recovery and individual receipts | Local corrections | Recovery 8/0 + 12/0; receipts 12/0; signed setup 130/0 | Yes | Yes;3c3c2d7 | Alerts remain off | Code live under existing gates; client acceptance open |
+| Editing, revision, filming and final delivery handoffs | Substantial local implementation; named W remainders open | Connected signed journey 19/0; exact approval/issue race PostgreSQL 11/0; real media, phone and provider paths open | Yes for completed batches; active work in handoff | Yes;3c3c2d7 | No new automation activation | Code live under existing gates; client acceptance open |
+| Truthful workload, revision causes and empty queues | Local corrections | C14 scoped drills; C15 12/0; C16 17/0 + 141/0 + 5/0 | Yes | Yes;3c3c2d7 | No switch changes | Staff code live; normal-role acceptance open |
+| Home, task ownership and Sidebar grouping | Local implementation; guarded office ad hoc date editing | Home 15/0; Tasks 21/0; Sidebar 41/0; dates/role/CAS/receipt 49/0 and retained detail 26/0 | Yes | Yes;3c3c2d7 | Not applicable | Staff code live; normal-role acceptance open |
+| Settings reminder fields and search | Local implementation | Policy 27/0; navigation 21/0; signed Settings 56/0 | Yes | Yes;3c3c2d7 | Policy save does not activate | Staff code live; normal-role acceptance open |
+| Upload and appointment uncertain-write recovery | Local implementation; named recovery limits retained | Upload PG26/0 + UI18/0, CP09 142/0, B4 69/0; appointment signed action13/0 + fake UI23/0 | Yes | Yes;3c3c2d7 | No provider/automation activation | Code live under existing gates; client acceptance open |
+| Resources drafts and uncertain-write recovery | Local implementation; current-tab retention | Actual handler/action/page fixture33/0 and focused review, including group/removal remounts; browser open | Yes | Yes;3c3c2d7 | No publishing or automation change | Staff code live; normal-role acceptance open |
+| Exact-cut removal/move dialog and recovery | Local correction; preserved destructive confirmation and file rules | Actual fake UI/action30/0; lint/types/review; native browser/provider open | Yes | Yes;3c3c2d7 | No provider operation activated | Code live under existing gates; client acceptance open |
+| Month/library corrections and office review controls | Local correction; preserved fee/clock/identity rules | Fake actual UI/action38/0; office handler/wrapper/CAS25/0; lint/review; browser open | Yes | Yes;3c3c2d7 | No switch or billing changes | Code live under existing gates; client acceptance open |
+| Logins/access conflict and recovery | Local correction; shared account guards and atomic override reset | Fake actual handler/action/CAS26/0; types/lint/review; browser open | `5ae370a` | Yes;3c3c2d7 | No account/invite change | Staff code live; normal-role acceptance open |
+| Capacity/calendar controls | Local correction; exact newer drafts and unknown guards | Fake actual handlers/wrappers20/0 including all-day count repair; lint/review; browser open | `6972796` | Yes;3c3c2d7 | No capacity/date/pay change | Staff code live; normal-role acceptance open |
+| Team/Slack identity and DM recovery | Local correction; Find/Sync conditional writes, no fallback after uncertain direct post | Fake UI29/0, wrappers15/0, transport13/0; types/lint/review; real browser/provider/DB concurrency open | `41c8baf` | Yes;3c3c2d7 | No real Slack call or ID change | Staff code live; normal-role acceptance open |
+| Map read/keyboard recovery | Local correction; exact pin/home/query scopes and native suggestions | Actual fake handlers/read effects36/0; lint/review; Leaflet/normal-role browser/provider open | `4681377` + fixture type repair `2b87cc2` | Yes;3c3c2d7 | No provider or route changes | Staff code live; normal-role acceptance open |
+| Mixed photo/video final handoff | Existing implementation verified; no app change | New actual signed/domain fixture25/0 with fake Aryeo; manual/automatic video and converse photo-task paths | `953e680` | Yes;3c3c2d7 | No delivery or switch changes | No distinct source change; delivery acceptance open |
+| Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | Completed slices at3c3c2d7 | No | Complete journey/UI acceptance open |
 
-Latest known deployment before takeover: `bf2e0b4`. This is historical evidence,
-not a fresh production-version check. No branch push has been performed.
+Fresh Oct1 production:3c3c2d741aaf, Ready deployment
+dpl_FaUomN98Qz8EDuFnUopYgtnt55HS, at https://hub.realtourpilot.com. Remote build
+and HTTP deployment smoke passed; automation/rollout remain unchanged. Previous
+productionbf2e0b48a0dd was freshly verified for rollback. No branch push occurred.
+See `audit-2026-10-01-production-release.md` for backup/schema/smoke evidence.
 
 Application candidate `2b87cc2` passed non-incremental types, changed-file lint
 (41 files plus type-only fixture repair) and the separate clean-environment
@@ -68,23 +72,23 @@ for normal authorized client/editor access.
 
 | Item | Required owner | Concrete next step |
 |---|---|---|
-| Monthly delivery destination | Jordan | Choose portal, Aryeo, both, or an explicit per-output rule; preserve current behavior until decided |
-| Editor brand/brief receipt policy | Jordan | Confirm no-brand acknowledgment and whether reassignment requires a new receipt |
-| General welcome destination | Jordan | Supply the approved listing consultation destination or call/text wording; do not replay welcomes |
+| Monthly delivery destination | Engineering; Jordan decision received | Portal plus backup in final Dropbox folder. Implement exact dual evidence for monthly outputs; preserve property Aryeo routing. Not implemented in3c3c2d7. |
+| Editor brand/brief receipt policy | Engineering; Jordan decision received | Intentional no-brand requires acknowledgment; returning to an editor after reassignment requires a fresh receipt. Implement explicit choice/generation; preserve historical receipts and manual Start/Pause. |
+| General welcome destination | Engineering; Jordan supplied link | Use https://calendly.com/realtourpilot-info/strategy-call. Prepare targeted default/config correction; retain monthly appointment mapping and never replay welcomes. |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |
 | Client identities | Kyle/Jordan | Resolve Janice/Arielle and other named conflicts using source evidence; investigate Joe/Joseph without assuming they should merge |
 | Intended first client roster | Jordan | Confirm the intended first roster using the private Sep 30 22:33 ET inventory of 13 candidates; then prepare the exact seats, strategy/bank, month and source evidence. No invitations are authorized by the inventory |
 | Browser evidence | Engineering/environment | Restore authorized local-browser access; the current tool policy refusal must not be bypassed with another browser transport |
 | Provider and real-media acceptance | Jordan + engineering | Agree on isolated/sandbox recipients, booking/media records and destinations before any external write; keep clients and real bookings untouched |
-| Production deployment | Jordan | Review the exact local candidate, completed evidence, schema diff and rollback plan before approving deployment |
+| Production deployment | Completed under Jordan authorization |3c3c2d7 promoted and HTTP verified; existing gates unchanged. No activation/client sends authorized. Future source batches need their own exact release evidence. |
 
 ## Schema and rollback gate
 
-Five local additive tables are not applied: `ClientBrandReceipt`,
+Five additive tables were applied and verified on Oct1: `ClientBrandReceipt`,
 `DeliveryFollowUpHealth`, `FinalRenditionCheck`, `ShootBriefRead`,
-`EditorBriefReceipt`. No migration history was present at takeover. Before an
-approved release, recheck current schema and backup coverage; the prior full
-backup is private and is never staged with source. No reset or seed is allowed.
+`EditorBriefReceipt`. No migration history was present at takeover. Fresh pre-release
+backup covered144/144existing models; postflight149tables,12indexes,2validatedFKs
+and schema diff0 passed. Backups remain private outsideGit. No reset/seed is allowed.
 
 Prepare schema before code that depends on it, then smoke-check the exact
 candidate with client automation still off. A code rollback uses the previously
