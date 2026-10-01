@@ -74,6 +74,12 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U4 task text receipts:** newer notes/reply drafts survive older async
+  completions, with read-only AI suggestion evidence and honest Cancel handling.
+  Fake handler/receipt 16/0 plus retained signed rows 26/0, lint/TypeScript/diff
+  and independent review pass. No send/recipient/domain policy changed; mounted
+  browser interaction remains open.
+
 - **U5 client workspace reliability:** retained section drafts, snapshot-specific
   AI result/copy receipts, explicit failures and distinct partial notes saves
   passed delayed-promise/first-paint 21/0, lint, TypeScript and focused review.

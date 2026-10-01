@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### U4 checkpoint — exact task note and reply-draft receipts
+
+Task reply generation and Add note compare their exact request-start text with
+the latest live input. Late AI results retain newer words and expose the returned
+suggestion read-only; late note success keeps a newer note open and explicitly
+unsaved. An unchanged submitted note still clears/closes as before. Cancelled
+empty text cannot produce a false newer-unsaved receipt. Existing send handlers,
+recipient verification, source context and task/notification state are unchanged.
+
+Delayed fake component-handler/receipt checks passed 16/0 and retained signed
+task-row/drawer regression 26/0 (`/tmp/u4-task-text-receipts-final/`), focused
+lint, TypeScript and diff passed. Independent review found the Cancel feedback
+defect; it was corrected and covered. No actual note/send/model/provider or
+production operation occurred. Mounted typing/pending/drawer interaction remains
+browser acceptance, not claimed by the fake handler evidence.
+
 ### U5 checkpoint — client workspace drafts and precise feedback
 
 Email/Notes sections stay mounted with native hidden state and client-specific

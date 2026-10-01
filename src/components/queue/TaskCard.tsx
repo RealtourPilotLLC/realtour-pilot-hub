@@ -23,6 +23,7 @@ import { ModalDialog } from "@/components/ui/ModalDialog";
 import { TaskCompactRow } from "@/components/queue/TaskCompactRow";
 import type { TaskRowAction } from "@/lib/taskRowPresentation";
 import { TaskDeadlineEditor } from "@/components/queue/TaskDeadlineEditor";
+import { finishTaskNoteReceipt, finishTaskReplyDraft } from "@/lib/taskTextReceipt";
 
 // Friendly display label per task type (QA → QC, etc.) — the one shared map in
 // src/lib/taskSource.ts, so this chip and the Done ledger can't drift apart.
@@ -528,6 +529,8 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [draftText, setDraftText] = useState("");
+  const draftTextRef = useRef("");
+  const [draftReceipt, setDraftReceipt] = useState<string | null>(null);
   const [emailMsg, setEmailMsg] = useState<string | null>(null);
   const [emailing, startEmail] = useTransition();
   const [drafting, startDraft] = useTransition();
@@ -537,6 +540,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   const [predraftCopied, setPredraftCopied] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
+  const noteTextRef = useRef("");
   const [noteMsg, setNoteMsg] = useState<string | null>(null);
   const [noteError, setNoteError] = useState(false);
   const [savingNote, startNote] = useTransition();
@@ -642,10 +646,14 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   // Email tasks can send the reviewed draft straight back into the thread.
   const canEmailSend = task.source === "gmail" && !!task.sourceDetail?.startsWith("gmail-thread:") && !editorView;
   const [emailTo, setEmailTo] = useState<string | null>(null);
-  const makeDraft = () =>
+  const updateDraftText = (value: string) => { draftTextRef.current = value; setDraftText(value); };
+  const updateNoteText = (value: string) => { noteTextRef.current = value; setNoteText(value); };
+  const makeDraft = () => {
+    const requested = draftTextRef.current;
     startDraft(async () => {
       setCopied(false);
       setEmailMsg(null);
+      setDraftReceipt(null);
       if (!open) setOpen(true);
       try {
         const [d, rcpt] = await Promise.all([
@@ -653,11 +661,14 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
           canEmailSend ? resolveEmailRecipient(task.id) : Promise.resolve(null),
         ]);
         if (d.error) { setStatusNote(d.error); return; }
+        const receipt = finishTaskReplyDraft(draftTextRef.current, requested, d.text ?? "");
         setDraft(d);
-        setDraftText(d.text ?? "");
+        updateDraftText(receipt.value);
+        setDraftReceipt(receipt.message || null);
         setEmailTo(rcpt?.ok ? rcpt.to ?? null : null);
       } catch { setStatusNote("A new draft could not be loaded. Any text you already entered is still here."); }
     });
+  };
   const sendEmail = () =>
     startEmail(async () => {
       // Recipient shown = recipient sent-to; the server re-verifies (expectedTo).
@@ -666,19 +677,23 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
         setEmailMsg(r.message);
       } catch { setEmailMsg("The email send was not confirmed. Your draft is still here; check the conversation before trying again."); }
     });
-  const saveNote = () =>
+  const saveNote = () => {
+    const submitted = noteTextRef.current;
     startNote(async () => {
       setNoteMsg(null);
       try {
-        const r = await addTaskNote(task.id, noteText);
-        setNoteMsg(r.message);
-        setNoteError(!r.ok);
-        if (r.ok) { setNoteText(""); setNoteOpen(false); }
+        const r = await addTaskNote(task.id, submitted);
+        const receipt = finishTaskNoteReceipt(noteTextRef.current, submitted, r);
+        setNoteMsg(receipt.message);
+        setNoteError(receipt.error);
+        updateNoteText(receipt.value);
+        if (receipt.close) setNoteOpen(false);
       } catch {
         setNoteError(true);
         setNoteMsg("The note was not confirmed. Your text is still here; check project messages before trying again.");
       }
     });
+  };
 
   const card = (
     <div ref={detailRef} id={compact ? undefined : `task-${task.id}`} className={`panel-shadow scroll-mt-24 rounded-2xl border bg-surface p-3 sm:p-4 transition-shadow ${done ? "opacity-60" : ""}`}>
@@ -989,7 +1004,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
           <AutoTextarea
             aria-label="Project note"
             value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
+            onChange={(e) => updateNoteText(e.target.value)}
             minRows={2}
             autoFocus
             placeholder="Leave a note for the crew on this job…"
@@ -1003,7 +1018,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
             >
               {savingNote ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />} Add to project messages
             </button>
-            <button onClick={() => { setNoteOpen(false); setNoteText(""); }} className="text-xs text-muted hover:text-foreground">Cancel</button>
+            <button onClick={() => { setNoteOpen(false); updateNoteText(""); }} className="text-xs text-muted hover:text-foreground">Cancel</button>
           </div>
           <p className="mt-1.5 text-[10px] text-muted-2">Posts to the job&rsquo;s team thread — not sent to the client.</p>
         </div>
@@ -1031,10 +1046,17 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
               <AutoTextarea
                 aria-label="Reply draft"
                 value={draftText}
-                onChange={(e) => setDraftText(e.target.value)}
+                onChange={(e) => updateDraftText(e.target.value)}
                 rows={Math.min(10, Math.max(3, draftText.split("\n").length + 1))}
                 className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
               />
+              {draftReceipt && <>
+                <p role="status" className="mt-2 text-sm text-muted">{draftReceipt}</p>
+                <details className="mt-2 rounded-lg border border-border">
+                  <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">New AI suggestion</summary>
+                  <p className="whitespace-pre-wrap break-words px-3 pb-3 text-sm">{draft.text}</p>
+                </details>
+              </>}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {canEmailSend && (
                   <button
