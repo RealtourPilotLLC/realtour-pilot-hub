@@ -40,7 +40,7 @@ export function Section({
         className,
       )}
     >
-      <div className={cn("flex items-center gap-2.5 border-b px-5 py-3.5", warning && "border-warning/20")}>
+      <div className={cn("flex flex-wrap items-center gap-2.5 border-b px-5 py-3.5", warning && "border-warning/20")}>
         {Icon && (
           <span
             className={cn(
@@ -48,14 +48,14 @@ export function Section({
               warning ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted",
             )}
           >
-            <Icon className="size-4" />
+            <Icon aria-hidden className="size-4" />
           </span>
         )}
-        <h2 className={cn("text-sm font-semibold", warning && "text-warning")}>{title}</h2>
+        <h2 className={cn("min-w-0 break-words text-base font-semibold leading-snug", warning && "text-warning")}>{title}</h2>
         {count != null && (
-          <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{count}</span>
+          <span className="rounded-full bg-surface-2 px-2 text-ui-status font-medium text-muted">{count}</span>
         )}
-        {action && <div className="ml-auto flex items-center gap-2">{action}</div>}
+        {action && <div className="ml-auto flex max-w-full flex-wrap items-center gap-2">{action}</div>}
       </div>
       {flush ? children : <div className={cn("px-5 py-4", bodyClassName)}>{children}</div>}
     </section>

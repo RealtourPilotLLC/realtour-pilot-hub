@@ -19,8 +19,8 @@ export function Card({ children, className, tone = "default" }: { children: Reac
 
 export function CardTitle({ icon: Icon, children, action }: { icon?: LucideIcon; children: React.ReactNode; action?: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="flex items-center gap-2 text-sm font-semibold">{Icon && <Icon className="size-4 text-brand" />} {children}</span>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="flex min-w-0 items-center gap-2 text-base font-semibold leading-snug">{Icon && <Icon aria-hidden className="size-4 shrink-0 text-brand" />} {children}</span>
       {action}
     </div>
   );
@@ -31,7 +31,7 @@ export function LoadFailed({ what }: { what: string }) {
   return (
     <div role="alert" className="flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
-      <span className="text-xs">We couldn&rsquo;t load {what} just now — refresh to try again. If it keeps happening, {contactLine()}.</span>
+      <span className="text-ui-secondary leading-relaxed">We couldn&rsquo;t load {what} just now — refresh to try again. If it keeps happening, {contactLine()}.</span>
     </div>
   );
 }
@@ -75,8 +75,8 @@ const WORD_TONE: Record<WordTone, string> = {
 export function StatusChip({ word, className }: { word: Word; className?: string }) {
   const Icon = WORD_ICON[word.icon];
   return (
-    <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold", WORD_TONE[word.tone], className)}>
-      <Icon className="size-3" aria-hidden /> {word.label}
+    <span className={cn("inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-ui-status font-semibold leading-snug", WORD_TONE[word.tone], className)}>
+      <Icon className="size-3.5 shrink-0" aria-hidden /> {word.label}
     </span>
   );
 }

@@ -30,3 +30,17 @@ saving, saved, error, partial, empty, filtered-empty and disabled examples.
 Token calculations are a preliminary contrast check; rendered contrast, focus,
 clipping and phone acceptance remain open while local browser access is blocked.
 Do not record U1 or UA10–UA12 complete from server markup alone.
+
+Shared PageHeader and Section headers now wrap long titles/actions; shared
+status labels use the 13px status scale and allow long labels to wrap. Portal
+section titles use 16px and failed-load copy uses 14px. These shared consumers
+reach client, schedule, resource and team pages; their route-specific forms,
+tables and editors still need the fixed responsive/zoom comparison. Finance
+content, calculations and pay policies are untouched.
+
+Secondary acceptance still open: Clients list/detail tables, Schedule calendar
+and appointment forms, Resource editors, Team roster/access forms, financial
+views under their actual roles, and remaining setting panels. Check both staff
+themes, long names, 200% zoom and tablet widths before claiming their migration
+complete. No new tests mirror these reversible class changes; lint/build and
+the pending visual comparison are the appropriate gates.
