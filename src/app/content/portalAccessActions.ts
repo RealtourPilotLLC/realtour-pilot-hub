@@ -15,66 +15,67 @@ import {
 // src/lib/portalAccess.ts, not here: an action cannot forget them.
 // ---------------------------------------------------------------------------
 
-type Result = { ok: boolean; message: string };
+type Result = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
+const accessFail = (e: unknown, outcome: Result["outcome"] = "unknown"): Result => ({ ...fail(e), outcome });
 const me = async () => (await getCurrentUser())?.id ?? null;
 
 export async function rotatePortalLink(enrollmentId: string): Promise<Result & { url?: string }> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  try { await requireOwner(); } catch (e) { return accessFail(e, "refused"); }
   try {
     const r = await rotatePortalToken(enrollmentId);
     revalidatePath(`/content/${enrollmentId}`);
-    return { ok: true, message: r.rotated ? "Link rotated — the old one now shows the sign-in page." : "Portal link created.", url: r.url };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: r.rotated ? "Link rotated — the old one now shows the sign-in page." : "Portal link created.", url: r.url };
+  } catch (e) { return accessFail(e); }
 }
 
 /** days = 0 expires the link now; null clears the expiry. */
 export async function expirePortalLink(enrollmentId: string, days: number | null): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  try { await requireOwner(); } catch (e) { return accessFail(e, "refused"); }
   try {
     const r = await expirePortalToken(enrollmentId, days);
     revalidatePath(`/content/${enrollmentId}`);
-    return { ok: true, message: r.expiresAt ? (days === 0 ? "Link expired — it now shows the sign-in page." : `Link expires ${r.expiresAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}.`) : "Link no longer expires." };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: r.expiresAt ? (days === 0 ? "Link expired — it now shows the sign-in page." : `Link expires ${r.expiresAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}.`) : "Link no longer expires." };
+  } catch (e) { return accessFail(e); }
 }
 
 export async function invitePortalPerson(enrollmentId: string, email: string, name: string, role: string): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
-  if (!isPortalRole(role)) return { ok: false, message: "Pick a role." };
+  try { await requireOwner(); } catch (e) { return accessFail(e, "refused"); }
+  if (!isPortalRole(role)) return { ok: false, message: "Pick a role.", outcome: "refused" };
   try {
     const r = await inviteClientUser(enrollmentId, email, name, role, await me());
     revalidatePath(`/content/${enrollmentId}`);
-    return { ok: true, message: r.note };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: r.note };
+  } catch (e) { return accessFail(e); }
 }
 
 export async function revokePortalPerson(enrollmentId: string, membershipId: string): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  try { await requireOwner(); } catch (e) { return accessFail(e, "refused"); }
   try {
     await revokeMembership(membershipId, await me());
     revalidatePath(`/content/${enrollmentId}`);
-    return { ok: true, message: "Access revoked — their next request is refused." };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: "Access revoked — their next request is refused." };
+  } catch (e) { return accessFail(e); }
 }
 
 export async function setPortalPersonRole(enrollmentId: string, membershipId: string, role: string): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
-  if (!isPortalRole(role)) return { ok: false, message: "Pick a role." };
+  try { await requireOwner(); } catch (e) { return accessFail(e, "refused"); }
+  if (!isPortalRole(role)) return { ok: false, message: "Pick a role.", outcome: "refused" };
   try {
     await setMembershipRole(membershipId, role);
     revalidatePath(`/content/${enrollmentId}`);
-    return { ok: true, message: `Role set to ${role.toLowerCase()}.` };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: `Role set to ${role.toLowerCase()}.` };
+  } catch (e) { return accessFail(e); }
 }
 
 /** The owner's own test path: a one-time sign-in URL to open themselves. */
 export async function getPortalSignInLink(enrollmentId: string, membershipId: string): Promise<Result & { url?: string; expiresAtISO?: string }> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  try { await requireOwner(); } catch (e) { return accessFail(e, "refused"); }
   try {
     const r = await mintLoginLink(membershipId, await me());
     revalidatePath(`/content/${enrollmentId}`);
-    return { ok: true, message: "Sign-in link minted — it works once and expires in 15 minutes.", url: r.url, expiresAtISO: r.expiresAt.toISOString() };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: "Sign-in link minted — it works once and expires in 15 minutes.", url: r.url, expiresAtISO: r.expiresAt.toISOString() };
+  } catch (e) { return accessFail(e); }
 }
 
 // ---------------------------------------------------------------------------

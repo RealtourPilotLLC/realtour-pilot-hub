@@ -2,6 +2,47 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U2/U5 checkpoint — sign-in and portal access recovery
+
+Public sign-in no longer fabricates an email-send success on rejection. The
+server keeps its fixed delay and account-private generic response, now request
+acknowledgement rather than proof of an account or delivery. Password inputs
+have labels and caught local/transport errors without storing credentials.
+Client and staff invitation forms clear only the exact unchanged submitted
+name/email/role; later edits remain. Shared opaque current-tab access markers
+hold uncertain requests across refresh, with exact attempt-only cleanup on known
+responses. Initial hydration skips its own in-flight attempt. Markers contain
+no name/address/password/token/link/body; native drafts are mounted-only.
+
+Six staff wrappers add optional outcome evidence without changing guards,
+domain calls/order, IDs, recipients, saved settings, switch or rollout rules.
+Unknown operations require staff to inspect the exact account/seat/outbox/link
+before another write; markers are not backend receipts or cross-tab locks.
+Public recovery preserves account privacy and links only to the existing portal.
+
+Fake actual UI29/0 and actual wrappers with fake domains10/0 passed at
+`/tmp/client-access-recovery-final/`; typecheck/lint logs
+`/tmp/client-access-types-final.log`, `/tmp/client-access-lint-final.log` exit0.
+Root focused review caught the initializer own-marker race, repaired/covered.
+Earlier fixture failures were only unrelated parallel-call ordering and one SSR
+unknown/ReactNode type, corrected. No real login, invite, send, provider or DB
+operation occurred. Browser, phone, actual session/email delivery remain open.
+
+### Oct 1 combined checkpoint — committed Resources candidate `d9f5306`
+
+Non-incremental TypeScript exit0; changed TypeScript ESLint123 files exit0 with
+three unused-variable warnings (resources/page creativeSafeResource; tasks
+editorKeyForTeamName/pinnedKey). Separate clean checkout fast-forwarded from
+`c5e619e` to `d9f5306`; production build exit0. Logs are
+`/tmp/ops-hub-types-d9f5306.log`, `/tmp/ops-hub-lint-d9f5306.log`, and
+`/tmp/ops-hub-build-d9f5306.log`. No env files existed in the build checkout;
+build used env-i, no provider credentials and dead127.0.0.1:5998 DB.
+The main-checkout fenced demo started00:38ET on3200 was identified and left
+running. No build wrote its `.next`, and no process was stopped. New independent
+access/month/review/embedded form repairs follow this candidate; they require a
+new final stable gate, not a repeat of earlier whole drill suites. No push,
+schema, deployment, activation or new client-visible release occurred.
+
 ### Oct 1 U5 checkpoint — Resources drafts, read failures and uncertain writes
 
 Existing create/update/publish/review actions now report confirmed, pre-write

@@ -9,6 +9,7 @@ instructions and batch evidence remain in `handoff.md`.
 | Area | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
 |---|---|---|---|---|---|---|
 | Access, manual work state, draft preservation, rollout guards | Local corrections | Targeted isolated signed-role/action tests; normal browser journey open | Yes; see C01–C03/C09/C12 | No takeover deployment | Existing switches unchanged | No new release |
+| Client sign-in and teammate invitation feedback | Local correction; privacy-generic acknowledgement and newer-draft retention | Actual fake UI29/0 + wrapper10/0; typecheck/lint/review; real email/browser open | Yes | No | No invite or login switch changes | No new release |
 | Written and call planning; exact script acceptance | Local corrections | Written 23/0, call 25/0; fake model/provider evidence only | Yes | No | No worker or rollout activation | No new release |
 | Brand alert recovery and individual receipts | Local corrections | Recovery 8/0 + 12/0; receipts 12/0; signed setup 130/0 | Yes | No; schema required | Alerts remain off | No new release |
 | Editing, revision, filming and final delivery handoffs | Substantial local implementation; named W remainders open | Connected signed journey 19/0; exact approval/issue race PostgreSQL 11/0; real media, phone and provider paths open | Yes for completed batches; active work in handoff | No; schema required | No new automation activation | No new release |

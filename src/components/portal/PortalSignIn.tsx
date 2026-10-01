@@ -1,9 +1,11 @@
 "use client";
 
-import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useRef, useState } from "react";
 import { BrandWordmark } from "@/components/Brand";
-import { ArrowRight, KeyRound, Loader2, LogOut, MailCheck } from "lucide-react";
+import { ArrowRight, KeyRound, LogOut, MailCheck } from "lucide-react";
+import { Button, ActionLink } from "@/components/ui/Action";
+import { TextField } from "@/components/ui/FormField";
+import { useAccessAttempt } from "./useAccessAttempt";
 import { requestPortalLoginLink, signOutPortal } from "@/app/portal/login/actions";
 
 // The sign-in screen — also what an expired or rotated link lands on (HTTP
@@ -30,8 +32,25 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
   /** False while `portal_login_email` is off: the form would take an address and send nothing. */
   emailSignIn?: boolean }) {
   const [email, setEmail] = useState("");
-  const [done, setDone] = useState<string | null>(null);
-  const [busy, start] = useTransition();
+  const emailRef = useRef("");
+  const [receipt, setReceipt] = useState<{ email: string; message: string } | null>(null);
+  const attempt = useAccessAttempt("portal-login-unconfirmed");
+  const done = !attempt.held && receipt?.email === email ? receipt.message : null;
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!emailSignIn || !emailRef.current.trim()) return;
+    const id = attempt.begin("login");
+    if (!id) return;
+    const requestedEmail = emailRef.current;
+    const fd = new FormData(); fd.set("email", requestedEmail);
+    try {
+      const r = await requestPortalLoginLink(fd);
+      setReceipt({ email: requestedEmail, message: r.message });
+      attempt.finish(id, true);
+    } catch {
+      attempt.finish(id, false);
+    }
+  }
   // With the email form off, every "Sign in with your email to continue" is an
   // instruction the page cannot honour — drop the clause, keep the news.
   const raw = reason ? REASONS[reason] : null;
@@ -50,55 +69,44 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
           <h1 className="mt-4 text-center text-xl font-semibold tracking-tight">Sign in to your portal</h1>
           {note && !done && <p className="mt-2 text-center text-sm text-muted">{note}</p>}
           {signedIn && !done && (
-            <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-xs">
-              <span className="min-w-0 flex-1 truncate text-muted">Signed in as <span className="font-semibold text-foreground">{signedIn.who}</span></span>
+            <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-sm">
+              <span className="min-w-0 flex-1 break-words text-muted">Signed in as <span className="font-semibold text-foreground">{signedIn.who}</span></span>
               {signedIn.canEnter && (
-                <Link href="/portal/me" className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1.5 font-semibold text-white">
+                <ActionLink href="/portal/me" variant="primary">
                   Open your portal <ArrowRight className="size-3.5" />
-                </Link>
+                </ActionLink>
               )}
               <form action={signOutPortal}>
-                <button type="submit" className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 font-semibold text-muted hover:text-foreground">
+                <Button type="submit" variant="secondary">
                   <LogOut className="size-3.5" /> Sign out
-                </button>
+                </Button>
               </form>
             </div>
           )}
           {!emailSignIn && !done && (
-            <p className="mt-4 rounded-xl border border-border bg-surface px-3 py-2.5 text-center text-xs text-muted">
+            <p className="mt-4 rounded-xl border border-border bg-surface px-3 py-2.5 text-center text-sm text-muted">
               Email sign-in isn&rsquo;t switched on yet. Reply to any text or email from us and we&rsquo;ll get you in.
             </p>
           )}
+          {attempt.held && (
+            <div role="alert" className="mt-4 space-y-3 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm leading-relaxed">
+              <p>We couldn’t confirm your sign-in request. It may already have been processed. Check your inbox or open your portal if you already signed in. Reply to any text or email from us and ask our team to check before requesting another link.</p>
+              <p>This tab holds repeat requests. Reloading does not confirm what happened; unsaved email input is kept only while this form stays open.</p>
+              <ActionLink href="/portal/me">Open your portal</ActionLink>
+            </div>
+          )}
           {done ? (
-            <p className="mt-3 text-center text-sm text-muted">{done}</p>
+            <p role="status" className="mt-3 text-center text-sm leading-relaxed text-muted">{done}</p>
           ) : !emailSignIn ? null : (
-            <form
-              className="mt-4 space-y-3"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const fd = new FormData();
-                fd.set("email", email);
-                start(async () => {
-                  const r = await requestPortalLoginLink(fd).catch(() => ({ ok: true as const, message: "If that email has portal access, a sign-in link is on its way." }));
-                  setDone(r.message);
-                });
-              }}
-            >
-              <label className="block">
-                <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Your email</span>
-                <input
-                  type="email" required autoComplete="email" inputMode="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className="mt-1.5 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand"
-                />
-              </label>
-              <button type="submit" disabled={busy || !email.trim()}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40">
-                {busy && <Loader2 className="size-4 animate-spin" />} Email me a sign-in link
-              </button>
-              <p className="text-center text-[11px] text-muted-2">No password — we send a one-time link that works for 15 minutes.</p>
+            <form className="mt-4 space-y-3" onSubmit={submit}>
+              <TextField id="portal-login-email" name="email" label="Your email" type="email" required autoComplete="email" inputMode="email"
+                value={email} onChange={(e) => { emailRef.current = e.target.value; setEmail(e.target.value); }} placeholder="you@example.com" />
+              <Button type="submit" busy={attempt.pending} disabled={attempt.blocked || !email.trim()} className="w-full">Email me a sign-in link</Button>
+              {receipt && <p role="status" className="text-sm leading-relaxed text-muted">{receipt.message} This response is for your earlier request; your newer email has been kept.</p>}
+              <p className="text-center text-sm text-muted">No password — available sign-in links work once and expire in 15 minutes.</p>
             </form>
           )}
+          {attempt.localError && <p role="alert" className="mt-3 text-sm text-danger">{attempt.localError}</p>}
         </div>
       </div>
     </div>

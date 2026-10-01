@@ -1,7 +1,11 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { Copy, ExternalLink, Loader2, RefreshCw, TimerOff, UserMinus, UserPlus, Link2, Eye } from "lucide-react";
+import { useRef, useState } from "react";
+import { ExternalLink, RefreshCw, TimerOff, UserMinus, UserPlus, Link2, Eye } from "lucide-react";
+import { Button } from "@/components/ui/Action";
+import { TextField, FormField } from "@/components/ui/FormField";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { useAccessAttempt } from "../useAccessAttempt";
 import { cn } from "@/lib/utils";
 import {
   rotatePortalLink, expirePortalLink, invitePortalPerson, revokePortalPerson, setPortalPersonRole, getPortalSignInLink,
@@ -38,20 +42,40 @@ export function PortalAccessControls(props: {
   switches: { invites: boolean; loginEmail: boolean };
 }) {
   const { enrollmentId, link, people, lastOpened, visits, switches, isTestClient } = props;
-  const [msg, setMsg] = useState<string | null>(null);
-  const [signIn, setSignIn] = useState<{ url: string; expiresAtISO: string } | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [signIn, setSignIn] = useState<{ url: string; expiresAtISO: string; who: string } | null>(null);
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<(typeof ROLES)[number]>("OWNER");
   const [days, setDays] = useState("30");
-  const [busy, start] = useTransition();
-
-  const run = (fn: () => Promise<{ ok: boolean; message: string }>) =>
-    start(async () => {
-      const r = await fn().catch(() => ({ ok: false, message: "That didn't go through — try again." }));
-      setMsg(r.message);
+  const attempt = useAccessAttempt(`staff-portal-unconfirmed:${enrollmentId}`);
+  const busy = attempt.blocked;
+  const draft = useRef({ name: "", email: "", role: "OWNER" as (typeof ROLES)[number] });
+  type AccessResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown"; url?: string; expiresAtISO?: string };
+  const run = async (operation: "invite" | "role" | "revoke" | "rotate" | "expire" | "mint", fn: () => Promise<AccessResult>, after?: (r: AccessResult) => boolean) => {
+    const id = attempt.begin(operation);
+    if (!id) return;
+    setMsg(null);
+    if (operation === "mint") setSignIn(null);
+    try {
+      const r = await fn();
+      const confirmed = r.ok && r.outcome === "confirmed";
+      const known = confirmed || (!r.ok && r.outcome === "refused");
+      const unchanged = confirmed ? after?.(r) : undefined;
+      setMsg({ ok: confirmed, text: r.message + (unchanged === false ? " Your newer invitation draft has been kept." : "") });
+      attempt.finish(id, known);
+    } catch { attempt.finish(id, false); }
+  };
+  function invite() {
+    if (inviteBlocked) return;
+    const sent = { ...draft.current };
+    void run("invite", () => invitePortalPerson(enrollmentId, sent.email, sent.name, sent.role), () => {
+      const current = draft.current;
+      if (current.email !== sent.email || current.name !== sent.name || current.role !== sent.role) return false;
+      draft.current = { ...sent, email: "", name: "" }; setEmail(""); setName("");
+      return true;
     });
-  const copy = (text: string) => navigator.clipboard?.writeText(text).then(() => setMsg("Copied.")).catch(() => setMsg("Couldn't copy — select it by hand."));
+  }
 
   // Invitations while the switch is off: only a TEST client can be given a
   // person, and only on a staff-controlled address. The action refuses
@@ -73,15 +97,15 @@ export function PortalAccessControls(props: {
           <Link2 className="size-4 text-brand" />
           <span className="font-semibold">Share link</span>
           {!link.issued ? (
-            <span className="text-xs text-muted">not issued</span>
+            <span className="text-sm text-muted">not issued</span>
           ) : link.expired ? (
-            <span className="rounded bg-danger-soft px-1.5 py-0.5 text-[10px] font-semibold text-danger">expired</span>
+            <span className="rounded bg-danger-soft px-1.5 py-0.5 text-sm font-semibold text-danger">expired</span>
           ) : (
-            <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">live</span>
+            <span className="rounded bg-success-soft px-1.5 py-0.5 text-sm font-semibold text-success">live</span>
           )}
-          {props.accessRevokedAtISO && <span className="rounded bg-danger-soft px-1.5 py-0.5 text-[10px] font-semibold text-danger">access revoked {fmt(props.accessRevokedAtISO)}</span>}
+          {props.accessRevokedAtISO && <span className="rounded bg-danger-soft px-1.5 py-0.5 text-sm font-semibold text-danger">access revoked {fmt(props.accessRevokedAtISO)}</span>}
         </div>
-        <dl className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-muted">
+        <dl className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm text-muted">
           <dt>Issued</dt><dd>{fmt(link.issuedAtISO) ?? (link.issued ? "before Sep 16 (no stamp)" : "—")}</dd>
           <dt>Expires</dt><dd>{fmt(link.expiresAtISO) ?? "never"}</dd>
           <dt>Rotated</dt><dd>{fmt(link.rotatedAtISO) ?? "never"}</dd>
@@ -91,20 +115,20 @@ export function PortalAccessControls(props: {
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {link.url && (
             <>
-              <button disabled={busy} onClick={() => copy(link.url!)} className={btn}><Copy className="size-3.5" /> Copy link</button>
+              <CopyButton value={link.url} label="Copy link" />
               <a href={link.url} target="_blank" rel="noopener noreferrer" className={btn}><ExternalLink className="size-3.5" /> Open</a>
             </>
           )}
-          <button disabled={busy} onClick={() => run(() => rotatePortalLink(enrollmentId))} className={btn}>
+          <Button variant="secondary" disabled={busy} onClick={() => run("rotate", () => rotatePortalLink(enrollmentId))} className={btn}>
             <RefreshCw className="size-3.5" /> {link.issued ? "Rotate" : "Create link"}
-          </button>
+          </Button>
           {link.issued && (
-            <span className="inline-flex items-center gap-1">
-              <input value={days} onChange={(e) => setDays(e.target.value)} inputMode="numeric" className="w-14 rounded-lg border border-border bg-surface px-2 py-1 text-xs" aria-label="Days until the link expires" />
-              <button disabled={busy} onClick={() => run(() => expirePortalLink(enrollmentId, Math.max(0, parseInt(days, 10) || 0)))} className={btn}>
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <input value={days} onChange={(e) => setDays(e.target.value)} inputMode="numeric" className="min-h-11 w-20 rounded-lg border border-border-strong bg-surface px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" aria-label="Days until the link expires" />
+              <Button variant="secondary" disabled={busy} onClick={() => run("expire", () => expirePortalLink(enrollmentId, Math.max(0, parseInt(days, 10) || 0)))} className={btn}>
                 <TimerOff className="size-3.5" /> {parseInt(days, 10) === 0 ? "Expire now" : "Expire in days"}
-              </button>
-              {link.expiresAtISO && <button disabled={busy} onClick={() => run(() => expirePortalLink(enrollmentId, null))} className={btn}>Never expire</button>}
+              </Button>
+              {link.expiresAtISO && <Button variant="secondary" disabled={busy} onClick={() => run("expire", () => expirePortalLink(enrollmentId, null))} className={btn}>Never expire</Button>}
             </span>
           )}
         </div>
@@ -114,45 +138,44 @@ export function PortalAccessControls(props: {
       <div>
         <div className="flex items-center gap-2 font-semibold"><Eye className="size-4 text-brand" /> People with access</div>
         {active.length === 0 ? (
-          <p className="mt-1 text-xs text-muted">Nobody has a personal sign-in yet — the share link is the only door.</p>
+          <p className="mt-1 text-sm text-muted">Nobody has a personal sign-in yet — the share link is the only door.</p>
         ) : (
           <ul className="mt-2 divide-y divide-border rounded-xl border border-border">
             {active.map((p) => (
               <li key={p.membershipId} className="flex flex-wrap items-center gap-2 px-3 py-2">
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{p.name ?? p.email}</div>
-                  <div className="truncate text-xs text-muted">{p.email} · invited {fmt(p.invitedAtISO)}{p.acceptedAtISO ? ` · accepted ${fmt(p.acceptedAtISO)}` : " · not signed in yet"}{p.lastLoginAtISO ? ` · last sign-in ${fmt(p.lastLoginAtISO)}` : ""}</div>
+                  <div className="break-words font-medium">{p.name ?? p.email}</div>
+                  <div className="break-words text-sm text-muted">{p.email} · invited {fmt(p.invitedAtISO)}{p.acceptedAtISO ? ` · accepted ${fmt(p.acceptedAtISO)}` : " · not signed in yet"}{p.lastLoginAtISO ? ` · last sign-in ${fmt(p.lastLoginAtISO)}` : ""}</div>
                 </div>
-                <select value={p.role} disabled={busy} onChange={(e) => run(() => setPortalPersonRole(enrollmentId, p.membershipId, e.target.value))}
-                  className="rounded-lg border border-border bg-surface px-2 py-1 text-xs" title={ROLE_HELP[p.role]}>
+                <select value={p.role} disabled={busy} onChange={(e) => { const next = e.target.value; void run("role", () => setPortalPersonRole(enrollmentId, p.membershipId, next)); }}
+                  className={selectClass} aria-label={`Role for ${p.name ?? p.email}`} title={ROLE_HELP[p.role]}>
                   {ROLES.map((r) => <option key={r} value={r}>{r.toLowerCase()}</option>)}
                 </select>
-                <button disabled={busy} title="Mint a one-time sign-in link to open yourself (testing)"
-                  onClick={() => start(async () => {
-                    const r = await getPortalSignInLink(enrollmentId, p.membershipId).catch(() => ({ ok: false, message: "That didn't go through." } as { ok: boolean; message: string; url?: string; expiresAtISO?: string }));
-                    setMsg(r.message);
-                    setSignIn(r.ok && r.url && r.expiresAtISO ? { url: r.url, expiresAtISO: r.expiresAtISO } : null);
+                <Button variant="secondary" disabled={busy} title="Mint a one-time sign-in link to open yourself (testing)"
+                  onClick={() => run("mint", () => getPortalSignInLink(enrollmentId, p.membershipId), (r) => {
+                    if (r.url && r.expiresAtISO) setSignIn({ url: r.url, expiresAtISO: r.expiresAtISO, who: p.name ?? p.email });
+                    return true;
                   })}
-                  className={btn}>Get sign-in link</button>
-                <button disabled={busy} onClick={() => run(() => revokePortalPerson(enrollmentId, p.membershipId))} className={cn(btn, "text-danger")}>
+                  className={btn}>Get sign-in link</Button>
+                <Button variant="secondary" disabled={busy} onClick={() => run("revoke", () => revokePortalPerson(enrollmentId, p.membershipId))} className={cn(btn, "text-danger")}>
                   <UserMinus className="size-3.5" /> Revoke
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
         )}
         {signIn && (
-          <div className="mt-2 rounded-xl border border-brand/30 bg-brand-soft/30 p-3 text-xs">
-            <div className="font-semibold">One-time sign-in link (expires {fmt(signIn.expiresAtISO)}) — open it yourself to test; nothing was emailed.</div>
+          <div className="mt-2 rounded-xl border border-brand/30 bg-brand-soft/30 p-3 text-sm">
+            <div className="font-semibold">One-time sign-in link for {signIn.who} (expires {fmt(signIn.expiresAtISO)}) — open it yourself to test; nothing was emailed.</div>
             <div className="mt-1 flex items-center gap-2">
-              <code className="min-w-0 flex-1 truncate">{signIn.url}</code>
-              <button onClick={() => copy(signIn.url)} className={btn}><Copy className="size-3.5" /> Copy</button>
+              <code className="min-w-0 flex-1 break-words">{signIn.url}</code>
+              <CopyButton value={signIn.url} label="Copy sign-in link" />
             </div>
           </div>
         )}
         {revoked.length > 0 && (
-          <details className="mt-2 text-xs text-muted">
-            <summary className="cursor-pointer">{revoked.length} revoked</summary>
+          <details className="mt-2 text-sm text-muted">
+            <summary className="min-h-11 cursor-pointer rounded-lg py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{revoked.length} revoked</summary>
             <ul className="mt-1 space-y-0.5">
               {revoked.map((p) => <li key={p.membershipId}>{p.name ?? p.email} · {p.email} · revoked {fmt(p.revokedAtISO)}</li>)}
             </ul>
@@ -162,35 +185,37 @@ export function PortalAccessControls(props: {
         {/* INVITE */}
         <form
           className="mt-3 flex flex-wrap items-end gap-2"
-          onSubmit={(e) => { e.preventDefault(); run(async () => { const r = await invitePortalPerson(enrollmentId, email, name, role); if (r.ok) { setEmail(""); setName(""); } return r; }); }}
+          onSubmit={(e) => { e.preventDefault(); invite(); }}
         >
-          <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Email</span>
-            <input type="email" required disabled={inviteBlocked} value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 block w-52 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs disabled:opacity-50" />
-          </label>
-          <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Name</span>
-            <input disabled={inviteBlocked} value={name} onChange={(e) => setName(e.target.value)} className="mt-1 block w-40 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs disabled:opacity-50" />
-          </label>
-          <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Role</span>
-            <select disabled={inviteBlocked} value={role} onChange={(e) => setRole(e.target.value as (typeof ROLES)[number])} className="mt-1 block rounded-lg border border-border bg-surface px-2 py-1.5 text-xs disabled:opacity-50" title={ROLE_HELP[role]}>
+          <TextField id={`staff-invite-email-${enrollmentId}`} name="email" label="Email" type="email" required disabled={inviteBlocked} value={email}
+            onChange={(e) => { draft.current.email = e.target.value; setEmail(e.target.value); }} className="w-full sm:w-64" />
+          <TextField id={`staff-invite-name-${enrollmentId}`} name="name" label="Name" disabled={inviteBlocked} value={name}
+            onChange={(e) => { draft.current.name = e.target.value; setName(e.target.value); }} className="w-full sm:w-52" />
+          <FormField id={`staff-invite-role-${enrollmentId}`} label="Role">
+            <select id={`staff-invite-role-${enrollmentId}`} name="role" disabled={inviteBlocked} value={role}
+              onChange={(e) => { const next = e.target.value as (typeof ROLES)[number]; draft.current.role = next; setRole(next); }} className={selectClass} title={ROLE_HELP[role]}>
               {ROLES.map((r) => <option key={r} value={r}>{r.toLowerCase()}</option>)}
             </select>
-          </label>
-          <button type="submit" disabled={busy || inviteBlocked} className={cn(btn, "bg-brand-action text-white hover:opacity-90 disabled:opacity-50")}>
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <UserPlus className="size-3.5" />} {switches.invites ? "Invite" : "Add person"}
-          </button>
+          </FormField>
+          <Button variant="secondary" type="submit" busy={attempt.pending} disabled={busy || inviteBlocked} className={cn(btn, "bg-brand-action text-white hover:opacity-90 disabled:opacity-50")}>
+            <UserPlus className="size-4" /> {switches.invites ? "Invite" : "Add person"}
+          </Button>
         </form>
-        <p className={cn("mt-1.5 text-[11px]", inviteBlocked ? "text-warning" : "text-muted")}>{inviteNote}</p>
+        <p className={cn("mt-1.5 text-sm", inviteBlocked ? "text-warning" : "text-muted")}>{inviteNote}</p>
         {!switches.loginEmail && (
-          <p className="mt-1 text-[11px] text-muted">Sign-in emails are switched off until launch: a person who asks for a link on the sign-in page gets the &ldquo;check your inbox&rdquo; message and nothing is sent. &ldquo;Get sign-in link&rdquo; above is the test path{isTestClient ? "" : " (TEST clients only)"}.</p>
+          <p className="mt-1 text-sm text-muted">Sign-in emails are switched off until launch: the sign-in page explains the switch and directs people to our team for help. &ldquo;Get sign-in link&rdquo; above is the test path{isTestClient ? "" : " (TEST clients only)"}.</p>
         )}
       </div>
 
-      {msg && <p className="text-xs text-muted">{msg}</p>}
+      {attempt.held && <div role="alert" className="space-y-2 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm leading-relaxed">
+        <p>This portal access change is unconfirmed. A seat, link or invitation may already have changed. Ask Kyle to inspect this client’s portal access, request logs and outbox before repeating the operation.</p>
+        <p>This tab holds further access changes. Reloading does not prove the earlier writer or send ended. Native input is kept only while this form stays open.</p>
+      </div>}
+      {attempt.localError && <p role="alert" className="text-sm text-danger">{attempt.localError}</p>}
+      {msg && <p role={msg.ok ? "status" : "alert"} className={cn("text-sm leading-relaxed", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>
   );
 }
 
-const btn = "inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50";
+const btn = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-2 rounded-xl border border-border-strong px-3 py-2 text-sm font-medium text-foreground whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
+const selectClass = "min-h-11 max-w-full rounded-lg border border-border-strong bg-surface px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";

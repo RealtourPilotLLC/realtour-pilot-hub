@@ -32,8 +32,8 @@ export async function requestPortalLoginLink(formData: FormData): Promise<{ ok: 
   return {
     ok: true,
     message: live
-      ? "If that email has portal access, a sign-in link is on its way. It works once and expires in 15 minutes."
-      : "Email sign-in isn't switched on yet. We've noted that you asked — reply to any text or email from us and we'll get you in.",
+      ? "Request received. If email sign-in is available for that address, check your inbox for a one-time link. We cannot confirm an account or email delivery here. Reply to any text or email from us if you need help getting in."
+      : "Request received. Email sign-in isn't switched on yet. Reply to any text or email from us and we'll help you get in.",
   };
 }
 

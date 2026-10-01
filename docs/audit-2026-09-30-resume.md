@@ -9,7 +9,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `9a721dc` plus the Resources commit containing this update; inspect actual HEAD/status when resuming.
+  checkpoint: `d9f5306` plus the access recovery commit containing this update;
+  inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
   messages/invitations, real bookings, financial changes, automation activation,
@@ -21,7 +22,9 @@ Do not restart the audit or repeat green checks without a specific changed risk.
   running; no process was stopped or restarted. Inspect before any build/start.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
-  Last observed clean/detached at `c5e619e`, whose build passed. Advance only
+  Last observed clean/detached at `d9f5306`, whose clean-environment build passed.
+  Main-checkout non-incremental types and changed-file lint passed at that SHA.
+  Advance only
   with an inspected fast-forward to an exact committed candidate; use a clean
   environment and dead loopback DB. Never copy production env/credentials there.
 - Browser access was rejected by tool policy. Do not bypass with another
@@ -51,7 +54,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `a642e79` | Exact clipboard receipts and native Markdown controls |Fake clipboard handlers12/0; lint/review; browser open |
 | `681030b` / `f154bb4` | Appointment/Resources authoring and common navigation |Lint/diff/source review; behavior fixes separate |
 | `9a721dc` | Appointment uncertainty and retained date/email choices |Signed fake-provider action13/0; actual form/refresh23/0; lint/types/review |
-| Resources commit containing this update | Guide drafts/read failures/uncertain-write recovery |Actual handler/action/page33/0; group/removal remount repair reviewed; lint/diff |
+| `d9f5306` | Guide drafts/read failures/uncertain-write recovery |Actual handler/action/page33/0; remount repair reviewed; combined types/lint/build |
+| Access commit containing this update | Privacy-generic sign-in and newer invitation drafts |Actual fake UI29/0 + wrapper10/0; typecheck/lint/root review |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -75,9 +79,13 @@ are not provider receipts; Resources retention is current-tab only. Unknown
 requests still require staff inspection. Provider/notify, validation/publication,
 ownership and backfill rules remain intact. No real mutation is authorized.
 
-After that stable checkpoint, run the combined typecheck/changed-file lint and
-one production build in the separate clean checkout. Record the exact source
-commit, exit codes and logs here. Do not repeat already-passed whole drill suites.
+The Resources checkpoint passed combined gates. Remaining concrete local forms
+are in progress: month/identity receipts, review fee/clock/hold and native
+take-back dialog recovery, then Users/Slack/Map/Calendar/capacity controls named
+by the bounded remaining-scope review. Preserve the frozen evidence and ownership;
+finish/checkpoint each, then run one final combined gate for the new stable SHA.
+Do not repeat already-passed whole drill suites. Business and browser acceptance
+remainders below stay open; this continuation is not a new broad audit.
 
 ## Required release and business remainders
 

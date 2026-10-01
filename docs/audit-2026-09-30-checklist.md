@@ -74,6 +74,27 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U2/U5 client access recovery:** public sign-in acknowledges a request without
+  proving an account or email delivery. Rejection remains unconfirmed; mounted
+  invitation forms retain newer name/email/role after older success. Password
+  fields are labeled and failed transport has honest feedback. Staff access
+  wrappers annotate existing refusals/confirmed paths versus uncertain errors;
+  opaque current-tab markers hold replay and survive refresh without persisting
+  PII/password/token/link/body. Actual fake UI29/0 and wrapper10/0, typecheck,
+  scoped lint/diff and root review pass (`/tmp/client-access-recovery-final/`).
+  No send/session/role/rollout policy changed. Unknown results require staff
+  inspection; markers are not backend terminal receipts or cross-tab locks.
+  Native drafts last while mounted; real delivery/browser acceptance is open.
+
+- **Combined committed checkpoint `d9f5306`:** non-incremental TypeScript exit0,
+  changed-file ESLint123 files exit0 (three unused-variable warnings), and one
+  separate-checkout production build exit0. Logs `/tmp/ops-hub-types-d9f5306.log`,
+  `/tmp/ops-hub-lint-d9f5306.log`, `/tmp/ops-hub-build-d9f5306.log`.
+  Build used an empty environment, no copied env files, and dead loopback DB.
+  The running isolated main-checkout demo on3200 was left untouched. This gate
+  covers through Resources; later access/month/review source needs a new final
+  gate after its concrete repairs, not repeated whole-drill verification.
+
 - **U5 Resources recovery:** create/update/publish/review now distinguish existing
   pre-write refusals from confirmed and uncertain outcomes. Pending submission
   blocks duplicate writes/dismissal; Close/Cancel retains editor text. ID-scoped
