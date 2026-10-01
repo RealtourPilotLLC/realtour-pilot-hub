@@ -9,12 +9,11 @@ import { TaskFocus } from "@/components/queue/TaskFocus";
 import { AddTask } from "@/components/queue/AddTask";
 import { doneTodayCount } from "@/components/tasks/DoneView";
 import { taskToView } from "@/lib/taskView";
-import { MESSAGE_TASK_TYPES } from "@/lib/queries";
 import { prisma } from "@/lib/prisma";
-import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { listAssignees, firstName, viewerAssigneeKey } from "@/lib/assignees";
-import { isNeedsAssigning, boardVisibleWhere } from "@/lib/triage";
+import { isNeedsAssigning } from "@/lib/triage";
+import { boardWhere, BOARD_ACTIVE_STATUSES as ACTIVE, type TaskClientScope } from "@/lib/taskBoard";
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { editorScopeOf, isUnmappedEditor, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
@@ -24,7 +23,6 @@ import { cn } from "@/lib/utils";
 // The full grouped task board — every open task by person and category.
 // (Moved from /queue — now the Tasks hub's Board tab.)
 
-const ACTIVE = ["OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED"];
 const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
@@ -37,39 +35,10 @@ const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinit
 // list the owner sees (RTP-01, Sep 16). editorScopeOf now lives in
 // auth/guards beside the same rule /edit/<id> applies to Review Room notes.
 
-// The board's where clause — shared by the board query and the hub tab badge so
-// the "open" count always matches what the tab renders (incl. editor scoping).
-function boardWhere(editorScope: string | null): Prisma.SmartTaskWhereInput {
-  return {
-    status: { in: ACTIVE },
-    AND: [
-      // Comm-type tasks live on the Comms tab; Slack items on the Slack tab;
-      // edit tasks belong to the Editor Queue, not Kyle's board (Jordan, Sep 1).
-      // Editors keep their own scoped view untouched (incl. their edit_video,
-      // DB-scoped to their key so their view can't even load others' work).
-      // Non-editors use the shared boardVisibleWhere: QC + delivery hidden
-      // (Kyle's Ops Day owns those), the two auto-text types hidden — but
-      // UNASSIGNED triage work always shows in the "Needs assigning" pile
-      // (review: reel edits routed to nobody were invisible everywhere).
-      editorScope
-        ? { taskType: { notIn: ["client_reply", "comms_followup", "callback"] }, assignedKey: editorScope }
-        : boardVisibleWhere(),
-      {
-        OR: [
-          { projectId: null },
-          { project: recentProjectWhere() },
-          // Messages/replies surface regardless of project age — same as the
-          // morning brief — so clicking one in the brief always finds it here.
-          { taskType: { in: MESSAGE_TASK_TYPES } },
-        ],
-      },
-    ],
-  };
-}
-
-export async function boardOpenCount(): Promise<number> {
+// The shared predicate keeps Home's count and this tab's rows in agreement.
+export async function boardOpenCount(opts: TaskClientScope = {}): Promise<number> {
   const me = await getCurrentUser().catch(() => null);
-  return prisma.smartTask.count({ where: boardWhere(editorScopeOf(me)) });
+  return prisma.smartTask.count({ where: boardWhere(editorScopeOf(me), opts) });
 }
 
 // Which category a task belongs to within a person's list.
@@ -155,9 +124,11 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
   );
 }
 
-export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: string }; tabs: ReactNode }) {
+export async function BoardView({ sp, tabs, excludeClientIds, showTest = false }: { sp: { who?: string; task?: string }; tabs: ReactNode; excludeClientIds?: string[]; showTest?: boolean }) {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = editorScopeOf(me);
+  const scope = { excludeClientIds };
+  const boardHref = `/tasks?tab=other${showTest ? "&test=1" : ""}`;
   // An EDITOR login that maps to no editor profile gets NOTHING, and is told
   // why (RTP-01, Sep 16). Before this it fell through to the office board —
   // "All caught up 🎉" would be a lie here, and showing the team's work would
@@ -185,7 +156,7 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
     : null;
   const [tasks, assignees] = await Promise.all([
     prisma.smartTask.findMany({
-      where: deepLink ? { OR: [boardWhere(editorScope), deepLink] } : boardWhere(editorScope),
+      where: deepLink ? { OR: [boardWhere(editorScope, scope), deepLink] } : boardWhere(editorScope, scope),
       // segment / customer note / profileJson feed the QC card's client-aware
       // strip + VIP flag (taskView builds the compact context). Cheap columns on
       // the already-joined client — only used by media_qa cards. generalNotes is
@@ -356,6 +327,14 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
       />
       <div className="space-y-5 p-4 sm:p-6">
         {tabs}
+        {!editorScope && (
+          <div className="flex items-center justify-between gap-3 text-xs text-muted">
+            <span>{showTest ? "Showing real and test records" : "Showing real client work"}</span>
+            <Link href={showTest ? "/tasks?tab=other" : "/tasks?tab=other&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
+              {showTest ? "Hide test records" : "Show test records"}
+            </Link>
+          </div>
+        )}
         <AddTask assignees={assigneeChips} />
 
         {/* The signpost for everything that used to be on this tab. Rendered
@@ -380,13 +359,13 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
             Hidden for editors, who are locked to their own work. */}
         {!nothing && !editorScope && (
           <div className="flex flex-wrap items-center gap-1.5">
-            <FilterChip href="/tasks?tab=board" label="Everyone" count={views.length} active={activeKey === "all"} />
-            {meHasChip && <FilterChip href="/tasks?tab=board&who=me" label="My tasks" count={countOf(meKey!)} active={activeKey === "me"} />}
-            {triage.length > 0 && <FilterChip href={`/tasks?tab=board&who=${TRIAGE}`} label="Needs assigning" count={triage.length} active={activeKey === TRIAGE} />}
+            <FilterChip href={boardHref} label="Everyone" count={views.length} active={activeKey === "all"} />
+            {meHasChip && <FilterChip href={`${boardHref}&who=me`} label="My tasks" count={countOf(meKey!)} active={activeKey === "me"} />}
+            {triage.length > 0 && <FilterChip href={`${boardHref}&who=${TRIAGE}`} label="Needs assigning" count={triage.length} active={activeKey === TRIAGE} />}
             {assignees
               .filter((a) => countOf(a.key) > 0 || a.key === who)
               .map((a) => (
-                <FilterChip key={a.key} href={`/tasks?tab=board&who=${a.key}`} label={a.name} count={countOf(a.key)} active={activeKey === a.key} />
+                <FilterChip key={a.key} href={`${boardHref}&who=${a.key}`} label={a.name} count={countOf(a.key)} active={activeKey === a.key} />
               ))}
           </div>
         )}

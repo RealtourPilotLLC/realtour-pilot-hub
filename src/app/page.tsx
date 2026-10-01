@@ -1,5 +1,4 @@
 import Link from "next/link";
-import type { Prisma } from "@prisma/client";
 import { redirect } from "next/navigation";
 import {
   AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Clapperboard,
@@ -40,12 +39,12 @@ import { deliveryBoard, type DeliveryBoard } from "@/lib/deliveryBoard";
 import { ownerTodoLists } from "@/lib/ownerDay";
 import { ownerPulse } from "@/lib/ownerPulse";
 import {
-  MESSAGE_TASK_TYPES, getStuckJobs, getShootWindow,
+  getStuckJobs, getShootWindow,
   getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials,
   getFlaggedForMe } from "@/lib/queries";
 import { scrubMoney } from "@/lib/text";
-import { recentProjectWhere } from "@/lib/recency";
-import { boardVisibleWhere, isNeedsAssigning } from "@/lib/triage";
+import { isNeedsAssigning } from "@/lib/triage";
+import { boardWhere, photoQcWhere } from "@/lib/taskBoard";
 import { clientTextWhere } from "@/lib/clientTexts";
 import { unansweredCommsBoard } from "@/lib/commsBoard";
 import type { VideoCutState } from "@/lib/reviewCuts";
@@ -152,51 +151,18 @@ const listingQc = (d: OpsDay) => d.qc.filter((q) => !q.monthly);
 // The off-page numbers, each one its destination's own query.
 // ---------------------------------------------------------------------------
 
-// The Tasks hub's "Other" tab, exactly as BoardView builds it for a non-editor
-// (`boardWhere` in src/components/tasks/BoardView.tsx). Editors are redirected
-// off this page, so there is no editor scope to mirror.
-// TODO(cross-file): `boardWhere` belongs beside `boardVisibleWhere` in
-// src/lib/triage.ts so this can be imported instead of restated. Until it is,
-// any change there must be mirrored here or the rows start lying again.
-const BOARD_ACTIVE = [
-  "OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER",
-  "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED",
-];
-function otherTabWhere(): Prisma.SmartTaskWhereInput {
-  return {
-    status: { in: BOARD_ACTIVE },
-    AND: [
-      boardVisibleWhere(),
-      { OR: [{ projectId: null }, { project: recentProjectWhere() }, { taskType: { in: MESSAGE_TASK_TYPES } }] },
-    ],
-  };
-}
-
-// The Review Room's "Photo sets in QC" list, exactly as getReviewQueue reads it
-// (src/lib/reviewRoom.ts): open media_qa cards on a job that isn't cancelled or
-// on hold. It is NOT a row in "What needs you today" — the QC blocks below
-// render the same pile bucketed (overdue / due today / not due yet / monthly),
-// and a seventh QC number on the same screen would be one too many. It lives on
-// the QC block as the door into the Review Room, which is the one list that
-// also holds orphan cards (a QC task whose project row is gone).
-function photoQcWhere(): Prisma.SmartTaskWhereInput {
-  return {
-    taskType: "media_qa",
-    status: { notIn: ["COMPLETED", "CANCELLED"] },
-    OR: [{ projectId: null }, { project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } }],
-  };
-}
-
-async function offPageNumbers() {
+// Home counts use the destinations' shared queries, including their client
+// scope. Editors are redirected before this non-editor board is rendered.
+async function offPageNumbers(excludeClientIds: string[] = []) {
   const [board, qc, textsToSend, emailsWaiting] = await Promise.all([
     // The Other tab's rows themselves (a dozen or so) — "running late" and
     // "to assign" are then counted off that set with the tab's OWN arithmetic,
     // so a row can never disagree with the header it lands on.
     prisma.smartTask.findMany({
-      where: otherTabWhere(),
+      where: boardWhere(null, { excludeClientIds }),
       select: { assignedKey: true, taskType: true, dueAt: true },
     }),
-    prisma.smartTask.count({ where: photoQcWhere() }),
+    prisma.smartTask.count({ where: photoQcWhere({ excludeClientIds }) }),
     // The comms Outbox lists exactly clientTextWhere() (ClientTextsPanel), and
     // its tab badge is this same count.
     prisma.smartTask.count({ where: clientTextWhere() }),
@@ -490,10 +456,10 @@ export default async function HomePage() {
       // closeout. It already resolves the viewer's own loop lane, so this page
       // no longer calls openLoopsList() a second time.
       buildOpsDay({ excludeClientIds: excludedClientIds }),
-      offPageNumbers(),
+      offPageNumbers(excludedClientIds),
       getStuckJobs({ excludeClientIds: excludedClientIds }),
       getShootWindow({ excludeClientIds: excludedClientIds }), // only for the week-ahead strip; today's shoots come from buildOpsDay
-      getProactiveFlags(),
+      getProactiveFlags({ excludeClientIds: excludedClientIds }),
       // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
       handledByPeopleToday(),
       // The Project Tracker's delivery board, merged into the Pipeline block.

@@ -2,7 +2,53 @@
 
 ## Sep 30 takeover addendum
 
-### Oct 1 resume point — C04 provider recovery and C14 Home scope
+### C14 local checkpoint — radar and destination counts
+
+Strategic flags now scope delivery exceptions, AR, VIP and stale revisions
+before query caps (`c14-strategic-flags` 10/0). Home's Other and media-check
+badges share predicates with Tasks Other and Review Room; Tasks Other retains
+an explicit test-record toggle (`c14-other-qc-scope` 10/0). Unlinked work,
+current editor scope and real TEST addresses remain visible. Focused lint
+passed, with one older queries.ts warning. Final shared typecheck is pending
+following a corrected property typo in the new signed-journey drill.
+Comms/Outbox, ready-to-send follow-ups, Slack/Done and signed browser checks
+remain open. No live write or external action.
+
+### Sep 30 resumed checkpoint — signed client and delivery actions
+
+The interrupted build in the clean managed worktree at `21aa4aa` reached final
+`next-build` trace completion and emitted BUILD_ID/required-server-files at
+20:58 ET. Its terminal exit code was lost. Read-only process inspection found no
+Ops Hub dev/build/test/migration/deployment command running; the unrelated
+Premium Reel Next14 server on port 3100 was left untouched. No build rerun was
+needed solely to recover that state. A later 21:12 ET snapshot found the isolated
+demo launcher running from the main checkout since 21:02 on 3200/5599. It was
+identified and left untouched; use the separate managed worktree for builds.
+
+`client-written-journey` passed 21/0: actual one-time login route, normal named
+pilot owner cookie, first-month call protection, later written planning and
+answer submission, staff-only approval/canonical release, exact client
+acceptance, newer release needing a fresh decision, stale refusal and revoked
+seat denial. Only request cookie transport is injected; the real resolver and
+signed staff/client authorization execute. The manually authored script uses
+that interview's exact answer IDs. No model/provider/outbox/booking request.
+This does not close browser, discovery/monthly-call or final-media acceptance.
+
+CP06 is now 130/0. Its previous three failures came from a normal-client test
+seat being correctly excluded under TEST_ONLY; the isolated fixture now admits
+only that seat for sign-in, proves refusal before/after, and creates no outbox
+or enabled invite switch. Production access rules are unchanged.
+
+W04 is now 34/0 under enforced actual signed ADMIN/client/editor/preview
+sessions. Kyle's public attestation saves his real user ID; both manual exact
+cut send paths pass. Client, unassigned editor and owner preview cannot read,
+check, send or complete Kyle's delivery task, with no extra provider reads or
+persisted changes. Aryeo reads are fake; normal browser and real rendition
+playback remain open. All five additive tables remain unapplied. No push,
+deployment, live mutation, client communication or automation activation.
+
+
+### Earlier checkpoint — C04 provider recovery and C14 Home scope
 
 C04 now has a fake-provider boundary replay: Slack explicitly refuses the DM,
 `NotificationDelivery` records failed, the brand row stays `delivery_failed`,

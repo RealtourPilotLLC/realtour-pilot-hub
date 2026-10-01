@@ -65,11 +65,14 @@ export default async function TasksHubPage({ searchParams }: {
   }
 
   const showTestRevisions = tab === "revisions" && sp.test === "1";
-  const excludedRevisionClientIds = boardOnly || showTestRevisions ? []
+  const showTestOther = tab === "other" && sp.test === "1";
+  const syntheticClientIds = boardOnly ? []
     : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  const excludedRevisionClientIds = showTestRevisions ? [] : syntheticClientIds;
+  const excludedOtherClientIds = showTestOther ? [] : syntheticClientIds;
 
   const [otherN, doneN, checklists, phoneWaiting] = await Promise.all([
-    boardOpenCount(),
+    boardOpenCount({ excludeClientIds: excludedOtherClientIds }),
     boardOnly ? 0 : doneTodayCount(),
     boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds }),
     // Only to decide which side of Comms to open on — see commsChannel below.
@@ -98,12 +101,13 @@ export default async function TasksHubPage({ searchParams }: {
       commsCount={checklists.comms}
       revisionsCount={checklists.revisions}
       showTestRevisions={showTestRevisions}
+      showTestOther={showTestOther}
       slackCount={checklists.slack}
       updatedAt={new Date()}
     />
   );
 
-  if (tab === "other") return <BoardView sp={sp} tabs={tabs} />;
+  if (tab === "other") return <BoardView sp={sp} tabs={tabs} excludeClientIds={excludedOtherClientIds} showTest={showTestOther} />;
   if (tab === "done") return <DoneView tabs={tabs} />;
   if (tab === "revisions") return <RevisionsView tabs={tabs} excludeClientIds={excludedRevisionClientIds} showTest={showTestRevisions} />;
   // ?task=<id> lands on the row and highlights it — the digests deep-link here

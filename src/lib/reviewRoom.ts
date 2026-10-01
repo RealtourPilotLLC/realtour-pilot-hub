@@ -4,6 +4,7 @@ import { videoTier } from "@/lib/projectStatus";
 import { isHeldForSelfCheck } from "@/lib/selfCheck";
 import { verdictOf, type Verdict } from "@/lib/reviewAttribution";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { photoQcWhere } from "@/lib/taskBoard";
 
 // ---------------------------------------------------------------------------
 // Read layer for the STANDALONE Review Room (/review) — the owner's quality
@@ -165,6 +166,9 @@ const projectsWithLiveReview = (since: Date) => ({
 });
 
 export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Promise<ReviewQueue> {
+  const excludeClientIds = opts.includeTest === false
+    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    : [];
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
   // Editor-authored notes are context for the reviewer, not owed fixes —
   // they must not inflate "open notes" badges or the follow-up tallies.
@@ -197,11 +201,7 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
       },
     }),
     prisma.smartTask.findMany({
-      where: {
-        taskType: "media_qa",
-        status: { notIn: ["COMPLETED", "CANCELLED"] },
-        OR: [{ projectId: null }, { project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } }],
-      },
+      where: photoQcWhere({ excludeClientIds }),
       orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }],
       select: {
         id: true,

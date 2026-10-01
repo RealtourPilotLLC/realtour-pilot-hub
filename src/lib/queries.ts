@@ -1393,7 +1393,7 @@ export async function getClearedArRows(): Promise<
     .sort((a, b) => b.at.localeCompare(a.at));
 }
 
-export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutstanding: number }> {
+export async function getBillingRows(opts: { excludeClientIds?: string[] } = {}): Promise<{ rows: BillingRow[]; totalOutstanding: number }> {
   const projects = await prisma.project.findMany({
     // arRemovedAt = the owner took it off the AR list (cancelled appointment /
     // test order) — the row stays in the DB, just not in what's owed.
@@ -1401,6 +1401,7 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
     // the owner confirmed the money came in (Aryeo's paid flag lags). Either
     // way it is no longer OWED, so it leaves this list.
     where: {
+      ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}),
       AND: [
         { OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
         { balanceAmount: { gt: 0 } },
@@ -1518,7 +1519,7 @@ export type ProactiveFlag = {
 // Returns the top ≤3 freshest flags (not a 12-row wall — freshness is the MVP
 // mechanism, do not raise the cap back up) plus the single largest AR balance
 // for the owner's money strip (computed here so /billing isn't queried twice).
-export async function getProactiveFlags(): Promise<{
+export async function getProactiveFlags(opts: { excludeClientIds?: string[] } = {}): Promise<{
   flags: ProactiveFlag[];
   topAr: { name: string; total: number } | null;
 }> {
@@ -1538,14 +1539,14 @@ export async function getProactiveFlags(): Promise<{
   // one is a person's job.
   try {
     const { deliveryExceptionFlags } = await import("@/lib/deliveryExceptions");
-    for (const f of await deliveryExceptionFlags(2)) flags.push(f);
+    for (const f of await deliveryExceptionFlags(2, opts)) flags.push(f);
   } catch {
     /* a flag source that cannot be read must not take the panel down */
   }
 
   // 1) Aging accounts receivable — group delivered+unpaid jobs by client.
   try {
-    const { rows } = await getBillingRows();
+    const { rows } = await getBillingRows(opts);
     const byClient = new Map<string, { name: string; total: number; oldest: number; count: number }>();
     for (const r of rows) {
       const age = daysSince(r.deliveredAt) ?? 0;
@@ -1575,7 +1576,7 @@ export async function getProactiveFlags(): Promise<{
   // 2) VIP / high-volume clients who have gone quiet (no comms in 21+ days).
   try {
     const vips = await prisma.client.findMany({
-      where: { segment: { in: ["vip", "heavy"] } },
+      where: { segment: { in: ["vip", "heavy"] }, ...(opts.excludeClientIds?.length ? { id: { notIn: opts.excludeClientIds } } : {}) },
       select: { id: true, name: true, segment: true },
       take: 60,
     });
@@ -1611,7 +1612,7 @@ export async function getProactiveFlags(): Promise<{
   // dashboard.)
   try {
     const revs = await prisma.project.findMany({
-      where: { status: "REVISION", revisionRequestedAt: { lte: new Date(now - 2 * 86400000) } },
+      where: { status: "REVISION", revisionRequestedAt: { lte: new Date(now - 2 * 86400000) }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
       select: { id: true, title: true, revisionRequestedAt: true },
       orderBy: { revisionRequestedAt: "desc" },
       take: 5,

@@ -897,7 +897,7 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
 
 export type DeliveryExceptionFlag = Omit<ProactiveFlag, "kind"> & { kind: "delivery-exception" };
 
-export async function deliveryExceptionFlags(limit = 3): Promise<DeliveryExceptionFlag[]> {
+export async function deliveryExceptionFlags(limit = 3, opts: { excludeClientIds?: string[] } = {}): Promise<DeliveryExceptionFlag[]> {
   // Read them ALL, then rank, then cut. Ordering by deliveryExceptionAt alone
   // put the newest flag first, and the radar shows two — so 893 S Matlack St,
   // where SIXTEEN videos were ordered and the listing is empty, fell off the
@@ -906,7 +906,7 @@ export async function deliveryExceptionFlags(limit = 3): Promise<DeliveryExcepti
   // "Unconfirmed" is a question for a person. The first outranks the second
   // however recently either was written.
   const all = await prisma.project.findMany({
-    where: { deliveryExceptionAt: { not: null } },
+    where: { deliveryExceptionAt: { not: null }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     select: { id: true, title: true, deliveryExceptionAt: true, deliveryExceptionNote: true },
     orderBy: { deliveryExceptionAt: "desc" },
     take: 40,

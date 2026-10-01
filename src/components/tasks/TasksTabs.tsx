@@ -13,11 +13,12 @@ export type TasksTab = "comms" | "revisions" | "slack" | "other" | "done";
 // and a page whose numbers you can't date is a page you stop trusting. The
 // badges beside each tab are that tab's own count query, so the strip reads
 // as one live line: what is open, and when we last looked.
-export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false }: {
+export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false, showTestOther = false }: {
   tab: TasksTab; otherCount: number; doneCount: number;
   commsCount?: number; revisionsCount?: number; slackCount?: number;
   updatedAt?: Date;
   showTestRevisions?: boolean;
+  showTestOther?: boolean;
 }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
@@ -44,7 +45,7 @@ export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revision
         Slack
         {badge(slackCount, tab === "slack")}
       </Link>
-      <Link href="/tasks?tab=other" className={tab === "other" ? active : idle}>
+      <Link href={showTestOther ? "/tasks?tab=other&test=1" : "/tasks?tab=other"} className={tab === "other" ? active : idle}>
         <ListTodo className="mr-1.5 inline size-3.5" />
         Other
         {badge(otherCount, tab === "other")}
