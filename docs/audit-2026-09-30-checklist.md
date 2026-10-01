@@ -74,6 +74,18 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U3 take-back recovery:** existing two-step cut removal/move now uses the
+  native dialog, pending-aware close and retained mounted reason/search/message.
+  Read failures are separate from no matching jobs. Shared exact-cut opaque
+  retry markers hold uncertain dialog/file changes across remount/refresh;
+  known terminal responses clear only their own marker. Refusals remain visible,
+  deletion/location failures stay unconfirmed, and existing removal/file/role/
+  notification sequence stays intact. Actual fake UI/action30/0, typecheck,
+  focused lint/diff/root review plus narrow marker repair recheck pass
+  (`/tmp/u3-cut-takeback-marker-final-approved/`). No real deletion/provider
+  occurred. Native focus/phone/provider acceptance remains open; markers are
+  device guards, not server receipts or cross-tab serialization.
+
 - **U2/U5 client access recovery:** public sign-in acknowledges a request without
   proving an account or email delivery. Rejection remains unconfirmed; mounted
   invitation forms retain newer name/email/role after older success. Password

@@ -2445,21 +2445,28 @@ async function ringRemoved(input: {
 // shrugged, and nothing in the message said the deploy was the problem. Any
 // unexpected error now comes back as a sentence a person can act on, and the
 // stack goes to the server log.
-async function takeBackGuard<T extends { ok: boolean; message: string }>(
+export type TakeBackResult = { ok: boolean; message: string; outcome: "confirmed" | "refused" | "unknown" };
+
+async function takeBackGuard(
   what: string,
-  run: () => Promise<T>,
-): Promise<T | { ok: false; message: string }> {
+  run: () => Promise<{ ok: boolean; message: string; outcome?: TakeBackResult["outcome"] }>,
+): Promise<TakeBackResult> {
   try {
-    return await run();
+    const result = await run();
+    // Returned refusals below precede effects or confirm a failed atomic CAS.
+    // Provider failures explicitly remain unknown; exceptions can follow a
+    // committed removal/move and must never promise that nothing changed.
+    return { ...result, outcome: result.outcome ?? (result.ok ? "confirmed" : "refused") };
   } catch (e) {
     const detail = (e as Error)?.message ?? "";
     console.error(`[review] ${what} failed`, e);
     const stale = /Unknown (field|arg(ument)?)|does not exist in the current database|PrismaClientValidationError/i.test(detail);
     return {
       ok: false,
+      outcome: "unknown",
       message: stale
-        ? `Couldn't ${what} — this copy of the hub is running older code than the database. Reload the page; if it keeps happening, the site needs a redeploy.`
-        : `Couldn't ${what} — nothing was changed. Tell Jordan or Kyle what you were doing so it can be looked at.`,
+        ? `Could not confirm the request to ${what} — this copy of the hub may be running older code than the database. Ask Jordan or Kyle to check the exact version, timeline and files before another attempt.`
+        : `Could not confirm the request to ${what}. It may have changed the version or files. Ask Jordan or Kyle to check the exact version, timeline and files before another attempt.`,
     };
   }
 }
@@ -2476,10 +2483,10 @@ export async function removeCut(
    *  Final folder with it. Defaults OFF — Jordan's rule 2 ("leave it and flag
    *  it") is still the default answer; ticking the box is the exception. */
   alsoDeleteDropboxFile = false,
-): Promise<{ ok: boolean; message: string }> {
+): Promise<TakeBackResult> {
   return takeBackGuard("remove that version", () =>
     removeCutInner(submissionId, reason, alsoDeleteDropboxFile),
-  ) as Promise<{ ok: boolean; message: string }>;
+  );
 }
 
 /** @deprecated Sep 16 — a take-back removes the version outright now. Kept
@@ -2621,10 +2628,9 @@ async function removeCutInner(
       hubCopyDeleted = true;
     } else if (gone.reason === "delete-failed" || gone.reason === "no-token") {
       // "no-token" is a deployment with no blob store bound at all (local dev,
-      // a preview). Same sentence as a store having a bad minute: the file is
-      // still there and the person is told so.
+      // a preview). A failed response does not prove whether bytes remain.
       console.error("[review] blob delete failed for removed cut", sub.id, gone.reason);
-      leftBehind.push(`The video file could not be deleted from the hub's store — it is still at ${sub.blobPathname ?? sub.blobUrl}.`);
+      leftBehind.push(`Deletion of the video file from the hub's store was not confirmed. Check its recorded location: ${sub.blobPathname ?? sub.blobUrl}.`);
     } else {
       console.error("[review] refused to delete a foreign blob url on removed cut", sub.id, gone.reason);
       leftBehind.push(`Its video file isn't in the hub's cut store, so it was left where it is: ${sub.blobPathname ?? sub.blobUrl}.`);
@@ -2642,7 +2648,7 @@ async function removeCutInner(
         dropboxFileDeleted = true;
       } catch (e) {
         console.error("[review] dropbox delete failed for removed cut", sub.id, e);
-        leftBehind.push(`Dropbox wouldn't delete the finished file — it is still at ${hubCopyPath}.`);
+        leftBehind.push(`Deletion of the finished Dropbox file was not confirmed. Check its recorded location: ${hubCopyPath}.`);
       }
     } else {
       leftBehind.push(`The finished file is still in Dropbox: ${hubCopyPath}`);
@@ -2740,8 +2746,8 @@ export async function reassignCut(
   submissionId: string,
   targetProjectId: string,
   note?: string,
-): Promise<{ ok: boolean; message: string }> {
-  return takeBackGuard("move that cut", () => reassignCutInner(submissionId, targetProjectId, note)) as Promise<{ ok: boolean; message: string }>;
+): Promise<TakeBackResult> {
+  return takeBackGuard("move that cut", () => reassignCutInner(submissionId, targetProjectId, note));
 }
 
 async function reassignCutInner(
@@ -2954,11 +2960,11 @@ async function reassignCutInner(
 //        a REMOVED cut records it, because the row that used to hold the flag
 //        no longer exists.
 // ---------------------------------------------------------------------------
-export async function removeStrandedFinal(submissionId: string): Promise<{ ok: boolean; message: string }> {
-  return takeBackGuard("remove that file", () => removeStrandedFinalInner(submissionId)) as Promise<{ ok: boolean; message: string }>;
+export async function removeStrandedFinal(submissionId: string): Promise<TakeBackResult> {
+  return takeBackGuard("remove that file", () => removeStrandedFinalInner(submissionId));
 }
 
-async function removeStrandedFinalInner(submissionId: string): Promise<{ ok: boolean; message: string }> {
+async function removeStrandedFinalInner(submissionId: string): Promise<{ ok: boolean; message: string; outcome?: TakeBackResult["outcome"] }> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -2978,7 +2984,7 @@ async function removeStrandedFinalInner(submissionId: string): Promise<{ ok: boo
     const { dropboxDelete } = await import("@/lib/integrations/dropbox");
     await dropboxDelete(path); // a path that is already gone counts as done
   } catch (e) {
-    return { ok: false, message: `Dropbox wouldn't remove it (${(e as Error).message.slice(0, 80)}) — try again, or delete it in Dropbox yourself.` };
+    return { ok: false, outcome: "unknown", message: `Dropbox did not confirm removal (${(e as Error).message.slice(0, 80)}). Ask Kyle or Jordan to check that exact file and the timeline before another attempt.` };
   }
   if (sub) await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { strandedFinalPath: null } }).catch(() => {});
   // The reminder has done its job — close it rather than leave the office
@@ -3055,9 +3061,9 @@ export async function cutTakeBackFlags(projectId: string): Promise<CutTakeBackIn
  *  only — a cut has nowhere to land on a photos-only order. */
 export async function cutMoveTargets(submissionId: string, query: string): Promise<CutMoveOption[]> {
   const who = await takeBackActor();
-  if (!who.ok) return [];
+  if (!who.ok) throw new Error(who.message);
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
-  if (!sub) return [];
+  if (!sub) throw new Error("That version no longer exists. Close this dialog and check the current cut.");
   const q = (query ?? "").trim().slice(0, 80);
   const held = who.actor.office
     ? null

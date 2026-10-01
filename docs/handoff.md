@@ -2,6 +2,33 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U3 checkpoint — take-back dialog and exact-cut recovery
+
+CutTakeBack uses existing native ModalDialog for focus containment/return and
+pending Escape, with initial focus and an explicit Close-and-keep choice.
+Two-step destructive confirmation, unticked Dropbox exception, exact cut/file/
+owner/editor permissions, deletion/move/task/notification order are preserved.
+Reasons/search/messages remain mounted on close or refusal. Failed target reads
+are visibly unavailable and retry only the read, not a mutation. Result metadata
+distinguishes existing pre-effect/CAS refusals, confirmed core results and
+exceptions/provider uncertainty. Failed cleanup locations are recorded locations
+to inspect, not assertions that a timeout proves files still exist.
+
+One root review found remount lost the held result and raw danger-button contrast;
+shared opaque per-cut device markers now guard dialog and leftover-file actions
+before each request, survive refresh and clear only their own known response.
+Storage preparation failure refuses locally; no reason/path/body is persisted.
+Unknown results require exact cut/timeline/file inspection and never unlock on
+reload/expiry. This is not server terminal or cross-tab evidence.
+
+Actual handler/real action with pure fake provider/DB fixture30/0 passed at
+`/tmp/u3-cut-takeback-marker-final-approved/u3-cut-takeback-recovery.ts.log`;
+focused lint, full typecheck and diff pass. Root review and its exact repair
+recheck passed. First fake provider namespace errors were fixture-only, corrected
+with proper ES-module shape. No provider deletion, real cut mutation, client send
+or browser operation occurred. Native browser keyboard/phone and actual provider
+acceptance remain open; the combined candidate gate follows remaining source.
+
 ### Oct 1 U2/U5 checkpoint — sign-in and portal access recovery
 
 Public sign-in no longer fabricates an email-send success on rejection. The

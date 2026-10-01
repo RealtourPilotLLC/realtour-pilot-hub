@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowRightLeft, Loader2, Search, Trash2, Undo2, X } from "lucide-react";
-import { cutMoveTargets, reassignCut, removeCut, removeStrandedFinal } from "@/app/review/actions";
+import { cutMoveTargets, reassignCut, removeCut, removeStrandedFinal, type TakeBackResult } from "@/app/review/actions";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 import type { CutMoveOption, CutTakeBackInfo } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -38,28 +38,101 @@ const fmtWhen = (iso: string | null) => {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
 };
 
+const control = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
+const field = "min-h-11 w-full rounded-lg border border-border-strong bg-surface-2 px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60";
+
+function useTakeBackMutation(submissionId: string) {
+  const [busy, start] = useTransition();
+  const [receipt, setReceipt] = useState<TakeBackResult | null>(null);
+  const pending = useRef(false);
+  const held = useRef(false);
+  // All take-back controls for this exact cut share one opaque, tab-local
+  // marker. No reason, job, file path or other draft is persisted here.
+  const storageKey = `ops-cut-takeback-attempt:${submissionId}`;
+  const previousAttempt = () => {
+    held.current = true;
+    setReceipt({ ok: false, outcome: "unknown", message: "A previous change to this exact version or its files is unconfirmed." });
+  };
+  useEffect(() => {
+    let stopped = false;
+    queueMicrotask(() => {
+      if (stopped || pending.current) return;
+      try {
+        if (sessionStorage.getItem(storageKey)) {
+          held.current = true;
+          setReceipt({ ok: false, outcome: "unknown", message: "A previous change to this exact version or its files is unconfirmed." });
+        }
+      } catch { /* The synchronous guard below refuses writes without storage. */ }
+    });
+    return () => { stopped = true; };
+  }, [storageKey]);
+  const run = (write: () => Promise<TakeBackResult>, after: (r: TakeBackResult) => void) => {
+    if (pending.current || held.current) return;
+    let attempt: string;
+    try {
+      // Check again before writing: another mounted flag/dialog may have
+      // started a request since this control rendered.
+      if (sessionStorage.getItem(storageKey)) { previousAttempt(); return; }
+      attempt = crypto.randomUUID();
+      sessionStorage.setItem(storageKey, attempt);
+    } catch {
+      setReceipt({ ok: false, outcome: "refused", message: "This browser could not keep the request's recovery status. No request was made. Restore browser storage before trying again." });
+      return;
+    }
+    pending.current = true;
+    setReceipt(null);
+    start(async () => {
+      let result: TakeBackResult;
+      try {
+        const r = await write();
+        result = r.ok && r.outcome === "confirmed" || !r.ok && r.outcome === "refused" || !r.ok && r.outcome === "unknown"
+          ? r : { ok: false, outcome: "unknown", message: "The request was not confirmed." };
+      } catch {
+        result = { ok: false, outcome: "unknown", message: "The request was not confirmed." };
+      }
+      if (result.outcome !== "unknown") {
+        try {
+          if (sessionStorage.getItem(storageKey) === attempt) sessionStorage.removeItem(storageKey);
+        } catch {
+          result = { ok: false, outcome: "unknown", message: `${result.message} The local recovery status could not be cleared; check this exact version before another change.` };
+        }
+      }
+      held.current = result.outcome !== "refused";
+      setReceipt(result);
+      pending.current = false;
+      after(result);
+    });
+  };
+  return { busy, receipt, run, isPending: () => pending.current, isHeld: () => held.current };
+}
+
+function TakeBackReceipt({ receipt, submissionId }: { receipt: TakeBackResult | null; submissionId: string }) {
+  if (!receipt) return null;
+  return <div role={receipt.ok ? "status" : "alert"} className={`mt-2 space-y-2 break-words text-ui-status leading-relaxed ${receipt.ok ? "text-success" : "text-danger"}`}>
+    <p>{receipt.message}</p>
+    {receipt.outcome === "unknown" && <>
+      <p>The version or files may already have changed. This attempt stays blocked in this tab, including after a refresh. Ask Kyle or Jordan to check this exact version, its job timeline and files before another attempt. Closing or refreshing does not prove that nothing changed.</p>
+      <p className="text-muted">Cut reference: <span className="font-mono">{submissionId}</span></p>
+      <a className={`${control} border border-border-strong text-foreground`} href="/review" target="_blank" rel="noopener noreferrer">Open Review Room in a separate tab</a>
+    </>}
+  </div>;
+}
+
 /** The state banners — moved here, leftover file, and the withdrawn line that
  *  only rows from the afternoon of Sep 16 can still carry — shown wherever a
  *  cut is shown, whether or not the viewer may act on it. */
 export function CutTakeBackFlags({ info, onDone }: { info: CutTakeBackInfo; onDone?: () => void }) {
   const router = useRouter();
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const { busy, receipt, run, isPending, isHeld } = useTakeBackMutation(info.submissionId);
   const [confirming, setConfirming] = useState(false);
 
   const withdrawn = info.status === "WITHDRAWN";
   if (!withdrawn && !info.strandedFinalPath && !info.movedFromStreet) return null;
 
   const removeFile = () =>
-    start(async () => {
-      setErr(null);
-      setMsg(null);
-      const r = await removeStrandedFinal(info.submissionId).catch(() => ({ ok: false, message: "That didn't work — try again." }));
-      if (!r.ok) setErr(r.message);
-      else {
-        setMsg(r.message);
-        setConfirming(false);
+    run(() => removeStrandedFinal(info.submissionId), (r) => {
+      setConfirming(false);
+      if (r.ok) {
         onDone?.();
         router.refresh();
       }
@@ -68,7 +141,7 @@ export function CutTakeBackFlags({ info, onDone }: { info: CutTakeBackInfo; onDo
   return (
     <div className="space-y-1.5">
       {withdrawn && (
-        <p className="rounded-lg bg-surface-2 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted">
+        <p className="rounded-lg bg-surface-2 px-2.5 py-1.5 text-ui-status leading-relaxed text-muted">
           <span className="font-semibold text-foreground/80">Version {info.round} was withdrawn</span>
           {info.withdrawnBy ? ` by ${info.withdrawnBy}` : ""}
           {info.withdrawnAt ? ` on ${fmtWhen(info.withdrawnAt)}` : ""}
@@ -77,18 +150,18 @@ export function CutTakeBackFlags({ info, onDone }: { info: CutTakeBackInfo; onDo
         </p>
       )}
       {info.movedFromStreet && !withdrawn && (
-        <p className="rounded-lg bg-surface-2 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted">
+        <p className="rounded-lg bg-surface-2 px-2.5 py-1.5 text-ui-status leading-relaxed text-muted">
           <span className="font-semibold text-foreground/80">Moved here from {info.movedFromStreet}</span>
           {info.movedBy ? ` by ${info.movedBy}` : ""}
           {info.movedAt ? ` on ${fmtWhen(info.movedAt)}` : ""}. It hasn&apos;t been matched to any revision on this job — rule on it as a fresh cut.
         </p>
       )}
       {info.strandedFinalPath && (
-        <div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed">
+        <div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-ui-status leading-relaxed">
           <p className="flex items-start gap-1.5 text-foreground/85">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
             <span>
-              <span className="font-semibold">The approved file is still in Dropbox:</span>{" "}
+              <span className="font-semibold">The approved file recorded for Dropbox follow-up:</span>{" "}
               <span className="break-all text-muted">{info.strandedFinalPath}</span>
             </span>
           </p>
@@ -99,28 +172,28 @@ export function CutTakeBackFlags({ info, onDone }: { info: CutTakeBackInfo; onDo
                   <button
                     type="button"
                     onClick={removeFile}
-                    disabled={busy}
-                    className="inline-flex items-center gap-1 rounded-lg bg-danger px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+                    disabled={busy || isHeld()}
+                    className={`${control} bg-danger-action font-semibold text-white`}
                   >
                     {busy ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />} Yes, delete that file
                   </button>
-                  <button type="button" onClick={() => setConfirming(false)} className="text-[11px] font-medium text-muted hover:text-foreground">
+                  <button type="button" disabled={busy} onClick={() => { if (!isPending()) setConfirming(false); }} className={`${control} text-muted hover:text-foreground`}>
                     Keep it
                   </button>
                 </>
               ) : (
                 <button
                   type="button"
-                  onClick={() => setConfirming(true)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-[11px] font-medium text-muted hover:text-foreground"
+                  disabled={busy || isHeld()}
+                  onClick={() => { if (!isPending() && !isHeld()) setConfirming(true); }}
+                  className={`${control} border border-border-strong bg-surface text-muted hover:text-foreground`}
                 >
                   <Trash2 className="size-3" /> Remove it from Dropbox too
                 </button>
               )}
             </div>
           )}
-          {msg && <p className="mt-1 text-[11px] text-success">{msg}</p>}
-          {err && <p className="mt-1 text-[11px] text-danger">{err}</p>}
+          <TakeBackReceipt receipt={receipt} submissionId={info.submissionId} />
         </div>
       )}
     </div>
@@ -152,16 +225,16 @@ export function CutTakeBack({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className={className ?? "inline-flex items-center gap-1 text-[11px] font-medium text-muted-2 underline-offset-2 hover:text-foreground hover:underline"}
+        className={`${control} ${className ?? "text-muted underline-offset-2 hover:text-foreground hover:underline"}`}
       >
         <Undo2 className="size-3" /> Wrong video?
       </button>
-      {open && <TakeBackDialog info={info} cutLabel={cutLabel} onClose={() => setOpen(false)} onDone={onDone} />}
+      <TakeBackDialog key={info.submissionId} open={open} info={info} cutLabel={cutLabel} onClose={() => setOpen(false)} onDone={onDone} />
     </>
   );
 }
 
-function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBackInfo; cutLabel: string; onClose: () => void; onDone?: () => void }) {
+function TakeBackDialog({ open, info, cutLabel, onClose, onDone }: { open: boolean; info: CutTakeBackInfo; cutLabel: string; onClose: () => void; onDone?: () => void }) {
   const router = useRouter();
   const [tab, setTab] = useState<"remove" | "move">("remove");
   const [reason, setReason] = useState("");
@@ -169,8 +242,12 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
   const [note, setNote] = useState("");
   const [options, setOptions] = useState<CutMoveOption[] | null>(null);
   const [picked, setPicked] = useState<CutMoveOption | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, start] = useTransition();
+  const [readError, setReadError] = useState(false);
+  const [readRetry, setReadRetry] = useState(0);
+  const [closing, setClosing] = useState(false);
+  const closeChoice = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const { busy, receipt, run: mutate, isPending, isHeld } = useTakeBackMutation(info.submissionId);
   // The Dropbox copy of an approved cut, and whether this press takes it too.
   // OFF by default — Jordan's rule 2 stands, the box is the exception.
   const dropboxPath = info.finalPath ?? info.strandedFinalPath;
@@ -187,70 +264,73 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
   // Move and back used to leave the button already sitting on "Yes, remove it
   // permanently", one click from gone (reviewer, Sep 16). The second press
   // must mean what the first one said.
-  const [armed, setArmed] = useState(false);
+  const [armed, setArmedState] = useState(false);
+  const armedRef = useRef(false);
+  const setArmed = (value: boolean) => { armedRef.current = value; setArmedState(value); };
 
-  // Escape closes, like clicking the backdrop (same as the override dialog).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const close = () => {
+    if (isPending()) return;
+    setArmed(false);
+    if (reason || note || q || picked || alsoDropbox) setClosing(true);
+    else onClose();
+  };
+  useEffect(() => { if (closing) closeChoice.current?.focus(); }, [closing]);
 
   // The job list loads when the Move tab is opened, and again 300ms after the
   // search settles — one query per pause, never one per keystroke.
   useEffect(() => {
-    if (tab !== "move") return;
+    if (!open || tab !== "move" || !info.canMove) return;
     let live = true;
     const t = setTimeout(() => {
+      setOptions(null);
+      setReadError(false);
       void cutMoveTargets(info.submissionId, q)
-        .then((rows) => { if (live) setOptions(rows); })
-        .catch(() => { if (live) setOptions([]); });
-    }, options === null ? 0 : 300);
+        .then((rows) => { if (live) { setOptions(rows); setPicked((old) => old ? rows.find((r) => r.projectId === old.projectId) ?? null : null); } })
+        .catch(() => { if (live) { setReadError(true); setPicked(null); } });
+    }, 300);
     return () => { live = false; clearTimeout(t); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, q, info.submissionId]);
+  }, [open, tab, q, info.submissionId, info.canMove, readRetry]);
 
-  const run = (fn: () => Promise<{ ok: boolean; message: string }>) =>
-    start(async () => {
-      setErr(null);
-      const r = await fn().catch(() => ({ ok: false, message: "That didn't work — try again." }));
-      if (!r.ok) {
-        setErr(r.message);
-        // A refusal disarms: whatever they try next has to be confirmed again.
-        setArmed(false);
-      } else {
-        onClose();
+  const run = (fn: () => Promise<TakeBackResult>) =>
+    mutate(fn, (r) => {
+      setArmed(false);
+      if (r.ok) {
+        // Keep the confirmed receipt visible, including any file left behind.
         onDone?.();
         router.refresh();
       }
     });
 
-  return createPortal(
-    <>
-      <div className="fixed inset-0 z-[60] bg-black/50" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Remove or move ${cutLabel}`}
-        className="fixed left-1/2 top-1/2 z-[70] max-h-[90vh] w-[min(94vw,32rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:p-5"
-      >
+  return (
+      <ModalDialog open={open} label={`Remove or move ${cutLabel}`} busy={busy} holdEscape={closing} onCancel={close} className="sm:max-w-lg">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-sm font-semibold">
               <Undo2 className="size-4 text-brand" /> Wrong video?
             </div>
-            <p className="mt-0.5 truncate text-[12px] leading-snug text-muted">
+            <p className="mt-0.5 truncate text-ui-secondary leading-snug text-muted">
               {cutLabel} · version {info.round}
               {info.fileName ? ` · ${info.fileName}` : ""}
             </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-muted-2 hover:bg-surface-2 hover:text-foreground">
+          <button ref={closeButton} type="button" data-modal-initial-focus disabled={busy} onClick={close} aria-label="Close" className={`${control} text-muted hover:bg-surface-2 hover:text-foreground`}>
             <X className="size-4" />
           </button>
         </div>
 
+        {closing && <div className="mt-3 space-y-2 rounded-xl border border-border-strong bg-surface-2 p-3" role="group" aria-label="Close and keep draft">
+          <p className="text-ui-body">Your reason, search and message stay in this tab when you close. Closing does not cancel a completed request or unlock an unconfirmed attempt.</p>
+          <div className="flex flex-wrap gap-2">
+            <button ref={closeChoice} type="button" className={`${control} border border-border-strong`} onClick={() => { setClosing(false); closeButton.current?.focus(); }}>Keep editing</button>
+            <button type="button" className={`${control} border border-border-strong`} onClick={() => { if (!isPending()) { setClosing(false); setArmed(false); setOptions(null); onClose(); } }}>Close and keep draft</button>
+          </div>
+        </div>}
+
+        <TakeBackReceipt receipt={receipt} submissionId={info.submissionId} />
+        <p className="mt-2 text-ui-status text-muted">Reason and message drafts are kept in this tab when the dialog closes.</p>
+
         {info.status === "APPROVED" && (
-          <p className="mt-3 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-foreground/85">
+          <p className="mt-3 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-ui-status leading-relaxed text-foreground/85">
             This cut is approved, and its file was already copied into the job&apos;s Final folder. Removing it deletes the
             version here; the finished file in Dropbox only goes if you tick the box below.
           </p>
@@ -259,8 +339,10 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
         <div className="mt-3 flex gap-1.5">
           <button
             type="button"
-            onClick={() => { setTab("remove"); setErr(null); setArmed(false); }}
-            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${tab === "remove" ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2"}`}
+            disabled={busy || closing}
+            onClick={() => { if (!isPending()) { setTab("remove"); setArmed(false); } }}
+            aria-pressed={tab === "remove"}
+            className={`${control} border ${tab === "remove" ? "border-brand bg-brand-action text-brand-fg" : "border-border-strong bg-surface hover:bg-surface-2"}`}
           >
             <Trash2 className="size-3" /> Remove this version
           </button>
@@ -269,17 +351,19 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
           {info.canMove && (
             <button
               type="button"
-              onClick={() => { setTab("move"); setErr(null); setArmed(false); }}
-              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${tab === "move" ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2"}`}
+              disabled={busy || closing}
+              onClick={() => { if (!isPending()) { setTab("move"); setOptions(null); setReadError(false); setArmed(false); } }}
+              aria-pressed={tab === "move"}
+              className={`${control} border ${tab === "move" ? "border-brand bg-brand-action text-brand-fg" : "border-border-strong bg-surface hover:bg-surface-2"}`}
             >
               <ArrowRightLeft className="size-3" /> Move to another job
             </button>
           )}
         </div>
 
-        {tab === "remove" ? (
+        {tab === "remove" || !info.canMove ? (
           <div className="mt-3 space-y-2">
-            <p className="flex items-start gap-1.5 rounded-lg border border-danger/40 bg-danger-soft px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+            <p className="flex items-start gap-1.5 rounded-lg border border-danger/40 bg-danger-soft px-2.5 py-2 text-ui-secondary leading-relaxed text-foreground/85">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-danger" />
               <span>
                 <span className="font-semibold">This deletes the version and its file. It cannot be undone.</span>{" "}
@@ -293,20 +377,21 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
               </span>
             </p>
             <input
-              autoFocus
               value={reason}
-              onChange={(e) => { setReason(e.target.value); setArmed(false); }}
+              disabled={busy || closing}
+              aria-label="Reason for removing this version"
+              onChange={(e) => { if (!isPending()) { setReason(e.target.value); setArmed(false); } }}
               maxLength={300}
               placeholder="What went wrong? e.g. wrong export — no captions"
-              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              className={field}
             />
-            <p className="text-[11px] leading-relaxed text-muted-2">
+            <p className="text-ui-status leading-relaxed text-muted-2">
               Required — one line on the job&apos;s timeline naming you, the version and this reason is all that is kept.
             </p>
             {/* The one file a removal never touches. Said here rather than
                 discovered afterwards, because this cut came FROM that file. */}
             {folderName && (
-              <p className="rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-[11px] leading-relaxed text-muted">
+              <p className="rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-ui-status leading-relaxed text-muted">
                 <span className="font-semibold text-foreground/80">The video itself stays in Dropbox.</span>{" "}
                 This cut was picked up from a file you put in the job&apos;s Final folder (<span className="break-all font-medium">{folderName}</span>),
                 and that export is yours, not a copy the hub made — so it is left there and Kyle gets a task with the full
@@ -315,16 +400,17 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
             )}
             {/* The office's one Dropbox choice, on an approved cut only. */}
             {info.office && dropboxName && (
-              <label className="flex items-start gap-2 rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-[12px] leading-relaxed">
+              <label className="flex min-h-11 items-start gap-2 rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-ui-secondary leading-relaxed">
                 <input
                   type="checkbox"
                   checked={alsoDropbox}
-                  onChange={(e) => { setAlsoDropbox(e.target.checked); setArmed(false); }}
-                  className="mt-0.5 size-3.5 shrink-0 accent-[var(--danger)]"
+                  disabled={busy || closing}
+                  onChange={(e) => { if (!isPending()) { setAlsoDropbox(e.target.checked); setArmed(false); } }}
+                  className="mt-0.5 size-4 shrink-0 accent-[var(--danger)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 />
                 <span>
                   also delete the finished file from Dropbox (<span className="break-all font-medium">{dropboxName}</span>)
-                  <span className="mt-0.5 block text-[11px] text-muted-2">
+                  <span className="mt-0.5 block text-ui-status text-muted-2">
                     {alsoDropbox
                       ? "That file will be deleted from the job's Final folder."
                       : "Left unticked it stays in the job's Final folder, and Kyle gets a task with the full path."}
@@ -336,23 +422,23 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={busy}
-                  onClick={() => run(() => removeCut(info.submissionId, reason, alsoDropbox))}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                  disabled={busy || isHeld() || closing}
+                  onClick={() => { if (armedRef.current && !closing) run(() => removeCut(info.submissionId, reason, alsoDropbox)); }}
+                  className={`${control} bg-danger-action font-semibold text-white`}
                 >
                   {busy ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   Yes, remove it permanently
                 </button>
-                <button type="button" onClick={() => setArmed(false)} className="text-xs font-medium text-muted hover:text-foreground">
+                <button type="button" disabled={busy} onClick={() => { if (!isPending()) setArmed(false); }} className={`${control} text-muted hover:text-foreground`}>
                   Keep it
                 </button>
               </div>
             ) : (
               <button
                 type="button"
-                disabled={busy || !reason.trim()}
-                onClick={() => { setErr(null); setArmed(true); }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                disabled={busy || isHeld() || closing || !reason.trim()}
+                onClick={() => { if (!isPending() && !isHeld() && !closing && reason.trim()) setArmed(true); }}
+                className={`${control} bg-danger-action font-semibold text-white`}
               >
                 <Trash2 className="size-4" /> Remove this version
               </button>
@@ -360,25 +446,31 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
           </div>
         ) : (
           <div className="mt-3 space-y-2">
-            <p className="text-[12px] leading-relaxed text-muted">
+            <p className="text-ui-secondary leading-relaxed text-muted">
               The same video, its notes and its message move to the job you pick. The job it leaves goes back to where it
               stood; the job it lands on gets it as a fresh cut waiting on review.
             </p>
             <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5">
               <Search className="size-3.5 shrink-0 text-muted-2" />
               <input
-                autoFocus
                 value={q}
-                onChange={(e) => { setQ(e.target.value); setPicked(null); }}
+                aria-label="Search jobs by address or client"
+                disabled={busy || closing}
+                onChange={(e) => { if (!isPending()) { setQ(e.target.value); setPicked(null); setOptions(null); setReadError(false); } }}
                 placeholder="Search by address or client…"
-                className="w-full bg-transparent text-sm outline-none"
+                className={`${field} border-transparent bg-transparent`}
               />
             </div>
             <div className="max-h-56 overflow-y-auto rounded-lg border border-border">
-              {options === null ? (
-                <p className="px-3 py-3 text-[12px] text-muted">Loading jobs…</p>
+              {readError ? (
+                <div role="alert" className="space-y-2 p-3 text-ui-status">
+                  <p>Jobs could not be loaded. This does not mean no matching jobs exist.</p>
+                  <button type="button" disabled={busy} onClick={() => { setOptions(null); setReadError(false); setReadRetry((v) => v + 1); }} className={`${control} border border-border-strong`}>Retry job list</button>
+                </div>
+              ) : options === null ? (
+                <p className="px-3 py-3 text-ui-secondary text-muted">Loading jobs…</p>
               ) : options.length === 0 ? (
-                <p className="px-3 py-3 text-[12px] text-muted">
+                <p className="px-3 py-3 text-ui-secondary text-muted">
                   No job matches. {q ? "Try another address." : "Only jobs with video on the order can take a cut."}
                 </p>
               ) : (
@@ -387,12 +479,14 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
                     <li key={o.projectId}>
                       <button
                         type="button"
-                        onClick={() => setPicked(o)}
-                        className={`flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2 text-left text-sm hover:bg-surface-2 ${picked?.projectId === o.projectId ? "bg-brand-soft" : ""}`}
+                        disabled={busy || closing}
+                        onClick={() => { if (!isPending()) setPicked(o); }}
+                        aria-pressed={picked?.projectId === o.projectId}
+                        className={`${control} flex w-full flex-wrap justify-start gap-x-2 gap-y-0.5 text-left hover:bg-surface-2 ${picked?.projectId === o.projectId ? "bg-brand-soft" : ""}`}
                       >
                         <span className="font-medium">{o.street}</span>
                         {o.clientName && <span className="text-xs text-muted">{o.clientName}</span>}
-                        <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-2">{o.status.toLowerCase()}</span>
+                        <span className="ml-auto text-ui-status uppercase tracking-wide text-muted-2">{o.status.toLowerCase()}</span>
                       </button>
                     </li>
                   ))}
@@ -401,25 +495,24 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
             </div>
             <input
               value={note}
-              onChange={(e) => setNote(e.target.value)}
+              aria-label="Message for the reviewer on the destination job"
+              disabled={busy || closing}
+              onChange={(e) => { if (!isPending()) setNote(e.target.value); }}
               maxLength={1000}
               placeholder="Optional message for whoever reviews it there…"
-              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              className={field}
             />
             <button
               type="button"
-              disabled={busy || !picked}
-              onClick={() => picked && run(() => reassignCut(info.submissionId, picked.projectId, note))}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+              disabled={busy || isHeld() || closing || readError || options === null || !picked}
+              onClick={() => { if (picked && !closing && !readError && options !== null) run(() => reassignCut(info.submissionId, picked.projectId, note)); }}
+              className={`${control} bg-brand-action font-semibold text-brand-fg`}
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <ArrowRightLeft className="size-4" />}
               {picked ? `Move it to ${picked.street}` : "Pick a job first"}
             </button>
           </div>
         )}
-        {err && <p className="mt-2 text-xs text-danger">{err}</p>}
-      </div>
-    </>,
-    document.body,
+      </ModalDialog>
   );
 }
