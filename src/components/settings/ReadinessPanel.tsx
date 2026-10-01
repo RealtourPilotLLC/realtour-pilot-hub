@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { ActionLink, Button } from "@/components/ui/Action";
 import { ArrowRight, Check, Gauge, Minus, Plug, ShieldCheck, TriangleAlert, Users, X } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import type { ProgramScopeView, ReadinessReport, ReadinessRow } from "@/lib/readiness";
@@ -31,8 +31,8 @@ function Chip({ label, ok, detail, quiet = false }: { label: string; ok: boolean
       title={detail}
       aria-label={`${label}: ${state}. ${detail}`}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
-        ok === null ? "bg-surface-2 text-muted-2" : ok ? "bg-success/15 text-success" : quiet ? "bg-surface-2 text-muted" : "bg-warning/15 text-warning",
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-ui-status font-medium",
+        ok === null ? "bg-surface-2 text-muted" : ok ? "bg-success/15 text-success" : quiet ? "bg-surface-2 text-muted" : "bg-warning/15 text-warning",
       )}
     >
       <Icon className="size-3" aria-hidden />
@@ -73,7 +73,7 @@ function Row({ r }: { r: ReadinessRow }) {
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="min-w-0 break-words text-sm font-medium">{r.title}</span>
         {r.reaches === "clients" && (
-          <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">reaches clients</span>
+          <span className="rounded-full bg-warning/15 px-2 py-0.5 text-ui-status font-semibold text-warning">reaches clients</span>
         )}
       </div>
       <div className="mt-1 flex flex-wrap gap-1">
@@ -82,16 +82,16 @@ function Row({ r }: { r: ReadinessRow }) {
         <Chip label="Enabled" ok={r.enabled.ok} detail={r.enabled.detail} quiet />
         <Chip label="Healthy" ok={r.healthy.ok} detail={r.healthy.detail} />
       </div>
-      <p className={cn("mt-1 break-words text-[12px]", line.tone === "warn" ? "text-warning" : line.tone === "ok" ? "text-foreground" : "text-muted")}>
+      <p className={cn("mt-1 break-words text-ui-status", line.tone === "warn" ? "text-warning" : line.tone === "ok" ? "text-foreground" : "text-muted")}>
         {line.text}
       </p>
       {!r.configured.ok && r.enabled.ok && (
-        <p className="break-words text-[12px] text-warning">Configuration: {r.configured.detail}.</p>
+        <p className="break-words text-ui-status text-warning">Configuration: {r.configured.detail}.</p>
       )}
-      <p className="break-words text-[12px] text-muted-2">
+      <p className="break-words text-ui-status text-muted">
         Who hears about it: {r.recipients}.{r.scope && <> Who it may reach: {r.scope}.</>}
       </p>
-      {r.note && <p data-readiness-note className="break-words text-[12px] text-muted-2">{r.note}</p>}
+      {r.note && <p data-readiness-note className="break-words text-ui-status text-muted">{r.note}</p>}
     </li>
   );
 }
@@ -107,21 +107,21 @@ function Block({ title, rows, note }: { title: string; rows: ReadinessRow[]; not
     // Open by default only when something needs a look — otherwise four long
     // lists would push the actual settings a screen and a half down.
     <details open={attention > 0} className="group rounded-xl border border-border">
-      <summary className="flex min-h-10 cursor-pointer list-none flex-wrap [&::-webkit-details-marker]:hidden items-center gap-x-2 gap-y-0.5 px-3 py-2 text-[13px] focus-visible:outline-2 focus-visible:outline-brand">
+      <summary className="flex min-h-11 cursor-pointer list-none flex-wrap [&::-webkit-details-marker]:hidden items-center gap-x-2 gap-y-0.5 px-3 py-2 text-ui-body focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
         <span className="font-semibold">{title}</span>
         <span className="text-muted">
           {on} of {rows.length} on · {working} working
         </span>
         {attention > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning">
+          <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-ui-status font-semibold text-warning">
             <TriangleAlert className="size-3" aria-hidden /> {attention} need{attention === 1 ? "s" : ""} a look
           </span>
         )}
-        <span className="ml-auto text-[11px] text-muted-2 group-open:hidden">Show</span>
-        <span className="ml-auto hidden text-[11px] text-muted-2 group-open:inline">Hide</span>
+        <span className="ml-auto text-ui-status text-muted group-open:hidden">Show</span>
+        <span className="ml-auto hidden text-ui-status text-muted group-open:inline">Hide</span>
       </summary>
       <div className="border-t border-border px-3">
-        {note && <p className="pt-2 text-[12px] text-muted">{note}</p>}
+        {note && <p className="pt-2 text-ui-status text-muted">{note}</p>}
         <ul className="divide-y divide-border">
           {rows.map((r) => <Row key={r.key} r={r} />)}
         </ul>
@@ -157,8 +157,8 @@ const CODE_WORDS: Record<string, string> = {
  */
 function ProgramScope({ v }: { v: ProgramScopeView }) {
   return (
-    <div data-program-scope={v.mode} className="rounded-xl border border-border p-3 text-[13px]">
-      <p className="flex items-center gap-1.5 font-semibold"><Users className="size-4 text-muted-2" aria-hidden /> Who the program may reach</p>
+    <div data-program-scope={v.mode} className="rounded-xl border border-border p-3 text-ui-body">
+      <p className="flex items-center gap-1.5 font-semibold"><Users className="size-4 text-muted" aria-hidden /> Who the program may reach</p>
       <p className="mt-1">
         <span className="font-medium">{MODE_WORDS[v.mode]}</span>
         {v.modeSince && <span className="text-muted"> · since {dayET(v.modeSince)}</span>}
@@ -166,7 +166,7 @@ function ProgramScope({ v }: { v: ProgramScopeView }) {
       </p>
       {v.problem && <p className="mt-1 text-warning">The stored rollout could not be read, so only TEST clients are reached: {v.problem}.</p>}
       {v.pilot ? (
-        <p className="mt-1 text-[12px] text-muted">
+        <p className="mt-1 text-ui-status text-muted">
           Pilot ({v.pilotState.toLowerCase()}, {v.pilot.names.length} of at most {v.cap}): <span className="text-foreground">{v.pilot.names.join(", ")}</span>
           {" "}· covers {v.pilot.groups.length ? v.pilot.groups.map((g) => g.toLowerCase()).join("; ") : "nothing"}
           {v.pilot.approvedBy && <> · approved by {v.pilot.approvedBy}{v.pilot.approvedAt ? ` on ${dayET(v.pilot.approvedAt)}` : ""}</>}
@@ -174,12 +174,12 @@ function ProgramScope({ v }: { v: ProgramScopeView }) {
           {v.mode !== "PILOT" && <> · (on file, but the rollout is not set to a pilot)</>}
         </p>
       ) : (
-        <p className="mt-1 text-[12px] text-muted">No pilot client is named.</p>
+        <p className="mt-1 text-ui-status text-muted">No pilot client is named.</p>
       )}
       {v.clients.length > 0 && (
         <ul className="mt-1.5 flex flex-wrap gap-1">
           {v.clients.map((c) => (
-            <li key={c.name} title={c.reason} className={cn("rounded-full px-2 py-0.5 text-[11px]", c.tier ? "bg-success/15 text-success" : "bg-surface-2 text-muted")}>
+            <li key={c.name} title={c.reason} className={cn("rounded-full px-2 py-0.5 text-ui-status", c.tier ? "bg-success/15 text-success" : "bg-surface-2 text-muted")}>
               {/* Per group, not one op (review fix, Sep 28 2026): a pilot
                   client reads "in the pilot — program emails, …". */}
               {c.name}: {c.tier ? TIER_WORDS[c.tier] : (c.code ? CODE_WORDS[c.code] ?? c.code : "not reached")}
@@ -205,9 +205,9 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
     // somebody presses this, never on an ordinary visit.
     <form method="get" action="/settings#readiness">
       <input type="hidden" name="check" value="gmail" />
-      <button type="submit" className="inline-flex min-h-8 items-center rounded-lg border border-border px-2.5 text-[11px] font-semibold text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">
+      <Button type="submit" variant="secondary">
         Check Gmail
-      </button>
+      </Button>
     </form>
   );
   if (!report) {
@@ -231,7 +231,7 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
         {/* THE LAUNCH GATE, first, in one sentence. */}
         <div
           data-rollout={rolloutClosed.ok ? "closed" : "open"}
-          className={cn("flex items-start gap-2 rounded-xl border p-3 text-[13px]", rolloutClosed.ok ? "border-border bg-surface-2/40" : "border-warning/50 bg-warning-soft/40")}
+          className={cn("flex items-start gap-2 rounded-xl border p-3 text-ui-body", rolloutClosed.ok ? "border-border bg-surface-2/40" : "border-warning/50 bg-warning-soft/40")}
         >
           {rolloutClosed.ok ? <ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden /> : <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />}
           <div className="min-w-0">
@@ -260,14 +260,14 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
 
         <ProgramScope v={programScope} />
 
-        <p className="text-[12px] text-muted">
+        <p className="text-ui-status text-muted">
           This page is build <code className="rounded bg-surface-2 px-1">{deploy.page ?? "unstamped"}</code>
           {deploy.lastSync
             ? <> · the last hourly run was build <code className="rounded bg-surface-2 px-1">{deploy.lastSync.deploy ?? "unstamped"}</code>, {ago(deploy.lastSync.startedAt, now)}</>
             : <> · no hourly run recorded</>}
           . {gmailSend.detail}
         </p>
-        <p className="text-[12px] text-muted-2">
+        <p className="text-ui-status text-muted">
           <span className="font-medium text-muted">Configured</span>: saved, and its settings would run ·{" "}
           <span className="font-medium text-muted">Connected</span>: the outside services it needs are connected ·{" "}
           <span className="font-medium text-muted">Enabled</span>: switched on ·{" "}
@@ -287,9 +287,9 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
 export async function IntegrationsReadiness({ report: pending, isOwner }: { report: Promise<ReadinessReport | null>; isOwner: boolean }) {
   const report = await pending;
   const manage = isOwner ? (
-    <Link href="/connections" className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
+    <ActionLink href="/connections">
       Manage on Connections <ArrowRight className="size-3" aria-hidden />
-    </Link>
+    </ActionLink>
   ) : null;
   if (!report) {
     return (
@@ -315,16 +315,16 @@ export async function IntegrationsReadiness({ report: pending, isOwner }: { repo
                 detail={p.lastError ?? p.status}
                 quiet={p.status !== "error"}
               />
-              {p.lastSyncedAt && <span className="text-[11px] text-muted-2">last synced {ago(p.lastSyncedAt, now)}</span>}
+              {p.lastSyncedAt && <span className="text-ui-status text-muted">last synced {ago(p.lastSyncedAt, now)}</span>}
             </div>
-            {p.lastError && <p className="mt-0.5 break-words text-[12px] text-warning">{p.lastError.slice(0, 200)}</p>}
-            <p className="mt-0.5 break-words text-[12px] text-muted-2">
+            {p.lastError && <p className="mt-0.5 break-words text-ui-status text-warning">{p.lastError.slice(0, 200)}</p>}
+            <p className="mt-0.5 break-words text-ui-status text-muted">
               {p.usedBy.length ? <>Needed by: {p.usedBy.slice(0, 4).join(", ")}{p.usedBy.length > 4 ? ` and ${p.usedBy.length - 4} more` : ""}.</> : "No content-program switch depends on it."}
             </p>
           </li>
         ))}
       </ul>
-      <p className={cn("mt-2 text-[12px]", late.length ? "text-warning" : "text-muted")}>
+      <p className={cn("mt-2 text-ui-status", late.length ? "text-warning" : "text-muted")}>
         {late.length
           ? <>Late scheduled runs: {late.map((c) => `${c.job} (last started ${c.lastRunAt ? ago(c.lastRunAt, now) : "never"})`).join(", ")}.</>
           : <>Every scheduled run that records itself started on time.</>}

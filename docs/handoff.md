@@ -2,6 +2,21 @@
 
 ## Sep 30 takeover addendum
 
+### U3/U5 checkpoint — readable delivery and readiness evidence
+
+Delivery follow-up, held/rendering rows and file evidence now use the shared
+13px status scale. Aryeo/watch/download, recovery, incident/task links and native
+evidence disclosure have 44px targets and visible focus. Readiness preserves its
+four separate configuration/connection/enabled/health facts while using readable
+body/status text and native shared Gmail-check/Connections controls. Existing
+GET check semantics, effect reasons, audience, counts, exact file/destination
+links, handlers and rollout gates are unchanged.
+
+Focused lint and diff checks passed; an independent source review confirmed the
+same form/links/conditions/counts and a valid server-component import. No mirrored
+CSS tests added. Rendered contrast, focus, layout/zoom and browser acceptance
+remain open. No check, download, provider action or activation was executed.
+
 ### U5 checkpoint — Clients, Resources and Team presentation
 
 Six existing screens now use shared/native readable controls, visible keyboard

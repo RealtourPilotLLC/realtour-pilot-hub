@@ -99,14 +99,14 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
           board.noticeIncidentCheck === null ? "Delivery-text outcomes" : null,
         ].filter(Boolean).join(" and ") + " could not be checked."} Work may still be waiting.
       </p>
-      {!board.boardUnavailable && <div className="mt-1 space-y-0.5 text-xs text-muted">
+      {!board.boardUnavailable && <div className="mt-1 space-y-0.5 text-ui-status text-muted">
         {(["needsFinishing", "notTold"] as const).filter((lane) => board.followUpChecks?.[lane] === null).map((lane) => (
           <p key={lane}>{lane === "needsFinishing" ? "Delivery records" : "Client notification"}: {board.followUpLastSuccess?.[lane]
             ? `last successful check ${new Date(board.followUpLastSuccess[lane]).toLocaleString()}`
             : "no previous successful check recorded"}.</p>
         ))}
       </div>}
-      <button type="button" onClick={() => router.refresh()} className="mt-2 min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold">Check again</button>
+      <button type="button" onClick={() => router.refresh()} className="mt-2 min-h-11 rounded-lg border border-border-strong bg-surface px-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Check again</button>
     </div>
   );
   if (ready.length === 0) {
@@ -140,14 +140,14 @@ function DeliveryTextIncidents({ rows, includeTest = false }: { rows: DeliveryNo
   if (!rows.length) return null;
   return (
     <div className="rounded-xl border border-warning/40 bg-warning/5 px-3.5 py-3">
-      <p className="flex items-center gap-2 text-xs font-semibold text-warning"><AlertTriangle className="size-4" /> Delivery texts needing a check</p>
+      <p className="flex items-center gap-2 text-ui-status font-semibold text-warning"><AlertTriangle className="size-4" /> Delivery texts needing a check</p>
       <ul className="mt-2 space-y-2">
         {rows.map((r) => (
-          <li key={r.projectId} className="text-xs leading-relaxed">
+          <li key={r.projectId} className="text-ui-status leading-relaxed">
             <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.street}</Link>
             <span className="text-muted"> · {r.state === "unknown" ? "provider outcome unknown — check OpenPhone before retrying" : r.state === "failed" ? "send failed — review the task and client thread" : "send queued or in progress — no acceptance recorded"} · queued {etDateTime(new Date(r.queuedAtISO))}</span>
-            <Link href={`/communications?incident=${encodeURIComponent(r.outboxId)}`} className="ml-2 font-medium text-brand underline">Check conversation</Link>
-            {r.taskId && <Link href={homeRecordHref(`/tasks?tab=other&task=${r.taskId}`, includeTest)} className="ml-2 font-medium text-brand underline">Open task</Link>}
+            <Link href={`/communications?incident=${encodeURIComponent(r.outboxId)}`} className="ml-2 inline-flex min-h-11 items-center rounded-lg font-medium text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Check conversation</Link>
+            {r.taskId && <Link href={homeRecordHref(`/tasks?tab=other&task=${r.taskId}`, includeTest)} className="ml-2 inline-flex min-h-11 items-center rounded-lg font-medium text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open task</Link>}
           </li>
         ))}
       </ul>
@@ -177,12 +177,12 @@ function Rendering({ rows }: { rows: RenderingVideo[] }) {
 function Held({ rows }: { rows: RenderingVideo[] }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
-      <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning">
+      <p className="flex items-center gap-1.5 text-ui-status font-semibold text-warning">
         <AlertTriangle className="size-3.5" /> Held — the 1080p file&rsquo;s sound couldn&rsquo;t be checked
       </p>
       <ul className="mt-1 space-y-2">
         {rows.map((r) => (
-          <li key={r.submissionId} className="min-w-0 text-[11px] leading-snug text-muted-2">
+          <li key={r.submissionId} className="min-w-0 text-ui-status leading-snug text-muted">
             <Link href={`/projects/${r.projectId}`} className="font-medium text-muted hover:text-brand">{r.street}</Link>
             <span> · {r.cutLabel} · v{r.round}</span>
             <span className={cn(r.waitingHours >= 24 && "font-semibold text-danger")}> · approved {waited(r.waitingHours)} ago</span>
@@ -200,12 +200,12 @@ function Held({ rows }: { rows: RenderingVideo[] }) {
 function Running({ rows }: { rows: RenderingVideo[] }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
-      <p className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
+      <p className="flex items-center gap-1.5 text-ui-status font-semibold text-muted">
         <Loader2 className="size-3.5" /> Still in the 1080p pass — not ready yet
       </p>
       <ul className="mt-1 space-y-1">
         {rows.map((r) => (
-          <li key={r.submissionId} className="min-w-0 text-[11px] leading-snug text-muted-2">
+          <li key={r.submissionId} className="min-w-0 text-ui-status leading-snug text-muted">
             <Link href={`/projects/${r.projectId}`} className="font-medium text-muted hover:text-brand">{r.street}</Link>
             <span> · {r.cutLabel} · v{r.round}</span>
             {/* A render that should have taken half an hour and has been at it
@@ -245,13 +245,13 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         {v.monthlyProgram && <span className="text-muted">· {v.monthKey ? monthName(v.monthKey) : "Month link unverified"}</span>}
         {v.monthlyProgram && <span className="min-w-0 font-medium">· {v.topicTitle ?? "Topic not linked"}</span>}
         <span className={cn(
-          "rounded px-1.5 py-0.5 text-xs font-semibold",
+          "rounded px-1.5 py-0.5 text-ui-status font-semibold",
           v.file.source === "topaz-1080p" ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning",
         )}>
           {SOURCE_CHIP[v.file.source]}
         </span>
         {v.overdue && (
-          <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-bold text-danger">
+          <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-ui-status font-bold text-danger">
             <AlertTriangle className="size-2.5" /> past due
           </span>
         )}
@@ -291,14 +291,14 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
       {/* Technical file identity and provider evidence stay available without
           making Kyle read them before he can see the next action. */}
       <details className="mt-2 rounded-lg border border-border bg-surface-2/40">
-        <summary className="min-h-11 cursor-pointer px-3 py-2.5 text-sm font-medium">File and delivery evidence</summary>
+        <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">File and delivery evidence</summary>
         <div className="px-3 pb-3">
           <p className="text-sm leading-relaxed text-muted">
             <span className="block">Approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}.</span>
             <span className="mt-1 block font-medium text-foreground">{v.file.says}</span>
             {/* break-all: a real file name is "Done_322 N 62nd St_Stephen
                 Kennedy_1_prob4.mp4" and would otherwise run off a phone. */}
-            <span className="mt-0.5 block break-all font-mono text-xs">{v.file.fileName}</span>
+            <span className="mt-0.5 block break-all font-mono text-ui-status">{v.file.fileName}</span>
             {/* A DOOR, NOT A STRING (Jordan, Sep 21 2026: "I dont think we need to
                 show the file path on dropbox, a link to the dropbox would be
                 better"). The path was four lines of
@@ -324,7 +324,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
                 target="_blank"
                 rel="noreferrer"
                 title={v.file.dropboxPath ?? undefined}
-                className="mt-0.5 inline-flex items-center gap-1 text-muted hover:text-brand hover:underline"
+                className="mt-0.5 inline-flex min-h-11 items-center gap-1 rounded-lg text-foreground underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               >
                 <FileVideo className="size-3 shrink-0" />
                 Open this file in Dropbox
@@ -356,7 +356,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
                 client their video. Until Sep 17 these last two rendered
                 identically, in the same colour, with the same closing words. */}
             {v.listing && !v.listing.contested && !v.listing.couldBeThisCut && (
-              <span className="mt-1 flex items-start gap-1 text-muted-2">
+              <span className="mt-1 flex items-start gap-1 text-muted">
                 <ExternalLink className="mt-0.5 size-3 shrink-0" />
                 {v.listing.says}
               </span>
@@ -382,14 +382,14 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
             target="_blank"
             rel="noreferrer"
             title={v.aryeoTitle}
-            className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+            className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             <ExternalLink className="size-3.5" /> Aryeo
           </a>
         )}
         <Link
           href={v.reviewHref}
-          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+          className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           <Eye className="size-3.5" /> Watch it
         </Link>
@@ -456,7 +456,7 @@ function DownloadFile({ href, taken }: { href: string; taken: boolean }) {
         if (taken) return;
         window.setTimeout(() => router.refresh(), REPAINT_AFTER_MS);
       }}
-      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+      className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
     >
       <Download className="size-4" /> Download
     </a>
@@ -466,9 +466,9 @@ function DownloadFile({ href, taken }: { href: string; taken: boolean }) {
 /** The heading the block and the section share, so the count is written once. */
 export function ReadyToSendHeading({ n }: { n: number }) {
   return (
-    <h4 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-success">
+    <h4 className="flex items-center gap-1.5 text-ui-status font-bold uppercase tracking-widest text-success">
       <Send className="size-3.5" /> Ready to send
-      <span className="rounded-full bg-success/15 px-1.5 text-[10px] tabular-nums text-success">{n}</span>
+      <span className="rounded-full bg-success/15 px-1.5 text-ui-status tabular-nums text-success">{n}</span>
     </h4>
   );
 }
@@ -486,18 +486,18 @@ function NeedsFinishing({ rows }: { rows: { submissionId: string; street: string
   if (!rows.length) return null;
   return (
     <div className="rounded-lg border border-warning/40 bg-warning/5 px-3 py-2">
-      <p className="text-[11px] font-semibold text-warning">
+      <p className="text-ui-status font-semibold text-warning">
         {rows.length === 1 ? "One video is recorded as sent but its paperwork did not finish" : `${rows.length} videos are recorded as sent but their paperwork did not finish`}
       </p>
       <ul className="mt-1 space-y-0.5">
         {rows.map((r) => (
-          <li key={r.submissionId} className="text-[11px] text-muted">
+          <li key={r.submissionId} className="text-ui-status text-muted">
             <span className="font-medium text-foreground/85">{r.street}</span> — {r.why}.{" "}
             {r.sentBy ? `Marked sent by ${r.sentBy}.` : "Marked sent."}
           </li>
         ))}
       </ul>
-      <p className="mt-1 text-[10px] text-muted-2">
+      <p className="mt-1 text-ui-status text-muted">
         The client has these. Nothing needs re-uploading or re-sending — the hourly check finishes our own records, and
         this note clears itself when it does.
       </p>

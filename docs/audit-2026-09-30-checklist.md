@@ -74,6 +74,11 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U3/U5 evidence readability:** delivery/readiness use shared status/body type,
+  44px controls and visible focus. Native GET check, separate readiness facts,
+  exact file links and all state/rollout behavior are retained. Lint/diff and
+  independent source review passed; rendered/browser acceptance remains open.
+
 - **U5 secondary presentation:** Clients list/workspace, Resources landing/role
   guide and Team directory/member detail now use readable type, native/shared
   action targets, focus and wrapping. Focused lint/diff and source review passed;
