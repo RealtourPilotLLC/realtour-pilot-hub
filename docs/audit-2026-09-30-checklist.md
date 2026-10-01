@@ -74,6 +74,12 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **Month stage navigation:** real monthly Call/Topics/Scripts/Shoot targets keep
+  exact enrollment/month; unknown stage/count reasons are visible. Unneeded
+  calls, missing workspaces and Delivered's all-month library stay informational.
+  Pure links/SSR 14/0, lint/diff and independent review pass. Existing readers,
+  next-action, library scope and permissions remain; browser/card layout open.
+
 - **U4 task text receipts:** newer notes/reply drafts survive older async
   completions, with read-only AI suggestion evidence and honest Cancel handling.
   Fake handler/receipt 16/0 plus retained signed rows 26/0, lint/TypeScript/diff

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardCheck, MessageSquare, Rocket } from "lucide-react";
 import { Section } from "@/components/ui/Section";
-import { MonthJourney, journeyFromOverview } from "@/components/content/MonthJourney";
+import { MonthJourney, journeyFromOverview, monthJourneyLinks } from "@/components/content/MonthJourney";
 import { BlockedChip, SESSION_TONE } from "@/components/content/OverviewRow";
 import { contentHref } from "@/lib/contentNav";
 import { overviewFacts } from "@/lib/programOverview";
@@ -71,7 +71,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
       {/* THE TRACKER and THE ONE NEXT STEP — who holds it and by when. */}
       <div className="panel-shadow rounded-2xl border bg-surface p-4 sm:p-6">
         <div className="mx-auto max-w-2xl">
-          {row ? <MonthJourney size="hero" input={journeyFromOverview(row)} /> : <p className="text-sm text-warning">Couldn&rsquo;t read this month&rsquo;s progress — refresh to try again.</p>}
+          {row ? <MonthJourney size="hero" input={journeyFromOverview(row)} hrefs={monthJourneyLinks(row)} contextLabel={`${row.clientName}, ${row.monthName}`} /> : <p className="text-sm text-warning">Couldn&rsquo;t read this month&rsquo;s progress — refresh to try again.</p>}
         </div>
         {view && view.unknownLines.length > 0 && (
           <ul className="mt-5 space-y-1 border-t border-border pt-3 text-[13px] text-muted">

@@ -2,6 +2,26 @@
 
 ## Sep 30 takeover addendum
 
+### U2/U4 checkpoint — month stages navigate only to actual work views
+
+Roster cards and the month Overview now supply existing Call/Topics/Scripts/Shoot
+destinations pinned to the exact enrollment and month, including the current
+month after a later calendar rollover. An unneeded written-route call and a
+missing workspace stay informational. Delivered stays informational because the
+existing library deliberately spans all months; it does not falsely offer a
+month-filtered destination. Milestones do not prefetch whole workspace panes.
+Visible stage/count reasons replace hover-only unknown evidence. Card identity
+names the month, and next owner/action/errors use readable native targets/text.
+State readers, counts, next-action rules, routes and access checks are unchanged.
+
+Pure target/canonical route/initial-markup checks passed 14/0
+(`/tmp/ops-month-stage-navigation-reviewed/`), focused lint/diff passed. One
+independent review caught that Production's videos pane ignores the month
+selector; the link was removed rather than inventing a new library filter.
+The four remaining targets consume the month. Normal-role browser navigation,
+keyboard, narrow card/hero and return-context acceptance remain open; no domain,
+provider, production or client operation occurred.
+
 ### U4 checkpoint — exact task note and reply-draft receipts
 
 Task reply generation and Add note compare their exact request-start text with
