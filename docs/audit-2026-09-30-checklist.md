@@ -74,6 +74,20 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 Team/Slack recovery:** Save/Find retains newer typed IDs after late
+  results, catches failures and uses opaque current-tab unknown holds. Find
+  compares the previously read ID before saving; Sync writes only a still-empty
+  row, preserving intervening manual IDs. Existing matching, uniqueness checks,
+  scopes and fixed test message remain. Direct DM fallback now stops on network,
+  malformed, service and uncertain provider results; only documented negative
+  responses retain the existing open/post fallback. Slack's primary method docs
+  explicitly allow partial success for internal/fatal errors. Actual fake UI29/0,
+  wrappers/CAS contract doubles15/0 and adapter transport13/0 pass, with types,
+  scoped lint/diff and root review. Logs `/tmp/team-slack-recovery-fixed-fixtures/`,
+  `/tmp/team-slack-action-seam/`, `/tmp/team-slack-recovery/`. No real Slack/DB/send
+  occurred. Provider/browser and real DB concurrency acceptance remain open;
+  markers are device guards, not backend receipts/cross-tab locks.
+
 - **U5 capacity/calendar recovery:** record/cancel uses exact-input capture,
   synchronous pending guards, typed known refusals and visible unknown holds.
   Newer availability notes/end dates survive older success; only unchanged

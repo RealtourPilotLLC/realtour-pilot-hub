@@ -1,32 +1,43 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { Loader2, Send } from "lucide-react";
+import { useState } from "react";
+import { Send } from "lucide-react";
+import { Button, ActionLink } from "@/components/ui/Action";
 import { sendTestSlackDm } from "@/app/team/actions";
+import { useSlackAttempt } from "./useSlackAttempt";
 
-// Per-row "Send test DM" (owner/admin, Sep 15): DMs THAT person one fixed
-// sentence so the office can prove the Slack bridge works for each editor
-// before a real ping rides it — the Sep 15 morning version only ever tested
-// the signed-in owner's own account. Disabled, with the reason, until a
-// Slack ID is on the card; the server action refuses again on its own, and
-// hands Slack's error back verbatim when the DM fails (a missing im:write
-// reads as the exact re-install hint).
+// The server reads this exact Team row's current Slack recipient. The action
+// still sends only the existing fixed test sentence, under requireAdmin().
 export function SlackTestDmButton({ memberId, firstName, slackId }: { memberId: string; firstName: string; slackId: string | null }) {
-  const [note, setNote] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [pending, start] = useTransition();
+  const [note, setNote] = useState<{ memberId: string; ok: boolean; msg: string } | null>(null);
+  const attempt = useSlackAttempt(`slack-test-unconfirmed:${memberId}`);
   const can = !!slackId;
+  async function send() {
+    if (!can) return;
+    const id = attempt.begin("dm");
+    if (!id) return;
+    setNote(null);
+    try {
+      const r = await sendTestSlackDm(memberId);
+      const confirmed = r.ok && r.outcome === "confirmed";
+      setNote({ memberId, ok: confirmed, msg: r.message });
+      attempt.finish(id, confirmed || !r.ok && r.outcome === "refused");
+    } catch { attempt.finish(id, false); }
+  }
+  const visibleNote = note?.memberId === memberId ? note : null;
   return (
-    <div className="mt-2 text-xs">
-      <button
-        type="button"
-        disabled={pending || !can}
-        title={can ? `DM ${firstName} one test sentence on Slack (${slackId})` : `No Slack ID on ${firstName}'s card yet — add it first.`}
-        onClick={() => start(async () => { const r = await sendTestSlackDm(memberId); setNote({ ok: r.ok, msg: r.message }); })}
-        className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {pending ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send test DM
-      </button>
-      {note && <p className={`mt-1.5 whitespace-pre-line ${note.ok ? "text-success" : "text-warning"}`}>{note.msg}</p>}
+    <div className="mt-3 text-sm">
+      <Button variant="secondary" disabled={attempt.blocked || !can} busy={attempt.pending} onClick={send}
+        title={can ? `DM ${firstName} one test sentence on Slack (${slackId})` : `No Slack ID on ${firstName}'s card yet — add it first.`}>
+        <Send className="size-4" /> Send test DM
+      </Button>
+      {attempt.held && <div role="alert" className="mt-3 space-y-2 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm leading-relaxed">
+        <p>The test DM for {firstName} is unconfirmed. It may already have reached Slack. Ask Kyle to check this Team row’s recipient, the Slack conversation and request logs before sending again.</p>
+        <p>This tab holds repeats. Reloading does not prove the earlier send ended.</p>
+        <ActionLink href={`/team/${memberId}`}>Inspect {firstName}’s Team row</ActionLink>
+      </div>}
+      {attempt.localError && <p role="alert" className="mt-2 text-danger">{attempt.localError}</p>}
+      {visibleNote && <p role={visibleNote.ok ? "status" : "alert"} className={`mt-2 whitespace-pre-line leading-relaxed ${visibleNote.ok ? "text-success" : "text-warning"}`}>{visibleNote.msg}</p>}
     </div>
   );
 }

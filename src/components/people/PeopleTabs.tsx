@@ -13,19 +13,20 @@ const TABS: { key: PeopleTab; label: string; href: string; icon: typeof UserCog 
 ];
 
 export function PeopleTabs({ tab, show }: { tab: PeopleTab; show: PeopleTab[] }) {
-  const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
-  const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
+  const base = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  const active = `${base} border-transparent bg-brand-action text-brand-fg`;
+  const idle = `${base} border-border-strong text-foreground hover:bg-surface-2`;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
+    <nav aria-label="People sections" className="mb-4 flex flex-wrap items-center gap-2">
       {TABS.filter((t) => show.includes(t.key)).map((t) => {
         const Icon = t.icon;
         return (
-          <Link key={t.key} href={t.href} className={tab === t.key ? active : idle}>
-            <Icon className="mr-1.5 inline size-3.5" />
+          <Link key={t.key} href={t.href} aria-current={tab === t.key ? "page" : undefined} className={tab === t.key ? active : idle}>
+            <Icon aria-hidden className="size-4 shrink-0" />
             {t.label}
           </Link>
         );
       })}
-    </div>
+    </nav>
   );
 }

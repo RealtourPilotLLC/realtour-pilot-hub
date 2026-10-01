@@ -2,6 +2,34 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — Team/Slack identity and send recovery
+
+Slack controls use shared native targets/fields, exact submitted-ID snapshots,
+visible caught failures and opaque current-tab markers containing no ID/message.
+Newer input survives older Save/Find replies; unknown changes/sync/test-DM hold
+replay across reload and require Kyle's recipient/row/conversation/log inspection.
+Find CAS compares the ID read before provider lookup. Sync preserves fill-empty
+eligibility and uses conditional writes so intervening manual saves survive.
+Matching/scopes, existing uniqueness checks, recipients and fixed test text stay.
+
+The DM adapter preserves known-negative fallback but stops an ambiguous direct
+post before another send. Typed error/result metadata classifies only a small
+documented negative-code list as refused; network/malformed/HTTP-service and
+unfamiliar codes stay unknown. Slack documents internal_error/fatal_error as
+possibly partially successful:
+https://docs.slack.dev/reference/methods/chat.postMessage/
+No real provider call, DM, database update or invitation occurred.
+
+Actual mocked UI29/0 at `/tmp/team-slack-recovery-fixed-fixtures/`; actual Team
+wrappers/conditional-write contract doubles15/0 at `/tmp/team-slack-action-seam/`;
+actual adapter fake transport13/0 at `/tmp/team-slack-recovery/`. Typecheck/lint
+exit0 at `/tmp/team-slack-types-final.log` and `/tmp/team-slack-lint-final.log`;
+diff/root focused review pass. Earlier failures were fake dynamic namespace/text
+seams and fixture typings, corrected without changing provider policy. No real
+Postgres concurrency or mounted browser/provider acceptance is claimed. Native
+drafts are mounted-only, markers are device guards rather than terminal receipts
+or cross-tab serialization. Map and final combined gate remain.
+
 ### Oct 1 U5 checkpoint — capacity/calendar exact requests
 
 Capacity record/cancel controls capture the exact submitted person/kind/ET dates/

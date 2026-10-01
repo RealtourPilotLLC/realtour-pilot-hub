@@ -7,11 +7,19 @@ import { getSecret } from "./connections";
 // ---------------------------------------------------------------------------
 
 export class SlackError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly outcome: "refused" | "unknown" = "unknown") {
     super(message);
     this.name = "SlackError";
   }
 }
+
+// Explicit no-post responses. Slack documents internal_error/fatal_error as
+// possibly partially successful; unfamiliar errors remain unknown too.
+const NO_POST_ERRORS = new Set([
+  "channel_not_found", "not_in_channel", "missing_scope", "not_authed", "invalid_auth",
+  "account_inactive", "token_revoked", "no_permission", "is_archived",
+  "invalid_arguments", "invalid_arg_name", "no_text", "ekm_access_denied",
+]);
 
 async function slackApi<T = Record<string, unknown>>(
   method: string,
@@ -19,7 +27,7 @@ async function slackApi<T = Record<string, unknown>>(
   token?: string,
 ): Promise<T> {
   const t = token ?? (await getSecret("slack"));
-  if (!t) throw new SlackError("Slack is not connected.");
+  if (!t) throw new SlackError("Slack is not connected.", "refused");
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json; charset=utf-8" },
@@ -27,7 +35,7 @@ async function slackApi<T = Record<string, unknown>>(
     cache: "no-store",
   });
   const json = (await res.json().catch(() => ({ ok: false, error: "bad_response" }))) as { ok: boolean; error?: string };
-  if (!json.ok) throw new SlackError(json.error || `Slack ${method} failed`);
+  if (!res.ok || json.ok !== true) throw new SlackError(json.error || `Slack ${method} failed`, res.ok && json.ok === false && json.error && NO_POST_ERRORS.has(json.error) ? "refused" : "unknown");
   return json as T;
 }
 
@@ -350,30 +358,33 @@ export async function slackDmUser(userId: string, text: string): Promise<boolean
 // "channel_not_found" on the direct post plus "missing_scope" on the open is
 // the signature of a person the bot has never DMed on a token without
 // im:write, and the fix is a re-install, not a different member ID.
-export type SlackDmResult = { ok: true } | { ok: false; error: string };
+export type SlackDmResult = { ok: true; outcome?: "confirmed" } | { ok: false; error: string; outcome?: "refused" | "unknown" };
 export async function slackDmUserDetailed(userId: string, text: string): Promise<SlackDmResult> {
   let postError: string;
   try {
     await slackPostMessage(userId, text);
-    return { ok: true };
+    return { ok: true, outcome: "confirmed" };
   } catch (e) {
     postError = e instanceof Error ? e.message : String(e);
+    if (!(e instanceof SlackError) || e.outcome !== "refused") {
+      return { ok: false, outcome: "unknown", error: `chat.postMessage → ${postError}` };
+    }
   }
   try {
     const token = await getSecret("slack");
-    if (!token) return { ok: false, error: `chat.postMessage → ${postError}; Slack is not connected` };
+    if (!token) return { ok: false, outcome: "refused", error: `chat.postMessage → ${postError}; Slack is not connected` };
     const open = await fetch("https://slack.com/api/conversations.open", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ users: userId }),
     });
     const oj = (await open.json()) as { ok?: boolean; error?: string; channel?: { id?: string } };
-    if (!oj.ok || !oj.channel?.id) {
-      return { ok: false, error: `chat.postMessage → ${postError}; conversations.open → ${oj.error || "no channel"}` };
+    if (!open.ok || oj.ok !== true || !oj.channel?.id) {
+      return { ok: false, outcome: open.ok && oj.ok === false && oj.error && NO_POST_ERRORS.has(oj.error) ? "refused" : "unknown", error: `chat.postMessage → ${postError}; conversations.open → ${oj.error || "no channel"}` };
     }
     await slackPostMessage(oj.channel.id, text);
-    return { ok: true };
+    return { ok: true, outcome: "confirmed" };
   } catch (e) {
-    return { ok: false, error: `chat.postMessage → ${postError}; conversations.open → ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, outcome: e instanceof SlackError && e.outcome === "refused" ? "refused" : "unknown", error: `chat.postMessage → ${postError}; conversations.open → ${e instanceof Error ? e.message : String(e)}` };
   }
 }

@@ -1,58 +1,49 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/Action";
 import { syncSlackIdsFromWorkspace, type SlackSyncReport } from "@/app/team/actions";
+import { useSlackAttempt } from "./useSlackAttempt";
 
-// "Sync Slack IDs from the workspace" (owner/admin, Sep 15). The bot token
-// can't list users, but Jordan's own Slack token can — so one click asks the
-// workspace for its people and fills every roster row that has no Slack ID
-// yet, when exactly one human matches by email or by a unique first name.
-// Anything ambiguous is left alone and named in the report, for the card's
-// Add / Find buttons. The report stays on screen until the next click.
+// Same roster matching and saved/skipped report from the existing action.
 export function SlackSyncButton() {
   const router = useRouter();
   const [report, setReport] = useState<SlackSyncReport | null>(null);
-  const [pending, start] = useTransition();
+  const attempt = useSlackAttempt("slack-sync-unconfirmed");
+  async function sync() {
+    const id = attempt.begin("sync");
+    if (!id) return;
+    setReport(null);
+    let r: SlackSyncReport;
+    try { r = await syncSlackIdsFromWorkspace(); }
+    catch { attempt.finish(id, false); return; }
+    const known = r.outcome === "confirmed" && r.ok || r.outcome === "refused" && !r.ok;
+    setReport(r); attempt.finish(id, known);
+    if (known && r.set.length) router.refresh();
+  }
   return (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        disabled={pending}
-        title="Fill empty Slack IDs from the workspace's member list — only rows with one clear match"
-        onClick={() => start(async () => {
-          const r = await syncSlackIdsFromWorkspace().catch((e: unknown) => ({
-            ok: false, message: e instanceof Error ? e.message : "Couldn’t reach Slack — try again.", set: [], skipped: [],
-          } satisfies SlackSyncReport));
-          setReport(r);
-          // The cards read slackId from the server: refresh so the new chips
-          // (and the per-row test buttons) light up without a reload.
-          if (r.set.length) router.refresh();
-        })}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-60"
-      >
-        {pending ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Sync Slack IDs from the workspace
-      </button>
-      {report && (
-        <div className={`max-w-sm text-right text-[11px] ${report.ok ? "text-success" : "text-warning"}`}>
-          <p className="whitespace-pre-line">{report.message}</p>
-          {report.set.length > 0 && (
-            <ul className="mt-0.5 text-muted">
-              {report.set.map((s) => (
-                <li key={s.slackId}>{s.name} → <span className="font-mono">{s.slackId}</span> <span className="text-muted-2">(by {s.by})</span></li>
-              ))}
-            </ul>
-          )}
-          {report.skipped.length > 0 && (
-            <ul className="mt-0.5 text-muted">
-              {report.skipped.map((s) => (
-                <li key={s.name}>{s.name}: {s.reason}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+    <div className="flex max-w-full flex-col items-start gap-2 sm:items-end">
+      <Button variant="secondary" disabled={attempt.blocked} busy={attempt.pending}
+        title="Fill empty Slack IDs from the workspace's member list — only rows with one clear match" onClick={sync}>
+        <RefreshCw className="size-4" /> Sync Slack IDs from the workspace
+      </Button>
+      {attempt.held && <div role="alert" className="max-w-md rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm leading-relaxed text-warning">
+        <p>The Slack ID sync is unconfirmed. Some Team rows may already have changed. Ask Kyle to inspect the roster and request logs before syncing again.</p>
+        <p className="mt-2">This tab holds repeat syncs. Reloading does not prove the earlier writer ended.</p>
+      </div>}
+      {attempt.localError && <p role="alert" className="max-w-md text-sm text-danger">{attempt.localError}</p>}
+      {report && <div role={report.ok && report.outcome === "confirmed" ? "status" : "alert"}
+        className={`max-w-md text-sm leading-relaxed sm:text-right ${report.ok && report.outcome === "confirmed" ? "text-success" : "text-warning"}`}>
+        <p className="whitespace-pre-line break-words">{report.message}</p>
+        {report.set.length > 0 && <ul className="mt-1 text-muted">
+          {report.set.map((s) => <li key={s.slackId} className="break-words">{s.name} → <span className="font-mono">{s.slackId}</span> <span className="text-muted-2">(by {s.by})</span></li>)}
+        </ul>}
+        {report.skipped.length > 0 && <ul className="mt-1 text-muted">
+          {report.skipped.map((s) => <li key={s.name} className="break-words">{s.name}: {s.reason}</li>)}
+        </ul>}
+      </div>}
     </div>
   );
 }

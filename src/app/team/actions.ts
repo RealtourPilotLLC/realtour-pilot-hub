@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
 
-export type ActionResult = { ok: boolean; message: string };
+export type ActionResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 
 // Text a teammate via OpenPhone. Human-initiated (Kyle/Jordan clicks Send) — the
 // platform never auto-texts. Used for shoot coordination + morning well-wishes.
@@ -97,25 +97,25 @@ export async function savePaySettings(
 // on the wrong row would DM the wrong person.
 // ---------------------------------------------------------------------------
 export async function saveSlackId(memberId: string, slackId: string | null): Promise<ActionResult> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  try { await requireAdmin(); } catch (e) { return { ok: false, outcome: "refused", message: (e as Error).message }; }
   const { SLACK_MEMBER_ID_RE } = await import("@/lib/slackScopes");
   const id = (slackId ?? "").trim().toUpperCase();
   if (id && !SLACK_MEMBER_ID_RE.test(id)) {
-    return { ok: false, message: "That doesn't look like a Slack member ID — it starts with U or W (e.g. U07SCBTPDC7). In Slack: click the person → ⋯ → Copy member ID." };
+    return { ok: false, outcome: "refused", message: "That doesn't look like a Slack member ID — it starts with U or W (e.g. U07SCBTPDC7). In Slack: click the person → ⋯ → Copy member ID." };
   }
   const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } });
-  if (!member) return { ok: false, message: "Teammate not found." };
+  if (!member) return { ok: false, outcome: "refused", message: "Teammate not found." };
   const first = member.name.split(/\s+/)[0];
   if (id) {
     const taken = await slackIdTakenBy(id, memberId);
-    if (taken) return { ok: false, message: `That ID is already on ${taken}'s row — one Slack account, one person.` };
+    if (taken) return { ok: false, outcome: "refused", message: `That ID is already on ${taken}'s row — one Slack account, one person.` };
   }
   await prisma.teamMember.update({ where: { id: memberId }, data: { slackId: id || null } });
   revalidatePath("/users");
   revalidatePath(`/team/${memberId}`);
   return id
-    ? { ok: true, message: `Saved — @mentions and replies now DM ${first} on Slack.` }
-    : { ok: true, message: `Cleared — ${first}'s mentions ring the bell (and any text fallback) only.` };
+    ? { ok: true, outcome: "confirmed", message: `Saved — @mentions and replies now DM ${first} on Slack.` }
+    : { ok: true, outcome: "confirmed", message: `Cleared — ${first}'s mentions ring the bell (and any text fallback) only.` };
 }
 
 // slackId has no unique constraint, and the same ID on two rows would DM the
@@ -133,9 +133,9 @@ async function slackIdTakenBy(slackId: string, exceptMemberId: string): Promise<
 // this answers with the exact fix rather than an ID — the button exists so
 // the day the scope is there, the ID is one click.
 export async function findSlackIdOnSlack(memberId: string): Promise<ActionResult & { slackId?: string }> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
-  const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true, email: true } });
-  if (!member) return { ok: false, message: "Teammate not found." };
+  try { await requireAdmin(); } catch (e) { return { ok: false, outcome: "refused", message: (e as Error).message }; }
+  const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true, email: true, slackId: true } });
+  if (!member) return { ok: false, outcome: "refused", message: "Teammate not found." };
   const first = member.name.split(/\s+/)[0];
   const { slackLookupByEmail } = await import("@/lib/integrations/slack");
   const { SLACK_SCOPE_FIX } = await import("@/lib/slackScopes");
@@ -143,19 +143,20 @@ export async function findSlackIdOnSlack(memberId: string): Promise<ActionResult
   if (r.ok) {
     const taken = await slackIdTakenBy(r.id, memberId);
     if (taken) {
-      return { ok: false, message: `Slack answered ${r.id} for ${member.email}, but that ID is already on ${taken}'s row — one Slack account, one person. Check the two rows' emails.` };
+      return { ok: false, outcome: "refused", message: `Slack answered ${r.id} for ${member.email}, but that ID is already on ${taken}'s row — one Slack account, one person. Check the two rows' emails.` };
     }
-    await prisma.teamMember.update({ where: { id: memberId }, data: { slackId: r.id } });
+    const saved = await prisma.teamMember.updateMany({ where: { id: memberId, slackId: member.slackId }, data: { slackId: r.id } });
+    if (!saved.count) return { ok: false, outcome: "refused", message: "Their Slack ID changed while Slack was being checked. Nothing from this lookup was saved. Review the Team row before trying again." };
     revalidatePath("/users");
     revalidatePath(`/team/${memberId}`);
-    return { ok: true, message: `Found ${first} on Slack (${r.id}) — saved.`, slackId: r.id };
+    return { ok: true, outcome: "confirmed", message: `Found ${first} on Slack (${r.id}) — saved.`, slackId: r.id };
   }
-  if (r.error === "missing_scope") return { ok: false, message: SLACK_SCOPE_FIX };
+  if (r.error === "missing_scope") return { ok: false, outcome: "refused", message: SLACK_SCOPE_FIX };
   if (r.error === "users_not_found") {
-    return { ok: false, message: `No Slack account under ${member.email}. Paste the member ID instead — in Slack: click the person → ⋯ → Copy member ID.` };
+    return { ok: false, outcome: "refused", message: `No Slack account under ${member.email}. Paste the member ID instead — in Slack: click the person → ⋯ → Copy member ID.` };
   }
-  if (r.error === "not_connected") return { ok: false, message: "Slack isn't connected — Connections → Slack." };
-  return { ok: false, message: `Slack answered "${r.error}". Try again, or paste the member ID by hand.` };
+  if (r.error === "not_connected") return { ok: false, outcome: "refused", message: "Slack isn't connected — Connections → Slack." };
+  return { ok: false, outcome: "refused", message: `Slack answered "${r.error}". Try again, or paste the member ID by hand.` };
 }
 
 // "Send test DM" on a People row (owner/admin — Sep 15, replacing the owner-
@@ -166,12 +167,12 @@ export async function findSlackIdOnSlack(memberId: string): Promise<ActionResult
 // "channel_not_found" + "missing_scope" means the bot has never talked to
 // them and the token has no im:write — a re-install, not a different ID.
 export async function sendTestSlackDm(teamMemberId?: string): Promise<ActionResult> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  try { await requireAdmin(); } catch (e) { return { ok: false, outcome: "refused", message: (e as Error).message }; }
   const select = { name: true, slackId: true } as const;
   let member: { name: string; slackId: string | null } | null = null;
   if (teamMemberId) {
     member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select });
-    if (!member) return { ok: false, message: "Teammate not found." };
+    if (!member) return { ok: false, outcome: "refused", message: "Teammate not found." };
   } else {
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
@@ -180,23 +181,23 @@ export async function sendTestSlackDm(teamMemberId?: string): Promise<ActionResu
       member = await prisma.teamMember.findFirst({ where: { email: { equals: me.email, mode: "insensitive" } }, select });
     }
     if (!member) {
-      return { ok: false, message: "Your login isn't linked to a Team row, so there is no Slack ID to test. Link it on Logins & access first." };
+      return { ok: false, outcome: "refused", message: "Your login isn't linked to a Team row, so there is no Slack ID to test. Link it on Logins & access first." };
     }
   }
   const first = member.name.split(/\s+/)[0];
   if (!member.slackId) {
-    return { ok: false, message: `No Slack ID on ${first}'s Team row yet — add it on the card (or press Find on Slack / Sync from the workspace), then try again.` };
+    return { ok: false, outcome: "refused", message: `No Slack ID on ${first}'s Team row yet — add it on the card (or press Find on Slack / Sync from the workspace), then try again.` };
   }
   const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
   const r = await slackDmUserDetailed(
     member.slackId,
     "⚙️ Test from the Ops Hub — you'll get pings here for tags and messages on your jobs.",
   );
-  if (r.ok) return { ok: true, message: `Sent — ${first} should see it in their Slack DMs (${member.slackId}).` };
+  if (r.ok) return { ok: true, outcome: "confirmed", message: `Sent — ${first} should see it in their Slack DMs (${member.slackId}).` };
   const scopeHint = /missing_scope|channel_not_found|not_in_channel/.test(r.error)
-    ? ` The bot has never DMed ${first} and the token can't open a DM on its own — re-install the Ops Hub Slack app with the im:write scope (Connections → Slack), or have ${first} send the bot one message first.`
+    ? ` If the bot has not opened a DM with ${first} and the token cannot open one — re-install the Ops Hub Slack app with the im:write scope (Connections → Slack), or have ${first} send the bot one message first.`
     : " Is the bot token still valid? Connections → Slack.";
-  return { ok: false, message: `Slack refused the DM: ${r.error}.${scopeHint}` };
+  return { ok: false, outcome: r.outcome === "refused" ? "refused" : "unknown", message: `Slack did not confirm the DM: ${r.error}.${scopeHint}` };
 }
 
 // "Sync Slack IDs from the workspace" (owner/admin, Sep 15): fill every
@@ -211,7 +212,7 @@ export type SlackSyncReport = ActionResult & {
   skipped: { name: string; reason: string }[];
 };
 export async function syncSlackIdsFromWorkspace(): Promise<SlackSyncReport> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message, set: [], skipped: [] }; }
+  try { await requireAdmin(); } catch (e) { return { ok: false, outcome: "refused", message: (e as Error).message, set: [], skipped: [] }; }
   const { slackWorkspaceUsers } = await import("@/lib/integrations/slack");
   const ws = await slackWorkspaceUsers();
   if (!ws.ok) {
@@ -219,7 +220,7 @@ export async function syncSlackIdsFromWorkspace(): Promise<SlackSyncReport> {
       ws.error === "user_token_not_connected"
         ? "the Slack history (user) token isn't connected — Connections → Slack history."
         : `Slack answered "${ws.error}".`;
-    return { ok: false, message: `Couldn't read the workspace directory: ${why}`, set: [], skipped: [] };
+    return { ok: false, outcome: "refused", message: `Couldn't read the workspace directory: ${why}`, set: [], skipped: [] };
   }
   const roster = await prisma.teamMember.findMany({
     where: { active: true },
@@ -267,7 +268,11 @@ export async function syncSlackIdsFromWorkspace(): Promise<SlackSyncReport> {
       skipped.push({ name: row.name, reason: `Slack's match (${hit.id}) is already on ${holder}'s row — one Slack account, one person.` });
       continue;
     }
-    await prisma.teamMember.update({ where: { id: row.id }, data: { slackId: hit.id } });
+    const saved = await prisma.teamMember.updateMany({ where: { id: row.id, OR: [{ slackId: null }, { slackId: "" }] }, data: { slackId: hit.id } });
+    if (!saved.count) {
+      skipped.push({ name: row.name, reason: "Their Slack ID changed during this sync — left their row unchanged." });
+      continue;
+    }
     takenIds.set(hit.id, row.name);
     set.push({ name: row.name, slackId: hit.id, by: hit.by });
   }
@@ -285,5 +290,5 @@ export async function syncSlackIdsFromWorkspace(): Promise<SlackSyncReport> {
       : `${set.length ? `Set ${set.length}: ${set.map((s) => `${s.name.split(/\s+/)[0]} (${s.slackId}, by ${s.by})`).join(", ")}.` : "Nothing new to set."}${
           skipped.length ? ` Couldn't place ${skipped.length}: ${skipped.map((s) => s.name.split(/\s+/)[0]).join(", ")}.` : ""
         }`;
-  return { ok: true, message, set, skipped };
+  return { ok: true, outcome: "confirmed", message, set, skipped };
 }
