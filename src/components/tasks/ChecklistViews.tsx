@@ -122,10 +122,15 @@ const subIdle = "rounded-lg px-3 py-1.5 text-sm font-medium text-muted hover:bg-
 
 // ---------------- REVISIONS ----------------
 
-export async function RevisionsView({ tabs }: { tabs: ReactNode }) {
-  const [groups, scrub] = await Promise.all([revisionsBoard(), moneyScrubber()]);
+export async function RevisionsView({ tabs, excludeClientIds = [], showTest = false }: { tabs: ReactNode; excludeClientIds?: string[]; showTest?: boolean }) {
+  const [groups, scrub] = await Promise.all([revisionsBoard(new Date(), { excludeClientIds }), moneyScrubber()]);
   return (
-    <Shell tabs={tabs} title="Revisions" subtitle="Every open revision, grouped by who asked. A row clears itself when the corrected work is delivered.">
+    <Shell tabs={tabs} title="Revisions" subtitle={`${showTest ? "Every open revision" : "Open revisions for real clients"}, grouped by who asked. A row clears itself when the corrected work is delivered.`}>
+      <div className="mb-4 flex justify-end">
+        <Link href={showTest ? "/tasks?tab=revisions" : "/tasks?tab=revisions&test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+          {showTest ? "Hide test records" : "Show test records"}
+        </Link>
+      </div>
       {groups.length === 0 ? (
         <p className="flex items-center gap-2 rounded-2xl border border-success/20 bg-success/[0.05] px-5 py-4 text-[15px] text-success">
           <CheckCircle2 className="size-5" /> No revisions in flight.
@@ -283,11 +288,11 @@ function SlackRow({ t, focused, assignOptions }: { t: SlackTaskRow; focused?: bo
 }
 
 // Tab-badge counts, shared with the page so the badges match the tabs.
-export async function checklistCounts(): Promise<{ comms: number; revisions: number; slack: number }> {
+export async function checklistCounts(opts: { excludeRevisionClientIds?: string[] } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
   const [phone, email, revs, slack] = await Promise.all([
     unansweredCommsBoard("phone"),
     unansweredCommsBoard("email"),
-    revisionsBoard(),
+    revisionsBoard(new Date(), { excludeClientIds: opts.excludeRevisionClientIds }),
     slackBoard(),
   ]);
   return {

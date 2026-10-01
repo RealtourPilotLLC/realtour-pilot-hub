@@ -487,7 +487,7 @@ export default async function HomePage() {
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
       // no longer calls openLoopsList() a second time.
-      buildOpsDay(),
+      buildOpsDay({ includeTest: false }),
       offPageNumbers(),
       getStuckJobs(),
       getShootWindow(), // only for the week-ahead strip; today's shoots come from buildOpsDay

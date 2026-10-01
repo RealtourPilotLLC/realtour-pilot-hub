@@ -2638,9 +2638,9 @@ function editingDetail(
 }
 
 /** Every cut across the business that is waiting on a verdict or back with an editor. */
-export async function videoReviewBoard(): Promise<{ waiting: VideoCutState[]; revising: VideoCutState[] }> {
+export async function videoReviewBoard(opts: { excludeClientIds?: string[] } = {}): Promise<{ waiting: VideoCutState[]; revising: VideoCutState[] }> {
   const rows = await prisma.reviewSubmission.findMany({
-    where: { status: { in: ["PENDING", "CHANGES_REQUESTED"] }, project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } },
+    where: { status: { in: ["PENDING", "CHANGES_REQUESTED"] }, project: { status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) } },
     select: { projectId: true },
     distinct: ["projectId"],
   });

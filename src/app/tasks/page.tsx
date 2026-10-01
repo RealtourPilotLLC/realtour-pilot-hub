@@ -8,6 +8,7 @@ import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
 import { CommsView, RevisionsView, SlackView, checklistCounts } from "@/components/tasks/ChecklistViews";
 import { unansweredCommsBoard } from "@/lib/commsBoard";
 import { prisma } from "@/lib/prisma";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,7 @@ export const dynamic = "force-dynamic";
 // link survives a restructure (audit fault #9). Nothing links to it now.
 
 export default async function TasksHubPage({ searchParams }: {
-  searchParams: Promise<{ tab?: string; focus?: string; who?: string; task?: string; via?: string }>;
+  searchParams: Promise<{ tab?: string; focus?: string; who?: string; task?: string; via?: string; test?: string }>;
 }) {
   const sp = await searchParams;
   const me = await getCurrentUser().catch(() => null);
@@ -63,10 +64,14 @@ export default async function TasksHubPage({ searchParams }: {
     if (t?.source === "slack") tab = "slack";
   }
 
+  const showTestRevisions = tab === "revisions" && sp.test === "1";
+  const excludedRevisionClientIds = boardOnly || showTestRevisions ? []
+    : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+
   const [otherN, doneN, checklists, phoneWaiting] = await Promise.all([
     boardOpenCount(),
     boardOnly ? 0 : doneTodayCount(),
-    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts(),
+    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds }),
     // Only to decide which side of Comms to open on — see commsChannel below.
     boardOnly ? 0 : unansweredCommsBoard("phone").then((g) => g.length).catch(() => 0),
   ]);
@@ -92,6 +97,7 @@ export default async function TasksHubPage({ searchParams }: {
       doneCount={doneN}
       commsCount={checklists.comms}
       revisionsCount={checklists.revisions}
+      showTestRevisions={showTestRevisions}
       slackCount={checklists.slack}
       updatedAt={new Date()}
     />
@@ -99,7 +105,7 @@ export default async function TasksHubPage({ searchParams }: {
 
   if (tab === "other") return <BoardView sp={sp} tabs={tabs} />;
   if (tab === "done") return <DoneView tabs={tabs} />;
-  if (tab === "revisions") return <RevisionsView tabs={tabs} />;
+  if (tab === "revisions") return <RevisionsView tabs={tabs} excludeClientIds={excludedRevisionClientIds} showTest={showTestRevisions} />;
   // ?task=<id> lands on the row and highlights it — the digests deep-link here
   // now, and a link that drops you at the top of a 21-row list is not a link.
   if (tab === "slack") return <SlackView tabs={tabs} focusTaskId={sp.task ?? null} />;

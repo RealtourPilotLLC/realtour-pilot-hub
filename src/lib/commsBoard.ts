@@ -147,9 +147,9 @@ export type RevisionGroup = {
   }[];
 };
 
-export async function revisionsBoard(now: Date = new Date()): Promise<RevisionGroup[]> {
+export async function revisionsBoard(now: Date = new Date(), opts: { excludeClientIds?: string[] } = {}): Promise<RevisionGroup[]> {
   const tasks = await prisma.smartTask.findMany({
-    where: { taskType: "revision", status: OPEN_STATUS, projectId: { not: null } },
+    where: { taskType: "revision", status: OPEN_STATUS, projectId: { not: null }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
     select: {
       id: true, projectId: true, assignedKey: true, createdAt: true, summary: true,
       project: {

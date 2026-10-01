@@ -159,15 +159,17 @@ export type UnansweredInbound = {
  */
 export async function findUnansweredInbound(
   now: Date = new Date(),
-  opts: { families?: WaitingFamily[]; windowDays?: number } = {},
+  opts: { families?: WaitingFamily[]; windowDays?: number; excludeClientIds?: string[] } = {},
 ): Promise<UnansweredInbound[]> {
-  const threads = await unansweredComms({
+  const allThreads = await unansweredComms({
     now,
     families: opts.families,
     windowDays: opts.windowDays,
     includeUnmatched: false, // a page needs a client to point at
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
   });
+  const excluded = new Set(opts.excludeClientIds ?? []);
+  const threads = excluded.size ? allThreads.filter((t) => !t.clientId || !excluded.has(t.clientId)) : allThreads;
   // One lookup for the headshots (a few dozen ids at most) — the thread
   // engine only carries names, and the home card shows the face beside them.
   const ids = Array.from(new Set(threads.map((t) => t.clientId).filter((id): id is string => Boolean(id))));
@@ -544,4 +546,3 @@ async function kyleMember(): Promise<{ id: string; name: string } | null> {
     .findFirst({ where: { name: { contains: "Kyle", mode: "insensitive" }, active: true }, select: { id: true, name: true } })
     .catch(() => null);
 }
-

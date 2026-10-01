@@ -4,6 +4,24 @@
 
 ### Oct 1 resume point — C14 Home exception scope
 
+A read-only Neon probe (`scripts/_recon/c14-home-workload.ts`) found five
+synthetic clients, three active TEST Review projects, and two open TEST tasks;
+this was a current Home operating-day count issue, not only a theoretical cap.
+`buildOpsDay({includeTest:false})` now excludes synthetic client/project rows
+before its shoot, QC, pipeline, Review count, revision, and loop caps; its
+unanswered-client and pending-cut lists use the same IDs. Shared reader defaults
+retain their full view. The Tasks Revisions tab now uses that normal reader for
+its badge and list and offers `?test=1` to show fixtures; the tab link retains
+that view. The isolated `c14-home-day` drill passed 7/0 including review,
+revision, pending cut, loop, protected-real and shared Tasks reader counts;
+provider traffic was fenced. Node20 TypeScript and focused lint passed. The
+component itself has not had a browser replay because the loopback browser
+action was policy-blocked. Build in the isolated worktree remains to run at
+this checkpoint. Ready-to-send follow-up lanes,
+other Home readers (Stuck jobs, week strip, delivery board, off-page badges),
+and signed browser identity still need C14 scoping/proof; do not claim all Home
+workload totals are clean.
+
 The New clients card now also removes synthetic arrivals before its six-row
 cap. The isolated `c14-new-clients` drill passed 3/0: eight newer fixture
 arrivals did not crowd out a real arrival or a protected real client renamed

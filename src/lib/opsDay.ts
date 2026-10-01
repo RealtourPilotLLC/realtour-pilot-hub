@@ -15,6 +15,7 @@ import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
 import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
 import { readyToSend, type ReadyBoard } from "@/lib/readyToSend";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -531,20 +532,24 @@ function parseEvidence(json: string | null): { ev: StatusEvidence | null; qc: Qc
   }
 }
 
-export async function buildOpsDay(): Promise<OpsDay> {
+export async function buildOpsDay(opts: { includeTest?: boolean } = {}): Promise<OpsDay> {
   const now = new Date();
   const today = etDayWindow(0);
   const tomorrow = etDayWindow(1);
+  const excludedClientIds = opts.includeTest === false
+    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    : [];
+  const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
 
   const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList] =
     await Promise.all([
       prisma.project.findMany({
-        where: { shootDate: { gte: today.start, lt: today.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] } },
+        where: { shootDate: { gte: today.start, lt: today.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...clientScope },
         select: SHOOT_SELECT,
         orderBy: { shootDate: "asc" },
       }),
       prisma.project.findMany({
-        where: { shootDate: { gte: tomorrow.start, lt: tomorrow.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] } },
+        where: { shootDate: { gte: tomorrow.start, lt: tomorrow.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...clientScope },
         select: SHOOT_SELECT,
         orderBy: { shootDate: "asc" },
       }),
@@ -554,7 +559,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
           status: { notIn: ["COMPLETED", "CANCELLED"] },
           // Orphan media_qa rows (null project) exist — the Review Room handles
           // them; Kyle's home page must not render dead /projects/null links.
-          project: { is: { status: { notIn: ["CANCELLED", "ON_HOLD"] }, aryeoMissingAt: null } },
+          project: { is: { status: { notIn: ["CANCELLED", "ON_HOLD"] }, aryeoMissingAt: null, ...clientScope } },
         },
         select: {
           id: true, title: true, dueAt: true, checklist: true, projectId: true,
@@ -595,9 +600,9 @@ export async function buildOpsDay(): Promise<OpsDay> {
         orderBy: { dueAt: "asc" },
         take: 30,
       }),
-      openLoopsList(now),
+      openLoopsList(now, undefined, { excludeClientIds: excludedClientIds }),
       prisma.project.findMany({
-        where: { status: { in: ["EDITING", "REVIEW", "REVISION"] } },
+        where: { status: { in: ["EDITING", "REVIEW", "REVISION"] }, ...clientScope },
         select: {
           id: true, title: true, status: true, statusEvidence: true,
           dueOverrideAt: true, // the office's due (Sep 13) — the QC card's "video due" reads it before the evidence
@@ -617,8 +622,8 @@ export async function buildOpsDay(): Promise<OpsDay> {
         // confirmed, which is how "6 editing" sat beside "1 working now".
         prisma.editorWorkItem
           .findMany({ where: { state: "ACTIVE" }, select: { projectId: true }, distinct: ["projectId"] })
-          .then((r) => prisma.project.count({ where: { id: { in: r.map((x) => x.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED"] } } })),
-        prisma.project.count({ where: { status: "REVIEW" } }),
+          .then((r) => prisma.project.count({ where: { id: { in: r.map((x) => x.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED"] }, ...clientScope } })),
+        prisma.project.count({ where: { status: "REVIEW", ...clientScope } }),
         // The tower's "N open revisions" pill opens /tasks?tab=revisions, whose
         // badge is revisionsBoard's job count (ChecklistViews checklistCounts).
         // The same function here makes the two numbers one number by
@@ -626,9 +631,9 @@ export async function buildOpsDay(): Promise<OpsDay> {
         // used to follow (overdue, due today, needs assigning) were never
         // rendered — the home states those off the Other tab's own query — and
         // were re-run on every 90-second refresh.
-        revisionsBoard(now).then((groups) => groups.reduce((s, g) => s + g.jobs.length, 0)),
+        revisionsBoard(now, { excludeClientIds: excludedClientIds }).then((groups) => groups.reduce((s, g) => s + g.jobs.length, 0)),
       ]),
-      findUnansweredInbound(now).catch(() => []),
+      findUnansweredInbound(now, { excludeClientIds: excludedClientIds }).catch(() => []),
     ]);
 
   // One comms pull for every shoot client (last 72h) — the per-SHOOT filter
@@ -660,7 +665,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
   const [turnarounds, videoStates, videoReview, readySend] = await Promise.all([
     turnaroundRules(),
     videoStatesFor(qcTasks.map((t) => t.projectId).filter((x): x is string => !!x)).catch(() => new Map<string, ProjectVideoState>()),
-    videoReviewBoard().catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
+    videoReviewBoard({ excludeClientIds: excludedClientIds }).catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
     // Finished and not yet sent (Sep 17). It rides here with the rest of the
     // day so Home still makes ONE pass at the database, and so the badge on the
     // block, the row in "What needs you today" and the card itself are all the
@@ -1039,7 +1044,7 @@ export function loopsZeroState(loops: OpsLoop[]): { label: string; title: string
  * session (so Ops Day and the Dashboard call the SAME function and each get
  * their own audience); pass `null` for the deliberate full-business view.
  */
-export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null): Promise<OpsLoopList> {
+export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null, opts: { excludeClientIds?: string[] } = {}): Promise<OpsLoopList> {
   // ONE roster read per render. It used to be two — currentLoopViewer() pulled
   // listAssignees() to resolve the viewer's key while this function pulled it
   // again for the display names — on every /ops and every dashboard load.
@@ -1058,6 +1063,7 @@ export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null
     status: { notIn: ["COMPLETED", "CANCELLED"] },
     taskType: { in: LOOP_TYPES },
   };
+  const AND: Prisma.SmartTaskWhereInput[] = [];
   if (!ownerView) {
     // Three NULL-safe exclusions, one per rule above. Each clause spells out
     // the null cases as their own branches: `notIn` on a NULL column is NULL,
@@ -1073,7 +1079,6 @@ export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null
     // TeamMember — Lauren's row is exactly that today) he lost the 10 unnamed
     // rows the routers file to him, i.e. his whole comms pile. An unreadable
     // roster must widen this list, never narrow it.
-    const AND: Prisma.SmartTaskWhereInput[] = [];
     // 1 · not a row a named owner holds
     if (owners.keys.length) {
       AND.push({ OR: [{ assignedKey: null }, { assignedKey: { notIn: owners.keys } }] });
@@ -1087,8 +1092,12 @@ export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null
     if (OWNER_LANE_SOURCES.length) {
       AND.push({ OR: [{ assignedKey: { not: null } }, { ownerId: { not: null } }, { source: { notIn: OWNER_LANE_SOURCES } }] });
     }
-    if (AND.length) where.AND = AND;
   }
+  if (opts.excludeClientIds?.length) AND.push(
+    { OR: [{ clientId: null }, { clientId: { notIn: opts.excludeClientIds } }] },
+    { OR: [{ projectId: null }, { project: { is: { clientId: { notIn: opts.excludeClientIds } } } }] },
+  );
+  if (AND.length) where.AND = AND;
 
   const rows = await prisma.smartTask.findMany({
     where,
