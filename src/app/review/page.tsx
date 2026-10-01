@@ -223,7 +223,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           </Section>
         )}
 
-        <DeliveryExitSummary board={deliveryBoard} />
+        <DeliveryExitSummary board={deliveryBoard} includeTest={includeTest} />
 
         {/* media_qa is a mixed-media task type. Do not present a video-only
             program job as a photo set. */}

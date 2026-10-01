@@ -2,6 +2,7 @@ import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, AlertTriangle, Send } from "lucide-react";
 import type { ReadyBoard } from "@/lib/readyToSend";
+import { homeRecordHref } from "@/lib/homeRecordScope";
 
 type Row = { id: string; label: string; stage: string; detail: string; owner: string; at: string; action: string; href: string; cutHref: string };
 
@@ -55,8 +56,8 @@ function rowsFor(board: ReadyBoard): Row[] {
 }
 
 /** Read-only handoff beside creative review. Home owns the delivery controls. */
-export function DeliveryExitSummary({ board }: { board: ReadyBoard }) {
-  const rows = rowsFor(board);
+export function DeliveryExitSummary({ board, includeTest = false }: { board: ReadyBoard; includeTest?: boolean }) {
+  const rows = rowsFor(board).map((r) => ({ ...r, href: homeRecordHref(r.href, includeTest) }));
   const incomplete = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
   return (
     <section id="delivery-exit" className="rounded-2xl border border-border bg-surface p-4 sm:p-5" aria-labelledby="delivery-exit-title">

@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### C14 checkpoint — explicit Home test view and supported return links
+
+Home now accepts `?test=1` across its existing operating workload readers and
+shows an explicit scope notice. Tasks, Review Room, Content, Project Tracker and
+the supported email/outbox destinations retain that scope, including exact task
+links and Review Room's return to Home delivery controls. Exact project/cut URLs,
+roles, manual work actions and Finance definitions are unchanged.
+
+Signed isolated Home/count/link fixture passed 22/0
+(`/tmp/c14-home-test-view-reviewed/`), focused lint/diff and root source review
+passed. The initial fixture needed only a Link traversal and router stub repair.
+Normal-browser identity and scope acceptance remain open. Office Editing and
+Schedule still use unfiltered destinations; their concrete normal/test mismatch
+is the next bounded C14 slice. Counts with different status/date definitions must
+not be claimed equal. No test or provider mutation reached production.
+
 ### U5 checkpoint — per-person notification save receipts
 
 Team notifications now use the existing snapshot-specific draft helper and typed

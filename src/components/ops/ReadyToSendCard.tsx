@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { homeRecordHref } from "@/lib/homeRecordScope";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
@@ -82,7 +83,7 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
   "editor-dropbox": "Editor's file",
 };
 
-export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
+export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBoard; includeTest?: boolean }) {
   const router = useRouter();
   const { ready, rendering, needsFinishing } = board;
   // 9.2: sent, and the client not told yet — its own short list (NotTold).
@@ -117,7 +118,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
         </p>}
         <NeedsFinishing rows={needsFinishing ?? []} />
         <NotTold rows={notTold} />
-        <DeliveryTextIncidents rows={board.noticeIncidents ?? []} />
+        <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
         <Rendering rows={rendering} />
       </div>
     );
@@ -127,7 +128,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
       {recoveryStatus}
       <NeedsFinishing rows={needsFinishing ?? []} />
       <NotTold rows={notTold} />
-      <DeliveryTextIncidents rows={board.noticeIncidents ?? []} />
+      <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
       <p className="text-sm text-muted">Each ready file still needs delivery proof. A download only starts the handoff.</p>
       {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
       <Rendering rows={rendering} />
@@ -135,7 +136,7 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
   );
 }
 
-function DeliveryTextIncidents({ rows }: { rows: DeliveryNoticeIncident[] }) {
+function DeliveryTextIncidents({ rows, includeTest = false }: { rows: DeliveryNoticeIncident[]; includeTest?: boolean }) {
   if (!rows.length) return null;
   return (
     <div className="rounded-xl border border-warning/40 bg-warning/5 px-3.5 py-3">
@@ -146,7 +147,7 @@ function DeliveryTextIncidents({ rows }: { rows: DeliveryNoticeIncident[] }) {
             <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.street}</Link>
             <span className="text-muted"> · {r.state === "unknown" ? "provider outcome unknown — check OpenPhone before retrying" : r.state === "failed" ? "send failed — review the task and client thread" : "send queued or in progress — no acceptance recorded"} · queued {etDateTime(new Date(r.queuedAtISO))}</span>
             <Link href={`/communications?incident=${encodeURIComponent(r.outboxId)}`} className="ml-2 font-medium text-brand underline">Check conversation</Link>
-            {r.taskId && <Link href={`/tasks?tab=other&task=${r.taskId}`} className="ml-2 font-medium text-brand underline">Open task</Link>}
+            {r.taskId && <Link href={homeRecordHref(`/tasks?tab=other&task=${r.taskId}`, includeTest)} className="ml-2 font-medium text-brand underline">Open task</Link>}
           </li>
         ))}
       </ul>

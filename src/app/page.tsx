@@ -56,6 +56,7 @@ import { isSyntheticClientRow } from "@/lib/testClients";
 import { reviewerChain } from "@/lib/reviewerAssignment";
 import { getReviewQueue, followUpHref } from "@/lib/reviewRoom";
 import { HomeRoutine } from "@/components/dashboard/HomeRoutine";
+import { homeRecordHref } from "@/lib/homeRecordScope";
 
 export const dynamic = "force-dynamic";
 
@@ -416,7 +417,7 @@ function NeedRow({ n }: { n: Need }) {
 
 // ---------------------------------------------------------------------------
 
-export default async function HomePage() {
+export default async function HomePage({ searchParams }: { searchParams?: Promise<{ test?: string | string[] }> } = {}) {
   const me = await getCurrentUser().catch(() => null);
   // Creatives never see the ops overview (middleware already bounces the roles;
   // this covers per-user "dashboard" permission overrides). Sessionless local
@@ -428,7 +429,9 @@ export default async function HomePage() {
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
   const canReview = !me || canAccess(me, "review");
-  const excludedClientIds = (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  const includeTest = (await searchParams)?.test === "1";
+  const scopeHref = (href: string) => homeRecordHref(href, includeTest);
+  const excludedClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
 
   const [dRaw, counts, stuck, shoots, radar, handledToday, boardRaw, flaggedRaw, ownerStats, pulse, dials, money, todos, newClients, exceptions, reviewQueue, reviewChain] =
     await Promise.all([
@@ -475,15 +478,15 @@ export default async function HomePage() {
       // exactly as /day was ownerOnly in PAGES.
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
       // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
-      newClientsForDashboard({ includeTest: false }).catch(() => []),
+      newClientsForDashboard({ includeTest }).catch(() => []),
       // The five quiet failures (R08). Reporting only, and a failed read is an
       // empty card rather than a page that will not render. The BOARD, not the
       // bare rows: the card has to be able to say how many it is not showing.
-      opsExceptionsBoard({ includeTest: false }).catch((e: unknown): OpsExceptionBoard => {
+      opsExceptionsBoard({ includeTest }).catch((e: unknown): OpsExceptionBoard => {
         console.warn("opsExceptions failed", (e as Error).message);
         return emptyExceptionBoard();
       }),
-      canReview ? getReviewQueue({ includeTest: false }).catch(() => null) : Promise.resolve(null),
+      canReview ? getReviewQueue({ includeTest }).catch(() => null) : Promise.resolve(null),
       canReview ? reviewerChain().catch(() => null) : Promise.resolve(null),
     ]);
 
@@ -492,7 +495,7 @@ export default async function HomePage() {
   // notes, message previews — passes through the figure scrub for a non-owner
   // (audit5 kyle-home §5, Sep 8: "$750 credit" on Kyle's loop list).
   const d = isOwner ? dRaw : scrubOpsDayMoney(dRaw);
-  const flagged = isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }));
+  const flagged = (isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }))).map((f) => ({ ...f, href: scopeHref(f.href) }));
   // The Pipeline block prints each job's notes in full (DeliveryBoardView's
   // JobNote) — and a job's notes can be the whole editor brief, which is where
   // Andrea's "$750 credit" would sit (audit5 F14; review, Sep 8). Same scrub,
@@ -512,7 +515,7 @@ export default async function HomePage() {
   // a /billing link an ADMIN can't open, and the panel sat outside the isOwner
   // gate. Jordan's rule (access.ts): "Kyle should not have access to any money
   // related info" — so the AR kind never reaches a non-owner (audit5 F9).
-  const radarFlags = radar.flags.filter((f) => isOwner || f.kind !== "ar");
+  const radarFlags = radar.flags.filter((f) => isOwner || f.kind !== "ar").map((f) => ({ ...f, href: scopeHref(f.href) }));
   const currentKey = blockKeyForNow(nowMin);
 
   const qcOverdue = listingQc(d).filter((q) => q.bucket === "overdue").length;
@@ -649,7 +652,7 @@ export default async function HomePage() {
     .sort((a, b) => {
       const rank = (key: string) => priority.includes(key) ? priority.indexOf(key) : priority.length;
       return rank(a.key) - rank(b.key);
-    });
+    }).map((n) => ({ ...n, href: scopeHref(n.href) }));
   const appointmentSummary = d.todayShoots.slice(0, 3);
   const currentBlock = BLOCKS.find((b) => b.key === currentKey)!;
   const criticalQueues = orderedNeeds.filter((n) => n.tone === "danger" || n.tone === "warning").length;
@@ -778,7 +781,7 @@ export default async function HomePage() {
             </nav>
             <div className="mt-2 space-y-2.5">
               {BLOCKS.map((b) => (
-                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={false} dayKey={todayKey} />
+                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={false} dayKey={todayKey} includeTest={includeTest} />
               ))}
             </div>
           </HomeRoutine>
@@ -813,8 +816,10 @@ export default async function HomePage() {
         eyebrow="Eastern time"
         title="Home"
         subtitle={`${etFullDate(now)} · nothing surprises the client · nothing gets missed`}
+        actions={<Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>}
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
+        {includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months and delivery lists keep this view when opened. Editing Room and Schedule use their existing lists without a test-record switch. Figures from the books keep Finance’s existing definitions.</p></div>}
         <section aria-labelledby="home-focus-title" className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -823,9 +828,9 @@ export default async function HomePage() {
               <p className="mt-1 text-sm text-muted">{homeRole === "review" ? "Your assigned cuts come first. Review Room shows the active owner and coverage on every cut." : homeRole === "owner" ? "Review decisions, resolve escalations, and check client-program progress." : "Send ready work, answer waiting clients, and resolve missing shoot details."}</p>
             </div>
             <nav aria-label="Your work destinations" className="flex flex-wrap gap-2">
-              {canReview && <Link href="/review" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Review Room</Link>}
-              {(!me || canAccess(me, "tasks")) && <Link href="/tasks?tab=work&who=me" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">My work</Link>}
-              {(!me || canAccess(me, "content")) && <Link href="/content" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Client months</Link>}
+              {canReview && <Link href={scopeHref("/review")} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Review Room</Link>}
+              {(!me || canAccess(me, "tasks")) && <Link href={scopeHref("/tasks?tab=work&who=me")} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">My work</Link>}
+              {(!me || canAccess(me, "content")) && <Link href={scopeHref("/content")} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Client months</Link>}
               <a href="#operating-routine" className="inline-flex min-h-11 items-center px-2 py-2 text-sm text-brand underline underline-offset-4">Daily checklist</a>
             </nav>
           </div>
@@ -840,7 +845,7 @@ export default async function HomePage() {
         {flaggedSection}
         {readySection}
         {needsSection}
-        <ExceptionsCard rows={exceptions.rows} totals={exceptions.totals} />
+        <ExceptionsCard rows={exceptions.rows.map((r) => ({ ...r, href: scopeHref(r.href) }))} totals={exceptions.totals} />
         {stuckSection}
         {shootsSection}
         {daySection}
@@ -968,8 +973,8 @@ export default async function HomePage() {
 
         {/* Quiet secondary links — everything else lives in the sidebar. */}
         <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
-          <Link href="/tasks" className="hover:text-foreground">All tasks</Link>
-          <Link href="/review" className="hover:text-foreground">Review Room</Link>
+          <Link href={scopeHref("/tasks")} className="hover:text-foreground">All tasks</Link>
+          <Link href={scopeHref("/review")} className="hover:text-foreground">Review Room</Link>
           <Link href="/schedule" className="hover:text-foreground">Schedule</Link>
         </div>
       </div>
@@ -1005,13 +1010,14 @@ function MoneyStat({ label, value, sub, tone }: { label: string; value: string; 
 
 type OffPageCounts = Awaited<ReturnType<typeof offPageNumbers>>;
 
-function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
+function Block({ def, current, d, board, counts, needsBelow, dayKey, includeTest = false }: {
   def: BlockDef; current: boolean; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
   /** "What needs you" renders UNDER the blocks in Kyle's order (page order
    *  is by whose day it is) — the tower's jump link has to point that way. */
   needsBelow: boolean;
   /** ET day, so a block opened by hand stays open for today's session only */
   dayKey: string;
+  includeTest?: boolean;
 }) {
   const Icon = def.icon;
   const n = countFor(def.key, d, board);
@@ -1078,7 +1084,7 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
       <div className="border-t border-border px-5 py-3.5">
         <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
         <div className="mt-3">
-          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} />
+          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} includeTest={includeTest} />
         </div>
       </div>
     </DayBlock>
@@ -1090,9 +1096,10 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
 // the list itself now (Jordan, Sep 21 — the top card is OWNER and ADMIN alike),
 // so the prop went with it. `needsBelow` still carries the same bit for the
 // blocks that genuinely lay out differently for the two people.
-function BlockBody({ blockKey, d, board, counts, needsBelow }: {
-  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean;
+function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false }: {
+  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean; includeTest?: boolean;
 }) {
+  const scopeHref = (href: string) => homeRecordHref(href, includeTest);
   switch (blockKey) {
     case "tower":
       // The shoot cards live in "Today's shoots" below — rendering them here as
@@ -1144,8 +1151,8 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
               /tasks?tab=other). One page, one number. What's left is the two
               figures nothing else on this screen states. */}
           <div className="flex flex-wrap gap-2 text-[13px]">
-            <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} open revision${d.pipeline.revision === 1 ? "" : "s"}`} href="/tasks?tab=revisions" />
-            <Pill warn={false} label={`${counts.boardOpen} on the task board`} href="/tasks?tab=other" />
+            <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} open revision${d.pipeline.revision === 1 ? "" : "s"}`} href={scopeHref("/tasks?tab=revisions")} />
+            <Pill warn={false} label={`${counts.boardOpen} on the task board`} href={scopeHref("/tasks?tab=other")} />
           </div>
           {/* The arrow follows the page order: the decisions list is above
               the blocks for Jordan and below them for Kyle (audit5 F19). */}
@@ -1156,7 +1163,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
       );
 
     case "qc-am":
-      return <QcDueToday d={d} totalInReviewRoom={counts.qc} />;
+      return <QcDueToday d={d} totalInReviewRoom={counts.qc} includeTest={includeTest} />;
 
     case "overdue":
       return <OverdueCard d={d} />;
@@ -1186,7 +1193,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
                       five of five rows on Sep 8 (audit5 F3). Email rows open
                       the Email board, which does hold them. */}
                   <Link
-                    href={u.family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies"}
+                    href={scopeHref(u.family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies")}
                     className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
                   >
                     Reply
@@ -1201,7 +1208,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
                   Showing the {d.unanswered.preview.length} oldest of {d.unanswered.count}.
                 </p>
               )}
-              <Link href="/tasks?tab=comms" className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
+              <Link href={scopeHref("/tasks?tab=comms")} className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
                 Clear the queue — {d.unanswered.count} waiting <ArrowRight className="size-4" />
               </Link>
             </>
@@ -1213,7 +1220,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
           <p className="flex flex-wrap gap-x-4 gap-y-1 pt-1 text-[11px] text-muted-2">
             <Link href="/communications?tab=replies" className="hover:text-foreground">Reply queue — every unanswered text, incl. unknown numbers →</Link>
             {counts.emailsWaiting > 0 && (
-              <Link href="/tasks?tab=comms&via=email" className="hover:text-foreground">Email board — {counts.emailsWaiting} sender{counts.emailsWaiting === 1 ? "" : "s"} →</Link>
+              <Link href={scopeHref("/tasks?tab=comms&via=email")} className="hover:text-foreground">Email board — {counts.emailsWaiting} sender{counts.emailsWaiting === 1 ? "" : "s"} →</Link>
             )}
           </p>
         </div>
@@ -1231,12 +1238,12 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
       );
 
     case "loops":
-      return <LoopsCard d={d} />;
+      return <LoopsCard d={d} includeTest={includeTest} />;
 
     case "video-review":
       // The first screen has one compact summary; this block holds the existing
       // delivery controls. Both Home and Review Room links open this block.
-      return <VideoReviewCard d={d} showReady />;
+      return <VideoReviewCard d={d} showReady includeTest={includeTest} />;
 
     case "lunch":
       return <p className="text-sm text-muted">Eat. The hub holds the fort.</p>;
@@ -1257,8 +1264,8 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
                 In production right now
                 <span className="flex flex-wrap gap-1.5 text-[11px] font-medium normal-case tracking-normal">
                   <Pill warn={false} label={`${d.pipeline.editing} being edited now`} href="/editing" />
-                  <Pill warn={d.pipeline.review > 0} label={`${d.pipeline.review} in review`} href="/review" />
-                  <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} in revision`} href="/tasks?tab=revisions" />
+                  <Pill warn={d.pipeline.review > 0} label={`${d.pipeline.review} in review`} href={scopeHref("/review")} />
+                  <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} in revision`} href={scopeHref("/tasks?tab=revisions")} />
                 </span>
               </h4>
               <div className="mt-2 space-y-2">
@@ -1519,7 +1526,7 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
 // burying it: on Sep 1 the card held 8 stale rows and nothing actually due, so
 // Kyle couldn't tell what this hour was for (Jordan: "too clogged up with
 // overdue and waiting — that should be a separate card to check").
-function QcDueToday({ d, totalInReviewRoom }: { d: OpsDay; totalInReviewRoom: number }) {
+function QcDueToday({ d, totalInReviewRoom, includeTest = false }: { d: OpsDay; totalInReviewRoom: number; includeTest?: boolean }) {
   const qc = listingQc(d);
   const rows = qc.filter((q) => q.bucket === "today");
   // Each number must match the card it links to — monthly rows are counted
@@ -1552,7 +1559,7 @@ function QcDueToday({ d, totalInReviewRoom }: { d: OpsDay; totalInReviewRoom: nu
           that also holds orphan QC cards (the job row is gone), so it can read
           a little higher than the buckets above — which are per-job. */}
       <p className="text-[11px] text-muted-2">
-        <Link href="/review" className="hover:text-foreground">
+        <Link href={homeRecordHref("/review", includeTest)} className="hover:text-foreground">
           Review Room holds all {totalInReviewRoom} photo set{totalInReviewRoom === 1 ? "" : "s"} in QC →
         </Link>
       </p>
@@ -1624,7 +1631,7 @@ function MonthlyCard({ d }: { d: OpsDay }) {
 // One open loop — the row Kyle acts on. View + Handled on every row (Jordan,
 // Sep 1) rather than one big link; the Other tab hides comm-type tasks, so the
 // only honest "view" for an unanchored loop is the task deep-link.
-function LoopRow({ l, now, muted }: { l: OpsLoop; now: Date; muted?: boolean }) {
+function LoopRow({ l, now, muted, includeTest = false }: { l: OpsLoop; now: Date; muted?: boolean; includeTest?: boolean }) {
   return (
     <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2", muted && "bg-surface-2/40")}>
       <div className="min-w-0 flex-1 basis-56">
@@ -1643,13 +1650,14 @@ function LoopRow({ l, now, muted }: { l: OpsLoop; now: Date; muted?: boolean }) 
           Other tab's deep link. */}
       <LoopActions
         taskId={l.taskId}
-        viewHref={
+        viewHref={homeRecordHref(
           l.source === "slack"
             ? `/tasks?tab=slack&task=${l.taskId}`
             : l.projectId
               ? `/projects/${l.projectId}`
-              : `/tasks?tab=other&task=${l.taskId}`
-        }
+              : `/tasks?tab=other&task=${l.taskId}`,
+          includeTest,
+        )}
       />
     </div>
   );
@@ -1667,7 +1675,7 @@ function LoopRow({ l, now, muted }: { l: OpsLoop; now: Date; muted?: boolean }) 
  * the /tasks board hides these task types (BOARD_HIDDEN_TYPES), so an overflow
  * link there would land on an empty page.
  */
-function LoopsCard({ d }: { d: OpsDay }) {
+function LoopsCard({ d, includeTest = false }: { d: OpsDay; includeTest?: boolean }) {
   const now = new Date(d.nowISO);
   const { act, later, elsewhere } = splitLoops(d.openLoops);
   if (act.length + later.length + elsewhere.length === 0) {
@@ -1702,7 +1710,7 @@ function LoopsCard({ d }: { d: OpsDay }) {
           <CheckCircle2 className="size-4" /> Nothing of yours is overdue or promised today.
         </p>
       ) : (
-        shown.map((l) => <LoopRow key={l.taskId} l={l} now={now} />)
+        shown.map((l) => <LoopRow key={l.taskId} l={l} now={now} includeTest={includeTest} />)
       )}
 
       {moreCount > 0 && (
@@ -1716,11 +1724,11 @@ function LoopsCard({ d }: { d: OpsDay }) {
             )}
           </summary>
           <div className="space-y-2 border-t border-border p-2.5">
-            {restOfAct.map((l) => <LoopRow key={l.taskId} l={l} now={now} />)}
+            {restOfAct.map((l) => <LoopRow key={l.taskId} l={l} now={now} includeTest={includeTest} />)}
             {later.length > 0 && (
               <>
                 <p className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Not due yet</p>
-                {later.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted />)}
+                {later.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted includeTest={includeTest} />)}
               </>
             )}
             {elsewhere.length > 0 && (
@@ -1728,7 +1736,7 @@ function LoopsCard({ d }: { d: OpsDay }) {
                 <p className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
                   With someone else — chase, don&rsquo;t do
                 </p>
-                {elsewhere.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted />)}
+                {elsewhere.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted includeTest={includeTest} />)}
               </>
             )}
           </div>
@@ -1737,7 +1745,7 @@ function LoopsCard({ d }: { d: OpsDay }) {
 
       {slackCount > 0 && (
         <Link
-          href="/tasks?tab=slack"
+          href={homeRecordHref("/tasks?tab=slack", includeTest)}
           className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline"
         >
           {slackCount} of these came in on Slack — open the Slack asks list
@@ -2067,7 +2075,7 @@ function Pill({ warn, label, href }: { warn: boolean; label: string; href: strin
 // monthly package with four videos shows four rows, each with its own button.
 // ---------------------------------------------------------------------------
 
-function VideoReviewCard({ d, showReady = true }: { d: OpsDay; showReady?: boolean }) {
+function VideoReviewCard({ d, showReady = true, includeTest = false }: { d: OpsDay; showReady?: boolean; includeTest?: boolean }) {
   const now = new Date(d.nowISO);
   const { waiting, revising } = d.videoReview;
   return (
@@ -2081,7 +2089,7 @@ function VideoReviewCard({ d, showReady = true }: { d: OpsDay; showReady?: boole
         <div>
           <ReadyToSendHeading n={d.readySend.ready.length} />
           <div className="mt-2">
-            <ReadyToSendCard board={d.readySend} />
+            <ReadyToSendCard board={d.readySend} includeTest={includeTest} />
           </div>
         </div>
       )}

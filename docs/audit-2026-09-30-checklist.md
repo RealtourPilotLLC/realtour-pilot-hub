@@ -39,6 +39,12 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Operating improvements
 
+Latest C14 composition: Home's explicit `?test=1` view and supported scoped
+links/Review Room return passed signed isolated count/link checks 22/0
+(`/tmp/c14-home-test-view-reviewed/`), lint/diff and source review. Office
+Editing/Schedule scope parity is the next concrete slice; browser identity and
+scope acceptance remain open. Exact cut links and Finance definitions are intact.
+
 | ID | State | Next evidence |
 |---|---|---|
 | W01 | Partial; month view and repair verified in isolated demo | `/edit/[id]` shows only same-client, explicitly linked month jobs the viewer may open, including separate Pro appointments, dates/addresses, topic pairing status and each job's own raw folder. Package allowance and output-row counts stay separate, with mismatch/incomplete-filming warnings; no slot is changed. Staff Sessions offers an explicit same-client unlinked-video-job link with reason, conflict refusal and activity log. Isolated W01 drill 15/0 covers two-project and one-project/two-appointment Pro, editor scope, legacy cuts with no output pointers, unpaired cuts, cross-client/conflicting-record refusal and audit trail; typecheck, focused lint and build pass. Browser replay: Avery month summary matched the review panel (4 submitted, 3 approved), desktop and 390px layout passed; a disposable unlinked TEST job was linked through the staff form, showed success and appeared under September, with missing Aryeo appointment still marked unverified. Demo was reset after the check. Live read-only Sarina: allowance 4, two linked jobs with 9 output slots, 2 delivered, no confirmed filmed/topic binding; Kyle must reconcile actual owed scope and per-video source before any live row repair. Normal authenticated role route replay remains. |

@@ -42,7 +42,7 @@ for normal authorized client/editor access.
 | UA11 — keyboard | Existing isolated dialog/drawer walkthrough; shared queue menu source proof | Engineering: normal-role pending/failure menus and dialogs; focus return, Escape, Tab and screen reader |
 | UA12 — responsive/contrast | Earlier fenced desktop/390px samples; partial token improvements | Engineering: fixed fixtures at 375/390/768/laptop, light/dark, 200% zoom and long names; capture matching screenshots and measure rendered contrast |
 | UA13 — phone file save | Honest download wording implemented; no real-device proof | Engineering with iPhone and Android: interruption/retry, correct approved file, save/share instructions; no Photos auto-save claim |
-| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results | Engineering: normal browser identity, filtered-empty/read failure/rollout-disabled states; consistent Home test view still open |
+| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; explicit Home test-view links 22/0 | Engineering: normal browser identity, filtered-empty/read failure/rollout-disabled states; Office Editing/Schedule fixture scope still open |
 
 ## Approval and external evidence needed
 
