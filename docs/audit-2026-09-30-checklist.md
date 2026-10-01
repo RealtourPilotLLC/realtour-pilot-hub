@@ -72,6 +72,12 @@ scope acceptance remain open. Exact cut links and Finance definitions are intact
 
 ## Current checks and environment
 
+- **U5 automation confirmation:** errors identify the attempted stage, partial
+  backlog saves require a fresh recorded batch, unread transcript audiences and
+  stale responses cannot confirm activation. Pure fake-action/SSR 12/0,
+  lint/diff and focused independent review pass. Switches/actions/rollout remain
+  unchanged; stable build and browser pending/failure acceptance remain open.
+
 - **U5 schedule/email receipts:** stable rows and normalized snapshot receipts
   preserve newer edits; saved-empty/rota/preset and enabled flags remain distinct.
   Isolated 21/0, lint/diff and focused review pass. Final stable integration gate

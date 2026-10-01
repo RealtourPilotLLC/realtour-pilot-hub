@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — truthful automation confirmation failures
+
+Automation confirmation catches thrown action responses and names the exact
+attempted stage. A backlog response lost before any switch call says the backlog
+is unknown and the switch was not attempted. A saved backlog followed by a refused
+or unknown switch names the saved choice; another mutation is blocked until a
+reload reads the current recorded state/batch. Failed or still-loading transcript
+audience reads cannot confirm activation, stale reads cannot replace a newly
+opened confirmation, and pending changes cannot be dismissed. Controls use shared
+44px buttons and readable state/history text. Existing actions, confirmation
+effects, owner permissions, rollout, defaults and worker gates are unchanged.
+
+Pure fake-action and first-paint fixture passed 12/0
+(`/tmp/ops-u5-automation-change-feedback/`), lint/diff and focused independent
+review passed after repairing the stage-attribution defect it found. The initial
+runner invocation used the wrong path, then tsx's IPC socket was sandbox-refused;
+the authorized isolated retry passed. No actual action, switch or provider write
+was called. Stable integration build and browser failure/pending checks remain.
+
 ### U5 checkpoint — schedule and email normalized save receipts
 
 Quiet-schedule rows retain a stable person key when the returned save timestamp

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { AlertTriangle, CircleSlash, Clock, Power, ShieldAlert } from "lucide-react";
 import { setAutomationAction } from "@/app/settings/programActions";
 import { loadTranscriptQueueBatch, setTranscriptBacklogAction } from "@/app/settings/calendlyActions";
@@ -9,6 +9,9 @@ import { ProgramRolloutPanel } from "@/components/settings/ProgramRolloutPanel";
 import { AUTOMATION_EFFECTS } from "@/lib/programAutomationCopy";
 import type { TranscriptQueueBatch } from "@/lib/transcriptJobs";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/Action";
+import { SaveStatus } from "@/components/ui/SaveStatus";
+import { attemptAutomationChange, transcriptBatchReadable, type AutomationChangeResult } from "@/lib/automationChange";
 
 // ---------------------------------------------------------------------------
 // THE SWITCHES (spec §13). One row per automation key, whatever the database
@@ -87,12 +90,12 @@ function ScriptReleaseSummary({ rows }: { rows: AutomationUi[] }) {
   ];
   return (
     <div className="rounded-xl border border-border bg-surface-2/40 p-3">
-      <p className="text-[12px] font-semibold">Script release: three separate controls</p>
+      <p className="text-[14px] font-semibold">Script release: three separate controls</p>
       <ul className="mt-1.5 space-y-1.5">
         {items.map((i) => (
-          <li key={i.key} className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+          <li key={i.key} className="flex flex-wrap items-baseline gap-x-2 text-[14px]">
             <span className="font-medium">{i.label}</span>
-            <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", i.state === "on" ? "bg-success/15 text-success" : i.state === "off" ? "bg-surface-2 text-muted" : "bg-warning/15 text-warning")}>{i.state}</span>
+            <span className={cn("rounded-full px-2 py-0.5 text-[13px] font-semibold", i.state === "on" ? "bg-success/15 text-success" : i.state === "off" ? "bg-surface-2 text-muted" : "bg-warning/15 text-warning")}>{i.state}</span>
             <span className="text-muted">{i.note}</span>
           </li>
         ))}
@@ -102,7 +105,6 @@ function ScriptReleaseSummary({ rows }: { rows: AutomationUi[] }) {
 }
 
 const when = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null);
-const btn = "rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50";
 
 /**
  * The batch the call processor would face, read when the owner opens its
@@ -113,7 +115,7 @@ function TranscriptBatchConfirm({ batch, include, setInclude }: { batch: Transcr
   if (!batch) return <p className="mt-1 text-muted">Reading what is queued…</p>;
   if ("error" in batch) return <p className="mt-1 text-warning">{batch.error} Read Settings → Calendly & calls before turning this on.</p>;
   return (
-    <div data-transcript-batch className="mt-2 space-y-1 rounded-lg border border-border bg-surface/60 p-2 text-[12px]">
+    <div data-transcript-batch className="mt-2 space-y-1 rounded-lg border border-border bg-surface/60 p-2 text-[14px]">
       <p className="font-medium">{batch.queuedNowLine}</p>
       <p className="text-muted">{batch.line}</p>
       {batch.heldBacklog > 0 && batch.backlog.source !== "include_all" && (
@@ -127,19 +129,32 @@ function TranscriptBatchConfirm({ batch, include, setInclude }: { batch: Transcr
 }
 
 export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]; isOwner: boolean }) {
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<AutomationChangeResult | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [batch, setBatch] = useState<TranscriptQueueBatch | { error: string } | null>(null);
   const [includeBacklog, setIncludeBacklog] = useState(false);
   const [busy, start] = useTransition();
+  const batchRead = useRef(0);
   const openConfirm = (key: string, open: boolean) => {
+    const readId = ++batchRead.current;
     setConfirming(open ? key : null);
     if (open && key === "transcript_jobs") {
       setBatch(null);
       setIncludeBacklog(false);
-      loadTranscriptQueueBatch().then(setBatch).catch(() => setBatch({ error: "What is queued could not be read." }));
+      loadTranscriptQueueBatch().then((value) => { if (readId === batchRead.current) setBatch(value); }).catch(() => { if (readId === batchRead.current) setBatch({ error: "What is queued could not be read." }); });
     }
   };
+  const change = (key: string, enabled: boolean) => start(async () => {
+    if (enabled && key === "transcript_jobs" && !transcriptBatchReadable(batch)) return;
+    setNote(null);
+    const result = await attemptAutomationChange({
+      includeBacklog: enabled && key === "transcript_jobs" && includeBacklog,
+      setBacklog: () => setTranscriptBacklogAction("include"),
+      setSwitch: () => setAutomationAction(key, enabled),
+    });
+    setNote(result);
+    if (result.ok) { ++batchRead.current; setConfirming(null); }
+  });
   const on = rows.filter((r) => r.enabled).length;
   const never = rows.filter((r) => r.missing).length;
 
@@ -153,7 +168,7 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
           ? <>Nothing on the content program runs by itself. <span className="font-medium text-foreground">{never} of {rows.length}</span> have never been configured at all — no row exists for them, which is the same as off and is shown as such.</>
           : <><span className="font-semibold text-foreground">{on} of {rows.length}</span> are switched on. {never > 0 && `${never} have never been configured.`}</>}
       </p>
-      {note && <p className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-[13px]">{note}</p>}
+      {note && <div className="rounded-lg border border-border bg-surface-2 px-3 py-2"><SaveStatus state={note.ok ? "info" : "error"} message={note.message} />{note.needsReload && <Button variant="secondary" onClick={() => window.location.reload()} className="mt-2">Reload recorded state</Button>}</div>}
       <ScriptReleaseSummary rows={rows} />
 
       <div className="divide-y divide-border rounded-xl border border-border">
@@ -173,27 +188,28 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
                   ? <Power className="size-4 shrink-0 text-success" />
                   : r.missing ? <CircleSlash className="size-4 shrink-0 text-muted-2" /> : <Power className="size-4 shrink-0 text-muted-2" />}
                 <span className="text-sm font-medium">{e?.title ?? r.key}</span>
-                <code className="rounded bg-surface-2 px-1 text-[10px] text-muted-2">{r.key}</code>
-                {e?.reaches === "clients" && <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">reaches clients</span>}
-                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                <code className="rounded bg-surface-2 px-1 text-[13px] text-muted-2">{r.key}</code>
+                {e?.reaches === "clients" && <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[13px] font-semibold text-warning">reaches clients</span>}
+                <span className={cn("rounded-full px-2 py-0.5 text-[13px] font-semibold",
                   blockedBySwitch ? "bg-warning/15 text-warning" : r.enabled ? "bg-success/15 text-success" : r.missing ? "bg-surface-2 text-muted-2" : "bg-surface-2 text-muted")}>
                   {blockedBySwitch ? "on, but blocked" : r.enabled ? "on" : r.missing ? "never configured" : "off"}
                 </span>
                 {isOwner && (
-                  <button
-                    className={cn(btn, "ml-auto", r.enabled ? "border border-border text-muted hover:bg-surface-2 hover:text-foreground" : "bg-brand text-white")}
-                    disabled={busy}
+                  <Button
+                    variant={r.enabled || isConfirming ? "secondary" : "primary"}
+                    className="ml-auto"
+                    disabled={busy || note?.needsReload}
                     onClick={() => {
-                      if (r.enabled) start(async () => { const x = await setAutomationAction(r.key, false); setNote(x.message); });
+                      if (r.enabled) change(r.key, false);
                       else openConfirm(r.key, !isConfirming);
                     }}
                   >
                     {r.enabled ? "Turn off" : isConfirming ? "Cancel" : "Turn on"}
-                  </button>
+                  </Button>
                 )}
               </div>
 
-              <p className="mt-1 text-[12px] text-muted">
+              <p className="mt-1 text-[14px] text-muted">
                 {r.missing
                   ? "No row exists for this in the database. Nothing has ever run it, and nothing can until it is switched on here."
                   : r.enabled
@@ -202,7 +218,7 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
                 {r.lastRunAtISO && <> · <Clock className="inline size-3" /> last ran {when(r.lastRunAtISO)}</>}
               </p>
               {blockedBySwitch && (
-                <p className="mt-0.5 text-[12px] text-warning">
+                <p className="mt-0.5 text-[14px] text-warning">
                   <AlertTriangle className="mr-1 inline size-3" />Has no effect until {offDeps.map((d) => `“${AUTOMATION_EFFECTS[d].title}”`).join(" and ")} {offDeps.length > 1 ? "are" : "is"} on as well.
                   {" "}Connections, settings and scope are checked in <a href="#readiness" className="font-medium text-brand hover:underline">Readiness</a> at the top.
                 </p>
@@ -210,11 +226,11 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
               {/* A switch that is off is not failing: its last error is history,
                   said in grey, not an amber fault (the Sep 23 regression). */}
               {r.lastError && (
-                <p className={cn("mt-0.5 text-[12px]", r.enabled ? "text-warning" : "text-muted-2")}>
+                <p className={cn("mt-0.5 text-[14px]", r.enabled ? "text-warning" : "text-muted-2")}>
                   <AlertTriangle className="mr-1 inline size-3" />{r.enabled ? "last run failed" : "before it was turned off, its last run failed"} {when(r.lastErrorAtISO)}: {r.lastError.slice(0, 200)}
                 </p>
               )}
-              {e?.blocked && <p className="mt-0.5 text-[12px] text-muted-2"><ShieldAlert className="mr-1 inline size-3" />{e.blocked}</p>}
+              {e?.blocked && <p className="mt-0.5 text-[14px] text-muted-2"><ShieldAlert className="mr-1 inline size-3" />{e.blocked}</p>}
 
               {/* THE CONFIRM — it names what will start happening. */}
               {isConfirming && e && (
@@ -234,35 +250,26 @@ export function ProgramAutomationPanel({ rows, isOwner }: { rows: AutomationUi[]
                     </p>
                   )}
                   {r.key === "transcript_jobs" && <TranscriptBatchConfirm batch={batch} include={includeBacklog} setInclude={setIncludeBacklog} />}
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      className={cn(btn, "bg-brand text-white")}
-                      disabled={busy || (r.key === "transcript_jobs" && !batch)}
-                      onClick={() => start(async () => {
-                        // The backlog choice first: if it fails the switch stays
-                        // off, and the default (skip the older jobs) is the safe one.
-                        if (r.key === "transcript_jobs" && includeBacklog) {
-                          const b = await setTranscriptBacklogAction("include");
-                          if (!b.ok) { setNote(b.message); return; }
-                        }
-                        const x = await setAutomationAction(r.key, true);
-                        setNote(x.message); if (x.ok) setConfirming(null);
-                      })}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Button
+                      busy={busy} busyLabel="Checking change…"
+                      disabled={note?.needsReload || (r.key === "transcript_jobs" && !transcriptBatchReadable(batch))}
+                      onClick={() => change(r.key, true)}
                     >
                       Yes — turn it on
-                    </button>
-                    <button className={cn(btn, "border border-border text-muted hover:bg-surface-2")} onClick={() => setConfirming(null)}>Not yet</button>
+                    </Button>
+                    <Button variant="secondary" disabled={busy} onClick={() => openConfirm(r.key, false)}>Not yet</Button>
                   </div>
                 </div>
               )}
 
               {r.key === "reminders" && (
-                <p className="mt-0.5 text-[12px] text-muted-2">
+                <p className="mt-0.5 text-[14px] text-muted-2">
                   The reminder policy, a dry run of what would go out, and the send ledger are in <a href="#program-reminders" className="font-medium text-brand hover:underline">Program reminders</a> below.
                 </p>
               )}
               {(r.key === "session_booking" || r.key === "address_sync" || r.key === "call_booking") && (
-                <p className="mt-0.5 text-[12px] text-muted-2">
+                <p className="mt-0.5 text-[14px] text-muted-2">
                   Its TEST fixtures are in <a href="#hub-write-scopes" className="font-medium text-brand hover:underline">Who the hub may write for</a>; its real clients are the program pilot&rsquo;s, with bookings ticked, in <a href="#program-rollout" className="font-medium text-brand hover:underline">Who the program may reach</a>.
                 </p>
               )}
