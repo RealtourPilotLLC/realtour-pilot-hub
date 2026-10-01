@@ -2,6 +2,40 @@
 
 ## Sep 30 takeover addendum
 
+### Connected client journey checkpoint — exact cut and issue approval guards
+
+One isolated normal named-pilot scenario now connects actual one-time login and
+membership, a discovery-pinned human strategy/topic-bank release, a later written
+month, exact script release/acceptance, address-bound filming request, Kyle's
+booking task, reconciled external appointment input, Harrison's assigned two-output
+handoff, Kim's manual Start/Pause, James's v1 revision and checked v2 approval,
+verified final-file fixture, client decisions/download and foreign/revoked denial.
+The first required call has its prior separate 25/0 evidence; its completed
+September call is an explicit fixture precondition, not another new browser pass.
+
+The connected scenario exposed two action gaps: historical CHANGES_REQUESTED cuts
+could still be approved after a replacement entered, and client approval could
+claim a window while its final rendition was processing. Staff approval now reads
+the canonical modern/legacy chain again inside a short cut/parent-lock transaction.
+Client approval uses the existing canonical finishing rule before claiming a
+window; genuine prior decisions and delivered/original-file fallback stay intact.
+Post-verdict issue verification also matches the captured addressed version/time,
+text and duplicate identity, so an accepted newer check cannot be verified by the
+old verdict. Assignment/classification updates do not invalidate legacy fixes.
+
+Connected signed/action scenario passed 19/0
+(`/tmp/client-production-journey-issue-race/client-production-journey.ts.log`).
+Focused multi-session PostgreSQL regression passed 11/0
+(`/tmp/client-production-journey-issue-race-final/current-cut-approval-regression.ts_postgres.log`):
+modern/legacy replacement entry, parent-insert fencing, post-verdict v2 rebinding,
+changed ask text, legacy metadata, prior verified history and final-file
+failure/duplicate/fallback. Typecheck and focused lint passed; root reviewed the
+source and exact race inputs. All commands completed. Fixtures, model output,
+booking input, providers and final bytes are isolated/fake. No real booking,
+message, financial action, production write, deployment or activation occurred.
+Normal browser/phone/raw upload, real model/rendition/provider handoff, destination
+policy, schema release and client launch preparation remain required.
+
 ### U5 checkpoint — rollout/write-scope read and change recovery
 
 Loaded rollout/write-scope context and confirmed change receipts survive a failed

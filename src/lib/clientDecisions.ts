@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { cutIdentityHash } from "@/lib/cutTranscripts";
-import { cutChainOf, stableCutIdentity } from "@/lib/cutEntitlement";
+import { clientCutFiles, cutChainOf, stableCutIdentity } from "@/lib/cutEntitlement";
 import { submissionForEnrollment, type PortalViewer } from "@/lib/portal";
 import { actorLabel, actorLabelResolved } from "@/lib/portalAccess";
 import { cutReleasedAt } from "@/lib/contentVideos";
@@ -514,6 +514,27 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
   const history = await cutHistory(viewer, submissionId);
   const me = history.find((h) => h.submissionId === submissionId);
   if (!me || !me.isCurrent) return { ok: false, message: "A newer version of this video has replaced this one — approve the new version instead." };
+  // A genuine prior approval is an idempotent receipt, even if a later
+  // finishing attempt is held or its file lookup is temporarily unavailable.
+  // An orphan claimed window still needs a new approval and passes the gate.
+  const priorWindow = await prisma.contentReviewWindow.findUnique({ where: { submissionId }, select: { state: true } });
+  if (priorWindow?.state === "APPROVED" || priorWindow?.state === "AUTO_APPROVED") {
+    const live = await prisma.clientDecision.findFirst({
+      where: { submissionId, enrollmentId: viewer.enrollment.id, decision: "APPROVE", receiptState: { not: "SUPERSEDED" } },
+      orderBy: { decidedAt: "desc" }, select: { id: true, basis: true },
+    });
+    if (live) return { ok: true, decisionId: live.id, duplicate: true, message: live.basis === "AUTO_EXPIRY" ? "Already approved — this version was approved when its review window closed." : "Already approved — this version is marked as yours." };
+  }
+  // Use the same final-file rule as the client player and download. Refuse
+  // before ensureWindow/claimWindow: a held render or a failed read must not
+  // claim a window or mint the approval that would itself unlock the export.
+  try {
+    if ((await clientCutFiles([submissionId])).get(submissionId)?.kind === "finishing") {
+      return { ok: false, message: "This video is still being finished — approve it when the final version is ready." };
+    }
+  } catch {
+    return { ok: false, message: "We couldn't confirm this video's final file — try again in a minute. Nothing was approved." };
+  }
   const open = await prisma.portalComment.findMany({ where: { submissionId, enrollmentId: viewer.enrollment.id, status: "OPEN", parentId: null }, select: { id: true } });
   if (open.length > 0 && choice === "NONE") return { ok: false, message: "You have notes on this video — tell us whether to send them along or set them aside, then approve." };
   const staff = viewer.actor.kind === "STAFF";

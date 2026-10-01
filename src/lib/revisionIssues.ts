@@ -579,7 +579,16 @@ export async function approvalGate(
       for (const i of toVerify) {
         if (listed && i.state === "ADDRESSED" && !listed.has(i.id)) continue;
         const won = await prisma.revisionIssue.updateMany({
-          where: { id: i.id, state: i.state },
+          // The verdict has already won its cut. A replacement's accepted
+          // check may now rebind ADDRESSED without changing state, or the
+          // desk may split/reword the ask. Verify only the declaration and
+          // text this gate read; assignment/classification edits need not
+          // invalidate it, so updatedAt alone is too broad a condition.
+          where: {
+            id: i.id, state: i.state,
+            addressedInSubmissionId: i.addressedInSubmissionId, addressedAt: i.addressedAt,
+            originalText: i.originalText, summary: i.summary, duplicateOfId: i.duplicateOfId,
+          },
           data: { state: "VERIFIED", verifiedAt: now, verifiedBy: actor.name.slice(0, 120), verifiedInSubmissionId: cut.id },
         });
         if (won.count) {

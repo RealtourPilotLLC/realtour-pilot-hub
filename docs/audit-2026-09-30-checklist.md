@@ -74,6 +74,16 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **Connected client production handoff:** signed normal named-pilot action
+  scenario 19/0 now couples login, strategy/bank, written month, exact scripts,
+  filming task/provider input, two-output creative handoff, manual Start/Pause,
+  James's revision, checked v2, final fixture, client approval/download and
+  revocation. New stale staff cut and client finishing guards plus post-verdict
+  issue-version CAS passed real multi-session PostgreSQL 11/0, typecheck/lint
+  and focused source review. See handoff for exact logs and fixture preconditions.
+  This closes server-action coupling gaps; browser, real providers/media,
+  production schema, policy and launch/activation acceptance remain open.
+
 - **U5 rollout/write-scope recovery:** loaded details, confirmed receipts and
   unrelated drafts survive read failures; unknown mutations require a successful
   read-only Refresh. Partial access-release and stale preview context are explicit.

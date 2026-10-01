@@ -19,6 +19,7 @@ import { displayNameFor } from "@/lib/actorName";
 import { exportRefusalMessage, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
 // Type-only (erased at build): the shape the withdraw/move controls render.
 import type { CutMoveOption, CutTakeBackInfo } from "@/components/review/types";
+import type { Prisma } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // Mutations for the STANDALONE Review Room (/review). The loop:
@@ -42,6 +43,26 @@ const streetOf = (title?: string | null) => (title || "this job").split(",")[0].
 // legacy folder rows by file path — see reviewCuts.cutKeyOf.
 const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
   s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
+
+/** The standing round for an office verdict, using the library's identity
+ * for legacy filenames too. Reserved uploads and checks still held with the
+ * editor have not entered review and cannot replace its standing round. */
+async function currentReviewCut(
+  submission: { id: string; projectId: string; deliverableId: string | null; slot: number; assetPath: string | null; fileName: string | null },
+  db: Pick<Prisma.TransactionClient, "reviewSubmission"> = prisma,
+): Promise<boolean> {
+  const { videoCutKey } = await import("@/lib/contentVideos");
+  const { NOT_A_CUT } = await import("@/lib/reviewCuts");
+  const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
+  const key = videoCutKey(submission);
+  const rounds = await db.reviewSubmission.findMany({
+    where: { projectId: submission.projectId, status: { notIn: [...NOT_A_CUT] } },
+    orderBy: [{ round: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    select: { id: true, deliverableId: true, slot: true, assetPath: true, fileName: true, status: true, selfCheckId: true, selfCheckedAt: true },
+  });
+  const chain = rounds.filter((r) => !isHeldForSelfCheck(r) && videoCutKey(r) === key);
+  return chain[chain.length - 1]?.id === submission.id;
+}
 
 function refresh(projectId: string) {
   revalidatePath("/review");
@@ -1024,6 +1045,12 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   if (isHeldForSelfCheck(submission)) {
     return { ok: false, message: "This version is waiting on the editor's check — it isn't in review yet, so there's nothing to approve." };
   }
+  // Older CHANGES_REQUESTED rows retain their recorded verdict. Once their
+  // replacement enters review they must refuse a stale Approve too, before
+  // the issue gate can verify fixes against that historical version.
+  if (!(await currentReviewCut(submission))) {
+    return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };
+  }
   // Nobody approves their own version, whatever seat or role they hold (§8.1).
   {
     const { refuseOwnWork } = await import("@/lib/reviewerAssignment");
@@ -1049,11 +1076,27 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // caller that actually moved the cut. (Sep 20 acceptance journeys: the drill
   // can only press twice seconds apart, so the sequential guards are proved and
   // this is the part that has to hold when the presses overlap.)
-  const won = await prisma.reviewSubmission.updateMany({
-    where: { id: submissionId, status: submission.status },
-    // decidedByUserId (Sep 28): the login behind the name, on every verdict.
-    data: { status: "APPROVED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId },
+  const won = await prisma.$transaction(async (tx) => {
+    // A replacement can enter while the reviewer checks the file or issues.
+    // Lock existing rounds against entry/status writes, then the parent
+    // against new cut inserts (its FK takes a key-share lock). Lock the rounds
+    // again to include any insert committed while acquiring the parent fence.
+    // Cut-first follows deleteCutRow's cut → Activity(project FK) lock order.
+    // Then re-read the canonical chain. This short transaction contains no provider work and
+    // changes no earlier verdict or sibling slot. It closes the read/CAS gap
+    // for legacy filename chains as well as deliverable/slot chains.
+    await tx.$queryRaw`SELECT "id" FROM "ReviewSubmission" WHERE "projectId" = ${submission.projectId} ORDER BY "id" FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${submission.projectId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "ReviewSubmission" WHERE "projectId" = ${submission.projectId} ORDER BY "id" FOR UPDATE`;
+    if (!(await currentReviewCut(submission, tx))) return { count: 0, stale: true };
+    const moved = await tx.reviewSubmission.updateMany({
+      where: { id: submissionId, status: submission.status },
+      // decidedByUserId (Sep 28): the login behind the name, on every verdict.
+      data: { status: "APPROVED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId },
+    });
+    return { ...moved, stale: false };
   });
+  if (won.stale) return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };
   if (won.count === 0) {
     return {
       ok: false,
