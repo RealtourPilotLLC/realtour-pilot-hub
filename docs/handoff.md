@@ -2,6 +2,18 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — appointment controls
+
+Existing appointment detail/reschedule/cancel controls now use shared native
+Button/TextField, associated labels, readable facts/status, 44px checkbox/brief
+targets, keyboard focus and wrapping. The input explicitly names its existing
+device-local timezone while displayed dates remain Eastern; conversion and
+every provider payload/condition are unchanged. Focused lint/diff and root
+source review passed. Browser/timezone/theme acceptance remains open.
+Confirmed preexisting `run()` rejection feedback is the next bounded recovery
+slice; this presentation checkpoint does not claim it fixed provider ambiguity.
+No appointment or email/provider action was called.
+
 ### Oct 1 U1/U3 checkpoint — shared clipboard and Markdown controls
 
 Shared CopyButton awaits a supported clipboard write, reports denied/unavailable

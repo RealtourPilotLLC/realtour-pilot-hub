@@ -4,6 +4,8 @@ import { useState, useTransition } from "react";
 import { Calendar, Clock, RefreshCw, XCircle, Loader2, AlertTriangle, ChevronDown } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Action";
+import { TextField } from "@/components/ui/FormField";
 import { rescheduleAppointmentAction, cancelAppointmentAction } from "@/app/actions";
 
 export type ApptView = {
@@ -98,17 +100,17 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
   return (
     <div className="px-5 py-4">
       {/* Header */}
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Calendar className="size-4 text-muted" />
+          <div className="flex items-start gap-2 text-base font-medium leading-relaxed">
+            <Calendar className="mt-1 size-4 shrink-0 text-muted" />
             {fmt(appt.startAt) ?? "Unscheduled"}
           </div>
-          {appt.title && <div className="mt-0.5 truncate text-xs text-muted">{appt.title}</div>}
+          {appt.title && <div className="mt-1 break-words text-sm leading-relaxed text-muted">{appt.title}</div>}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2">
           {appt.assignedTo && (
-            <span className="flex items-center gap-1.5 text-xs text-muted">
+            <span className="flex min-w-0 items-center gap-2 break-words text-sm text-muted">
               <Avatar name={appt.assignedTo.name} color={appt.assignedTo.avatarColor} size={20} />
               {appt.assignedTo.name.split(" ")[0]}
             </span>
@@ -123,11 +125,11 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
       </div>
 
       {/* All fields */}
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
+      <div className="mt-4 grid grid-cols-1 gap-x-4 gap-y-3 text-sm leading-relaxed min-[360px]:grid-cols-2 sm:grid-cols-3">
         {details
           .filter(([, v]) => v)
           .map(([k, v]) => (
-            <div key={k}>
+            <div key={k} className="min-w-0 break-words">
               <div className="text-muted-2">{k}</div>
               <div className="font-medium text-foreground/85">{v}</div>
             </div>
@@ -136,11 +138,11 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
 
       {/* Shoot brief (customer, lockbox, special instructions) */}
       {appt.description && (
-        <details className="mt-3 rounded-lg bg-surface-2 px-3 py-2 [&_summary]:list-none">
-          <summary className="flex cursor-pointer items-center gap-1 text-xs font-semibold text-foreground/80">
-            <ChevronDown className="size-3.5" /> Shoot brief
+        <details className="mt-4 rounded-lg bg-surface-2 px-3 py-2 [&_summary]:list-none">
+          <summary className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-foreground/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+            <ChevronDown className="size-4 shrink-0" /> Shoot brief
           </summary>
-          <pre className="mt-2 whitespace-pre-wrap font-sans text-xs leading-relaxed text-foreground/80">
+          <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground/80">
             {cleanBrief(appt.description)}
           </pre>
         </details>
@@ -151,79 +153,76 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
         <div className="mt-3 border-t pt-3">
           <div className="flex flex-wrap items-center gap-2">
             {appt.canReschedule && (
-              <button
+              <Button variant="secondary"
                 onClick={() => {
                   setShowReschedule((s) => !s);
                   setConfirmCancel(false);
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
               >
-                <RefreshCw className="size-3.5" /> Reschedule
-              </button>
+                <RefreshCw className="size-4 shrink-0" /> Reschedule
+              </Button>
             )}
             {appt.canCancel && !confirmCancel && (
-              <button
+              <Button variant="secondary"
                 onClick={() => {
                   setConfirmCancel(true);
                   setShowReschedule(false);
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger-soft"
+                className="text-danger hover:bg-danger-soft"
               >
-                <XCircle className="size-3.5" /> Cancel shoot
-              </button>
+                <XCircle className="size-4 shrink-0" /> Cancel shoot
+              </Button>
             )}
           </div>
 
           {/* Reschedule form */}
           {showReschedule && (
-            <div className="mt-3 space-y-2 rounded-lg border bg-surface-2 p-3">
-              <label className="text-xs font-medium">New date &amp; time</label>
-              <input
+            <div className="mt-3 space-y-3 rounded-lg border border-border bg-surface-2 p-3">
+              <TextField
+                id={`appointment-start-${appt.id}`}
+                label="New date & time"
+                hint="This field uses your device's local time zone. Appointment times above are shown in Eastern time."
                 type="datetime-local"
                 value={newStart}
                 onChange={(e) => setNewStart(e.target.value)}
-                className="w-full rounded-lg border bg-surface px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
               />
-              <label className="flex items-center gap-2 text-xs text-muted">
-                <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+              <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm leading-relaxed text-muted">
+                <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} className="size-5 shrink-0 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
                 Notify the customer by email
               </label>
-              <button
+              <Button
                 disabled={pending || !newStart}
                 onClick={() => run(() => rescheduleAppointmentAction(appt.id, new Date(newStart).toISOString(), notify))}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
               >
-                {pending ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                {pending ? <Loader2 className="size-4 shrink-0 animate-spin motion-reduce:animate-none" /> : <RefreshCw className="size-4 shrink-0" />}
                 Confirm reschedule
-              </button>
+              </Button>
             </div>
           )}
 
           {/* Cancel confirm */}
           {confirmCancel && (
-            <div className="mt-3 space-y-2 rounded-lg border border-danger/30 bg-danger-soft p-3">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-danger">
-                <AlertTriangle className="size-3.5" /> Cancel this shoot in Aryeo? This can&apos;t be undone here.
+            <div className="mt-3 space-y-3 rounded-lg border border-danger/30 bg-danger-soft p-3">
+              <div className="flex items-start gap-2 text-sm font-medium leading-relaxed text-danger">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" /> Cancel this shoot in Aryeo? This can&apos;t be undone here.
               </div>
-              <label className="flex items-center gap-2 text-xs text-muted">
-                <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+              <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm leading-relaxed text-muted">
+                <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} className="size-5 shrink-0 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
                 Notify the customer by email
               </label>
-              <div className="flex gap-2">
-                <button
+              <div className="flex flex-wrap gap-2">
+                <Button variant="danger"
                   disabled={pending}
                   onClick={() => run(() => cancelAppointmentAction(appt.id, notify))}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
                 >
-                  {pending ? <Loader2 className="size-3.5 animate-spin" /> : <XCircle className="size-3.5" />}
+                  {pending ? <Loader2 className="size-4 shrink-0 animate-spin motion-reduce:animate-none" /> : <XCircle className="size-4 shrink-0" />}
                   Yes, cancel shoot
-                </button>
-                <button
+                </Button>
+                <Button variant="secondary"
                   onClick={() => setConfirmCancel(false)}
-                  className="rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface"
                 >
                   Keep it
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -231,18 +230,20 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
       )}
 
       {msg && (
-        <p className={`mt-2 text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.text}</p>
+        <p role={msg.ok ? "status" : "alert"} aria-live={msg.ok ? "polite" : "assertive"} aria-atomic="true" className={`mt-3 text-sm leading-relaxed ${msg.ok ? "text-success" : "text-danger"}`}>{msg.text}</p>
       )}
 
       {/* Raw fields toggle (every field, for completeness) */}
-      <button
+      <Button variant="quiet"
         onClick={() => setShowAll((s) => !s)}
-        className="mt-3 inline-flex items-center gap-1 text-[11px] text-muted-2 hover:text-foreground"
+        aria-expanded={showAll}
+        aria-controls={`appointment-fields-${appt.id}`}
+        className="mt-3 text-muted"
       >
-        <Clock className="size-3" /> {showAll ? "Hide" : "All"} appointment fields
-      </button>
+        <Clock className="size-4 shrink-0" /> {showAll ? "Hide" : "All"} appointment fields
+      </Button>
       {showAll && (
-        <dl className="mt-2 space-y-0.5 rounded-lg bg-surface-2 p-3 text-[11px]">
+        <dl id={`appointment-fields-${appt.id}`} className="mt-2 space-y-2 rounded-lg bg-surface-2 p-3 text-sm leading-relaxed">
           {[
             ["Status", appt.status],
             ["Can reschedule", String(appt.canReschedule)],
@@ -256,9 +257,9 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
             ["Previous start", fmt(appt.previousStartAt) ?? "—"],
             ["Postponed at", fmt(appt.postponedAt) ?? "—"],
           ].map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-3">
-              <dt className="text-muted-2">{k}</dt>
-              <dd className="text-right font-medium text-foreground/80">{v || "—"}</dd>
+            <div key={k} className="flex flex-wrap justify-between gap-x-3 gap-y-1">
+              <dt className="text-muted">{k}</dt>
+              <dd className="min-w-0 break-words text-right font-medium text-foreground/80">{v || "—"}</dd>
             </div>
           ))}
         </dl>
