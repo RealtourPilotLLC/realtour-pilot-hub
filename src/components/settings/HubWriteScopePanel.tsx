@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { ShieldCheck } from "lucide-react";
 import { loadHubWriteScopes, removeFixtureClientAction, type HubWriteScopesPayload } from "@/app/settings/pilotActions";
 import { cn } from "@/lib/utils";
+import { changeSettingsPanel, readSettingsPanel, type PanelActionResult } from "@/lib/settingsPanelFeedback";
+import { Button } from "@/components/ui/Action";
+import { SaveStatus } from "@/components/ui/SaveStatus";
 
 // ---------------------------------------------------------------------------
 // WHO THE HUB MAY WRITE FOR (R02 / A26, Sep 25 2026), per provider-write
@@ -23,21 +26,48 @@ import { cn } from "@/lib/utils";
 
 const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : null);
 
-export function HubWriteScopePanel({ isOwner }: { isOwner: boolean }) {
-  const [data, setData] = useState<HubWriteScopesPayload | null>(null);
+export function HubWriteScopePanel({ isOwner, initial = null }: { isOwner: boolean; initial?: HubWriteScopesPayload | null }) {
+  const [data, setData] = useState<HubWriteScopesPayload | null>(initial);
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<PanelActionResult | null>(null);
+  const [reading, setReading] = useState(false);
+  const [requiresRefresh, setRequiresRefresh] = useState(false);
   const [busy, start] = useTransition();
-  const load = useCallback(() => {
-    loadHubWriteScopes()
-      .then((r) => { if ("error" in r) setError(r.error); else { setData(r); setError(null); } })
-      .catch(() => setError("Could not read who the hub may write for. Nothing has changed."));
+  const changing = useRef(false);
+  const readingRef = useRef(false);
+  const uncertain = useRef(false);
+  const load = useCallback(async () => {
+    if (readingRef.current || changing.current) return;
+    readingRef.current = true;
+    setReading(true);
+    try {
+      const r = await readSettingsPanel(loadHubWriteScopes);
+      if (r.ok) { setData(r.data); setError(null); uncertain.current = false; setRequiresRefresh(false); }
+      else setError(r.message);
+    } finally { readingRef.current = false; setReading(false); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (!initial) void load(); }, [initial, load]);
+
+  const remove = (switchKey: string, clientId: string) => {
+    if (changing.current || readingRef.current || uncertain.current) return;
+    changing.current = true;
+    setNote(null);
+    start(async () => {
+      try {
+        const outcome = await changeSettingsPanel(() => removeFixtureClientAction({ switchKey, clientId }), loadHubWriteScopes);
+        setNote(outcome.result);
+        if (outcome.requiresRefresh) { uncertain.current = true; setRequiresRefresh(true); }
+        if (outcome.read?.ok) { setData(outcome.read.data); setError(null); }
+        else if (outcome.read) setError(outcome.read.message);
+      } finally { changing.current = false; }
+    });
+  };
 
   // The anchor is on every state, not only the loaded one: the switches above
   // link here, and before this the link went nowhere until the read finished.
-  if (error) return <p id="hub-write-scopes" className="scroll-mt-28 text-[13px] text-muted">{error}</p>;
+  if (error && !data) return <div id="hub-write-scopes" className="scroll-mt-28 space-y-2 text-sm">
+    <p role="alert">{error}</p><Button variant="secondary" busy={reading} onClick={() => void load()}>Refresh write scopes</Button>
+  </div>;
   if (!data) return <p id="hub-write-scopes" className="scroll-mt-28 text-[13px] text-muted">Reading who the hub may write for…</p>;
 
   return (
@@ -50,37 +80,42 @@ export function HubWriteScopePanel({ isOwner }: { isOwner: boolean }) {
           <a href="#program-rollout" className="font-medium text-brand hover:underline">Who the program may reach</a>, with &ldquo;bookings&rdquo; ticked. There is one pilot list, edited there. Neither does anything while its switch is off.
         </p>
       </div>
-      {note && <p className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-[13px]">{note}</p>}
+      {note && !busy && <SaveStatus state={note.ok ? "saved" : "error"} message={note.message} />}
+      {busy && <SaveStatus state="saving" message="Updating this TEST fixture list…" />}
+      {error && <p role="alert" className="rounded-lg border border-warning/50 px-3 py-2 text-sm text-warning">The current write scopes could not be refreshed. The last loaded details remain below; refresh to check the current lists.</p>}
+      {requiresRefresh && !error && <p className="text-sm text-warning">Changes are paused until Refresh confirms the current write scopes. The last loaded lists remain below.</p>}
+      <Button variant="secondary" busy={reading} disabled={busy} onClick={() => void load()}>Refresh write scopes</Button>
       <div className="divide-y divide-border rounded-xl border border-border">
         {data.switches.map((s) => (
           <div key={s.switchKey} className="px-3 py-3 sm:px-4">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="text-sm font-medium">{s.title}</span>
-              <code className="rounded bg-surface-2 px-1 text-[10px] text-muted-2">{s.switchKey}</code>
-              <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", s.enabled ? "bg-success/15 text-success" : "bg-surface-2 text-muted")}>{s.enabled ? "switch on" : s.missing ? "never configured" : "switch off"}</span>
+              <code className="rounded bg-surface-2 px-1 text-[13px] text-muted-2">{s.switchKey}</code>
+              <span className={cn("rounded-full px-2 py-0.5 text-[13px] font-semibold", s.enabled ? "bg-success/15 text-success" : "bg-surface-2 text-muted")}>{s.enabled ? "switch on" : s.missing ? "never configured" : "switch off"}</span>
             </div>
-            <p className="mt-1 text-[12px] text-muted">{s.headline}</p>
-            <p className="mt-1 text-[12px]">
+            <p className="mt-1 text-[14px] text-muted">{s.headline}</p>
+            <p className="mt-1 text-[14px]">
               <span className="font-medium">TEST fixtures:</span>{" "}
               {s.fixtures.length ? s.fixtures.map((f, i) => (
                 <span key={f.id}>
                   {i > 0 && ", "}{f.name}{f.problem && <span className="text-warning"> (refused: {f.problem})</span>}
                   {isOwner && (
-                    <button className="ml-1 text-[11px] font-medium text-brand hover:underline disabled:opacity-50" disabled={busy}
-                      onClick={() => start(async () => { const r = await removeFixtureClientAction({ switchKey: s.switchKey, clientId: f.id }); setNote(r.message); load(); })}>
+                    <button className="ml-1 inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg px-2 text-sm font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50" disabled={busy || reading || !!error || requiresRefresh}
+                      aria-label={`Remove ${f.name} from ${s.title}'s TEST fixture list`}
+                      onClick={() => remove(s.switchKey, f.id)}>
                       Remove
                     </button>
                   )}
                 </span>
               )) : <span className="text-muted">none</span>}
             </p>
-            <div className="mt-1 text-[12px]">
+            <div className="mt-1 text-[14px]">
               <span className="font-medium">Program pilot:</span>{" "}
               {s.pilotProblem ? (
                 <span className="text-warning">could not be read ({s.pilotProblem}) — no real client is written for.</span>
               ) : s.pilot ? (
                 <>
-                  <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", s.pilot.state === "ACTIVE" ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted")}>{s.pilot.state.toLowerCase()}</span>{" "}
+                  <span className={cn("rounded-full px-2 py-0.5 text-[13px] font-semibold", s.pilot.state === "ACTIVE" ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted")}>{s.pilot.state.toLowerCase()}</span>{" "}
                   {s.pilot.groups.length ? `covers ${s.groups.filter((g) => s.pilot!.groups.includes(g.key)).map((g) => g.label.toLowerCase()).join("; ")}` : "bookings are not ticked for the pilot, so nothing is written"}
                   {s.pilot.approvedBy && <> · approved by {s.pilot.approvedBy}{s.pilot.approvedAtISO ? ` on ${day(s.pilot.approvedAtISO)}` : ""}</>}
                   {s.pilot.expiresAtISO && <> · ends {day(s.pilot.expiresAtISO)}</>}

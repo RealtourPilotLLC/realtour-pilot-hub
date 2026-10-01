@@ -74,6 +74,12 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 rollout/write-scope recovery:** loaded details, confirmed receipts and
+  unrelated drafts survive read failures; unknown mutations require a successful
+  read-only Refresh. Partial access-release and stale preview context are explicit.
+  Mocked operations/SSR 22/0, lint/diff and review pass. No domain action or actual
+  activation/send was executed. Browser interaction and stable build remain open.
+
 - **U3 exact-cut review:** truthful historical/client/creative stage wording,
   visible checked-fix IDs, retained newer note/reply input and explicit unknown
   outcome recovery are implemented. Fake-action/read-generation/SSR 15/0,

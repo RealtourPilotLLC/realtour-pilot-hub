@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — rollout/write-scope read and change recovery
+
+Loaded rollout/write-scope context and confirmed change receipts survive a failed
+read-back. Refresh retries only the reader. Submitted pilot forms freeze while
+pending; other mode/form drafts remain. Thrown operations distinguish unknown
+changes from known refusals and block handlers/controls until a successful
+read-only Refresh. Preview failures preserve prior context but label it stale;
+scope changes invalidate release eligibility. Held-access release receipts name
+partial or unknown outcomes and require a new preview. Readability and targets
+use existing shared action/status scales. All domain actions, permissions,
+audiences, pilot cap/end dates and activation behavior are unchanged.
+
+Isolated mocked-operation/SSR fixture passed 22/0
+(`/tmp/ops-u5-rollout-panel-feedback-lock/`), lint/diff and focused review pass.
+Review added the thrown-only stale-context lock; no mutation is retried to repair
+a read failure. No actual rollout, release, invitation, welcome, fixture-removal
+or provider action was executed. Browser forms/preview/failure interaction and
+the final stable build remain open; this is not rollout authorization.
+
 ### U3 / W03 checkpoint — exact review stage and safe action receipts
 
 The exact-cut panel now distinguishes replaced/withdrawn/incomplete versions,
