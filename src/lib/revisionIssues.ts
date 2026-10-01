@@ -213,6 +213,19 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
       const k = owedSlotKeyOf(r, owedKeys);
       if (k) latestByKey.set(k, r);
     }
+    // A staff receipt can be repaired after a newer cut has arrived. Its ask
+    // still belongs to the version saved on the receipt. Never substitute the
+    // latest version (or a pin that now belongs to a different project).
+    const staffPinned = brief.source === "review_room_staff" && !!brief.submissionId;
+    const receiptCut = staffPinned ? rounds.find((r) => r.id === brief.submissionId) : null;
+    if (staffPinned && (!receiptCut?.deliverableId || !brief.outputId)) return 0;
+    if (staffPinned) {
+      const output = await prisma.deliverableOutput.findFirst({
+        where: { id: brief.outputId!, projectId: brief.projectId, deliverableId: receiptCut!.deliverableId!, slot: receiptCut!.slot ?? 1 },
+        select: { id: true },
+      });
+      if (!output || (receiptCut!.outputId && receiptCut!.outputId !== output.id)) return 0;
+    }
     const assigned = await currentVideoAssignee(brief.projectId);
 
     const wanted: { sourceId: string; item: BriefItemShape; slotKey: string | null }[] = [];
@@ -226,7 +239,8 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
 
     let made = 0;
     for (const w of wanted) {
-      const latest = w.slotKey ? latestByKey.get(w.slotKey) ?? null : null;
+      const latest = staffPinned ? receiptCut! : w.slotKey ? latestByKey.get(w.slotKey) ?? null : null;
+      if (staffPinned && w.slotKey !== slotKeyOf(receiptCut!.deliverableId!, receiptCut!.slot ?? 1)) continue;
       const [deliverableId, slotStr] = w.slotKey ? w.slotKey.split(":") : [null, null];
       const text = (w.item.quote || w.item.ask || "").trim() || brief.originalText.slice(0, 1000);
       const author = await versionAuthor(latest);
@@ -234,7 +248,7 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
         const row = await prisma.revisionIssue.create({
           data: {
             projectId: brief.projectId,
-            outputId: latest?.outputId ?? (w.slotKey && brief.outputId ? brief.outputId : null),
+            outputId: staffPinned ? brief.outputId : latest?.outputId ?? (w.slotKey && brief.outputId ? brief.outputId : null),
             deliverableId,
             slot: slotStr ? Number(slotStr) || 1 : null,
             raisedOnSubmissionId: latest?.id ?? null,

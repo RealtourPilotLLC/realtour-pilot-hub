@@ -66,6 +66,9 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Current checks and environment
 
+- **W03 saved-receipt recovery:** missing/partial issues and timing retry safely from immutable saved metadata. Exact original version and editor survive a newer cut; legacy closed/moved/unknown cases refuse. Real PG 22/0 plus existing W03 26/0, lint/review pass. Pre-receipt task/activity/upload windows remain a separate active item; browser proof open.
+- **Integrated build:** committed candidate through `c5e619e` passed isolated production build + TypeScript (exit 0, `/tmp/ops-hub-build-c5e619e.log`). W03 and later active batches are not covered by this build.
+
 - **U4 task navigation:** My work / Needs assignment / All work / Completed lead the operational board; specialist Replies/Revisions/Slack remain visible. Legacy URLs, editor restrictions, Kyle's routine ownership, test view and source/type/owner filter state are preserved. Signed route/board drill 21/0, focused lint and review passed. No task mutation or provider calls. Browser, compact rows/detail drawer and external return-context acceptance remain open; Home composition is separate.
 
 - **U1/U3 queue controls:** shared ActionMenu now covers status/rare actions with keyboard navigation and 44px targets; office overrides reuse native ModalDialog and block dismissal during pending saves/escalation. Failed removal retains the reason for retry. Original guards, request IDs, confirmation and undo remain. Lint/source review passed; final integrated type/build pending after the last modal correction. Browser acceptance remains blocked, so neither phase is complete.

@@ -396,6 +396,18 @@ async function standDownNonRevision(briefId: string): Promise<void> {
  *  folder cut — which keeps the job-level brief it always had. */
 export type BriefPin = { submissionId: string; outputId: string | null; cutKey: string | null; decisionId: string | null; roundId: string | null; label?: string | null };
 
+/** The first staff submit owns its timestamp, including an intentional blank.
+ * Older receipts have no such evidence: a later submit must not fill it in. */
+export function staffReceiptTime(itemsJson: string | null): { timeSec: number | null } | null {
+  try {
+    const value = JSON.parse(itemsJson ?? "null")?.staffReceipt;
+    if (value?.version !== 1) return null;
+    const at: unknown = value.timeSec;
+    if (at !== null && (typeof at !== "number" || !Number.isInteger(at) || at < 0 || at > 59_999)) return null;
+    return { timeSec: at as number | null };
+  } catch { return null; }
+}
+
 /**
  * PINNED ITEMS, WITH NO MODEL (CP-03). The portal knows the cut, so every note
  * line becomes an item scoped to it — `named`, `cuts: [cutKey]`. Under 240
@@ -423,6 +435,8 @@ export async function createRevisionBrief(opts: {
   /** Staff-supplied files or references for a pinned request. Kept separate
    *  from originalText so the client's words stay byte-for-byte intact. */
   references?: { what: string; where: string }[];
+  /** Persist with the original receipt, before issue ingestion can fail. */
+  staffReceipt?: { timeSec: number | null };
   /** No model call: a portal ADDENDUM joins a request the editor already has,
    *  its pinned items are the work order, and a client re-sending notes must
    *  not be able to buy a model call per submit. */
@@ -461,7 +475,7 @@ export async function createRevisionBrief(opts: {
       ? {
           submissionId: pin.submissionId, decisionId: pin.decisionId, roundId: pin.roundId,
           ...(pin.cutKey ? { outputId: pin.outputId } : {}),
-          ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: opts.references ?? [], questions: [] }), analyzedAt: new Date() } : {}),
+          ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: opts.references ?? [], questions: [], ...(opts.source === "review_room_staff" && opts.staffReceipt ? { staffReceipt: { version: 1, ...opts.staffReceipt } } : {}) }), analyzedAt: new Date() } : {}),
         }
       : {}),
   };
@@ -472,11 +486,12 @@ export async function createRevisionBrief(opts: {
     // clock in one row, even across concurrent server processes. Other sources
     // may legitimately reuse a thread reference for several distinct asks.
     const staffSourceDetail = opts.source === "review_room_staff" ? opts.sourceDetail : null;
+    const staffRequestKey = staffSourceDetail?.match(/^staff-cut:[^:]+:([a-f\d-]{36})$/i)?.[1];
     brief = staffSourceDetail
       ? await prisma.$transaction(async (tx) => {
-          await lockAdvisory(tx, `staff-revision:${opts.projectId}:${staffSourceDetail}`);
+          await lockAdvisory(tx, `staff-revision:${opts.projectId}:${staffRequestKey ? `request:${staffRequestKey}` : staffSourceDetail}`);
           const prior = await tx.revisionBrief.findFirst({
-            where: { projectId: opts.projectId, source: "review_room_staff", sourceDetail: staffSourceDetail },
+            where: { projectId: opts.projectId, source: "review_room_staff", sourceDetail: staffRequestKey ? { startsWith: "staff-cut:", endsWith: `:${staffRequestKey}` } : staffSourceDetail },
             orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
           });
           return prior ?? tx.revisionBrief.create({ data, select: { id: true } });
@@ -559,6 +574,7 @@ export async function analyzeBrief(
     select: {
       id: true,
       projectId: true,
+      source: true,
       originalText: true,
       twoSided: true,
       // A pinned brief (CP-03) keeps its cut through a re-analysis too.
@@ -610,6 +626,13 @@ export async function analyzeBrief(
     if (pinKey) {
       let kept: RevisionItem[] = [];
       try { kept = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItem[] }).items ?? []) : []; } catch { /* rebuilt below */ }
+      // Staff files and timestamp are evidence from the submit, not model
+      // suggestions. A re-read may refine items but cannot replace that evidence.
+      const receipt = brief.source === "review_room_staff" ? staffReceiptTime(brief.itemsJson) : null;
+      let references = analysis.references;
+      if (brief.source === "review_room_staff") {
+        try { references = JSON.parse(brief.itemsJson ?? "{}").references ?? []; } catch { references = []; }
+      }
       const items = analysis.items.length
         ? analysis.items.map((i) => ({ ...i, scope: "named" as const, cuts: [pinKey] }))
         : kept.length ? kept : pinnedItems(brief.originalText, pinKey);
@@ -617,7 +640,7 @@ export async function analyzeBrief(
         where: { id: briefId },
         data: {
           headline: analysis.items.length ? analysis.headline.slice(0, 300) : undefined,
-          itemsJson: JSON.stringify({ items, keep: analysis.keep, references: analysis.references, questions: analysis.questions }),
+          itemsJson: JSON.stringify({ items, keep: analysis.keep, references, questions: analysis.questions, ...(receipt ? { staffReceipt: { version: 1, ...receipt } } : {}) }),
           analyzedAt: new Date(),
           analysisError: null,
         },

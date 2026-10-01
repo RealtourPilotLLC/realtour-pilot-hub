@@ -2,6 +2,40 @@
 
 ## Sep 30 takeover addendum
 
+### W03 checkpoint — finish saved revision receipts after partial failure
+
+A repeated staff request now finishes its saved receipt instead of reporting
+success while video issues or the timestamp are missing. The original timestamp
+(including deliberately blank) is persisted in existing itemsJson metadata; retries
+ignore changed words/contact/file/cut fields. Every saved item must exist and
+match the saved project/output/version. Late recovery uses the original version
+and editor, not the newest cut. Moved pins, unknown legacy timestamp evidence and
+closed tasks with missing issues require staff review rather than silent repair.
+Legacy DONE/CLOSED count as closed. Reanalysis preserves staff reference/timing
+metadata. Project+validated request-key locking covers simultaneous changed-cut
+receipts as well as ordinary retries.
+
+Real Postgres targeted retry/concurrency drill passed 22/0; existing W03 signed
+regression passed 26/0 (`/tmp/w03-retry-reviewed-pg/`). Scoped lint and one focused
+review passed; review fixes included source selection typing, legacy closed tasks
+and locking across different cuts. Earlier failure-injection interception missed
+a dynamic import; the final fixture injects failure at actual issue writes.
+No provider call, production mutation, schema change or Start/Pause transition.
+
+Still open: the older task/project/activity writes and attachment upload happen
+before the receipt transaction. That earlier interruption/concurrent-input window
+is a separate active reliability item; this batch does not claim all W03 writes
+are atomic. Browser attachment/error acceptance remains open.
+
+### Integrated build checkpoint
+
+The committed candidate through `c5e619e` passed a production build, including
+TypeScript, in the separate managed checkout with environment credentials removed
+and an unreachable loopback database (`/tmp/ops-hub-build-c5e619e.log`, exit 0).
+This covers completed Home/Settings/task/sidebar/context batches. W03 and later
+active recovery/Editing batches need the next integrated gate. No build touched
+production or a development server, and no deployment occurred.
+
 ### U5 checkpoint — exact save feedback across core Settings forms
 
 Routing, turnaround, internal alerts, text wording and review rules now share

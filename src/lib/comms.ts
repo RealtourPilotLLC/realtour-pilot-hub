@@ -541,6 +541,8 @@ export type RaiseRevisionOpts = {
   requestedBy?: Requester | null;
   /** References attached by staff to an exact-cut request. */
   references?: { what: string; where: string }[];
+  /** Exact timestamp (or intentionally blank) for a staff request receipt. */
+  staffReceipt?: { timeSec: number | null };
 };
 
 /** The channel a revision's source implies, for a caller that did not say. */
@@ -826,6 +828,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
       skipAnalysis: !!opts.addendum,
       requestedBy: requester,
       references: opts.references,
+      staffReceipt: opts.staffReceipt,
     });
   } catch { /* the revision itself already landed */ }
 
