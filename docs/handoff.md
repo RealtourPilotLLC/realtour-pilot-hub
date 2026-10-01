@@ -2,6 +2,33 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — appointment uncertainty and retained input
+
+Appointment actions now annotate their existing results as confirmed, known
+pre-provider refused, or unknown. Provider payloads/order, duration, eligibility,
+notify choice, timeline and permissions are unchanged. UI catches rejection,
+keeps later native date/email choice, refuses duplicate pending actions, and
+holds further writes on returned/transport uncertainty. A device marker binds
+appointment/operation/opaque attempt and exact native date/boolean; refresh shows
+that retained input in the corresponding held panel. Late terminal responses
+clear only their own marker. Local UUID/date preparation failures remain
+retryable and cannot pretend a provider request began. Known refusals allow
+correction; omitted legacy evidence stays conservatively unconfirmed.
+
+Actual signed actions on disposable DB records with fake Aryeo passed 13/0
+(`/tmp/appointment-outcomes/appointment-outcomes.ts.log`); actual component
+handlers/delayed promises/device refresh passed 23/0
+(`/tmp/appointment-recovery-ui-final/appointment-recovery-ui.ts.log`). Final
+TypeScript/lint/diff passed. The prior type failure was one fixture optional
+boolean, corrected without changing policy. Root focused review found missing
+refresh input and local preparation feedback; both repaired and covered.
+
+This device guard is not a provider receipt or cross-tab/server serialization.
+Unknown requests require Kyle to inspect the exact Aryeo appointment, hub
+timeline and any customer email before another change; refresh never auto-unlocks.
+No real provider/booking/email, production or browser operation occurred.
+Normal browser/timezone/device-storage/provider acceptance remains open.
+
 ### Oct 1 U1/U5 checkpoint — Resources and common navigation
 
 Staff Resources authoring now has visible native Title/Group/Summary/Guide labels,

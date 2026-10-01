@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Calendar, Clock, RefreshCw, XCircle, Loader2, AlertTriangle, ChevronDown } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Action";
 import { TextField } from "@/components/ui/FormField";
 import { rescheduleAppointmentAction, cancelAppointmentAction } from "@/app/actions";
+import type { ApptResult } from "@/app/actions";
 
 export type ApptView = {
   id: string;
@@ -60,6 +61,17 @@ function toLocalInput(d: string | Date | null): string {
   return new Date(date.getTime() - off).toISOString().slice(0, 16);
 }
 
+type AppointmentHold = {
+  appointmentId: string; attemptId: string; operation: "reschedule" | "cancel";
+  draft: { start: string; notify: boolean };
+};
+function readHold(key: string, appointmentId: string): AppointmentHold | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "null");
+    return value?.appointmentId === appointmentId && typeof value.attemptId === "string" && /^[0-9a-f-]{36}$/i.test(value.attemptId) && (value.operation === "reschedule" || value.operation === "cancel") && typeof value.draft?.start === "string" && typeof value.draft?.notify === "boolean" ? value : null;
+  } catch { return null; }
+}
+
 export function AppointmentManager({ appt }: { appt: ApptView }) {
   const status = (appt.status || "").toUpperCase();
   const canceled = status === "CANCELED";
@@ -75,16 +87,105 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
   // call), so it must be a deliberate tick, not something to remember to undo.
   const [notify, setNotify] = useState(false);
   const [showAll, setShowAll] = useState(false);
-
-  const run = (fn: () => Promise<{ ok: boolean; message: string }>) =>
-    start(async () => {
-      const r = await fn();
-      setMsg({ ok: r.ok, text: r.message });
-      if (r.ok) {
-        setShowReschedule(false);
-        setConfirmCancel(false);
-      }
+  const busyRef = useRef(false);
+  const uncertainRef = useRef(false);
+  const [uncertain, setUncertain] = useState(false);
+  const startRef = useRef(newStart);
+  const notifyRef = useRef(notify);
+  const activeAttemptRef = useRef<AppointmentHold | null>(null);
+  const nativeEditedRef = useRef(false);
+  const holdKey = `appointment-unconfirmed:${appt.id}`;
+  const holdMessage = "The appointment change is unconfirmed. Your typed date and email choice are kept. Ask Kyle to check this exact appointment in Aryeo, the hub timeline and any customer email before another change. Reloading does not prove the earlier request finished.";
+  useEffect(() => {
+    let mounted = true;
+    queueMicrotask(() => {
+      if (!mounted || busyRef.current) return;
+      try {
+        const saved = readHold(holdKey, appt.id);
+        if (saved) {
+          activeAttemptRef.current = saved;
+          if (!nativeEditedRef.current) {
+            startRef.current = saved.draft.start; notifyRef.current = saved.draft.notify;
+            setNewStart(saved.draft.start); setNotify(saved.draft.notify);
+          }
+          setShowReschedule(saved.operation === "reschedule"); setConfirmCancel(saved.operation === "cancel");
+          uncertainRef.current = true; setUncertain(true); setMsg({ ok: false, text: holdMessage });
+        }
+      } catch { /* native input remains usable when device storage is unavailable */ }
     });
+    return () => { mounted = false; };
+  }, [appt.id, holdKey, holdMessage]);
+  const hold = (operation: "reschedule" | "cancel", report?: string) => {
+    uncertainRef.current = true; setUncertain(true);
+    setShowReschedule(operation === "reschedule"); setConfirmCancel(operation === "cancel");
+    setMsg({ ok: false, text: `${holdMessage}${report ? ` Server report: ${report}` : ""}` });
+  };
+  const mirrorInput = () => {
+    nativeEditedRef.current = true;
+    const active = activeAttemptRef.current;
+    if (!active || (!busyRef.current && !uncertainRef.current)) return;
+    const next = { ...active, draft: { start: startRef.current, notify: notifyRef.current } };
+    activeAttemptRef.current = next;
+    // A late response/input must not erase a different tab's newer marker.
+    if (readHold(holdKey, appt.id)?.attemptId === active.attemptId) {
+      try { localStorage.setItem(holdKey, JSON.stringify(next)); } catch { /* native draft is kept */ }
+    }
+  };
+  const clearOwnMarker = (attempt: AppointmentHold) => {
+    if (readHold(holdKey, appt.id)?.attemptId === attempt.attemptId) {
+      try { localStorage.removeItem(holdKey); } catch { /* persisted hold stays conservative */ }
+    }
+  };
+
+  const run = (operation: "reschedule" | "cancel", fn: () => Promise<ApptResult>) => {
+    if (busyRef.current || uncertainRef.current) return;
+    try {
+      const earlier = readHold(holdKey, appt.id);
+      if (earlier) {
+        activeAttemptRef.current = earlier; hold(earlier.operation);
+        if (nativeEditedRef.current) mirrorInput();
+        return;
+      }
+    } catch { /* in-memory guards remain active */ }
+    const submittedStart = newStart, submittedNotify = notify;
+    let attemptId: string;
+    try { attemptId = crypto.randomUUID(); }
+    catch { setMsg({ ok: false, text: "The change request could not be prepared. Your input is kept; please try again." }); return; }
+    const attempt: AppointmentHold = { appointmentId: appt.id, attemptId, operation, draft: { start: submittedStart, notify: submittedNotify } };
+    busyRef.current = true;
+    activeAttemptRef.current = attempt;
+    // A refresh while awaiting the action is uncertain too. This local ID is
+    // a device guard, not a provider receipt or cross-tab/server write lock.
+    try { localStorage.setItem(holdKey, JSON.stringify(attempt)); }
+    catch { /* pending/unknown guards still protect this mounted page */ }
+    start(async () => {
+      try {
+        const r = await fn();
+        if (r.outcome === "refused" && !r.ok) {
+          clearOwnMarker(attempt);
+          setMsg({ ok: false, text: r.message }); return;
+        }
+        // Omitted legacy outcomes cannot distinguish a pre-write refusal from
+        // provider uncertainty. Neither a reload nor a local stamp settles it.
+        if (r.outcome !== "confirmed" || !r.ok) { hold(operation, r.message); return; }
+        clearOwnMarker(attempt);
+        const newerInput = startRef.current !== submittedStart || notifyRef.current !== submittedNotify;
+        setMsg({ ok: true, text: `${r.message}${newerInput ? " Your newer local date or email choice is kept and has not been submitted." : ""}` });
+        if (!newerInput) {
+          setShowReschedule(false);
+          setConfirmCancel(false);
+        }
+      } catch { hold(operation); }
+      finally { busyRef.current = false; }
+    });
+  };
+  const reschedule = () => {
+    if (busyRef.current || uncertainRef.current) return;
+    const start = new Date(newStart);
+    if (!Number.isFinite(start.getTime())) { setMsg({ ok: false, text: "Choose a valid date and time. Your input is kept." }); return; }
+    const startISO = start.toISOString();
+    run("reschedule", () => rescheduleAppointmentAction(appt.id, startISO, notify));
+  };
 
   const details: [string, string | null][] = [
     ["Starts", fmt(appt.startAt)],
@@ -154,6 +255,7 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
           <div className="flex flex-wrap items-center gap-2">
             {appt.canReschedule && (
               <Button variant="secondary"
+                disabled={pending || uncertain}
                 onClick={() => {
                   setShowReschedule((s) => !s);
                   setConfirmCancel(false);
@@ -164,6 +266,7 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
             )}
             {appt.canCancel && !confirmCancel && (
               <Button variant="secondary"
+                disabled={pending || uncertain}
                 onClick={() => {
                   setConfirmCancel(true);
                   setShowReschedule(false);
@@ -184,15 +287,15 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
                 hint="This field uses your device's local time zone. Appointment times above are shown in Eastern time."
                 type="datetime-local"
                 value={newStart}
-                onChange={(e) => setNewStart(e.target.value)}
+                onChange={(e) => { startRef.current = e.target.value; setNewStart(e.target.value); mirrorInput(); }}
               />
               <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm leading-relaxed text-muted">
-                <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} className="size-5 shrink-0 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
+                <input type="checkbox" checked={notify} onChange={(e) => { notifyRef.current = e.target.checked; setNotify(e.target.checked); mirrorInput(); }} className="size-5 shrink-0 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
                 Notify the customer by email
               </label>
               <Button
-                disabled={pending || !newStart}
-                onClick={() => run(() => rescheduleAppointmentAction(appt.id, new Date(newStart).toISOString(), notify))}
+                disabled={pending || uncertain || !newStart}
+                onClick={reschedule}
               >
                 {pending ? <Loader2 className="size-4 shrink-0 animate-spin motion-reduce:animate-none" /> : <RefreshCw className="size-4 shrink-0" />}
                 Confirm reschedule
@@ -207,18 +310,19 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" /> Cancel this shoot in Aryeo? This can&apos;t be undone here.
               </div>
               <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm leading-relaxed text-muted">
-                <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} className="size-5 shrink-0 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
+                <input type="checkbox" checked={notify} onChange={(e) => { notifyRef.current = e.target.checked; setNotify(e.target.checked); mirrorInput(); }} className="size-5 shrink-0 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
                 Notify the customer by email
               </label>
               <div className="flex flex-wrap gap-2">
                 <Button variant="danger"
-                  disabled={pending}
-                  onClick={() => run(() => cancelAppointmentAction(appt.id, notify))}
+                  disabled={pending || uncertain}
+                  onClick={() => run("cancel", () => cancelAppointmentAction(appt.id, notify))}
                 >
                   {pending ? <Loader2 className="size-4 shrink-0 animate-spin motion-reduce:animate-none" /> : <XCircle className="size-4 shrink-0" />}
                   Yes, cancel shoot
                 </Button>
                 <Button variant="secondary"
+                  disabled={pending || uncertain}
                   onClick={() => setConfirmCancel(false)}
                 >
                   Keep it

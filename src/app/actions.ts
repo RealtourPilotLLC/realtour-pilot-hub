@@ -21,7 +21,7 @@ import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete, reopenedForCategori
 import { etEndOfDay } from "@/lib/datetime";
 import { DISMISS_REASONS, DISMISSED_PREFIX, type DismissReason } from "@/lib/triage";
 
-export type ApptResult = { ok: boolean; message: string };
+export type ApptResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 
 /**
  * THE PROVIDER-WRITE GUARD on the staff appointment buttons (CP-04, §16).
@@ -80,16 +80,16 @@ export async function rescheduleAppointmentAction(
   notifyCustomer: boolean,
 ): Promise<ApptResult> {
   await requireAdmin();
-  if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected." };
+  if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected.", outcome: "refused" };
   const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
-  if (!appt) return { ok: false, message: "Appointment not found." };
-  if (!appt.canReschedule) return { ok: false, message: "Aryeo says this appointment can't be rescheduled." };
+  if (!appt) return { ok: false, message: "Appointment not found.", outcome: "refused" };
+  if (!appt.canReschedule) return { ok: false, message: "Aryeo says this appointment can't be rescheduled.", outcome: "refused" };
 
   const start = new Date(startAtISO);
-  if (isNaN(start.getTime())) return { ok: false, message: "Invalid date/time." };
+  if (isNaN(start.getTime())) return { ok: false, message: "Invalid date/time.", outcome: "refused" };
   const end = new Date(start.getTime() + (appt.durationMin ?? 60) * 60000);
   const refused = await staffApptWriteRefusal(appt.projectId, "appointments.reschedule");
-  if (refused) return { ok: false, message: refused };
+  if (refused) return { ok: false, message: refused, outcome: "refused" };
 
   try {
     await Aryeo.rescheduleAppointment(appt.aryeoId, {
@@ -98,7 +98,7 @@ export async function rescheduleAppointmentAction(
       notify: notifyCustomer,
     });
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Reschedule failed." };
+    return { ok: false, message: e instanceof Error ? e.message : "Reschedule failed.", outcome: "unknown" };
   }
 
   await refreshAppointment(appt.aryeoId, appt.projectId);
@@ -112,7 +112,7 @@ export async function rescheduleAppointmentAction(
   revalidatePath(`/projects/${appt.projectId}`);
   revalidatePath("/schedule");
   revalidatePath("/pipeline");
-  return { ok: true, message: "Appointment rescheduled." };
+  return { ok: true, message: "Appointment rescheduled.", outcome: "confirmed" };
 }
 
 /** Cancel an appointment in Aryeo, then refresh locally. */
@@ -121,17 +121,17 @@ export async function cancelAppointmentAction(
   notifyCustomer: boolean,
 ): Promise<ApptResult> {
   await requireAdmin();
-  if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected." };
+  if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected.", outcome: "refused" };
   const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
-  if (!appt) return { ok: false, message: "Appointment not found." };
-  if (!appt.canCancel) return { ok: false, message: "Aryeo says this appointment can't be cancelled." };
+  if (!appt) return { ok: false, message: "Appointment not found.", outcome: "refused" };
+  if (!appt.canCancel) return { ok: false, message: "Aryeo says this appointment can't be cancelled.", outcome: "refused" };
   const refused = await staffApptWriteRefusal(appt.projectId, "appointments.cancel");
-  if (refused) return { ok: false, message: refused };
+  if (refused) return { ok: false, message: refused, outcome: "refused" };
 
   try {
     await Aryeo.cancelAppointment(appt.aryeoId, { notify: notifyCustomer });
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Cancel failed." };
+    return { ok: false, message: e instanceof Error ? e.message : "Cancel failed.", outcome: "unknown" };
   }
 
   await refreshAppointment(appt.aryeoId, appt.projectId);
@@ -145,7 +145,7 @@ export async function cancelAppointmentAction(
   revalidatePath(`/projects/${appt.projectId}`);
   revalidatePath("/schedule");
   revalidatePath("/pipeline");
-  return { ok: true, message: "Appointment cancelled." };
+  return { ok: true, message: "Appointment cancelled.", outcome: "confirmed" };
 }
 
 /** Update a SmartTask's status (and stamp completion). */

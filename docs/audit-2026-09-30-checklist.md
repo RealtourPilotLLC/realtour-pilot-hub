@@ -74,6 +74,14 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 appointment recovery:** typed confirmed/pre-write-refused/unknown results,
+  retained native date/email input, sync duplicate guard, exact device marker and
+  visible held refresh panel. Local prep refusals retry; unknown provider requests
+  require Kyle's exact appointment/timeline/email inspection, not refresh unlock.
+  Signed disposable action13/0 + fake actual UI23/0, lint/TypeScript/diff and
+  focused review passed. No provider policy, booking, send or schema change;
+  device guard is not server serialization or provider completion evidence.
+
 - **U1/U5 Resources/common navigation controls:** labeled readable authoring
   fields and owner/review/publication evidence, focused44px actions/disclosures;
   shared BackLink/ShowMore preserve destinations/history/toggle behavior, with
