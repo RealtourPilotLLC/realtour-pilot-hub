@@ -8,6 +8,25 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Policy candidate held — client approval repair
+
+`974327f` passed the separate clean Node20 build and Vercel remote build. Its
+stage completed at15:33:14Z; protected version/login checks passed and canonical
+production remained3c3c2d741aaf at15:39:27Z. It is **not promoted**. Inspection
+found that the existing outside-delivery entitlement treated the new monthly
+portal handoff stamp as client download/caption permission.
+
+The repair commits an exact `monthly_portal_handoff` AuditLog marker in the same
+transaction as the first handoff stamp. Entitlement and finishing-file readers
+honor that marker, including paused/ended fallback, and propagate failed reads.
+Exact client approval, prior-approved v1 and unmarked historical/listing rules
+remain. Marker backend41/0 and signed stream/download/caption PostgreSQL21/0
+pass; scoped lint0, non-incremental types0 and focused root/peer review pass.
+A new exact commit/build and replacement stage are required before promotion.
+No new schema or live write. Combined gate logs:
+`/tmp/ops-hub-portal-handoff-types.log`, `/tmp/ops-hub-portal-handoff-lint.log`.
+Logs: `/tmp/monthly-portal-handoff-marker/`, `/tmp/monthly-portal-approval-gate/`.
+
 ### Follow-up W04 — monthly portal plus final Dropbox backup (local)
 
 Supplemental canonical legacy-original check: when the portal's no-blob
@@ -127,7 +146,7 @@ additions were unapplied then; their current applied state is recorded above.
 | C16 | Confirmed-cause reporting implemented and targeted tests passed; UI acceptance open | Optional unticked QC boxes remain **not recorded**, never confirmed defects. Review Room now shows existing root revision issues by reviewer-confirmed cause, with period, applicable denominator, duplicate/N/A exclusions, recorded editor attribution, exact-version coverage and unknown history. Editor first-review/recurring/client-visible fault metrics require confirmation actor/time; unknown labels go to classification. Normal quality views exclude fixtures; explicit Quality test view retains them. Moved cuts cannot inherit former-project issue history, and staff uploads credited by valid self-checks appear in the editor roster. New drill 17/0, existing self-QC/issues 141/0, signed Editing page scope 5/0; lint/review passed. Required self-QC, pay and recorded source words remain unchanged. Browser/readability acceptance and historical unknown classification remain open. |
 | C17 | Partial; shared assignment truth in code and browser | Home exceptions, Editing Room and job brief now resolve task override → project editor/vendor → saved manual unassignment → routing suggestion through `editorAssignment`. Suggested routing is visibly unsaved in the queue dropdown, and Home asks Kyle to confirm it rather than claiming the editor accepted. Isolated five-state drill 11/0; queue removal 22/0, active editing 147/0, handoff 116/0. Live read-only: 8 active video candidates; 4600 Newburg has no project editor/vendor/open edit task and the saved route suggests Kim. No assignment changed. Isolated browser with Kim routing: desktop queue select reads “Suggested: Kim · not assigned”; Home says Kyle should confirm; at 390px the same control is reachable by horizontal scrolling, but the table is hard to use and remains U3 work. In-house acceptance/acknowledgment is a separate W02 handoff, never inferred from assignment or Start. |
 | C18 | Code guard done; live one-row repair pending review | Read-only Neon check: task `cmucuidu10005gu04uws9vz24` is OPEN, title names 3826 Fairmount, but project/property address point to 3057 N 10th. The related OpenPhone conversation was filed with `projectGuess=true` on 3057, and the task's matched inbound text did not itself name 3826; the generated task title did. New routing checks the message plus proposed title/detail against the client's own order addresses, clears explicit unknowns and contradictions, and refuses cross-client/cross-property merges. Isolated C18 drill 11/0 plus reply-request regression 108/0. Proposed surgical repair: after Kyle verifies source conversation, relink only this task to project `cmucuivp8000bgu04xf08gzwm` (3826 Fairmount), update its `propertyAddress`, preserve its original title/body/source and audit the correction. No live row was changed. |
-| C19 | Waiting on correct destination | Saved general welcome points at monthly Calendly. Determine the approved listing-client consultation URL or call/text policy; avoid replaying welcomes. User clarification requested. |
+| C19 | Approved link implemented and targeted-tested locally; release pending | Jordan approved https://calendly.com/realtourpilot-info/strategy-call. Commit7220dca separates the general default/fallback from monthly booking; actual fenced fixture26/0 and lint/review pass. Fresh live read found no auto_texts row, so no settings write was needed. Release the repaired exact policy candidate; never replay old welcomes. |
 
 ### C14 Home progress
 

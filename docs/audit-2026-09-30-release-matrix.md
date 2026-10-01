@@ -7,6 +7,13 @@ instructions and batch evidence remain in `handoff.md`.
 
 ## Release state
 
+Policy candidate974327f built/staged successfully but is held, not promoted:
+recording monthly portal availability must not grant client download/caption
+permission. The atomic AuditLog marker and entitlement repair have backend41/0
+and actual signed approval-gate21/0 evidence; combined types/lint and focused
+review pass. New exact build/release remains. Production was freshly confirmed3c3c2d741aaf at15:39:27Z. No activation,
+client verdict, invitation, provider booking or message was performed.
+
 | Area | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
 |---|---|---|---|---|---|---|
 | Access, manual work state, draft preservation, rollout guards | Local corrections | Targeted isolated signed-role/action tests; normal browser journey open | Yes; see C01–C03/C09/C12 | Yes;3c3c2d7 | Existing switches unchanged | Code live under existing gates; client acceptance open |

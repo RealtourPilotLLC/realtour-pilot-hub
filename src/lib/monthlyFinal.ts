@@ -96,6 +96,8 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
 
 /** Provider proof is collected before the transaction; the first delivery
  * claim rechecks canonical version, exact seat/scope and saved check inside it. */
+export const monthlyPortalHandoffId = (submissionId: string) => `monthly-portal-handoff:${submissionId}`;
+
 export async function claimMonthlyFinalDelivery(id: string, by: string | null): Promise<{ ok: true; count: number } | { ok: false; message: string }> {
   const s = await monthlyFinalSnapshot(id);
   if (!s.ok) return s;
@@ -111,6 +113,12 @@ export async function claimMonthlyFinalDelivery(id: string, by: string | null): 
     const check = await tx.finalRenditionCheck.findFirst({ where: { submissionId: id, destination: "client-portal", sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId }, select: { id: true } });
     if (!check) return { ok: false as const, message: "Check the exact portal final file and final Dropbox backup before recording delivery." };
     const changed = await tx.reviewSubmission.updateMany({ where: { id, status: "APPROVED", sentToClientAt: null }, data: { sentToClientAt: new Date(), sentToClientBy: by } });
+    if (changed.count === 1) {
+      // Portal readiness is not a delivery outside the portal and must not
+      // bypass the client's verdict. The marker and first stamp commit together.
+      await tx.auditLog.create({ data: { id: monthlyPortalHandoffId(id), actor: "system", action: "monthly_portal_handoff", target: id,
+        detail: JSON.stringify({ sourceFingerprint: s.fingerprint, finalCheckId: check.id }) } });
+    }
     return { ok: true as const, count: changed.count };
   }, { isolationLevel: "Serializable" });
 }

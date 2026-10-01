@@ -39,8 +39,7 @@ import { TEXT_KYLE_START } from "@/lib/portalWords";
 //   · client approval unlocks it when the approval's recorded identity still
 //     matches the cut (stableCutIdentity) and there are bytes to serve.
 //   · a delivery made OUTSIDE the portal also unlocks it: Kyle's Mark-as-sent
-//     (sentToClientAt — content cuts are never Aryeo-stamped, so that column
-//     only ever means he pressed it), the delivery auto-stamp, or — before
+//     (an unmarked sentToClientAt), the delivery auto-stamp, or — before
 //     CLIENT_APPROVAL_GATE_SINCE, when no real client held a seat — a DELIVERED
 //     project or an imported historical month. That is the explicit exception
 //     that keeps every older delivery downloadable, on ended and paused
@@ -167,6 +166,10 @@ export type EntitlementFacts = {
    *  round missing from the map — or the whole map omitted — is the editor's
    *  original, exactly as before. */
   clientFiles?: Map<string, ClientCutFile>;
+  /** New monthly portal handoffs reuse sentToClientAt for operational history.
+   * Their exact durable marker distinguishes them from older external sends;
+   * availability for review is not the client's approval to download/post. */
+  portalHandoffs?: Set<string>;
 };
 
 /**
@@ -321,7 +324,7 @@ function decideForDecisiveRound(f: EntitlementFacts, opts: { gateSince?: Date } 
   const preGateDelivered = (c: ChainRound) => preGate(c) && (f.projectDelivered || f.monthHistorical || !!c.completedAt || c.status === "APPROVED");
   // A paused or ended program cannot approve anything, so the gate would wait
   // for ever: an Aryeo-delivered project counts as the delivery it is.
-  const delivered = (c: ChainRound) => !!c.sentToClientAt || c.decidedBy === DELIVERED_STAMP || preGateDelivered(c) || (!active && f.projectDelivered);
+  const delivered = (c: ChainRound) => (!!c.sentToClientAt && !f.portalHandoffs?.has(c.id)) || c.decidedBy === DELIVERED_STAMP || preGateDelivered(c) || (!active && f.projectDelivered && !f.portalHandoffs?.has(c.id));
 
   const decisive = [...f.chain].reverse().find((c) => !!cutReleasedAt(c) || c.decidedBy === DELIVERED_STAMP || !!c.sentToClientAt) ?? null;
   const approval = decisive ? f.approvals.get(decisive.id) ?? null : null;
@@ -415,6 +418,18 @@ export function aryeoMatchBasis(title: string | null, chain: { fileName: string 
  *  client was already being served. */
 const VERIFIED_OUTPUT = new Set(["verified", "resolved-processed"]);
 
+/** The marker and sent stamp are committed together by the monthly handoff.
+ * Match all three identifiers; an unrelated audit row is not delivery proof.
+ * A failed read must propagate, never turn a new handoff into a legacy send. */
+async function monthlyPortalHandoffsFor(submissionIds: string[]): Promise<Set<string>> {
+  if (submissionIds.length === 0) return new Set();
+  const rows = await prisma.auditLog.findMany({
+    where: { id: { in: submissionIds.map((id) => `monthly-portal-handoff:${id}`) }, action: "monthly_portal_handoff", target: { in: submissionIds } },
+    select: { id: true, target: true },
+  });
+  return new Set(rows.filter((row) => row.id === `monthly-portal-handoff:${row.target}`).map((row) => row.target));
+}
+
 /**
  * The name a client's download is saved under: the video's own name (the
  * editor's export, which is what the page has been calling it), with the
@@ -471,13 +486,14 @@ export async function clientCutFiles(submissionIds: string[]): Promise<Map<strin
     },
   });
   if (jobs.length === 0) return out;
+  const portalHandoffs = await monthlyPortalHandoffsFor(jobs.map((job) => job.submissionId));
   const { laneStillOwesWork } = await import("@/lib/readyToSend");
   const gate = CLIENT_APPROVAL_GATE_SINCE.getTime();
   for (const j of jobs) {
     if (laneStillOwesWork(j.state)) {
       const s = j.submission;
       const deliveredElsewhere =
-        !!s && (!!s.sentToClientAt || s.decidedBy === DELIVERED_STAMP || (!!s.decidedAt && s.decidedAt.getTime() < gate) || !!s.clientApprovedDecisionId);
+        !!s && ((!!s.sentToClientAt && !portalHandoffs.has(j.submissionId)) || s.decidedBy === DELIVERED_STAMP || (!!s.decidedAt && s.decidedAt.getTime() < gate) || !!s.clientApprovedDecisionId);
       out.set(j.submissionId, deliveredElsewhere ? { kind: "original" } : { kind: "finishing", state: j.state });
       continue;
     }
@@ -573,12 +589,13 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
   }
   const chainIds = [...new Set([...chainOf.values()].flat().map((r) => r.id))];
   const enrollmentIds = [...new Set(videos.map((v) => v.enrollmentId))];
-  const [decisions, sources, clientFiles] = await Promise.all([
+  const [decisions, sources, clientFiles, portalHandoffs] = await Promise.all([
     chainIds.length
       ? prisma.clientDecision.findMany({ where: { submissionId: { in: chainIds }, enrollmentId: { in: enrollmentIds } }, select: { id: true, submissionId: true, enrollmentId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
       : Promise.resolve([]),
     prisma.contentVideoSource.findMany({ where: { videoId: { in: videos.map((v) => v.id) }, kind: "PORTAL_VIDEO", isFinal: true }, orderBy: { createdAt: "asc" }, select: { videoId: true, portalVideoId: true, matchBasis: true, confirmedAt: true } }),
     clientCutFiles(chainIds),
+    monthlyPortalHandoffsFor(chainIds),
   ]);
   const pvIds = [...new Set(sources.map((s) => s.portalVideoId).filter((x): x is string => !!x))];
   const pvs = pvIds.length ? await prisma.portalVideo.findMany({ where: { id: { in: pvIds }, source: "aryeo" }, select: { id: true, enrollmentId: true, title: true, download: true, playback: true, deliveredAt: true } }) : [];
@@ -606,7 +623,7 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
       monthHistorical: !!month && (month.historical || month.status === "IMPORTED"),
       aryeoFinal,
       enrollmentActive: (enrollmentStatus.get(v.enrollmentId) ?? "ACTIVE") === "ACTIVE",
-      clientFiles,
+      clientFiles, portalHandoffs,
     }, opts));
   }
   return out;

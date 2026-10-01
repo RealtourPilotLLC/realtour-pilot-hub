@@ -118,6 +118,20 @@ browser, real provider/model output, real rendition/watch or phone-file proof.
 
 ## Next slice after deployment
 
+Current safe checkpoint: policy commits7220dca,0334622,148440a,974327f are
+preserved. Candidate974327f clean/local and remote builds passed; stage
+`https://realtour-pilot-br6mfk7cs-realtour-pilot-s-projects.vercel.app` completed
+successfully, but **must not be promoted**. Protected stage smoke passed and
+canonical stayed3c3c2d741aaf at15:39:27Z. A concrete entitlement regression was
+found: a new portal handoff reused the historical external-send stamp and could
+unlock downloads/captions before approval. The focused repair is frozen in
+monthlyFinal.ts/cutEntitlement.ts and two fixtures: atomic marker41/0 and signed
+approval gate21/0, lint0. Combined types0 and focused peer/root review pass.
+Root must commit, advance the clean build checkout to the new exact commit, build/stage again,
+and promote only that repaired candidate. No schema change or live backfill.
+Preserve the held stage receipts under `/private/tmp/ops-hub-policy-release-2026-10-01`.
+The intentional preview remains running; no stalled deployment command remains.
+
 User decisions received after release: monthly finals go to the portal with a
 backup in the final Dropbox folder; intentional no-brand requires acknowledgment;
 returning an editor after reassignment requires a fresh receipt. General welcome

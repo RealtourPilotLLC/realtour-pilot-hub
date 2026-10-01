@@ -2,6 +2,27 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 staged policy candidate held — exact approval repair
+
+Candidate974327f completed clean Node20 build and Vercel remote build/staging
+at15:33:14Z. Protected version/login smoke passed; canonical remained3c3c2d741aaf
+at15:39:27Z. Stagebr6mfk7cs is **held, not promoted**. Existing entitlement
+classified the new portal handoff's sentToClientAt as outside delivery, bypassing
+the preserved client download/caption approval gate.
+
+Frozen repair: monthlyFinal.ts writes stable `monthly-portal-handoff:<cutId>`
+AuditLog action `monthly_portal_handoff`, exact target and opaque fingerprint/check
+in the same Serializable transaction as first stamp. cutEntitlement.ts excludes
+that marker from external-send and paused/ended fallback, and from finishing
+original fallback. Read errors propagate. Old unmarked delivery, listing,
+pre-gate and prior-approved v1 rules remain. Backend41/0 and actual signed
+playback/download/caption fixture21/0 passed; scoped lint0, non-incremental types0
+and focused peer/root review pass. Logs:
+`/tmp/monthly-portal-handoff-marker/`, `/tmp/monthly-portal-approval-gate/`.
+Next: new commit/build/stage, then promote
+the repaired candidate under existing deployment authorization. Never promote
+974327f or replay a delivery. No schema/live mutation/activation was used.
+
 ### Oct 1 monthly destination follow-up — local source ready
 
 Supplemental pre-build repair to148440a binds the no-blob canonical `assetPath`

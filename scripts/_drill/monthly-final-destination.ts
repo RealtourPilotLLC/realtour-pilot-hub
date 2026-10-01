@@ -210,6 +210,8 @@ async function main() {
     c.ok("owner revocation after provider/read-only proof but before atomic claim prevents delivery stamp", !revokedClaim.ok && !(await prisma.reviewSubmission.findUnique({ where: { id: lost.id } }))?.sentToClientAt);
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { revokedAt: null } });
     const delivered = await markVideoSent(lost.id, "Kyle isolated fixture");
+    const portalHandoff = await prisma.auditLog.findUnique({ where: { id: `monthly-portal-handoff:${lost.id}` } });
+    c.ok("first portal handoff stamp has durable matching atomic entitlement marker", !!(await prisma.reviewSubmission.findUnique({ where: { id: lost.id } }))?.sentToClientAt && portalHandoff?.action === "monthly_portal_handoff" && portalHandoff.target === lost.id && typeof JSON.parse(portalHandoff.detail).sourceFingerprint === "string" && !!JSON.parse(portalHandoff.detail).finalCheckId);
     c.ok("checked monthly handoff records portal channel without client send or approval", delivered.ok && !!(await prisma.reviewSubmission.findUnique({ where: { id: lost.id } }))?.sentToClientAt && (await prisma.deliverableOutput.findFirst({ where: { projectId: project.id, deliverableId: d.id, slot: 5 } }))?.deliveredVia === "client-portal");
     const enhancedPrior = "/isolated/monthly/05-Final-Video/prior-enhanced.mp4";
     put(enhancedPrior, PROCESSED); put("/isolated/monthly/05-Final-Video/superseded/prior-enhanced.mp4", WRONG);
