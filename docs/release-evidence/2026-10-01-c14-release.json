@@ -1,0 +1,194 @@
+{
+  "candidate": "f123eca38cf2d384df5431b7ceb24bcf4c63eecc",
+  "deployment": {
+    "candidate": "f123eca38cf2d384df5431b7ceb24bcf4c63eecc",
+    "id": "dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+    "url": "https://realtour-pilot-oqooq7tjq-realtour-pilot-s-projects.vercel.app",
+    "state": "READY",
+    "target": "production",
+    "releaseCommit": null
+  },
+  "build": {
+    "candidate": "f123eca38cf2d384df5431b7ceb24bcf4c63eecc",
+    "startedAt": "2026-10-01T17:23:16.090115+00:00",
+    "finishedAt": "2026-10-01T17:24:07.914200+00:00",
+    "exitCode": 0,
+    "node": "20.20.2",
+    "environment": "clean; no provider credentials; dead loopback database",
+    "mainPreviewUntouched": true
+  },
+  "staging": {
+    "at": "2026-10-01T17:30:46.183Z",
+    "candidate": "f123eca38cf2d384df5431b7ceb24bcf4c63eecc",
+    "stagedUrl": "https://realtour-pilot-oqooq7tjq-realtour-pilot-s-projects.vercel.app",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "f123eca38cf2"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      }
+    ],
+    "canonicalStill": "4354aca113ef",
+    "protectionRetained": true
+  },
+  "promotion": {
+    "candidate": "f123eca38cf2d384df5431b7ceb24bcf4c63eecc",
+    "id": "dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+    "stagedUrl": "https://realtour-pilot-oqooq7tjq-realtour-pilot-s-projects.vercel.app",
+    "startedAt": "2026-10-01T17:31:37.572Z",
+    "finishedAt": "2026-10-01T17:31:41.647Z",
+    "exitCode": 0,
+    "promoted": true
+  },
+  "productionHTTP": {
+    "at": "2026-10-01T17:32:20.025Z",
+    "base": "https://hub.realtourpilot.com",
+    "expected": "f123eca38cf2",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "f123eca38cf2"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/",
+        "status": 307,
+        "location": "/login?next=%2F"
+      },
+      {
+        "path": "/editing",
+        "status": 307,
+        "location": "/login?next=%2Fediting"
+      },
+      {
+        "path": "/review",
+        "status": 307,
+        "location": "/login?next=%2Freview"
+      },
+      {
+        "path": "/tasks",
+        "status": 307,
+        "location": "/login?next=%2Ftasks"
+      },
+      {
+        "path": "/portal/me",
+        "status": 200,
+        "location": null,
+        "streamedSignInRedirect": true
+      },
+      {
+        "path": "/api/review/cut/invalidcut12345678/final?f=fixture",
+        "status": 403,
+        "location": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "/_next/static/chunks/3h8wwix_4ntx5.css?dpl=dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/3r8h98x5pdyho.css?dpl=dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2gokyol_h_2zh.js?dpl=dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2pzafz57-h46r.js?dpl=dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2fzkd0kh4cb41.js?dpl=dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2g05-lers809t.js?dpl=dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+        "status": 200
+      }
+    ],
+    "failures": [],
+    "oldHost": {
+      "status": 307,
+      "location": "https://hub.realtourpilot.com/login"
+    }
+  },
+  "stateComparison": {
+    "enforcedReadOnly": true,
+    "automationUnchanged": true,
+    "savedBusinessSettingsUnchanged": true,
+    "operationalMarkerChangesByPrefix": {
+      "aryeo-wh-seen-": 2,
+      "aryeo-wh-activity-": 1,
+      "aryeo-reconciled:": 0
+    },
+    "operationalCursorChanges": [
+      "aryeo:apptReconcile",
+      "aryeo:fullReconcile"
+    ],
+    "operationalChangeContext": "Existing Aryeo webhook and reconciliation markers/cursors advanced during live business activity; no agent provider event or switch call. Source aryeoDelivery.ts MARK and integrations/aryeo.ts APPT_CURSOR_KEY/RECONCILE_CURSOR_KEY.",
+    "clientSeatCountsUnchanged": true,
+    "rawActiveClientUsers": 2,
+    "rawUnrevokedMemberships": 3,
+    "rawCountsAreNotEligibleRealSeats": true,
+    "rollout": "TEST_ONLY (default)",
+    "enabledStoredAutomations": []
+  },
+  "behavioralEvidence": {
+    "actualNamedOfficePageFailuresAndRecovery": {
+      "passed": 14,
+      "failed": 0,
+      "scope": "Home exceptions; Review submissions; Editing inflight projects; Schedule List appointments; denied-review/editing ADMIN; no task/cut/appointment/manual work mutation"
+    },
+    "types": 0,
+    "changedFileLint": 0,
+    "focusedReview": "clear after permission-link repair"
+  },
+  "activation": false,
+  "realClientSends": false,
+  "realInvitations": false,
+  "realProviderBookings": false,
+  "schemaChanges": false,
+  "gitPush": false,
+  "acceptanceOpen": [
+    "C14 mounted normal/test/empty/failure/return and error-boundary recovery",
+    "U0-U5 partial, U6",
+    "phone/provider/full-watch",
+    "first roster and strategy/topic/seat preparation",
+    "historical source reconciliation",
+    "generated-workflow dates and optional manual unknown-text authority"
+  ],
+  "rollback": {
+    "candidate": "4354aca113ef75e0c17fe72f42c1b33e42541973",
+    "deployment": "dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+    "url": "https://realtour-pilot-gwas4lidg-realtour-pilot-s-projects.vercel.app",
+    "preserveDatabaseAndNewerWrites": true
+  }
+}

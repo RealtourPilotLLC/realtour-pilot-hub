@@ -2,6 +2,31 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 current production — f123eca, no unfinished source batch
+
+Canonical f123eca38cf2, Ready dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq,
+promoted17:31:41Z. a38715d portal cache35/0,4354aca exact echo36/0 andf123eca
+Home read recovery14/0 were committed/released separately; prior-build HTTP37/0
+is durable transport evidence. Lint/types/focused reviews/exact local and remote
+build/stage/production HTTP pass. Saved business settings/automation/rollout/
+seats unchanged; operational markers/cursors changed during normal business
+activity, sanitized evidence separate. Current release doc/JSON:
+`audit-2026-10-01-c14-release.md`; rollback4354aca, preserve all DB writes.
+
+Final command check: no build/test/deploy process remains. Fenced mainpreview
+3200/5599/5598 and unrelated3100 retained; all owned5601/5602/3211/5972 fixture
+processes stopped. Build checkout clean/detachedf123eca. Main branch stays
+codex/audit-2026-09-30; no push/main merge. Final docs-only checkpoint records
+release/remaining work and does not change runtime source.
+
+No further concrete autonomous source gap is documented. Continue when supported
+browser access or business/provider evidence changes; don't restart audit/green
+suites. C14 mounted normal/test/empty/failure/return/error-boundary, U0–U5partial/
+U6, actual phone/provider/full-watch, first real roster/strategy/topic/seats,
+C13/C18/Sarina surgical source repairs, worker/backlog/rollout and two business
+policy questions remain open. Resume table and acceptance map provide exact
+next steps. No whole-project/real-client completion claim is made.
+
 ### Oct 1 current production — W05 checkpoint4354aca
 
 Canonical now4354aca113ef, Ready dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp,

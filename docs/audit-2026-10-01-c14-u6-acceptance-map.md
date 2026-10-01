@@ -5,10 +5,11 @@ checklist, release matrix and fixtures. It is not a new audit or a completed
 browser pass. This update changes only this acceptance map. The policy release
 history starts at `e6eac69`. The subsequent monthly portal cache/failure repair
 is verified at35/0 and deployed as `a38715d` with exact build/HTTP evidence in
-`audit-2026-10-01-cache-release.md`; current production4354aca also includes W05.
-C14 actual Home/Review/Editing/Schedule page-read failure verification passes
-14/0; Home's silent-empty exception fallback is repaired locally and awaits
-its separate exact commit/build/release.
+`audit-2026-10-01-cache-release.md`; current productionf123eca includes W05
+and the Home read-recovery repair. C14 actual Home/Review/Editing/Schedule
+page-read failure verification passes14/0 and the source is deployed with exact
+build/stage/HTTP proof in `audit-2026-10-01-c14-release.md`. Mounted/browser
+acceptance remains open.
 
 ## Supported browser access is blocked
 

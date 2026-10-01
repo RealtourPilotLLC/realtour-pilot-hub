@@ -5,7 +5,38 @@ Use this page first. The full backlog is in
 `audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.
 Do not restart the audit or repeat green checks without a specific changed risk.
 
-## Current checkpoint — W05 deployed, C14 failure repair verified
+## Current checkpoint — three verified application checkpoints deployed
+
+Canonical https://hub.realtourpilot.com serves `f123eca38cf2`, Ready
+`dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq`, promoted17:31:41Z (1:31 PM EDT).
+App checkpoints a38715d (portal cache),4354aca (exact delivery echo),f123eca
+(Home read failure) are committed and deployed separately. Targeted35/0,36/0,
+14/0 and prior exact-build HTTP37/0 pass; all changed-file lint, non-incremental
+types, clean local/remote builds, protected stages and canonical HTTP gates pass.
+Current evidence: `audit-2026-10-01-c14-release.md` and sanitized JSON; prior
+cache/W05 release records remain. Verified rollback4354aca. Saved business
+settings/automation/rollout/seats unchanged; existing operational markers/cursors
+advanced during live business activity and are recorded separately. No agent
+schema/send/invite/booking/financial/activation/rollout/push operation.
+
+No build/test/deploy command is stalled or left running. Main fenced preview
+3200/5599/5598 and unrelated Premium Reel3100 remain intentional. Build checkout
+clean/detachedf123eca; final documentation-only checkpoint may follow it.
+No further concrete autonomous source defect remains documented. Do not restart
+the audit or repeat green checks to fill time. The whole journey remains
+unaccepted; source implementation is not launch acceptance.
+
+| Remaining item | Concrete next step |
+|---|---|
+| C14 mounted normal/test/empty/failure/return | Restore supported browser access, then execute existing C14 acceptance map with signed isolated roles; retain exact IDs and money definitions. Tool policy prohibits alternate transports/workarounds. |
+| U0–U5 partial; U6 open | Fixed375/390/768/laptop, light/dark/client palette,200%zoom, keyboard/focus/drafts and Kyle/James task-finding observations. Completed secondary source coverage is in ui-controls.md. |
+| Real client onboarding | Jordan names first roster; staff prepare/release approved strategies/topics and eligible access under existing gates. Last16:11Z readonly inventory:13 candidates/13 October workspaces;0 eligible real seats/released strategies/approved canonical topics. No invitation/send authorized. |
+| C13/C18/Sarina historical records | Kyle confirms exact topic/cut/property source and cross-session owed scope in the private proposal, then use reviewed surgical CAS/audit repairs; do not regenerate filmed versions or reactivate ended records. |
+| Phone/provider/rendition journey | Isolated actual iPhone/Android upload/save/share/interruption; approved provider outcomes/locations; human full rendition/audio/frame review. Fake-provider and HTTP evidence cannot close these. |
+| Worker/backlog and rollout | Retain OFF/TEST_ONLY; validate approved real audience, content and provider/model output before any separate activation. Existing five held backlog jobs are not replayed. |
+| Generated-workflow dates; manual unknown-text authority | Await business answers; preserve current clocks and conservative unknown holds. Deployed authenticated automatic exact-echo recovery is independent of new manual rights. |
+
+## Previous W05 deployment and C14 preparation history
 
 Production now serves `4354aca113ef`, Ready `dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp`,
 promoted17:15:02Z (1:15 PM EDT). Exact clean local/remote builds/stage and
@@ -110,8 +141,8 @@ accepted for real-client onboarding.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Latest application release:
-  `e6eac69f1d41f4697a9cb64c8011644be458a3ea`; exact build/release evidence is in
-  `audit-2026-10-01-policy-release.md`. First-release source evidence at
+  `f123eca38cf2d384df5431b7ceb24bcf4c63eecc`; exact build/release evidence is in
+  `audit-2026-10-01-c14-release.md`. First-release source evidence at
   `2b87cc2` and mixed-handoff953e680 remains historical.
   At first-release3c3c2d7, the fresh main fetch found no missing main commits;
   that candidate was161 commits ahead. No push/main merge followed.

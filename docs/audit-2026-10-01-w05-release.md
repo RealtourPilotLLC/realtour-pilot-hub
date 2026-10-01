@@ -44,8 +44,8 @@ activation, rollout expansion or Git push.
 
 Mounted browser/phone/provider/media and complete real-client journey remain
 unaccepted. U0–U5 partial/U6 open. C14 Home's unreadable exception fallback has
-its own reviewed14/0 source repair, not included in4354aca. Fresh launch inventory
-still has13 candidates/13 October workspaces but zero eligible real seats,
+its own reviewed14/0 source repair, not included in4354aca. The last16:11Z launch inventory
+recorded13 candidates/13 October workspaces but zero eligible real seats,
 released strategies or approved canonical topics; first roster and staff source
 reconciliation remain gates. Browser tool policy blocks supported tab access.
 

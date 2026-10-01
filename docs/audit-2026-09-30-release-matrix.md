@@ -1,11 +1,28 @@
 # September 30 release evidence — Oct 1 production checkpoints
 
 This is an acceptance ledger. Jordan explicitly authorized the Oct1 deployment;
-reviewed candidate e6eac69 is now live, with existing gates unchanged. The detailed C01–C19,
+reviewed candidate f123eca is now live, with existing gates unchanged. The detailed C01–C19,
 W01–W06 and U0–U6 backlog remains in `audit-2026-09-30-checklist.md`; the resume
 instructions and batch evidence remain in `handoff.md`.
 
 ## Release state
+
+Current production f123eca38cf2, Ready dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq,
+promoted17:31:41Z (1:31 PM EDT). All three app checkpoints deployed separately,
+with clean builds/stages/HTTP and readonly comparison evidence. Saved business
+settings/automation/rollout/seats unchanged; existing operational marker/cursor
+movement recorded separately. Rollback4354aca; no client/provider/activation
+operation. Current authority `audit-2026-10-01-c14-release.md`.
+
+| Latest work | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
+|---|---|---|---|---|---|---|
+| Portal cache and failed detail | Canonical markers/status/pointers; both layouts fail closed |35/0 PG/SSR; exact build/release gates |a38715d |Yes |Existing gates |Source live; mounted/real-client acceptance open |
+| Exact delivery-text recovery | Authenticated unambiguous provider proof, original time, no resend |36/0 PG/webhook/concurrency/notice; exact gates |4354aca |Yes |Existing verified callback path; no switch change |Future callbacks may settle staff status; real provider outcome unobserved |
+| Home unavailable exceptions | Honest status/native retry/permitted scoped destinations; healthy empty retained |14/0 actual signed pages/recovery; exact gates |f123eca |Yes |Existing Home permissions |Staff notice live; mounted/error-boundary acceptance open |
+| Normal-role HTTP fixture |No distinct product change |37/0 against prior exact e6 build; cookie/action/range/manual work |a38715d |Local evidence only |No activation |No distinct feature or real client invitation |
+
+All following release paragraphs/tables preserve earlier checkpoint history.
+U0–U5 remain partial and U6 open; none is accepted by these source/HTTP gates.
 
 Current production is W05 checkpoint4354aca113ef, Ready
 dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp, promoted17:15:02Z.36/0 exact proof tests,
