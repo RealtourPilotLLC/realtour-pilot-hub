@@ -186,10 +186,10 @@ export async function RevisionsView({ tabs, excludeClientIds = [], showTest = fa
 // who it is for, which client and which property, what was actually said (with
 // a link straight back into Slack) and what the required action is. Two ways
 // to clear it: Done ✓ when it happened, "Not needed" when it didn't and won't.
-export async function SlackView({ tabs, focusTaskId }: { tabs: ReactNode; focusTaskId?: string | null }) {
+export async function SlackView({ tabs, focusTaskId, excludeClientIds, showTest = false }: { tabs: ReactNode; focusTaskId?: string | null; excludeClientIds?: string[]; showTest?: boolean }) {
   const { listAssignees } = await import("@/lib/assignees");
   const [board, scrub, assignees] = await Promise.all([
-    slackBoard(new Date(), { withPermalinks: true }),
+    slackBoard(new Date(), { withPermalinks: true, excludeClientIds, focusTaskId }),
     moneyScrubber(),
     listAssignees().catch(() => []),
   ]);
@@ -206,9 +206,15 @@ export async function SlackView({ tabs, focusTaskId }: { tabs: ReactNode; focusT
   const sub =
     board.total === 0
       ? "Action items parsed from Slack — assign, do, or tick them off."
-      : `${board.total} open${board.capped ? ` · showing the oldest ${rows.length}` : ""}${board.unassignedCount ? ` · ${board.unassignedCount} still need assigning` : ""}${board.overdueCount ? ` · ${board.overdueCount} overdue` : ""}. Oldest first.`;
+      : `${board.total} open${board.capped ? ` · showing ${rows.length}` : ""}${board.unassignedCount ? ` · ${board.unassignedCount} still need assigning` : ""}${board.overdueCount ? ` · ${board.overdueCount} overdue` : ""}. Unassigned and oldest first.`;
   return (
     <Shell tabs={tabs} title="Slack asks" subtitle={sub}>
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
+        <span>{showTest ? "Showing real and test records" : focusTaskId ? "Real client work and the linked ask" : "Test records hidden from the board"}</span>
+        <Link href={showTest ? "/tasks?tab=slack" : "/tasks?tab=slack&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
+          {showTest ? "Hide test records" : "Show test records"}
+        </Link>
+      </div>
       {rows.length === 0 ? (
         <p className="flex items-center gap-2 rounded-2xl border border-success/20 bg-success/[0.05] px-5 py-4 text-[15px] text-success">
           <CheckCircle2 className="size-5" /> Slack is clear.
@@ -296,12 +302,12 @@ function SlackRow({ t, focused, assignOptions }: { t: SlackTaskRow; focused?: bo
 }
 
 // Tab-badge counts, shared with the page so the badges match the tabs.
-export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeCommsClientIds?: string[] } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
+export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeCommsClientIds?: string[]; excludeSlackClientIds?: string[] } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
   const [phone, email, revs, slack] = await Promise.all([
     unansweredCommsBoard("phone", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
     unansweredCommsBoard("email", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
     revisionsBoard(new Date(), { excludeClientIds: opts.excludeRevisionClientIds }),
-    slackBoard(),
+    slackBoard(new Date(), { excludeClientIds: opts.excludeSlackClientIds }),
   ]);
   return {
     comms: phone.length + email.length,

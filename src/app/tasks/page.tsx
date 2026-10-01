@@ -67,16 +67,20 @@ export default async function TasksHubPage({ searchParams }: {
   const showTestRevisions = tab === "revisions" && sp.test === "1";
   const showTestOther = tab === "other" && sp.test === "1";
   const showTestComms = tab === "comms" && sp.test === "1";
+  const showTestSlack = tab === "slack" && sp.test === "1";
+  const showTestDone = tab === "done" && sp.test === "1";
   const syntheticClientIds = boardOnly ? []
     : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
   const excludedRevisionClientIds = showTestRevisions ? [] : syntheticClientIds;
   const excludedOtherClientIds = showTestOther ? [] : syntheticClientIds;
   const excludedCommsClientIds = showTestComms ? [] : syntheticClientIds;
+  const excludedSlackClientIds = showTestSlack ? [] : syntheticClientIds;
+  const excludedDoneClientIds = showTestDone ? [] : syntheticClientIds;
 
   const [otherN, doneN, checklists, phoneWaiting] = await Promise.all([
     boardOpenCount({ excludeClientIds: excludedOtherClientIds }),
-    boardOnly ? 0 : doneTodayCount(),
-    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeCommsClientIds: excludedCommsClientIds }),
+    boardOnly ? 0 : doneTodayCount({ excludeClientIds: excludedDoneClientIds }),
+    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeCommsClientIds: excludedCommsClientIds, excludeSlackClientIds: excludedSlackClientIds }),
     // Only to decide which side of Comms to open on — see commsChannel below.
     boardOnly ? 0 : unansweredCommsBoard("phone", new Date(), { excludeClientIds: excludedCommsClientIds }).then((g) => g.length).catch(() => 0),
   ]);
@@ -105,16 +109,18 @@ export default async function TasksHubPage({ searchParams }: {
       showTestRevisions={showTestRevisions}
       showTestOther={showTestOther}
       showTestComms={showTestComms}
+      showTestSlack={showTestSlack}
+      showTestDone={showTestDone}
       slackCount={checklists.slack}
       updatedAt={new Date()}
     />
   );
 
-  if (tab === "other") return <BoardView sp={sp} tabs={tabs} excludeClientIds={excludedOtherClientIds} showTest={showTestOther} />;
-  if (tab === "done") return <DoneView tabs={tabs} />;
+  if (tab === "other") return <BoardView sp={sp} tabs={tabs} excludeClientIds={excludedOtherClientIds} excludeRelatedClientIds={syntheticClientIds} showTest={showTestOther} />;
+  if (tab === "done") return <DoneView tabs={tabs} excludeClientIds={excludedDoneClientIds} showTest={showTestDone} />;
   if (tab === "revisions") return <RevisionsView tabs={tabs} excludeClientIds={excludedRevisionClientIds} showTest={showTestRevisions} />;
   // ?task=<id> lands on the row and highlights it — the digests deep-link here
   // now, and a link that drops you at the top of a 21-row list is not a link.
-  if (tab === "slack") return <SlackView tabs={tabs} focusTaskId={sp.task ?? null} />;
+  if (tab === "slack") return <SlackView tabs={tabs} focusTaskId={sp.task ?? null} excludeClientIds={excludedSlackClientIds} showTest={showTestSlack} />;
   return <CommsView tabs={tabs} channel={commsChannel} excludeClientIds={excludedCommsClientIds} showTest={showTestComms} />;
 }

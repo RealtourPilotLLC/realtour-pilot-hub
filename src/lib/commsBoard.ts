@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { unansweredComms } from "@/lib/replyQueue";
 import { editorMeta } from "@/lib/editors";
+import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
 // The Comms Checklist boards (Jordan, Sep 1 2026: "we don't need to turn every
@@ -316,8 +317,21 @@ const SLACK_PAGE = 60;
 
 /** Every open Slack ask, counted. Cheap enough for a badge or a signpost on a
  *  page that doesn't render the list (the Board tab's pointer at this tab). */
-export async function slackOpenCount(): Promise<number> {
-  return prisma.smartTask.count({ where: { source: "slack", status: { notIn: ["COMPLETED", "CANCELLED"] } } });
+type SlackScope = TaskClientScope & { focusTaskId?: string | null };
+
+function slackWhere(opts: SlackScope = {}) {
+  const scope = taskClientScopeWhere(opts);
+  return {
+    source: "slack",
+    status: { notIn: ["COMPLETED", "CANCELLED"] },
+    // A saved link still opens the requested open ask. Ordinary list and
+    // badge callers do not pass this explicit exception.
+    AND: [opts.focusTaskId && opts.excludeClientIds?.length ? { OR: [scope, { id: opts.focusTaskId }] } : scope],
+  };
+}
+
+export async function slackOpenCount(opts: SlackScope = {}): Promise<number> {
+  return prisma.smartTask.count({ where: slackWhere(opts) });
 }
 
 /** Every open Slack ask. `withPermalinks` costs one cached Slack call per row
@@ -325,22 +339,29 @@ export async function slackOpenCount(): Promise<number> {
  *  does not. */
 export async function slackBoard(
   now: Date = new Date(),
-  opts: { withPermalinks?: boolean } = {},
+  opts: SlackScope & { withPermalinks?: boolean } = {},
 ): Promise<SlackBoard> {
+  const select = {
+    id: true, title: true, summary: true, description: true, createdAt: true, assignedKey: true,
+    dueAt: true, contactName: true, sourceDetail: true, propertyAddress: true, projectId: true,
+    client: { select: { name: true } },
+    project: { select: { title: true } },
+  } as const;
   const [tasks, total] = await Promise.all([
     prisma.smartTask.findMany({
-      where: { source: "slack", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-      select: {
-        id: true, title: true, summary: true, description: true, createdAt: true, assignedKey: true,
-        dueAt: true, contactName: true, sourceDetail: true, propertyAddress: true, projectId: true,
-        client: { select: { name: true } },
-        project: { select: { title: true } },
-      },
+      where: slackWhere(opts),
+      select,
       orderBy: { createdAt: "asc" },
       take: SLACK_PAGE,
     }),
-    slackOpenCount(),
+    slackOpenCount(opts),
   ]);
+  // A digest's exact ask can be newer than the oldest page of work. Keep the
+  // explicit link useful without widening ordinary list or badge queries.
+  if (opts.focusTaskId && !tasks.some((task) => task.id === opts.focusTaskId)) {
+    const focused = await prisma.smartTask.findFirst({ where: { ...slackWhere(opts), id: opts.focusTaskId }, select });
+    if (focused) tasks.push(focused);
+  }
   if (tasks.length === 0) return { rows: [], unassignedCount: 0, overdueCount: 0, total: 0, capped: false };
 
   // assignedKey is a slug ("jordan", "kim"). The tab showed the slug; a person

@@ -13,13 +13,15 @@ export type TasksTab = "comms" | "revisions" | "slack" | "other" | "done";
 // and a page whose numbers you can't date is a page you stop trusting. The
 // badges beside each tab are that tab's own count query, so the strip reads
 // as one live line: what is open, and when we last looked.
-export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false, showTestOther = false, showTestComms = false }: {
+export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false, showTestOther = false, showTestComms = false, showTestSlack = false, showTestDone = false }: {
   tab: TasksTab; otherCount: number; doneCount: number;
   commsCount?: number; revisionsCount?: number; slackCount?: number;
   updatedAt?: Date;
   showTestRevisions?: boolean;
   showTestOther?: boolean;
   showTestComms?: boolean;
+  showTestSlack?: boolean;
+  showTestDone?: boolean;
 }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
@@ -41,7 +43,7 @@ export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revision
         Revisions
         {badge(revisionsCount, tab === "revisions")}
       </Link>
-      <Link href="/tasks?tab=slack" className={tab === "slack" ? active : idle}>
+      <Link href={showTestSlack ? "/tasks?tab=slack&test=1" : "/tasks?tab=slack"} className={tab === "slack" ? active : idle}>
         <Hash className="mr-1.5 inline size-3.5" />
         Slack
         {badge(slackCount, tab === "slack")}
@@ -51,7 +53,7 @@ export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revision
         Other
         {badge(otherCount, tab === "other")}
       </Link>
-      <Link href="/tasks?tab=done" className={tab === "done" ? active : idle}>
+      <Link href={showTestDone ? "/tasks?tab=done&test=1" : "/tasks?tab=done"} className={tab === "done" ? active : idle}>
         <History className="mr-1.5 inline size-3.5" />
         Done
         {badge(doneCount, tab === "done")}

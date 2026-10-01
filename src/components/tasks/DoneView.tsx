@@ -7,23 +7,15 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { getTaskHistory, getDeliveryHistory, getShootHistory, type HistoryTask } from "@/lib/queries";
 import { DayRecap } from "@/components/history/DayRecap";
-import { prisma } from "@/lib/prisma";
-import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
+import { etDayKey, etTime } from "@/lib/datetime";
 import { taskTypeMeta } from "@/lib/taskSource";
 import { getCurrentUser } from "@/lib/auth/user";
 import { scrubMoney } from "@/lib/text";
-import { isDismissedSummary, dismissedReason, dismissedBy } from "@/lib/triage";
+import { closedWithoutDoing, type ClosedRow } from "@/lib/taskHistory";
+export { doneTodayCount } from "@/lib/taskHistory";
 
 // The day-by-day ledger of what got done — shoots, completed to-dos, deliveries.
 // (Moved from /history — now the Tasks hub's Done tab.)
-
-// The hub tab badge: how many tasks were completed today (ET) — one cheap count.
-// Also the Other tab's "N done today" header badge, so the two never disagree.
-export async function doneTodayCount(): Promise<number> {
-  return prisma.smartTask.count({
-    where: { status: "COMPLETED", completedAt: { gte: etDayStartUtc(new Date()) } },
-  });
-}
 
 // Friendly label + grouping bucket per task type — the one shared map in
 // src/lib/taskSource.ts (this ledger and the board chip used to keep separate
@@ -54,47 +46,14 @@ function friendlyDay(key: string): string {
 // a decision, not an output, and nothing may read "done" without the thing
 // having happened (Jordan's standing rule).
 // ---------------------------------------------------------------------------
-type ClosedRow = {
-  id: string;
-  title: string;
-  taskType: string;
-  summary: string | null;
-  at: Date;
-  projectId: string | null;
-  byHand: boolean;
-  reason: string | null;
-  who: string | null;
-};
-
-async function closedWithoutDoing(days: number): Promise<ClosedRow[]> {
-  const rows = await prisma.smartTask.findMany({
-    where: { status: "CANCELLED", updatedAt: { gte: new Date(Date.now() - days * 86_400_000) } },
-    // CANCELLED rows carry no completedAt on purpose (every "what got done"
-    // count pairs it with COMPLETED), so the ledger dates them by the write.
-    orderBy: { updatedAt: "desc" },
-    take: 200,
-    select: { id: true, title: true, taskType: true, summary: true, updatedAt: true, projectId: true },
-  });
-  return rows.map((t) => ({
-    id: t.id,
-    title: t.title,
-    taskType: t.taskType,
-    summary: t.summary,
-    at: t.updatedAt,
-    projectId: t.projectId,
-    byHand: isDismissedSummary(t.summary),
-    reason: dismissedReason(t.summary),
-    who: dismissedBy(t.summary),
-  }));
-}
-
-export async function DoneView({ tabs }: { tabs: ReactNode }) {
+export async function DoneView({ tabs, excludeClientIds, showTest = false }: { tabs: ReactNode; excludeClientIds?: string[]; showTest?: boolean }) {
+  const scope = { excludeClientIds };
   const [tasksRaw, deliveries, shoots, me, closedRaw] = await Promise.all([
-    getTaskHistory(45),
-    getDeliveryHistory(45),
-    getShootHistory(45),
+    getTaskHistory(45, scope),
+    getDeliveryHistory(45, scope),
+    getShootHistory(45, scope),
     getCurrentUser().catch(() => null),
-    closedWithoutDoing(45).catch(() => [] as ClosedRow[]),
+    closedWithoutDoing(45, scope).catch(() => [] as ClosedRow[]),
   ]);
   // No money on an ADMIN screen (Jordan's standing rule): a closed Slack to-do
   // keeps its title here, figure and all, so a non-owner's ledger is redacted
@@ -136,6 +95,12 @@ export async function DoneView({ tabs }: { tabs: ReactNode }) {
       <PageHeader title="Tasks" subtitle="What happened, day by day — shoots, completed to-dos, and deliveries. Tap “Write a recap” for a plain-English summary." />
       <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">
         {tabs}
+        <div className="flex items-center justify-between gap-3 text-xs text-muted">
+          <span>{showTest ? "Showing real and test records" : "Test records hidden"}</span>
+          <Link href={showTest ? "/tasks?tab=done" : "/tasks?tab=done&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
+            {showTest ? "Hide test records" : "Show test records"}
+          </Link>
+        </div>
         {orderedDays.length === 0 && (
           <div className="rounded-2xl border border-border bg-surface p-8 text-center text-sm text-muted">
             <History className="mx-auto mb-2 size-6 text-muted-2" />
@@ -178,7 +143,7 @@ export async function DoneView({ tabs }: { tabs: ReactNode }) {
               )}
 
               {/* AI narrative recap of the day (on demand) */}
-              <DayRecap dayKey={key} />
+              <DayRecap key={showTest ? "test" : "real"} dayKey={key} includeTest={showTest} />
 
               <ul className="divide-y divide-border">
                 {dayShoots.map((s) => (

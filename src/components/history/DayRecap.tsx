@@ -5,7 +5,7 @@ import { Sparkles, Loader2 } from "lucide-react";
 import { summarizeDay } from "@/app/history/actions";
 
 // "Write recap" button → AI narrative of the day. On-demand to keep cost down.
-export function DayRecap({ dayKey }: { dayKey: string }) {
+export function DayRecap({ dayKey, includeTest = false }: { dayKey: string; includeTest?: boolean }) {
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -13,7 +13,7 @@ export function DayRecap({ dayKey }: { dayKey: string }) {
   const run = () =>
     start(async () => {
       setErr(null);
-      const r = await summarizeDay(dayKey);
+      const r = await summarizeDay(dayKey, { includeTest });
       if (r.ok && r.text) setText(r.text);
       else setErr(r.message ?? "Could not generate a recap.");
     });

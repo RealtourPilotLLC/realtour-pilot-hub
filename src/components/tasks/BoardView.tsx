@@ -124,7 +124,7 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
   );
 }
 
-export async function BoardView({ sp, tabs, excludeClientIds, showTest = false }: { sp: { who?: string; task?: string }; tabs: ReactNode; excludeClientIds?: string[]; showTest?: boolean }) {
+export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClientIds, showTest = false }: { sp: { who?: string; task?: string }; tabs: ReactNode; excludeClientIds?: string[]; excludeRelatedClientIds?: string[]; showTest?: boolean }) {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = editorScopeOf(me);
   const scope = { excludeClientIds };
@@ -174,7 +174,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, showTest = false }
   // 11 to assign · 21 overdue · 1340 done" beside a Done tab badge of 2 — the
   // 1340 was every task ever closed). Same query as that badge, so the two
   // numbers can't disagree.
-  const doneToday = await doneTodayCount();
+  const doneToday = await doneTodayCount({ excludeClientIds: excludeRelatedClientIds });
   // WHERE THE SLACK ASKS WENT (Sep 16). This tab no longer lists them — they
   // have one home now — but every link minted before today still points here,
   // including the 8am Slack DM, which lists overdue rows (Slack rows among
@@ -182,7 +182,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, showTest = false }
   // containing what a digest just named is the exact fault Kyle reported, so
   // the tab says out loud where they live. Editors never had Slack asks routed
   // away from them, so this is for the office only.
-  const slackElsewhere = editorScope ? 0 : await slackOpenCount().catch(() => 0);
+  const slackElsewhere = editorScope ? 0 : await slackOpenCount({ excludeClientIds: excludeRelatedClientIds }).catch(() => 0);
   const assigneeChips = assignees.map((a) => ({ key: a.key, name: a.name }));
 
   const startToday = etDayStartUtc(new Date()).getTime();

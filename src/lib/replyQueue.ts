@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { taskClientScopeWhere } from "@/lib/taskBoard";
+import { taskClientScopeWhere } from "@/lib/taskClientScope";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
 import { phoneKey } from "@/lib/integrations/openphone";

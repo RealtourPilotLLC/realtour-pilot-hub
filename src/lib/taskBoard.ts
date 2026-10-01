@@ -2,24 +2,13 @@ import type { Prisma } from "@prisma/client";
 import { MESSAGE_TASK_TYPES } from "@/lib/queries";
 import { recentProjectWhere } from "@/lib/recency";
 import { boardVisibleWhere } from "@/lib/triage";
+import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
+export { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 
 export const BOARD_ACTIVE_STATUSES = [
   "OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER",
   "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED",
 ];
-
-export type TaskClientScope = { excludeClientIds?: string[] };
-
-/** Match either durable link; preserve tasks with no linked client or job. */
-export function taskClientScopeWhere(opts: TaskClientScope = {}): Prisma.SmartTaskWhereInput {
-  const ids = opts.excludeClientIds;
-  return ids?.length ? {
-    AND: [
-      { OR: [{ clientId: null }, { clientId: { notIn: ids } }] },
-      { OR: [{ projectId: null }, { project: { clientId: { notIn: ids } } }] },
-    ],
-  } : {};
-}
 
 /** One membership rule for Tasks → Other and every Home badge linking to it.
  * Editor assignment, live work, triage and message recency keep their rules. */

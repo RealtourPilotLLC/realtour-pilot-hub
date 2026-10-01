@@ -4,6 +4,8 @@ import { requireAdmin } from "@/lib/auth/guards";
 
 import { getTaskHistory, getDeliveryHistory, getShootHistory } from "@/lib/queries";
 import { etDayKey } from "@/lib/datetime";
+import { prisma } from "@/lib/prisma";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // AI recap of one ET calendar day, built from that day's completed tasks,
 // deliveries, and shoots. On-demand (a button on the history page) to keep AI
@@ -14,12 +16,15 @@ const TYPE_NAME: Record<string, string> = {
   revision: "revision", vendor_update: "vendor update", image_fixes: "photo fixes", internal_instruction: "team task",
 };
 
-export async function summarizeDay(dayKey: string): Promise<{ ok: boolean; text?: string; message?: string }> {
+export async function summarizeDay(dayKey: string, opts: { includeTest?: boolean } = {}): Promise<{ ok: boolean; text?: string; message?: string }> {
   await requireAdmin(); // costs an AI call — staff only
+  const excludeClientIds = opts.includeTest ? []
+    : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  const scope = { excludeClientIds };
   const [tasks, deliveries, shoots] = await Promise.all([
-    getTaskHistory(120),
-    getDeliveryHistory(120),
-    getShootHistory(120),
+    getTaskHistory(120, scope),
+    getDeliveryHistory(120, scope),
+    getShootHistory(120, scope),
   ]);
   const dt = tasks.filter((t) => etDayKey(new Date(t.completedAt)) === dayKey);
   const dd = deliveries.filter((d) => etDayKey(new Date(d.deliveredAt)) === dayKey);

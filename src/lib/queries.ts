@@ -13,6 +13,7 @@ import { DEBRIEF_QC_LABELS } from "@/lib/debrief";
 import { pinnedPromise } from "@/lib/turnaround";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { rankClientRows } from "@/lib/contacts";
+import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 
 // Re-export the QC types so the dashboard can consume them without reaching
 // past this module — queries.ts is the dashboard's single data door.
@@ -1263,10 +1264,10 @@ export type HistoryDelivery = {
 };
 
 // Completed tasks over the last N days (newest first), for the history page.
-export async function getTaskHistory(days = 45): Promise<HistoryTask[]> {
+export async function getTaskHistory(days = 45, opts: TaskClientScope = {}): Promise<HistoryTask[]> {
   const since = etDayStartUtc(etAddDays(new Date(), -days));
   const tasks = await prisma.smartTask.findMany({
-    where: { status: "COMPLETED", completedAt: { gte: since } },
+    where: { status: "COMPLETED", completedAt: { gte: since }, AND: [taskClientScopeWhere(opts)] },
     orderBy: { completedAt: "desc" },
     select: {
       id: true, title: true, taskType: true, completedAt: true,
@@ -1299,10 +1300,10 @@ export type HistoryShoot = {
 };
 
 // Shoots (appointments) that occurred over the last N days, for the daily recap.
-export async function getShootHistory(days = 45): Promise<HistoryShoot[]> {
+export async function getShootHistory(days = 45, opts: TaskClientScope = {}): Promise<HistoryShoot[]> {
   const since = etDayStartUtc(etAddDays(new Date(), -days));
   const appts = await prisma.appointment.findMany({
-    where: { startAt: { gte: since, lte: new Date() }, status: { not: "CANCELED" } },
+    where: { startAt: { gte: since, lte: new Date() }, status: { not: "CANCELED" }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
     orderBy: { startAt: "desc" },
     select: {
       id: true, startAt: true,
@@ -1490,10 +1491,10 @@ export async function getBillingRows(opts: { excludeClientIds?: string[] } = {})
 }
 
 // Projects delivered over the last N days, to round out the daily recap.
-export async function getDeliveryHistory(days = 45): Promise<HistoryDelivery[]> {
+export async function getDeliveryHistory(days = 45, opts: TaskClientScope = {}): Promise<HistoryDelivery[]> {
   const since = etDayStartUtc(etAddDays(new Date(), -days));
   const projects = await prisma.project.findMany({
-    where: { deliveredAt: { gte: since } },
+    where: { deliveredAt: { gte: since }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     orderBy: { deliveredAt: "desc" },
     select: { id: true, title: true, deliveredAt: true, client: { select: { name: true, avatarUrl: true } } },
   });

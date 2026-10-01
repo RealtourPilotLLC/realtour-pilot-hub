@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### C14 checkpoint — Slack/Done and recap scope
+
+The interrupted agent's Slack/Done source edits were preserved and integrated.
+The isolated drill passes 12/0: fixture rows do not consume normal Slack or
+closed-task caps, exact linked Slack asks remain reachable beyond the oldest
+page, normal Done count/history/recap agree, and cancellations remain separate
+from completed work. Explicit test views retain fixtures. Recaps used a dummy
+local key and intercepted HTTP response, with no real model spend. Focused
+lint passed (existing queries.ts warning). Shared scope now has its own module,
+avoiding a query/board import cycle.
+
+Remaining C14 found in the actual Home composition: owner-only stats/pulse/
+quality summaries, operational fields in ownerPulse, handled-today and personal
+flagged work still use unscoped readers. Signed browser identity also remains
+open. Do not call the whole Home fixture-free. The live demo from Claude's app
+remains on 3200/5599; no build should use this checkout's `.next`. No active
+migration/deploy command, production write, send or switch change.
+
+
 ### Signed editor and photographer checkpoint
 
 C01 configured fake-provider regression found that owner preview could import
