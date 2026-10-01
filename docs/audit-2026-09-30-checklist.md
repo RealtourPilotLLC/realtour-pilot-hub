@@ -8,6 +8,23 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Active continuation — recovery and causal HTTP acceptance
+
+- ErrorScreen uses installed Next16 current-data retry with duplicate guard and
+  truthful interrupted-save/send guidance. Actual handler/runtime/SSR14/0,
+  scoped lint and whole-tree nonincremental types pass; root review clear.
+  Commit/build/deployment pending. Mounted transition acceptance remains open.
+- Separate W05 authenticated receipt/replay fixes a concrete transient database
+  proof-loss defect; PostgreSQL21/0 plus existing echo36/0 pass, lint/types pass,
+  peer review pending. No schema or resend. Release pending.
+- Continuous first CALL-month HTTP acceptance begins with no planning or
+  production artifacts. First run stopped at an overstrict fixture assertion
+  about nullable stored CALL mode; canonical fallback is being used before
+  rerun. This establishes no product defect and no full journey pass yet.
+- Historical surgical repair mechanics are being prepared read-only with private
+  plans and disposable fixtures; semantic bindings remain held for Kyle/source
+  confirmation. No live repair or client preparation occurred.
+
 ### Current production — f123eca; remaining acceptance held
 
 Ready dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq promoted17:31:41Z (1:31 PM EDT).

@@ -2860,3 +2860,13 @@ The checklist rows still marked PARTIAL that needed nobody's decision.
 - **Production facts read (read-only, 25006 proven):** James has an ADMIN login;
   Kyle ADMIN; Jordan OWNER; Harrison PHOTOGRAPHER; Kim and John Mark EDITOR.
   `review_room` was unset, 8 cuts pending.
+# Oct 1 continuation — current-data retry and durable delivery proof
+
+Canonical remains f123eca. ErrorScreen current-data retry passes actual
+handler/Next16 runtime/SSR14/0, scoped lint/types and root review; release
+pending. Separate W05 proof-loss repair passes new PostgreSQL21/0 plus prior
+36/0 and lint/types; peer review pending. Continuous causal CALL-month HTTP
+fixture is correcting a stored-vs-canonical planning-mode expectation from its
+first run; no full journey pass yet. See the resume/checklist and
+`audit-2026-10-01-error-screen-recovery.md`. Main preview and client-send/
+activation restrictions preserved. No build/deploy command was interrupted.

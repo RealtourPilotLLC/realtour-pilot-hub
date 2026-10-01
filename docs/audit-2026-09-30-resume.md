@@ -7,6 +7,19 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 ## Current checkpoint — three verified application checkpoints deployed
 
+### Active continuation — ErrorScreen and durable delivery proof
+
+ErrorScreen current-data refetch and truthful interrupted-action guidance pass
+14/0 actual handler/installed-runtime/SSR, scoped lint and whole-tree
+nonincremental types. Release pending; canonical remains f123eca. See
+`audit-2026-10-01-error-screen-recovery.md`. Separate durable authenticated W05
+replay passes new PostgreSQL21/0 and prior echo36/0; peer review pending.
+Continuous HTTP onboarding now starts from no planning/production artifacts.
+Its first run stopped at an overstrict fixture CALL-storage expectation, being
+corrected against canonical first-month fallback; no product defect established.
+The older “no further concrete autonomous source defect” statement below is
+superseded by these findings. Main isolated preview is preserved.
+
 Canonical https://hub.realtourpilot.com serves `f123eca38cf2`, Ready
 `dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq`, promoted17:31:41Z (1:31 PM EDT).
 App checkpoints a38715d (portal cache),4354aca (exact delivery echo),f123eca
