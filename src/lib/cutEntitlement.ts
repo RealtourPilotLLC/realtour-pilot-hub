@@ -421,7 +421,7 @@ const VERIFIED_OUTPUT = new Set(["verified", "resolved-processed"]);
 /** The marker and sent stamp are committed together by the monthly handoff.
  * Match all three identifiers; an unrelated audit row is not delivery proof.
  * A failed read must propagate, never turn a new handoff into a legacy send. */
-async function monthlyPortalHandoffsFor(submissionIds: string[]): Promise<Set<string>> {
+export async function monthlyPortalHandoffsFor(submissionIds: string[]): Promise<Set<string>> {
   if (submissionIds.length === 0) return new Set();
   const rows = await prisma.auditLog.findMany({
     where: { id: { in: submissionIds.map((id) => `monthly-portal-handoff:${id}`) }, action: "monthly_portal_handoff", target: { in: submissionIds } },

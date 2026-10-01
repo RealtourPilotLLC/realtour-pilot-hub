@@ -193,6 +193,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   let home: HomeData | null = null;
   let videosPage: { ok: true; data: VideoListPage } | { ok: false } | null = null;
   let detail: VideoDetailData | null = null;
+  let videoStatusFailed = false;
   let topicsRes: { ok: true; data: PortalTopicsData } | { ok: false } | null = null;
   let interviewRes: { ok: true; data: PortalInterviewView | null } | { ok: false } | null = null;
   let strategyRes: { ok: true; data: PortalStrategyView | null } | { ok: false } | null = null;
@@ -249,11 +250,12 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     if (vId) {
       const video = await videoForEnrollment(enrollment, vId).catch(() => null);
       if (video) {
-        const [hist, kit, deliveredSrc] = await Promise.all([
+        const [hist, kit, deliveredSrc, state] = await Promise.all([
           attempt("cut history", () => (video.currentSubmissionId ? cutHistory(viewer, video.currentSubmissionId) : Promise.resolve([] as CutVersion[]))),
           attempt("posting kit", () => postingKitFor(viewer, video)),
           prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, orderBy: { isFinal: "desc" }, select: { portalVideoId: true } })
             .then(async (s) => (s?.portalVideoId ? prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { playback: true, thumb: true } }) : null)).catch(() => null),
+          attempt("video status", () => videoState(enrollment.id, video)),
         ]);
         // 9.6b: a version still in its 1080p pass (or held for a listen) has
         // nothing to play for the client — never the editor's export in its
@@ -273,15 +275,11 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         if (reviewing) reviewing.review = await import("@/lib/reviewWindows").then((m) => m.reviewPanelFor(viewer, reviewing.submissionId)).catch(() => null);
         const pillar = video.pillarId ? await prisma.contentPillar.findUnique({ where: { id: video.pillarId }, select: { name: true } }).catch(() => null) : null;
         const kitData: PostingKit | null = kit.ok ? kit.data : null;
-        // The state comes from the video row itself, through the one derivation
-        // the list uses — never from whichever page happened to be fetched.
-        const current = versions.find((x) => x.isCurrent);
-        const state = await videoState(enrollment.id, video).catch(() =>
-          current?.clientState === "YOU_APPROVED" ? "APPROVED" : current?.clientState === "AWAITING_YOUR_DECISION" ? "FOR_REVIEW" : current?.clientState === "YOU_REQUESTED_CHANGES" ? "CHANGES_IN_PROGRESS" : video.status === "DELIVERED" ? "DELIVERED" : "IN_PRODUCTION",
-        );
-        detail = {
+        // A failed canonical status read is unavailable, not permission to
+        // reconstruct a release from an older cached status or cut history.
+        if (state.ok) detail = {
           video: {
-            id: video.id, title: video.title ?? "Video", monthKey: video.monthKey, kind: video.kind, state, filmedAtISO: video.filmedAt?.toISOString() ?? null, deliveredAtISO: video.deliveredAt?.toISOString() ?? null, pillarName: pillar?.name ?? null, format: video.format,
+            id: video.id, title: video.title ?? "Video", monthKey: video.monthKey, kind: video.kind, state: state.data, filmedAtISO: video.filmedAt?.toISOString() ?? null, deliveredAtISO: video.deliveredAt?.toISOString() ?? null, pillarName: pillar?.name ?? null, format: video.format,
             // CP-12: older backfill is "Previous content", never labelled with a month we can't vouch for.
             section: await import("@/lib/contentVideos").then((m) => m.videoLibrarySection(video)).catch(() => "RECENT" as const),
           },
@@ -297,13 +295,14 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           // that leads to one that can — when that door actually opens.
           signInHref: actor.kind === "TOKEN" && emailSignInLive ? "/portal/login" : null,
         };
+        else videoStatusFailed = true;
       }
     }
     if (!detail && !v2) {
       const year = query.year && /^\d{4}$/.test(query.year) ? Number(query.year) : null;
       const page = query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1;
       // CP-12: `filter=previous` is the flat "Previous content" section.
-      videosPage = await attempt("videos", () => portalVideoList(enrollment, { year, page, section: query.filter === "previous" ? "previous" : null }));
+      videosPage = videoStatusFailed ? { ok: false } : await attempt("videos", () => portalVideoList(enrollment, { year, page, section: query.filter === "previous" ? "previous" : null }));
     }
   }
   if (dataTab === "topics") {
@@ -475,8 +474,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
 
     // ---- Content Library: search + filters over the whole library ----
     let library: LibraryV2Data | null = null;
-    let libraryFailed = false;
-    if (route.dest === "library" && !detail) {
+    let libraryFailed = videoStatusFailed;
+    if (route.dest === "library" && !detail && !videoStatusFailed) {
       const all = await attempt("library", () => libraryRows(enrollment));
       if (all.ok) {
         const view = libraryView(all.data.rows, { q: query.q, st: isLibraryFilter(query.st) ? query.st : "all", page: query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1 });

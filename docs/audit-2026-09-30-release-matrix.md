@@ -7,6 +7,20 @@ instructions and batch evidence remain in `handoff.md`.
 
 ## Release state
 
+Current local follow-up: canonical monthly marker facts now repair cache writes
+and validate marked library/Home/detail reads; stale/unreadable answers use both
+layouts' failure panels. Actual PostgreSQL and both-layout SSR35/0, peer/root
+review, types/lint pass. Commit/build/release pending. Separate normal-role
+actual built HTTP37/0 against e6eac69 covers password/cookies/middleware,
+ownership, client tabs/exact approvals/range download/manual Start/Pause.
+All temporary3211/5601/5602 services stopped. Browser/phone/provider/full-watch
+acceptance stays open; no automation/rollout or live client record change.
+
+Fresh readonly16:11Z readiness inventory has13 candidates and13 October
+workspaces; no eligible real seats, released strategies or approved canonical
+available topics. First roster and staff source preparation remain unapproved.
+W05 exact delivery-echo source recovery is in progress independently.
+
 Policy candidate 974327f built/staged successfully but was held, never promoted:
 recording monthly portal availability must not grant client download/caption
 permission. The atomic AuditLog marker and entitlement repair have backend 41/0

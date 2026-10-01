@@ -6,7 +6,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import type { Prisma } from "@prisma/client";
 // Types only: cutEntitlement imports this file, so its CODE is loaded lazily
 // inside syncEnrollmentVideos rather than forming an import cycle.
-import type { AryeoFinal, Entitlement } from "@/lib/cutEntitlement";
+import type { AryeoFinal, Entitlement, EntitlementVideo } from "@/lib/cutEntitlement";
 
 // ---------------------------------------------------------------------------
 // LOGICAL VIDEOS (spec §7, Sep 17 2026). The client's library used to be a
@@ -171,10 +171,16 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // The client's own decisions on these cuts — the only thing that turns an
   // internally approved cut into THEIR video (cutEntitlement). One query per
   // enrollment; superseded rows never count.
-  const { decideEntitlement, foldDecisions, aryeoMatchBasis, clientCutFiles } = await import("@/lib/cutEntitlement");
-  const decisionRows = subs.length
-    ? await prisma.clientDecision.findMany({ where: { enrollmentId: enrollment.id, submissionId: { in: subs.map((s) => s.id) } }, select: { id: true, submissionId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
-    : [];
+  const { decideEntitlement, foldDecisions, aryeoMatchBasis, clientCutFiles, monthlyPortalHandoffsFor } = await import("@/lib/cutEntitlement");
+  // A marked monthly handoff means available for review, not approved for
+  // download. Gather the same fact as the live gate before writing its cache.
+  // Failed marker reads propagate rather than restoring the old send bypass.
+  const [decisionRows, portalHandoffs] = await Promise.all([
+    subs.length
+      ? prisma.clientDecision.findMany({ where: { enrollmentId: enrollment.id, submissionId: { in: subs.map((s) => s.id) } }, select: { id: true, submissionId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
+      : Promise.resolve([]),
+    monthlyPortalHandoffsFor(subs.map((s) => s.id)),
+  ]);
   // Source rows are read ONLY to find this enrollment's own videos (every hit
   // goes through liveOr below, which discards anything outside it), so the
   // query is scoped to them — unscoped it grew with the whole company's
@@ -404,7 +410,7 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       monthHistorical: historicalMonth.has(p.contentMonthId!),
       aryeoFinal: aryeoFor.get(videoId) ?? null,
       enrollmentActive,
-      clientFiles,
+      clientFiles, portalHandoffs,
     });
     const fileCut = e.file?.kind === "cut" ? cuts.find((c) => c.id === e.file!.submissionId) ?? null : null;
     const data = {
@@ -606,8 +612,33 @@ function stateOf(v: { status: string; approvedSubmissionId: string | null; curre
 async function finishingCuts(submissionIds: string[]): Promise<Set<string>> {
   if (submissionIds.length === 0) return new Set();
   const { clientCutFiles } = await import("@/lib/cutEntitlement");
-  const files = await clientCutFiles(submissionIds).catch(() => new Map<string, { kind: string }>());
+  const files = await clientCutFiles(submissionIds);
   return new Set([...files].filter(([, f]) => f.kind === "finishing").map(([id]) => id));
+}
+
+type CachedReleaseVideo = EntitlementVideo & { status: string; deliveredAt: Date | null };
+
+/** A failed rebuild must not make an older cache advertise a marked monthly
+ * handoff as delivered. Check every cached cut pointer, including cuts with
+ * no finishing job; clientCutFiles alone cannot establish that distinction.
+ * For marked rows the live release rule validates the stored answer. A stale
+ * or unreadable answer is unavailable until a successful sync repairs it;
+ * reading the library does not perform another write or invent a release. */
+async function assertMonthlyReleaseCache(videos: CachedReleaseVideo[]): Promise<void> {
+  const { monthlyPortalHandoffsFor, entitlementsForVideos } = await import("@/lib/cutEntitlement");
+  const cutIds = (v: CachedReleaseVideo) => [v.currentSubmissionId, v.approvedSubmissionId, v.finalSubmissionId].filter((id): id is string => !!id);
+  const handoffs = await monthlyPortalHandoffsFor([...new Set(videos.flatMap(cutIds))]);
+  const marked = videos.filter((v) => cutIds(v).some((id) => handoffs.has(id)));
+  if (marked.length === 0) return;
+  const entitlements = await entitlementsForVideos(marked);
+  for (const v of marked) {
+    const e = entitlements.get(v.id);
+    const approved = e?.current?.state === "APPROVED" && e.blockedBy !== "HASH_DRIFT" ? e.current.submissionId : null;
+    const final = e?.file?.kind === "cut" ? e.file.submissionId : null;
+    if (!e?.current || v.status !== statusFromEntitlement(e, true, false) || v.approvedSubmissionId !== approved || v.finalSubmissionId !== final) {
+      throw new Error("The library's release status could not be verified. Refresh to retry.");
+    }
+  }
 }
 
 /** Latest live decision kind per submission, for one enrollment. */
@@ -687,7 +718,7 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
     prisma.contentPillar.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, name: true } }),
   ]);
   const currentIds = videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x);
-  const [decided, finishing] = await Promise.all([currentDecisions(enrollment.id, currentIds), finishingCuts(currentIds)]);
+  const [decided, finishing] = await Promise.all([currentDecisions(enrollment.id, currentIds), finishingCuts(currentIds), assertMonthlyReleaseCache(videos)]);
   const portalIds = sources.map((s) => s.portalVideoId).filter((x): x is string => !!x);
   const portalRows = portalIds.length ? await prisma.portalVideo.findMany({ where: { id: { in: portalIds } }, select: { id: true, thumb: true, download: true, playback: true } }) : [];
   const thumbOf = new Map(portalRows.map((r) => [r.id, r.thumb]));
@@ -716,7 +747,8 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
  * page (it used to be re-derived from the cut history when the row fell
  * outside the page that was fetched to find it).
  */
-export async function videoState(enrollmentId: string, v: { id: string; status: string; approvedSubmissionId: string | null; currentSubmissionId: string | null; deliveredAt: Date | null }): Promise<ClientVideoState> {
+export async function videoState(enrollmentId: string, v: CachedReleaseVideo): Promise<ClientVideoState> {
+  await assertMonthlyReleaseCache([v]);
   const decided = v.currentSubmissionId ? await currentDecisions(enrollmentId, [v.currentSubmissionId]) : new Map<string, CurrentDecision>();
   const finishing = v.currentSubmissionId ? await finishingCuts([v.currentSubmissionId]) : new Set<string>();
   return stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null, !!v.currentSubmissionId && finishing.has(v.currentSubmissionId));
@@ -732,7 +764,7 @@ export type LibraryAttention = { needReview: number; readyToUse: number; readyWi
 export async function libraryAttention(enrollment: { id: string; clientId: string }): Promise<LibraryAttention> {
   const videos = await prisma.contentVideo.findMany({
     where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, status: { not: "ARCHIVED" } },
-    select: { id: true, status: true, approvedSubmissionId: true, currentSubmissionId: true, finalSubmissionId: true, deliveredAt: true },
+    select: { id: true, enrollmentId: true, clientId: true, monthId: true, status: true, approvedSubmissionId: true, currentSubmissionId: true, finalSubmissionId: true, deliveredAt: true },
   });
   if (videos.length === 0) return { needReview: 0, readyToUse: 0, readyWithFile: 0 };
   const ids = videos.map((v) => v.id);
@@ -741,6 +773,7 @@ export async function libraryAttention(enrollment: { id: string; clientId: strin
     currentDecisions(enrollment.id, currentIds),
     prisma.contentVideoSource.findMany({ where: { videoId: { in: ids }, kind: "PORTAL_VIDEO", isFinal: true }, select: { videoId: true } }),
     finishingCuts(currentIds),
+    assertMonthlyReleaseCache(videos),
   ]);
   const withFile = new Set(finals.map((f) => f.videoId));
   const out: LibraryAttention = { needReview: 0, readyToUse: 0, readyWithFile: 0 };

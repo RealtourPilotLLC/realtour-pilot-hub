@@ -8,6 +8,32 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Current follow-up — verified portal cache and actual HTTP transport
+
+User requests deployment after each verified checkpoint. Monthly portal cache
+derivation now passes exact marker facts to the canonical entitlement rule;
+marked cached status/pointers are validated before lists, Home attention and
+detail reads. Stale/unreadable answers render existing unavailable panels in
+both layouts. No approval, delivery, pointer or provider operation is invented.
+Real PG/domain/routes/cache plus actual v1/v2 page SSR:35/0. Focused peer/root
+review, non-incremental types and six-file lint:0. Logs
+`/tmp/monthly-portal-approval-cache-page/` and
+`/tmp/ops-hub-cache-http-{types,lint}.log`. Exact commit/build/deployment pending.
+
+Built e6eac69 normal-role HTTP37/0 covers real Next password action/cookies,
+middleware/ownership, one-use client session, seven client tabs, exact script
+and cut decisions, approved range download and editor manual Start/Pause.
+Its owned3211/5601/5602 processes stopped. No send/invite/booking/dispatcher;
+fake providers and disposable data only. HTTP evidence is not browser/phone
+acceptance. Main3200/5599/5598 preview stays intact.
+
+W05 delivery exact-echo recovery is a separate in-progress source slice; manual
+settlement authority is unanswered. Fresh readonly16:11Z launch inventory:
+13 candidates/13 October workspaces; zero eligible real seats, released
+strategies or canonical approved available topics. Staff source reconciliation
+and first roster remain open. Browser policy still blocks C14 mounted/U6
+acceptance. See `audit-2026-10-01-c14-u6-acceptance-map.md`.
+
 ### Latest policy release — deployed and HTTP verified
 
 Candidate e6eac69 promoted 11:47 AM EDT, Ready dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv.

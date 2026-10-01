@@ -5,7 +5,46 @@ Use this page first. The full backlog is in
 `audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.
 Do not restart the audit or repeat green checks without a specific changed risk.
 
-## Latest checkpoint — policy code deployed, launch acceptance open
+## Current checkpoint — portal status repair verified, release preparing
+
+The user now requests production deployment after each verified checkpoint.
+The prior application release below remains live until this checkpoint passes
+its exact build, protected stage, promotion and unchanged-state checks.
+
+Focused follow-up found a concrete cache gap: monthly portal markers were
+missing from library cache derivation. Downloads stayed gated, but cached
+DELIVERED/final pointers and page fallback could advertise an unapproved cut.
+The repair uses canonical marker facts before cache writes and validates marked
+cached rows on reads. Unreadable/stale status uses existing unavailable panels
+in both portal layouts; no local reconstruction grants release. Isolated real
+PostgreSQL/domain/routes/cache and actual both-layout page SSR pass 35/0.
+Focused peer/root review, non-incremental TypeScript and six-file ESLint pass.
+Logs: `/tmp/monthly-portal-approval-cache-page/`,
+`/tmp/ops-hub-cache-http-types.log`, `/tmp/ops-hub-cache-http-lint.log`.
+
+Actual built Next HTTP acceptance against e6eac69 passed 37/0: password/cookies,
+role middleware, owned and foreign work, one-use client sign-in, seven portal
+tabs, exact script/cut approval, download/range bytes, and manual Start/Pause.
+Disposable DB5601/media5602/Next3211 were stopped; main3200/5599/5598 preserved.
+Logs: `/tmp/normal-role-http-acceptance/`,
+`/tmp/normal-role-http-acceptance-run.log`. This closes transport checks only;
+mounted browser/phone/provider/full-watch acceptance remains open.
+
+W05 automatic exact provider-echo settlement for held delivery texts is in
+progress separately. Ambiguous/unsigned/stale proof stays held; no retry/send,
+new manual authority, schema or activation is included. Optional manual
+settlement and generated-workflow date policy questions remain pending.
+
+Fresh SELECT-only active-candidate launch inventory at 16:11:14Z found 13 real
+candidates, 13 October workspaces, zero active eligible real-client seats,
+zero released strategies and zero canonical approved available topics. No
+audience has been approved. The private preparation plan and exact C13/C18/
+Sarina reconciliation proposal are ready for staff source review; no business
+record was repaired. Browser access is still blocked by the supported tool's
+explicit policy rejection; do not work around it. See the C14/U6 acceptance map.
+U0–U5 remain partial and U6 open. Real-client onboarding is not accepted.
+
+## Previous checkpoint — policy code deployed, launch acceptance open
 
 Production now serves `e6eac69f1d41` at https://hub.realtourpilot.com, Ready
 `dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted Oct1 11:47 AM EDT. Exact local/remote
@@ -22,7 +61,8 @@ Backend 41/0, approval gate 21/0, W02 44/0, welcome 26/0 and affected checks pas
 Held 974327f stage is superseded and must never be promoted. Build checkout is
 clean/detached e6eac69; the main3200 fenced preview remains intentional.
 
-No documented autonomous source gap remains after these follow-ups. Do not
+At that checkpoint no further autonomous source gap had been identified. The
+cache follow-up and W05 proof recovery above supersede that conclusion. Do not
 restart the audit or repeat green suites. Next work needs supported browser
 access for UA01–UA14/U6 and phone/provider/media acceptance, Jordan's first real
 roster, Kyle's exact C13/C18/Sarina source reconciliation, and prepared released

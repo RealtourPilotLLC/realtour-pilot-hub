@@ -2,6 +2,38 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 current verified follow-up — release preparing
+
+The user requests a production release after each verified checkpoint. Preserve
+the main fenced preview and all W05 work in progress. Portal cache repair owns
+contentVideos.ts/cutEntitlement.ts/PortalPage.tsx and its monthly approval
+fixture. It supplies canonical marker facts before writes, validates marked
+cached status/pointers on reads, and suppresses detail reconstruction on failed
+status. Real PG/domain/routes/cache and both-layout page SSR35/0, focused peer/
+root review, non-incremental types0 and six-file lint0 are complete. Source
+checkpoint/exact clean build/stage/deploy remain next; no schema/live write.
+
+New normal-role HTTP fixture/preload passed37/0 against the exact e6eac69 build:
+real password and one-use client cookies/middleware, roles/ownership, seven
+portal tabs, exact script/cut decisions, range bytes and manual Start/Pause.
+Owned Next3211/DB5601/media5602 stopped; main3200/5599/5598 untouched. Evidence
+is transport, not mounted browser/phone/provider or human-watch acceptance.
+Logs `/tmp/normal-role-http-acceptance/`,
+`/tmp/monthly-portal-approval-cache-page/`,
+`/tmp/ops-hub-cache-http-types.log`, `/tmp/ops-hub-cache-http-lint.log`.
+
+W05 bounded source work in outbox.ts/OpenPhone webhook is automatic exact
+authenticated delivery-echo recovery, no retry/send/new manual authority.
+Optional manual settlement and generated-workflow dates remain unanswered.
+Fresh readonly16:11Z private readiness plan:13 candidates/13 October workspaces,
+zero eligible real seats/released strategies/canonical approved topics. Exact
+C13/C18/Sarina proposals require staff source review; no records changed.
+Browser tool policy explicitly blocks supported tab access and workarounds.
+C14 mounted and U6/phone/provider/media checks remain open; U0–U5 partial.
+Do not treat earlier 'no autonomous gap' statements as current: this cache
+defect and W05 follow-up were subsequently identified. Real onboarding remains
+unaccepted. Next checkpoint must record exact commit/build/deployment receipts.
+
 ### Oct 1 latest production checkpoint — e6eac69
 
 Policy code is deployed at https://hub.realtourpilot.com. Exact app commit
