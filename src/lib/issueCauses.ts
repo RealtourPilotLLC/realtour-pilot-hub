@@ -40,6 +40,12 @@ export const isEditorCaused = (cause: string | null | undefined): boolean =>
 export const isIssueCause = (v: unknown): v is IssueCause =>
   typeof v === "string" && (ISSUE_CAUSES as readonly string[]).includes(v);
 
+/** A stored suggestion or imported label is not a person's classification. */
+export function hasConfirmedIssueCause(issue: { cause: string; causeConfirmedAt?: Date | null; causeConfirmedBy?: string | null }): boolean {
+  return isIssueCause(issue.cause) && issue.cause !== "UNCLASSIFIED" &&
+    !!issue.causeConfirmedAt && !!issue.causeConfirmedBy?.trim();
+}
+
 /** The work order's own areas (revisionBrief.REVISION_AREAS) plus the two the
  *  self-check names that a client rarely does. */
 export const ISSUE_CATEGORIES = [

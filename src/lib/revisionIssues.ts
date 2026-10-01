@@ -3,8 +3,9 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { stripMoneySentences } from "@/lib/text";
 import { cutSlots, owedSlotKeyOf, slotKeyOf, videoLaneRevisionWhere } from "@/lib/reviewCuts";
-import { CAUSE_LABEL, isIssueCause, ISSUE_CATEGORIES, ISSUE_SEVERITIES, type IssueCause } from "@/lib/issueCauses";
+import { CAUSE_LABEL, hasConfirmedIssueCause, isIssueCause, ISSUE_CATEGORIES, ISSUE_SEVERITIES, type IssueCause } from "@/lib/issueCauses";
 import { parseDeclarations, SELF_CHECK_REQUIRED_SINCE } from "@/lib/selfCheck";
+import type { TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
 // REVISION ISSUES (unified handoff §8.3, Sep 25 2026).
@@ -875,12 +876,22 @@ export async function issuesForProject(projectId: string, opts: { scrub: boolean
 
 /** Issues waiting on a reviewer's classification, across the business (the
  *  /quality Editors tab). Newest first, capped. */
-export async function unclassifiedIssues(limit = 40): Promise<{ id: string; projectId: string; street: string; text: string; category: string; state: string; raisedByName: string | null; versionEditorKey: string | null; causeSuggested: string | null; createdAtISO: string }[]> {
-  const rows = await prisma.revisionIssue.findMany({
-    where: { cause: "UNCLASSIFIED", state: { notIn: ["DUPLICATE", "NOT_APPLICABLE"] }, imported: false },
+export async function unclassifiedIssues(limit = 40, opts: TaskClientScope = {}): Promise<{ id: string; projectId: string; street: string; text: string; category: string; state: string; raisedByName: string | null; versionEditorKey: string | null; causeSuggested: string | null; createdAtISO: string }[]> {
+  const excludedProjects = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
+  // Apply the same confirmation rule as reports before the display cap. Keep
+  // this first read to identity/classification fields; full text loads below.
+  const candidates = await prisma.revisionIssue.findMany({
+    where: {
+      state: { notIn: ["DUPLICATE", "NOT_APPLICABLE"] }, duplicateOfId: null, imported: false,
+      ...(excludedProjects.length ? { projectId: { notIn: excludedProjects } } : {}),
+    },
     orderBy: { createdAt: "desc" },
-    take: limit,
+    select: { id: true, cause: true, causeConfirmedAt: true, causeConfirmedBy: true },
   });
+  const ids = candidates.filter((r) => !hasConfirmedIssueCause(r)).slice(0, Math.max(0, limit)).map((r) => r.id);
+  const rows = await prisma.revisionIssue.findMany({ where: { id: { in: ids } }, orderBy: { createdAt: "desc" } });
   const projects = await prisma.project.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.projectId))] } }, select: { id: true, title: true } });
   const street = new Map(projects.map((p) => [p.id, (p.title ?? "Job").split(",")[0].trim()]));
   return rows.map((r) => ({

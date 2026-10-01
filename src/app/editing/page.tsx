@@ -185,8 +185,14 @@ export default async function EditorQueuePage() {
       ? null
       : await (async () => {
           const { editorQuality } = await import("@/lib/editorQuality");
+          const { prisma } = await import("@/lib/prisma");
+          const { isSyntheticClientRow } = await import("@/lib/testClients");
+          // Match the normal /quality editor results. Test quality remains
+          // available in that page's explicit test view; queue ownership is separate.
+          const excludeClientIds = (await prisma.client.findMany({ select: { id: true, name: true } }))
+            .filter(isSyntheticClientRow).map((client) => client.id);
           const now = new Date();
-          return editorQuality({ editorKey: editorScope, from: new Date(now.getTime() - 90 * 24 * 3600_000), to: now });
+          return editorQuality({ excludeClientIds, editorKey: editorScope, from: new Date(now.getTime() - 90 * 24 * 3600_000), to: now });
         })().catch(() => null);
 
     return (

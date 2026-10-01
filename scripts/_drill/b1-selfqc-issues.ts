@@ -564,7 +564,7 @@ async function main() {
   {
     const dec = new Date("2026-09-26T12:00:00Z");
     const o = (status: string, decided: Date | null, issues: { cause: string; state?: string; foundAfterApproval?: boolean; duplicateOfId?: string | null }[]) =>
-      eq.firstReviewOutcome({ status, decidedAt: decided }, issues.map((i) => ({ cause: i.cause, state: i.state ?? "OPEN", foundAfterApproval: !!i.foundAfterApproval, duplicateOfId: i.duplicateOfId ?? null })));
+      eq.firstReviewOutcome({ status, decidedAt: decided }, issues.map((i) => ({ cause: i.cause, causeConfirmedAt: i.cause === "UNCLASSIFIED" ? null : dec, causeConfirmedBy: i.cause === "UNCLASSIFIED" ? null : "James", state: i.state ?? "OPEN", foundAfterApproval: !!i.foundAfterApproval, duplicateOfId: i.duplicateOfId ?? null })));
     c.ok("a pending first review is pending, not a pass or a fail", o("PENDING", null, []) === "pendingReview");
     c.ok("a bounce whose issues nobody classified is pending classification", o("CHANGES_REQUESTED", dec, [{ cause: "UNCLASSIFIED" }]) === "pendingClassification");
     c.ok("a CLIENT_CHANGE bounce does not fail the editor", o("CHANGES_REQUESTED", dec, [{ cause: "CLIENT_CHANGE" }]) === "passed");
@@ -591,7 +591,7 @@ async function main() {
     const unk = await mk(7, 1, "CHANGES_REQUESTED", day(28, 9), day(28, 12));
     await mk(8, 1, "PENDING", day(29, 9), null);
     const mkIssue = async (subId: string, cause: string, extra: Record<string, unknown> = {}) =>
-      prisma.revisionIssue.create({ data: { projectId: R.projectId, deliverableId: R.deliverableId, slot: 6, raisedOnSubmissionId: subId, sourceKind: "MANUAL", sourceId: `m-${subId}-${cause}-${seq++}`, originalText: "Crooked verticals in the kitchen", category: "Framing", versionEditorKey: "remar", cause, createdAt: day(28, 12), ...extra } });
+      prisma.revisionIssue.create({ data: { projectId: R.projectId, deliverableId: R.deliverableId, slot: 6, raisedOnSubmissionId: subId, sourceKind: "MANUAL", sourceId: `m-${subId}-${cause}-${seq++}`, originalText: "Crooked verticals in the kitchen", category: "Framing", versionEditorKey: "remar", cause, causeConfirmedAt: cause === "UNCLASSIFIED" ? null : day(28, 12), causeConfirmedBy: cause === "UNCLASSIFIED" ? null : "James", createdAt: day(28, 12), ...extra } });
     const err = await mkIssue(bad.id, "EDITOR_ERROR");
     await mkIssue(unk.id, "UNCLASSIFIED");
     const rep = await eq.editorQuality({ editorKey: "remar", from: day(27, 0), to: NOW, now: NOW });

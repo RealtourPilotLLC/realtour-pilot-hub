@@ -3,8 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { etAt, etDayKey, isWeekdayET } from "@/lib/datetime";
 import { editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
 import { videoStyleFor } from "@/lib/videoStyles";
-import { isEditorCaused } from "@/lib/issueCauses";
+import { hasConfirmedIssueCause, isEditorCaused } from "@/lib/issueCauses";
 import { SELF_CHECK_REQUIRED_SINCE } from "@/lib/selfCheck";
+import type { TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
 // EDITOR QUALITY (unified handoff §8.4, Sep 25 2026).
@@ -62,7 +63,7 @@ const median = (xs: number[]): number | null => {
 // ---- pure rules, exported for the drills ---------------------------------------
 
 export type FirstReviewOutcome = "passed" | "failed" | "pendingReview" | "pendingClassification" | "replacedBeforeReview";
-type IssueForOutcome = { cause: string; state: string; duplicateOfId: string | null; foundAfterApproval: boolean };
+type IssueForOutcome = { cause: string; causeConfirmedAt?: Date | null; causeConfirmedBy?: string | null; state: string; duplicateOfId: string | null; foundAfterApproval: boolean };
 
 /**
  * The first version of a video, judged on its FIRST review. Only a confirmed
@@ -76,8 +77,8 @@ export function firstReviewOutcome(round: { status: string; decidedAt: Date | nu
   if (round.status === "PENDING" || round.status === "UPLOADING") return "pendingReview";
   if (!round.decidedAt && (round.status === "SUPERSEDED" || round.status === "WITHDRAWN" || round.status === "UPLOAD_FAILED")) return "replacedBeforeReview";
   const live = issues.filter((i) => !i.foundAfterApproval && !i.duplicateOfId && i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE");
-  if (live.some((i) => isEditorCaused(i.cause))) return "failed";
-  if (live.some((i) => i.cause === "UNCLASSIFIED")) return "pendingClassification";
+  if (live.some((i) => hasConfirmedIssueCause(i) && isEditorCaused(i.cause))) return "failed";
+  if (live.some((i) => !hasConfirmedIssueCause(i))) return "pendingClassification";
   // Sent back with nothing recorded on it: the reason is unknown, not good.
   if (round.status === "CHANGES_REQUESTED" && live.length === 0) return "pendingClassification";
   return "passed";
@@ -176,12 +177,16 @@ const weekStartISO = (d: Date): string => {
  * One editor's numbers (editorKey), or the whole team's (null). Every block
  * carries its own n. Read-only.
  */
-export async function editorQuality(opts: { editorKey?: string | null; from?: Date; to?: Date; now?: Date } = {}): Promise<EditorQualityReport> {
+export async function editorQuality(opts: TaskClientScope & { editorKey?: string | null; from?: Date; to?: Date; now?: Date } = {}): Promise<EditorQualityReport> {
   const now = opts.now ?? new Date();
   const to = opts.to ?? now;
   const from = new Date(Math.max((opts.from ?? new Date(to.getTime() - 90 * 86_400_000)).getTime(), QUALITY_TRACKED_SINCE.getTime()));
   const editorKey = opts.editorKey ?? null;
   const editorName = editorKey ? editorMeta(editorKey)?.name ?? editorKey : "Team";
+  const excludedProjects = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
+  const projectScope = excludedProjects.length ? { projectId: { notIn: excludedProjects } } : {};
 
   // An editor's versions: the ones on their key, plus the office's uploads of
   // their files (no key on the row; the accepted check names who it was for).
@@ -191,6 +196,7 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
   const subs = await prisma.reviewSubmission.findMany({
     where: {
       kind: "video",
+      ...projectScope,
       createdAt: { gte: from, lte: to },
       status: { notIn: ["UPLOAD_FAILED"] },
       ...(editorKey ? { OR: [{ submittedByKey: editorKey }, { submittedByKey: null, id: { in: forEditor } }] } : {}),
@@ -201,7 +207,7 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
     },
   });
   const issues = await prisma.revisionIssue.findMany({
-    where: { createdAt: { gte: from, lte: to }, ...(editorKey ? { versionEditorKey: editorKey } : {}) },
+    where: { ...projectScope, createdAt: { gte: from, lte: to }, ...(editorKey ? { versionEditorKey: editorKey } : {}) },
   });
   const projectIds = [...new Set([...subs.map((s) => s.projectId), ...issues.map((i) => i.projectId)])];
   const [projects, deliverables] = await Promise.all([
@@ -228,10 +234,12 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
   // An issue raised on a version in this window may itself be older than the
   // window's issue read; re-read those by submission id so none is missed.
   const subIds = subs.map((s) => s.id);
+  const subProject = new Map(subs.map((s) => [s.id, s.projectId]));
   const raisedOn = subIds.length
-    ? await prisma.revisionIssue.findMany({ where: { raisedOnSubmissionId: { in: subIds } }, select: { raisedOnSubmissionId: true, cause: true, state: true, duplicateOfId: true, foundAfterApproval: true } })
+    ? await prisma.revisionIssue.findMany({ where: { ...projectScope, raisedOnSubmissionId: { in: subIds } }, select: { projectId: true, raisedOnSubmissionId: true, cause: true, causeConfirmedAt: true, causeConfirmedBy: true, state: true, duplicateOfId: true, foundAfterApproval: true } })
     : [];
   for (const i of raisedOn) {
+    if (subProject.get(i.raisedOnSubmissionId!) !== i.projectId) continue;
     const arr = issuesBySub.get(i.raisedOnSubmissionId!) ?? [];
     arr.push(i as never);
     issuesBySub.set(i.raisedOnSubmissionId!, arr);
@@ -257,7 +265,7 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
   const reviewed = passed + failed;
 
   // ---- recurring editor-caused issues ----------------------------------------
-  const roots = issues.filter((i) => !i.duplicateOfId && i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE" && isEditorCaused(i.cause));
+  const roots = issues.filter((i) => !i.duplicateOfId && i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE" && hasConfirmedIssueCause(i) && !!i.versionEditorKey?.trim() && isEditorCaused(i.cause));
   const groupMap = new Map<string, { category: string; product: string; items: typeof issues }>();
   for (const i of roots) {
     const product = productOf(i.deliverableId);
@@ -275,22 +283,27 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
   // John's v2 that misses Kim's v1 note is John's miss, and Kim's card shows
   // none. The pool is every ask a version in scope had to carry — claimed
   // fixed in it, or stamped missed in it — so `asked` is the same scope.
-  const carried = subIds.length
-    ? await prisma.revisionIssue.findMany({ where: { OR: [{ missedInSubmissionId: { in: subIds } }, { addressedInSubmissionId: { in: subIds } }] } })
+  const carriedRows = subIds.length
+    ? await prisma.revisionIssue.findMany({ where: { ...projectScope, OR: [{ missedInSubmissionId: { in: subIds } }, { addressedInSubmissionId: { in: subIds } }] } })
     : [];
+  const carried = carriedRows.map((i) => ({
+    ...i,
+    missedInSubmissionId: i.missedInSubmissionId && subProject.get(i.missedInSubmissionId) === i.projectId ? i.missedInSubmissionId : null,
+    addressedInSubmissionId: i.addressedInSubmissionId && subProject.get(i.addressedInSubmissionId) === i.projectId ? i.addressedInSubmissionId : null,
+  })).filter((i) => i.missedInSubmissionId || i.addressedInSubmissionId);
   const missed = missedCorrections(carried);
   const asked = carried.filter((i) => i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE" && !i.duplicateOfId && !i.foundAfterApproval).length;
   // Declared not done: the editor's own honest "not in this version, because…"
   // on the checks of the versions in scope. Their own figure, with the reason.
   const declared = subIds.length
-    ? await prisma.revisionIssueEvent.findMany({ where: { kind: "NOT_ADDRESSED", submissionId: { in: subIds } }, orderBy: { at: "asc" }, select: { issueId: true, note: true, at: true } }).catch(() => [])
+    ? await prisma.revisionIssueEvent.findMany({ where: { kind: "NOT_ADDRESSED", submissionId: { in: subIds } }, orderBy: { at: "asc" }, select: { issueId: true, submissionId: true, note: true, at: true } }).catch(() => [])
     : [];
   const declaredIssues = declared.length
     ? await prisma.revisionIssue.findMany({ where: { id: { in: [...new Set(declared.map((d) => d.issueId))] } } }).catch(() => [])
     : [];
   const declaredRows = declared
     .map((d) => ({ d, i: declaredIssues.find((x) => x.id === d.issueId) }))
-    .filter((x): x is { d: (typeof declared)[number]; i: (typeof declaredIssues)[number] } => !!x.i && x.i.state !== "DUPLICATE" && !x.i.duplicateOfId);
+    .filter((x): x is { d: (typeof declared)[number]; i: (typeof declaredIssues)[number] } => !!x.i && x.i.projectId === subProject.get(x.d.submissionId!) && x.i.state !== "DUPLICATE" && !x.i.duplicateOfId);
 
   // ---- revision turnaround -----------------------------------------------------
   const keyOf = (s: { deliverableId: string | null; slot: number | null; assetPath: string | null; id: string }) =>
@@ -370,7 +383,7 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
   // reason stretches. None recorded → null ("not recorded"), never 0.
   const pauses = await prisma.editorWorkEvent
     .findMany({
-      where: { kind: { in: ["PAUSE", "AUTO_PAUSE", "RESUME", "START", "SUBMIT", "CLOSE"] }, at: { gte: from, lte: to }, ...(editorKey ? { editorKey } : {}), ...(projectIds.length ? { projectId: { in: projectIds } } : {}) },
+      where: { kind: { in: ["PAUSE", "AUTO_PAUSE", "RESUME", "START", "SUBMIT", "CLOSE"] }, at: { gte: from, lte: to }, ...(editorKey ? { editorKey } : {}), projectId: { in: projectIds } },
       orderBy: { at: "asc" },
       select: { itemId: true, kind: true, reason: true, at: true },
     })
@@ -393,7 +406,8 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
   const visible = issues.filter((i) => i.foundAfterApproval && !i.duplicateOfId && i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE");
   const cv = { editingFault: 0, reviewMiss: 0, unclassified: 0, other: 0 };
   for (const i of visible) {
-    if (i.reviewMiss) cv.reviewMiss++;
+    if (!hasConfirmedIssueCause(i)) cv.unclassified++;
+    else if (i.reviewMiss) cv.reviewMiss++;
     else if (isEditorCaused(i.cause)) cv.editingFault++;
     else if (i.cause === "UNCLASSIFIED") cv.unclassified++;
     else cv.other++;
@@ -472,13 +486,17 @@ export async function editorQuality(opts: { editorKey?: string | null; from?: Da
 
 /** The editors with any work in the window, for the team view — one card each,
  *  in roster order, never sorted by score. */
-export async function editorsWithWork(from: Date, to: Date): Promise<{ key: string; name: string }[]> {
+export async function editorsWithWork(from: Date, to: Date, opts: TaskClientScope = {}): Promise<{ key: string; name: string }[]> {
   const rows = await prisma.reviewSubmission.findMany({
-    where: { kind: "video", createdAt: { gte: new Date(Math.max(from.getTime(), QUALITY_TRACKED_SINCE.getTime())), lte: to }, submittedByKey: { not: null } },
-    select: { submittedByKey: true },
-    distinct: ["submittedByKey"],
+    where: { kind: "video", status: { not: "UPLOAD_FAILED" }, createdAt: { gte: new Date(Math.max(from.getTime(), QUALITY_TRACKED_SINCE.getTime())), lte: to }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
+    select: { id: true, submittedByKey: true },
   });
-  const keys = new Set(rows.map((r) => r.submittedByKey!));
+  const officeIds = rows.filter((r) => r.submittedByKey === null).map((r) => r.id);
+  const accepted = officeIds.length ? await prisma.cutSelfCheck.findMany({
+    where: { submissionId: { in: officeIds }, state: "VALID", createdAt: { gte: new Date(Math.max(from.getTime(), QUALITY_TRACKED_SINCE.getTime())), lte: to } },
+    select: { editorKey: true },
+  }) : [];
+  const keys = new Set([...rows.map((r) => r.submittedByKey), ...accepted.map((r) => r.editorKey)].filter((key): key is string => !!key));
   const order = [...VIDEO_LANE_KEYS.filter((k) => keys.has(k)), ...[...keys].filter((k) => !(VIDEO_LANE_KEYS as string[]).includes(k)).sort()];
   return order.map((key) => ({ key, name: editorMeta(key)?.name ?? key }));
 }

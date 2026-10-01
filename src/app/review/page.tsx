@@ -13,6 +13,8 @@ import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
 import { followUpHref, getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
 import { getFixPatterns, getQcStats } from "@/lib/qc";
+import { revisionQuality } from "@/lib/revisionQuality";
+import { RevisionQualitySummary } from "@/components/review/RevisionQualitySummary";
 import { verdictLine } from "@/lib/reviewAttribution";
 import { reviewDeliveryBoard } from "@/lib/reviewDelivery";
 import { DeliveryExitSummary } from "@/components/review/DeliveryExitSummary";
@@ -138,11 +140,12 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   }
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const [q, patterns, qcStats, deliveryBoard] = await Promise.all([
+  const [q, patterns, qcStats, deliveryBoard, causes] = await Promise.all([
     getReviewQueue({ includeTest }),
     getFixPatterns(60, { includeTest }),
     getQcStats(30, { includeTest }),
     reviewDeliveryBoard({ includeTest }).catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard),
+    revisionQuality(30, { includeTest }).catch(() => null),
   ]);
   // "Waiting on YOUR verdict" counts only the cuts that are yours (§8.1) —
   // Kyle's Room must not tell him James's cuts are his to rule on.
@@ -307,10 +310,13 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           </Section>
         )}
 
-        {/* What's slipping through — the recurring-miss scoreboard, so Kyle and
-            the owner see the SAME "most commonly missed" list, not anecdotes. */}
+        <Section icon={Flag} title="Revision causes">
+          {causes ? <RevisionQualitySummary report={causes} /> : <p role="status" className="text-sm text-warning">Revision causes could not be loaded. Refresh to retry; no quality result is available from this read.</p>}
+        </Section>
+
+        {/* Recording gaps and reported observations are separate from confirmed causes. */}
         {(patterns.flagsTotal > 0 || qcStats.byMiss.length > 0 || patterns.captureByPhotographer.length > 0) && (
-          <Section icon={Flag} title="What's slipping through">
+          <Section icon={Flag} title="Review observations and optional check records">
             <div className="grid gap-5 sm:grid-cols-2">
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-2">

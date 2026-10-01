@@ -2,6 +2,30 @@
 
 ## Sep 30 takeover addendum
 
+### C16 checkpoint — confirmed causes and consistent editor reports
+
+Review Room now separates reviewer-confirmed revision causes from optional QC
+recording gaps. The new read-only summary counts root issues once, excludes N/A
+and duplicates, names its period/denominator/test scope, and reports missing
+version or editor attribution. No historical unknown is silently reclassified.
+Existing editor reports now require cause confirmation actor/time before fault
+attribution; unconfirmed legacy/invalid labels remain pending. Normal Quality
+and Editing reports exclude fixtures, and Quality retains an explicit test view.
+
+One focused review found and fixed whitespace/invalid-cause queue mismatch,
+overstated version wording, inconsistent Editing scope, office-upload roster
+omission and moved-cut issue leakage. Classification candidates are filtered by
+the same validity rule before the display cap. Issue-to-submission project
+agreement protects first-review, carried corrections and declared-not-done reads.
+Office uploads use the existing valid self-check owner rule. Empty report scopes
+cannot borrow another job's pause history. Operational missed-correction tracking
+is still separate from editor-fault classification; the existing rule is intact.
+
+Checks: `c16-revision-quality` 17/0, `b1-selfqc-issues` 141/0,
+`c16-editor-quality-scope` signed page 5/0; focused lint passed. Full integrated
+type/build and browser acceptance remain to be recorded. No schema/live write,
+client send, provider call, pay change or work-state transition.
+
 ### U1/U3 checkpoint — keyboard status and rare queue actions
 
 Added shared ActionMenu (arrows/Home/End/type-to-focus/Escape/Tab, focus return,

@@ -21,6 +21,7 @@ import { PlatformFeedbackItem } from "@/components/feedback/PlatformFeedbackItem
 import { prisma } from "@/lib/prisma";
 import { etDate, etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
+import { isSyntheticClientRow } from "@/lib/testClients";
 import { QualityTabs, type QualityTab } from "./QualityTabs";
 import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
 import { SelfCheckSettings, UnclassifiedIssues } from "@/components/editing/QualityDesk";
@@ -61,7 +62,7 @@ export const dynamic = "force-dynamic";
 export default async function QualityPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; filter?: string }>;
+  searchParams: Promise<{ tab?: string; filter?: string; test?: string }>;
 }) {
   const me = await getCurrentUser().catch(() => null);
   // Fail CLOSED: a transient null under enforcement is unauthenticated (or a
@@ -94,7 +95,7 @@ export default async function QualityPage({
     officeView ? getTabCounts() : Promise.resolve({ clients: 0, photographers: 0 }),
     tab === "clients" ? getClientFeedbackFeed(filter) : null,
     tab === "photographers" ? getPhotographerBoard() : null,
-    tab === "editors" ? loadEditorsTab(editorSelf ? (me?.editorKey ?? "__none__") : null) : null,
+    tab === "editors" ? loadEditorsTab(editorSelf ? (me?.editorKey ?? "__none__") : null, sp.test === "1") : null,
   ]);
 
   // Sessionless local dev (gate off) reads as the owner, same as /feedback.
@@ -118,7 +119,13 @@ export default async function QualityPage({
         <QualityTabs active={tab} counts={{ ...tabCounts, editors: editors?.unclassified.length }} only={officeView ? undefined : ["editors"]} />
         {feed && <ClientTab feed={feed} />}
         {board && <PhotographerTab board={board} mod={mod} />}
-        {editors && <EditorsTab data={editors} />}
+        {editors && <>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
+            <span>{sp.test === "1" ? "Editor results include test records." : "Editor results exclude test records."}</span>
+            <Link href={sp.test === "1" ? "/quality?tab=editors" : "/quality?tab=editors&test=1"} className="inline-flex min-h-11 items-center text-brand underline underline-offset-4">{sp.test === "1" ? "Hide test records" : "Show test records"}</Link>
+          </div>
+          <EditorsTab data={editors} />
+        </>}
       </div>
     </div>
   );
@@ -577,21 +584,22 @@ function PhotographerBlockCard({ b, mod }: { b: PhotographerBlock; mod: Moderati
 // editor sees only their own. Plus the reviewer's two standing jobs: giving
 // issues a cause, and refining the send-for-review checklist per product.
 
-async function loadEditorsTab(ownKey: string | null) {
+async function loadEditorsTab(ownKey: string | null, includeTest: boolean) {
   const { editorQuality, editorsWithWork } = await import("@/lib/editorQuality");
   const now = new Date();
   const from = new Date(now.getTime() - 90 * 24 * 3600_000);
+  const scope = { excludeClientIds: includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id) };
   if (ownKey) {
-    return { own: await editorQuality({ editorKey: ownKey, from, to: now }), team: null, cards: [], unclassified: [], profiles: [] };
+    return { own: await editorQuality({ ...scope, editorKey: ownKey, from, to: now }), team: null, cards: [], unclassified: [], profiles: [] };
   }
   const { unclassifiedIssues } = await import("@/lib/revisionIssues");
   const { selfCheckOverrides } = await import("@/lib/selfCheckStore");
   const { DEFAULT_SELF_CHECK, resolveSelfCheckProfile } = await import("@/lib/selfCheck");
-  const list = await editorsWithWork(from, now);
+  const list = await editorsWithWork(from, now, scope);
   const [team, cards, unclassified, overrides] = await Promise.all([
-    editorQuality({ editorKey: null, from, to: now }),
-    Promise.all(list.map((e) => editorQuality({ editorKey: e.key, from, to: now }))),
-    unclassifiedIssues(40),
+    editorQuality({ ...scope, editorKey: null, from, to: now }),
+    Promise.all(list.map((e) => editorQuality({ ...scope, editorKey: e.key, from, to: now }))),
+    unclassifiedIssues(40, scope),
     selfCheckOverrides().catch(() => ({})),
   ]);
   const profiles = Object.keys(DEFAULT_SELF_CHECK).filter((k) => k !== "default").map((k) => resolveSelfCheckProfile(k, overrides));
