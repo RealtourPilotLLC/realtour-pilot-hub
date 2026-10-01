@@ -38,6 +38,16 @@ remain distinct and were not merged. Read-only snapshots also found an empty
 global failed-automation index and 11 Home exceptions with no TEST-labeled
 title; those snapshots do not prove all production counts are isolated.
 
+The next C14 batch scopes the roster's failed-automation index by durable
+client identity, including global cut-transcript failures with a missing
+project pointer (resolved through the submission). The Monitoring ledger still
+contains every TEST failure, and the explicit test view includes it. An empty
+normal roster still reports real global failures. The isolated failure drill
+is 5/0 after a legacy-cut fallback check. Delivery reconciliation no longer
+skips a real job merely because its title says TEST; it skips only a synthetic
+client row. The isolated delivery drill is 3/0 with no provider request. Home
+exception totals remain to scope; a clean live snapshot alone is not proof.
+
 ### Current resume point — C13 month next-action reconciliation
 
 `3ffef4f` adds the missing output-link check to both staff readers. The second

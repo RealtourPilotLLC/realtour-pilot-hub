@@ -236,7 +236,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   const syntheticIds = new Set(allClients.filter(isSyntheticClientRow).map((c) => c.id));
   const enrollments = opts.includeTest === false ? allEnrollments.filter((e) => !syntheticIds.has(e.clientId)) : allEnrollments;
   if (enrollments.length === 0) {
-    return { rows: [], monthKey: allOpen ? ALL_OPEN : monthKey, monthKeys: [], counts: emptyCounts(), endedCount: 0, globalFailures: [] };
+    return { rows: [], monthKey: allOpen ? ALL_OPEN : monthKey, monthKeys: [], counts: emptyCounts(), endedCount: 0, globalFailures: (await failedAutomationIndex({ includeTest: opts.includeTest })).global };
   }
   const enrollmentIds = enrollments.map((e) => e.id);
 
@@ -282,7 +282,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     }
   }
   if (rowsSpec.length === 0) {
-    return { rows: [], monthKey: allOpen ? ALL_OPEN : monthKey, monthKeys, counts: emptyCounts(), endedCount: 0, globalFailures: (await failedAutomationIndex()).global };
+    return { rows: [], monthKey: allOpen ? ALL_OPEN : monthKey, monthKeys, counts: emptyCounts(), endedCount: 0, globalFailures: (await failedAutomationIndex({ includeTest: opts.includeTest })).global };
   }
 
   const monthIds = rowsSpec.map((r) => r.month?.id).filter((x): x is string => !!x);
@@ -314,7 +314,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     }),
     monthIds.length ? prisma.programSessionRequest.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, status: true, slotStart: true, bookingState: true, lastError: true } }) : [],
     prisma.programReminder.findMany({ where: { enrollmentId: { in: enrollmentIds } }, orderBy: { createdAt: "desc" }, take: 400, select: { enrollmentId: true, monthKey: true, action: true, state: true, createdAt: true, sentAt: true, nextEligibleAt: true, suppressionReason: true, lastError: true, outcome: true } }),
-    failedAutomationIndex(),
+    failedAutomationIndex({ includeTest: opts.includeTest }),
     monthIds.length ? prisma.programTranscriptJob.findMany({ where: { enrollmentId: { in: enrollmentIds } }, select: { callRecordId: true, kind: true, state: true, reviewReason: true, lastError: true }, orderBy: { updatedAt: "desc" }, take: 300 }) : [],
   ]);
 

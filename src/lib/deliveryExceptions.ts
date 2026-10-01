@@ -3,7 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { parseEvidence, type ParsedEvidence } from "@/lib/statusEvidence";
 import { getListingMedia } from "@/lib/integrations/aryeo";
-import { isTestClientName } from "@/lib/testClients";
+import { isSyntheticClientRow } from "@/lib/testClients";
 import { laneStillOwesWork } from "@/lib/readyToSend";
 import { expectedCategories } from "@/lib/projectStatus";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
@@ -683,7 +683,7 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
       statusEvidence: true,
       deliveryExceptionAt: true,
       deliveryExceptionNote: true,
-      client: { select: { name: true } },
+      client: { select: { id: true, name: true } },
       // OWED rows only. This used to filter on removedFromOrderAt alone, which
       // let a row the office had already marked "not required on this job" put
       // a lane into `expected` and a slot into the ordered count. tasks.ts
@@ -745,7 +745,7 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
   const live = candidates.filter((p) => {
     // Synthetic clients live in production next to real ones (testClients.ts).
     // They are not a delivery anybody is owed.
-    if (!opts.includeTest && (isTestClientName(p.client?.name) || isTestClientName(p.title))) {
+    if (!opts.includeTest && p.client && isSyntheticClientRow(p.client)) {
       result.skippedTest++;
       return false;
     }

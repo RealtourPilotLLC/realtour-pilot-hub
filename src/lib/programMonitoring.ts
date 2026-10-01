@@ -4,6 +4,7 @@ import { allAutomations, type AutomationState } from "@/lib/programAutomation";
 import { getSetting, putSetting } from "@/lib/settings";
 import { etAt, etDayKey } from "@/lib/datetime";
 import { importReviewItems, type ReviewItem } from "@/lib/contentImport";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // MONITORING (spec §13 / §20 / §24). Read-only views over the durable job
@@ -126,12 +127,38 @@ function monthIdOf(scopeJson: string | null): string | null {
   try { const s = scopeJson ? (JSON.parse(scopeJson) as { monthId?: string }) : null; return s?.monthId ?? null; } catch { return null; }
 }
 
-/** Failures keyed by enrollment (and by month where known) — the overview's filter input. */
-export async function failedAutomationIndex(): Promise<{ byEnrollment: Map<string, FailedAutomation[]>; global: FailedAutomation[] }> {
+/** Failures keyed by enrollment (and by month where known) — the overview's filter input.
+ * Monitoring keeps the full audit trail; the normal roster omits synthetic
+ * failures, including global cut-transcript rows that lack a clientId. */
+export async function failedAutomationIndex(opts: { includeTest?: boolean } = {}): Promise<{ byEnrollment: Map<string, FailedAutomation[]>; global: FailedAutomation[] }> {
   const all = await failedAutomations({ sinceDays: 30 });
+  let visible = all;
+  if (opts.includeTest === false && all.length) {
+    const enrollmentIds = [...new Set(all.map((f) => f.enrollmentId).filter((id): id is string => !!id))];
+    const cutIds = all.filter((f) => f.kind === "cut_transcript").map((f) => f.ref);
+    const [enrollments, cuts] = await Promise.all([
+      enrollmentIds.length ? prisma.contentEnrollment.findMany({ where: { id: { in: enrollmentIds } }, select: { id: true, clientId: true } }) : [],
+      cutIds.length ? prisma.contentCutTranscript.findMany({ where: { id: { in: cutIds } }, select: { id: true, projectId: true, submissionId: true } }) : [],
+    ]);
+    const clientOfEnrollment = new Map(enrollments.map((e) => [e.id, e.clientId]));
+    const missingSubmissionIds = cuts.filter((c) => !c.projectId).map((c) => c.submissionId);
+    const submissions = missingSubmissionIds.length
+      ? await prisma.reviewSubmission.findMany({ where: { id: { in: missingSubmissionIds } }, select: { id: true, projectId: true } }) : [];
+    const projectOfSubmission = new Map(submissions.map((s) => [s.id, s.projectId]));
+    const projectOfCut = new Map(cuts.map((c) => [c.id, c.projectId ?? projectOfSubmission.get(c.submissionId) ?? null]));
+    const projectIds = [...new Set([...projectOfCut.values()].filter((id): id is string => !!id))];
+    const projects = projectIds.length ? await prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, clientId: true } }) : [];
+    const clientOfProject = new Map(projects.map((p) => [p.id, p.clientId]));
+    const clientOf = (f: FailedAutomation) => f.clientId ?? (f.enrollmentId ? clientOfEnrollment.get(f.enrollmentId) : null)
+      ?? (f.kind === "cut_transcript" ? clientOfProject.get(projectOfCut.get(f.ref) ?? "") : null) ?? null;
+    const clientIds = [...new Set(all.map(clientOf).filter((id): id is string => !!id))];
+    const clients = clientIds.length ? await prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true } }) : [];
+    const synthetic = new Set(clients.filter(isSyntheticClientRow).map((c) => c.id));
+    visible = all.filter((f) => !synthetic.has(clientOf(f) ?? ""));
+  }
   const byEnrollment = new Map<string, FailedAutomation[]>();
   const global: FailedAutomation[] = [];
-  for (const f of all) {
+  for (const f of visible) {
     if (f.enrollmentId) byEnrollment.set(f.enrollmentId, [...(byEnrollment.get(f.enrollmentId) ?? []), f]);
     else global.push(f);
   }
