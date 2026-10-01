@@ -44,3 +44,10 @@ views under their actual roles, and remaining setting panels. Check both staff
 themes, long names, 200% zoom and tablet widths before claiming their migration
 complete. No new tests mirror these reversible class changes; lint/build and
 the pending visual comparison are the appropriate gates.
+
+MonthHeader's existing picker/Skip controls and native SubNav links now inherit
+44px targets, focus and readable type. The staff library's native summaries,
+status/identity/release text and named cut-history overflow region share these
+scales. Its all-month default remains. ClientReview fee/clock/hold forms,
+LibraryIdentityEditor/dialogs and MonthControls action logic are untouched and
+still need acceptance; no month filter or financial policy was introduced.

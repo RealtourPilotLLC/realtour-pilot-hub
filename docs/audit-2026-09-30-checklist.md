@@ -74,6 +74,13 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U1/U5 month/library controls:** native SubNav/MonthHeader picker/Skip targets,
+  readable library identity/status/release text, shared badge ink and focused cut
+  history overflow region; routes/all-month scope/rows/roles/pay/handlers retained.
+  Lint/diff and source review passed; browser acceptance open. ClientReview
+  financial forms, LibraryIdentityEditor/dialogs and MonthControls action logic
+  are explicitly not migrated or acceptance-tested by this slice.
+
 - **U3/W06 upload reconciliation:** opaque exact-attempt AuditLog receipts bind
   actor/project/payload to the atomic brief/report commit and separate terminal
   state. Unknown/unfinished submits hold replay and server autosave while newer

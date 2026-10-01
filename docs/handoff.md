@@ -2,6 +2,21 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U1/U5 checkpoint — month and library controls
+
+SubNav native links and MonthHeader's existing picker/Skip controls have readable
+type, 44px targets, visible focus and wrapping. The all-month staff library has
+readable title/status/month/identity/release evidence, theme-aware review badge
+ink, native focused video summaries, larger Edit links and a named keyboard
+scroll region for exact cut history. Query scope, links, counts, row/version
+identity, handlers, moneyEyes/pay and decision inputs are unchanged.
+
+Focused lint/diff and root source review passed. No CSS-mirroring tests or
+browser claim. Untouched/not acceptance-tested: ClientReview's clock/hold/fee
+forms, LibraryIdentityEditor/dialogs, and MonthControls' selection/Skip/session
+logic. Their existing role/domain behavior is preserved. Normal-role table,
+picker, theme/zoom/phone acceptance remains open; build is the next combined gate.
+
 ### Oct 1 U3/W06 checkpoint — exact upload and size recovery
 
 Upload submit now retains an opaque UUID and canonical payload fingerprint on

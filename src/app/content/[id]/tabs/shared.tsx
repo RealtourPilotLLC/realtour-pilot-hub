@@ -39,12 +39,12 @@ export function SubNav({ id, tab, current, views, month, badges = {} }: {
           href={contentHref(id, { tab, view: v.key, month })}
           aria-current={current === v.key ? "page" : undefined}
           className={cn(
-            "inline-flex min-h-9 items-center rounded-lg px-3 py-1.5 text-sm font-medium",
+            "inline-flex min-h-11 min-w-11 max-w-full items-center rounded-lg px-3 py-2 text-ui-secondary font-medium whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
             current === v.key ? "bg-surface-2 text-foreground" : "text-muted hover:bg-surface-2/60 hover:text-foreground",
           )}
         >
           {v.label}
-          {(badges[v.key] ?? 0) > 0 && <span className="ml-1.5 rounded-full bg-brand-soft px-1.5 text-xs font-semibold text-brand">{badges[v.key]}</span>}
+          {(badges[v.key] ?? 0) > 0 && <span className="ml-1.5 shrink-0 rounded-full bg-brand-soft px-1.5 text-ui-status font-semibold text-brand">{badges[v.key]}</span>}
         </Link>
       ))}
     </nav>
@@ -60,15 +60,15 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h2 className="text-2xl font-semibold tracking-tight">
+        <h2 className="break-words text-2xl font-semibold tracking-tight">
           {title ?? monthLabel(key)}
-          {m?.historical && <span className="ml-2 align-middle text-[13px] font-normal text-muted-2">imported history</span>}
-          {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-[13px] font-normal text-muted-2">skipped</span>}
+          {m?.historical && <span className="ml-2 align-middle text-ui-status font-normal text-muted">imported history</span>}
+          {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-ui-status font-normal text-muted">skipped</span>}
         </h2>
-        {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
+        {subtitle && <p className="mt-1 break-words text-ui-secondary leading-relaxed text-muted">{subtitle}</p>}
       </div>
       {ctx.months.length > 0 && (
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2 [&>span]:min-w-0 [&>span]:max-w-full [&_button]:min-h-11 [&_button]:min-w-11 [&_button]:max-w-full [&_button]:whitespace-normal [&_button]:text-ui-secondary [&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-brand [&_select]:min-h-11 [&_select]:min-w-0 [&_select]:max-w-full [&_select]:text-base [&_select]:focus-visible:outline-2 [&_select]:focus-visible:outline-offset-2 [&_select]:focus-visible:outline-brand">
           <MonthPicker
             months={ctx.months.map((x) => ({ key: x.monthKey, label: monthLabel(x.monthKey), historical: x.historical }))}
             currentKey={key}

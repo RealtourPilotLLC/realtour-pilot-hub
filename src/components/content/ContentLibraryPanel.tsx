@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers, TriangleAlert } from "lucide-react";
 import { Section } from "@/components/ui/Section";
+import { badgeColors } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { decideRevisionFeeForm, holdReviewWindowForm, restartReviewClockForm } from "@/app/content/actions";
 import { LibraryIdentityEditor } from "@/components/content/LibraryIdentityEditor";
@@ -92,8 +93,8 @@ const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateSt
 const when = (isoStr: string | null) => (isoStr ? `${new Date(isoStr).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET` : null);
 
 const STATUS_TONE: Record<string, string> = {
-  PLANNED: "bg-surface-2 text-muted-2", FILMED: "bg-brand-soft text-brand", EDITING: "bg-brand-soft text-brand",
-  CLIENT_REVIEW: "bg-[#8b93e6]/20 text-[#8b93e6]", APPROVED: "bg-success/15 text-success", DELIVERED: "bg-success/15 text-success", ARCHIVED: "bg-surface-2 text-muted-2",
+  PLANNED: "bg-surface-2 text-muted", FILMED: "bg-brand-soft text-brand", EDITING: "bg-brand-soft text-brand",
+  CLIENT_REVIEW: "", APPROVED: "bg-success/15 text-success", DELIVERED: "bg-success/15 text-success", ARCHIVED: "bg-surface-2 text-muted",
 };
 
 export function ContentLibraryPanel({
@@ -112,7 +113,7 @@ export function ContentLibraryPanel({
   if (rows.length === 0) {
     return (
       <Section icon={Film} title={monthLabelText ? `Videos — ${monthLabelText}` : "Videos"} flush>
-        <div className="px-5 py-5 text-sm">
+        <div className="px-5 py-5 text-ui-body leading-relaxed">
           <p className="text-muted">No rows in the video library for this client{monthLabelText ? ` in ${monthLabelText}` : ""}.</p>
           {pipelineOnly.length > 0 && (
             <>
@@ -120,11 +121,11 @@ export function ContentLibraryPanel({
                 The pipeline has {pipelineOnly.length} shoot{pipelineOnly.length === 1 ? "" : "s"} attached to their program months. The library has not been built
                 for them yet, so this tab cannot show a video history — it is not the same thing as &ldquo;nothing was delivered&rdquo;.
               </p>
-              <ul className="mt-2 space-y-1 text-[13px]">
+              <ul className="mt-2 space-y-1 text-ui-secondary">
                 {pipelineOnly.slice(0, 12).map((p) => (
                   <li key={p.id}>
-                    <Link href={`/edit/${p.id}`} className="text-brand hover:underline">{p.title}</Link>
-                    <span className="text-muted-2"> · {p.status.toLowerCase()}{p.monthKey ? ` · ${p.monthKey}` : ""}{p.shootDateISO ? ` · ${day(p.shootDateISO)}` : ""}</span>
+                    <Link href={`/edit/${p.id}`} className="inline-flex min-h-11 max-w-full items-center rounded-lg text-brand underline underline-offset-2 break-words focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{p.title}</Link>
+                    <span className="text-muted"> · {p.status.toLowerCase()}{p.monthKey ? ` · ${p.monthKey}` : ""}{p.shootDateISO ? ` · ${day(p.shootDateISO)}` : ""}</span>
                   </li>
                 ))}
               </ul>
@@ -143,7 +144,7 @@ export function ContentLibraryPanel({
         <Stat label="Internal only" value={internalOnly} tone={internalOnly > 0 ? "warning" : undefined} />
       </div>
       {flagged > 0 && (
-        <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
+        <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-ui-status leading-relaxed text-warning">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           {flagged} video{flagged === 1 ? " needs" : "s need"} an identity check — open {flagged === 1 ? "it" : "each one"} to confirm or correct its title, topic or delivered file.
         </p>
@@ -154,44 +155,45 @@ export function ContentLibraryPanel({
         title={monthLabelText ? `Videos — ${monthLabelText}` : "Every video"}
         count={rows.length}
         flush
-        action={<span className="hidden text-[11px] text-muted-2 sm:inline">staff view — all rounds, including what the client never saw</span>}
+        action={<span className="hidden text-ui-status text-muted sm:inline">staff view — all rounds, including what the client never saw</span>}
       >
         <div className="divide-y divide-border">
           {rows.map((v) => {
             const releasedCuts = v.cuts.filter((c) => c.releasedToClientAtISO && !c.withdrawn);
             return (
               <details key={v.id} className="group">
-                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 px-5 py-3 hover:bg-surface-2/60">
-                  <span className="min-w-0 flex-1 basis-40 truncate text-[14px] font-medium">{v.title}</span>
-                  <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold", STATUS_TONE[v.status] ?? "bg-surface-2 text-muted-2")}>{v.status.toLowerCase().replace(/_/g, " ")}</span>
-                  {v.kind !== "PROGRAM" && <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted-2">{v.kind.toLowerCase()}</span>}
-                  {!v.countsTowardAllowance && <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted-2">extra — not against the allowance</span>}
-                  <span className="shrink-0 text-[11px] text-muted-2">{v.monthKey ?? "no month"}{v.identity?.section === "PREVIOUS" ? " · previous content" : ""}</span>
+                <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 px-5 py-3 hover:bg-surface-2/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand">
+                  <span className="min-w-0 flex-1 basis-40 break-words text-ui-body font-medium">{v.title}</span>
+                  <span className={cn("max-w-full rounded-full px-2 py-0.5 text-ui-status font-semibold break-words", STATUS_TONE[v.status] ?? "bg-surface-2 text-muted")} style={v.status === "CLIENT_REVIEW" ? badgeColors("#8b93e6") : undefined}>{v.status.toLowerCase().replace(/_/g, " ")}</span>
+                  {v.kind !== "PROGRAM" && <span className="max-w-full rounded-full bg-surface-2 px-2 py-0.5 text-ui-status text-muted break-words">{v.kind.toLowerCase()}</span>}
+                  {!v.countsTowardAllowance && <span className="max-w-full rounded-full bg-surface-2 px-2 py-0.5 text-ui-status text-muted">extra — not against the allowance</span>}
+                  <span className="max-w-full text-ui-status text-muted">{v.monthKey ?? "no month"}{v.identity?.section === "PREVIOUS" ? " · previous content" : ""}</span>
                   {v.status !== "ARCHIVED" && v.identity?.flags.map((f) => (
-                    <span key={f} className="shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{f}</span>
+                    <span key={f} className="max-w-full rounded-full bg-warning/15 px-2 py-0.5 text-ui-status font-semibold text-warning">{f}</span>
                   ))}
-                  <span className="shrink-0 text-[11px]">
-                    <Layers className="mr-0.5 inline size-3 text-muted-2" />{v.cuts.length} cut{v.cuts.length === 1 ? "" : "s"}
+                  <span className="shrink-0 text-ui-status">
+                    <Layers className="mr-0.5 inline size-3 text-muted" />{v.cuts.length} cut{v.cuts.length === 1 ? "" : "s"}
                   </span>
-                  <span className={cn("shrink-0 text-[11px]", releasedCuts.length > 0 ? "text-success" : "text-muted-2")}>
+                  <span className={cn("max-w-full text-ui-status", releasedCuts.length > 0 ? "text-success" : "text-muted")}>
                     {releasedCuts.length > 0 ? <><Eye className="mr-0.5 inline size-3" />{releasedCuts.length} released</> : <><EyeOff className="mr-0.5 inline size-3" />never shown to them</>}
                   </span>
                 </summary>
-                <div className="space-y-2 border-t border-border/70 bg-surface-2/30 px-5 py-3 text-[12px]">
-                  <p className="text-muted">
+                <div className="space-y-2 border-t border-border/70 bg-surface-2/30 px-5 py-3 text-ui-status leading-relaxed">
+                  <p className="break-words text-muted">
                     {[v.pillarName, v.format, v.filmedAtISO ? `filmed ${day(v.filmedAtISO)}` : null, v.deliveredAtISO ? `delivered ${day(v.deliveredAtISO)}` : null,
                       v.releasedAtISO ? `released ${day(v.releasedAtISO)}` : null, v.postedAtISO ? `they marked it posted ${day(v.postedAtISO)}` : null,
                       `source: ${v.source}`].filter(Boolean).join(" · ")}
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    {v.projectId && <Link href={`/edit/${v.projectId}`} className="rounded-md border border-border px-2 py-0.5 font-medium text-muted hover:bg-surface-2 hover:text-foreground">Editing room</Link>}
-                    {v.sources.map((s, i) => <span key={i} className="rounded-md bg-surface-2 px-2 py-0.5 text-muted-2">{s.kind.toLowerCase()}{s.isFinal ? " (final)" : ""}</span>)}
+                    {v.projectId && <Link href={`/edit/${v.projectId}`} className="inline-flex min-h-11 min-w-11 max-w-full items-center rounded-lg border border-border-strong px-3 py-2 font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Editing room</Link>}
+                    {v.sources.map((s, i) => <span key={i} className="max-w-full self-center rounded-md bg-surface-2 px-2 py-0.5 text-muted break-words">{s.kind.toLowerCase()}{s.isFinal ? " (final)" : ""}</span>)}
                   </div>
                   {v.cuts.length === 0 ? (
-                    <p className="text-muted-2">No cut has been submitted for this video yet.</p>
+                    <p className="text-muted">No cut has been submitted for this video yet.</p>
                   ) : (
+                    <div role="region" aria-label={`Cut history for ${v.title}`} tabIndex={0} className="overflow-x-auto rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                     <table className="w-full text-left">
-                      <thead className="text-[10px] uppercase tracking-wide text-muted-2">
+                      <thead className="text-ui-status uppercase tracking-wide text-muted">
                         <tr><th className="py-1 pr-2">Round</th><th className="pr-2">Internal</th><th className="pr-2">Editor</th><th className="pr-2">Client saw it</th><th>Their answer</th></tr>
                       </thead>
                       <tbody>
@@ -200,12 +202,13 @@ export function ContentLibraryPanel({
                             <td className="py-1 pr-2 font-medium">v{c.round}{c.slot > 1 ? `·${c.slot}` : ""}{c.withdrawn && " (withdrawn)"}</td>
                             <td className="pr-2">{c.status.toLowerCase().replace(/_/g, " ")}{c.decidedAtISO ? ` ${day(c.decidedAtISO)}` : ""}{c.decidedBy ? ` · ${c.decidedBy}` : ""}</td>
                             <td className="pr-2 text-muted">{c.submittedBy ?? "—"}</td>
-                            <td className="pr-2">{c.releasedToClientAtISO ? <span className="text-success">{day(c.releasedToClientAtISO)}</span> : <span className="text-muted-2">no</span>}</td>
-                            <td>{c.clientDecision ? <span className={c.clientDecision === "APPROVE" ? "text-success" : "text-warning"}>{c.clientDecision.toLowerCase().replace(/_/g, " ")}</span> : <span className="text-muted-2">—</span>}</td>
+                            <td className="pr-2">{c.releasedToClientAtISO ? <span className="text-success">{day(c.releasedToClientAtISO)}</span> : <span className="text-muted">no</span>}</td>
+                            <td>{c.clientDecision ? <span className={c.clientDecision === "APPROVE" ? "text-success" : "text-warning"}>{c.clientDecision.toLowerCase().replace(/_/g, " ")}</span> : <span className="text-muted">—</span>}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   )}
                   <ClientReview v={v} />
                   {identity && v.identity && <LibraryIdentityEditor options={identity} video={{ id: v.id, title: v.title, topicId: v.topicId, scriptId: v.scriptId, kind: v.kind, monthKey: v.monthKey, status: v.status }} identity={v.identity} />}
@@ -319,7 +322,7 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: "su
   return (
     <div className="panel-shadow rounded-2xl border bg-surface px-3 py-2.5">
       <div className={cn("text-xl font-semibold tracking-tight", tone === "success" && "text-success", tone === "warning" && "text-warning")}>{value}</div>
-      <div className="text-[11px] text-muted">{label}</div>
+      <div className="text-ui-status text-muted">{label}</div>
     </div>
   );
 }
