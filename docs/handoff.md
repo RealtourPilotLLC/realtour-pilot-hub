@@ -22,8 +22,12 @@ Logs `/tmp/normal-role-http-acceptance/`,
 `/tmp/monthly-portal-approval-cache-page/`,
 `/tmp/ops-hub-cache-http-types.log`, `/tmp/ops-hub-cache-http-lint.log`.
 
-W05 bounded source work in outbox.ts/OpenPhone webhook is automatic exact
-authenticated delivery-echo recovery, no retry/send/new manual authority.
+W05 bounded source work in outbox.ts/OpenPhone webhook is verified automatic exact
+authenticated delivery-echo recovery:36/0 real PG/actual webhook/concurrency and
+notice-window tests, lint/types0 and focused review clear. Source is frozen;
+port5972 stopped. Review repaired pre-intent-time acceptance. Evidence
+`/tmp/w05-delivery-echo-recovery-final-source/`. Exact source checkpoint/build/
+release is next. No retry/send/new manual authority.
 Optional manual settlement and generated-workflow dates remain unanswered.
 Fresh readonly16:11Z private readiness plan:13 candidates/13 October workspaces,
 zero eligible real seats/released strategies/canonical approved topics. Exact

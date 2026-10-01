@@ -1182,3 +1182,41 @@ export async function settleUnknownFromEcho(echo: { toRef: string; body: string;
   if (n.count > 0) console.info(`[outbox] a manual send we could not confirm was settled by OpenPhone's own echo (${row.state} -> accepted).`);
   return n.count > 0;
 }
+
+/** Verified provider evidence may settle a held delivery identity; it never
+ * offers a send or releases dedupe. Keep this stricter than the historical
+ * manual-text matcher: another matching send, missing original time/id, group
+ * or attachment context, or a changed row leaves the outcome unknown. */
+export async function settleUnknownDeliveryFromEcho(echo: { toRef: string; body: string; providerId: string; at: Date }): Promise<boolean> {
+  const key = echo.toRef.replace(/\D/g, "").slice(-10);
+  const providerId = echo.providerId.trim();
+  const atMs = echo.at.getTime();
+  if (key.length !== 10 || !echo.body.trim() || !providerId || !Number.isFinite(atMs) || atMs > Date.now() + 5 * 60_000) return false;
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // Look across identities/states: the same words in a manual text or on
+      // another job are ambiguity, not permission to pick the newest delivery.
+      const matches = await tx.outboxMessage.findMany({
+        where: { channel: "sms", toRef: key, body: echo.body, createdAt: { gte: new Date(atMs - 6 * 3600_000), lte: echo.at } },
+        select: { id: true, state: true, dedupeKey: true, projectId: true, attempts: true, providerId: true, createdAt: true, extraToRefsJson: true, mediaUrlsJson: true },
+        take: 2,
+      });
+      if (matches.length !== 1) return false;
+      const row = matches[0];
+      if (row.state !== "unknown" || row.attempts < 1 || !row.projectId || row.dedupeKey !== deliveryKey(row.projectId) || row.extraToRefsJson !== null || row.mediaUrlsJson !== null || (row.providerId !== null && row.providerId !== providerId)) return false;
+      // A provider message is evidence for one intent only. Serializable reads
+      // also prevent concurrent echoes claiming this id for different rows.
+      if (await tx.outboxMessage.findFirst({ where: { providerId, id: { not: row.id } }, select: { id: true } })) return false;
+      const n = await tx.outboxMessage.updateMany({
+        where: { id: row.id, state: "unknown", dedupeKey: row.dedupeKey, projectId: row.projectId, toRef: key, body: echo.body, attempts: row.attempts, providerId: row.providerId, createdAt: row.createdAt, extraToRefsJson: null, mediaUrlsJson: null },
+        // Acceptance is when the provider held the message, not when a late
+        // webhook arrived: later cuts cannot inherit an earlier delivery text.
+        data: { state: "accepted", providerId, acceptedAt: echo.at, resolvedAt: new Date(), leaseUntil: null, leaseBy: null, providerError: null },
+      });
+      return n.count === 1;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch {
+    // Read/CAS/serialization failure preserves the held row; no retry or send.
+    return false;
+  }
+}

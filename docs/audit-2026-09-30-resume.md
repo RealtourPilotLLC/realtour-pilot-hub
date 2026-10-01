@@ -30,10 +30,13 @@ Logs: `/tmp/normal-role-http-acceptance/`,
 `/tmp/normal-role-http-acceptance-run.log`. This closes transport checks only;
 mounted browser/phone/provider/full-watch acceptance remains open.
 
-W05 automatic exact provider-echo settlement for held delivery texts is in
-progress separately. Ambiguous/unsigned/stale proof stays held; no retry/send,
+W05 automatic exact provider-echo settlement for held delivery texts is verified
+locally in a separate checkpoint:36/0 real PG/actual webhook tests, lint/types0
+and focused review clear. Pre-intent provider time is refused. Ambiguous/unsigned/stale proof stays held; no retry/send,
 new manual authority, schema or activation is included. Optional manual
-settlement and generated-workflow date policy questions remain pending.
+settlement and generated-workflow date policy questions remain pending. Exact
+commit/build/release follow the cache checkpoint; port5972 is stopped. Evidence
+is `/tmp/w05-delivery-echo-recovery-final-source/`.
 
 Fresh SELECT-only active-candidate launch inventory at 16:11:14Z found 13 real
 candidates, 13 October workspaces, zero active eligible real-client seats,

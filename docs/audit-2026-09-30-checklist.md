@@ -34,6 +34,28 @@ strategies or canonical approved available topics. Staff source reconciliation
 and first roster remain open. Browser policy still blocks C14 mounted/U6
 acceptance. See `audit-2026-10-01-c14-u6-acceptance-map.md`.
 
+### W05 exact authenticated delivery-echo recovery — verified locally
+
+The OpenPhone POST passes verified provenance only when the existing configured
+webhook token check succeeds. An outgoing delivered event from the workspace
+line, one exact recipient/body, original message ID/time and no media may settle
+one attempted unknown `delivery:<projectId>` row. Matching history across jobs/
+manual sends is ambiguity. Original provider time cannot precede intent creation;
+the six-hour bound, unchanged identity CAS and Serializable provider-ID check
+hold stale, competing or changed facts. Dedupe stays assigned; nothing resends.
+AcceptedAt uses provider time so existing notice stamping cannot cover later cuts.
+The historical manual matcher and unsigned/replay behavior remain unchanged.
+
+Actual configured/bad-token/unsigned POST plus real PG concurrency/notice tests:
+36/0, scoped lint0, non-incremental types0 and focused peer/root review clear.
+Review's pre-intent timestamp finding was repaired and specifically rechecked.
+Log `/tmp/w05-delivery-echo-recovery-final-source/`; root gate logs
+`/tmp/ops-hub-w05-types.log`, `/tmp/ops-hub-w05-lint.log`. Owned5972 stopped.
+No schema, task, provider send, manual settlement authority, activation or live
+mutation test. Source checkpoint/clean build/release are next. Missing/unsigned/
+ambiguous historical proof and events arriving before the row becomes unknown
+stay held; operational/provider acceptance remains open.
+
 ### Latest policy release — deployed and HTTP verified
 
 Candidate e6eac69 promoted 11:47 AM EDT, Ready dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv.

@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
   });
 
   try {
-    await processOpenPhoneEvent(type, payload);
+    await processOpenPhoneEvent(type, payload, { verifiedProvider: !auth.unsigned });
     await prisma.webhookEvent.update({
       where: { id: log.id },
       data: { status: "PROCESSED", processedAt: new Date() },
@@ -258,7 +258,7 @@ function collectPhones(obj: unknown, acc: string[] = []): string[] {
   return acc;
 }
 
-export async function processOpenPhoneEvent(type: string, payload: Record<string, unknown>) {
+export async function processOpenPhoneEvent(type: string, payload: Record<string, unknown>, proof: { verifiedProvider: boolean } = { verifiedProvider: false }) {
   const data = ((payload.data as Record<string, unknown>)?.object ?? payload.data ?? payload) as Record<string, unknown>;
 
   // Call transcripts arrive on their own event — pull the transcript, log it,
@@ -331,6 +331,16 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // ---------------------------------------------------------------------
   if (!isCall && fromUs && text.trim()) {
     try {
+      // W05: only a verified workspace-line delivery event with its original
+      // provider identity/time may settle a delivery timeout. Legacy unsigned
+      // events and stored replays without verified provenance remain held.
+      const deliveredAt = typeof data.createdAt === "string" ? new Date(data.createdAt) : null;
+      const messageId = typeof data.id === "string" ? data.id.trim() : "";
+      const noMedia = [data.media, data.mediaUrls, data.attachments].every((v) => v == null || (Array.isArray(v) && v.length === 0));
+      if (proof.verifiedProvider && type === "message.delivered" && direction.toLowerCase() === "outgoing" && fromLine && recipients.length === 1 && messageId && deliveredAt && noMedia) {
+        const { settleUnknownDeliveryFromEcho } = await import("@/lib/outbox");
+        await settleUnknownDeliveryFromEcho({ toRef: recipients[0], body: text, providerId: messageId, at: deliveredAt });
+      }
       const { settleUnknownFromEcho } = await import("@/lib/outbox");
       for (const to of recipients.length ? recipients : outsiders) {
         if (await settleUnknownFromEcho({ toRef: to, body: text, providerId: typeof data.id === "string" ? data.id : null })) break;
