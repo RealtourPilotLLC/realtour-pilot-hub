@@ -58,10 +58,10 @@ export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEd
       />
       <div className="p-4 sm:p-6">
         <PeopleTabs tab="team" show={show} />
-        <p className="mb-4 text-xs text-muted">
+        <p className="mb-4 text-sm leading-relaxed text-muted">
           An @mention, a reply or a message on their job reaches the person on Slack — with the summary and the link — when
           their Slack member ID is on their card; a text needs a phone on the row. Which pings go where, per person, is set
-          under <Link href="/settings" className="font-medium text-brand hover:underline">Settings → Team notifications</Link>.
+          under <Link href="/settings" className="inline-flex min-h-11 items-center rounded-lg font-medium text-brand underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Settings → Team notifications</Link>.
         </p>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {team.map((m) => {
@@ -72,7 +72,7 @@ export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEd
               m._count.projectsAsVa;
             return (
               <div key={m.id} className="panel-shadow rounded-2xl border bg-surface p-5">
-                <Link href={`/team/${m.id}`} className="flex items-center gap-3 rounded-lg hover:bg-surface-2">
+                <Link href={`/team/${m.id}`} className="flex min-h-11 items-center gap-3 rounded-lg hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                   <Avatar name={m.name} size={44} color={m.avatarColor} />
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{m.name}</div>
@@ -82,8 +82,8 @@ export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEd
                   </div>
                 </Link>
                 <div className="mt-3 space-y-1 text-sm text-muted">
-                  <div className="flex items-center gap-2">
-                    <Mail className="size-3.5" /> {m.email}
+                  <div className="flex items-center gap-2 break-all">
+                    <Mail className="size-3.5 shrink-0" /> {m.email}
                   </div>
                   {m.phone && (
                     <div className="flex items-center gap-2">
@@ -91,7 +91,7 @@ export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEd
                     </div>
                   )}
                 </div>
-                <div className="mt-3 text-xs text-muted">
+                <div className="mt-3 text-sm text-muted">
                   {load} active assignment{load === 1 ? "" : "s"}
                 </div>
                 <SlackIdField memberId={m.id} firstName={m.name.split(/\s+/)[0]} slackId={m.slackId} canEdit={canEditSlack} />

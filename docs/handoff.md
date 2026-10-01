@@ -2,6 +2,24 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — Clients, Resources and Team presentation
+
+Six existing screens now use shared/native readable controls, visible keyboard
+focus, 44px action targets and responsive wrapping: Clients search/list,
+ClientWorkspace, Resources landing, role guide, Team directory and member detail.
+Queries, GET search, links, role gates, notes/email handlers, assignments and pay
+math are unchanged. Embedded Slack, team send and pay-setting controls and the
+guide chooser were outside this bounded slice.
+
+Focused lint and diff checks passed (one pre-existing unused resource helper
+warning); agent and root source review found no altered domain behavior. This
+presentation change does not justify mirrored CSS tests. Browser/phone/zoom,
+focus, guide scrolling, SOP detail and long-row acceptance remain open.
+The source review identified three separate ClientWorkspace reliability bugs:
+switching tabs unmounts drafts, late AI results overwrite typed email text, and
+Copy claims success without awaiting the clipboard. Their next separate batch
+will preserve existing provider/send boundaries and partial note-save semantics.
+
 ### Connected client journey checkpoint — exact cut and issue approval guards
 
 One isolated normal named-pilot scenario now connects actual one-time login and

@@ -74,6 +74,13 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 secondary presentation:** Clients list/workspace, Resources landing/role
+  guide and Team directory/member detail now use readable type, native/shared
+  action targets, focus and wrapping. Focused lint/diff and source review passed;
+  handlers, queries, role gates and pay math retained. Browser acceptance and
+  remaining secondary tables/embedded editors stay open. ClientWorkspace's
+  separately confirmed draft/AI/clipboard defects are the next reliability slice.
+
 - **Connected client production handoff:** signed normal named-pilot action
   scenario 19/0 now couples login, strategy/bank, written month, exact scripts,
   filming task/provider input, two-output creative handoff, manual Start/Pause,

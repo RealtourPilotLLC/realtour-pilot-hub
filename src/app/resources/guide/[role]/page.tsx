@@ -29,7 +29,7 @@ function isGuideKey(s: string): s is GuideKey {
 
 function LinkChip({ l }: { l: GuideLink }) {
   const cls =
-    "inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted transition-colors hover:border-brand hover:text-brand";
+    "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-2 rounded-xl border border-border-strong bg-surface px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   return l.external ? (
     <a href={l.href} target="_blank" rel="noopener noreferrer" className={cls}>
       {l.label} <ExternalLink className="size-3" />
@@ -69,11 +69,11 @@ export default async function RoleGuidePage({ params }: { params: Promise<{ role
             <ListChecks className="size-4 text-brand" />
             <h2 className="text-sm font-semibold">The runbook — your day in order</h2>
           </div>
-          <p className="mt-1 text-xs text-muted">Written for {g.who}. Everything below this card is the detail behind one of these lines.</p>
+          <p className="mt-1 text-sm leading-relaxed text-muted">Written for {g.who}. Everything below this card is the detail behind one of these lines.</p>
           <ol className="mt-3 space-y-2.5">
             {g.runbook.map((r, i) => (
               <li key={i} className="flex gap-3">
-                <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-[11px] font-bold text-brand">
+                <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-sm font-bold text-brand">
                   {i + 1}
                 </span>
                 <span className="min-w-0 flex-1 text-sm leading-relaxed">
@@ -92,7 +92,7 @@ export default async function RoleGuidePage({ params }: { params: Promise<{ role
             <a
               key={s.id}
               href={`#${s.id}`}
-              className="inline-flex shrink-0 items-center rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+              className="inline-flex min-h-11 min-w-11 shrink-0 items-center rounded-full border border-border-strong bg-surface px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
               {s.title}
             </a>
@@ -122,17 +122,17 @@ export default async function RoleGuidePage({ params }: { params: Promise<{ role
           <div>
             <div className="mb-2 flex items-center gap-2 px-1">
               <BookOpen className="size-3.5 text-muted-2" />
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">The other guides</span>
+              <span className="text-sm font-semibold text-muted">The other guides</span>
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               {others.map((k) => (
                 <Link
                   key={k}
                   href={`/resources/guide/${k}`}
-                  className="rounded-2xl border border-border bg-surface p-3.5 transition-colors hover:border-brand/40"
+                  className="rounded-2xl border border-border bg-surface p-3.5 transition-colors hover:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 >
                   <div className="text-sm font-semibold">{GUIDES[k].title}</div>
-                  <div className="mt-0.5 text-xs text-muted">{GUIDE_BLURB[k]}</div>
+                  <div className="mt-0.5 text-sm leading-relaxed text-muted">{GUIDE_BLURB[k]}</div>
                 </Link>
               ))}
             </div>

@@ -106,7 +106,7 @@ export default async function ResourcesPage() {
         title={creative ? "SOP Center" : "Resources & SOPs"}
         subtitle={creative ? "How we shoot, edit, and deliver — the standards for every job" : "Links, tools, and standard operating procedures for the team"}
       />
-      <div className="space-y-8 p-6">
+      <div className="space-y-8 p-4 sm:p-6">
         {/* Pinned FIRST: this person's own walkthrough guide. Go-live onboarding
             (Sep 2026) — everybody gets a runbook for their day plus a
             screen-by-screen walkthrough, and the link lands them on THEIRS
@@ -114,14 +114,14 @@ export default async function ResourcesPage() {
             page itself gates who may open which). */}
         <Link
           href="/resources/guide"
-          className="flex items-center gap-3 rounded-2xl border border-brand/40 bg-brand/[0.04] p-4 transition hover:border-brand"
+          className="flex items-center gap-3 rounded-2xl border border-brand/40 bg-brand/[0.04] p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
             <Compass className="size-5" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold">{guideTitle} — how the hub works</span>
-            <span className="block text-xs text-muted">
+            <span className="block text-sm leading-relaxed text-muted">
               Your day in order, then a walkthrough of every screen you use — start here
             </span>
           </span>
@@ -133,14 +133,14 @@ export default async function ResourcesPage() {
             benefit from knowing the bar too). */}
         <Link
           href="/resources/video-styles"
-          className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:border-brand"
+          className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
             <Clapperboard className="size-5" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold">Video Style Guide</span>
-            <span className="block text-xs text-muted">
+            <span className="block text-sm leading-relaxed text-muted">
               Every video type we edit — style specs, linked examples, edit-time budgets and turnarounds
             </span>
           </span>
@@ -161,14 +161,14 @@ export default async function ResourcesPage() {
                   href={f.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="group flex items-center justify-between gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md"
+                  className="group flex items-center justify-between gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-1 truncate font-medium">
                       <span className="truncate">{f.title}</span>
-                      <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100" />
+                      <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
                     </div>
-                    <div className="text-xs text-muted">Client order form</div>
+                    <div className="text-sm text-muted">Client order form</div>
                   </div>
                   {f.is_public ? (
                     <Badge color="#16a34a" soft="#dcfce7">Public</Badge>
@@ -189,7 +189,7 @@ export default async function ResourcesPage() {
           {!creative && (
             <Link
               href="/catalog"
-              className="flex items-center justify-between rounded-2xl border border-border bg-surface px-4 py-3 text-sm font-medium hover:bg-surface-2"
+              className="flex min-h-11 items-center justify-between gap-3 rounded-2xl border border-border bg-surface px-4 py-3 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
               <span>Service Catalog — every product, price, and description</span>
               <span className="text-muted-2">→</span>
@@ -209,18 +209,18 @@ export default async function ResourcesPage() {
                       href={r.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="group flex items-center gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md"
+                      className="group flex items-center gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                     >
-                      <span className="flex size-10 items-center justify-center rounded-xl bg-brand-soft text-brand">
+                      <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand">
                         <Icon className="size-5" />
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1 font-medium">
                           <span className="truncate">{r.title}</span>
-                          <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100" />
+                          <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
                         </div>
                         {r.description && (
-                          <div className="truncate text-xs text-muted">{r.description}</div>
+                          <div className="text-sm leading-relaxed text-muted">{r.description}</div>
                         )}
                       </div>
                     </a>
@@ -248,13 +248,13 @@ export default async function ResourcesPage() {
                     key={s.id}
                     className="group rounded-2xl border bg-surface px-5 py-3.5 [&_summary]:list-none"
                   >
-                    <summary className="flex cursor-pointer items-center justify-between gap-3">
+                    <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                       <div>
                         <div className="text-sm font-semibold">{s.title}</div>
-                        {s.summary && <div className="text-xs text-muted">{s.summary}</div>}
+                        {s.summary && <div className="text-sm leading-relaxed text-muted">{s.summary}</div>}
                       </div>
-                      <span className="text-xs text-muted-2 group-open:hidden">Open</span>
-                      <span className="hidden text-xs text-muted-2 group-open:inline">Close</span>
+                      <span className="text-sm text-muted group-open:hidden">Open</span>
+                      <span className="hidden text-sm text-muted group-open:inline">Close</span>
                     </summary>
                     <div className="mt-3 border-t pt-3">
                       <Markdown content={s.content} />

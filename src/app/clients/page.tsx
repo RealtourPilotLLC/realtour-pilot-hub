@@ -4,6 +4,8 @@ import { Building2, Mail, Palette, Phone, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { ActionLink, Button } from "@/components/ui/Action";
+import { TextField } from "@/components/ui/FormField";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { prisma } from "@/lib/prisma";
@@ -75,34 +77,34 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
         // Client Assets lives as a TAB here (Jordan: "client assets should be
         // in the clients tab"), not its own nav item.
         actions={
-          <Link
-            href="/clients/assets"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-          >
+          <ActionLink href="/clients/assets">
             <Palette className="size-4 text-brand" /> Client Assets
-          </Link>
+          </ActionLink>
         }
       />
       <div className="space-y-8 p-4 sm:p-6">
         {/* Search + view toggle — plain GET form, no client JS needed. */}
         <form className="flex flex-wrap items-center gap-2" action="/clients">
-          <input
+          <TextField
+            id="client-search"
+            label="Search clients by name, company, email or phone"
+            labelHidden
             type="search"
             name="q"
             defaultValue={q}
             placeholder="Search name, company, email, phone…"
-            className="w-full max-w-sm rounded-xl border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
+            className="w-full max-w-sm"
           />
-          <button className="rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-white">Search</button>
+          <Button type="submit">Search</Button>
           {hiddenCount > 0 && (
-            <Link href="/clients?all=1" className="text-xs font-medium text-muted hover:text-foreground hover:underline">
+            <ActionLink href="/clients?all=1" variant="quiet">
               Show {hiddenCount} more (leads &amp; assistants)
-            </Link>
+            </ActionLink>
           )}
           {(showAll || needle) && (
-            <Link href="/clients" className="text-xs font-medium text-muted hover:text-foreground hover:underline">
+            <ActionLink href="/clients" variant="quiet">
               Clear
-            </Link>
+            </ActionLink>
           )}
         </form>
         {clients.length === 0 && (
@@ -120,7 +122,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {g.clients.map((c) => (
-                <Link key={c.id} href={`/clients/${c.id}`} className="panel-shadow lift rounded-2xl border bg-surface p-5 hover:bg-surface-2">
+                <Link key={c.id} href={`/clients/${c.id}`} className="panel-shadow lift rounded-2xl border bg-surface p-5 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
             <div className="flex items-center gap-3">
               <Avatar name={c.name} src={c.avatarUrl} size={40} color="#4f46e5" />
               <div className="min-w-0">
@@ -130,7 +132,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
                   <SocialBadge socialClient={c.socialClient} socialPlan={c.socialPlan} size="xs" />
                 </div>
                 {c.company && (
-                  <div className="flex items-center gap-1 truncate text-xs text-muted">
+                  <div className="flex items-center gap-1 truncate text-sm text-muted">
                     <Building2 className="size-3" /> {c.company}
                   </div>
                 )}
@@ -140,8 +142,8 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
 
             <div className="mt-3 space-y-1 text-sm text-muted">
               {c.email && (
-                <div className="flex items-center gap-2">
-                  <Mail className="size-3.5" /> {c.email}
+                <div className="flex items-center gap-2 break-all">
+                  <Mail className="size-3.5 shrink-0" /> {c.email}
                 </div>
               )}
               {c.phone && (
@@ -153,14 +155,14 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
 
             {c.editingPreferences && (
               <div className="mt-3 rounded-lg bg-brand-soft px-3 py-2">
-                <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-brand">
+                <div className="mb-0.5 flex items-center gap-1 text-sm font-semibold text-brand">
                   <Sparkles className="size-3" /> Editing preferences
                 </div>
-                <p className="text-xs text-foreground/80">{c.editingPreferences}</p>
+                <p className="text-sm leading-relaxed text-foreground/80">{c.editingPreferences}</p>
               </div>
             )}
             {c.generalNotes && (
-              <p className="mt-2 line-clamp-4 text-xs text-muted">{stripHtml(c.generalNotes)}</p>
+              <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted">{stripHtml(c.generalNotes)}</p>
             )}
                 </Link>
               ))}

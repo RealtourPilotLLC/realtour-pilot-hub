@@ -5,6 +5,7 @@ import { Mail, Save, Sparkles, Copy, Check, StickyNote, AlertTriangle, RefreshCw
 import { cn } from "@/lib/utils";
 import { draftClientReply, loadCustomerNotes, saveCustomerNotes, type CustomerNotesState } from "@/app/clients/actions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { Button } from "@/components/ui/Action";
 
 type Props = {
   clientId: string;
@@ -27,7 +28,7 @@ export function ClientWorkspace(props: Props) {
 
   return (
     <div className="rounded-2xl border bg-surface">
-      <div className="flex border-b border-border text-sm">
+      <div className="flex flex-wrap border-b border-border text-sm">
         <TabBtn active={tab === "email"} onClick={() => setTab("email")} icon={<Mail className="size-4" />} label="Email draft" />
         <TabBtn
           active={tab === "notes"}
@@ -52,9 +53,11 @@ function TabBtn({
 }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; alert?: boolean }) {
   return (
     <button
+      type="button"
+      aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 px-4 py-2.5 font-medium",
+        "flex min-h-11 min-w-11 items-center gap-1.5 rounded-t-xl px-4 py-2.5 font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
         active ? "border-b-2 border-brand text-foreground" : "text-muted hover:text-foreground",
       )}
     >
@@ -71,14 +74,16 @@ function EmailComposer({ clientId, email, lastInbound }: Props) {
   return (
     <div>
       <AutoTextarea
+        aria-label="Email reply draft"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         minRows={5}
         placeholder="Draft an email reply… (use AI draft, then review and send from your mail app)"
-        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+        className="w-full rounded-lg border border-border-strong bg-surface px-3 py-2 text-base text-foreground placeholder:text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       />
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
+        <Button
+          variant="secondary"
           disabled={pending}
           onClick={() =>
             start(async () => {
@@ -86,31 +91,30 @@ function EmailComposer({ clientId, email, lastInbound }: Props) {
               if (r.draft) setBody(r.draft);
             })
           }
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
         >
           <Sparkles className="size-4 text-brand" /> {pending ? "Drafting…" : "AI draft"}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="secondary"
           disabled={!body.trim()}
           onClick={() => {
             navigator.clipboard.writeText(body);
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
         >
           {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />} {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
         {email && (
           <a
             href={`mailto:${email}?body=${encodeURIComponent(body)}`}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             <Mail className="size-4" /> Open in mail
           </a>
         )}
       </div>
-      <p className="mt-2 text-[11px] text-muted-2">Review before sending — the hub drafts, you send.</p>
+      <p className="mt-2 text-sm text-muted">Review before sending — the hub drafts, you send.</p>
     </div>
   );
 }
@@ -180,7 +184,7 @@ function CustomerNotes({ clientId, notes, notesSyncedAt, notesSyncError, aryeoLi
   return (
     <div className="space-y-3">
       <div>
-        <label className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+        <label htmlFor={`customer-notes-${clientId}`} className="mb-1 flex flex-wrap items-center justify-between gap-2 text-sm font-semibold text-muted">
           <span>Customer notes</span>
           {state.linked ? (
             <span className="normal-case tracking-normal text-muted-2">Saved to Aryeo</span>
@@ -189,44 +193,46 @@ function CustomerNotes({ clientId, notes, notesSyncedAt, notesSyncError, aryeoLi
           )}
         </label>
         <AutoTextarea
+          id={`customer-notes-${clientId}`}
           value={text}
           onChange={(e) => setText(e.target.value)}
           minRows={5}
           placeholder="Anything the team should know about this client — the same notes you'd write on their Aryeo customer…"
-          className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          className="w-full rounded-lg border border-border-strong bg-surface px-3 py-2 text-base text-foreground placeholder:text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         />
-        <p className="mt-1 text-[11px] text-muted-2">
+        <p className="mt-1 text-sm leading-relaxed text-muted">
           {state.linked
             ? "One list: these are the customer notes on this client's Aryeo record. Saving here updates Aryeo too."
             : "This client isn’t linked to an Aryeo customer, so this note lives in the hub only."}
         </p>
       </div>
 
-      {loading && <p className="text-[11px] text-muted-2">Checking Aryeo for their copy…</p>}
+      {loading && <p className="text-sm text-muted">Checking Aryeo for their copy…</p>}
 
       {/* Couldn't even READ Aryeo's copy — say so, rather than showing our
           mirror as if it were confirmed. */}
       {!loading && !flash && !state.ok && state.linked && !state.syncError && (
-        <p className="text-[11px] text-warning">
+        <p className="text-sm text-warning">
           Couldn’t check Aryeo’s copy just now ({state.message}). What’s below is the hub’s last mirror of it.
         </p>
       )}
 
       {/* The write-back failed: the note is safe here, but the two are apart. */}
       {state.syncError && (
-        <div className="rounded-lg border border-danger/30 bg-danger-soft/60 px-3 py-2 text-xs text-danger">
+        <div className="rounded-lg border border-danger/30 bg-danger-soft/60 px-3 py-2 text-sm text-danger">
           <div className="flex items-start gap-1.5">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
             <div className="min-w-0">
               <p className="font-semibold">Saved in the hub, but not in Aryeo.</p>
               <p className="mt-0.5 break-words opacity-90">{state.syncError}</p>
-              <button
+              <Button
+                variant="secondary"
                 disabled={pending}
                 onClick={() => save(text)}
-                className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-danger/40 px-2 py-1 font-medium hover:bg-danger-soft disabled:opacity-50"
+                className="mt-1.5 border-danger/40 text-danger hover:bg-danger-soft"
               >
                 <RefreshCw className={cn("size-3.5", pending && "animate-spin")} /> Try Aryeo again
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -234,29 +240,29 @@ function CustomerNotes({ clientId, notes, notesSyncedAt, notesSyncError, aryeoLi
 
       {/* Aryeo moved on since we mirrored it — reconcile, don't fork. */}
       {aryeoDiffers && (
-        <div className="rounded-lg border border-warning/30 bg-warning-soft/50 px-3 py-2 text-xs">
+        <div className="rounded-lg border border-warning/30 bg-warning-soft/50 px-3 py-2 text-sm">
           <p className="font-semibold text-warning">Aryeo’s copy is different</p>
           <p className="mt-1 whitespace-pre-wrap text-foreground/80">{state.aryeoNotes}</p>
-          <button
+          <Button
+            variant="secondary"
             onClick={() => setText(state.aryeoNotes ?? "")}
-            className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-warning/40 px-2 py-1 font-medium text-warning hover:bg-warning-soft"
+            className="mt-1.5 border-warning/40 text-warning hover:bg-warning-soft"
           >
             <ArrowDownToLine className="size-3.5" /> Use Aryeo’s version
-          </button>
+          </Button>
         </div>
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <button
+        <Button
           disabled={pending}
           onClick={() => save(text)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {pending ? <Save className="size-4" /> : state.ok && flash ? <Check className="size-4" /> : <Save className="size-4" />}
           {pending ? "Saving…" : "Save notes"}
-        </button>
+        </Button>
         {flash && (
-          <span className={cn("text-xs", state.ok ? "text-success" : "text-danger")}>{flash}</span>
+          <span className={cn("text-sm", state.ok ? "text-success" : "text-danger")}>{flash}</span>
         )}
         {/* Positive confirmation comes from the LIVE read, not a stored
             timestamp — the note can only be called "in sync" when we just saw

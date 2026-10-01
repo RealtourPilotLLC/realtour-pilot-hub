@@ -73,13 +73,13 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
               {member.email && (
-                <a href={`mailto:${member.email}`} className="inline-flex items-center gap-1.5 hover:text-foreground">
-                  <Mail className="size-3.5" /> {member.email}
+                <a href={`mailto:${member.email}`} className="inline-flex min-h-11 items-center gap-1.5 break-all rounded-lg hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                  <Mail className="size-3.5 shrink-0" /> {member.email}
                 </a>
               )}
               {member.phone && (
-                <a href={`tel:${member.phone}`} className="inline-flex items-center gap-1.5 hover:text-foreground">
-                  <Phone className="size-3.5" /> {member.phone}
+                <a href={`tel:${member.phone}`} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                  <Phone className="size-3.5 shrink-0" /> {member.phone}
                 </a>
               )}
               {canSeeAddress && paidPerShoot && (
@@ -93,7 +93,7 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
               )}
             </div>
           </div>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex flex-wrap gap-2">
             <Stat icon={<Camera className="size-4" />} label="Shoots / mo" value={String(kpis.shootsThisMonth)} />
             <Stat icon={<Palette className="size-4" />} label="Edits / mo" value={String(kpis.editsThisMonth)} />
             <Stat
@@ -113,15 +113,15 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
             <div className="space-y-2">
               {upcoming.length === 0 && <p className="text-sm text-muted">No upcoming shoots assigned.</p>}
               {upcoming.map((a) => (
-                <Link key={a.id} href={`/projects/${a.project.id}`} className="flex items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2">
+                <Link key={a.id} href={`/projects/${a.project.id}`} className="flex flex-wrap items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">
                     <Camera className="size-4" />
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{a.project.title}</div>
-                    <div className="truncate text-xs text-muted">{a.project.client.name}</div>
+                    <div className="truncate text-sm text-muted">{a.project.client.name}</div>
                   </div>
-                  <div className="shrink-0 text-right text-xs">
+                  <div className="ml-auto text-right text-sm">
                     <div className={isTodayET(a.startAt ?? new Date(0)) ? "font-semibold text-brand" : "text-muted"}>
                       {a.startAt ? etDateTime(a.startAt) : "Unscheduled"}
                     </div>
@@ -138,15 +138,15 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
                 {editingNow.map((p) => {
                   const stage = stageMeta(p.status);
                   return (
-                    <Link key={p.id} href={`/projects/${p.id}`} className="flex items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2">
+                    <Link key={p.id} href={`/projects/${p.id}`} className="flex flex-wrap items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-sm font-medium">{p.title}</span>
                           <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
                         </div>
-                        <div className="truncate text-xs text-muted">{p.client.name}</div>
+                        <div className="truncate text-sm text-muted">{p.client.name}</div>
                       </div>
-                      <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted">
+                      <span className="inline-flex items-center gap-1 text-sm text-muted">
                         <Clock className="size-3" /> {p.deliveryDue ? `Due ${etMonthDay(p.deliveryDue)}` : "No due date"}
                       </span>
                     </Link>
@@ -163,13 +163,13 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
                 {recentShoots.map((p) => {
                   const stage = stageMeta(p.status);
                   return (
-                    <Link key={p.id} href={`/projects/${p.id}`} className="flex items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2">
+                    <Link key={p.id} href={`/projects/${p.id}`} className="flex items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-sm font-medium">{p.title}</span>
                           <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
                         </div>
-                        <div className="truncate text-xs text-muted">{p.client.name}{p.shootDate ? ` · ${etMonthDay(p.shootDate)}` : ""}</div>
+                        <div className="truncate text-sm text-muted">{p.client.name}{p.shootDate ? ` · ${etMonthDay(p.shootDate)}` : ""}</div>
                       </div>
                       <ArrowRight className="size-4 shrink-0 text-muted" />
                     </Link>
@@ -213,10 +213,10 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Upload className="size-4 text-muted" /> Recent uploads</h2>
               <div className="rounded-2xl border bg-surface">
                 {uploads.map((u) => (
-                  <Link key={u.id} href={`/projects/${u.project.id}`} className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-sm last:border-0 hover:bg-surface-2">
+                  <Link key={u.id} href={`/projects/${u.project.id}`} className="flex min-h-11 items-center gap-2 border-b border-border px-4 py-2.5 text-sm last:border-0 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                     <Upload className="size-3.5 shrink-0 text-muted-2" />
                     <span className="min-w-0 flex-1 truncate">{u.originalName}</span>
-                    <span className="shrink-0 truncate text-xs text-muted">{u.project.title.split(",")[0]}</span>
+                    <span className="max-w-[45%] truncate text-sm text-muted">{u.project.title.split(",")[0]}</span>
                   </Link>
                 ))}
               </div>
@@ -229,7 +229,7 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
               <div className="rounded-2xl border bg-surface">
                 {feedback.map((f) => (
                   <div key={f.id} className="border-b border-border px-4 py-3 last:border-0">
-                    <div className="mb-0.5 text-xs font-medium text-warning">
+                    <div className="mb-0.5 text-sm font-medium text-warning">
                       {f.rating ? `${f.rating}/5` : ""}{f.sentiment ? `${f.rating ? " · " : ""}${f.sentiment.toLowerCase()}` : ""}
                     </div>
                     <p className="text-sm text-foreground/90">{f.body}</p>
@@ -249,7 +249,7 @@ function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; va
     <div className="rounded-xl border bg-surface px-3 py-2 text-center">
       <div className="flex items-center justify-center gap-1 text-muted-2">{icon}</div>
       <div className="mt-0.5 text-sm font-semibold">{value}</div>
-      <div className="text-[10px] uppercase tracking-wide text-muted-2">{label}</div>
+      <div className="text-sm text-muted">{label}</div>
     </div>
   );
 }
