@@ -550,8 +550,9 @@ async function finishBrandAlertClaim(clientId: string, claim: string, now: Date,
   // The task and every row's taskId commit together. A retry after this point
   // reuses the task instead of appending the same change a second time.
   const taskId = await ensureAckTask(clientId, clientName, rows, editors, alertsOn, now);
+  const dedupeHour = /^\d{10}:/.test(claim) ? claim.slice(0, 10) : etHourKey(rows[0].createdAt);
   const channel = legacyUnknown ? "delivery_unknown" : editors.length === 0 ? "no_editor" : alertsOn
-    ? await deliverEditorAlert(clientId, clientName, rows, editors, `brand-updated-${clientId}-${etHourKey(rows[0].createdAt)}`)
+    ? await deliverEditorAlert(clientId, clientName, rows, editors, `brand-updated-${clientId}-${dedupeHour}`)
     : "pending";
   await prisma.clientBrandChange.updateMany({
     where: { alertClaim: claim },
@@ -615,7 +616,20 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
 async function deliverEditorAlert(clientId: string, clientName: string, rows: ChangeRow[], editors: AssignedEditor[], dedupeKey: string): Promise<string> {
   const { notifyInApp } = await import("@/lib/notify");
   const { appBase } = await import("@/lib/appUrl");
-  const existedBefore = !!(await prisma.notification.findUnique({ where: { dedupeKey: `${dedupeKey}-0` }, select: { id: true } }).catch(() => null));
+  const keys = editors.map((e, i) => ({ key: `${dedupeKey}-${i}`, userKey: `editor:${e.key}` }));
+  const before = await Promise.all(keys.map(({ key }) => prisma.notification.findUnique({ where: { dedupeKey: key }, select: { id: true, userKey: true } })));
+  let reachedBefore = 0;
+  // A prior bell with no channel result is ambiguous: the process may have
+  // died after Slack accepted the DM but before its delivery leg was logged.
+  // Do not re-drive that person on the strength of an empty receipt.
+  for (let i = 0; i < before.length; i++) {
+    const row = before[i];
+    if (!row) continue;
+    if (row.userKey !== keys[i].userKey) return "delivery_unknown";
+    const legs = await prisma.notificationDelivery.findMany({ where: { notificationId: row.id, channel: { in: ["slack", "sms"] } }, select: { status: true } });
+    if (!legs.length) return "delivery_unknown";
+    if (legs.some((l) => l.status === "sent" || l.status === "queued")) reachedBefore++;
+  }
   const summary = rows.map((r) => describeBrandChange(r)).join("; ");
   const hrefOf = (e: AssignedEditor) => (e.projectId ? `/edit/${e.projectId}#brand-updates` : "/editing");
   const r = await notifyInApp({
@@ -630,8 +644,23 @@ async function deliverEditorAlert(clientId: string, clientName: string, rows: Ch
     })),
     dedupeKey,
   });
-  const reached = r.bridged.find((b) => b.channel === "slack") ?? r.bridged.find((b) => b.channel === "sms") ?? r.bridged[0];
-  return reached ? reached.channel : existedBefore ? "deduped" : "bell";
+  const outcomes = await Promise.all(keys.map(async ({ key, userKey }) => {
+    const row = await prisma.notification.findUnique({ where: { dedupeKey: key }, select: { id: true, userKey: true } });
+    if (!row || row.userKey !== userKey) return "delivery_failed";
+    const legs = await prisma.notificationDelivery.findMany({ where: { notificationId: row.id, channel: { in: ["slack", "sms"] } }, select: { channel: true, status: true } });
+    if (legs.some((l) => l.channel === "slack" && l.status === "sent")) return "slack";
+    if (legs.some((l) => l.channel === "slack" && l.status === "queued")) return "quiet";
+    if (legs.some((l) => l.channel === "sms" && (l.status === "sent" || l.status === "queued"))) return "sms";
+    if (legs.some((l) => l.status === "failed")) {
+      const attempts = Math.max(...["slack", "sms"].map((channel) => legs.filter((l) => l.channel === channel).length));
+      return attempts >= 3 ? "delivery_unreached" : "delivery_failed";
+    }
+    return r.bridged.find((b) => b.userKey === userKey)?.channel ?? "bell";
+  }));
+  if (outcomes.includes("delivery_unreached")) return "delivery_unreached";
+  if (outcomes.includes("delivery_failed")) return outcomes.some((o) => ["slack", "sms", "quiet"].includes(o)) ? "delivery_partial" : "delivery_failed";
+  if (outcomes.every((o) => ["slack", "sms", "quiet"].includes(o)) && reachedBefore === editors.length) return "deduped";
+  return outcomes.includes("slack") ? "slack" : outcomes.includes("sms") ? "sms" : outcomes.includes("quiet") ? "quiet" : "bell";
 }
 
 /**
@@ -657,6 +686,8 @@ export async function sweepBrandChangeAlerts(opts: { now?: Date; limit?: number 
     where: { OR: [
       { alertChannel: "preparing", alertedAt: { lt: leaseExpired } },
       { alertChannel: null, alertedAt: { lt: leaseExpired } }, // older interrupted claims
+      { alertChannel: "delivery_failed", alertedAt: { lt: leaseExpired } },
+      { alertChannel: "delivery_partial", alertedAt: { lt: leaseExpired } },
     ] },
     distinct: ["alertClaim"], take: opts.limit ?? 50,
     select: { clientId: true, alertClaim: true, alertChannel: true },

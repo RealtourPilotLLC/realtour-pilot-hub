@@ -4870,7 +4870,7 @@ model ClientBrandChange {
   alertClaim      String?
   alertedAt       DateTime? // alert claim/lease timestamp while preparing or sending; final settlement time afterward
   alertEditorKeys String?
-  alertChannel    String? // slack | sms | bell | none | no_editor | skipped_test
+  alertChannel    String? // slack | sms | quiet | bell | deduped | pending | preparing | sending | delivery_failed | delivery_partial | delivery_unreached | delivery_unknown | no_editor | skipped_test
   taskId          String?
   ackAt           DateTime?
   ackBy           String?

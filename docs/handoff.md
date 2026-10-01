@@ -2,15 +2,30 @@
 
 ## Sep 30 takeover addendum
 
-### Oct 1 resume point — C14 Home exception scope
+### Oct 1 resume point — C04 provider recovery and C14 Home scope
+
+C04 now has a fake-provider boundary replay: Slack explicitly refuses the DM,
+`NotificationDelivery` records failed, the brand row stays `delivery_failed`,
+and the expired claim retries the same notification once after the simulated
+provider recovers. A process interruption after accepted delivery reuses its
+receipt without another DM. An existing bell with no channel leg is marked
+`delivery_unknown` for staff instead of blindly resent; three explicit
+failures end `delivery_unreached` and no fourth DM is attempted. The
+`c04-brand-provider-recovery` drill passed 12/0, including a failed catch-up
+retry that retains its dispatch-hour notification key; the prior claim/catch-up drill
+8/0, Node20 TypeScript and focused lint passed. The catch-up claim keeps its
+original hour in the notification key on retry. No production provider call,
+database write, switch activation, push or deployment. The local brand alert
+switch remains OFF in production. The existing five-table additive schema
+release gate remains, followed by normal-role/provider observation; C04 is
+local code/test evidence, not client-visible proof.
 
 Home and Project Tracker now read the same normal delivery board with synthetic
 client jobs excluded before the 400-job cap; an explicitly indexed extra-shoot
 source is filtered before its 200-row cap too. `/pipeline?test=1` restores the
 full board and labels that view. Isolated `c14-delivery-board` passed 4/0,
-including a real TEST Avenue title and protected real client. Node20 TypeScript
-and focused lint passed; build and browser presentation for this batch remain
-unverified at this checkpoint. The loopback browser action is still blocked by
+including a real TEST Avenue title and protected real client. Node20 TypeScript,
+focused lint and an isolated-worktree production build passed. The loopback browser action is still blocked by
 policy, so this is source/fixture evidence only. No production DB/provider
 write, push or deployment. Off-page task badges, ready-to-send follow-ups and
 strategic flags remain open for C14.
@@ -21,9 +36,8 @@ into the operating-day reader so this does not add another all-client scan.
 The isolated `c14-home-windows` drill passed 5/0: real TEST Avenue and a
 protected real client remain in both readers, synthetic fire/appointment rows
 do not, and default full readers retain them. Node20 TypeScript and focused
-lint passed (one pre-existing unused-import warning in `queries.ts`); the
-isolated-worktree build is pending final confirmation for this narrow
-batch. Delivery board, off-page task badges, ready-to-send and strategic flags
+lint and the isolated-worktree production build passed (one pre-existing
+unused-import warning in `queries.ts`). Off-page task badges, ready-to-send and strategic flags
 remain open for C14 scoping; no production or provider mutation was made.
 
 A read-only Neon probe (`scripts/_recon/c14-home-workload.ts`) found five
@@ -38,9 +52,9 @@ that view. The isolated `c14-home-day` drill passed 7/0 including review,
 revision, pending cut, loop, protected-real and shared Tasks reader counts;
 provider traffic was fenced. Node20 TypeScript and focused lint passed. The
 component itself has not had a browser replay because the loopback browser
-action was policy-blocked. Build in the isolated worktree remains to run at
-this checkpoint. Ready-to-send follow-up lanes,
-other Home readers (Stuck jobs, week strip, delivery board, off-page badges),
+action was policy-blocked. The isolated-worktree build passed.
+Ready-to-send follow-up lanes,
+off-page badges,
 and signed browser identity still need C14 scoping/proof; do not claim all Home
 workload totals are clean.
 
