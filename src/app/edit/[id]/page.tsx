@@ -1039,7 +1039,7 @@ export default async function EditBriefPage({
                     {purpose && <p><span className="text-muted">Purpose:</span> {purpose}</p>}
                     {direction && <p><span className="text-muted">Treatment:</span> {direction}</p>}
                     <p><span className="text-muted">Script:</span> {o.script ? `${o.script.title}${o.script.versionNo ? ` v${o.script.versionNo}` : ""} · ${o.script.standing}` : "none released for this video"}</p>
-                    <p><span className="text-muted">Brand:</span> {chosen ? <>{chosen.name}{chosen.versionNo ? ` v${chosen.versionNo}` : ""}{chosen.fileName ? ` · ${chosen.fileName}` : ""}{chosen.state !== "current" ? " · no longer current; Kyle to confirm" : ""}{chosenFile?.url && <> · <a href={chosenFile.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Open chosen file</a></>}</> : "no logo or branding card choice recorded; ask Kyle if this cut needs one"}</p>
+                    <p><span className="text-muted">Brand:</span> {chosen ? <>{chosen.name}{chosen.versionNo ? ` v${chosen.versionNo}` : ""}{chosen.fileName ? ` · ${chosen.fileName}` : ""}{chosen.state !== "current" ? " · no longer current; Kyle to confirm" : ""}{chosenFile?.url && <> · <a href={chosenFile.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Open chosen file</a></>}</> : o.brandChoice === "none" ? "intentionally no logo or branding card for this video; acknowledge this choice with the assignment" : "no logo or branding card choice recorded; ask Kyle if this cut needs one"}</p>
                     <p><span className="text-muted">Footage:</span> {o.folder ? <a href={o.folder.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{o.folder.label}</a> : <><a href={rawUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Job raw folder</a>{monthly ? " · topic-specific source not linked; ask Kyle" : ""}</>}</p>
                     {limitation && <p className="text-warning"><span className="font-medium">Limitation:</span> {limitation}</p>}
                     <EditorBriefReceiptCard
@@ -1404,7 +1404,7 @@ export default async function EditBriefPage({
                     </div>
                     <p className="text-[11px] text-muted-2">{o.versionLabel}</p>
                     <p className={`mt-1 text-xs ${o.brandAsset && o.brandAsset.state !== "current" ? "text-warning" : "text-muted"}`}>
-                      Chosen logo / branding card: {o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; Kyle to confirm" : ""}` : "no choice recorded for this video"}
+                      Chosen logo / branding card: {o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; Kyle to confirm" : ""}` : o.brandChoice === "none" ? "intentionally none for this video — editor acknowledgment required" : "no choice recorded for this video"}
                     </p>
                     {o.sections.length > 0 && (
                       <dl className="mt-1.5 space-y-1 text-xs leading-relaxed">
@@ -1455,8 +1455,9 @@ export default async function EditBriefPage({
                           <input type="hidden" name="expectedVersion" value={o.version ?? ""} />
                           {brandBrief ? <label className="block text-[11px] font-medium text-muted">
                             Logo or branding card for this video
-                            <select name="brandAssetVersionId" defaultValue={o.brandAsset?.versionId ?? ""} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-xs font-normal text-foreground">
+                            <select name="brandAssetVersionId" defaultValue={o.brandChoice === "none" ? "__none__" : o.brandAsset?.versionId ?? ""} className="mt-0.5 min-h-11 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm font-normal text-foreground focus-visible:outline-2 focus-visible:outline-brand">
                               <option value="">No logo or branding card choice recorded</option>
+                              <option value="__none__">Intentionally no logo or branding card — editor must acknowledge</option>
                               {o.brandAsset && !brandBrief.files.some((f) => f.versionId === o.brandAsset?.versionId) && <option value={o.brandAsset.versionId}>{o.brandAsset.name} · previously chosen, check current kit</option>}
                               {(brandBrief?.files ?? []).filter((f) => f.type === "LOGO" || f.type === "BRANDING_CARD").map((f) => <option key={f.versionId} value={f.versionId}>{f.typeWord} · {f.name} · v{f.versionNo}{f.fileName ? ` · ${f.fileName}` : ""}</option>)}
                             </select>

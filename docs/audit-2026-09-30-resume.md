@@ -129,8 +129,11 @@ Aryeo delivery and dedicated monthly Calendly mapping. Do not send or activate.
 C19 source is now prepared locally: approved general default/fallback, fixture26/0,
 scoped lint and root review. Fresh guarded production read found no `auto_texts`
 row, so no stored settings write was needed or performed. The new default takes
-effect only with its release. W02 and monthly source work are still in progress;
-preserve their dirty files and do not repeat completed C19 verification.
+effect only with its release. W02 source and signed PostgreSQL fixture44/0 are
+complete locally, with affected15/0 and61/0, lint and focused repair review.
+Intentional no-brand and returning-editor receipts are separate from Start/Pause.
+Monthly source work remains in progress; preserve its dirty files. Stable combined
+types/build and mounted acceptance remain open. Do not repeat completed drills.
 
 ## Earlier source checkpoint
 

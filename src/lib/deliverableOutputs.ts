@@ -1235,20 +1235,23 @@ const OUTPUT_BRIEF_KEYS = new Set<string>(OUTPUT_BRIEF_FIELDS.map((f) => f.key))
 /** Per section. A brief longer than this is a document, and belongs in the job's files. */
 export const OUTPUT_BRIEF_FIELD_CAP = 2000;
 
-export type StoredOutputBrief = { version: number; sections: Partial<Record<OutputBriefKey, string>>; brandAssetVersionId: string | null };
+export type OutputBrandChoice = "unspecified" | "asset" | "none";
+export type StoredOutputBrief = { version: number; sections: Partial<Record<OutputBriefKey, string>>; brandAssetVersionId: string | null; brandChoice: OutputBrandChoice };
 
 /** The stored brief, or null when there is none (or it cannot be read — then the next save starts it over at v1). */
 export function readOutputBrief(json: string | null | undefined): StoredOutputBrief | null {
   if (!json) return null;
   try {
-    const o = JSON.parse(json) as { version?: unknown; sections?: unknown; brandAssetVersionId?: unknown };
+    const o = JSON.parse(json) as { version?: unknown; sections?: unknown; brandAssetVersionId?: unknown; brandChoice?: unknown };
     const version = typeof o.version === "number" && Number.isInteger(o.version) && o.version > 0 ? o.version : null;
     if (!version || !o.sections || typeof o.sections !== "object") return null;
     const sections: Partial<Record<OutputBriefKey, string>> = {};
     for (const [k, v] of Object.entries(o.sections as Record<string, unknown>)) {
       if (OUTPUT_BRIEF_KEYS.has(k) && typeof v === "string" && v.trim()) sections[k as OutputBriefKey] = v;
     }
-    return { version, sections, brandAssetVersionId: typeof o.brandAssetVersionId === "string" && o.brandAssetVersionId.trim() ? o.brandAssetVersionId : null };
+    const brandAssetVersionId = typeof o.brandAssetVersionId === "string" && o.brandAssetVersionId.trim() ? o.brandAssetVersionId : null;
+    // A legacy null means no decision was recorded, never intentional none.
+    return { version, sections, brandAssetVersionId, brandChoice: brandAssetVersionId ? "asset" : o.brandChoice === "none" ? "none" : "unspecified" };
   } catch {
     return null;
   }
@@ -1279,6 +1282,8 @@ export async function saveOutputBrief(input: {
   sections: Partial<Record<OutputBriefKey, string | null>>;
   /** Omitted by older callers to preserve the selected asset. Null clears it. */
   brandAssetVersionId?: string | null;
+  /** Explicit office decision. Omission preserves it for older brief writers. */
+  brandChoice?: OutputBrandChoice;
   expectedVersion?: number | null;
   actor: string;
 }): Promise<SaveOutputBriefResult> {
@@ -1316,6 +1321,11 @@ export async function saveOutputBrief(input: {
     else delete next[k as OutputBriefKey];
   }
   const brandAssetVersionId = input.brandAssetVersionId === undefined ? current?.brandAssetVersionId ?? null : input.brandAssetVersionId?.trim() || null;
+  const brandChoice = input.brandChoice ?? (input.brandAssetVersionId === undefined
+    ? current?.brandChoice ?? "unspecified" : brandAssetVersionId ? "asset" : "unspecified");
+  if (!["unspecified", "asset", "none"].includes(brandChoice) || (brandChoice === "asset") !== !!brandAssetVersionId) {
+    return { ok: false, reason: "invalid_brand", message: "Choose a current brand file, intentional no branding, or leave the decision unrecorded.", version: curVersion };
+  }
   if (brandAssetVersionId && brandAssetVersionId !== current?.brandAssetVersionId) {
     const version = await prisma.clientAssetVersion.findUnique({ where: { id: brandAssetVersionId }, select: { assetId: true, fileRef: true } });
     const [asset, project] = await Promise.all([
@@ -1330,12 +1340,12 @@ export async function saveOutputBrief(input: {
       return { ok: false, reason: "invalid_brand", message: "That logo or branding card is not a current file for this client. Reload the brand kit and choose an active version.", version: curVersion };
     }
   }
-  if (JSON.stringify(orderedSections(current?.sections ?? {})) === JSON.stringify(orderedSections(next)) && brandAssetVersionId === (current?.brandAssetVersionId ?? null)) {
+  if (JSON.stringify(orderedSections(current?.sections ?? {})) === JSON.stringify(orderedSections(next)) && brandAssetVersionId === (current?.brandAssetVersionId ?? null) && brandChoice === (current?.brandChoice ?? "unspecified")) {
     return { ok: true, changed: false, version: curVersion ?? 0 };
   }
   const version = (curVersion ?? 0) + 1;
   const actor = (input.actor || "the office").trim().slice(0, 120);
-  const json = JSON.stringify({ version, sections: orderedSections(next), brandAssetVersionId });
+  const json = JSON.stringify({ version, sections: orderedSections(next), brandAssetVersionId, ...(brandChoice === "none" ? { brandChoice } : {}) });
   // Compare-and-set on what was READ: a save that raced this one wins, and
   // this one is refused rather than overwriting it.
   const res = await prisma.deliverableOutput.updateMany({
@@ -1439,6 +1449,8 @@ export type OutputBrief = {
   sections: OutputBriefSection[];
   /** The exact asset version chosen for this video, or null until the office chooses. */
   brandAsset: { versionId: string; assetId: string | null; name: string; fileName: string | null; versionNo: number | null; type: string | null; state: "current" | "outdated" | "missing" } | null;
+  /** Legacy missing choice stays unspecified; none is an explicit office decision. */
+  brandChoice?: OutputBrandChoice;
   /** this video's brief version; null = none has ever been written */
   version: number | null;
   updatedAtISO: string | null;
@@ -1541,7 +1553,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       directionSource === "own"
         ? `Brief ${saved}`
         : saved
-          ? brandAsset ? `Brand choice in Brief ${saved}; direction goes by ${shared}` : `Brief ${saved} (emptied); goes by ${shared}`
+          ? brandAsset || brief?.brandChoice === "none" ? `Brand choice in Brief ${saved}; direction goes by ${shared}` : `Brief ${saved} (emptied); goes by ${shared}`
           : directionSource === "job"
             ? `No brief of its own; goes by ${shared}`
             : "No brief of its own, and the job has no instructions yet";
@@ -1561,6 +1573,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       format: formatOf.get(o.key) ?? o.label,
       sections,
       brandAsset,
+      brandChoice: brief?.brandChoice ?? "unspecified",
       version: brief?.version ?? null,
       updatedAtISO: at?.toISOString() ?? null,
       updatedBy: by,

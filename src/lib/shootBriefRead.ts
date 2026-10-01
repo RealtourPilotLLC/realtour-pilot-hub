@@ -56,7 +56,7 @@ export function shootBriefLines(view: ShootView, assets: AssetRow[]): BriefLine[
     add(`${stem}:version`, `${output.label} · brief version`, output.versionLabel);
     add(`${stem}:asset`, `${output.label} · chosen asset`, output.brandAsset
       ? `${output.brandAsset.name} · v${output.brandAsset.versionNo ?? "?"}${output.brandAsset.state !== "current" ? " · no longer current" : ""}`
-      : "No chosen logo or branding card recorded");
+      : output.brandChoice === "none" ? "Intentionally no logo or branding card for this video" : "No chosen logo or branding card recorded");
     output.sections.forEach((section) => add(`${stem}:section:${section.label}`, `${output.label} · ${section.label}`, section.text));
   }
   return lines;

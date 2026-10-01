@@ -299,14 +299,14 @@ export async function buildEditorBriefPdf(
   // then each says whether it goes by the shared instructions below. A
   // one-video job with no brief of its own prints exactly as it always did.
   const outs = outputs ?? [];
-  if (outs.some((o) => o.directionSource === "own" || o.brandAsset) || outs.length > 1) {
+  if (outs.some((o) => o.directionSource === "own" || o.brandAsset || o.brandChoice === "none") || outs.length > 1) {
     heading("Each video's brief");
     for (const o of outs) {
       y -= 4;
       text(`${o.index}. ${o.label}${o.format !== o.label ? ` - ${o.format}` : ""}`, { size: 11, f: bold, gap: 2 });
       text(o.versionLabel, { size: 9, color: MUTED, x: MARGIN + 14, gap: 2 });
       for (const sec of o.sections) text(`${sec.label}: ${sec.text}`, { size: 10, x: MARGIN + 14, gap: 2 });
-      text(`Chosen logo / branding card: ${o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` - ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " - no longer current; confirm with Kyle" : ""}` : "not recorded for this video"}`, { size: 10, x: MARGIN + 14, gap: 2 });
+      text(`Chosen logo / branding card: ${o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` - ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " - no longer current; confirm with Kyle" : ""}` : o.brandChoice === "none" ? "intentionally none for this video; editor acknowledgment required" : "not recorded for this video"}`, { size: 10, x: MARGIN + 14, gap: 2 });
       const due = o.promisedAtISO ? etDate(o.promisedAtISO) : null; // ET, not the server's clock
       const who = [o.reviewer ? `Reviewer: ${o.reviewer.name}${o.reviewer.from === "chain" ? " (first in line)" : ""}` : null, due ? `Due ${due}` : null].filter(Boolean).join("  ·  ");
       if (who) text(who, { size: 9, color: MUTED, x: MARGIN + 14, gap: 2 });

@@ -1,5 +1,5 @@
 import "server-only";
-import type { DeliverableType } from "@prisma/client";
+import type { DeliverableType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getBillingRows } from "@/lib/queries";
 import { parseEvidence } from "@/lib/statusEvidence";
@@ -16,6 +16,17 @@ import { canSeeMoney } from "@/lib/auth/access";
 // ---------------------------------------------------------------------------
 
 const dollars = (cents?: number | null) => (cents == null ? null : Math.round(cents) / 100);
+
+async function writeTaskAssignment<T>(
+  task: { projectId: string | null; taskType: string },
+  write: (db: Pick<Prisma.TransactionClient, "smartTask">) => Promise<T>,
+): Promise<T> {
+  if (task.projectId && task.taskType === "edit_video") {
+    const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+    return withEditorAssignmentChange(task.projectId, write, "task assignment through Ask the Hub");
+  }
+  return write(prisma);
+}
 
 function deliverableLabels(ds: { type: DeliverableType; label: string | null }[]): string[] {
   return ds.map((d) => refinedDeliverableLabel(d.type, d.label));
@@ -876,10 +887,10 @@ export async function execHubTool(
       if (scored.length > 1 && scored[1].hits === best.hits) {
         return { ambiguous: scored.slice(0, 3).map((x) => x.m.title), note: "Say which one you mean." };
       }
-      await prisma.smartTask.update({
+      await writeTaskAssignment(best.m, (db) => db.smartTask.update({
         where: { id: best.m.id },
         data: reopen ? { status: "OPEN", completedAt: null } : { status: "COMPLETED", completedAt: new Date() },
-      });
+      }));
       // A chat Complete on an EDIT or VIDEO-REVISION card takes the editor's
       // started work with it, as the task board's Complete does (R01, Sep 28
       // 2026) — after the write, so a Start that landed a moment before it is
@@ -927,7 +938,7 @@ export async function execHubTool(
         return { ambiguous: scored2.slice(0, 3).map((x) => x.m.title), note: "Say which one you mean." };
       }
       // Human assignment through chat IS manual — the engines must respect it.
-      await prisma.smartTask.update({ where: { id: best2.m.id }, data: { assignedKey: target.key, assignedManually: true } });
+      await writeTaskAssignment(best2.m, (db) => db.smartTask.update({ where: { id: best2.m.id }, data: { assignedKey: target.key, assignedManually: true } }));
       // Handing an edit or video-revision card to someone else through chat
       // ends the previous editor's started work, as every other reassign does
       // (R01, Sep 28 2026) — after the write, recomputed under the desk lock,

@@ -3241,7 +3241,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
     // Diff-before-write: an unchanged card is not touched (see changedKeys).
     if (changedKeys(existing, data).length === 0) return;
     if (route.assignedKey === undefined || route.assignedKey === existing.assignedKey) {
-      await prisma.smartTask.update({ where: { id: existing.id }, data });
+      const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+      await withEditorAssignmentChange(projectId, (tx) => tx.smartTask.update({ where: { id: existing.id }, data }));
       return;
     }
     // THE ROUTE IS DECIDED UNDER THE JOB'S LOCK (review fix, Sep 28 2026).
@@ -3256,8 +3257,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
     // work keeps it. The office's pin still moves it (and closes her below).
     // Only the route waits on the lock; a refresh that routes nothing never
     // takes it.
-    const { underJobLock } = await import("@/lib/editorWork");
-    const moved = await underJobLock(projectId, async (tx) => {
+    const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+    const moved = await withEditorAssignmentChange(projectId, async (tx) => {
       const cur = await tx.smartTask.findUnique({ where: { id: existing.id }, select: { assignedKey: true, assignedManually: true, status: true } });
       if (!cur || cur.status === "COMPLETED" || cur.status === "CANCELLED") return false;
       const keep =
@@ -3290,7 +3291,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
     });
     return;
   }
-  await prisma.smartTask.create({
+  const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+  await withEditorAssignmentChange(projectId, (tx) => tx.smartTask.create({
     data: {
       taskType: "edit_video",
       title: `Edit — ${street}`.slice(0, 120),
@@ -3319,7 +3321,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
       propertyAddress: p.title,
       dedupeKey: key,
     },
-  });
+  }));
 }
 
 /**
@@ -3344,9 +3346,9 @@ export async function mintEditTask(projectId: string): Promise<void> {
  * AFTER this returns. Returns how many cards it moved.
  */
 export async function moveLiveVideoWork(projectId: string, key: string | null): Promise<number> {
-  const { underJobLock } = await import("@/lib/editorWork");
+  const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
   const { VIDEO_LANE_KEYS } = await import("@/lib/editors");
-  const r = await underJobLock(projectId, (tx) => tx.smartTask.updateMany({
+  const r = await withEditorAssignmentChange(projectId, (tx) => tx.smartTask.updateMany({
     where: {
       projectId,
       status: { notIn: ["COMPLETED", "CANCELLED"] },
@@ -3820,7 +3822,8 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await er());
       const tmId = await editorTeamMemberId(key);
       if (tmId && p.editorId !== tmId) {
-        await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
+        const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+        await withEditorAssignmentChange(projectId, (tx) => tx.project.update({ where: { id: projectId }, data: { editorId: tmId } }));
       }
     } catch { /* editor link is best-effort */ }
   }

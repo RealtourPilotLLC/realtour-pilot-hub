@@ -18,8 +18,28 @@ Status terms: **done in code** still requires its named acceptance check; **part
   send windows, opt-outs and dedupe are preserved. No real message was sent.
 - Fresh read-only live settings check found no `auto_texts` row. No row was
   inserted or changed; production will use the new default only after this
-  source is released. Combined stable types/build remain pending for the new
-  policy batch. Production still serves3c3c2d7.
+  source is released. Current policy source passed non-incremental TypeScript
+  (`/tmp/ops-hub-policy-types.log`); the final clean build remains pending.
+  Production still serves3c3c2d7.
+
+### Follow-up W02 — explicit no-brand and returning assignments (local)
+
+- Versioned briefs distinguish intentional no-brand from an unset choice. The
+  choice appears in editor/shoot/PDF/new agency packets and exact receipts.
+  Existing frozen packets and legacy unspecified choices are preserved.
+- Actual effective owner changes advance the existing output `ownerSetAt`
+  generation in the same Project→Output transaction as assignment/card writes.
+  Queue, project, task/status/checklist/dismiss and Ask Hub paths are covered;
+  explicit per-output owners and unchanged assignments keep their generation.
+  Returning/unassigning and returning requires a fresh receipt, even if the
+  intervening editor never acknowledged. Clock skew cannot reuse an old receipt.
+- Signed isolated PostgreSQL fixture44/0, including real stale-ack lock wait;
+  affected existing W02 15/0 and A28 61/0; scoped lint and focused review pass.
+  Review found and repaired queue-add bypasses; targeted recheck passed.
+- No new schema, live writes, Start/Pause changes, provider messages or
+  activation. Non-incremental TypeScript passed with the current policy source
+  (`/tmp/ops-hub-policy-types.log`). Clean build and normal mounted editor
+  acceptance remain pending. This follow-up is separate from deployed3c3c2d7.
 
 | Stage | Verified fact / next step |
 |---|---|

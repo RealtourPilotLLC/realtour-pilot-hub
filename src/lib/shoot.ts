@@ -236,6 +236,7 @@ export type ShootOutputBrief = {
   versionLabel: string;
   sections: { label: string; text: string }[];
   brandAsset: OutputBrief["brandAsset"];
+  brandChoice?: OutputBrief["brandChoice"];
 };
 
 export async function getShoot(projectId: string): Promise<ShootView | null> {
@@ -391,8 +392,8 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
     zillowTourUrl: extractZillowUrl(primary?.description),
     session,
     outputBriefs: outputBriefs
-      .filter((o) => o.directionSource === "own" || !!o.brandAsset)
-      .map((o) => ({ outputId: o.outputId, label: o.label, format: o.format, versionLabel: o.versionLabel, sections: o.sections.map((x) => ({ label: x.label, text: x.text })), brandAsset: o.brandAsset })),
+      .filter((o) => o.directionSource === "own" || !!o.brandAsset || o.brandChoice === "none")
+      .map((o) => ({ outputId: o.outputId, label: o.label, format: o.format, versionLabel: o.versionLabel, sections: o.sections.map((x) => ({ label: x.label, text: x.text })), brandAsset: o.brandAsset, brandChoice: o.brandChoice })),
   };
 }
 

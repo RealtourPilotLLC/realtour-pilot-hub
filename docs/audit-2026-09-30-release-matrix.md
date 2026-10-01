@@ -73,7 +73,7 @@ for normal authorized client/editor access.
 | Item | Required owner | Concrete next step |
 |---|---|---|
 | Monthly delivery destination | Engineering; Jordan decision received | Portal plus backup in final Dropbox folder. Implement exact dual evidence for monthly outputs; preserve property Aryeo routing. Not implemented in3c3c2d7. |
-| Editor brand/brief receipt policy | Engineering; Jordan decision received | Intentional no-brand requires acknowledgment; returning to an editor after reassignment requires a fresh receipt. Implement explicit choice/generation; preserve historical receipts and manual Start/Pause. |
+| Editor brand/brief receipt policy | Engineering; local source prepared | Explicit no-brand and fresh returning-editor generation implemented; signed PG44/0, affected15/0+61/0, lint and focused review pass. Stable combined types/build and mounted browser acceptance open. Not deployed; historical receipts and manual Start/Pause preserved. |
 | General welcome destination | Engineering; local source prepared | Approved general default/fallback implemented; actual fenced fixture26/0, lint and root review pass. Fresh live read found no `auto_texts` row, so no stored write. New source not yet deployed; retain monthly mapping and never replay welcomes. |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |
 | Client identities | Kyle/Jordan | Resolve Janice/Arielle and other named conflicts using source evidence; investigate Joe/Joseph without assuming they should merge |

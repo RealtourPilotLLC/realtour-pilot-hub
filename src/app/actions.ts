@@ -12,6 +12,7 @@ import {
   Priority,
   ActivityType,
   DeliverableStatus,
+  type Prisma,
 } from "@prisma/client";
 import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
@@ -22,6 +23,20 @@ import { etEndOfDay } from "@/lib/datetime";
 import { DISMISS_REASONS, DISMISSED_PREFIX, type DismissReason } from "@/lib/triage";
 
 export type ApptResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
+
+/** Keep an edit card's effective owner and receipt generation atomic.
+ * Completing/reopening the card can change its fallback owner too. Other
+ * task types retain their existing writes and cannot select that receipt. */
+async function writeTaskWithReceiptGeneration<T>(
+  task: { projectId: string | null; taskType: string },
+  write: (db: Pick<Prisma.TransactionClient, "smartTask">) => Promise<T>,
+): Promise<T> {
+  if (task.projectId && task.taskType === "edit_video") {
+    const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+    return withEditorAssignmentChange(task.projectId, write, "task card ownership change");
+  }
+  return write(prisma);
+}
 
 /**
  * THE PROVIDER-WRITE GUARD on the staff appointment buttons (CP-04, §16).
@@ -492,7 +507,7 @@ export async function dismissTask(
   const prior = (t.summary ?? "").replace(/^Dismissed by [^\n]*\n?/, "").trim();
   const summary = (prior ? `${stamp}\n${prior}` : stamp).slice(0, 500);
 
-  const done = await prisma.smartTask.updateMany({
+  const done = await writeTaskWithReceiptGeneration(t, (db) => db.smartTask.updateMany({
     where: { id: taskId, status: { not: "CANCELLED" } },
     // CANCELLED, never COMPLETED, and no completedAt: nothing happened here —
     // every "what got done" count pairs COMPLETED with completedAt, and a
@@ -504,7 +519,7 @@ export async function dismissTask(
     // dismissal has never cut a phone conversation in either direction and
     // stamping one here would mark a close that does not exist.
     data: { status: "CANCELLED", completedAt: null, summary },
-  });
+  }));
   if (done.count === 0) return { ok: true, message: "Already dismissed." };
 
   // A PERSON decided this. Same marker the Complete buttons write, so home's
@@ -697,10 +712,10 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
   // cuts down. Stamping here would flip both of them to satisfy a note, which
   // is how the previous three over-corrections happened. It wants its own
   // filing, with Jordan's call on what a to-do tick on a client page means.
-  const updated = await prisma.smartTask.updateMany({
+  const updated = await writeTaskWithReceiptGeneration(t, (db) => db.smartTask.updateMany({
     where: { id: taskId },
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null, ...qcMarker },
-  });
+  }));
   if (updated.count === 0) return; // lost a race with a delete — nothing else to do
   // A person pressed Complete: leave the trace "handled today" counts (the
   // sweeps and the janitor close far more rows than people do — audit, Sep 8).
@@ -1005,12 +1020,13 @@ export async function setTaskAssignee(taskId: string, key: string) {
   const roster = await listAssignees();
   const validKeys = new Set(roster.map((a) => a.key));
   const assignedKey = key && validKeys.has(key) ? key : null;
-  const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true, taskType: true } });
-  const t = await prisma.smartTask.update({
+  const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true, taskType: true, projectId: true } });
+  if (!prev) return;
+  const t = await writeTaskWithReceiptGeneration(prev, (db) => db.smartTask.update({
     where: { id: taskId },
     data: { assignedKey },
     select: { projectId: true, title: true },
-  });
+  }));
   // THE WORK FOLLOWS THE CARD (§7.1, O09/A58). Moving a job's edit card — or
   // its video-lane revision — off an editor ends their stretch on it now, as
   // the Editing Room's own reassign does, recorded as whoever moved it. The
@@ -1207,7 +1223,7 @@ export async function toggleTaskChecklistItem(
       });
     } catch { /* dial is analytics-only — never block the tick */ }
   }
-  await prisma.smartTask.update({
+  await writeTaskWithReceiptGeneration(t, (db) => db.smartTask.update({
     where: { id: taskId },
     data: {
       checklist: serializeChecklist(items),
@@ -1219,7 +1235,7 @@ export async function toggleTaskChecklistItem(
           ? { status: "OPEN", completedAt: null }
           : {}),
     },
-  });
+  }));
   // Ticking the last step of a REVISION task ("Mark the revision resolved") is
   // a completion — it must run the same side effects as the Complete button,
   // or the project stays pinned in REVISION with its re-QC card frozen open
@@ -1260,31 +1276,37 @@ export async function assignMember(
     memberId ? prisma.teamMember.findUnique({ where: { id: memberId } }) : null,
     prisma.project.findUnique({ where: { id: projectId }, select: { source: true } }),
   ]);
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      [field]: memberId,
-      // Tug-of-war guard: on Aryeo jobs the hourly sync auto-fills photographerId
-      // from the appointment assignee, silently reverting any hand assignment
-      // within the hour. The flag tells the sync a human chose this photographer;
-      // clearing the assignment hands control back to Aryeo.
-      ...(role === "photographer" && project?.source === "ARYEO"
-        ? { photographerManual: memberId != null }
-        : {}),
-      // Same contract for the editor: a hand pick pins (the hourly handoff and
-      // mint stop re-routing to the rules editor), clearing it unpins so the
-      // automatic routing takes back over. Without this, the project-page pick
-      // silently reverted within the hour while the queue-row pick stuck.
-      ...(role === "editor" ? { editorManual: memberId != null } : {}),
-    },
-  });
-  await prisma.activity.create({
-    data: {
-      projectId,
-      type: ActivityType.ASSIGNMENT,
-      body: member ? `${role[0].toUpperCase() + role.slice(1)} set to ${member.name}.` : `${role} unassigned.`,
-    },
-  });
+  const write = async (db: Pick<Prisma.TransactionClient, "project" | "activity">) => {
+    await db.project.update({
+      where: { id: projectId },
+      data: {
+        [field]: memberId,
+        // Tug-of-war guard: on Aryeo jobs the hourly sync auto-fills photographerId
+        // from the appointment assignee, silently reverting any hand assignment
+        // within the hour. The flag tells the sync a human chose this photographer;
+        // clearing the assignment hands control back to Aryeo.
+        ...(role === "photographer" && project?.source === "ARYEO"
+          ? { photographerManual: memberId != null }
+          : {}),
+        // Same contract for the editor: a hand pick pins (the hourly handoff and
+        // mint stop re-routing to the rules editor), clearing it unpins so the
+        // automatic routing takes back over. Without this, the project-page pick
+        // silently reverted within the hour while the queue-row pick stuck.
+        ...(role === "editor" ? { editorManual: memberId != null } : {}),
+      },
+    });
+    await db.activity.create({
+      data: {
+        projectId,
+        type: ActivityType.ASSIGNMENT,
+        body: member ? `${role[0].toUpperCase() + role.slice(1)} set to ${member.name}.` : `${role} unassigned.`,
+      },
+    });
+  };
+  if (role === "editor") {
+    const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+    await withEditorAssignmentChange(projectId, write, "project editor assignment");
+  } else await write(prisma);
   // THE CARD FOLLOWS THE PICK NOW, not within the hour (R01, Sep 28 2026).
   // Left to the hourly refresh, the old editor could keep pressing Start on a
   // job the project page already gave to someone else.
@@ -1725,10 +1747,14 @@ export async function assignTeamMember(
   memberId: string | null,
 ) {
   await requireAdmin();
-  await prisma.project.update({
+  const write = (db: Pick<Prisma.TransactionClient, "project">) => db.project.update({
     where: { id: projectId },
     data: { [field]: memberId },
   });
+  if (field === "editorId") {
+    const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+    await withEditorAssignmentChange(projectId, write, "team editor assignment");
+  } else await write(prisma);
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");
 }

@@ -30,9 +30,10 @@ export function EditorBriefReceiptCard({ projectId, outputId, state, canAcknowle
         <p className="text-warning">Assignment not yet received by the editor.</p>
       )}
       <p className="mt-1 text-muted">Receiving the brief records what was shown. Start and Pause still record actual editing work separately.</p>
+      {state.intentionalNoBrand && <p className="mt-1 font-medium">The office chose no logo or branding card for this video. Receiving this assignment explicitly acknowledges that choice.</p>}
       {message && <p role="status" className={`mt-1 ${message.ok ? "text-success" : "text-danger"}`}>{message.text}</p>}
       {canAcknowledge && !received && (
-        <button type="button" disabled={pending} className="mt-2 inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-brand px-3 py-1.5 font-semibold text-brand hover:bg-brand-soft/40 disabled:opacity-50" onClick={() => start(async () => {
+        <button type="button" disabled={pending} className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand px-3 py-1.5 font-semibold text-brand hover:bg-brand-soft/40 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-brand" onClick={() => start(async () => {
           const result = await acknowledgeEditorBrief(projectId, outputId, state.digest).catch(() => ({ ok: false, message: "Could not save the receipt. Try again." }));
           setMessage({ ok: result.ok, text: result.message });
           if (result.ok) { setMarkedDigest(state.digest); router.refresh(); }

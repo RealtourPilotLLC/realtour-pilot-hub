@@ -192,7 +192,7 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
     versionLabel: o.versionLabel,
     directionSource: o.directionSource,
     sections: o.sections.map((x) => ({ label: x.label, text: x.text })),
-    brandChoice: o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; confirm with Kyle" : ""}` : "No logo or branding card chosen for this video",
+    brandChoice: o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; confirm with Kyle" : ""}` : o.brandChoice === "none" ? "Intentionally no logo or branding card for this video; acknowledge this choice with the assignment" : "No logo or branding card chosen for this video",
     topicTitle: o.topicTitle,
     note: o.note,
     script: o.script

@@ -109,18 +109,19 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   // No TeamMember row AND no task moved = the pick would vanish (mint reads the
   // pin through Project.editor) — say so instead of pretending it stuck.
   const tmId = key ? await editorTeamMemberId(key) : null;
+  const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
   if (tmId) {
-    await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true, editorVendorKey: null } });
+    await withEditorAssignmentChange(projectId, (tx) => tx.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true, editorVendorKey: null } }));
   } else if (unassign || external) {
     // Nobody in-house holds it now. Clearing editorId with editorManual set is
     // the "pinned to nobody" pair ensureEditorHandoff already honours — it is
     // told not to fill editorId back in from the routing rules.
     // editorVendorKey is what an UPCOMING job (no task yet) remembers: the
     // agency has no TeamMember, so editorId cannot carry it.
-    await prisma.project.update({
+    await withEditorAssignmentChange(projectId, (tx) => tx.project.update({
       where: { id: projectId },
       data: { editorId: null, editorManual: true, editorVendorKey: key === EXTERNAL_EDITOR_KEY ? EXTERNAL_EDITOR_KEY : null },
-    });
+    }));
   } else if (moved.count === 0) {
     return { ok: false, message: `Couldn't link ${editorName} — their Team row is missing. Add them on the People page first.` };
   }
@@ -335,6 +336,7 @@ export async function addToEditorQueue(
     return { ok: false, message: "Pick a video editor (Kim or John Mark)." };
   }
   const key = editorKey as EditorKey;
+  const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -491,7 +493,7 @@ export async function addToEditorQueue(
     await endRemovalHere();
 
     const tmId = await editorTeamMemberId(key);
-    await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
+    await withEditorAssignmentChange(projectId, (tx) => tx.project.update({ where: { id: projectId }, data: { editorId: tmId } }));
     await prisma.activity.create({
       data: {
         projectId,
@@ -522,7 +524,7 @@ export async function addToEditorQueue(
   // respects assignedManually so the chosen editor survives the refresh.
   const { mintEditTask } = await import("@/lib/tasks");
   await mintEditTask(projectId);
-  await prisma.smartTask.updateMany({
+  await withEditorAssignmentChange(projectId, (tx) => tx.smartTask.updateMany({
     where: { dedupeKey: `edit-video-${projectId}` },
     data: {
       assignedKey: key,
@@ -531,7 +533,7 @@ export async function addToEditorQueue(
       completedAt: null,
       ...(cleanNote ? { description: cleanNote } : {}),
     },
-  });
+  }));
   await mintEditTask(projectId);
   await endRemovalHere();
 
@@ -539,7 +541,7 @@ export async function addToEditorQueue(
   // A manual queue-add is a human pick — pin it (editorManual) so the hourly
   // handoff can't revert it to the routing rules. Pin only with a real link:
   // a null editorId + pin would block the engines from ever filling it back in.
-  await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: !!tmId } });
+  await withEditorAssignmentChange(projectId, (tx) => tx.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: !!tmId } }));
   await prisma.activity.create({
     data: {
       projectId,
@@ -2835,6 +2837,7 @@ export async function saveVideoBrief(
   sections: Record<string, string | null>,
   expectedVersion: number | null,
   brandAssetVersionId?: string | null,
+  brandChoice?: import("@/lib/deliverableOutputs").OutputBrandChoice,
 ): Promise<{ ok: boolean; changed: boolean; message: string; version: number | null; reason?: string }> {
   try {
     await requireAdmin();
@@ -2843,7 +2846,7 @@ export async function saveVideoBrief(
   }
   const { saveOutputBrief } = await import("@/lib/deliverableOutputs");
   const actor = await staffActor();
-  const res = await saveOutputBrief({ outputId, projectId, sections, brandAssetVersionId, expectedVersion, actor: actor.name });
+  const res = await saveOutputBrief({ outputId, projectId, sections, brandAssetVersionId, brandChoice, expectedVersion, actor: actor.name });
   if (!res.ok) return { ok: false, changed: false, message: res.message, version: res.version, reason: res.reason };
   revalidatePath(`/edit/${projectId}`);
   revalidatePath(`/shoot/${projectId}`);
@@ -2913,7 +2916,10 @@ export async function saveVideoBriefForm(form: FormData): Promise<void> {
   const sections: Record<string, string | null> = {};
   for (const f of OUTPUT_BRIEF_FIELDS) if (form.has(`s_${f.key}`)) sections[f.key] = formText(form, `s_${f.key}`);
   const ev = formText(form, "expectedVersion");
-  const res = await saveVideoBrief(projectId, outputId, sections, ev === "" ? null : Number(ev), form.has("brandAssetVersionId") ? formText(form, "brandAssetVersionId") || null : undefined);
+  const brand = form.has("brandAssetVersionId") ? formText(form, "brandAssetVersionId") : undefined;
+  const res = await saveVideoBrief(projectId, outputId, sections, ev === "" ? null : Number(ev),
+    brand === undefined ? undefined : brand === "__none__" ? null : brand || null,
+    brand === "__none__" ? "none" : undefined);
   await backToJob(
     projectId,
     res.ok ? (res.changed ? "brief-saved" : "brief-unchanged") : res.reason === "conflict" ? "brief-conflict" : res.reason === "too_long" ? "brief-too-long" : res.reason === "invalid_brand" ? "brief-brand-invalid" : "brief-error",

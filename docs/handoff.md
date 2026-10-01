@@ -2,6 +2,26 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 W02 approved-receipt follow-up — local checkpoint
+
+Intentional no-brand is explicit in the existing versioned brief and exact
+assignment receipt. Real effective ownership transitions use the existing
+`ownerSetAt` generation under Project→Output locks, including queue-add,
+task/status/checklist/dismiss, project editor and Ask Hub doors. Returning to an
+editor requires a fresh receipt; explicit output pins, same-owner refreshes,
+legacy compatibility and historical receipts survive. Transition time exceeds
+prior receipt timestamps to prevent app/database clock-skew reuse, and exact
+current receipts win over timestamp ordering. Manual Start/Pause remains separate.
+
+Signed real PostgreSQL fixture44/0 at `/tmp/w02-assignment-policy-clock/`;
+affected W02 15/0 and A28 61/0; scoped lint, root review and narrow peer recheck
+passed. First29/1 run exposed only a redundant log timing assertion; observed
+`pg_locks` plus independent backends now proves the race. Focused review found
+queue-add bypasses and the expanded fixture proves their repair. No schema or
+live mutation. Stable combined types/build and normal browser acceptance remain
+pending; non-incremental types for the current policy snapshot now pass
+(`/tmp/ops-hub-policy-types.log`). This source is not part of production3c3c2d7.
+
 ### Oct 1 C19 approved-link follow-up — local checkpoint
 
 `src/lib/settings.ts` separates the approved general strategy-call welcome URL
