@@ -8,6 +8,20 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Latest deployed checkpoint — a38715d cache repair
+
+Ready dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf promoted17:07:26Z (1:07 PM EDT).
+Canonical hub.realtourpilot.com exact version, login/assets/auth and protected
+stage plus clean local/remote builds pass. Portal cache35/0/both-layout SSR,
+HTTP37/0 against prior e6 build, types/lint/review are preserved below.
+Readonly comparison: saved business settings, automation/rollout and raw seat
+counts unchanged; only existing library rotation's content-video-sweep-cursor
+advanced. No activation/live test/send/invite/provider booking/schema/push.
+See `audit-2026-10-01-cache-release.md` and its sanitized JSON. e6eac69 rollback.
+W05 checkpoint4354aca has clean build0 and is staging. New C14 page failure
+fixture found Home's exceptions pool silently empty on failure; minimal honest
+unavailable-card repair is in progress. Normal browser/phone/U6 remain open.
+
 ### Current follow-up — verified portal cache and actual HTTP transport
 
 User requests deployment after each verified checkpoint. Monthly portal cache

@@ -1,0 +1,190 @@
+{
+  "candidate": "a38715d5ecefccf7185ac8928581e9e0bd218a5c",
+  "deployment": {
+    "candidate": "a38715d5ecefccf7185ac8928581e9e0bd218a5c",
+    "id": "dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+    "url": "https://realtour-pilot-nbul1c6h3-realtour-pilot-s-projects.vercel.app",
+    "state": "READY",
+    "target": "production",
+    "releaseCommit": null
+  },
+  "build": {
+    "candidate": "a38715d5ecefccf7185ac8928581e9e0bd218a5c",
+    "startedAt": "2026-10-01T17:00:58.303094+00:00",
+    "finishedAt": "2026-10-01T17:01:54.137180+00:00",
+    "exitCode": 0,
+    "node": "20.20.2",
+    "environment": "clean; no provider credentials; dead loopback database",
+    "mainPreviewUntouched": true
+  },
+  "staging": {
+    "at": "2026-10-01T17:06:45.646Z",
+    "candidate": "a38715d5ecefccf7185ac8928581e9e0bd218a5c",
+    "stagedUrl": "https://realtour-pilot-nbul1c6h3-realtour-pilot-s-projects.vercel.app",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "a38715d5ecef"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      }
+    ],
+    "canonicalStill": "e6eac69f1d41",
+    "protectionRetained": true
+  },
+  "promotion": {
+    "candidate": "a38715d5ecefccf7185ac8928581e9e0bd218a5c",
+    "id": "dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+    "stagedUrl": "https://realtour-pilot-nbul1c6h3-realtour-pilot-s-projects.vercel.app",
+    "startedAt": "2026-10-01T17:07:17.658Z",
+    "finishedAt": "2026-10-01T17:07:26.355Z",
+    "exitCode": 0,
+    "promoted": true
+  },
+  "productionHTTP": {
+    "at": "2026-10-01T17:07:49.213Z",
+    "base": "https://hub.realtourpilot.com",
+    "expected": "a38715d5ecef",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "a38715d5ecef"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/",
+        "status": 307,
+        "location": "/login?next=%2F"
+      },
+      {
+        "path": "/editing",
+        "status": 307,
+        "location": "/login?next=%2Fediting"
+      },
+      {
+        "path": "/review",
+        "status": 307,
+        "location": "/login?next=%2Freview"
+      },
+      {
+        "path": "/tasks",
+        "status": 307,
+        "location": "/login?next=%2Ftasks"
+      },
+      {
+        "path": "/portal/me",
+        "status": 200,
+        "location": null,
+        "streamedSignInRedirect": true
+      },
+      {
+        "path": "/api/review/cut/invalidcut12345678/final?f=fixture",
+        "status": 403,
+        "location": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "/_next/static/chunks/0j264-w8w63n2.css?dpl=dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/3r8h98x5pdyho.css?dpl=dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2gokyol_h_2zh.js?dpl=dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2pzafz57-h46r.js?dpl=dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2fzkd0kh4cb41.js?dpl=dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2g05-lers809t.js?dpl=dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+        "status": 200
+      }
+    ],
+    "failures": [],
+    "oldHost": {
+      "status": 307,
+      "location": "https://hub.realtourpilot.com/login"
+    }
+  },
+  "stateComparison": {
+    "enforcedReadOnly": true,
+    "automationUnchanged": true,
+    "savedBusinessSettingsUnchanged": true,
+    "changedOperationalKeys": [
+      "content-video-sweep-cursor"
+    ],
+    "operationalChangeContext": "Existing library cron updates its rotation cursor; no switch activation. Source contentVideos.ts LIBRARY_CURSOR/sweepContentVideoLibraries.",
+    "clientSeatCountsUnchanged": true,
+    "rawActiveClientUsers": 2,
+    "rawUnrevokedMemberships": 3,
+    "rawCountsAreNotEligibleRealSeats": true,
+    "rollout": "TEST_ONLY (default)",
+    "enabledStoredAutomations": []
+  },
+  "behavioralEvidence": {
+    "monthlyPortalCacheAndBothLayoutsSSR": {
+      "passed": 35,
+      "failed": 0
+    },
+    "normalRoleHTTPAgainstPriorExactE6Build": {
+      "passed": 37,
+      "failed": 0
+    },
+    "types": 0,
+    "changedFileLint": 0,
+    "focusedReview": "clear"
+  },
+  "activation": false,
+  "realClientSends": false,
+  "realInvitations": false,
+  "realProviderBookings": false,
+  "schemaChanges": false,
+  "gitPush": false,
+  "acceptanceOpen": [
+    "mounted browser and C14 scope/return/failure",
+    "U0-U5 partial, U6",
+    "phone/provider/full-watch",
+    "intended roster and strategy/topic/seat preparation",
+    "historical staff source reconciliation"
+  ],
+  "rollback": {
+    "candidate": "e6eac69f1d41f4697a9cb64c8011644be458a3ea",
+    "deployment": "dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv",
+    "url": "https://realtour-pilot-k1sr8m9kc-realtour-pilot-s-projects.vercel.app",
+    "preserveDatabaseAndNewerWrites": true
+  }
+}

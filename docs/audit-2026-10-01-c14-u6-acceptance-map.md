@@ -3,8 +3,11 @@
 Updated October 1, 2026. This is a bounded acceptance map from the existing
 checklist, release matrix and fixtures. It is not a new audit or a completed
 browser pass. This update changes only this acceptance map. The policy release
-remains `e6eac69`. The subsequent monthly portal cache/failure repair is verified
-locally at 35/0; its release is upcoming, not claimed deployed here.
+history starts at `e6eac69`. The subsequent monthly portal cache/failure repair
+is verified at35/0 and deployed as `a38715d` with exact build/HTTP evidence in
+`audit-2026-10-01-cache-release.md`. C14 actual Home/Review/Editing/Schedule
+page-read failure verification is active separately; Home's silent-empty
+exception fallback has a concrete pending source repair.
 
 ## Supported browser access is blocked
 
@@ -39,7 +42,7 @@ cannot establish layout, focus, native menus, mounted navigation or phone saves.
 | Map reads | `u5-project-map-recovery.ts` 36/0: fake actual handlers/effects, late/read-failure/empty address and exact-pin recovery |
 | Calendar availability | `u5-capacity-recovery.ts` 20/0: unavailable versus empty calendar, all-day count, capacity draft/unknown recovery |
 | Normal-role HTTP identity and journey | `normal-role-http-acceptance.ts` 37/0, no skips, against the built `e6eac69` app on port 3211: actual password/session and one-use client login cookies, role routes, seven client tabs, exact script/cut approvals, download/range bytes, foreign-scope refusals and manual Start/Pause. This is isolated HTTP evidence, not browser acceptance. |
-| Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired local source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Not yet deployed. |
+| Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d; mounted acceptance stays open. |
 
 Evidence logs:
 

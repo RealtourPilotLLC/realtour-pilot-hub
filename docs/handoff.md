@@ -2,6 +2,21 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 latest production — cache checkpoint a38715d
+
+Canonical https://hub.realtourpilot.com serves a38715d5ecef, Ready
+dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf, promoted17:07:26Z. Clean exact local/remote
+build, protected stage, canonical HTTP/auth/assets checks pass. Readonly checks
+prove unchanged saved business settings, automation/rollout and raw seat counts;
+existing library cursor alone moved. See `audit-2026-10-01-cache-release.md` and
+sanitized JSON. e6eac69 rollback. No schema, client send/invite, provider booking,
+financial change, activation or push. W05 checkpoint4354aca has clean build0
+and is staging next. Main fenced preview preserved. C14 exact page failure
+fixture has found Home hides exceptions on read failure; narrow honest
+unavailable state/recovery work is active independently. Browser/U6/phone and
+real readiness/source preparation remain open. This supersedes pending-cache
+and earlier release-state prose below without discarding its history.
+
 ### Oct 1 current verified follow-up — release preparing
 
 The user requests a production release after each verified checkpoint. Preserve

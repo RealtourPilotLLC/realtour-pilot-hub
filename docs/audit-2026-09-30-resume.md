@@ -5,11 +5,23 @@ Use this page first. The full backlog is in
 `audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.
 Do not restart the audit or repeat green checks without a specific changed risk.
 
-## Current checkpoint — portal status repair verified, release preparing
+## Current checkpoint — cache deployed, W05 stage building
+
+Production serves `a38715d5ecef`, Ready `dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf`,
+promoted17:07:26Z (1:07 PM EDT). Exact clean local/remote build, protected stage,
+canonical HTTP/auth/assets and readonly state checks pass. Automation, rollout,
+client-seat counts and saved business settings are unchanged. The existing
+library sweep advanced only `content-video-sweep-cursor`; that operational
+movement is recorded in `audit-2026-10-01-cache-release.md` and its sanitized
+JSON. Previous e6eac69 is rollback. No new schema/send/invite/booking/activation.
+
+W05 source checkpoint `4354aca` passed its separate clean Node20 build and is
+staging; canonical promotion remains pending. C14 named page-read verification
+found Home hides exceptions on read failure; a narrow unavailable-card repair
+and recovery fixture are now in progress. Other green scopes are not rerun.
 
 The user now requests production deployment after each verified checkpoint.
-The prior application release below remains live until this checkpoint passes
-its exact build, protected stage, promotion and unchanged-state checks.
+The cache checkpoint's gates are complete above; W05 has its own separate gates.
 
 Focused follow-up found a concrete cache gap: monthly portal markers were
 missing from library cache derivation. Downloads stayed gated, but cached

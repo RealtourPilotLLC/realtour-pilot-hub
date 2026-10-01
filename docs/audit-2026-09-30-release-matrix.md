@@ -7,6 +7,20 @@ instructions and batch evidence remain in `handoff.md`.
 
 ## Release state
 
+Latest production is cache checkpoint `a38715d5ecef`, Ready
+`dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf`, promoted17:07:26Z. Exact local/remote
+build/stage, canonical HTTP/auth/assets and readonly checks pass; saved business
+settings, automation/rollout and seat counts unchanged. Existing library cursor
+movement is recorded separately. e6eac69 rollback, no schema/activation/send.
+W05 source4354aca clean build0 is staging. Home unreadable exceptions is a newly
+identified narrow repair. Other entries below retain their original checkpoints.
+
+| New checkpoint | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
+|---|---|---|---|---|---|---|
+| Monthly cached release and page failure | Canonical cache markers/read guards; both-layout unavailable detail | Real PG/SSR35/0, lint/types/review, exact builds/HTTP | a38715d | Yes | Existing gates unchanged | Code live; real client/browser/phone acceptance open |
+| Actual normal-role HTTP evidence | Test fixtures; no distinct product change | Built e6eac69 HTTP37/0; services stopped | a38715d | Fixtures are local verification only | No | No distinct user feature |
+| Authenticated exact delivery-text echo | Conservative settlement, provider time, no resend | Real PG/actual webhook36/0, lint/types/review, clean build |4354aca | Stage building, not promoted | No new automation activation | Not yet shipped |
+
 Current local follow-up: canonical monthly marker facts now repair cache writes
 and validate marked library/Home/detail reads; stale/unreadable answers use both
 layouts' failure panels. Actual PostgreSQL and both-layout SSR35/0, peer/root
