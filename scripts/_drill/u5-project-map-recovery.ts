@@ -1,7 +1,7 @@
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 // Real map-panel event handlers with deferred in-memory read providers. No
 // browser, database boot, tiles, geocoding, routing or weather request is made.
-import { createElement, isValidElement, type ReactElement } from "react";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { fenceFetch, installNextStubs, makeChecker } from "./_harness";
 import type { MapPin } from "../../src/components/map/ProjectMap";
@@ -78,7 +78,7 @@ async function main() {
   stub(req.resolve("leaflet"), { __esModule: true, default: {} });
   stub(req.resolve("../../src/lib/territories.ts"), { getTerritories: () => [], territoriesContaining: () => [], covers: () => false });
   stub(req.resolve("../../src/components/project/DroneAdvisory.tsx"), { DroneAdvisory: () => null });
-  const dom = req("react-dom") as { createPortal: (children: unknown, container: unknown) => unknown };
+  const dom = req("react-dom") as { createPortal: (children: ReactNode, container: unknown) => unknown };
   const originalPortal = dom.createPortal;
   dom.createPortal = (children) => createElement("portal-fixture", {}, children);
   const originalWindow = globalThis.window, originalDocument = globalThis.document;
