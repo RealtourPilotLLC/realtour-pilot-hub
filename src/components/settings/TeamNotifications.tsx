@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight, MessageSquare, RotateCcw, Smartphone } from "lucide-react";
 import { saveTeamNotifyPrefs } from "@/app/settings/actions";
@@ -11,6 +11,7 @@ import {
 } from "@/lib/notifyPrefDefaults";
 import { Toggle, SaveRow } from "@/components/settings/OperatingRules";
 import { cn } from "@/lib/utils";
+import { useSettingsDraft } from "@/components/settings/useSettingsDraft";
 
 // "Team notifications" (Jordan, Sep 15: "I should be able to manage team
 // notifications in settings"). One block per active person, a 5-event ×
@@ -119,15 +120,12 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
   // says (Sep 16) — the save action clears it too, so the card and the bridge
   // can never disagree about what is live.
   const initial = clearInapplicable(row.prefs, group);
-  const [saved, setSaved] = useState<NotifyPrefs>(initial);
-  const [draft, setDraft] = useState<NotifyPrefs>(initial);
+  const { value: draft, setValue: setDraft, busy, dirty, feedback, save } = useSettingsDraft<NotifyPrefs>(initial);
   const [explicit, setExplicit] = useState(row.explicit);
   const [open, setOpen] = useState(true);
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
+  const [resetNote, setResetNote] = useState<string | null>(null);
 
   const first = row.name.split(/\s+/)[0];
-  const dirty = !notifyPrefsEqual(draft, saved);
   const atDefaults = notifyPrefsEqual(draft, clearInapplicable(defaults, group));
   const canSlack = !!row.slackId;
   const canSms = row.hasPhone;
@@ -135,7 +133,7 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
 
   const flip = (event: NotifyEvent, channel: keyof NotifyChannels) => (v: boolean) => {
     setDraft((p) => ({ ...p, [event]: { ...p[event], [channel]: v } }));
-    setMsg(null);
+    setResetNote(null);
   };
 
   // What is on right now — the one line that makes the collapsed block (and a
@@ -191,7 +189,7 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           aria-controls={panelId}
-          className="inline-flex items-center gap-1.5 rounded-md text-left text-sm font-semibold hover:text-brand focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-md text-left text-sm font-semibold hover:text-brand focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
         >
           {open ? <ChevronDown className="size-4 text-muted" /> : <ChevronRight className="size-4 text-muted" />}
           {row.name}
@@ -258,24 +256,28 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
               </tbody>
             </table>
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-3">
-            <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
-              const res = await saveTeamNotifyPrefs(row.teamMemberId, draft).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
-              setMsg(res.message);
-              if (res.ok) { setSaved(draft); setExplicit(true); }
-            })} />
-            <button
-              type="button"
-              onClick={() => { setDraft(clearInapplicable(defaults, group)); setMsg(atDefaults ? null : "Back to the defaults for this role — Save to keep."); }}
-              disabled={busy || atDefaults}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12px] font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              title={atDefaults ? `${first} is on the ${group.toLowerCase()} defaults` : `Put ${first} back on the ${group.toLowerCase()} defaults`}
-            >
-              <RotateCcw className="size-3.5" /> Reset to defaults
-            </button>
-          </div>
         </div>
       )}
+      {/* Save receipts stay visible even when a person's channel matrix is folded. */}
+      <div className="flex flex-wrap items-center gap-3 border-t border-border px-3 pb-3">
+        <SaveRow busy={busy} feedback={feedback} dirty={dirty} msg={resetNote} label={`Save ${first}'s notifications`} onSave={() => {
+          setResetNote(null);
+          save(async (submitted) => {
+            const res = await saveTeamNotifyPrefs(row.teamMemberId, submitted);
+            if (res.ok) setExplicit(true);
+            return res;
+          });
+        }} />
+        {open && <button
+          type="button"
+          onClick={() => { setDraft(clearInapplicable(defaults, group)); setResetNote("Role defaults selected."); }}
+          disabled={busy || atDefaults}
+          className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          title={atDefaults ? `${first} is on the ${group.toLowerCase()} defaults` : `Put ${first} back on the ${group.toLowerCase()} defaults`}
+        >
+          <RotateCcw className="size-3.5" /> Reset to defaults
+        </button>}
+      </div>
     </div>
   );
 }

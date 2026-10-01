@@ -2,6 +2,21 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — per-person notification save receipts
+
+Team notifications now use the existing snapshot-specific draft helper and typed
+save feedback. Each person's named Save button and loaded/dirty/saving/error
+receipt remain visible when their channel matrix is folded. Late saves acknowledge
+only submitted preferences; newer input and unconfirmed edits remain. Defaults,
+event applicability, unavailable channels and recorded delivery text are unchanged.
+
+Focused isolated feedback/first-paint checks passed 16/0
+(`/tmp/ops-u5-team-notification-feedback/`); lint/diff and one focused review
+passed. No server action, saved channel policy, activation or provider was changed.
+Browser collapse/live interaction remains open. Two adjacent proven late-save
+risks in NotificationSchedule and EmailSlaSettings are being fixed separately;
+do not mark all Settings feedback complete from this slice.
+
 ### U1 checkpoint — shared action, field and save-state presentation
 
 Added small native Button/ActionLink, FormField/TextField and SaveStatus pieces
