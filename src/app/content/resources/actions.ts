@@ -2,14 +2,18 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
-import { createResource, updateResource, setResourcePublished, markResourceReviewed, type ResourceInput } from "@/lib/portalResourcesAdmin";
+import { createResource, updateResource, setResourcePublished, markResourceReviewed, ResourceWriteRefusedError, type ResourceInput } from "@/lib/portalResourcesAdmin";
 import { markReviewItemHandled, unmarkReviewItem } from "@/lib/programMonitoring";
 
 // Writes for the Resources tab (§11) and the program-wide backfill review (§14).
 // Publishing is OWNER-only: a published guide is client-facing copy.
 
-type Result = { ok: boolean; message: string };
+export type ResourceActionResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
+type Result = ResourceActionResult;
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
+const resourceFailure = (e: unknown, beforeWrite = false): Result => ({
+  ...fail(e), outcome: beforeWrite || e instanceof ResourceWriteRefusedError ? "refused" : "unknown",
+});
 
 async function who(): Promise<string> {
   const { getCurrentUser } = await import("@/lib/auth/user");
@@ -18,33 +22,33 @@ async function who(): Promise<string> {
 }
 
 export async function createResourceAction(input: ResourceInput): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return resourceFailure(e, true); }
   try {
     await createResource(input, await who());
     revalidatePath("/content/resources");
-    return { ok: true, message: "Saved as a draft. It is not visible to any client until it is published." };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: "Saved as a draft. It is not visible to any client until it is published." };
+  } catch (e) { return resourceFailure(e); }
 }
 
 export async function updateResourceAction(id: string, input: ResourceInput): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  try { await updateResource(id, input); revalidatePath("/content/resources"); return { ok: true, message: "Saved." }; }
-  catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return resourceFailure(e, true); }
+  try { await updateResource(id, input); revalidatePath("/content/resources"); return { ok: true, outcome: "confirmed", message: "Saved." }; }
+  catch (e) { return resourceFailure(e); }
 }
 
 export async function publishResourceAction(id: string, published: boolean): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  try { await requireOwner(); } catch (e) { return resourceFailure(e, true); }
   try {
     await setResourcePublished(id, published, await who());
     revalidatePath("/content/resources");
-    return { ok: true, message: published ? "Published — clients can see it, and today is its review date." : "Unpublished. It disappears from the client's Resources immediately." };
-  } catch (e) { return fail(e); }
+    return { ok: true, outcome: "confirmed", message: published ? "Published — clients can see it, and today is its review date." : "Unpublished. It disappears from the client's Resources immediately." };
+  } catch (e) { return resourceFailure(e); }
 }
 
 export async function reviewResourceAction(id: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  try { await markResourceReviewed(id, await who()); revalidatePath("/content/resources"); return { ok: true, message: "Marked as reviewed today." }; }
-  catch (e) { return fail(e); }
+  try { await requireAdmin(); } catch (e) { return resourceFailure(e, true); }
+  try { await markResourceReviewed(id, await who()); revalidatePath("/content/resources"); return { ok: true, outcome: "confirmed", message: "Marked as reviewed today." }; }
+  catch (e) { return resourceFailure(e); }
 }
 
 // ---- backfill review (§14) ----------------------------------------------------------------

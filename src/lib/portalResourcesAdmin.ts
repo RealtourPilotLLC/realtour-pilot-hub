@@ -26,12 +26,15 @@ export type ResourceInput = {
 
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "guide";
 
+/** Existing pre-write guards: this refusal proves the requested write never began. */
+export class ResourceWriteRefusedError extends Error {}
+
 function validate(input: ResourceInput): void {
-  if (!input.title?.trim() || input.title.trim().length < 3) throw new Error("A guide needs a title.");
-  if (!RESOURCE_GROUPS.some((g) => g.key === input.groupKey)) throw new Error("Pick one of the four resource groups.");
-  if (!input.body?.trim()) throw new Error("A guide needs a body — an empty guide is a placeholder, and placeholders are not published.");
-  if (input.platform && !(PLATFORMS as readonly string[]).includes(input.platform)) throw new Error("Unknown platform.");
-  if (input.deviceContext && !(DEVICES as readonly string[]).includes(input.deviceContext)) throw new Error("Unknown device context.");
+  if (!input.title?.trim() || input.title.trim().length < 3) throw new ResourceWriteRefusedError("A guide needs a title.");
+  if (!RESOURCE_GROUPS.some((g) => g.key === input.groupKey)) throw new ResourceWriteRefusedError("Pick one of the four resource groups.");
+  if (!input.body?.trim()) throw new ResourceWriteRefusedError("A guide needs a body — an empty guide is a placeholder, and placeholders are not published.");
+  if (input.platform && !(PLATFORMS as readonly string[]).includes(input.platform)) throw new ResourceWriteRefusedError("Unknown platform.");
+  if (input.deviceContext && !(DEVICES as readonly string[]).includes(input.deviceContext)) throw new ResourceWriteRefusedError("Unknown device context.");
 }
 
 export async function createResource(input: ResourceInput, by: string | null): Promise<{ id: string; slug: string }> {
@@ -63,10 +66,10 @@ export async function updateResource(id: string, input: ResourceInput): Promise<
 /** Publish = a person vouches for the guide today; it also stamps the review date. Unpublish hides it immediately. */
 export async function setResourcePublished(id: string, published: boolean, by: string | null): Promise<void> {
   const r = await prisma.portalResource.findUnique({ where: { id }, select: { body: true, ownerAppUserId: true } });
-  if (!r) throw new Error("Guide not found.");
+  if (!r) throw new ResourceWriteRefusedError("Guide not found.");
   if (published) {
-    if (!r.body.trim() || /\b(TODO|TBD|lorem ipsum|placeholder)\b/i.test(r.body)) throw new Error("This guide still reads as a placeholder (TODO / TBD / placeholder text) — finish it before publishing.");
-    if (!r.ownerAppUserId) throw new Error("Give the guide an owner before publishing — someone has to keep it current.");
+    if (!r.body.trim() || /\b(TODO|TBD|lorem ipsum|placeholder)\b/i.test(r.body)) throw new ResourceWriteRefusedError("This guide still reads as a placeholder (TODO / TBD / placeholder text) — finish it before publishing.");
+    if (!r.ownerAppUserId) throw new ResourceWriteRefusedError("Give the guide an owner before publishing — someone has to keep it current.");
   }
   await prisma.portalResource.update({ where: { id }, data: published ? { published: true, reviewedAt: new Date(), reviewedBy: by } : { published: false } });
 }

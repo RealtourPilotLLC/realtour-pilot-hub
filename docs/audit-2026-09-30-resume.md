@@ -9,14 +9,16 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `f154bb4`; inspect actual HEAD/status when resuming.
+  checkpoint: `9a721dc` plus the Resources commit containing this update; inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
   messages/invitations, real bookings, financial changes, automation activation,
   branch push or deployment is authorized.
 - The prior isolated demo used port 3200 and the main checkout's `.next`. It
-  was left running earlier; Oct 1 resume process inspection found it no longer
-  running. No process was stopped or restarted. Inspect before any build/start.
+  was absent at an earlier resume check. Latest Oct 1 inspection found a new
+  `scripts/demo/run-demo-dev.sh` process started at 00:38 ET, with the fenced
+  demo database and Next server on port 3200 in the main checkout. It is left
+  running; no process was stopped or restarted. Inspect before any build/start.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
   Last observed clean/detached at `c5e619e`, whose build passed. Advance only
@@ -48,6 +50,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `1570ba5` | Month/library readability, focus and exact history |Lint/diff/source review; browser open |
 | `a642e79` | Exact clipboard receipts and native Markdown controls |Fake clipboard handlers12/0; lint/review; browser open |
 | `681030b` / `f154bb4` | Appointment/Resources authoring and common navigation |Lint/diff/source review; behavior fixes separate |
+| `9a721dc` | Appointment uncertainty and retained date/email choices |Signed fake-provider action13/0; actual form/refresh23/0; lint/types/review |
+| Resources commit containing this update | Guide drafts/read failures/uncertain-write recovery |Actual handler/action/page33/0; group/removal remount repair reviewed; lint/diff |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -64,13 +68,12 @@ No new schema. If an absent/core_saved receipt cannot settle, office staff must
 inspect its request logs and saved handoff/task/notification evidence; no blind
 retry/expiry is offered. See handoff for logs and actual browser/provider limits.
 
-The remaining active local slices are appointment and Resources recovery:
-typed known refusal versus unknown outcomes, retained native/editor drafts,
-pending/unknown holds and explicit guide/owner read failures. Appointment action
-annotations preserve provider/notify behavior; resource annotations preserve
-all validation/publish/ownership policy. No real mutation is authorized. Finish
-the focused fake/contract evidence and review, commit, then run the combined
-gate. Resource/appointment presentation is already committed; do not repeat it.
+Appointment and Resources recovery are now verified local source batches.
+Typed known refusals versus unknown outcomes retain native/editor drafts and
+hold replay; guide/owner failures remain explicit. Appointment device markers
+are not provider receipts; Resources retention is current-tab only. Unknown
+requests still require staff inspection. Provider/notify, validation/publication,
+ownership and backfill rules remain intact. No real mutation is authorized.
 
 After that stable checkpoint, run the combined typecheck/changed-file lint and
 one production build in the separate clean checkout. Record the exact source

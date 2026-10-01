@@ -16,6 +16,7 @@ instructions and batch evidence remain in `handoff.md`.
 | Home, task ownership and Sidebar grouping | Local implementation; guarded office ad hoc date editing | Home 15/0; Tasks 21/0; Sidebar 41/0; dates/role/CAS/receipt 49/0 and retained detail 26/0 | Yes | No | Not applicable | No new release |
 | Settings reminder fields and search | Local implementation | Policy 27/0; navigation 21/0; signed Settings 56/0 | Yes | No | Policy save does not activate | No new release |
 | Upload and appointment uncertain-write recovery | Local implementation; named recovery limits retained | Upload PG26/0 + UI18/0, CP09 142/0, B4 69/0; appointment signed action13/0 + fake UI23/0 | Yes | No | No provider/automation activation | No new release |
+| Resources drafts and uncertain-write recovery | Local implementation; current-tab retention | Actual handler/action/page fixture33/0 and focused review, including group/removal remounts; browser open | Yes | No | No publishing or automation change | No new release |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | No | No | No |
 
 Latest known deployment before takeover: `bf2e0b4`. This is historical evidence,

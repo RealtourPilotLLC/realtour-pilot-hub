@@ -74,6 +74,18 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 Resources recovery:** create/update/publish/review now distinguish existing
+  pre-write refusals from confirmed and uncertain outcomes. Pending submission
+  blocks duplicate writes/dismissal; Close/Cancel retains editor text. ID-scoped
+  sessions retain drafts and uncertainty holds when guides move groups or a
+  failed list read removes and restores rows. Guide/owner read failures are
+  explicit rather than empty data. Isolated actual handler/action/page fixture
+  33/0, focused lint/diff and one review with a narrow remount repair recheck pass
+  (`/tmp/u5-resource-recovery-stable/u5-resource-recovery.ts.log`). Publication,
+  ownership and backfill rules remain unchanged. Retention is within this tab;
+  unknown writes require staff inspection before another write, not auto-retry.
+  Normal browser and navigation/storage acceptance remain open.
+
 - **U5 appointment recovery:** typed confirmed/pre-write-refused/unknown results,
   retained native date/email input, sync duplicate guard, exact device marker and
   visible held refresh panel. Local prep refusals retry; unknown provider requests
@@ -86,13 +98,13 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
   fields and owner/review/publication evidence, focused44px actions/disclosures;
   shared BackLink/ShowMore preserve destinations/history/toggle behavior, with
   an explicit non-submit ShowMore button. Lint/diff/source review passed.
-  Resource retention/unconfirmed feedback is active separately; browser open.
+  Resource retention/unconfirmed feedback is verified separately above; browser open.
 
 - **U5 appointment controls:** native shared buttons and labeled datetime field,
   existing device-local-time interpretation explained, readable facts/brief/
   feedback and focused44px targets. Conditions/provider payloads/time conversion
   unchanged; lint/diff/source review passed. Rejected provider-response feedback
-  is active separately; browser and actual timezone acceptance remain open.
+  is verified separately above; browser and actual timezone acceptance remain open.
 
 - **U1/U3 shared copy/editor controls:** exact supported clipboard receipts,
   visible denied/unavailable failures, native label/pending guard/timer cleanup,

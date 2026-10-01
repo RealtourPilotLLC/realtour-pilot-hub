@@ -2,6 +2,36 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — Resources drafts, read failures and uncertain writes
+
+Existing create/update/publish/review actions now report confirmed, pre-write
+refused or unknown outcomes; typed refusals reuse existing validation and
+publication guards without changing ownership/publication/backfill policy.
+Rejected/uncertain writes are caught and held for staff verification. Pending
+actions cannot be dismissed or duplicated. Close/Cancel keeps editor words;
+confirmed creation opens a fresh draft. Guide and owner read failures have
+separate visible evidence and cannot masquerade as empty counts/choices.
+
+Per-guide immutable sessions live in the stable panel, keyed by durable ID.
+Actual group placement/counts remain correct; group moves and temporary failed
+list removal/restoration preserve draft, baseline and unknown hold, and older
+callbacks settle the same retained guide. Stored changes never replace divergent
+unsaved text; confirmed saved normalization is recognized. Missing owner choices
+retain the current owner and disable owner changes. Failed guide-list reads show
+an explicit duplicate warning; creating a draft remains available under existing
+policy and does not publish it.
+
+Actual component/action/domain/page fixture passed 33/0 at
+`/tmp/u5-resource-recovery-stable/u5-resource-recovery.ts.log`; focused lint/diff
+passed. One independent review found group/removal remount loss; the ID-scoped
+repair and parent reconciliation coverage passed its narrow recheck. Earlier
+fixture failures were auth-import/Link traversal and fake promise-order seams,
+corrected without changing product policy. No commands remain active in this
+batch. Drafts and holds last within this tab, not full navigation; unknown writes
+require staff to inspect the exact stored guide before another write. Browser,
+navigation/storage and real publication acceptance remain open. No production
+write, provider, publication or client send occurred.
+
 ### Oct 1 U5 checkpoint — appointment uncertainty and retained input
 
 Appointment actions now annotate their existing results as confirmed, known

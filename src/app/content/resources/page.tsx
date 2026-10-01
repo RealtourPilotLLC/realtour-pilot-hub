@@ -24,9 +24,9 @@ export default async function ContentResourcesPage({ searchParams }: { searchPar
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
   const view = (await searchParams).view === "backfill" ? "backfill" : "guides";
 
-  const [rows, staff, items] = await Promise.all([
-    view === "guides" ? listResourcesForAdmin().catch(() => []) : Promise.resolve([]),
-    staffChoices().catch(() => []),
+  const [guides, owners, items] = await Promise.all([
+    view === "guides" ? listResourcesForAdmin().then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [], failed: true })) : Promise.resolve({ rows: [], failed: false }),
+    staffChoices().then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [], failed: true })),
     view === "backfill" ? programReviewItems().catch(() => []) : Promise.resolve([]),
   ]);
 
@@ -40,11 +40,11 @@ export default async function ContentResourcesPage({ searchParams }: { searchPar
         title={view === "guides" ? "Client resources" : "Backfill review"}
         subtitle={view === "guides" ? "the guides clients read — edited here, live without a deploy" : "records across every client that look mis-filed"}
         actions={
-          <div className="flex items-center gap-1.5">
-            <Link href="/content/resources" className={view === "guides" ? "rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white" : "rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"}>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Link href="/content/resources" className={`inline-flex min-h-11 min-w-11 max-w-full items-center justify-center rounded-lg px-3 py-2 text-sm whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${view === "guides" ? "bg-brand-action font-semibold text-brand-fg" : "border border-border-strong font-medium text-muted hover:bg-surface-2 hover:text-foreground"}`}>
               <BookOpen className="mr-1 inline size-3.5" />Guides
             </Link>
-            <Link href="/content/resources?view=backfill" className={view === "backfill" ? "rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white" : "rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"}>
+            <Link href="/content/resources?view=backfill" className={`inline-flex min-h-11 min-w-11 max-w-full items-center justify-center rounded-lg px-3 py-2 text-sm whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${view === "backfill" ? "bg-brand-action font-semibold text-brand-fg" : "border border-border-strong font-medium text-muted hover:bg-surface-2 hover:text-foreground"}`}>
               <FileSearch className="mr-1 inline size-3.5" />Backfill review
             </Link>
           </div>
@@ -53,7 +53,7 @@ export default async function ContentResourcesPage({ searchParams }: { searchPar
       <div className="mx-auto max-w-5xl space-y-6 p-4 pb-16 sm:p-6">
         {view === "guides" ? (
           <ResourcesAdminPanel
-            rows={rows.map((r) => ({
+            rows={guides.rows.map((r) => ({
               id: r.id, slug: r.slug, groupKey: r.groupKey, title: r.title, summary: r.summary, body: r.body,
               platform: r.platform, deviceContext: r.deviceContext, ownerAppUserId: r.ownerAppUserId, ownerName: r.ownerName,
               reviewedAtISO: r.reviewedAt?.toISOString() ?? null, linkedActions: r.linkedActions, published: r.published,
@@ -63,8 +63,10 @@ export default async function ContentResourcesPage({ searchParams }: { searchPar
             platforms={[...PLATFORMS]}
             devices={[...DEVICES]}
             actions={LINKABLE_ACTIONS}
-            staff={staff.map((s) => ({ id: s.id, name: s.name }))}
+            staff={owners.rows.map((s) => ({ id: s.id, name: s.name }))}
             isOwner={ownerEyes}
+            readError={guides.failed}
+            staffReadError={owners.failed}
           />
         ) : (
           <BackfillReview
