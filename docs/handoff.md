@@ -2,6 +2,24 @@
 
 ## Sep 30 takeover addendum
 
+### U4 checkpoint — role-first Home and optional operating routine
+
+Home now leads with a compact role-specific orientation, fixed appointments,
+ranked next actions and delivery count/age. James's creative review view follows
+the saved primary reviewer seat rather than a name heuristic. Kyle retains the
+operating checklist in an optional section; all 15 existing block anchors open it.
+Exact oldest assigned-cut links are preserved. Delivery controls remain in the
+video-review block, because Review Room itself links back there. Owner money
+and private tasks remain gated and lower. Failed assigned-review reads retain
+known general workload with an explicit warning rather than implying no work.
+
+Actual signed Home SSR drill passed 15/0
+(`/tmp/u4-home-focus-reviewed/u4-home-focus.ts.log`); focused lint and one review
+passed. Browser acceptance remains blocked. The optional Home test toggle is
+still deferred until every nested destination uses matching scope; normal
+operating readers retain the C14 filtering. Full stable integration checks follow
+once the active portal/sidebar batches are complete.
+
 ### U5 checkpoint — searchable Settings without losing drafts
 
 Seven purpose groups now collapse independently, show already-loaded summaries,
