@@ -2,6 +2,24 @@
 
 ## Sep 30 takeover addendum
 
+### U4 checkpoint — grouped Sidebar with identical access
+
+Sidebar destinations now sit under Daily work, Production, Clients, Team &
+learning, Reference, and Administration. Frequent groups and the current section
+open by default; Report a hub issue remains reachable without opening a group.
+The existing filtered destination list is unchanged, including photographer
+exceptions, explicit My Pay grants and configured owner-only Script Writing.
+Notices, theme/logout and longest-path selection remain intact. Unique disclosure
+IDs support both mounted sidebars; the drawer's existing focus selector includes
+summary controls. If overrides remove ordinary work groups, the first authorized
+group opens so initial focus remains visible.
+
+Actual role SSR comparison passed 41/0 across 12 role/override profiles
+(`/tmp/ops-u4-sidebar-navigation-final/u4-sidebar-navigation.ts.log`); lint,
+diff checks and one focused review passed. Browser/drawer keyboard and tablet
+acceptance stay open. Home drill assertion was explicitly narrowed to boolean
+for TypeScript; its runtime check is unchanged.
+
 ### U4 checkpoint — role-first Home and optional operating routine
 
 Home now leads with a compact role-specific orientation, fixed appointments,

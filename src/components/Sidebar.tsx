@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useId } from "react";
 import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import {
@@ -29,12 +30,14 @@ import {
   LogOut,
   PenLine,
   ExternalLink,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { canAccess, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { groupSidebarDestinations } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
   name: string | null;
@@ -104,7 +107,7 @@ const SECTIONS: NavSection[] = [
       // override carries here too. /coaching itself has no PageKey, so
       // middleware only checks you are signed in and the page's own owner /
       // coached-roster check is the real gate — see the header comment there.
-      { label: "Comms coaching", href: "/coaching", icon: Radar, key: "review" },
+      { label: "Communication coaching", href: "/coaching", icon: Radar, key: "review" },
       // "Project Tracker" (/pipeline) retired from the nav — its delivery board
       // is the Production Pipeline block on Home. Route + PageKey stay.
       // Schedule now carries the Map as its ?view=map tab (List | Map toggle in
@@ -173,7 +176,7 @@ const SECTIONS: NavSection[] = [
     items: [
       // The HUB's own board — features to build, bugs to fix. Every role files
       // here. Feedback about the WORK is "Client & Team Feedback" in Operations.
-      { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
+      { label: "Report a hub issue", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
       { label: "Settings", href: "/settings", icon: SlidersHorizontal, key: "settings" },
       { label: "Connections", href: "/connections", icon: Plug, key: "connections" },
     ],
@@ -183,6 +186,7 @@ const SECTIONS: NavSection[] = [
 
 export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser | null; scriptingUrl?: string | null; onNavigate?: () => void }) {
   const pathname = usePathname();
+  const navigationId = useId(); // Desktop and drawer sidebars are both mounted.
   // When signed in, hide pages this person can't open. When not signed in (gate
   // still off, pre-cutover), show everything so the open app is unchanged.
   const can = (item: NavItem) => (item.key ? !user || canAccess(user, item.key) : true);
@@ -196,7 +200,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   const creative = !!user && (user.role === "EDITOR" || user.role === "PHOTOGRAPHER");
   // Parsed ONCE per render (was re-parsed twice per section — audit).
   const perms = parsePermissions(user?.permissions);
-  const sections = SECTIONS.map((s) => {
+  const authorized = SECTIONS.map((s) => {
     let items = s.items.filter(can);
     // Match on href, not key: the Creative "Style Guide" item also carries the
     // `resources` key (it rides that permission) and must keep its own label.
@@ -233,6 +237,28 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     return { ...s, items };
   }).filter((s) => s.items.length > 0);
 
+  // Group only AFTER the existing access rules and role exceptions. These
+  // categories are navigation, never new permissions or replacement pages.
+  const sections = groupSidebarDestinations(authorized.flatMap((section) => section.items), pathname);
+  const renderItem = (item: NavItem) => {
+    const active = sections.some((section) => section.activeHref === item.href);
+    const Icon = item.icon;
+    const content = <>
+      <Icon className="size-4 shrink-0" aria-hidden />
+      <span className="flex-1">{item.label}</span>
+      {item.external && <ExternalLink className="size-3.5 shrink-0 text-muted-2" aria-hidden />}
+      {item.soon && <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2">soon</span>}
+    </>;
+    const classes = cn(
+      "flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+      active ? "bg-brand-soft text-brand ring-1 ring-inset ring-brand/20" : "text-muted hover:bg-surface-2 hover:text-foreground",
+      item.soon && "cursor-default opacity-60 hover:bg-transparent",
+    );
+    return item.soon ? <div key={item.href} className={classes} title="Coming in a later milestone">{content}</div>
+      : item.external ? <a key={item.href} href={item.href} target="_blank" rel="noopener noreferrer" className={classes} onClick={onNavigate}>{content}</a>
+      : <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={classes} onClick={onNavigate}>{content}</Link>;
+  };
+
   return (
     // relative: the notification-bell panel anchors to the sidebar (opens upward).
     <aside className="relative flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
@@ -247,64 +273,30 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
         </div>
       </div>
 
-      <nav className="flex-1 space-y-5 overflow-y-auto scroll-thin px-3 py-2">
-        {sections.map((section) => (
-          <div key={section.title}>
-            <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
-              {section.title}
-            </div>
-            <div className="space-y-0.5">
-              {section.items.map((item) => {
-                // Longest-prefix wins: "Style Guide" (/resources/video-styles)
-                // and "Resources & SOPs" (/resources) share a prefix, and both
-                // lighting up reads as a bug. The item is active only if no
-                // sibling nav item matches the path more specifically.
-                const matches = (href: string) =>
-                  href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
-                const active =
-                  matches(item.href) &&
-                  !sections.some((sec) =>
-                    sec.items.some(
-                      (o) => o.href.length > item.href.length && matches(o.href),
-                    ),
-                  );
-                const Icon = item.icon;
-                const content = (
-                  <>
-                    <Icon className="size-4 shrink-0" />
-                    <span className="flex-1">{item.label}</span>
-                    {item.external && <ExternalLink className="size-3.5 shrink-0 text-muted-2" />}
-                    {item.soon && (
-                      <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2">
-                        soon
-                      </span>
-                    )}
-                  </>
-                );
-                const classes = cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all",
-                  active
-                    ? "bg-brand-soft text-brand ring-1 ring-inset ring-brand/20"
-                    : "text-foreground/65 hover:bg-surface-2 hover:text-foreground",
-                  item.soon && "cursor-default opacity-60 hover:bg-transparent",
-                );
-                return item.soon ? (
-                  <div key={item.href} className={classes} title="Coming in a later milestone">
-                    {content}
-                  </div>
-                ) : item.external ? (
-                  <a key={item.href} href={item.href} target="_blank" rel="noopener noreferrer" className={classes} onClick={onNavigate}>
-                    {content}
-                  </a>
-                ) : (
-                  <Link key={item.href} href={item.href} className={classes} onClick={onNavigate}>
-                    {content}
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+      <nav aria-label="Staff navigation" className="flex-1 space-y-3 overflow-y-auto scroll-thin px-3 py-2">
+        {sections.map((section) => {
+          // If overrides remove all normal work doors, the first authorized
+          // group still provides a visible initial link for the mobile drawer.
+          const expanded = section.frequent || section.current || section === sections[0];
+          // Reporting a broken hub must remain one click away even when the
+          // administrative pages are folded. Preserve its existing grant.
+          const shortcut = !expanded ? section.items.filter((item) => item.href === "/feedback") : [];
+          const folded = section.items.filter((item) => !shortcut.includes(item));
+          return <section key={section.id} data-sidebar-group={section.id} aria-labelledby={`${navigationId}-${section.id}`}>
+            {expanded ? <>
+              <h2 id={`${navigationId}-${section.id}`} className="px-3 pb-1.5 text-sm font-semibold text-muted">{section.title}</h2>
+              <div className="space-y-0.5">{section.items.map(renderItem)}</div>
+            </> : <>
+              {folded.length > 0 ? <details className="group/sidebar">
+                <summary id={`${navigationId}-${section.id}`} tabIndex={0} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-3 text-sm font-semibold text-muted hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+                  {section.title}<ChevronDown aria-hidden className="size-4 shrink-0 transition-transform group-open/sidebar:rotate-180" />
+                </summary>
+                <div className="space-y-0.5">{folded.map(renderItem)}</div>
+              </details> : <h2 id={`${navigationId}-${section.id}`} className="px-3 text-sm font-semibold text-muted">{section.title}</h2>}
+              {shortcut.map(renderItem)}
+            </>}
+          </section>;
+        })}
       </nav>
 
       <div className="space-y-1 border-t px-3 py-3">

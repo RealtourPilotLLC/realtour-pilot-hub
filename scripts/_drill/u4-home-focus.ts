@@ -76,7 +76,7 @@ async function main() {
     const reviewNeeds = elements(reviewTree, "NeedsToday")[0]?.needs as { key: string; count: number; href: string; detail?: string }[];
     const actualQueue = await getReviewQueue({ includeTest: false });
     c.ok("assigned cut count equals the authoritative normal Review Room source", reviewNeeds.find((n) => n.key === "review-mine")?.count === actualQueue.pending.filter((r) => r.reviewer?.id === jamesTm.id).length && reviewNeeds.find((n) => n.key === "review-mine")?.count === 1);
-    c.ok("primary review action opens the exact assigned version and keeps age", reviewNeeds[0].href === `/review/${realJob.id}?cut=${mine.id}` && reviewNeeds[0].detail?.includes("1h"));
+    c.ok("primary review action opens the exact assigned version and keeps age", reviewNeeds[0].href === `/review/${realJob.id}?cut=${mine.id}` && reviewNeeds[0].detail?.includes("1h") === true);
     c.ok("other review owners remain explicit coverage rather than personal assignment", reviewNeeds.find((n) => n.key === "review-coverage")?.count === 1 && !reviewNeeds.some((n) => n.key === "cuts"));
     c.ok("creative lead receives no owner financial or private-task sections", elements(reviewTree, "MoneyStat").length === 0 && elements(reviewTree, "QuickAdd").length === 0 && elements(reviewTree, "PulseStrip").length === 0);
     failReviewRead = true;
