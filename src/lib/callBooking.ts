@@ -414,7 +414,7 @@ export async function portalCallBookingView(viewer: PortalViewer, monthId: strin
  *      the mapped page with the token, in a new tab.
  * bookingUrl null = no monthly page is set up (the caller shows the office).
  */
-export async function portalBookingLinks(viewer: PortalViewer, opts: { layout: "v1" | "v2"; planHref: string | null; now?: Date }): Promise<{ bookingUrl: string | null; view: PortalCallBookingView | null }> {
+export async function portalBookingLinks(viewer: PortalViewer, opts: { layout: "v1" | "v2"; planHref: string | null; monthId?: string | null; now?: Date }): Promise<{ bookingUrl: string | null; view: PortalCallBookingView | null }> {
   const now = opts.now ?? new Date();
   const mapping = await monthlyStrategyMapping();
   if (opts.layout === "v1") {
@@ -422,7 +422,7 @@ export async function portalBookingLinks(viewer: PortalViewer, opts: { layout: "
     return { bookingUrl: mapping?.publicUrl ?? STRATEGY_CALL_BOOKING_URL, view: null };
   }
   const month = await prisma.contentMonth.findFirst({
-    where: { enrollmentId: viewer.enrollment.id, historical: false, monthKey: { gte: etMonthKey(now) } },
+    where: { enrollmentId: viewer.enrollment.id, ...(opts.monthId ? { id: opts.monthId } : {}), historical: false, monthKey: { gte: etMonthKey(now) } },
     orderBy: { monthKey: "asc" },
     select: { id: true, planningMode: true },
   });

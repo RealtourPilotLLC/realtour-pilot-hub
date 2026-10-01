@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 // prompt. With `routeHref` the call card shows where the month stands and
 // links there instead of carrying its own buttons; v1 passes nothing and keeps
 // them exactly as they were.
-export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref, topicsLabel = "Video Topics", routeHref = null }: {
+export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref, topicsLabel = "Video Topics", routeHref = null, selectedMonthId, selectedSessionIndex }: {
   planning: PortalPlanning | null;
   planningFailed: boolean;
   months: PortalScheduleMonth[];
@@ -35,6 +35,8 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
   topicsLabel?: string;
   /** v2: Your Month's route step — the one place the planning route is chosen. */
   routeHref?: string | null;
+  selectedMonthId?: string | null;
+  selectedSessionIndex?: number | null;
 }) {
   // v2 routes the choice to Your Month; v1 keeps its buttons here.
   const switchLink = (label: string) => routeHref && p?.noCallEligible && !readOnly && perms.session
@@ -114,12 +116,12 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
       {/* Content session */}
       <div>
         <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><Camera className="size-4 text-brand" /> Schedule content session</div>
-        {scheduleFailed ? <LoadFailed what="your session months" /> : <PortalScheduler months={months} bookingUrl={bookingUrl} days={slotDays} readOnly={!perms.session || readOnly} timezone={tz} />}
+        {scheduleFailed ? <LoadFailed what="your session months" /> : <PortalScheduler months={months} bookingUrl={bookingUrl} days={slotDays} readOnly={!perms.session || readOnly} timezone={tz} selectedMonthId={selectedMonthId} selectedSessionIndex={selectedSessionIndex} />}
       </div>
 
       {/* Sessions on the calendar */}
       <Card>
-        <CardTitle icon={Camera}>Sessions</CardTitle>
+        <CardTitle icon={Camera}>Sessions · all program months</CardTitle>
         {sessions.filter((s) => s.shootDate).length === 0 ? (
           <p className="mt-2 text-sm text-muted">No sessions on the calendar yet.</p>
         ) : (

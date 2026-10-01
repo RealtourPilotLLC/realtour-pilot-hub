@@ -28,6 +28,11 @@ const btn = cn("inline-flex min-h-11 items-center justify-center gap-1.5 rounded
 type Msg = { ok: boolean; text: string } | null;
 
 export function PortalCallPicker({ view }: { view: PortalCallBookingView }) {
+  // A new program month or provider mode has a new calendar and selection.
+  return <CallPickerMonth key={`${view.monthId}:${view.mode}`} view={view} />;
+}
+
+function CallPickerMonth({ view }: { view: PortalCallBookingView }) {
   const router = useRouter();
   const tz = view.timezone || "America/New_York";
   const [mode, setMode] = useState(view.mode);
@@ -95,7 +100,7 @@ function withFilming(message: string, filmingFromISO: string | null, tz: string)
 
 function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz: string; onFallback: () => void }) {
   const router = useRouter();
-  const [page, setPage] = useState<{ fromISO: string | null; slots: CallSlot[]; next: string | null; prev: string | null } | null>(null);
+  const [page, setPage] = useState<{ fromISO: string; toISO: string; slots: CallSlot[]; next: string | null; prev: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [pick, setPick] = useState<CallSlot | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
@@ -118,11 +123,11 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
           return;
         }
         setMsg(null);
-        setPage({ fromISO: r.fromISO, slots: r.slots, next: r.nextFromISO, prev: r.prevFromISO });
+        setPage({ fromISO: r.fromISO, toISO: r.toISO, slots: r.slots, next: r.nextFromISO, prev: r.prevFromISO });
       });
     return () => { alive = false; };
   }, [view.monthId, from, onFallback]);
-  const load = (fromISO: string | null) => { setLoading(true); setPick(null); setFrom((f) => ({ iso: fromISO, n: f.n + 1 })); };
+  const load = (fromISO: string | null) => { setLoading(true); setMsg(null); setPick(null); setFrom((f) => ({ iso: fromISO, n: f.n + 1 })); };
 
   const days = useMemo(() => {
     const out = new Map<string, CallSlot[]>();
@@ -143,18 +148,23 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
     const r: BookCallResult = await portalBookCall(portalAuthFromLocation(), view.monthId, pick.startISO).catch(() => ({ ok: false, state: "PENDING" as const, message: "We're confirming your booking with the calendar. This page will update in a minute." }));
     setMsg({ ok: r.ok || r.state === "PENDING", text: r.ok ? withFilming(r.message, r.filmingFromISO ?? null, tz) : r.message });
     if (r.ok) router.refresh();
-    else if (r.state === "FAILED") void load(page?.fromISO ?? null);
+    // Keep the booking error visible until the client explicitly reloads.
+    // A failed slot must not remain selected for another submission.
+    else if (r.state === "FAILED") setPick(null);
   });
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <button type="button" disabled={!page?.prev || loading} onClick={() => void load(page?.prev ?? null)} className={cn("inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted hover:text-foreground disabled:opacity-40 sm:min-h-0", focusRing)}><ChevronLeft className="size-3.5" aria-hidden /> Earlier</button>
+        <button type="button" disabled={!page?.prev || loading || busy} onClick={() => void load(page?.prev ?? null)} className={cn("inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted hover:text-foreground disabled:opacity-40 sm:min-h-0", focusRing)}><ChevronLeft className="size-3.5" aria-hidden /> Earlier</button>
         <span className="text-[11px] text-muted-2">Times in {tzName}</span>
-        <button type="button" disabled={!page?.next || loading} onClick={() => void load(page?.next ?? null)} className={cn("inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted hover:text-foreground disabled:opacity-40 sm:min-h-0", focusRing)}>Later <ChevronRight className="size-3.5" aria-hidden /></button>
+        <button type="button" disabled={!page?.next || loading || busy} onClick={() => void load(page?.next ?? null)} className={cn("inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted hover:text-foreground disabled:opacity-40 sm:min-h-0", focusRing)}>Later <ChevronRight className="size-3.5" aria-hidden /></button>
       </div>
+      {page && !loading && !msg && <p className="text-sm text-muted" aria-live="polite">Open times from {new Date(page.fromISO).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" })} through {new Date(page.toISO).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" })}. Use Later for the next week.</p>}
       {loading ? (
         <p className="flex items-center gap-1.5 text-xs text-muted"><Loader2 className="size-3.5 animate-spin" /> Loading open times…</p>
+      ) : msg && !msg.ok ? (
+        <button type="button" disabled={busy} onClick={() => load(from.iso)} className={cn(btn, "border border-border")}>Try loading this week again</button>
       ) : days.length === 0 ? (
         <p className="text-xs text-muted">No open times this week. Try later dates.</p>
       ) : (
@@ -164,7 +174,7 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
               <div className="text-xs font-semibold">{day}</div>
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {slots.map((s) => (
-                  <button key={s.startISO} type="button" onClick={() => setPick(s)} aria-pressed={pick?.startISO === s.startISO}
+                  <button key={s.startISO} type="button" disabled={busy} onClick={() => setPick(s)} aria-pressed={pick?.startISO === s.startISO}
                     className={cn("min-h-11 rounded-lg border px-3 text-sm tabular-nums sm:min-h-8", focusRing, pick?.startISO === s.startISO ? "border-brand bg-brand-action text-white" : "border-border bg-surface hover:border-brand/50")}>
                     {time(s.startISO)}
                   </button>
@@ -180,7 +190,7 @@ function SlotPicker({ view, tz, onFallback }: { view: PortalCallBookingView; tz:
           <p className="mt-0.5 text-xs text-muted">With this call, filming can be booked for {when(pick.filmingFromISO)} or later.</p>
           <div className="mt-2 flex flex-wrap gap-2">
             <button type="button" onClick={book} disabled={busy} className={cn(btn, "bg-brand-action text-white hover:opacity-90 disabled:opacity-50")}>{busy ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-4" aria-hidden />} Book this time</button>
-            <button type="button" onClick={() => setPick(null)} className={cn(btn, "border border-border text-muted hover:bg-surface")}>Pick another</button>
+            <button type="button" disabled={busy} onClick={() => setPick(null)} className={cn(btn, "border border-border text-muted hover:bg-surface")}>Pick another</button>
           </div>
         </div>
       )}

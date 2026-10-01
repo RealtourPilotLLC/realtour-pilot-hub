@@ -31,6 +31,7 @@ import { ContactTeam } from "@/components/portal/ContactTeam";
 import { cn } from "@/lib/utils";
 // UI-01 — the v2 layout (lib/portalLayout.ts decides who gets it).
 import { resolvePortalRoute, portalHref, v2HrefFor, baseQueryPairs, portalNav, firstQueryValues, type PlanView } from "@/lib/portalNav";
+import { portalMonthKey, portalSessionIndex, selectedPortalMonth } from "@/lib/portalScheduling";
 import { portalLayoutDecision, libraryRows, reviewDeadlines } from "@/lib/portalLayout";
 import { homeActions, planModel, libraryView, type HomeAction } from "@/lib/portalHome";
 import { isLibraryFilter } from "@/lib/portalWords";
@@ -86,7 +87,7 @@ const PHONE_BAR: PortalTab[] = ["home", "videos", "topics", "strategy"];
 export const portalTabOf = (raw: string | undefined): PortalTab => resolvePortalRoute({ tab: raw }).v1Tab;
 
 /** Everything the address bar may carry besides the tab. `pv` is My Plan's subview, `q`/`st` the Library's search and status filter, `layout=v2` a staff preview (all v2). */
-export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string; page?: string; filter?: string; r?: string; pv?: string; q?: string; st?: string; layout?: string };
+export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string; page?: string; filter?: string; r?: string; pv?: string; q?: string; st?: string; layout?: string; month?: string; session?: string };
 
 // Client-facing program terms. The AppSetting `portal-terms` overrides this
 // default wholesale (blank lines split paragraphs; "## " starts a heading) —
@@ -142,17 +143,26 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     profile: can(viewer, "editBrandProfile"),
     session: can(viewer, "requestSession"),
   };
-  const monthKey = etMonthKey();
+  // The same first three open months exposed by portalTopics/ScheduleMonths.
+  // A query never selects another enrollment's month or reopens history.
+  const contextMonths = portalMonthKey(query.month) ? await prisma.contentMonth.findMany({
+    where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
+    orderBy: { monthKey: "asc" }, take: 3, select: { id: true, monthKey: true },
+  }) : [];
+  const selectedMonth = selectedPortalMonth(contextMonths, query.month);
+  const selectedSession = selectedMonth ? portalSessionIndex(query.session, enrollment.sessionsPerMonth) : null;
+  const monthKey = selectedMonth?.monthKey ?? etMonthKey();
   const scope = mediaScopeOf(viewer);
   // Greet the PERSON when we know one. A collaborator or viewer signed into
   // Cara's program was opened with "Hi Cara" — the account's name, not theirs
   // (review, Sep 17). The link seat has no person, so it keeps the account's.
   const first = ((actor.kind === "CLIENT" ? actor.name : null) || client?.name || "there").split(/\s+/)[0];
-  const href = (t: string, extra?: string) => `?${baseQuery ? `${baseQuery}&` : ""}tab=${t}${extra ? `&${extra}` : ""}`;
+  const contextBase = [baseQuery, selectedMonth ? `month=${selectedMonth.monthKey}` : "", selectedSession ? `session=${selectedSession}` : ""].filter(Boolean).join("&");
+  const href = (t: string, extra?: string) => `?${contextBase ? `${contextBase}&` : ""}tab=${t}${extra ? `&${extra}` : ""}`;
   // v2 links carry `layout=v2` only on a staff preview — a TEST client and the
   // switch need nothing in the address. `tabHref` is the one the shared data
   // below builds links with: v1's href in v1 (unchanged), v2 addresses in v2.
-  const v2Base = [baseQuery, why === "STAFF_PREVIEW" ? "layout=v2" : ""].filter(Boolean).join("&");
+  const v2Base = [contextBase, why === "STAFF_PREVIEW" ? "layout=v2" : ""].filter(Boolean).join("&");
   const v2Href = v2HrefFor(v2Base);
   const tabHref = v2 ? v2Href : href;
   // W03: "Book the call" goes to the enabled MONTHLY_STRATEGY mapping's page
@@ -161,7 +171,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // show it; in v2 with no mapping the link is the office conversation.
   const noCallLinks: { bookingUrl: string | null; view: PortalCallBookingView | null } = { bookingUrl: null, view: null };
   const callLinksP = dataTab === "home" || dataTab === "schedule" || (v2 && route.dest === "plan")
-    ? portalBookingLinks(viewer, { layout: v2 ? "v2" : "v1", planHref: v2 ? portalHref(v2Base, "plan") : null })
+    ? portalBookingLinks(viewer, { layout: v2 ? "v2" : "v1", planHref: v2 ? portalHref(v2Base, "plan") : null, monthId: selectedMonth?.id })
       .catch((e) => { console.error("[portal] call booking links failed", e); return noCallLinks; })
     : Promise.resolve(noCallLinks);
   const loadCallLinks = () => callLinksP;
@@ -201,7 +211,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   }
   if (dataTab === "home") {
     const [planning, schedule, videos, topics, released, month, progress, attention] = await Promise.all([
-      attempt("planning", () => portalPlanning(enrollment)),
+      attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
       attempt("schedule", () => portalScheduleMonths(enrollment)),
       attempt("videos", () => portalVideoList(enrollment, { page: 1, perPage: 24 })),
       attempt("topics", () => portalTopics(enrollment)),
@@ -311,7 +321,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   }
   if (dataTab === "schedule") {
     const [p, s, sess] = await Promise.all([
-      attempt("planning", () => portalPlanning(enrollment)),
+      attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
       attempt("schedule months", () => portalScheduleMonths(enrollment)),
       prisma.project.findMany({
         where: { clientId: enrollment.clientId, contentMonthId: { not: null }, status: { not: "CANCELLED" }, shootDate: { not: null } },
@@ -485,7 +495,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     let yourMonth: PlanTabData["yourMonth"] = null;
     if (route.dest === "plan" && route.planView === "month" && !interviewRes) {
       const [p, sm] = await Promise.all([
-        attempt("planning", () => portalPlanning(enrollment)),
+        attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
         attempt("schedule months", () => portalScheduleMonths(enrollment)),
       ]);
       const thisMonth = p.ok && p.data && sm.ok ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? null : null;
@@ -500,6 +510,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
         can: { suggest: perms.suggest, session: perms.session },
         scheduleHref: portalHref(v2Base, "schedule"),
+        selectedSessionIndex: selectedSession,
       };
     }
     const setupLeft = setupMore?.ok && !setupMore.data.complete ? Math.max(0, setupMore.data.total - setupMore.data.done) : null;
@@ -517,6 +528,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         // CP-13: the conversation when this viewer may use it, the office line always.
         footer={route.dest !== "messages" ? <ContactTeam contact={contact} messagesHref={canMessage ? v2Href("messages") : null} className="mt-8" /> : null}
       >
+        {query.month && !selectedMonth && (route.dest === "plan" || route.dest === "schedule") && <p role="status" className="mt-4 rounded-xl border border-border bg-surface-2 p-3 text-sm text-muted">That planning month is not available here. Your open months are shown below.</p>}
         {route.dest === "home" && home && <HomeV2 d={home} actions={actions} href={v2Href} />}
         {route.dest === "plan" && route.planView && (
           <PlanTab d={{
@@ -530,6 +542,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={v2Href} /> : <LibraryV2 d={library} failed={libraryFailed} href={v2Href} />)}
         {route.dest === "schedule" && (
           <ScheduleTab
+            key={`${selectedMonth?.id ?? "default"}:${selectedSession ?? "next"}`}
+            selectedMonthId={selectedMonth?.id} selectedSessionIndex={selectedSession}
             planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
             months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
             slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
@@ -642,6 +656,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         {tab === "strategy" && <StrategyTab strategy={strategyRes?.ok ? strategyRes.data : null} failed={!!strategyRes && !strategyRes.ok} priorities={priorities} monthKey={monthKey} canSuggest={perms.suggest} readOnly={readOnly} />}
         {tab === "schedule" && (
           <ScheduleTab
+            key={`${selectedMonth?.id ?? "default"}:${selectedSession ?? "next"}`}
+            selectedMonthId={selectedMonth?.id} selectedSessionIndex={selectedSession}
             planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
             months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
             slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}

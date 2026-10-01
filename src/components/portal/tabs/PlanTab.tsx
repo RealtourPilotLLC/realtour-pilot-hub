@@ -12,6 +12,7 @@ import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
 import { YourMonth, type YourMonthData } from "@/components/portal/YourMonth";
+import { portalMonthHref } from "@/lib/portalScheduling";
 
 // ---------------------------------------------------------------------------
 // MY PLAN — the v2 layout (UI-01, Sep 24 2026). What used to be one long
@@ -57,7 +58,7 @@ export type PlanTabData = {
 export function PlanTab({ d }: { d: PlanTabData }) {
   if (d.interviewFailed) return <div className="mt-6"><LoadFailed what="those questions" /></div>;
   // The questions sit inside the plan; "All topics" goes back to the month they belong to.
-  if (d.interview) return <div className="mt-6"><InterviewFlow iv={d.interview} backHref={d.hrefs.month} canAct={d.canAct && !d.readOnly} /></div>;
+  if (d.interview) return <div className="mt-6"><InterviewFlow iv={d.interview} backHref={portalMonthHref(d.hrefs.month, d.interview.monthKey)} canAct={d.canAct && !d.readOnly} /></div>;
 
   const plan = d.topics ? planModel(d.topics, d.monthKey) : null;
   const tabs = [
@@ -109,6 +110,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
             </p>
           )}
           <TopicBank
+            key={`${d.view}:${plan.month?.id ?? "none"}`}
             groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
             canAct={d.canAct} readOnly={d.readOnly}
             // The bank opens on what is still to choose from; a filter in the address wins.

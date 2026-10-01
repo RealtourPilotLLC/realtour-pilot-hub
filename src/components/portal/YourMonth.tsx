@@ -35,6 +35,7 @@ export type YourMonthData = {
   bookingUrl: string;
   /** W03: the month's strategy call, booked here (embed or API); null = not loaded → bookingUrl. */
   callBooking?: PortalCallBookingView | null;
+  selectedSessionIndex?: number | null;
   can: { suggest: boolean; session: boolean };
   readOnly: boolean;
   filter?: string;
@@ -147,7 +148,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
                 ) : s && step.state === "current" && !s.locked ? (
                   <div className="mt-3">
-                    <PortalScheduler months={[s]} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={p.timezone} embedded />
+                    <PortalScheduler key={`${s.monthId}:${d.selectedSessionIndex ?? "next"}`} months={[s]} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={p.timezone} selectedMonthId={s.monthId} selectedSessionIndex={d.selectedSessionIndex} embedded />
                     {d.can.session && !d.readOnly && s.sessionsMissing > 0 && s.capacity.remaining > 0 && (
                       <ScheduleLaterButton monthId={s.monthId} deferred={!!p.deferredAtISO} />
                     )}
@@ -171,6 +172,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
           <div className="mt-3 space-y-3">
             <Link href={d.hrefs.bank} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Browse the full topic bank <ChevronRight className="size-4" aria-hidden /></Link>
             <TopicBank
+              key={month.id}
               groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
               canAct={d.can.suggest} readOnly={d.readOnly} initialFilter={d.filter}
               tabHref={d.hrefs.month} view="month" initialMonthId={month.id} scriptsHref={d.hrefs.scripts}

@@ -6,6 +6,7 @@ import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
 import type { MonthPlanning, PlanStep } from "@/lib/planningState";
 import { TEXT_KYLE } from "@/lib/portalWords";
+import { PROGRAM_SLOT_HORIZON_DAYS } from "@/lib/portalScheduling";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28; identity layer,
@@ -517,7 +518,7 @@ export async function programSlotDays(opts: {
   // used to fall through to the company-wide list, which is the over-offer.
   if (!product || !minutes) return [];
 
-  const horizonDays = opts.days ?? 21;
+  const horizonDays = opts.days ?? PROGRAM_SLOT_HORIZON_DAYS;
   const { productAvailability, availabilityFromDay } = await import("@/lib/integrations/aryeo");
   const fromDay = availabilityFromDay(opts.from);
   const key = slotsCacheKey(product.productId, minutes, horizonDays) + (fromDay ? `:from:${fromDay}` : "");

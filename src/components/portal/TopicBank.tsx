@@ -13,6 +13,7 @@ import { StatusChip } from "@/components/portal/ui";
 import { awaitingScript, inBank } from "@/lib/portalHome";
 import { CTA_WORDS, SCRIPT_WORDS, TEXT_KYLE, TOPIC_WORDS, answerCta, planStepWord } from "@/lib/portalWords";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
+import { portalMonthHref } from "@/lib/portalScheduling";
 
 // ---------------------------------------------------------------------------
 // VIDEO TOPICS (spec §5): the client's bank by their pillars, in the
@@ -216,7 +217,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
             {months.length > 1 && (
               <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
                 {months.map((m) => (
-                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
+                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); if (v2) router.replace(portalMonthHref(tabHref, m.monthKey), { scroll: false }); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground", v2 && "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
                 ))}
               </div>
             )}

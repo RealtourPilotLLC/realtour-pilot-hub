@@ -322,7 +322,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
     <div className="mt-6 space-y-4">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Content Library</h1>
-        <p className="mt-0.5 text-xs text-muted">Every video we&rsquo;ve made for you. Anything waiting on your review comes first.</p>
+        <p className="mt-0.5 text-xs text-muted">All program months. Every video we&rsquo;ve made for you, with anything waiting on your review first. Your selected planning month is kept when you return to Your Month or Schedule.</p>
       </div>
 
       {!nothingAtAll && (
@@ -510,4 +510,3 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
     </div>
   );
 }
-

@@ -2,6 +2,23 @@
 
 ## Sep 30 takeover addendum
 
+### U2 checkpoint — selected month/session and address-bound appointments
+
+Portal navigation retains a validated enrollment month and Pro session between
+Plan, Schedule and Library. The call picker remounts on month/mode changes;
+filming choices belong to a specific session/address version, and changing that
+address clears stale choices. Date pages clamp when a shorter result arrives.
+Availability horizon, explicit retry and all-month labels are shown. Failed call
+booking retains its error and clears the rejected selection. Existing six-date
+paging and all server eligibility/travel/72-weekday/provider rules remain intact.
+
+Signed-client fixture/first-paint drill passed 20/0, including all 15 dates,
+last-date/last-time choice, cross-enrollment and Pro-plan boundaries, and actual
+address actions (`/tmp/u2-scheduling-context-logs/u2-scheduling-context.ts.log`).
+Lint and one focused review passed. TypeScript found no U2 errors; the concurrent
+W03 selected-source typing fix is pending. No real provider booking or client
+message. Mounted browser navigation, phone visuals and provider acceptance remain.
+
 ### U4 checkpoint — grouped Sidebar with identical access
 
 Sidebar destinations now sit under Daily work, Production, Clients, Team &

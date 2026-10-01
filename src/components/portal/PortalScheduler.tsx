@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, Camera, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Loader2, Lock, MapPin, MoveRight, Phone, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,7 @@ import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
 import type { PreparationHold, SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
 import { CancelRequestButton } from "@/components/portal/PlanningChoice";
+import { PROGRAM_SLOT_HORIZON_DAYS, currentSessionSlot, portalMonthHref, portalSessionIndex, sessionDatePage, sessionOfferKey } from "@/lib/portalScheduling";
 
 // The scheduling card, clean (Jordan, Aug 28): finished states collapse to
 // slim ✓ rows; the live picker gets room — big day pills, a real time grid,
@@ -94,7 +95,7 @@ function hourIn(iso: string, tz: string): number {
  * chip may shrink). Past three rows the day splits into morning and afternoon
  * so the client can find 2 PM without counting chips.
  */
-export function SlotTimes({ day, slot, tz, onPick }: { day: TravelSlotDay; slot: string | null; tz: string; onPick: (s: string) => void }) {
+export function SlotTimes({ day, slot, tz, onPick, disabled = false }: { day: TravelSlotDay; slot: string | null; tz: string; onPick: (s: string) => void; disabled?: boolean }) {
   const groups =
     day.slots.length > 9
       ? [
@@ -109,7 +110,7 @@ export function SlotTimes({ day, slot, tz, onPick }: { day: TravelSlotDay; slot:
           {g.label && <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-2">{g.label}</div>}
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {g.slots.map((s) => (
-              <button key={s} type="button" onClick={() => onPick(s)}
+              <button key={s} type="button" disabled={disabled} aria-pressed={slot === s} onClick={() => onPick(s)}
                 className={cn(
                   "min-w-0 rounded-xl border px-2 py-2 text-sm font-medium tabular-nums transition-colors",
                   slot === s ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
@@ -209,9 +210,12 @@ function PlanAddressStep({ monthId, sessionIndex, lead, onSaved, onCancel }: { m
   const [f, setF] = useState({ street: "", unit: "", city: "", state: "", zip: "" });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
   const go = () => start(async () => {
     const r = await portalSaveSessionPlanAddress(portalAuthFromLocation(), monthId, sessionIndex, f).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+    if (!mounted.current) return;
     setMsg({ ok: r.ok, text: r.message });
     if (r.ok) onSaved();
   });
@@ -240,7 +244,7 @@ function PlanAddressStep({ monthId, sessionIndex, lead, onSaved, onCancel }: { m
 }
 
 export function PortalScheduler({
-  months, bookingUrl, days = [], readOnly = false, timezone = "America/New_York", embedded = false,
+  months, bookingUrl, days = [], readOnly = false, timezone = "America/New_York", embedded = false, selectedMonthId = null, selectedSessionIndex = null,
 }: {
   /** This month and the open ones after it — each with its gate, capacity and requests. Empty = no open month yet. */
   months: PortalScheduleMonth[];
@@ -257,6 +261,8 @@ export function PortalScheduler({
    * above it already say where the call and the answers stand.
    */
   embedded?: boolean;
+  selectedMonthId?: string | null;
+  selectedSessionIndex?: number | null;
 }) {
   const tz = timezone;
   const router = useRouter();
@@ -264,17 +270,17 @@ export function PortalScheduler({
   // to watch, or room to book. A month whose session is filmed (or fully
   // requested) gives way to the next one, so late in the month the client sees
   // next month's picker instead of a finished card.
-  const initial = months.find((m) => m.requests.some((r) => OPEN.has(r.status)) || m.capacity.remaining > 0) ?? months[0] ?? null;
+  const initial = months.find((m) => m.monthId === selectedMonthId) ?? months.find((m) => m.requests.some((r) => OPEN.has(r.status)) || m.capacity.remaining > 0) ?? months[0] ?? null;
   const [monthId, setMonthId] = useState<string | null>(initial?.monthId ?? null);
   const [day, setDay] = useState<string | null>(null);
   const [dayWindow, setDayWindow] = useState<{ key: string; page: number } | null>(null);
-  const [slot, setSlot] = useState<string | null>(null);
+  const [slotPick, setSlotPick] = useState<{ key: string; value: string } | null>(null);
   const [creative, setCreative] = useState<string | null>(null);
   const [when, setWhen] = useState("");
   const [moving, setMoving] = useState<string | null>(null);
   const [addressFor, setAddressFor] = useState<string | null>(null);
   // §6.6 W02: which session is being booked, and its times from its address.
-  const [sessionPick, setSessionPick] = useState<number | null>(null);
+  const [sessionPick, setSessionPick] = useState<number | null>(portalSessionIndex(selectedSessionIndex, initial?.sessionsRequired ?? 1));
   const [slotsRes, setSlotsRes] = useState<{ key: string; res: SessionSlotsResult } | null>(null);
   const [editAddress, setEditAddress] = useState(false);
   const [reload, setReload] = useState(0);
@@ -288,24 +294,31 @@ export function PortalScheduler({
   // Booked sessions AND every session already held (a pending ask, a hand
   // booking): the server refuses a second live ask for any of them.
   const bookedIndexes = new Set([...(month?.sessions ?? []).map((x) => x.sessionIndex), ...(month?.takenIndexes ?? [])]);
-  const pickIdx = sessionPick ?? month?.sessionIndex ?? 1;
+  const pickIdx = sessionPick && !bookedIndexes.has(sessionPick) ? sessionPick : month?.sessionIndex ?? 1;
   const slotsKey = month ? `${month.monthId}:${pickIdx}:${moving ?? ""}:${reload}` : "";
   const res = slotsRes && slotsRes.key === slotsKey ? slotsRes.res : null;
   // Slots this session may actually take: the server already applied its gate
   // (which carries the 24-hour floor — those are a phone call, see KyleLine).
   const monthDays: TravelSlotDay[] = month && !month.locked && res?.ok ? res.days : [];
-  const dayPage = dayWindow?.key === slotsKey ? dayWindow.page : 0;
-  const visibleDays = monthDays.slice(dayPage * 6, dayPage * 6 + 6);
-  const activeDay = visibleDays.find((d) => d.date === day) ?? visibleDays[0] ?? null;
+  const offerKey = sessionOfferKey(slotsKey, res);
+  const { page: dayPage, visible: visibleDays, active: activeDay } = sessionDatePage(monthDays, dayWindow?.key === offerKey ? dayWindow.page : 0, day);
+  const slot = currentSessionSlot(slotPick, offerKey, activeDay);
+  const setSlot = (value: string | null) => setSlotPick(value ? { key: offerKey, value } : null);
   const slotCreatives = slot && activeDay?.slotCreatives?.[slot] ? activeDay.slotCreatives[slot] : [];
   const chosenCreative = slotCreatives.length === 1 ? slotCreatives[0].teamMemberId : creative;
   const chosenTravel: TravelLabel | null = slot && activeDay ? (chosenCreative ? activeDay.slotCreativeTravel[slot]?.[chosenCreative] ?? null : activeDay.slotTravel[slot] ?? null) : null;
   const needsAddress = !moving && !!res && (res.needsAddress || editAddress);
 
-  const pickMonth = (id: string) => { setMonthId(id); setSessionPick(null); setEditAddress(false); setDay(null); setSlot(null); setCreative(null); setMoving(null); setDone(null); setErr(null); };
+  const rememberContext = (monthKey: string, index?: number | null) => router.replace(portalMonthHref(window.location.search, monthKey, index), { scroll: false });
+  const pickMonth = (id: string) => {
+    const next = months.find((m) => m.monthId === id);
+    if (!next) return;
+    setMonthId(id); setSessionPick(null); setEditAddress(false); setDay(null); setSlot(null); setWhen(""); setCreative(null); setMoving(null); setDone(null); setErr(null);
+    rememberContext(next.monthKey);
+  };
   const pickSlot = (s: string) => { setSlot(s); setCreative(null); };
   const changeDayPage = (page: number) => {
-    setDayWindow({ key: slotsKey, page });
+    setDayWindow({ key: offerKey, page });
     setDay(null);
     setSlot(null);
     setCreative(null);
@@ -369,8 +382,8 @@ export function PortalScheduler({
         {months.length > 1 && (
           <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
             {months.map((m) => (
-              <button key={m.monthId} type="button" role="tab" aria-selected={m.monthId === month?.monthId} onClick={() => pickMonth(m.monthId)}
-                className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", m.monthId === month?.monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+              <button key={m.monthId} type="button" role="tab" disabled={busy} aria-selected={m.monthId === month?.monthId} onClick={() => pickMonth(m.monthId)}
+                className={cn("min-h-11 rounded-lg border px-2.5 py-1 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50", m.monthId === month?.monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
                 {monthLabel(m.monthKey)}
               </button>
             ))}
@@ -480,9 +493,9 @@ export function PortalScheduler({
                 {!moving && required > 1 && (
                   <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label="Which session">
                     {Array.from({ length: required }, (_, i) => i + 1).filter((i) => !bookedIndexes.has(i)).map((i) => (
-                      <button key={i} type="button" role="tab" aria-selected={pickIdx === i}
-                        onClick={() => { setSessionPick(i); setEditAddress(false); setDay(null); setSlot(null); setCreative(null); setErr(null); }}
-                        className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold", pickIdx === i ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
+                      <button key={i} type="button" role="tab" disabled={busy} aria-selected={pickIdx === i}
+                        onClick={() => { setSessionPick(i); setEditAddress(false); setDay(null); setSlot(null); setWhen(""); setCreative(null); setErr(null); rememberContext(month.monthKey, i); }}
+                        className={cn("min-h-11 rounded-lg border px-2.5 py-1 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50", pickIdx === i ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
                         Session {i} of {required}
                       </button>
                     ))}
@@ -492,26 +505,30 @@ export function PortalScheduler({
                 {!res ? (
                   <p className="mt-3 flex items-center gap-2 text-xs text-muted"><Loader2 className="size-3.5 animate-spin" /> Checking the times{moving ? "" : " from your filming address"}…</p>
                 ) : !res.ok && !res.needsAddress ? (
-                  <p className="mt-3 text-sm text-muted">{res.message}</p>
+                  <div className="mt-3 space-y-2"><p role="alert" className="text-sm text-muted">{res.message}</p><button type="button" onClick={() => { setSlot(null); setReload((n) => n + 1); }} className="min-h-11 rounded-xl border border-border px-3 text-sm font-medium">Try loading times again</button></div>
                 ) : (
                   <>
                     {/* Step 1: where. An exact address, before any time is offered. */}
                     {!moving && (
                       needsAddress ? (
-                        <PlanAddressStep monthId={month.monthId} sessionIndex={pickIdx} lead={res.needsAddress ? res.message : null}
-                          onSaved={() => { setEditAddress(false); setSlot(null); setDay(null); setReload((n) => n + 1); }}
+                        <PlanAddressStep key={`${month.monthId}:${pickIdx}`} monthId={month.monthId} sessionIndex={pickIdx} lead={res.needsAddress ? res.message : null}
+                          onSaved={() => { setEditAddress(false); setSlot(null); setCreative(null); setDay(null); setReload((n) => n + 1); }}
                           onCancel={res.needsAddress ? null : () => setEditAddress(false)} />
                       ) : (
                         <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                           <MapPin className="size-4 shrink-0 text-muted-2" />
                           <span className="font-medium">{res.addressLine}</span>
-                          <button type="button" onClick={() => setEditAddress(true)} className="text-xs font-semibold text-brand hover:underline">Change</button>
+                          <button type="button" disabled={busy} onClick={() => { setEditAddress(true); setSlot(null); setWhen(""); setCreative(null); setDay(null); }} className="min-h-11 px-2 text-sm font-semibold text-brand hover:underline">Change</button>
                         </div>
                       )
                     )}
 
                     {/* Step 2: when, from that address. A19: when the preparation
                         window is why the first day is later than tomorrow, say so. */}
+                    {!needsAddress && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted">
+                      <p className="min-w-0 flex-1 basis-64">We search {PROGRAM_SLOT_HORIZON_DAYS} calendar days from the first eligible filming day. Need a later date? Kyle can help. Calendar results can be cached for a few minutes; booking rechecks the time.</p>
+                      <button type="button" disabled={busy} onClick={() => { setSlot(null); setDay(null); setCreative(null); setReload((n) => n + 1); }} className="min-h-11 rounded-xl border border-border px-3 font-medium">Reload times</button>
+                    </div>}
                     {!needsAddress && res.preparation && (
                       <p className="mt-3 flex items-start gap-1.5 text-xs text-muted">
                         <Info className="mt-0.5 size-3.5 shrink-0 text-muted-2" /> {preparationLine(res.preparation, tz)}
@@ -522,7 +539,7 @@ export function PortalScheduler({
                         <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a day</div>
                         <div className="mt-1.5 flex flex-wrap gap-2">
                           {visibleDays.map((d) => (
-                            <button key={d.date} type="button" onClick={() => { setDay(d.date); setSlot(null); setCreative(null); }}
+                            <button key={d.date} type="button" disabled={busy} aria-pressed={activeDay?.date === d.date} onClick={() => { setDay(d.date); setSlot(null); setCreative(null); }}
                               className={cn(
                                 "rounded-xl border px-3.5 py-2 text-sm font-semibold transition-colors",
                                 activeDay?.date === d.date ? "border-brand bg-brand-action text-white shadow" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
@@ -533,12 +550,12 @@ export function PortalScheduler({
                         </div>
                         {monthDays.length > 6 && (
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-                            <button type="button" disabled={dayPage === 0} onClick={() => changeDayPage(dayPage - 1)}
+                            <button type="button" disabled={busy || dayPage === 0} onClick={() => changeDayPage(dayPage - 1)}
                               className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-border px-3 font-medium disabled:opacity-40">
                               <ChevronLeft className="size-4" /> Previous dates
                             </button>
                             <span className="text-muted" aria-live="polite">Dates {dayPage * 6 + 1}–{Math.min((dayPage + 1) * 6, monthDays.length)} of {monthDays.length} available</span>
-                            <button type="button" disabled={(dayPage + 1) * 6 >= monthDays.length} onClick={() => changeDayPage(dayPage + 1)}
+                            <button type="button" disabled={busy || (dayPage + 1) * 6 >= monthDays.length} onClick={() => changeDayPage(dayPage + 1)}
                               className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-border px-3 font-medium disabled:opacity-40">
                               More dates <ChevronRight className="size-4" />
                             </button>
@@ -547,13 +564,13 @@ export function PortalScheduler({
                         {activeDay && (
                           <>
                             <div className="mt-3 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Pick a time</div>
-                            <SlotTimes day={activeDay} slot={slot} tz={tz} onPick={pickSlot} />
+                            <SlotTimes day={activeDay} slot={slot} tz={tz} onPick={pickSlot} disabled={busy} />
                             {slot && slotCreatives.length > 1 && (
                               <div className="mt-3">
                                 <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Who would you like?</div>
                                 <div className="mt-1.5 flex flex-wrap gap-2" role="radiogroup" aria-label="Videographer">
                                   {slotCreatives.map((c) => (
-                                    <button key={c.teamMemberId} type="button" role="radio" aria-checked={creative === c.teamMemberId} onClick={() => setCreative(c.teamMemberId)}
+                                    <button key={c.teamMemberId} type="button" disabled={busy} role="radio" aria-checked={creative === c.teamMemberId} onClick={() => setCreative(c.teamMemberId)}
                                       className={cn("rounded-xl border px-3 py-1.5 text-sm", creative === c.teamMemberId ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:text-foreground")}>
                                       {c.name}
                                       {activeDay.slotCreativeTravel[slot]?.[c.teamMemberId] === "UNCHECKED" && <span className="ml-1 text-[10px] font-normal text-muted-2">(Kyle confirms)</span>}
