@@ -2,6 +2,39 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U3/W06 checkpoint — exact upload and size recovery
+
+Upload submit now retains an opaque UUID and canonical payload fingerprint on
+this device. Existing AuditLog rows bind the exact actor/project/request to the
+atomic saved brief/filming report and a separate terminal complete/ended marker.
+An authorized read-only check proves only that exact save and whether its action
+ended; it never claims files or editor notifications were confirmed. Lost/partial
+responses retain native words and identity and hold another submit. Newer input
+stays in the device mirror; server autosave stays held while the attempt is
+nonterminal or an existing draft conflict still awaits an explicit choice.
+Square-foot saves use the same exact-attempt pattern, synchronous serialization,
+catch/finally and retained newer input. Reading a current size alone never
+unlocks an uncertain earlier writer. Older tabs retain their existing contract.
+There is no new table or migration, and existing split/legacy handoff, payroll,
+editor Start/Pause, conflict and notification policies remain intact.
+
+Signed isolated server actions with real PostgreSQL passed 26/0
+(`/tmp/upload-receipts-final-affected/upload-attempt-recovery.ts_postgres.log`);
+actual component-hook/native-input/refresh fixtures passed 18/0
+(`/tmp/upload-portal-recovery-ui-conflict-final/upload-portal-recovery-ui.ts.log`).
+Affected existing CP09 passed 142/0 and B4 upload 69/0 in
+`/tmp/upload-receipts-final-affected/`. Non-incremental TypeScript and focused
+lint/diff passed. One focused review exposed autosave, delayed size-writer and
+draft-conflict hold races; those were repaired and covered. Earlier fixture-only
+timeline literal failures were corrected, with no relaxed production rule.
+
+Absence/core_saved may remain held if a process died or its terminal mark could
+not persist. There is no blind retry or assumed expiry: staff must inspect the
+exact request/server logs, saved brief/report and existing editor task/notification
+evidence before resolving the hold. Browser, actual phone raw files, real provider
+handoff and notification delivery remain untested. No production write, send,
+booking, activation or deployment was performed.
+
 ### U2/U4 checkpoint — month stages navigate only to actual work views
 
 Roster cards and the month Overview now supply existing Call/Topics/Scripts/Shoot

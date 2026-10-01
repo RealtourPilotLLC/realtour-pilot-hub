@@ -24,7 +24,7 @@ import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
 import { photoRangeFor } from "@/lib/culling";
 import {
   markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback, setProjectSquareFeet,
-  checkUploadRawFiles,
+  checkUploadRawFiles, readUploadAttempt, readUploadSquareFeet,
   reportMissedShot, planGapRecovery, closeProductionGap, recordFieldPreference, decideFieldReport,
 } from "@/app/upload/actions";
 import { saveUploadDraft, discardUploadDraft } from "@/app/upload/draftActions";
@@ -45,6 +45,7 @@ import { Markdown } from "@/components/ui/Markdown";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
 import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYouSubmitted";
+import { parseUploadAttempt, uploadAttemptFingerprint, type UploadAttempt } from "@/lib/uploadReceipt";
 
 // ---------------------------------------------------------------------------
 // The shoot debrief portal (rebuilt Aug 31 2026 per Jordan; readability pass
@@ -62,6 +63,8 @@ type AskAction =
 
 type FieldReportView = { id: string; body: string; status: string; scope: string; basis: "client_said" | "observation" | null; createdAtISO: string };
 const DRAFT_MIRROR_KEY = (projectId: string) => `upload-draft:${projectId}`;
+const ATTEMPT_MIRROR_KEY = (projectId: string) => `upload-attempt:${projectId}`;
+const SIZE_ATTEMPT_MIRROR_KEY = (projectId: string) => `upload-size-attempt:${projectId}`;
 
 /**
  * §7.5 / §6.8: one video's brief as the upload page carries it — the same row
@@ -543,6 +546,11 @@ export function UploadPortal({
   const [flags, setFlags] = useState(initialFlags);
   const [flagInput, setFlagInput] = useState("");
   const [isPending, startTransition] = useTransition();
+  const submitBusyRef = useRef(false);
+  const attemptRef = useRef<UploadAttempt | null>(null);
+  const [pendingAttempt, setPendingAttempt] = useState<UploadAttempt | null>(null);
+  const [checkingAttempt, setCheckingAttempt] = useState(false);
+  const checkingAttemptRef = useRef(false);
   const [toggling, startToggle] = useTransition();
   // Collapsed = submitted. Before the Sep 2 payroll gate the sweep's
   // uploadedAt was the only stamp a finished job had, so those still read
@@ -561,6 +569,12 @@ export function UploadPortal({
   const [bandText, setBandText] = useState<string | null>(policy.squareFeetBand);
   const [sqftBusy, setSqftBusy] = useState(false);
   const [sqftErr, setSqftErr] = useState<string | null>(null);
+  const sqftBusyRef = useRef(false);
+  const sqftSavedRef = useRef(policy.squareFeet);
+  const sqftQueuedRef = useRef<number | null | undefined>(undefined);
+  const sqftNeedsCheckRef = useRef(false);
+  const [sqftNeedsCheck, setSqftNeedsCheck] = useState(false);
+  const sqftAttemptRef = useRef<UploadAttempt | null>(null);
   // After a submit the whole checklist collapses to the confirmation — the page
   // is ~1,300px of answered steps, and scrolling back into it read as "did that
   // work?" (Jordan, Sep 3). Reopening is one tap for a correction.
@@ -818,6 +832,8 @@ export function UploadPortal({
     revision: number; payload: DraftPayload; savedAtISO: string; by: string | null; submitted: boolean;
     device?: { typedAtISO: string; baseHash: string | null; baseAtISO: string | null };
   } | null>(null);
+  const draftConflictRef = useRef<typeof draftConflict>(null);
+  const holdDraftConflict = (value: typeof draftConflict) => { draftConflictRef.current = value; setDraftConflict(value); };
   const [restored, setRestored] = useState<{ atISO: string; from: "server" | "device" } | null>(
     draft ? { atISO: draft.savedAtISO, from: "server" } : null,
   );
@@ -875,7 +891,10 @@ export function UploadPortal({
         // topic list failed to load, and this deleted the one copy that still
         // held them. It now answers "not saved, retryable" instead, the copy
         // stays, and the autosaver retries with the same revision.
-        const device = { keep: () => writeMirror(json), clear: clearMirror };
+        const device = { keep: () => writeMirror(JSON.stringify(payloadRef.current)), clear: () => {
+          if (submitBusyRef.current || attemptRef.current || JSON.stringify(payloadRef.current) !== json) writeMirror(JSON.stringify(payloadRef.current));
+          else clearMirror();
+        } };
         try {
           const r = await saveUploadDraft(project.id, { revision: revRef.current, baseHash: baseHashRef.current, payload });
           const settled = settleDraftSave(r, device);
@@ -883,7 +902,7 @@ export function UploadPortal({
             revRef.current = settled.revision;
             lastSavedJson.current = json;
           }
-          if (settled.conflict) setDraftConflict(settled.conflict);
+          if (settled.conflict) holdDraftConflict(settled.conflict);
           return settled.outcome;
         } catch {
           device.keep();
@@ -910,7 +929,9 @@ export function UploadPortal({
       try {
         const d = decideDeviceRestore(window.localStorage.getItem(mirrorKey), {
           draft: draft ? { revision: draft.revision, savedAtISO: draft.savedAtISO, payload: draft.payload } : null,
-          debriefSubmittedAtISO: project.debriefSubmittedAt,
+          // An uncertain attempt may consume the draft after a later edit was
+          // typed. Its old timestamp cannot prove that device text submitted.
+          debriefSubmittedAtISO: parseUploadAttempt(window.localStorage.getItem(ATTEMPT_MIRROR_KEY(project.id))) ? null : project.debriefSubmittedAt,
         });
         if (d.action === "drop") { clearMirror(); return; }
         if (d.action === "none") return;
@@ -921,7 +942,7 @@ export function UploadPortal({
           saver.stop();
           applyDraft(m.payload);
           setReopened(true);
-          setDraftConflict({
+          holdDraftConflict({
             revision: draft.revision, payload: draft.payload, savedAtISO: draft.savedAtISO, by: null, submitted: false,
             device: { typedAtISO: m.typedAtISO, baseHash: m.baseHash, baseAtISO: m.baseAtISO },
           });
@@ -955,10 +976,15 @@ export function UploadPortal({
   useEffect(() => {
     if (!canSaveDraft || !saverRef.current) return;
     if (payloadJson === lastSavedJson.current) return;
+    if (submitBusyRef.current || attemptRef.current) { writeMirror(payloadJson); return; }
     saverRef.current.change();
+    // writeMirror reads the current baseline refs; its identity is not a
+    // payload change and must not restart or release a held autosave.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payloadJson, canSaveDraft]);
 
   function keepMineAfterConflict() {
+    if (submitBusyRef.current || attemptRef.current) return;
     if (!draftConflict) return;
     revRef.current = draftConflict.submitted ? null : draftConflict.revision;
     // The device copy won: it goes on with the fingerprint IT was typed against.
@@ -972,20 +998,22 @@ export function UploadPortal({
       }
       setRestored({ atISO: dev.typedAtISO, from: "device" });
     }
-    setDraftConflict(null);
+    holdDraftConflict(null);
     saverRef.current?.resume();
     saverRef.current?.change();
   }
   function takeTheirsAfterConflict() {
+    if (submitBusyRef.current || attemptRef.current) return;
     if (!draftConflict) return;
     revRef.current = draftConflict.revision;
     lastSavedJson.current = JSON.stringify(draftConflict.payload);
     applyDraft(draftConflict.payload);
     clearMirror();
-    setDraftConflict(null);
+    holdDraftConflict(null);
     saverRef.current?.resume();
   }
   function discardDraft() {
+    if (submitBusyRef.current || attemptRef.current) return;
     saverRef.current?.stop();
     clearMirror();
     startTransition(async () => {
@@ -1141,6 +1169,7 @@ export function UploadPortal({
   }
 
   function finalize(scope?: HandoffCategory) {
+    if (submitBusyRef.current || attemptRef.current) return;
     const missing = missingItems(scope);
     if (missing.length > 0) {
       setErr(`Not done yet — ${missing.join(" · ")}. ${scope ? `The ${scope} can't be submitted until every step for them is answered.` : "The job isn't finished until every step is answered."}`);
@@ -1178,7 +1207,53 @@ export function UploadPortal({
     videosFilmed: project.videosFilmed,
   };
 
+  function keepAttempt(attempt: UploadAttempt | null) {
+    attemptRef.current = attempt; setPendingAttempt(attempt);
+    try {
+      if (attempt) localStorage.setItem(ATTEMPT_MIRROR_KEY(project.id), JSON.stringify(attempt));
+      else localStorage.removeItem(ATTEMPT_MIRROR_KEY(project.id));
+    } catch { /* same-page receipt and draft stay intact without device storage */ }
+  }
+  useEffect(() => {
+    let mounted = true;
+    queueMicrotask(() => {
+      if (!mounted) return;
+      try {
+        const priorAttempt = parseUploadAttempt(localStorage.getItem(ATTEMPT_MIRROR_KEY(project.id)));
+        if (priorAttempt) { attemptRef.current = priorAttempt; saverRef.current?.stop(); setPendingAttempt(priorAttempt); setErr("An earlier upload response is unconfirmed. Your answers are kept. Check that attempt before submitting again; editor notification is not confirmed here."); }
+        const priorSize = parseUploadAttempt(localStorage.getItem(SIZE_ATTEMPT_MIRROR_KEY(project.id)));
+        if (priorSize) { sqftAttemptRef.current = priorSize; sqftNeedsCheckRef.current = true; setSqftNeedsCheck(true); setSqftErr("An earlier size response is unconfirmed. Check that attempt before another save."); }
+      } catch { /* storage may be unavailable */ }
+    });
+    return () => { mounted = false; };
+  }, [project.id]);
+
+  async function checkAttempt() {
+    const attempt = attemptRef.current;
+    if (!attempt || submitBusyRef.current || checkingAttemptRef.current) return;
+    checkingAttemptRef.current = true; setCheckingAttempt(true);
+    try {
+      const receipt = await readUploadAttempt(project.id, attempt.attemptId, attempt.payloadFingerprint);
+      if (receipt.state === "unknown") { setErr("This exact upload attempt is not confirmed. It may still be processing. Your answers are kept; check again before submitting, or ask the office to check the handoff."); return; }
+      setHalfAt({ photos: receipt.handoff.photosAtISO, video: receipt.handoff.videoAtISO });
+      if (!receipt.terminal) { setErr("Your answers were saved, but the earlier upload request has not confirmed it finished. Editor notification is unconfirmed. Your current answers are kept; check again before another submit."); return; }
+      // Rebase on what this attempt wrote, never on somebody else's later
+      // edit. A next submit still reaches the existing forced-conflict choice.
+      setSubmitHash(receipt.baseHash); baseHashRef.current = receipt.baseHash; baseAtRef.current = receipt.atISO; setMovedSinceDraft(receipt.currentChanged);
+      if (receipt.handoff.wholeDone) { setDone(true); setReopened(true); revRef.current = null; }
+      keepAttempt(null);
+      setErr(`Your submitted answers are confirmed saved. ${receipt.phase === "complete" ? "The request finished; this check does not confirm editor notification or file readiness." : "The request ended before its finishing handoff was confirmed; ask the office to check it."} Your current draft stays on this page${receipt.currentChanged ? "; the submitted answers have changed since this attempt" : ""}.`);
+      if (!draftConflictRef.current) {
+        saverRef.current?.resume();
+        if (JSON.stringify(payloadRef.current) !== lastSavedJson.current) saverRef.current?.change();
+      } else writeMirror(JSON.stringify(payloadRef.current));
+    } catch { setErr("The upload receipt could not be checked. Your answers are kept; retry this check before another submit."); }
+    finally { checkingAttemptRef.current = false; setCheckingAttempt(false); }
+  }
+
   function runSubmit(force: boolean, scope?: HandoffCategory, baseHashOverride?: string) {
+    if (submitBusyRef.current || attemptRef.current) return;
+    submitBusyRef.current = true;
     setErr(null);
     const payload = {
       editorBrief,
@@ -1219,12 +1294,19 @@ export function UploadPortal({
     saverRef.current?.stop();
     const submittedJson = payloadJson;
     const resumeAutosave = () => {
+      if (attemptRef.current || draftConflictRef.current) { writeMirror(JSON.stringify(payloadRef.current)); return; }
       saverRef.current?.resume();
       if (payloadRef.current && JSON.stringify(payloadRef.current) !== lastSavedJson.current) saverRef.current?.change();
     };
     startTransition(async () => {
+      let attempted = false;
       try {
-        const res = await finalizeUpload(project.id, payload);
+        const attempt = { attemptId: crypto.randomUUID(), payloadFingerprint: await uploadAttemptFingerprint(payload) };
+        keepAttempt(attempt); attempted = true;
+        const res = await finalizeUpload(project.id, { ...payload, ...attempt });
+        if (res.blocked || res.needsConfirm || res.conflict || res.attemptTerminal) {
+          if (!res.attemptPending) keepAttempt(null);
+        }
         if (res.blocked) { resumeAutosave(); setErr(res.blocked); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
         if (res.needsConfirm) {
           resumeAutosave();
@@ -1261,22 +1343,24 @@ export function UploadPortal({
           // The draft is spent: the server consumed it with this submit.
           revRef.current = null;
           lastSavedJson.current = submittedJson;
-          clearMirror();
+          const newerDraft = JSON.stringify(payloadRef.current) !== submittedJson;
+          if (!newerDraft) clearMirror();
           setRestored(null);
           if (done) setLastEdited({ by: "you", atISO: new Date().toISOString() });
           setDone(true);
-          setReopened(false); // collapse back to the confirmation after a re-submit
+          setReopened(newerDraft); // keep later native input visible and recoverable
           // The read-back card uses the server's submitted values and time.
           // Without a refresh it could say "never submitted" beside the new
           // success banner until the photographer manually reloaded the page.
-          router.refresh();
+          if (!newerDraft && res.attemptTerminal) router.refresh();
         }
+        if (!res.attemptTerminal) setErr("Your answers were saved, but the request's finished status could not be recorded. Editor notification is unconfirmed. Check this attempt before another submit, or ask the office to inspect the handoff.");
         resumeAutosave();
         window.scrollTo({ top: 0, behavior: "smooth" });
       } catch {
         resumeAutosave();
-        setErr("Couldn’t submit — the editors were NOT notified. Your answers are kept on this page. Please try again.");
-      }
+        setErr(attempted ? "The upload response was lost. Your answers are kept; they may already be saved and editor notification is unconfirmed. Check this exact attempt before submitting again." : "The upload request could not be prepared. Your answers are kept; please try again.");
+      } finally { submitBusyRef.current = false; }
     });
   }
 
@@ -1358,13 +1442,58 @@ export function UploadPortal({
   async function saveSqft(raw: string) {
     const trimmed = raw.replace(/[^0-9]/g, "");
     const value = trimmed ? Number(trimmed) : null;
-    if (value === sqftSaved) return;
-    setSqftBusy(true); setSqftErr(null);
-    const res = await setProjectSquareFeet(project.id, value);
-    setSqftBusy(false);
-    if (!res.ok) { setSqftErr(res.message ?? "Couldn't save that."); return; }
-    setSqftSaved(value);
-    setBandText(null); // a typed figure is better than the ordered band
+    if (sqftNeedsCheckRef.current) return;
+    if (sqftBusyRef.current) { sqftQueuedRef.current = value; return; }
+    if (value === sqftSavedRef.current) return;
+    sqftBusyRef.current = true; setSqftBusy(true); setSqftErr(null);
+    let next: number | null | undefined = value;
+    try {
+      while (next !== undefined) {
+        const submitted: number | null = next; sqftQueuedRef.current = undefined;
+        const attempt = { attemptId: crypto.randomUUID(), payloadFingerprint: await uploadAttemptFingerprint({ squareFeet: submitted }) };
+        sqftAttemptRef.current = attempt;
+        try { localStorage.setItem(SIZE_ATTEMPT_MIRROR_KEY(project.id), JSON.stringify(attempt)); } catch { /* retained in this page */ }
+        const res = await setProjectSquareFeet(project.id, submitted, attempt);
+        if (res.terminal || (!res.ok && !res.pending)) {
+          sqftAttemptRef.current = null;
+          try { localStorage.removeItem(SIZE_ATTEMPT_MIRROR_KEY(project.id)); } catch { /* best effort */ }
+        }
+        if (!res.ok) {
+          sqftQueuedRef.current = undefined;
+          if (res.pending) { sqftNeedsCheckRef.current = true; setSqftNeedsCheck(true); }
+          setSqftErr(res.message ?? "Couldn't save that. Your current size is kept."); return;
+        }
+        sqftSavedRef.current = submitted; setSqftSaved(submitted); setBandText(null);
+        if (!res.terminal) {
+          sqftQueuedRef.current = undefined; sqftNeedsCheckRef.current = true; setSqftNeedsCheck(true);
+          setSqftErr("The size is saved, but its finished status is unconfirmed. Check this attempt before another save."); return;
+        }
+        next = sqftQueuedRef.current;
+        if (next === submitted) next = undefined;
+      }
+    } catch {
+      // A queued later blur is not permission to replay an uncertain write.
+      sqftQueuedRef.current = undefined;
+      if (sqftAttemptRef.current) {
+        sqftNeedsCheckRef.current = true; setSqftNeedsCheck(true);
+        setSqftErr("The size save response was lost. Your typed figure is kept. Check the current size before saving again.");
+      } else setSqftErr("The size request could not be prepared. Your typed figure is kept; choose Save current size to try again.");
+    } finally { sqftBusyRef.current = false; setSqftBusy(false); }
+  }
+  async function checkSqft() {
+    if (sqftBusyRef.current || !sqftNeedsCheckRef.current || !sqftAttemptRef.current) return;
+    sqftBusyRef.current = true; setSqftBusy(true);
+    try {
+      const attempt = sqftAttemptRef.current;
+      const current = await readUploadSquareFeet(project.id, attempt.attemptId, attempt.payloadFingerprint);
+      if (current.state === "unknown" || !current.terminal) { setSqftErr("The earlier size request has not confirmed it finished. Your typed figure is kept; check again or ask the office to inspect it before saving."); return; }
+      sqftSavedRef.current = current.squareFeet; setSqftSaved(current.squareFeet); if (current.squareFeet !== null) setBandText(null);
+      sqftNeedsCheckRef.current = false; setSqftNeedsCheck(false);
+      sqftAttemptRef.current = null;
+      try { localStorage.removeItem(SIZE_ATTEMPT_MIRROR_KEY(project.id)); } catch { /* best effort */ }
+      setSqftErr(`Current saved size: ${current.squareFeet === null ? "none" : `${current.squareFeet.toLocaleString("en-US")} sq ft`}. Your typed figure is kept. Choose Save current size if you want to apply it.`);
+    } catch { setSqftErr("The current size could not be checked. Your typed figure is kept; retry this check before saving."); }
+    finally { sqftBusyRef.current = false; setSqftBusy(false); }
   }
 
   const checkbox = "size-4 shrink-0 accent-[var(--brand)]";
@@ -1420,7 +1549,7 @@ export function UploadPortal({
               : `Restored answers you hadn't submitted (saved ${etDateTime(restored.atISO)}).`}
             {movedSinceDraft && " The submitted answers changed after these were saved, so submitting will show you what changed before it replaces anything."}
           </span>
-          <button onClick={discardDraft} disabled={isPending} className="text-xs font-medium text-muted underline hover:text-foreground disabled:opacity-50">
+          <button onClick={discardDraft} disabled={isPending || !!pendingAttempt} className="text-xs font-medium text-muted underline hover:text-foreground disabled:opacity-50">
             Discard
           </button>
         </div>
@@ -1443,16 +1572,16 @@ export function UploadPortal({
                 <button onClick={() => window.location.reload()} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
                   Reload to see what went in
                 </button>
-                <button onClick={keepMineAfterConflict} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
                   Keep editing here
                 </button>
               </>
             ) : (
               <>
-                <button onClick={keepMineAfterConflict} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
+                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">
                   Keep this page&rsquo;s answers
                 </button>
-                <button onClick={takeTheirsAfterConflict} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                <button onClick={takeTheirsAfterConflict} disabled={isPending || !!pendingAttempt} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
                   Load the other copy
                 </button>
               </>
@@ -1590,6 +1719,7 @@ export function UploadPortal({
           <div className="font-medium">{err}</div>
         </div>
       )}
+      {pendingAttempt && <button type="button" disabled={isPending || checkingAttempt} onClick={() => { void checkAttempt(); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm font-medium disabled:opacity-50">{checkingAttempt ? "Checking upload status…" : "Check upload status"}</button>}
 
       {/* Everything below is the checklist itself — hidden once submitted,
           so the confirmation IS the page rather than a banner above a wall of
@@ -1771,6 +1901,8 @@ export function UploadPortal({
                 : sqftSaved != null && String(sqftSaved) === sqft
                   ? <span className="inline-flex items-center gap-1 text-xs text-success"><Check className="size-3.5" />saved</span>
                   : null}
+              {sqftNeedsCheck ? <button type="button" disabled={sqftBusy} onClick={() => { void checkSqft(); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs disabled:opacity-50">Check current size</button>
+                : sqftErr && <button type="button" disabled={sqftBusy} onClick={() => { void saveSqft(sqft); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs disabled:opacity-50">Save current size</button>}
             </div>
             {sqftErr
               ? <span className="w-full text-xs text-danger">{sqftErr}</span>
@@ -2438,7 +2570,7 @@ export function UploadPortal({
             <div className="mt-2.5 flex flex-wrap gap-2">
               <button
                 type="button"
-                disabled={isPending || (ask.review && checkingRaw)}
+                disabled={isPending || !!pendingAttempt || (ask.review && checkingRaw)}
                 onClick={() => {
                   const a = ask.action;
                   setAsk(null);
@@ -2491,7 +2623,7 @@ export function UploadPortal({
                   </div>
                   <button
                     onClick={() => finalize(half)}
-                    disabled={isPending}
+                    disabled={isPending || !!pendingAttempt}
                     className={cn(
                       "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50",
                       at ? "border border-border bg-surface text-foreground" : "bg-brand text-brand-fg",
@@ -2520,7 +2652,7 @@ export function UploadPortal({
         </div>
         <button
           onClick={() => finalize()}
-          disabled={isPending}
+          disabled={isPending || !!pendingAttempt}
           className="inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}

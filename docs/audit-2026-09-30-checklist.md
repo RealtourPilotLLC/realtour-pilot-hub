@@ -74,6 +74,16 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U3/W06 upload reconciliation:** opaque exact-attempt AuditLog receipts bind
+  actor/project/payload to the atomic brief/report commit and separate terminal
+  state. Unknown/unfinished submits hold replay and server autosave while newer
+  local text and explicit draft-conflict choices survive. Size writes serialize
+  and require their own terminal receipt after a lost response. Signed isolated
+  PostgreSQL 26/0, actual handler/refresh fixture 18/0, affected CP09 142/0 and B4
+  upload 69/0; lint/TypeScript/diff passed. No new schema or provider policy.
+  Absent/nonterminal receipts require office request/log/handoff inspection if
+  they cannot settle; no blind expiry/retry. Browser/phone/provider acceptance open.
+
 - **Month stage navigation:** real monthly Call/Topics/Scripts/Shoot targets keep
   exact enrollment/month; unknown stage/count reasons are visible. Unneeded
   calls, missing workspaces and Delivered's all-month library stay informational.

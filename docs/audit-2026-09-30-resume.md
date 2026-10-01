@@ -14,9 +14,9 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
   messages/invitations, real bookings, financial changes, automation activation,
   branch push or deployment is authorized.
-- Existing isolated demo uses port 3200 and the main checkout's `.next`. It was
-  left running. Inspect processes before any build/start; do not terminate or
-  overwrite its build files blindly.
+- The prior isolated demo used port 3200 and the main checkout's `.next`. It
+  was left running earlier; Oct 1 resume process inspection found it no longer
+  running. No process was stopped or restarted. Inspect before any build/start.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
   Last observed clean/detached at `c5e619e`, whose build passed. Advance only
@@ -51,15 +51,18 @@ browser, real provider/model output, real rendition/watch or phone-file proof.
 
 ## Active slice and next safe checkpoint
 
-Upload submit reconciliation is in progress in `upload/actions.ts`,
-`UploadPortal.tsx` and a new receipt helper/drill. A lost response must not say
-editors were not notified or invite blind replay. The intended no-schema design
-uses existing AuditLog for opaque exact-attempt/core-commit/terminal receipts,
-guarded read-only checks and retained local draft/attempt identity. Square-foot
-saves must settle pending state, keep newer input and reconcile lost responses
-before another write. Preserve all existing handoff, conflict, pay and clock rules.
-The slice is not yet tested/committed. Complete its focused independent review,
-isolated failure/concurrency evidence, lint and typecheck, then commit it.
+Upload reconciliation now has exact actor/project/payload-bound AuditLog
+core/terminal receipts, authorized read-only recovery and retained local drafts.
+Uncertain submits, size writes and existing draft-conflict choices hold replay
+and server autosave; newer text stays mirrored. Isolated PostgreSQL 26/0, UI
+hook/refresh 18/0, affected CP09 142/0 and B4 69/0 pass, as do lint/TypeScript.
+No new schema. If an absent/core_saved receipt cannot settle, office staff must
+inspect its request logs and saved handoff/task/notification evidence; no blind
+retry/expiry is offered. See handoff for logs and actual browser/provider limits.
+
+Remaining active local slices are bounded content-library/month controls and
+shared CopyButton/MarkdownEditor controls. Freeze/review/commit them before the
+combined gate; neither their source checks nor clipboard fakes prove browser use.
 
 After that stable checkpoint, run the combined typecheck/changed-file lint and
 one production build in the separate clean checkout. Record the exact source

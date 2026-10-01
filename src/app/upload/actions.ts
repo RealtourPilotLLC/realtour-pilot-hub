@@ -32,6 +32,7 @@ import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
 import { UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
+import { UPLOAD_ATTEMPT_ACTION, uploadAttemptIdValid, uploadFingerprintValid, uploadAttemptFingerprint, uploadAttemptRowId, parseUploadCommitReceipt, type UploadCommitReceipt } from "@/lib/uploadReceipt";
 
 // Provenance marker for a script the photographer typed on site (no Script
 // Studio draft existed). Kept as a constant so the re-submit guard and the
@@ -284,15 +285,31 @@ export async function submitUploadFeedback(projectId: string, body: string): Pro
 export async function setProjectSquareFeet(
   projectId: string,
   squareFeet: number | null,
-): Promise<{ ok: boolean; message?: string }> {
+  attempt?: { attemptId: string; payloadFingerprint: string },
+): Promise<{ ok: boolean; message?: string; terminal?: boolean; pending?: boolean }> {
   await requireShootAccess(projectId);
   if (squareFeet != null && (!Number.isFinite(squareFeet) || squareFeet < 100 || squareFeet > 60_000)) {
     return { ok: false, message: "That doesn't look like a square footage — enter the finished living area, e.g. 2400." };
   }
   const value = squareFeet == null ? null : Math.round(squareFeet);
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser();
+  const actor = me?.email?.trim().toLowerCase() ?? "local-development";
+  if (attempt && (!uploadAttemptIdValid(attempt.attemptId) || !uploadFingerprintValid(attempt.payloadFingerprint) || await uploadAttemptFingerprint({ squareFeet }) !== attempt.payloadFingerprint)) return { ok: false, message: "That size request receipt is invalid." };
+  const receiptId = attempt ? `upload-size:${attempt.attemptId}` : null;
+  if (receiptId && await prisma.auditLog.findUnique({ where: { id: receiptId } })) return { ok: false, pending: true, message: "This size attempt already has a receipt. Check it before saving again." };
   const before = await prisma.project.findUnique({ where: { id: projectId }, select: { squareFeet: true } });
-  if (before?.squareFeet === value) return { ok: true };
-  await prisma.project.update({ where: { id: projectId }, data: { squareFeet: value } });
+  if (before?.squareFeet === value && !attempt) return { ok: true };
+  let receipt: UploadCommitReceipt | null = null;
+  if (attempt && receiptId) {
+    receipt = { version: 1, phase: "core_saved", payloadFingerprint: attempt.payloadFingerprint, baseHash: await uploadAttemptFingerprint({ squareFeet: value }), scope: "all", atISO: new Date().toISOString() };
+    await prisma.$transaction(async (tx) => {
+      if (before?.squareFeet !== value) await tx.project.update({ where: { id: projectId }, data: { squareFeet: value } });
+      await tx.auditLog.create({ data: { id: receiptId, actor, action: "upload_size_attempt", target: projectId, detail: JSON.stringify(receipt) } });
+    });
+  } else await prisma.project.update({ where: { id: projectId }, data: { squareFeet: value } });
+  try {
+  if (before?.squareFeet !== value) {
   await prisma.activity.create({
     data: {
       projectId,
@@ -302,9 +319,56 @@ export async function setProjectSquareFeet(
         : `Square footage set to ${value.toLocaleString("en-US")} sq ft on the upload page — the photo target now follows that size tier.`,
     },
   }).catch(() => {});
+  }
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
-  return { ok: true };
+  let terminal = !attempt;
+  if (receipt && receiptId) {
+    try { await prisma.auditLog.update({ where: { id: receiptId }, data: { detail: JSON.stringify({ ...receipt, phase: "complete" }) } }); terminal = true; }
+    catch { /* the exact attempt stays held */ }
+  }
+  return { ok: true, terminal };
+  } catch (error) {
+    if (receipt && receiptId) await prisma.auditLog.update({ where: { id: receiptId }, data: { detail: JSON.stringify({ ...receipt, phase: "ended" }) } }).catch(() => {});
+    throw error;
+  }
+}
+
+/** Read-only recovery: neither a provider check nor a size write. */
+export async function readUploadSquareFeet(projectId: string, attemptId: string, payloadFingerprint: string) {
+  await requireShootAccess(projectId);
+  if (!uploadAttemptIdValid(attemptId) || !uploadFingerprintValid(payloadFingerprint)) throw new Error("That size receipt is invalid.");
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser();
+  const row = await prisma.auditLog.findUnique({ where: { id: `upload-size:${attemptId}` } });
+  const receipt = row && row.action === "upload_size_attempt" && row.target === projectId && row.actor === (me?.email?.trim().toLowerCase() ?? "local-development") ? parseUploadCommitReceipt(row.detail) : null;
+  if (!receipt || receipt.payloadFingerprint !== payloadFingerprint) return { state: "unknown" as const };
+  const current = await prisma.project.findUnique({ where: { id: projectId }, select: { squareFeet: true } });
+  if (!current) throw new Error("This shoot is no longer available.");
+  return { state: "saved" as const, terminal: receipt.phase !== "core_saved", ...current };
+}
+
+/** The atomic receipt proves saved answers, not completed notifications. A
+ * nonterminal receipt must hold the next submit while its action still runs. */
+export async function readUploadAttempt(projectId: string, attemptId: string, payloadFingerprint: string) {
+  await requireShootAccess(projectId);
+  if (!uploadAttemptIdValid(attemptId) || !uploadFingerprintValid(payloadFingerprint)) throw new Error("That upload receipt is invalid.");
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser();
+  const actor = me?.email?.trim().toLowerCase() ?? "local-development";
+  const row = await prisma.auditLog.findUnique({ where: { id: uploadAttemptRowId(attemptId) } });
+  const receipt = row && row.target === projectId && row.actor === actor && row.action === UPLOAD_ATTEMPT_ACTION ? parseUploadCommitReceipt(row.detail) : null;
+  if (!receipt || receipt.payloadFingerprint !== payloadFingerprint) return { state: "unknown" as const };
+  const current = await prisma.project.findUnique({ where: { id: projectId }, select: {
+    editorBrief: true, videoInstructions: true, removalNotes: true, shotOrderNotes: true, reelScript: true, scriptConfirmNote: true, videosFilmed: true,
+    photosHandoffAt: true, videoHandoffAt: true, debriefSubmittedAt: true,
+  } });
+  if (!current) throw new Error("This shoot is no longer available.");
+  const { submittedFieldsHash } = await import("@/lib/uploadDraft");
+  return { state: "saved" as const, terminal: receipt.phase !== "core_saved", phase: receipt.phase, baseHash: receipt.baseHash, atISO: receipt.atISO,
+    currentChanged: submittedFieldsHash(current) !== receipt.baseHash,
+    handoff: { photosAtISO: current.photosHandoffAt?.toISOString() ?? null, videoAtISO: current.videoHandoffAt?.toISOString() ?? null, wholeDone: !!current.debriefSubmittedAt },
+  };
 }
 
 export async function flagIssue(projectId: string, body: string) {
@@ -419,12 +483,19 @@ export async function finalizeUpload(
      *  or a restored draft's save) — a change is pinned on a person only when
      *  their timeline line is newer than this. */
     baseAtISO?: string | null;
+    /** New tabs carry an opaque exact-attempt receipt; older tabs keep their existing contract. */
+    attemptId?: string;
+    payloadFingerprint?: string;
   },
 ): Promise<{
   pdfPath?: string;
   needsConfirm?: boolean;
   warning?: string;
   blocked?: string;
+  /** A replay reached an existing non-replayable attempt receipt. */
+  attemptPending?: boolean;
+  /** New tabs release their recovery hold only when this terminal mark persisted. */
+  attemptTerminal?: boolean;
   /** O04: the re-submit was refused — the submitted answers changed since this page loaded. */
   conflict?: { current: import("@/lib/uploadDraft").SubmittedFields; currentHash: string; by: string | null; atISO: string | null };
   /** O04: the fingerprint after this submit, for the page's next re-submit. */
@@ -532,6 +603,15 @@ export async function finalizeUpload(
   const firstFinalize = !everSubmitted && !legacyDone && !halfSubmittedBefore;
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
+  const receiptActor = me?.email?.trim().toLowerCase() ?? "local-development";
+  const attemptId = data.attemptId;
+  if (attemptId !== undefined) {
+    if (!uploadAttemptIdValid(attemptId) || !uploadFingerprintValid(data.payloadFingerprint) || await uploadAttemptFingerprint(data) !== data.payloadFingerprint) return { blocked: "The upload request receipt is invalid. Your answers are kept." };
+    // Even a duplicate still preparing must never re-enter the saved action's
+    // provider/handoff work. The unique atomic row also fences concurrent calls.
+    const existing = await prisma.auditLog.findUnique({ where: { id: uploadAttemptRowId(attemptId) }, select: { id: true } });
+    if (existing) return { blocked: "This upload attempt already has a saved receipt. Check its status before submitting again.", attemptPending: true };
+  }
   let submitterIsPhotographer = false;
   if (me) {
     const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
@@ -870,7 +950,7 @@ export async function finalizeUpload(
   // otherwise each see the other still missing, and neither would stamp it.
   const stampWhole = !scope && !prior?.debriefSubmittedAt;
 
-  const projectWrite = prisma.project.update({
+  const projectWrite = {
     where: { id: projectId },
     data: {
       // Only overwrite the brief when the finalize actually carries one — a
@@ -952,7 +1032,7 @@ export async function finalizeUpload(
       // submit still lands a fresh one.
       ...(prior?.uploadedAt ? {} : { uploadedAt: new Date() }),
     },
-  });
+  };
   // O05 — THE WHOLE WRAP-UP, decided off the committed row. updateMany on
   // `debriefSubmittedAt: null` makes the completion a claim: exactly one
   // submit completes it, and only that one writes the "completed upload"
@@ -980,15 +1060,26 @@ export async function finalizeUpload(
   // payloadHash), and a duplicate is a no-op rather than a P2002 that would
   // fail the whole submit.
   let reportIsNew = false;
-  if (filming) {
+  let attemptReceipt: UploadCommitReceipt | null = null;
+  if (attemptId) {
+    const { submittedFieldsHash } = await import("@/lib/uploadDraft");
+    attemptReceipt = await prisma.$transaction(async (tx) => {
+      if (filming) reportIsNew = (await tx.contentFilmingReport.createMany({ data: [filming.row], skipDuplicates: true })).count > 0;
+      const saved = await tx.project.update(projectWrite);
+      const receipt: UploadCommitReceipt = { version: 1, phase: "core_saved", payloadFingerprint: data.payloadFingerprint!, baseHash: submittedFieldsHash(saved), scope: scope ?? "all", atISO: nowStamp.toISOString() };
+      await tx.auditLog.create({ data: { id: uploadAttemptRowId(attemptId), actor: receiptActor, target: projectId, action: UPLOAD_ATTEMPT_ACTION, detail: JSON.stringify(receipt) } });
+      return receipt;
+    });
+  } else if (filming) {
     const [made] = await prisma.$transaction([
       prisma.contentFilmingReport.createMany({ data: [filming.row], skipDuplicates: true }),
-      projectWrite,
+      prisma.project.update(projectWrite),
     ]);
     reportIsNew = made.count > 0;
   } else {
-    await projectWrite;
+    await prisma.project.update(projectWrite);
   }
+  try {
   await completeIfWhole();
   if (!scope) {
     photosAt = prior?.photosHandoffAt ?? null;
@@ -1234,7 +1325,13 @@ export async function finalizeUpload(
       await sendSplitNoticeIfChaserPassed(projectId);
     } catch { /* best-effort — the page itself states the deadline */ }
   }
+  let attemptTerminal = !attemptId;
+  if (attemptId && attemptReceipt) {
+    try { await prisma.auditLog.update({ where: { id: uploadAttemptRowId(attemptId) }, data: { detail: JSON.stringify({ ...attemptReceipt, phase: "complete" }) } }); attemptTerminal = true; }
+    catch { /* core receipt remains held; the page must preserve its identity */ }
+  }
   return {
+    attemptTerminal,
     pdfPath,
     ...(topicsPending ? { topicsPending } : {}),
     ...(nextHash ? { baseHash: nextHash } : {}),
@@ -1247,6 +1344,13 @@ export async function finalizeUpload(
       videoLate,
     },
   };
+  } catch (error) {
+    // This invocation has ended after its atomic core commit. Provider work
+    // may have succeeded before throwing; the receipt deliberately makes no
+    // claim about notification delivery. Never mark another racing call ended.
+    if (attemptId && attemptReceipt) await prisma.auditLog.update({ where: { id: uploadAttemptRowId(attemptId) }, data: { detail: JSON.stringify({ ...attemptReceipt, phase: "ended" }) } }).catch(() => {});
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
