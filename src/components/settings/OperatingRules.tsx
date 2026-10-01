@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useId, useState, useTransition } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates } from "@/app/settings/actions";
 import { loadCutReviewerSeats, setCutReviewerAway } from "@/app/review/actions";
@@ -12,6 +12,9 @@ import { EmailSlaSettings } from "@/components/settings/EmailSlaSettings";
 import { NotificationSchedule } from "@/components/settings/NotificationSchedule";
 import { useSettingsDraft } from "@/components/settings/useSettingsDraft";
 import type { SettingsSaveResult } from "@/lib/settingsDraft";
+import { Button } from "@/components/ui/Action";
+import { TextField } from "@/components/ui/FormField";
+import { SaveStatus } from "@/components/ui/SaveStatus";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
 // settings for turnaround promises, alert thresholds, anything currently hard
@@ -24,20 +27,22 @@ const hour12 = (h: number) => {
   return `${v}:00 ${am ? "AM" : "PM"}`;
 };
 
-function Num({ value, onChange, min, max, suffix, wide }: { value: number; onChange: (n: number) => void; min: number; max: number; suffix?: string; wide?: boolean }) {
+function Num({ label, value, onChange, min, max, suffix, wide }: { label: string; value: number; onChange: (n: number) => void; min: number; max: number; suffix?: string; wide?: boolean }) {
+  const id = useId();
   return (
-    <span className="inline-flex items-center gap-1.5">
-      <input
+    <div className="inline-flex items-center gap-1.5">
+      <TextField id={id} label={label} labelHidden
         inputMode="numeric"
+        aria-describedby={suffix ? `${id}-unit` : undefined}
         value={String(value)}
         onChange={(e) => {
           const n = Number(e.target.value.replace(/[^\d]/g, ""));
           if (!Number.isNaN(n)) onChange(Math.min(max, Math.max(min, n)));
         }}
-        className={cn("rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm tabular-nums outline-none focus:border-brand", wide ? "w-20" : "w-16")}
+        className={wide ? "w-20" : "w-16"} inputClassName="bg-surface-2 px-2 text-sm tabular-nums"
       />
-      {suffix && <span className="text-xs text-muted">{suffix}</span>}
-    </span>
+      {suffix && <span id={`${id}-unit`} className="text-sm text-muted">{suffix}</span>}
+    </div>
   );
 }
 
@@ -48,9 +53,11 @@ export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChang
     <button
       type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled}
       onClick={() => onChange(!on)}
-      className={cn("relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50", on ? "bg-success" : "bg-surface-2 ring-1 ring-border")}
+      className="relative h-11 w-11 shrink-0 rounded-lg disabled:cursor-not-allowed disabled:opacity-50"
     >
-      <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", on ? "left-[22px]" : "left-0.5")} />
+      <span aria-hidden className={cn("absolute inset-x-0 top-2.5 h-6 rounded-full transition-colors", on ? "bg-success" : "bg-surface-2 ring-1 ring-border-strong")}>
+        <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", on ? "left-[22px]" : "left-0.5")} />
+      </span>
     </button>
   );
 }
@@ -59,11 +66,12 @@ export function SaveRow({ onSave, msg, busy, feedback, dirty, label = "Save" }: 
   const message = feedback?.message ?? msg;
   return (
     <div className="mt-3 flex flex-wrap items-center gap-3">
-      <button type="button" onClick={onSave} disabled={busy} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50">
-        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : feedback?.ok && !dirty ? <Check aria-hidden className="size-4" /> : null} {busy ? "Saving…" : label}
-      </button>
-      {dirty !== undefined && <span className="text-sm text-muted">{dirty ? "Unsaved changes" : feedback?.ok ? "Saved" : "Loaded settings"}</span>}
-      {message && <span role={feedback?.ok === false ? "alert" : "status"} className={cn("text-sm font-medium", feedback?.ok === false ? "text-danger" : "text-muted")}>{message}{feedback?.ok && dirty ? " Newer edits are still unsaved." : ""}</span>}
+      <Button onClick={onSave} busy={busy} busyLabel="Saving…">
+        {!busy && feedback?.ok && !dirty ? <Check aria-hidden className="size-4" /> : null} {label}
+      </Button>
+      {(dirty !== undefined || message || busy) && <SaveStatus
+        state={busy ? "saving" : feedback?.ok === false ? "error" : dirty ? "dirty" : feedback?.ok ? "saved" : dirty !== undefined ? "loaded" : "info"}
+        message={!busy && message ? <>{message}{feedback?.ok && dirty ? " Newer edits are still unsaved." : ""}</> : undefined} />}
     </div>
   );
 }
@@ -96,7 +104,7 @@ export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
               <b>{row.label}</b>
               {row.hint && <span className="text-muted"> — {row.hint}</span>}
             </span>
-            <Num
+            <Num label={row.label + " turnaround"}
               value={r[row.key] as number}
               onChange={(n) => { setR((p) => ({ ...p, [row.key]: n })); }}
               min={1} max={row.max} suffix={row.unit}
@@ -105,7 +113,7 @@ export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
         ))}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
           <span className="text-[13px]"><b>Monthly content</b><span className="text-muted"> — personal branding batches</span></span>
-          <Num value={r.monthlyBusinessDays} onChange={(n) => { setR((p) => ({ ...p, monthlyBusinessDays: n })); }} min={1} max={60} suffix="business days" />
+          <Num label="Monthly content turnaround" value={r.monthlyBusinessDays} onChange={(n) => { setR((p) => ({ ...p, monthlyBusinessDays: n })); }} min={1} max={60} suffix="business days" />
         </div>
       </div>
       <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save turnaround promises" onSave={() => save(saveTurnarounds)} />
@@ -189,9 +197,9 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
 
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
           <span className="text-[13px] text-muted">Covered</span>
-          <Num value={r.coverage.fromHour} onChange={(n) => setCover({ fromHour: n })} min={0} max={22} suffix={hour12(r.coverage.fromHour)} />
+          <Num label="Coverage start hour" value={r.coverage.fromHour} onChange={(n) => setCover({ fromHour: n })} min={0} max={22} suffix={hour12(r.coverage.fromHour)} />
           <span className="text-xs text-muted-2">to</span>
-          <Num value={r.coverage.toHour} onChange={(n) => setCover({ toHour: n })} min={1} max={23} suffix={`ET (${hour12(r.coverage.toHour)})`} />
+          <Num label="Coverage end hour" value={r.coverage.toHour} onChange={(n) => setCover({ toHour: n })} min={1} max={23} suffix={`ET (${hour12(r.coverage.toHour)})`} />
         </div>
 
         <div className="mt-2 flex items-center justify-between gap-3 border-t border-border pt-2">
@@ -242,7 +250,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
         </div>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
           <span className="text-[13px] text-muted">Sends at</span>
-          <Num value={r.uploadReminder.hour} onChange={(n) => set({ uploadReminder: { ...r.uploadReminder, hour: n } })} min={0} max={23} suffix={`ET (${hour12(r.uploadReminder.hour)})`} />
+          <Num label="Upload reminder hour" value={r.uploadReminder.hour} onChange={(n) => set({ uploadReminder: { ...r.uploadReminder, hour: n } })} min={0} max={23} suffix={`ET (${hour12(r.uploadReminder.hour)})`} />
         </div>
       </div>
 
@@ -257,7 +265,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
         </div>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
           <span className="text-[13px] text-muted">Sends at</span>
-          <Num value={r.uploadChaser.hour} onChange={(n) => set({ uploadChaser: { ...r.uploadChaser, hour: n } })} min={0} max={23} suffix={`ET (${hour12(r.uploadChaser.hour)})`} />
+          <Num label="Upload chaser hour" value={r.uploadChaser.hour} onChange={(n) => set({ uploadChaser: { ...r.uploadChaser, hour: n } })} min={0} max={23} suffix={`ET (${hour12(r.uploadChaser.hour)})`} />
         </div>
       </div>
 
@@ -272,11 +280,11 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
           <span className="text-[13px] text-muted">Late after</span>
-          <Num value={r.photosUndelivered.lateAfterHours} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, lateAfterHours: n } })} min={1} max={336} suffix="hours" />
+          <Num label="Undelivered photos late threshold" value={r.photosUndelivered.lateAfterHours} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, lateAfterHours: n } })} min={1} max={336} suffix="hours" />
           <span className="text-[13px] text-muted">· alert between</span>
-          <Num value={r.photosUndelivered.fromHour} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, fromHour: n } })} min={0} max={22} suffix={hour12(r.photosUndelivered.fromHour)} />
+          <Num label="Undelivered photos alert start hour" value={r.photosUndelivered.fromHour} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, fromHour: n } })} min={0} max={22} suffix={hour12(r.photosUndelivered.fromHour)} />
           <span className="text-xs text-muted-2">and</span>
-          <Num value={r.photosUndelivered.toHour} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, toHour: n } })} min={1} max={23} suffix={hour12(r.photosUndelivered.toHour)} />
+          <Num label="Undelivered photos alert end hour" value={r.photosUndelivered.toHour} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, toHour: n } })} min={1} max={23} suffix={hour12(r.photosUndelivered.toHour)} />
         </div>
         {!windowOk(r.photosUndelivered) && (
           <p className="mt-2 text-[13px] text-warning">
@@ -426,7 +434,7 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
           this many days have passed. The client portal shows the current and previous month, so keep at least 60.
         </p>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
-          <Num value={r.keepUploadsDays} onChange={(n) => set({ keepUploadsDays: n })} min={1} max={365} suffix="days" />
+          <Num label="Keep uploads for" value={r.keepUploadsDays} onChange={(n) => set({ keepUploadsDays: n })} min={1} max={365} suffix="days" />
         </div>
       </div>
 
@@ -489,7 +497,7 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
         })}
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-2">
           <span className="text-[13px] text-muted">Offer the backup a cut the reviewer hasn&rsquo;t reached after</span>
-          <Num value={r.coverOfferHours} onChange={(n) => set({ coverOfferHours: n })} min={1} max={90} suffix="covered hours" />
+          <Num label="Reviewer cover offer after" value={r.coverOfferHours} onChange={(n) => set({ coverOfferHours: n })} min={1} max={90} suffix="covered hours" />
           <span className="w-full text-[11px] leading-relaxed text-muted-2">
             Covered hours are the rota above (Mon–Fri 9–6 ET by default). All three seats are told about every cut and
             can rule on it at any time; this is when the backup is nudged that the reviewer hasn&rsquo;t got to one. After
@@ -506,7 +514,7 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
             </p>
             {autoMove && (
               <div className="mt-1.5">
-                <Num value={r.coverTransferHours ?? 18} onChange={(n) => set({ coverTransferHours: n })} min={1} max={200} suffix="covered hours" />
+                <Num label="Reviewer cover transfer after" value={r.coverTransferHours ?? 18} onChange={(n) => set({ coverTransferHours: n })} min={1} max={200} suffix="covered hours" />
               </div>
             )}
           </div>

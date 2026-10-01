@@ -2,6 +2,31 @@
 
 ## Sep 30 takeover addendum
 
+### U1 checkpoint — shared action, field and save-state presentation
+
+Added small native Button/ActionLink, FormField/TextField and SaveStatus pieces
+alongside the existing Badge, ModalDialog and ActionMenu. Settings save rows and
+numeric fields use them; switches keep their visual track but have a 44px target.
+Client planning/cancellation controls use readable labels, 44px actions and
+accessible save/error feedback. Existing action handlers, input bounds, eligibility
+and confirmation policy remain unchanged. Semantic type/target/action tokens and
+the shared-control contract are in `docs/ui-controls.md`.
+
+Development-only `/settings/ui-preview` requires existing Settings access and
+uses fixed fictional states in staff and client-light palettes. Outside development
+it returns notFound before rendering. No domain reader/provider/mutation is used
+by its examples. It includes loading, loaded/dirty/saved/error, partial, empty,
+filtered-empty and disabled cases for the pending screenshot comparison.
+
+Focused native semantics/control fixture passed 9/0
+(`/tmp/u1-control-states-final/`), existing Settings snapshot regression 12/0,
+lint, stable-tree TypeScript and one independent source review passed. The initial
+fixture run needed a router stub; only that failed drill was repeated. Flat token
+calculations: primary white 5.06 dark / 5.53 light, danger white 6.47, sampled muted
+text 5.46–7.12. These are token calculations, not rendered contrast acceptance.
+Keyboard, phone, zoom, clipping and browser contrast remain blocked/open; U1 and
+UA10–UA12 are not complete.
+
 ### U4 checkpoint — compact task rows and retained detail drafts
 
 The operational board shows concise work rows with source, property, owner,

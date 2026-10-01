@@ -36,6 +36,7 @@
   --warning: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.14);
   --danger: #f87171;
+  --danger-action: #b91c1c;
   --danger-soft: rgba(248, 113, 113, 0.14);
 
   /* Chip ink — hex-colored chips mix their hue toward this so the text clears
@@ -48,6 +49,10 @@
   --hue-ink-mix: 0%;
 
   --radius: 1rem;
+  --type-body: 1rem;
+  --type-secondary: 0.875rem;
+  --type-status: 0.8125rem;
+  --control-target: 2.75rem;
 }
 
 /* Light mode — same token contract, warm-white palette. Activated by a class
@@ -76,6 +81,7 @@ html.light {
   --warning: #b45309;
   --warning-soft: rgba(180, 83, 9, 0.14);
   --danger: #dc2626;
+  --danger-action: #b91c1c;
   --danger-soft: rgba(220, 38, 38, 0.1);
 
   /* Chip text sinks toward near-black on the light canvas (see :root note). */
@@ -107,6 +113,7 @@ html.light {
   --warning: #b45309;
   --warning-soft: rgba(180, 83, 9, 0.14);
   --danger: #dc2626;
+  --danger-action: #b91c1c;
   --danger-soft: rgba(220, 38, 38, 0.1);
   --chip-ink: #1f1f1f;
   --chip-ink-mix: 50%;
@@ -132,10 +139,14 @@ html.light {
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
   --color-danger: var(--danger);
+  --color-danger-action: var(--danger-action);
   --color-danger-soft: var(--danger-soft);
   --font-sans: var(--font-inter);
   --font-display: var(--font-sora);
   --font-mono: var(--font-geist-mono);
+  --text-ui-body: var(--type-body);
+  --text-ui-secondary: var(--type-secondary);
+  --text-ui-status: var(--type-status);
 }
 
 * {

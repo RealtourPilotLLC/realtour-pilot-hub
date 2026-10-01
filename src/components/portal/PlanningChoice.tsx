@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 import { portalCancelSessionRequest, portalPlanWithCall, portalPlanWithoutCall, portalScheduleLater } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { CTA_WORDS } from "@/lib/portalWords";
+import { Button } from "@/components/ui/Action";
+import { SaveStatus } from "@/components/ui/SaveStatus";
 
 /** "Plan without a call" — rendered ONLY when the server says the enrollment is eligible. Sets the written path; never cancels a booked call. */
 export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; callBooked: boolean }) {
@@ -22,18 +24,18 @@ export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; call
   return (
     <div className="mt-2">
       {!confirm ? (
-        <button type="button" onClick={() => setConfirm(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><PenLine className="size-3.5" /> Choose my topics here instead</button>
+        <Button variant="secondary" onClick={() => setConfirm(true)}><PenLine aria-hidden className="size-4" /> Choose my topics here instead</Button>
       ) : (
         <div className="rounded-xl border border-border bg-surface p-3 text-sm">
           <p>Choose your topics here? You&rsquo;ll pick topics and answer a few short questions per topic. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</p>
           {callBooked && <p className="mt-1 text-xs text-muted">Your booked call stays on the calendar — cancel it on Calendly separately if you no longer need it.</p>}
-          <div className="mt-2 flex gap-2">
-            <button type="button" onClick={go} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3 animate-spin" />} Yes, choose them here</button>
-            <button type="button" onClick={() => setConfirm(false)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Keep the call</button>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button onClick={go} busy={busy} busyLabel="Saving choice…">Yes, choose them here</Button>
+            <Button variant="secondary" onClick={() => setConfirm(false)} disabled={busy}>Keep the call</Button>
           </div>
         </div>
       )}
-      {msg && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+      {msg && <div className="mt-1.5"><SaveStatus state={msg.ok ? "info" : "error"} message={msg.text} /></div>}
     </div>
   );
 }
@@ -52,8 +54,8 @@ export function PlanWithCall({ monthId }: { monthId: string }) {
   });
   return (
     <div className="mt-2">
-      <button type="button" onClick={go} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3 animate-spin" /> : <Phone className="size-3.5" />} Talk through topics on a call instead</button>
-      {msg && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+      <Button variant="secondary" onClick={go} busy={busy} busyLabel="Saving choice…"><Phone aria-hidden className="size-4" /> Talk through topics on a call instead</Button>
+      {msg && <div className="mt-1.5"><SaveStatus state={msg.ok ? "info" : "error"} message={msg.text} /></div>}
     </div>
   );
 }
@@ -88,8 +90,8 @@ export function RouteChoice({ monthId, current, large = true }: { monthId: strin
         <span className="flex items-center gap-2 text-sm font-semibold">
           {busy && pending === route ? <Loader2 className="size-4 animate-spin text-brand" aria-hidden /> : <Icon className="size-4 text-brand" aria-hidden />} {title}
         </span>
-        <span className="text-xs text-muted">{body}</span>
-        {chosen && <span className="text-[11px] font-semibold text-brand">Your choice this month</span>}
+        <span className="text-sm leading-relaxed text-muted">{body}</span>
+        {chosen && <span className="text-sm font-semibold text-foreground">Your choice this month</span>}
       </button>
     );
   };
@@ -99,7 +101,7 @@ export function RouteChoice({ monthId, current, large = true }: { monthId: strin
         {card("WRITTEN", PenLine, "Choose my topics here", "Pick your topics and answer a few short questions for each. Your progress saves as you go. Filming can be booked once your answers are in.")}
         {card("CALL", Phone, "Talk through topics on a call", "Book a strategy call and we choose the topics together. Filming can be booked as soon as the call is. Browsing topics first is optional.")}
       </div>
-      {msg && <p role="status" className={cn("mt-2 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+      {msg && <div className="mt-2"><SaveStatus state={msg.ok ? "info" : "error"} message={msg.text} /></div>}
     </div>
   );
 }
@@ -123,10 +125,10 @@ export function ScheduleLaterButton({ monthId, deferred, sessionIndex = null }: 
   });
   return (
     <div className="mt-2">
-      <button type="button" onClick={go} disabled={busy} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border px-4 text-sm font-medium text-muted hover:bg-surface hover:text-foreground disabled:opacity-50 sm:min-h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-        {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <CalendarClock className="size-4" aria-hidden />} {CTA_WORDS.LATER}
-      </button>
-      {msg && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+      <Button variant="secondary" onClick={go} busy={busy} busyLabel="Saving choice…">
+        <CalendarClock className="size-4" aria-hidden /> {CTA_WORDS.LATER}
+      </Button>
+      {msg && <div className="mt-1.5"><SaveStatus state={msg.ok ? "info" : "error"} message={msg.text} /></div>}
     </div>
   );
 }
@@ -146,14 +148,14 @@ export function CancelRequestButton({ requestId, confirmed, selfBooked = false }
     if (r.ok) router.refresh();
   });
   return (
-    <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]">
+    <span className="ml-auto inline-flex flex-wrap items-center gap-2 text-sm">
       {!confirm ? (
-        <button type="button" onClick={() => setConfirm(true)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-2 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><XCircle className="size-3" /> {selfBooked ? "Cancel session" : confirmed ? "Ask to cancel" : "Cancel"}</button>
+        <Button variant="quiet" onClick={() => setConfirm(true)}><XCircle aria-hidden className="size-4" /> {selfBooked ? "Cancel session" : confirmed ? "Ask to cancel" : "Cancel"}</Button>
       ) : (
         <>
           <span className="text-muted">{selfBooked ? "Cancel this session?" : confirmed ? "Ask us to cancel this session?" : "Cancel this request?"}</span>
-          <button type="button" onClick={go} disabled={busy} className="rounded-md bg-danger px-2 py-0.5 font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Yes</button>
-          <button type="button" onClick={() => setConfirm(false)} className="rounded-md border border-border px-2 py-0.5 text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">No</button>
+          <Button variant="danger" onClick={go} busy={busy} busyLabel="Saving…">Yes</Button>
+          <Button variant="secondary" onClick={() => setConfirm(false)} disabled={busy}>No</Button>
         </>
       )}
       {msg && <span role="status" className="text-muted">{msg}</span>}
