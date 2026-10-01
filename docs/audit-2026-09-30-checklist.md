@@ -66,6 +66,8 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Current checks and environment
 
+- **U4 task navigation:** My work / Needs assignment / All work / Completed lead the operational board; specialist Replies/Revisions/Slack remain visible. Legacy URLs, editor restrictions, Kyle's routine ownership, test view and source/type/owner filter state are preserved. Signed route/board drill 21/0, focused lint and review passed. No task mutation or provider calls. Browser, compact rows/detail drawer and external return-context acceptance remain open; Home composition is separate.
+
 - **U1/U3 queue controls:** shared ActionMenu now covers status/rare actions with keyboard navigation and 44px targets; office overrides reuse native ModalDialog and block dismissal during pending saves/escalation. Failed removal retains the reason for retry. Original guards, request IDs, confirmation and undo remain. Lint/source review passed; final integrated type/build pending after the last modal correction. Browser acceptance remains blocked, so neither phase is complete.
 
 - **Latest resume:** interrupted `cd3fc86` production build exited 0 in the isolated managed checkout; stable-tree TypeScript passed. No Ops Hub commands or 3200/5599 listeners remained at the resume check; unrelated Premium Reel commands were untouched. Earlier running-demo notes below are historical.

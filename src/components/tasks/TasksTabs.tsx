@@ -1,71 +1,58 @@
 import Link from "next/link";
-import { ListTodo, History, MessageSquare, Repeat2, Hash, RefreshCw } from "lucide-react";
+import { ListTodo, History, MessageSquare, Repeat2, Hash, RefreshCw, UserRound, UserPlus } from "lucide-react";
 import { etTime } from "@/lib/datetime";
+import { taskWorkHref, type TasksTab } from "@/lib/taskNavigation";
+export type { TasksTab } from "@/lib/taskNavigation";
 
-export type TasksTab = "comms" | "revisions" | "slack" | "other" | "done";
-
-// CommsTabs-style switcher for the Tasks hub — same consolidation pattern as
-// /communications: every tab is shareable via ?tab= and the page renders ONLY
-// the active tab's data. Counts reuse each view's own (cheap) count query.
-// `updatedAt` is when THIS render read the database. Kyle's call (Sep 16):
-// "I thought the Tasks page wasn't being updated any more" — the page is
-// force-dynamic and rebuilds on every visit, but nothing on it ever said so,
-// and a page whose numbers you can't date is a page you stop trusting. The
-// badges beside each tab are that tab's own count query, so the strip reads
-// as one live line: what is open, and when we last looked.
-export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false, showTestOther = false, showTestComms = false, showTestSlack = false, showTestDone = false }: {
-  tab: TasksTab; otherCount: number; doneCount: number;
+// Ownership leads the operational board. Specialist queues retain their own
+// membership, actions, counts and shareable URLs.
+export function TasksTabs({ tab, who, allCount, mineCount, needsAssignmentCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTest = false }: {
+  tab: TasksTab; who: string; allCount: number; mineCount: number; needsAssignmentCount: number; doneCount: number;
   commsCount?: number; revisionsCount?: number; slackCount?: number;
-  updatedAt?: Date;
-  showTestRevisions?: boolean;
-  showTestOther?: boolean;
-  showTestComms?: boolean;
-  showTestSlack?: boolean;
-  showTestDone?: boolean;
+  updatedAt?: Date; showTest?: boolean;
 }) {
-  const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
-  const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
-  const badge = (n: number, on: boolean) =>
-    n > 0 ? (
-      <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${on ? "bg-white/20" : "bg-brand/15 text-brand"}`}>
-        {n}
-      </span>
-    ) : null;
+  const active = "rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  const idle = "rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  const badge = (n: number, on: boolean) => n > 0 ? (
+    <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${on ? "bg-white/20" : "bg-brand/15 text-brand"}`}>{n}</span>
+  ) : null;
+  const mine = tab === "work" && who === "me";
+  const needsAssignment = tab === "work" && who === "needs-assigning";
+  const all = tab === "work" && who === "all";
+  const workTest = tab === "work" && showTest;
+  const sourceLink = (target: TasksTab) => `/tasks?tab=${target}${tab === target && showTest ? "&test=1" : ""}`;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <Link href={showTestComms ? "/tasks?tab=comms&test=1" : "/tasks"} className={tab === "comms" ? active : idle}>
-        <MessageSquare className="mr-1.5 inline size-3.5" />
-        Comms
-        {badge(commsCount, tab === "comms")}
-      </Link>
-      <Link href={showTestRevisions ? "/tasks?tab=revisions&test=1" : "/tasks?tab=revisions"} className={tab === "revisions" ? active : idle}>
-        <Repeat2 className="mr-1.5 inline size-3.5" />
-        Revisions
-        {badge(revisionsCount, tab === "revisions")}
-      </Link>
-      <Link href={showTestSlack ? "/tasks?tab=slack&test=1" : "/tasks?tab=slack"} className={tab === "slack" ? active : idle}>
-        <Hash className="mr-1.5 inline size-3.5" />
-        Slack
-        {badge(slackCount, tab === "slack")}
-      </Link>
-      <Link href={showTestOther ? "/tasks?tab=other&test=1" : "/tasks?tab=other"} className={tab === "other" ? active : idle}>
-        <ListTodo className="mr-1.5 inline size-3.5" />
-        Other
-        {badge(otherCount, tab === "other")}
-      </Link>
-      <Link href={showTestDone ? "/tasks?tab=done&test=1" : "/tasks?tab=done"} className={tab === "done" ? active : idle}>
-        <History className="mr-1.5 inline size-3.5" />
-        Done
-        {badge(doneCount, tab === "done")}
-      </Link>
-      {updatedAt && (
-        <span
-          className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-2"
-          title="This page reads the database on every visit — this is when it last did."
-        >
-          <RefreshCw className="size-3" /> Updated {etTime(updatedAt)}
-        </span>
-      )}
+    <div className="mb-4 space-y-3">
+      <nav aria-label="Task work views" className="flex flex-wrap items-center gap-1.5">
+        <Link href={taskWorkHref({ who: "me", showTest: workTest })} aria-current={mine ? "page" : undefined} className={mine ? active : idle}>
+          <UserRound aria-hidden="true" className="mr-1.5 inline size-4" />My work{badge(mineCount, mine)}
+        </Link>
+        <Link href={taskWorkHref({ who: "needs-assigning", showTest: workTest })} aria-current={needsAssignment ? "page" : undefined} className={needsAssignment ? active : idle}>
+          <UserPlus aria-hidden="true" className="mr-1.5 inline size-4" />Needs assignment{badge(needsAssignmentCount, needsAssignment)}
+        </Link>
+        <Link href={taskWorkHref({ who: "all", showTest: workTest })} aria-current={all ? "page" : undefined} className={all ? active : idle}>
+          <ListTodo aria-hidden="true" className="mr-1.5 inline size-4" />All work{badge(allCount, all)}
+        </Link>
+        <Link href={sourceLink("done")} aria-current={tab === "done" ? "page" : undefined} className={tab === "done" ? active : idle} title="Completed work; badge counts today">
+          <History aria-hidden="true" className="mr-1.5 inline size-4" />Completed{badge(doneCount, tab === "done")}
+        </Link>
+        {updatedAt && <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-2" title="Read from the database on this visit">
+          <RefreshCw aria-hidden="true" className="size-3" /> Updated {etTime(updatedAt)}
+        </span>}
+      </nav>
+      <nav aria-label="Specialist task queues" className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-sm text-muted">Specialist queues</span>
+        <Link href={sourceLink("comms")} aria-current={tab === "comms" ? "page" : undefined} className={tab === "comms" ? active : idle}>
+          <MessageSquare aria-hidden="true" className="mr-1.5 inline size-4" />Replies{badge(commsCount, tab === "comms")}
+        </Link>
+        <Link href={sourceLink("revisions")} aria-current={tab === "revisions" ? "page" : undefined} className={tab === "revisions" ? active : idle}>
+          <Repeat2 aria-hidden="true" className="mr-1.5 inline size-4" />Revisions{badge(revisionsCount, tab === "revisions")}
+        </Link>
+        <Link href={sourceLink("slack")} aria-current={tab === "slack" ? "page" : undefined} className={tab === "slack" ? active : idle}>
+          <Hash aria-hidden="true" className="mr-1.5 inline size-4" />Slack{badge(slackCount, tab === "slack")}
+        </Link>
+      </nav>
+      <p className="text-sm text-muted">Work views show operational tasks. Use the specialist queues for client replies, revision follow-through, and Slack asks.</p>
     </div>
   );
 }

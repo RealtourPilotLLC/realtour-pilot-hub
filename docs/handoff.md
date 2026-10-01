@@ -2,6 +2,21 @@
 
 ## Sep 30 takeover addendum
 
+### U4 checkpoint — ownership-first task navigation
+
+Task entry now leads with My work / Needs assignment / All work / Completed,
+with Replies, Revisions and Slack kept as specialist queues. All work is labelled
+as the operational board rather than implying every specialist queue is included.
+Legacy `other`, `board`, `today`, named-owner and exact task links retain their
+meaning. URL-backed source/type/owner filters and test scope survive navigation;
+unassigned routine work still belongs to Kyle under the existing rule. No task
+action, permission, source identity or automatic completion behavior changed.
+Isolated signed route/BoardView drill passed 21/0 (final log
+`/tmp/u4-task-navigation-final/u4-task-navigation.ts.log`), lint and one focused
+review passed. Earlier 18/0 log predates the three review-edge checks. Browser,
+compact row/detail drawer and external drill-down context acceptance remain open.
+Role-first Home composition is a separate active batch.
+
 ### U5 checkpoint — reminder policy form and activation separation
 
 Reminder policy has ordinary cadence/timing/limits/safeguard/template fields,

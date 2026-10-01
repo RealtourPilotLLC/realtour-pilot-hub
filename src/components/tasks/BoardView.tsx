@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { etDayStartUtc } from "@/lib/datetime";
 import { listAssignees, firstName, viewerAssigneeKey } from "@/lib/assignees";
 import { isNeedsAssigning } from "@/lib/triage";
+import { taskWorkCounts, taskWorkHref, taskWorkOwner } from "@/lib/taskNavigation";
 import { boardWhere, BOARD_ACTIVE_STATUSES as ACTIVE, type TaskClientScope } from "@/lib/taskBoard";
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -39,6 +40,16 @@ const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinit
 export async function boardOpenCount(opts: TaskClientScope = {}): Promise<number> {
   const me = await getCurrentUser().catch(() => null);
   return prisma.smartTask.count({ where: boardWhere(editorScopeOf(me), opts) });
+}
+
+// Navigation badges use the same source predicate and ownership rule as the rows.
+export async function boardNavigationCounts(opts: TaskClientScope = {}) {
+  const me = await getCurrentUser().catch(() => null);
+  const [rows, assignees] = await Promise.all([
+    prisma.smartTask.findMany({ where: boardWhere(editorScopeOf(me), opts), select: { assignedKey: true, taskType: true } }),
+    listAssignees(),
+  ]);
+  return taskWorkCounts(rows, viewerAssigneeKey(me, assignees));
 }
 
 // Which category a task belongs to within a person's list.
@@ -124,11 +135,11 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
   );
 }
 
-export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClientIds, showTest = false }: { sp: { who?: string; task?: string }; tabs: ReactNode; excludeClientIds?: string[]; excludeRelatedClientIds?: string[]; showTest?: boolean }) {
+export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClientIds, showTest = false }: { sp: { who?: string; task?: string; source?: string; type?: string }; tabs: ReactNode; excludeClientIds?: string[]; excludeRelatedClientIds?: string[]; showTest?: boolean }) {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = editorScopeOf(me);
   const scope = { excludeClientIds };
-  const boardHref = `/tasks?tab=other${showTest ? "&test=1" : ""}`;
+  const boardHref = (who: string) => taskWorkHref({ who, showTest, source: sp.source, type: sp.type });
   // An EDITOR login that maps to no editor profile gets NOTHING, and is told
   // why (RTP-01, Sep 16). Before this it fell through to the office board —
   // "All caught up 🎉" would be a lie here, and showing the team's work would
@@ -214,21 +225,24 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
   // Sessionless (local dev, a probe) renders as the owner, the same rule the
   // home applies; "view as Kyle" carries Kyle's role and gets Kyle's scrub.
   const isOwner = !me || me.role === "OWNER";
-  const views = tasks
+  const allViews = tasks
     .map((t) => ({ ...taskToView(t), flaggedBy: t.flaggedBy, siblings: siblingsOf(t) }))
     .map((v) => (isOwner ? v : scrubTaskMoney(v)));
+  const views = allViews.filter((v) => (!sp.source || v.source === sp.source) && (!sp.type || v.taskType === sp.type));
+  const sources = [...new Set([...allViews.map((v) => v.source), ...(sp.source ? [sp.source] : [])])].sort();
+  const types = [...new Set([...allViews.map((v) => v.taskType), ...(sp.type ? [sp.type] : [])])].sort();
+  const filterLabel = (value: string) => value.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
   // Pull the "needs assigning" pile out first — delegatable work with no owner
   // yet — so it surfaces in its own pinned section instead of hiding in Kyle's
   // pile. Everything else has a home (an editor, or Kyle's default routine).
   const triage = views.filter(isNeedsAssigning);
   const assigned = views.filter((v) => !isNeedsAssigning(v));
   // Unassigned routine work still defaults to Kyle (he runs the daily queue).
-  const ownerKey = (v: QueueTask) => v.assignedKey || "kyle";
+  const ownerKey = (v: QueueTask) => taskWorkOwner(v)!;
   const countOf = (key: string) => assigned.filter((v) => ownerKey(v) === key).length;
 
   // "My tasks" = the signed-in person, matched by teamMemberId/email/slug.
   const meKey = viewerAssigneeKey(me, assignees);
-  const meHasChip = !!meKey;
 
   // Selected filter. ?who=all | me | needs-assigning | <slug>. An editor is
   // locked to their own key (the ?who= param can't broaden their view).
@@ -246,12 +260,14 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
     else byKey.set(k, [v]);
   }
 
-  const overdueCount = views.filter(isOverdue).length;
   const oc = (items: QueueTask[]) => items.filter(isOverdue).length;
-  const nothing = views.length === 0;
+  const nothing = allViews.length === 0;
   const showTriage = !editorScope && (who === "all" || who === TRIAGE) && triage.length > 0;
   // Nothing to render for the current filter (but there ARE tasks elsewhere).
   const empty = !showTriage && forGrouping.length === 0;
+  const visible = showTriage ? [...triage, ...forGrouping] : forGrouping;
+  const overdueCount = visible.filter(isOverdue).length;
+  const viewLabel = whoRaw === "me" ? "My work" : who === TRIAGE ? "Needs assignment" : who === "all" ? "All work" : "Assigned work";
 
   // The category-grouped cards for one person.
   const personSection = (name: string, set: QueueTask[]) => {
@@ -302,11 +318,11 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
   const triageSection = (
     <div className="space-y-3">
       <div className="flex items-center gap-2 px-1 pt-1">
-        <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#d97706" }}>Needs assigning</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#d97706" }}>Needs assignment</h2>
         <span className="text-xs text-muted-2">· {triage.length}</span>
       </div>
       <GroupCard icon={UserPlus} title="Pick who owns each" accent="#f59e0b" items={triage.slice().sort(cmp)} overdue={oc(triage)} assignees={assigneeChips} defaultOpen assignPrompt
-        blurb="Work that came in without an owner — mostly Slack to-dos. Assign each to the right person and it moves to their list." />
+        blurb="Assign each task to the right person and it moves to their work list." />
     </div>
   );
 
@@ -316,7 +332,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
       <PageHeader
         eyebrow="Eastern time"
         title="Tasks"
-        subtitle={`${views.length} open${triage.length ? ` · ${triage.length} to assign` : ""}${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
+        subtitle={`${viewLabel} · ${visible.length} ${sp.source || sp.type ? "matching operational tasks" : "operational tasks"}${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
         actions={
           <div className="flex items-center gap-2">
             {triage.length > 0 && <Badge color="#b45309" soft="#fef3c7">{triage.length} to assign</Badge>}
@@ -330,7 +346,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
         {!editorScope && (
           <div className="flex items-center justify-between gap-3 text-xs text-muted">
             <span>{showTest ? "Showing real and test records" : "Showing real client work"}</span>
-            <Link href={showTest ? "/tasks?tab=other" : "/tasks?tab=other&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
+            <Link href={taskWorkHref({ who: sp.who, showTest: !showTest, source: sp.source, type: sp.type })} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
               {showTest ? "Hide test records" : "Show test records"}
             </Link>
           </div>
@@ -355,31 +371,50 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
           </Link>
         )}
 
-        {/* Person filter — see everyone, just you, or one teammate's tasks.
-            Hidden for editors, who are locked to their own work. */}
         {!nothing && !editorScope && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FilterChip href={boardHref} label="Everyone" count={views.length} active={activeKey === "all"} />
-            {meHasChip && <FilterChip href={`${boardHref}&who=me`} label="My tasks" count={countOf(meKey!)} active={activeKey === "me"} />}
-            {triage.length > 0 && <FilterChip href={`${boardHref}&who=${TRIAGE}`} label="Needs assigning" count={triage.length} active={activeKey === TRIAGE} />}
-            {assignees
-              .filter((a) => countOf(a.key) > 0 || a.key === who)
-              .map((a) => (
-                <FilterChip key={a.key} href={`${boardHref}&who=${a.key}`} label={a.name} count={countOf(a.key)} active={activeKey === a.key} />
-              ))}
+          <div className="space-y-3">
+            <form action="/tasks" className="flex flex-wrap items-end gap-3">
+              <input type="hidden" name="tab" value="work" />
+              <input type="hidden" name="who" value={sp.who ?? "all"} />
+              {showTest && <input type="hidden" name="test" value="1" />}
+              <label className="space-y-1 text-sm text-muted">
+                <span className="block">Source</span>
+                <select name="source" defaultValue={sp.source ?? ""} className="rounded-lg border border-border bg-surface px-3 py-2 text-foreground">
+                  <option value="">All sources</option>
+                  {sources.map((source) => <option key={source} value={source}>{filterLabel(source)}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm text-muted">
+                <span className="block">Task type</span>
+                <select name="type" defaultValue={sp.type ?? ""} className="rounded-lg border border-border bg-surface px-3 py-2 text-foreground">
+                  <option value="">All types</option>
+                  {types.map((type) => <option key={type} value={type}>{filterLabel(type)}</option>)}
+                </select>
+              </label>
+              <button type="submit" className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Apply filters</button>
+              {(sp.source || sp.type) && <Link href={taskWorkHref({ who: sp.who, showTest })} className="px-2 py-2 text-sm text-brand underline">Clear filters</Link>}
+            </form>
+            <div className="flex flex-wrap items-center gap-1.5" aria-label="Filter operational work by owner">
+              <span className="mr-1 text-sm text-muted">Owner</span>
+              <FilterChip href={boardHref("all")} label="Everyone" count={views.length} active={activeKey === "all"} />
+              {assignees
+                .filter((a) => countOf(a.key) > 0 || a.key === who)
+                .map((a) => <FilterChip key={a.key} href={boardHref(a.key)} label={a.name} count={countOf(a.key)} active={activeKey === a.key} />)}
+            </div>
           </div>
         )}
 
         {nothing ? (
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <CheckCircle2 className="mx-auto mb-2 size-6 text-success" />
-            <p className="text-sm text-muted">All caught up — nothing open. 🎉</p>
+            <p className="text-sm text-muted">{editorScope ? "No open tasks assigned to you." : "No open operational tasks. Replies, revisions, and Slack asks have their own queues above."}</p>
           </div>
         ) : empty ? (
           <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">
-            {who === TRIAGE
-              ? "Nothing needs assigning right now."
-              : `Nothing assigned to ${activeKey === "me" ? "you" : selectedName} right now.`}
+            {sp.source || sp.type ? "No operational tasks match these filters. Clear filters to see the other work."
+              : whoRaw === "me" && !meKey ? "Your account is not linked to a task owner. Choose a named owner or All work to continue."
+                : who === TRIAGE ? "No operational tasks need assignment right now."
+                  : `No operational tasks assigned to ${activeKey === "me" ? "you" : selectedName} right now.`}
           </p>
         ) : (
           <>
