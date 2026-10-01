@@ -74,6 +74,21 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 capacity/calendar recovery:** record/cancel uses exact-input capture,
+  synchronous pending guards, typed known refusals and visible unknown holds.
+  Newer availability notes/end dates survive older success; only unchanged
+  submitted note/end clear. Opaque current-tab markers survive reload without
+  storing names/dates/notes. Existing self-only kinds, Eastern conversion,
+  permissions and capacity/register mutation rules remain. Week disclosure keeps
+  its controlled region mounted, has native expanded state and readable focus
+  targets; unavailable data is distinct from a free week. Peer review found its
+  new collapsed count omitted all-day entries, repaired and covered. Actual fake
+  handlers/wrappers20/0 (`/tmp/u5-capacity-review-repair/`), lint/diff and source
+  review pass. Prior19/1 was a numeric/whitespace fixture helper assertion,
+  repaired without changing calendar behavior. No availability, reassignment,
+  deadline, pay or provider data changed. Browser acceptance remains open;
+  unknown writes need exact register inspection, not blind replay.
+
 - **U5 Logins/access recovery:** one per-account guard covers role, permissions,
   link, status and removal; opaque current-tab markers hold unknown writes
   across reload without storing names, emails or tokens. Newer invite fields

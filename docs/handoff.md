@@ -2,6 +2,28 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — capacity/calendar exact requests
+
+Capacity record/cancel controls capture the exact submitted person/kind/ET dates/
+note, guard synchronous repeats and show known refusal versus uncertainty.
+Unchanged confirmed submissions clear note/end only; later words/dates remain.
+Opaque current-tab request markers contain no names, dates or notes and hold
+unknown writes across reload. Current-tab drafts are not promised after reload.
+Existing self-only blocked/offline eligibility, role checks, conversion, optional
+end and domain writes remain; no dates, ownership, SLA, assignments or pay move.
+
+WeekCalendar now labels unavailable reads, wraps linked blocks and exposes a
+44px native disclosure with aria-expanded/controls and retained hidden region.
+One peer review found the new scheduled count excluded all-day items; the count
+includes them now. Actual fake UI/actions fixture20/0 at
+`/tmp/u5-capacity-review-repair/u5-capacity-recovery.ts.log`; focused lint/diff
+and review pass. The previous18/1 assertion omitted numeric React children and
+did not normalize whitespace; only the fixture helper was repaired for19/0.
+The added review case then produced20/0. No live capacity/provider operation.
+Unknown writes need Kyle's exact person/date/register inspection. Device markers
+are not backend receipts/cross-tab locks. Browser calendar/layout/focus acceptance
+remains open; combined types/build follow the stable source candidate.
+
 ### Oct 1 U5 checkpoint — Logins/access conflict and recovery
 
 UsersManager shares a synchronous per-account pending/unknown guard across role,

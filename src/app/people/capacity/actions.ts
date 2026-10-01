@@ -23,14 +23,16 @@ function refresh() {
   for (const path of ["/people/capacity", "/editing"]) revalidatePath(path);
 }
 
-export async function recordCapacityExceptionAction(input: CapacityInput): Promise<{ ok: boolean; message: string }> {
+export type CapacityActionResult = { ok: boolean; message: string; outcome: "confirmed" | "refused" | "unknown" };
+
+export async function recordCapacityExceptionAction(input: CapacityInput): Promise<CapacityActionResult> {
   const r = await recordCapacityException(input, await actor(), { authEnforced: authEnforced() });
   if (r.ok) refresh();
-  return { ok: r.ok, message: r.message };
+  return { ok: r.ok, message: r.message, outcome: r.ok ? "confirmed" : "refused" };
 }
 
-export async function cancelCapacityExceptionAction(id: string): Promise<{ ok: boolean; message: string }> {
+export async function cancelCapacityExceptionAction(id: string): Promise<CapacityActionResult> {
   const r = await cancelCapacityException(id, await actor(), { authEnforced: authEnforced() });
   if (r.ok) refresh();
-  return r;
+  return { ...r, outcome: r.ok ? "confirmed" : "refused" };
 }
