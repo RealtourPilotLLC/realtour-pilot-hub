@@ -396,6 +396,20 @@ async function standDownNonRevision(briefId: string): Promise<void> {
  *  folder cut — which keeps the job-level brief it always had. */
 export type BriefPin = { submissionId: string; outputId: string | null; cutKey: string | null; decisionId: string | null; roundId: string | null; label?: string | null };
 
+export type StaffReceiptIntake = {
+  version: 1;
+  videoLabel: string;
+  attachment: null | {
+    originalName: string; mimeType: string; size: number; sha256: string; storedPath: string;
+    state: "PENDING" | "UPLOADING" | "UNKNOWN" | "CONFIRMED";
+  };
+  effects?: {
+    taskTitle: string; taskNote: string; assignedKey: string | null; outputOwnerKey: string | null;
+    wasAlreadyOpen: boolean; reassigned: boolean; urgentClaimed?: boolean;
+  };
+};
+export type StaffReceiptData = { timeSec: number | null; intake?: StaffReceiptIntake };
+
 /** The first staff submit owns its timestamp, including an intentional blank.
  * Older receipts have no such evidence: a later submit must not fill it in. */
 export function staffReceiptTime(itemsJson: string | null): { timeSec: number | null } | null {
@@ -405,6 +419,17 @@ export function staffReceiptTime(itemsJson: string | null): { timeSec: number | 
     const at: unknown = value.timeSec;
     if (at !== null && (typeof at !== "number" || !Number.isInteger(at) || at < 0 || at > 59_999)) return null;
     return { timeSec: at as number | null };
+  } catch { return null; }
+}
+
+export function staffReceiptIntake(itemsJson: string | null): StaffReceiptIntake | null {
+  if (!staffReceiptTime(itemsJson)) return null;
+  try {
+    const intake = JSON.parse(itemsJson!).staffReceipt.intake as StaffReceiptIntake | undefined;
+    if (intake?.version !== 1 || typeof intake.videoLabel !== "string") return null;
+    const a = intake.attachment;
+    if (a !== null && (!a || typeof a.originalName !== "string" || typeof a.mimeType !== "string" || !Number.isInteger(a.size) || a.size <= 0 || a.size > 5_000_000 || !/^[a-f0-9]{64}$/.test(a.sha256) || typeof a.storedPath !== "string" || !["PENDING", "UPLOADING", "UNKNOWN", "CONFIRMED"].includes(a.state))) return null;
+    return intake;
   } catch { return null; }
 }
 
@@ -436,7 +461,9 @@ export async function createRevisionBrief(opts: {
    *  from originalText so the client's words stay byte-for-byte intact. */
   references?: { what: string; where: string }[];
   /** Persist with the original receipt, before issue ingestion can fail. */
-  staffReceipt?: { timeSec: number | null };
+  staffReceipt?: StaffReceiptData;
+  /** Intake saves evidence before any task, issue, clock mirror or provider work. */
+  deferStaffEffects?: boolean;
   /** No model call: a portal ADDENDUM joins a request the editor already has,
    *  its pinned items are the work order, and a client re-sending notes must
    *  not be able to buy a model call per submit. */
@@ -500,6 +527,7 @@ export async function createRevisionBrief(opts: {
   } catch {
     return null; // never break a revision over its paperwork
   }
+  if (opts.source === "review_room_staff" && opts.deferStaffEffects) return brief.id;
   // The revision card carries the same date the job does (§3 replaces the Sep
   // 8 "revisions promise nothing" rule). Best-effort; never throws.
   if (clock) await mirrorClockToTasks(opts.projectId);
@@ -628,23 +656,25 @@ export async function analyzeBrief(
       try { kept = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItem[] }).items ?? []) : []; } catch { /* rebuilt below */ }
       // Staff files and timestamp are evidence from the submit, not model
       // suggestions. A re-read may refine items but cannot replace that evidence.
-      const receipt = brief.source === "review_room_staff" ? staffReceiptTime(brief.itemsJson) : null;
-      let references = analysis.references;
-      if (brief.source === "review_room_staff") {
-        try { references = JSON.parse(brief.itemsJson ?? "{}").references ?? []; } catch { references = []; }
-      }
       const items = analysis.items.length
         ? analysis.items.map((i) => ({ ...i, scope: "named" as const, cuts: [pinKey] }))
         : kept.length ? kept : pinnedItems(brief.originalText, pinKey);
-      await prisma.revisionBrief.update({
-        where: { id: briefId },
-        data: {
-          headline: analysis.items.length ? analysis.headline.slice(0, 300) : undefined,
-          itemsJson: JSON.stringify({ items, keep: analysis.keep, references, questions: analysis.questions, ...(receipt ? { staffReceipt: { version: 1, ...receipt } } : {}) }),
-          analyzedAt: new Date(),
-          analysisError: null,
-        },
-      });
+      const savePinned = async (db: Prisma.TransactionClient | typeof prisma) => {
+        // The model may have been running while the attachment/task handoff
+        // advanced. Merge its analysis with the current receipt under its lock.
+        const fresh = brief.source === "review_room_staff" ? await db.revisionBrief.findUnique({ where: { id: briefId }, select: { itemsJson: true } }) : null;
+        const saved = fresh ? JSON.parse(fresh.itemsJson ?? "{}") : null;
+        await db.revisionBrief.update({
+          where: { id: briefId },
+          data: {
+            headline: analysis.items.length ? analysis.headline.slice(0, 300) : undefined,
+            itemsJson: JSON.stringify({ items, keep: analysis.keep, references: saved ? saved.references ?? [] : analysis.references, questions: analysis.questions, ...(saved?.staffReceipt ? { staffReceipt: saved.staffReceipt } : {}) }),
+            analyzedAt: new Date(), analysisError: null,
+          },
+        });
+      };
+      if (brief.source === "review_room_staff") await prisma.$transaction(async (tx) => { await lockAdvisory(tx, `staff-intake:${briefId}`); await savePinned(tx); });
+      else await savePinned(prisma);
       await ingestBriefIssues(briefId);
       return true;
     }

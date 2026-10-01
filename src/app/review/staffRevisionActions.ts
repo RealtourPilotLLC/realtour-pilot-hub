@@ -5,13 +5,13 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { requireCutReviewer } from "@/lib/auth/guards";
 import { cutSlots, slotKeyOf } from "@/lib/reviewCuts";
-import { raiseRevisionDetailed } from "@/lib/comms";
-import { saveUpload } from "@/lib/storage";
+import { applySavedStaffRevision } from "@/lib/comms";
 import { ingestBriefItems } from "@/lib/revisionIssues";
 import { LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
 import { editorMeta } from "@/lib/editors";
-import { staffReceiptTime, type RevisionItem } from "@/lib/revisionBrief";
+import { createRevisionBrief, staffReceiptTime, staffReceiptIntake, type RevisionItem } from "@/lib/revisionBrief";
 import { TASK_DONE_INCLUDING_LEGACY } from "@/lib/programDeskTasks";
+import { finishStaffAttachment, staffAttachmentManifest } from "@/lib/staffRevisionIntake";
 
 export type ApprovedRevisionTarget = {
   submissionId: string;
@@ -106,6 +106,17 @@ async function finishReceipt(projectId: string, briefId: string): Promise<Result
   return { ok: true, message: `Recorded for version ${cut.round}. The original words, contact, attachments and timestamp are saved; ${taskClosed ? "the revision task remains closed" : `the revision task is with ${owner}`}.`, briefId: brief.id };
 }
 
+async function resumeReceipt(projectId: string, briefId: string, data: FormData): Promise<Result> {
+  const row = await prisma.revisionBrief.findFirst({ where: { id: briefId, projectId, source: "review_room_staff" }, select: { itemsJson: true } });
+  if (row && staffReceiptIntake(row.itemsJson)) {
+    const file = data.get("attachment");
+    if (file instanceof File && file.size > 5_000_000) return reject("Choose an attachment smaller than 5 MB.");
+    await finishStaffAttachment(briefId, file instanceof File ? file : null);
+    await applySavedStaffRevision(briefId);
+  }
+  return finishReceipt(projectId, briefId);
+}
+
 /** Staff records a client's exact words against one approved, current version. */
 export async function requestApprovedCutRevision(data: FormData): Promise<Result> {
   try {
@@ -124,7 +135,7 @@ export async function requestApprovedCutRevision(data: FormData): Promise<Result
       where: { projectId, source: "review_room_staff", sourceDetail: { startsWith: "staff-cut:", endsWith: `:${requestKey}` } },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
     });
-    if (prior) return await finishReceipt(projectId, prior.id);
+    if (prior) return await resumeReceipt(projectId, prior.id, data);
     if (data.get("confirmedClientWords") !== "yes") return reject("Confirm these are the client's own words before recording a client request.");
     if (clientContact.length < 2 || clientContact.length > 120) return reject("Name the client contact who asked for this change.");
     const at = seconds(field(data, "timecode"));
@@ -146,22 +157,18 @@ export async function requestApprovedCutRevision(data: FormData): Promise<Result
     const sourceDetail = `staff-cut:${submissionId}:${requestKey}`;
     const references: { what: string; where: string }[] = [];
     if (sourceMessage) references.push({ what: "Original team message", where: `/projects/${projectId}#msg-${sourceMessageId}` });
-    if (file instanceof File && file.size > 0) {
-      const meta = await saveUpload(projectId, file);
-      await prisma.uploadedFile.create({ data: { projectId, deliverableId: target.cut.deliverableId, ...meta } });
-      references.push({ what: meta.originalName, where: `/api/file?path=${encodeURIComponent(meta.storedPath)}` });
-    }
     const actor = me?.realName ?? me?.name ?? LOCAL_DEV_AUTHOR;
-    const revision = await raiseRevisionDetailed({
-      projectId, clientId: project.clientId, clientName: project.client.name, propertyAddress: project.title,
-      note: words, source: "review_room_staff", threadRef: sourceDetail,
+    const briefId = await createRevisionBrief({
+      projectId, clientName: project.client.name, propertyAddress: project.title,
+      text: words, source: "review_room_staff", sourceDetail,
       requestedBy: { name: `${actor} (on behalf of ${clientContact})`, kind: "CLIENT_STAFF", userId: me?.id ?? null },
       references,
-      staffReceipt: { timeSec: at },
-      pin: { submissionId, outputId: target.outputId, cutKey: target.key, decisionId: null, roundId: null, videoLabel: target.label },
+      staffReceipt: { timeSec: at, intake: { version: 1, videoLabel: target.label, attachment: await staffAttachmentManifest(projectId, requestKey, file instanceof File ? file : null) } },
+      deferStaffEffects: true,
+      pin: { submissionId, outputId: target.outputId, cutKey: target.key, decisionId: null, roundId: null, label: target.label },
     });
-    if (!revision.ok || !revision.briefId) return reject("The job was flagged, but the revision record could not be completed. Ask Kyle to check the revision task before retrying.");
-    return await finishReceipt(projectId, revision.briefId);
+    if (!briefId) return reject("The revision receipt could not be confirmed. Retry this same request before creating another.");
+    return await resumeReceipt(projectId, briefId, data);
   } catch (e) {
     return reject(e instanceof Error ? e.message : "Could not record this revision. Try again.");
   }

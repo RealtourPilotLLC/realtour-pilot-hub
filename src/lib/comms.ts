@@ -8,6 +8,9 @@ import type { NotifyTarget } from "@/lib/notify";
 import { clip } from "@/lib/text";
 import { REVISION_FLAG_PREFIX } from "@/lib/debrief";
 import { sameName, type Requester, type RequesterKind } from "@/lib/reviewAttribution";
+import type { Prisma, RevisionBrief } from "@prisma/client";
+import type { EditorRoutingRules } from "@/lib/settings";
+import { lockAdvisory } from "@/lib/dbLocks";
 
 // ---------------------------------------------------------------------------
 // Communications cross-check for the smart-status engine.
@@ -573,11 +576,17 @@ export type RevisionPin = {
  *  every text / email / call path calls) is this with the ids dropped; only
  *  the portal passes a pin — and an addendum when new notes join a request
  *  that is already with the editor. */
-export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
+type DetailedRevisionOpts = RaiseRevisionOpts & {
   pin?: RevisionPin;
   /** Notes added to an OPEN request: a new brief on the SAME task, no new round. */
   addendum?: { n: number; requestKey?: string | null };
-}): Promise<{ ok: boolean; taskId: string | null; briefId: string | null; wasAlreadyOpen: boolean }> {
+};
+export async function raiseRevisionDetailed(opts: DetailedRevisionOpts) {
+  return runRevisionDetailed(opts);
+}
+
+async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db: Prisma.TransactionClient; receipt: RevisionBrief; routing: EditorRoutingRules }): Promise<{ ok: boolean; taskId: string | null; briefId: string | null; wasAlreadyOpen: boolean }> {
+  const db = receiptTx?.db ?? prisma;
   const none = { ok: false, taskId: null, briefId: null, wasAlreadyOpen: false };
   // A caller that names nobody names nobody: clientName is the ACCOUNT, and an
   // assistant's or a coordinator's ask read "Asked by <the agent>" (review,
@@ -585,7 +594,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   const requester: Requester = opts.requestedBy ?? { name: null, kind: requesterKindOfSource(opts.source) };
   const sourceWords = opts.source === "review_room_staff" ? "staff in the Review Room" : opts.source;
   const askedBy = requester.name?.trim() || null;
-  const project = await prisma.project.findUnique({
+  const project = await db.project.findUnique({
     where: { id: opts.projectId },
     select: { id: true, status: true, title: true, clientId: true, contentMonthId: true, revisionRequestedAt: true, statusPinnedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
   });
@@ -635,7 +644,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     primary?.type,
     primary?.label,
     isMonthlyContentJob(project.deliverables),
-    await editorRouting(),
+    receiptTx?.routing ?? await editorRouting(),
   );
 
   // The client's request IS the work order — keep it whole (word-boundary clip,
@@ -653,11 +662,12 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   // later when the sweep (which the pin was holding off) would have — so the
   // queue row and the timeline agree the moment the ask lands.
   const pinned = !!project.statusPinnedAt;
-  await prisma.project.update({
+  await db.project.update({
     where: { id: project.id },
     data: {
-      revisionRequestedAt: new Date(),
-      revisionNote: note,
+      ...(receiptTx && project.revisionRequestedAt && project.revisionRequestedAt > receiptTx.receipt.createdAt ? {} : {
+        revisionRequestedAt: receiptTx?.receipt.createdAt ?? new Date(), revisionNote: note,
+      }),
       statusPinnedAt: null,
       // Only a delivered (or pinned) job changes stage; REVIEW/REVISION keep
       // their stage.
@@ -665,7 +675,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     },
   });
 
-  await prisma.activity.create({
+  await db.activity.create({
     data: {
       projectId: project.id,
       type: "FLAG",
@@ -674,7 +684,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     },
   });
 
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const kyle = await db.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   // ONE WORK ORDER PER MEDIUM, not per job. Two asks about the same video are
   // the same job of work and belong on one card; a photo ask that arrives while
   // a video revision is open is different work for a different person, and
@@ -687,7 +697,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   // matches and gets appended to, instead of every job growing a duplicate.
   const photoLane = !primaryIsVideoWork && medium === "photo";
   const key = dedupeKey(photoLane ? [project.id, "revision", "photo"] : [project.id, "revision"]);
-  let existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  let existing = await db.smartTask.findUnique({ where: { dedupeKey: key } });
   // Which video, on the editor's card: every pinned ask carries its label, so
   // four videos asked about back to back read as four lines, not one blur.
   const tagged = opts.pin ? `[${opts.pin.videoLabel}] ${taskNote}` : taskNote;
@@ -738,8 +748,8 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   // takes the append path below like any later ask.
   let taskId: string | null = null;
   if (!existing) {
-    const made = await prisma.smartTask.createMany({ data: [data], skipDuplicates: true });
-    const row = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+    const made = await db.smartTask.createMany({ data: [data], skipDuplicates: true });
+    const row = await db.smartTask.findUnique({ where: { dedupeKey: key } });
     if (!row) return none;
     if (made.count === 1) taskId = row.id;
     else existing = row;
@@ -757,7 +767,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     } else if (wasAlreadyOpen && existing.description) {
       description = existing.description;
     }
-    await prisma.smartTask.update({
+    await db.smartTask.update({
       where: { id: existing.id },
       // A hand-picked editor (owner reassign / manual queue-add) survives a
       // re-raise — only the automatic routing suggestion gets overwritten. A
@@ -774,7 +784,7 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
     // Start that landed a moment before it would otherwise stay ACTIVE on a
     // job that is no longer theirs. Recomputed under the desk lock; closes
     // nothing when they still hold the job another way. Never throws.
-    if (wasAlreadyOpen && !existing.assignedManually && existing.assignedKey !== data.assignedKey) {
+    if (!receiptTx && wasAlreadyOpen && !existing.assignedManually && existing.assignedKey !== data.assignedKey) {
       const { closeGhostWork } = await import("@/lib/editorWork");
       await closeGhostWork(project.id, { reason: "REASSIGNED", detail: "the client's revision was routed to another editor" });
     }
@@ -790,8 +800,10 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   // with how it came back). Video asks only: a photo ask is Kyle's and never
   // on the Editing Room. A no-op read on every job that was never removed.
   if (primaryIsVideoWork) {
-    const { endRemoval } = await import("@/lib/queueRemoved");
-    await endRemoval(project.id, { by: askedBy ?? null, how: "the client asked for changes to the video" });
+    const { endRemoval, endRemovalTx } = await import("@/lib/queueRemoved");
+    const how = { by: askedBy ?? null, how: "the client asked for changes to the video" };
+    if (receiptTx) await endRemovalTx(receiptTx.db, project.id, how);
+    else await endRemoval(project.id, how);
   }
 
   // THE WORK ORDER. The task description above is a clipped paragraph by
@@ -801,6 +813,21 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   // our own questions are what make the client's answers legible. Best-effort:
   // a brief that fails to write or analyse never blocks the revision.
   let briefId: string | null = null;
+  if (receiptTx) {
+    const { staffReceiptIntake } = await import("@/lib/revisionBrief");
+    const parsed = JSON.parse(receiptTx.receipt.itemsJson!);
+    const intake = staffReceiptIntake(receiptTx.receipt.itemsJson);
+    if (!intake) throw new Error("The saved staff receipt is incomplete.");
+    const owner = opts.pin?.outputId ? await db.deliverableOutput.findUnique({ where: { id: opts.pin.outputId }, select: { ownerKey: true } }) : null;
+    intake.effects = { taskTitle: data.title, taskNote, assignedKey: existing?.assignedManually ? existing.assignedKey : assignedKey, outputOwnerKey: owner?.ownerKey ?? null, wasAlreadyOpen, reassigned: !!existing && wasAlreadyOpen && !existing.assignedManually && existing.assignedKey !== data.assignedKey };
+    parsed.staffReceipt.intake = intake;
+    const { reflectRevisionInQc } = await import("@/lib/tasks");
+    await reflectRevisionInQc(project.id, opts.qcCategories ?? [], note, null, { db: receiptTx.db, at: receiptTx.receipt.createdAt });
+    await db.revisionBrief.update({ where: { id: receiptTx.receipt.id }, data: { taskId, itemsJson: JSON.stringify(parsed) } });
+    // The task, project flag, QC handoff and receipt pointer commit together.
+    // Notifications, issue ingestion and work reconciliation run after commit.
+    return { ok: true, taskId, briefId: receiptTx.receipt.id, wasAlreadyOpen };
+  }
   try {
     const { createRevisionBrief } = await import("@/lib/revisionBrief");
     const dialogue = (opts.fullText ?? "").trim();
@@ -916,6 +943,68 @@ export async function raiseRevisionDetailed(opts: RaiseRevisionOpts & {
   } catch { /* QC reflection is best-effort */ }
 
   return { ok: true, taskId, briefId, wasAlreadyOpen };
+}
+
+/** Apply a durable staff intake once. Every mutable database consequence is
+ * inside the project lock; provider delivery is deliberately outside it. */
+export async function applySavedStaffRevision(briefId: string): Promise<void> {
+  const { staffReceiptIntake, mirrorClockToTasks } = await import("@/lib/revisionBrief");
+  const header = await prisma.revisionBrief.findUnique({ where: { id: briefId }, select: { projectId: true } });
+  if (!header) throw new Error("The saved revision request was not found.");
+  const { editorRouting } = await import("@/lib/settings");
+  const routing = await editorRouting();
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${header.projectId} FOR NO KEY UPDATE`;
+    await lockAdvisory(tx, `staff-intake:${briefId}`);
+    const receipt = await tx.revisionBrief.findUnique({ where: { id: briefId } });
+    const intake = receipt ? staffReceiptIntake(receipt.itemsJson) : null;
+    if (!receipt || receipt.source !== "review_room_staff" || !intake || !receipt.submissionId || !receipt.outputId) throw new Error("The saved staff request is incomplete. Ask Kyle to check its receipt.");
+    if (intake.attachment && intake.attachment.state !== "CONFIRMED") throw new Error("The original attachment has not been confirmed. The client's words are saved; retry to check the same attachment.");
+    const cut = await tx.reviewSubmission.findFirst({ where: { id: receipt.submissionId, projectId: receipt.projectId }, select: { deliverableId: true, slot: true, outputId: true } });
+    const output = cut?.deliverableId ? await tx.deliverableOutput.findFirst({ where: { id: receipt.outputId, projectId: receipt.projectId, deliverableId: cut.deliverableId, slot: cut.slot ?? 1 }, select: { id: true } }) : null;
+    if (!cut?.deliverableId || !output || (cut.outputId && cut.outputId !== output.id)) throw new Error("The saved request's video no longer belongs to this job or output. Ask Kyle to check the receipt.");
+    if (receipt.taskId) return; // includes a task somebody has since closed
+    const { slotKeyOf } = await import("@/lib/reviewCuts");
+    const result = await runRevisionDetailed({
+      projectId: receipt.projectId, note: receipt.originalText, source: receipt.source, threadRef: receipt.sourceDetail,
+      requestedBy: { name: receipt.requestedBy, kind: "CLIENT_STAFF", userId: receipt.requestedByUserId },
+      pin: { submissionId: receipt.submissionId, outputId: receipt.outputId, cutKey: slotKeyOf(cut.deliverableId, cut.slot), decisionId: null, roundId: null, videoLabel: intake.videoLabel },
+    }, { db: tx, receipt, routing });
+    if (!result.ok) throw new Error("The client's words are saved, but the task handoff did not complete. Retry this same request.");
+  });
+
+  await mirrorClockToTasks(header.projectId);
+  const receipt = await prisma.revisionBrief.findUnique({ where: { id: briefId } });
+  const intake = receipt ? staffReceiptIntake(receipt.itemsJson) : null;
+  const effects = intake?.effects;
+  if (!receipt || !effects) return;
+  if (effects.reassigned) {
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    await closeGhostWork(receipt.projectId, { reason: "REASSIGNED", detail: "the client's revision was routed to another editor" });
+  }
+  const { notifyInApp, notifyUrgent } = await import("@/lib/notify");
+  const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
+  const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+  for (const key of new Set([effects.assignedKey, effects.outputOwnerKey])) {
+    if (key && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(key)) targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${receipt.projectId}` });
+  }
+  // notifyInApp already owns per-channel retry/quiet-time/dedupe behavior.
+  await notifyInApp({ kind: "revision_raised", title: `${effects.taskTitle.replace(/^Video revision — /, "Revision — ").split(",")[0].trim()} · ${intake!.videoLabel}`, body: clip(receipt.requestedBy ? `${receipt.requestedBy}: ${effects.taskNote}` : effects.taskNote, 140), href: `/projects/${receipt.projectId}`, targets, dedupeKey: `staff-cut-${receipt.sourceDetail}` });
+  if (!effects.wasAlreadyOpen && !effects.urgentClaimed) {
+    const claimed = await prisma.$transaction(async (tx) => {
+      await lockAdvisory(tx, `staff-intake:${briefId}`);
+      const fresh = await tx.revisionBrief.findUnique({ where: { id: briefId }, select: { itemsJson: true } });
+      const current = fresh ? staffReceiptIntake(fresh.itemsJson) : null;
+      if (!current?.effects || current.effects.urgentClaimed) return false;
+      current.effects.urgentClaimed = true;
+      const parsed = JSON.parse(fresh!.itemsJson!); parsed.staffReceipt.intake = current;
+      await tx.revisionBrief.update({ where: { id: briefId }, data: { itemsJson: JSON.stringify(parsed) } });
+      return true;
+    });
+    // This existing best-effort Slack alert has no provider idempotency key.
+    // A claimed/unknown attempt is never blindly sent again on a browser retry.
+    if (claimed) await notifyUrgent(`${effects.taskTitle}: “${clip(receipt.originalText, 140)}”`);
+  }
 }
 
 /** Every text / email / call path: the revision, as a yes or no. */

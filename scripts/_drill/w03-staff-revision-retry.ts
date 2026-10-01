@@ -9,10 +9,12 @@ let failIngestion = false;
 let failTimeWrite = false;
 let failSecondItem = false;
 let uploads = 0;
-interceptModule((r) => r === "@/lib/storage", (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
+const uploadedBytes = new Map<string, Buffer>();
+interceptModule((r) => r === "@/lib/integrations/dropbox", (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
   get(t, k) {
-    if (k !== "saveUpload") return t[k];
-    return async (projectId: string, file: File) => ({ originalName: file.name, storedPath: `/RealTour Pilot/Hub/projects/${projectId}/uploads/fake-${++uploads}.png`, size: file.size, mimeType: file.type });
+    if (k === "dropboxUpload") return async (path: string, bytes: Uint8Array) => { uploads++; uploadedBytes.set(path, Buffer.from(bytes)); return { pathDisplay: path }; };
+    if (k === "dropboxDownload") return async (path: string) => { const bytes = uploadedBytes.get(path); if (!bytes) throw new Error("drill: missing fake upload"); return bytes; };
+    return t[k];
   },
 }));
 const clients = new WeakMap<object, unknown>();
@@ -149,6 +151,9 @@ async function main() {
   const raceIssues = await prisma.revisionIssue.findMany({ where: { sourceId: { startsWith: `${raceBriefs[0]?.id}:` } } });
   c.ok("same key on different approved cuts produces one winning exact receipt", competing.result.every((r) => r.ok && r.briefId === raceBriefs[0]?.id) && raceBriefs.length === 1 && !!winner && raceBriefs[0].originalText === winner.form.get("originalText") && raceBriefs[0].requestedBy === `Kyle Retry (on behalf of ${winner.form.get("clientContact")})` && raceBriefs[0].outputId === winner.output.id);
   c.ok("competing cut retry keeps one issue with the winner's time and one task", raceIssues.length === 1 && raceIssues[0].raisedOnSubmissionId === winner?.cut.id && raceIssues[0].timeSec === winner?.cut.slot && await prisma.smartTask.count({ where: { projectId: race.projectId!, taskType: "revision" } }) === 1);
+  const raceTask = await prisma.smartTask.findFirst({ where: { projectId: race.projectId!, taskType: "revision" } });
+  const losing = candidates.find((candidate) => candidate !== winner);
+  c.ok("losing retry input never appends to the task or project/activity records", !!winner && !!losing && raceTask?.description?.includes(String(winner.form.get("originalText"))) === true && !raceTask?.description?.includes(String(losing.form.get("originalText"))) && (await prisma.project.findUnique({ where: { id: race.projectId! } }))?.revisionNote === winner.form.get("originalText") && await prisma.activity.count({ where: { projectId: race.projectId!, type: "FLAG" } }) === 1);
   await clearSession();
   c.ok("saved receipt replay still requires an authenticated reviewer", !(await requestApprovedCutRevision(timed)).ok);
   // The established W03 drill separately covers owner preview and editor guards.

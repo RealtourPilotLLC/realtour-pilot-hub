@@ -13,6 +13,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import { clip } from "@/lib/text";
 import { pinnedEditorFor } from "@/lib/editors";
 import { effectiveTier } from "@/lib/editOverrides";
+import type { Prisma } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -1517,35 +1518,39 @@ export async function reflectRevisionInQc(
   categories: string[],
   reason?: string | null,
   by?: { name: string; userId?: string | null } | null,
+  /** Staff intake already saved its client clock; apply its QC handoff in
+   * the same short transaction as the task, once per durable receipt. */
+  receiptTx?: { db: Prisma.TransactionClient; at: Date },
 ): Promise<void> {
+  const db = receiptTx?.db ?? prisma;
   // Stamp the latest QC pass as reopened-by-revision (best-effort, before the
   // reopen below re-opens the task). If QC never ran (no record) this no-ops.
   try {
-    const last = await prisma.qcRecord.findFirst({
+    const last = await db.qcRecord.findFirst({
       where: { projectId },
       orderBy: { completedAt: "desc" },
       select: { id: true },
     });
     if (last) {
-      await prisma.qcRecord.update({
+      await db.qcRecord.update({
         where: { id: last.id },
-        data: { reopenedByRevisionAt: new Date(), revisionReason: reason?.slice(0, 500) ?? null },
+        data: { reopenedByRevisionAt: receiptTx?.at ?? new Date(), revisionReason: reason?.slice(0, 500) ?? null },
       });
     }
-  } catch { /* dial is analytics-only — never block the revision */ }
+  } catch (e) { if (receiptTx) throw e; /* dial is analytics-only outside the receipt transaction */ }
   // REOPENED WORK IS DUE THE SAME DAY (A52, Jordan Sep 25). A client's ask
   // already carries its 24–48 business-hour clock by now (comms writes the
   // brief first), so this only dates a job the OFFICE put back — the Editing
   // Room's new cut on a finished job. A no-op on a job with any clock, or one
   // never delivered. Never throws.
-  {
+  if (!receiptTx) {
     const { stampReopenedClock } = await import("@/lib/revisionBrief");
     await stampReopenedClock(projectId, {
       why: reason?.trim() ? `a new round on the finished job: ${clip(reason.trim(), 160)}` : "a new round on the finished job",
       ...(by?.name ? { by: by.name, byUserId: by.userId ?? null } : {}),
     });
   }
-  const existing = await prisma.smartTask.findFirst({
+  const existing = await db.smartTask.findFirst({
     where: { projectId, taskType: "media_qa" },
     orderBy: { createdAt: "desc" },
   });
@@ -1572,7 +1577,7 @@ export async function reflectRevisionInQc(
   // Sep 8 (due-fuses audit): the re-QC card was born due-now too — "Overdue ·
   // <raise minute>" on Kyle's list before the corrected media could exist.
   // No due date (a revision promises nothing); HIGH, URGENT for VIP/unhappy.
-  const project = await prisma.project.findUnique({
+  const project = await db.project.findUnique({
     where: { id: projectId },
     select: { title: true, clientId: true, client: { select: { segment: true } } },
   });
@@ -1580,7 +1585,7 @@ export async function reflectRevisionInQc(
   const priority = revisionPriority({ segment: project.client?.segment, ask: reason });
 
   if (existing) {
-    await prisma.smartTask.update({
+    await db.smartTask.update({
       where: { id: existing.id },
       data: {
         status: "OPEN",
@@ -1594,8 +1599,8 @@ export async function reflectRevisionInQc(
   }
 
   // No QC task (job was delivered + QC closed) → make one for the re-QC.
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-  await prisma.smartTask.create({
+  const kyle = await db.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  await db.smartTask.create({
     data: {
       taskType: "media_qa",
       title: `QC — ${project.title}`,

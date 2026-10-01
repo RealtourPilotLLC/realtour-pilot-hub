@@ -2,6 +2,34 @@
 
 ## Sep 30 takeover addendum
 
+### W03 checkpoint — durable intake before task and attachment effects
+
+Staff submissions now save the exact words, contact/actor, video/output, first
+timestamp and attachment identity before any upload or task handoff. The project
+flag, activity, revision task, QC reopen and queue restoration commit together.
+Editor-work reconciliation and existing internal notification paths run after
+commit. Saved request retries preserve the first cut even when a newer cut or
+changed form arrives; closed tasks stay closed.
+
+Attachments use one deterministic path with add-only/no-autorename writes and
+exact-byte readback. Unknown transport outcomes are checked before retry; only
+confirmed absence permits the same bytes/name/size/type to be uploaded again.
+Mismatched bytes remain a staff exception. File-record failure recovers existing
+bytes without another upload. Model reanalysis merges current receipt metadata
+under the same lock. Browser storage keeps IDs only, supports refresh/resume and
+same-key target reselection after a stale first submit with no server receipt.
+A failed cleanup of the browser reminder cannot turn a recorded request into
+a reported recording failure.
+
+Evidence: real PostgreSQL existing W03 26/0 and retry 23/0; real PostgreSQL intake
+review 24/0 (`/tmp/w03-intake-reviewed/`); final PGlite intake 26/0 includes the
+two added stale-first-submit/reselection cases (`/tmp/audit-resume-targeted/`).
+Scoped lint has only two existing tasks.ts warnings; stable-tree TypeScript
+passed. One focused review found and repaired the browser identity, known-absent
+upload and concurrent metadata risks. No production/schema/provider write or
+manual Start/Pause change. Normal browser refresh/resume, real Dropbox behavior
+and distinct per-cut stage readability remain open.
+
 ### U3 checkpoint — persistent Editing stage filters
 
 The queue now filters by the project status it already displays: Ready for

@@ -187,6 +187,12 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
       select: { id: true, projectId: true, taskId: true, submissionId: true, outputId: true, roundId: true, source: true, sourceDetail: true, originalText: true, itemsJson: true, analyzedAt: true, createdAt: true, requestedBy: true },
     });
     if (!brief || !(await briefIsVideoLane(brief))) return 0;
+    // An intake receipt is durable before its attachment/task handoff. Readers
+    // must not turn that pending receipt into editor work ahead of the action.
+    if (brief.source === "review_room_staff" && !brief.taskId) {
+      const { staffReceiptIntake } = await import("@/lib/revisionBrief");
+      if (staffReceiptIntake(brief.itemsJson)) return 0;
+    }
     // WHO RAISED IT (gap 13, Sep 28): the person on the work order — the
     // client, their teammate, our staff on their behalf, the email sender —
     // not the word "Client" on every item of every brief.

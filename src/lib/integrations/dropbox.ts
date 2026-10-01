@@ -344,7 +344,7 @@ export async function dropboxUploadPublic(path: string, bytes: Uint8Array): Prom
 export async function dropboxUpload(
   path: string,
   bytes: Buffer | Uint8Array,
-  opts: { overwrite?: boolean } = {},
+  opts: { overwrite?: boolean; autorename?: boolean } = {},
 ): Promise<{ pathDisplay: string }> {
   const token = await dropboxAccessToken();
   const mode = opts.overwrite ? "overwrite" : "add";
@@ -354,7 +354,7 @@ export async function dropboxUpload(
       Authorization: `Bearer ${token}`,
       ...(await pathRootHeader(token)),
       "Content-Type": "application/octet-stream",
-      "Dropbox-API-Arg": JSON.stringify({ path, mode, autorename: !opts.overwrite, mute: false }),
+      "Dropbox-API-Arg": JSON.stringify({ path, mode, autorename: opts.autorename ?? !opts.overwrite, mute: false }),
     },
     body: new Uint8Array(bytes) as unknown as BodyInit,
     cache: "no-store",
