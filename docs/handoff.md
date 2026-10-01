@@ -2,6 +2,16 @@
 
 ## Sep 30 takeover addendum
 
+### C15 checkpoint — existing no-cuts/other-work behavior verified
+
+Actual signed Kyle and James Review Room page rendering passes 12/0 with no
+first-cut approvals pending, a real-client video-only check, exact v2 revision,
+and unknown delivery text. The headline is scoped to cuts while revisions,
+delivery checks and the real incident link remain visible. Normal/test and
+signed-out cases pass; task rows, version and unknown send state stay unchanged.
+No additional product fix was required. This is server rendering, not browser
+interaction/visual acceptance. Provider fence recorded zero calls.
+
 ### U4 checkpoint — ownership-first task navigation
 
 Task entry now leads with My work / Needs assignment / All work / Completed,
