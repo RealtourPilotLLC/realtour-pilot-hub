@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
 import { EmailSlaSettings } from "@/components/settings/EmailSlaSettings";
 import { NotificationSchedule } from "@/components/settings/NotificationSchedule";
+import { useSettingsDraft } from "@/components/settings/useSettingsDraft";
+import type { SettingsSaveResult } from "@/lib/settingsDraft";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
 // settings for turnaround promises, alert thresholds, anything currently hard
@@ -53,13 +55,15 @@ export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChang
   );
 }
 
-export function SaveRow({ onSave, msg, busy }: { onSave: () => void; msg: string | null; busy: boolean }) {
+export function SaveRow({ onSave, msg, busy, feedback, dirty, label = "Save" }: { onSave: () => void; msg?: string | null; busy: boolean; feedback?: SettingsSaveResult | null; dirty?: boolean; label?: string }) {
+  const message = feedback?.message ?? msg;
   return (
     <div className="mt-3 flex flex-wrap items-center gap-3">
-      <button onClick={onSave} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">
-        {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save
+      <button type="button" onClick={onSave} disabled={busy} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50">
+        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : feedback?.ok && !dirty ? <Check aria-hidden className="size-4" /> : null} {busy ? "Saving…" : label}
       </button>
-      {msg && <span className="text-[13px] font-medium text-muted">{msg}</span>}
+      {dirty !== undefined && <span className="text-sm text-muted">{dirty ? "Unsaved changes" : feedback?.ok ? "Saved" : "Loaded settings"}</span>}
+      {message && <span role={feedback?.ok === false ? "alert" : "status"} className={cn("text-sm font-medium", feedback?.ok === false ? "text-danger" : "text-muted")}>{message}{feedback?.ok && dirty ? " Newer edits are still unsaved." : ""}</span>}
     </div>
   );
 }
@@ -78,9 +82,7 @@ const TURN_ROWS: { key: keyof TurnaroundRules; label: string; hint: string; max:
 ];
 
 export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
-  const [r, setR] = useState(initial);
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
+  const { value: r, setValue: setR, busy, feedback, dirty, save } = useSettingsDraft(initial);
   return (
     <div>
       <p className="mb-3 text-[13px] text-muted">
@@ -96,20 +98,17 @@ export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
             </span>
             <Num
               value={r[row.key] as number}
-              onChange={(n) => { setR((p) => ({ ...p, [row.key]: n })); setMsg(null); }}
+              onChange={(n) => { setR((p) => ({ ...p, [row.key]: n })); }}
               min={1} max={row.max} suffix={row.unit}
             />
           </div>
         ))}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
           <span className="text-[13px]"><b>Monthly content</b><span className="text-muted"> — personal branding batches</span></span>
-          <Num value={r.monthlyBusinessDays} onChange={(n) => { setR((p) => ({ ...p, monthlyBusinessDays: n })); setMsg(null); }} min={1} max={60} suffix="business days" />
+          <Num value={r.monthlyBusinessDays} onChange={(n) => { setR((p) => ({ ...p, monthlyBusinessDays: n })); }} min={1} max={60} suffix="business days" />
         </div>
       </div>
-      <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
-        const res = await saveTurnarounds(r).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
-        setMsg(res.message);
-      })} />
+      <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save turnaround promises" onSave={() => save(saveTurnarounds)} />
     </div>
   );
 }
@@ -166,10 +165,8 @@ function coverageSentence(c: InternalAlertRules["coverage"], onCall: OnCallCandi
 }
 
 export function InternalAlertSettings({ initial }: { initial: InternalAlertRules }) {
-  const [r, setR] = useState(initial);
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
-  const set = (patch: Partial<InternalAlertRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
+  const { value: r, setValue: setR, busy, feedback, dirty, save } = useSettingsDraft(initial);
+  const set = (patch: Partial<InternalAlertRules>) => { setR((p) => ({ ...p, ...patch })); };
   const setCover = (patch: Partial<InternalAlertRules["coverage"]>) => set({ coverage: { ...r.coverage, ...patch } });
   // The roster is fetched rather than passed in: this card is rendered from
   // /settings/page.tsx and the picker should not make every visit to that page
@@ -306,10 +303,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
         <Toggle on={r.kyleDigests.enabled} onChange={(v) => set({ kyleDigests: { enabled: v } })} label="Kyle's Slack digests" />
       </div>
 
-      <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
-        const res = await saveInternalAlerts(r).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
-        setMsg(res.message);
-      })} />
+      <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save internal alerts" onSave={() => save(saveInternalAlerts)} />
     </div>
   );
 }
@@ -321,9 +315,7 @@ const TPL_FIELDS: { key: keyof TextTemplates; label: string; hint: string; vars:
 ];
 
 export function TextTemplateSettings({ initial }: { initial: TextTemplates }) {
-  const [t, setT] = useState(initial);
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
+  const { value: t, setValue: setT, busy, feedback, dirty, save } = useSettingsDraft(initial);
   return (
     <div className="space-y-3">
       <p className="text-[13px] text-muted">
@@ -337,19 +329,17 @@ export function TextTemplateSettings({ initial }: { initial: TextTemplates }) {
             {f.hint && <span className="font-normal text-muted"> — {f.hint}</span>}
           </label>
           <textarea
-            value={t[f.key] || BUILTIN_TEMPLATE_TEXT[f.key]}
-            onChange={(e) => { setT((p) => ({ ...p, [f.key]: e.target.value })); setMsg(null); }}
+            value={t[f.key] ?? ""}
+            onChange={(e) => { setT((p) => ({ ...p, [f.key]: e.target.value })); }}
             rows={3}
-            placeholder="Type the message clients should get"
+            placeholder={BUILTIN_TEMPLATE_TEXT[f.key]}
+            aria-label={f.label}
             className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           <p className="mt-1 text-[11px] text-muted-2">Placeholders: {f.vars.join(" · ")}</p>
         </div>
       ))}
-      <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
-        const res = await saveTextTemplates(t).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
-        setMsg(res.message);
-      })} />
+      <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save text wording" onSave={() => save(saveTextTemplates)} />
     </div>
   );
 }
@@ -401,10 +391,8 @@ function SeatAway({ seat, onChanged }: { seat: ReviewerSeat; onChanged: () => vo
 }
 
 export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
-  const [r, setR] = useState(initial);
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
-  const set = (patch: Partial<ReviewRoomRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
+  const { value: r, setValue: setR, busy, feedback, dirty, save } = useSettingsDraft(initial);
+  const set = (patch: Partial<ReviewRoomRules>) => { setR((p) => ({ ...p, ...patch })); };
   // Fetched, not passed in — the same reason the on-call picker fetches its
   // roster: /settings should not wait on a query most visits do not need.
   const [roster, setRoster] = useState<ReviewerSeat[] | null>(null);
@@ -526,10 +514,7 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
         </div>
       </div>
 
-      <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
-        const res = await saveReviewRoomRules(r).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
-        setMsg(res.message);
-      })} />
+      <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save review rules" onSave={() => save(saveReviewRoomRules)} />
     </div>
   );
 }

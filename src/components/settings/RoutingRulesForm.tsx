@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { Check, Loader2 } from "lucide-react";
+import { useSettingsDraft } from "@/components/settings/useSettingsDraft";
+import { SaveRow } from "@/components/settings/OperatingRules";
 import { saveEditorRouting } from "@/app/settings/actions";
 import type { EditorRoutingRules } from "@/lib/settings";
 
@@ -18,21 +18,11 @@ const CHOICES = [
 ];
 
 export function RoutingRulesForm({ initial }: { initial: EditorRoutingRules }) {
-  const [form, setForm] = useState({
+  const { value: form, setValue: setForm, busy, feedback, dirty, save } = useSettingsDraft({
     standardVideo: initial.standardVideo ?? "manual",
     premiumVideo: initial.premiumVideo ?? "manual",
     personalBranding: initial.personalBranding ?? "manual",
   });
-  const [note, setNote] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [pending, start] = useTransition();
-
-  const save = () =>
-    start(async () => {
-      const r = await saveEditorRouting(form);
-      setNote(r.message);
-      setSaved(r.ok);
-    });
 
   return (
     <div className="space-y-3">
@@ -44,8 +34,9 @@ export function RoutingRulesForm({ initial }: { initial: EditorRoutingRules }) {
           </div>
           <select
             value={form[lane.key]}
-            onChange={(e) => { setForm((f) => ({ ...f, [lane.key]: e.target.value })); setSaved(false); setNote(null); }}
-            className="rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-brand"
+            onChange={(e) => { setForm((f) => ({ ...f, [lane.key]: e.target.value })); }}
+            aria-label={lane.label}
+            className="min-h-11 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-brand"
           >
             {CHOICES.map((c) => (
               <option key={c.value} value={c.value}>{c.label}</option>
@@ -53,17 +44,7 @@ export function RoutingRulesForm({ initial }: { initial: EditorRoutingRules }) {
           </select>
         </div>
       ))}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={save}
-          disabled={pending}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-        >
-          {pending ? <Loader2 className="size-4 animate-spin" /> : saved ? <Check className="size-4" /> : null}
-          Save routing rules
-        </button>
-        {note && <span className={`text-xs ${saved ? "text-success" : "text-danger"}`}>{note}</span>}
-      </div>
+      <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save routing rules" onSave={() => save(saveEditorRouting)} />
     </div>
   );
 }

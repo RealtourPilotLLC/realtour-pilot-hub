@@ -2,6 +2,28 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — exact save feedback across core Settings forms
+
+Routing, turnaround, internal alerts, text wording and review rules now share
+section-specific loaded/dirty/saving/saved/error feedback. A late success only
+acknowledges the submitted snapshot; newer input remains unsaved. Rejected or
+unconfirmed saves retain input and expose retry. Dirty forms warn on browser
+refresh/close; search/collapse still leaves them mounted. Existing actions,
+permissions and policy values are unchanged. Empty template input now remains
+empty with built-in wording as its placeholder, matching the existing server's
+use-default semantics rather than refilling the draft while deleting text.
+
+Fenced UI state/actual first-paint regression passed 12/0
+(`/tmp/u5-settings-save-feedback-final/u5-settings-save-feedback.ts.log`), lint
+and one independent focused source review passed. The initial run passed all
+assertions but used the wrong test-summary helper; it was corrected. No database
+or provider calls. Broader panel migration and mounted browser acceptance remain.
+
+Release evidence and explicit UA01–UA14 remaining steps are maintained in
+`docs/audit-2026-09-30-release-matrix.md`. It records implementation, tests,
+commits, deployment, activation and client visibility separately; no UI phase
+is accepted solely from first-paint rendering.
+
 ### U2 checkpoint — selected month/session and address-bound appointments
 
 Portal navigation retains a validated enrollment month and Pro session between
