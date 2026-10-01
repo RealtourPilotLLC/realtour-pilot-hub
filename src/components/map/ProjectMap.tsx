@@ -1,7 +1,7 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
@@ -38,6 +38,12 @@ export type MapPin = {
 export type MapDay = { key: string; label: string; count: number };
 type Home = { lat: number; lng: number; label: string } | null;
 type TempPin = { lat: number; lng: number; label: string } | null;
+type AddressChoice = { lat: number; lng: number; label: string };
+type AddressResult = Awaited<ReturnType<typeof distanceToAddress>>;
+type ReadState<T> = { scope: string; pending: boolean; value: T | null; message: string | null };
+const pinScope = (pin: MapPin | null) => pin ? JSON.stringify([pin.id, pin.projectId, pin.lat, pin.lng, pin.shootISO]) : "no-pin";
+const addressScope = (scope: string, query: string) => JSON.stringify([scope, query]);
+const mapAction = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-1.5 rounded-lg border border-border-strong px-3 py-2 text-sm font-medium whitespace-normal hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 
 function fmt(iso: string | null): string {
   if (!iso) return "—";
@@ -66,6 +72,7 @@ export function ProjectMap({
     !dayMode && pins.length === 1 ? pins[0] : null,
   );
   const [tempPin, setTempPin] = useState<TempPin>(null); // address from the distance tool
+  const selectedRef = useRef(selected);
 
   // Real service-territory polygons synced from Aryeo.
   const territories = useMemo(() => getTerritories(), []);
@@ -90,63 +97,12 @@ export function ProjectMap({
     const list = dayMode ? pins.filter((p) => p.dayKey === day) : pins;
     return [...list].sort((a, b) => (a.shootISO ?? "").localeCompare(b.shootISO ?? ""));
   }, [pins, day, dayMode]);
-
-  // Init the map once.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const L = (await import("leaflet")).default;
-      if (cancelled || !mapEl.current || mapRef.current) return;
-      LRef.current = L;
-      const map = L.map(mapEl.current, { zoomControl: true, scrollWheelZoom: true });
-      mapRef.current = map;
-      // Satellite imagery (Esri — free, no key) + light labels for streets/towns.
-      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-        attribution: "Tiles &copy; Esri", maxZoom: 19,
-      }).addTo(map);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png", {
-        attribution: "&copy; OpenStreetMap &copy; CARTO", maxZoom: 19,
-      }).addTo(map);
-      // Territories first so they sit beneath the route line + markers.
-      terrLayerRef.current = L.layerGroup().addTo(map);
-      layerRef.current = L.layerGroup().addTo(map);
-      overlayRef.current = L.layerGroup().addTo(map);
-      map.setView([40.0, -75.4], 9);
-      drawTerritories();
-      drawMarkers();
-      drawOverlay();
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Redraw markers + route whenever the visible set changes.
-  useEffect(() => {
-    drawMarkers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
-
-  // Re-highlight the selected shooter's territory + redraw the temp address pin
-  // when selection / address change.
-  useEffect(() => {
-    drawTerritories();
-    drawOverlay();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, tempPin]);
-
-  // Clear the temp address pin when the selected shoot changes.
-  useEffect(() => {
-    setTempPin(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
-
   function drawMarkers() {
     const L = LRef.current;
     const map = mapRef.current;
     const layer = layerRef.current;
     if (!L || !map || !layer) return;
     layer.clearLayers();
-    setSelected((s) => (s && visible.some((p) => p.id === s.id) ? s : null));
 
     const pts = visible.filter((p) => p.lat && p.lng);
 
@@ -174,7 +130,7 @@ export function ProjectMap({
         iconSize: [18, 18], iconAnchor: [9, 9],
       });
       const m = L.marker(offsetOf(p), { icon, title: p.title }).addTo(layer);
-      m.on("click", () => setSelected(p));
+      m.on("click", () => selectPin(p));
     });
 
     // Route line connecting the day's shoots in time order.
@@ -247,29 +203,84 @@ export function ProjectMap({
   }
 
   function focus(p: MapPin) {
-    setSelected(p);
+    selectPin(p);
     const map = mapRef.current;
     if (map && p.lat && p.lng) map.setView([p.lat, p.lng], 15, { animate: true });
   }
+  function selectPin(p: MapPin) {
+    if (pinScope(selectedRef.current) !== pinScope(p)) setTempPin(null);
+    selectedRef.current = p;
+    setSelected(p);
+  }
+
+  useEffect(() => {
+    const next = selectedRef.current ? visible.find((p) => p.id === selectedRef.current?.id) ?? null : null;
+    if (pinScope(next) !== pinScope(selectedRef.current)) setTempPin(null);
+    selectedRef.current = next;
+    setSelected(next);
+  }, [visible]);
+
+  // Init the map once.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const L = (await import("leaflet")).default;
+      if (cancelled || !mapEl.current || mapRef.current) return;
+      LRef.current = L;
+      const map = L.map(mapEl.current, { zoomControl: true, scrollWheelZoom: true });
+      mapRef.current = map;
+      // Satellite imagery (Esri — free, no key) + light labels for streets/towns.
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        attribution: "Tiles &copy; Esri", maxZoom: 19,
+      }).addTo(map);
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png", {
+        attribution: "&copy; OpenStreetMap &copy; CARTO", maxZoom: 19,
+      }).addTo(map);
+      // Territories first so they sit beneath the route line + markers.
+      terrLayerRef.current = L.layerGroup().addTo(map);
+      layerRef.current = L.layerGroup().addTo(map);
+      overlayRef.current = L.layerGroup().addTo(map);
+      map.setView([40.0, -75.4], 9);
+      drawTerritories();
+      drawMarkers();
+      drawOverlay();
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Redraw markers + route whenever the visible set changes.
+  useEffect(() => {
+    drawMarkers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  // Re-highlight the selected shooter's territory + redraw the temp address pin
+  // when selection / address change.
+  useEffect(() => {
+    drawTerritories();
+    drawOverlay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, tempPin]);
 
   return (
     <div className="space-y-3">
       {/* Day selector */}
       {dayMode && (
-        <div className="flex gap-1.5 overflow-x-auto scroll-thin pb-1">
+        <div className="flex flex-wrap gap-1.5 pb-1">
           {days!.map((d) => (
             <button
               key={d.key}
               onClick={() => setDay(d.key)}
               className={cn(
-                "inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
+                `${mapAction} transition-colors`,
                 day === d.key
                   ? "border-brand/30 bg-brand-soft text-brand"
                   : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
               )}
             >
               {d.label}
-              <span className={cn("rounded-full px-1.5 text-[10px]", day === d.key ? "bg-brand/15" : "bg-surface-2")}>{d.count}</span>
+              <span className={cn("rounded-full px-1.5 text-ui-status", day === d.key ? "bg-brand/15" : "bg-surface-2")}>{d.count}</span>
             </button>
           ))}
         </div>
@@ -279,7 +290,7 @@ export function ProjectMap({
         <div ref={mapEl} className="h-[420px] w-full overflow-hidden rounded-2xl border border-border lg:h-[640px]" />
         <div className="space-y-3">
           {selected ? (
-            <PinDetail pin={selected} home={home ?? null} onAddress={setTempPin} territories={territories} />
+            <PinDetail pin={selected} home={home ?? null} onAddress={(address) => { if (pinScope(selectedRef.current) === pinScope(selected)) setTempPin(address); }} territories={territories} />
           ) : (
             <div className="space-y-3">
               <div className="rounded-2xl border border-border bg-surface p-4 text-sm text-muted">
@@ -290,13 +301,13 @@ export function ProjectMap({
             </div>
           )}
           <div className="max-h-[260px] space-y-1 overflow-y-auto rounded-2xl border border-border bg-surface p-2 lg:max-h-[300px]">
-            {visible.length === 0 && <div className="px-2 py-3 text-xs text-muted">No shoots this day.</div>}
+            {visible.length === 0 && <div className="px-2 py-3 text-ui-secondary text-muted">No shoots this day.</div>}
             {visible.map((p, i) => (
               <button
                 key={p.id}
                 onClick={() => focus(p)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-surface-2",
+                  "flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                   selected?.id === p.id && "bg-surface-2",
                 )}
               >
@@ -304,7 +315,7 @@ export function ProjectMap({
                   <span className="flex size-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white" style={{ backgroundColor: p.color }}>{i + 1}</span>
                 )}
                 {!dayMode && <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: p.color }} />}
-                <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                <span className="min-w-0 flex-1 break-words">{p.title}</span>
                 <span className="shrink-0 text-muted-2">{fmtTimeOnly(p.shootISO)}</span>
               </button>
             ))}
@@ -315,15 +326,34 @@ export function ProjectMap({
   );
 }
 
-function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: Home; onAddress: (p: TempPin) => void; territories: Territory[] }) {
-  const [weather, setWeather] = useState<Weather | null>(null);
-  const [loadingW, startW] = useTransition();
-  const [drive, setDrive] = useState<DriveInfo | null>(null);
-  const [loadingD, startD] = useTransition();
-
+type PinDetailProps = { pin: MapPin; home: Home; onAddress: (p: TempPin) => void; territories: Territory[] };
+function PinDetail(props: PinDetailProps) {
+  // A different shoot/coordinate/time is a different read context. Replacing
+  // only this private panel clears its previous queries and cancels old reads.
+  return <PinReadPanel key={pinScope(props.pin)} {...props} />;
+}
+function PinReadPanel({ pin, home, onAddress, territories }: PinDetailProps) {
+  const scope = pinScope(pin);
+  const homeScope = JSON.stringify([scope, home?.lat, home?.lng]);
+  const scopeRef = useRef(scope), homeScopeRef = useRef(homeScope);
+  const weatherReq = useRef(0), driveReq = useRef(0), addressReq = useRef(0);
+  const [weatherState, setWeatherState] = useState<ReadState<Weather>>(() => ({ scope, pending: true, value: null, message: null }));
+  const [driveState, setDriveState] = useState<ReadState<DriveInfo> | null>(null);
   const [addr, setAddr] = useState("");
-  const [addrRes, setAddrRes] = useState<{ label?: string; lat?: number; lng?: number; drive?: DriveInfo; message: string } | null>(null);
-  const [loadingA, startA] = useTransition();
+  const addrRef = useRef(addr);
+  const [addressState, setAddressState] = useState<ReadState<AddressResult> | null>(null);
+  const addressPending = useRef<{ scope: string; req: number } | null>(null);
+  const homePending = useRef<{ scope: string; req: number } | null>(null);
+  const weather = weatherState?.scope === scope ? weatherState.value : null;
+  const loadingW = weatherState?.scope === scope && weatherState.pending;
+  const weatherMessage = weatherState?.scope === scope ? weatherState.message : null;
+  const drive = driveState?.scope === homeScope ? driveState.value : null;
+  const loadingD = driveState?.scope === homeScope && driveState.pending;
+  const driveMessage = driveState?.scope === homeScope ? driveState.message : null;
+  const currentAddressScope = addressScope(scope, addr);
+  const addrRes = addressState?.scope === currentAddressScope ? addressState.value : null;
+  const loadingA = addressState?.scope === currentAddressScope && addressState.pending;
+  const addressMessage = addressState?.scope === currentAddressScope ? addressState.message : null;
 
   // Which real service territory(ies) does the looked-up address fall in, and
   // does the assigned shooter cover any of them?
@@ -335,14 +365,25 @@ function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: H
   })();
 
   // Address typeahead state.
-  const [sugs, setSugs] = useState<{ lat: number; lng: number; label: string }[]>([]);
+  const [sugs, setSugs] = useState<AddressChoice[]>([]);
+  const sugsRef = useRef<AddressChoice[]>([]);
   const [showSugs, setShowSugs] = useState(false);
+  const showRef = useRef(false);
+  const [activeSug, setActiveSug] = useState(-1);
+  const activeSugRef = useRef(-1);
+  const [focused, setFocused] = useState(false);
+  const focusedRef = useRef(false);
+  const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
   const sugReqRef = useRef(0); // guards against out-of-order responses
-  const skipSugRef = useRef(false); // skip the fetch triggered by picking a result
+  const skipSugRef = useRef<string | null>(null); // skip only the picked label
+  const addressId = useId(), listId = `${addressId}-choices`, hintId = `${addressId}-hint`;
+  const openSuggestions = (open: boolean) => { showRef.current = open; setShowSugs(open); };
+  const activateSuggestion = (index: number) => { activeSugRef.current = index; setActiveSug(index); };
   // The suggestions list is rendered in a portal at the document root, anchored
   // under the input — so a parent card's `overflow-hidden` (e.g. the project
   // page's Location Section) can't clip it the way an absolute child would.
   const boxRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const [menu, setMenu] = useState<{ left: number; top: number; width: number } | null>(null);
   const placeMenu = () => {
     const r = boxRef.current?.getBoundingClientRect();
@@ -359,51 +400,122 @@ function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: H
       window.removeEventListener("resize", on);
     };
   }, [showSugs, sugs]);
-
   useEffect(() => {
-    setWeather(null); setDrive(null); setAddrRes(null); setAddr("");
-    setSugs([]); setShowSugs(false);
-    startW(async () => setWeather(await projectWeather(pin.projectId)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin.id]);
+    if (!showSugs || activeSug < 0) return;
+    const list = listRef.current;
+    const option = list?.children.item(activeSug) as HTMLElement | null;
+    if (!list || !option) return;
+    const top = list.getBoundingClientRect().top + list.clientTop;
+    const bottom = top + list.clientHeight;
+    const rect = option.getBoundingClientRect();
+    // Move this list's scroll position only. Long wrapped labels and keyboard
+    // choices stay visible without scrolling the page or animating movement.
+    if (rect.top < top || rect.height > list.clientHeight) list.scrollTop += rect.top - top;
+    else if (rect.bottom > bottom) list.scrollTop += rect.bottom - bottom;
+  }, [activeSug, showSugs, sugs]);
+
+  const cancelReads = useCallback(() => {
+    weatherReq.current++; driveReq.current++; addressReq.current++; sugReqRef.current++;
+  }, []);
+  useEffect(() => {
+    const req = ++weatherReq.current;
+    void (async () => {
+      let value: Weather | null = null, message: string | null = null;
+      try { value = await projectWeather(pin.projectId); if (!value) message = "Weather is unavailable for this shoot."; }
+      catch { message = "Weather could not be loaded for this shoot."; }
+      if (weatherReq.current === req && scopeRef.current === scope) setWeatherState({ scope, pending: false, value, message });
+    })();
+    return cancelReads;
+  }, [scope, pin.projectId, cancelReads]);
+  useEffect(() => { homeScopeRef.current = homeScope; driveReq.current++; }, [homeScope]);
 
   // Debounced suggestions as the user types.
   useEffect(() => {
-    if (skipSugRef.current) { skipSugRef.current = false; return; }
-    const q = addr.trim();
-    if (q.length < 3) { setSugs([]); setShowSugs(false); return; }
     const reqId = ++sugReqRef.current;
+    const pickedLabel = skipSugRef.current;
+    skipSugRef.current = null;
+    if (pickedLabel === addr) return;
+    if (!focused) return;
+    const q = addr.trim();
+    if (q.length < 3) return;
     const t = setTimeout(async () => {
-      const res = await addressSuggestions(q);
-      if (reqId === sugReqRef.current) { setSugs(res); setShowSugs(true); }
+      let res: AddressChoice[] = [], message: string | null = null;
+      try { res = await addressSuggestions(q); if (!res.length) message = "No address suggestions were returned. Enter the full address and calculate its distance."; }
+      catch { message = "Address suggestions could not be loaded. You can enter the full address and calculate its distance."; }
+      if (reqId === sugReqRef.current && scopeRef.current === scope && addrRef.current.trim() === q && focusedRef.current) {
+        sugsRef.current = res; setSugs(res); activeSugRef.current = -1; setActiveSug(-1);
+        showRef.current = res.length > 0; setShowSugs(res.length > 0); setSuggestionMessage(message);
+      }
     }, 300);
     return () => clearTimeout(t);
-  }, [addr]);
+  }, [addr, scope, focused]);
 
   // Pick a suggestion: fill the field and route straight to its coordinates
   // (no second geocode needed).
-  function pickSuggestion(s: { lat: number; lng: number; label: string }) {
-    skipSugRef.current = true;
-    setAddr(s.label);
-    setSugs([]); setShowSugs(false);
+  function pickSuggestion(s: AddressChoice) {
+    if (scopeRef.current !== scope || !showRef.current || !sugsRef.current.some((choice) => choice.lat === s.lat && choice.lng === s.lng && choice.label === s.label)) return;
+    sugReqRef.current++;
+    skipSugRef.current = s.label;
+    addrRef.current = s.label; setAddr(s.label); setSuggestionMessage(null);
+    sugsRef.current = []; setSugs([]); openSuggestions(false); activateSuggestion(-1);
     onAddress({ lat: s.lat, lng: s.lng, label: s.label }); // drop temp pin
-    startA(async () => {
-      const d = await driveInfo(pin.lat, pin.lng, s.lat, s.lng);
-      setAddrRes(d ? { label: s.label, lat: s.lat, lng: s.lng, drive: d, message: "ok" } : { lat: s.lat, lng: s.lng, message: "Couldn't compute a route." });
-    });
+    const req = ++addressReq.current, requestScope = addressScope(scope, s.label);
+    addressPending.current = { scope: requestScope, req };
+    setAddressState({ scope: requestScope, pending: true, value: null, message: null });
+    void (async () => {
+      let value: AddressResult | null = null, message: string | null = null;
+      try {
+        const d = await driveInfo(pin.lat, pin.lng, s.lat, s.lng);
+        value = d ? { ok: true, label: s.label, lat: s.lat, lng: s.lng, drive: d, message: "ok" } : { ok: false, label: s.label, lat: s.lat, lng: s.lng, message: "Couldn't compute a route." };
+      } catch { message = "Distance could not be loaded for this address. Your chosen address is kept."; }
+      if (addressReq.current === req && scopeRef.current === scope && addrRef.current === s.label) {
+        addressPending.current = null;
+        setAddressState({ scope: requestScope, pending: false, value, message });
+      }
+    })();
+  }
+  function calculateAddress() {
+    const query = addrRef.current, requestScope = addressScope(scope, query);
+    if (!query.trim() || scopeRef.current !== scope || addressPending.current?.scope === requestScope && addressPending.current.req === addressReq.current) return;
+    openSuggestions(false); activateSuggestion(-1); sugReqRef.current++;
+    const req = ++addressReq.current;
+    addressPending.current = { scope: requestScope, req };
+    setAddressState({ scope: requestScope, pending: true, value: null, message: null }); onAddress(null);
+    void (async () => {
+      let value: AddressResult | null = null, message: string | null = null;
+      try { value = await distanceToAddress(pin.lat, pin.lng, query); }
+      catch { message = "Distance could not be loaded. Your address is still here; try again."; }
+      if (addressReq.current === req && scopeRef.current === scope && addrRef.current === query) {
+        addressPending.current = null;
+        setAddressState({ scope: requestScope, pending: false, value, message });
+        if (value?.ok && value.lat != null && value.lng != null) onAddress({ lat: value.lat, lng: value.lng, label: value.label ?? query });
+      }
+    })();
+  }
+  function calculateHome() {
+    if (!home || scopeRef.current !== scope || homeScopeRef.current !== homeScope || homePending.current?.scope === homeScope && homePending.current.req === driveReq.current) return;
+    const req = ++driveReq.current;
+    homePending.current = { scope: homeScope, req };
+    setDriveState({ scope: homeScope, pending: true, value: null, message: null });
+    void (async () => {
+      let value: DriveInfo | null = null, message: string | null = null;
+      try { value = await driveInfo(pin.lat, pin.lng, home.lat, home.lng); if (!value) message = "The drive to home base is unavailable."; }
+      catch { message = "The drive to home base could not be loaded. Try again."; }
+      if (driveReq.current === req && homeScopeRef.current === homeScope && scopeRef.current === scope) { homePending.current = null; setDriveState({ scope: homeScope, pending: false, value, message }); }
+    })();
   }
 
   return (
     <div className="rounded-2xl border border-border bg-surface p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-start gap-1.5">
-          <Link href={`/projects/${pin.projectId}`} className="font-semibold leading-snug hover:text-brand">{pin.title}</Link>
+          <Link href={`/projects/${pin.projectId}`} className="inline-flex min-h-11 items-center rounded-lg break-words text-ui-body font-semibold leading-snug hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{pin.title}</Link>
           <CopyButton value={pin.title} title="Copy address" className="mt-0.5 shrink-0" />
         </div>
-        <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ color: ink(pin.color), backgroundColor: pin.color + "22" }}>{pin.stage}</span>
+        <span className="max-w-full rounded-full px-2 py-0.5 text-ui-status font-medium" style={{ color: ink(pin.color), backgroundColor: pin.color + "22" }}>{pin.stage}</span>
       </div>
-      <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-        <span className="truncate">{pin.client}</span>
+      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-ui-secondary text-muted">
+        <span className="break-words">{pin.client}</span>
         {pin.hasDrone && <DroneBadge size="xs" />}
       </div>
 
@@ -411,48 +523,73 @@ function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: H
         <Row icon={<Clock className="size-3.5" />} label="Shoot">{fmt(pin.shootISO)}{pin.endISO ? ` – ${fmtTimeOnly(pin.endISO)}` : ""}</Row>
         <Row icon={<Camera className="size-3.5" />} label="Shooter">{pin.photographer ?? "Unassigned"}</Row>
         <Row icon={<CloudSun className="size-3.5" />} label="Weather">
-          {loadingW ? <Loader2 className="size-3.5 animate-spin" /> : weather ? `${weather.emoji} ${weather.tempF}° · ${weather.label}` : <span className="text-muted-2">—</span>}
+          {loadingW ? <span role="status" className="inline-flex items-center gap-1"><Loader2 className="size-3.5 animate-spin" />Loading weather…</span> : weather ? `${weather.emoji} ${weather.tempF}° · ${weather.label}` : <span role="status" className="text-muted-2">{weatherMessage ?? "Weather not loaded."}</span>}
         </Row>
       </dl>
 
       {home && (
         <button
-          onClick={() => startD(async () => setDrive(await driveInfo(pin.lat, pin.lng, home.lat, home.lng)))}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2"
+          disabled={loadingD}
+          onClick={calculateHome}
+          className={`${mapAction} mt-3`}
         >
           {loadingD ? <Loader2 className="size-3.5 animate-spin" /> : <Home className="size-3.5" />} Drive to home base
         </button>
       )}
       {drive && <DriveLine drive={drive} />}
+      {driveMessage && <p role="alert" className="mt-2 text-ui-status leading-relaxed text-danger">{driveMessage}</p>}
 
       <div className="mt-3 border-t border-border pt-3">
-        <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+        <label htmlFor={addressId} className="mb-1 flex items-center gap-1.5 text-ui-secondary font-semibold text-muted">
           <Ruler className="size-3.5" /> Distance to an address
         </label>
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           <div ref={boxRef} className="relative min-w-0 flex-1">
             <input
+              id={addressId}
               value={addr}
-              onChange={(e) => setAddr(e.target.value)}
-              onFocus={() => { if (sugs.length) setShowSugs(true); }}
-              onBlur={() => setTimeout(() => setShowSugs(false), 150)}
-              onKeyDown={(e) => { if (e.key === "Escape") setShowSugs(false); }}
+              onChange={(e) => {
+                addrRef.current = e.target.value; setAddr(e.target.value); addressReq.current++; sugReqRef.current++;
+                setAddressState(null); onAddress(null); sugsRef.current = []; setSugs([]); openSuggestions(false); activateSuggestion(-1); setSuggestionMessage(null);
+              }}
+              onFocus={() => { focusedRef.current = true; setFocused(true); if (sugsRef.current.length) openSuggestions(true); }}
+              onBlur={() => { focusedRef.current = false; setFocused(false); sugReqRef.current++; openSuggestions(false); activateSuggestion(-1); }}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                const choices = sugsRef.current;
+                if ((e.key === "ArrowDown" || e.key === "ArrowUp") && choices.length) {
+                  e.preventDefault(); openSuggestions(true);
+                  activateSuggestion(e.key === "ArrowDown" ? Math.min(activeSugRef.current + 1, choices.length - 1) : activeSugRef.current < 0 ? choices.length - 1 : Math.max(activeSugRef.current - 1, 0));
+                } else if (e.key === "Escape") { e.preventDefault(); sugReqRef.current++; openSuggestions(false); activateSuggestion(-1); }
+                else if (e.key === "Enter") { e.preventDefault(); const chosen = showRef.current ? choices[activeSugRef.current] : null; if (chosen) pickSuggestion(chosen); else calculateAddress(); }
+              }}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={showSugs && sugs.length > 0 && !!menu}
+              aria-controls={showSugs && sugs.length > 0 && menu ? listId : undefined}
+              aria-activedescendant={showSugs && menu && activeSug >= 0 ? `${listId}-${activeSug}` : undefined}
+              aria-describedby={hintId}
               placeholder="Start typing an address…"
               autoComplete="off"
-              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+              className="min-h-11 w-full rounded-lg border border-border-strong bg-surface-2 px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             />
             {showSugs && sugs.length > 0 && menu &&
               createPortal(
                 <ul
+                  ref={listRef}
+                  id={listId} role="listbox" aria-label="Address suggestions"
                   style={{ position: "fixed", left: menu.left, top: menu.top, width: menu.width, zIndex: 2000 }}
                   className="max-h-56 overflow-auto rounded-lg border border-border bg-surface py-1 shadow-lg"
                 >
                   {sugs.map((s, i) => (
-                    <li key={i}>
+                    <li key={i} id={`${listId}-${i}`} role="option" aria-selected={activeSug === i}>
                       <button
                         type="button"
-                        onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }}
-                        className="block w-full truncate px-2.5 py-1.5 text-left text-xs hover:bg-surface-2"
+                        tabIndex={-1}
+                        onPointerDown={(e) => e.preventDefault()}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => pickSuggestion(s)}
+                        className={cn("block min-h-11 w-full break-words rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", activeSug === i && "bg-surface-2")}
                         title={s.label}
                       >
                         {s.label}
@@ -465,25 +602,26 @@ function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: H
           </div>
           <button
             disabled={loadingA || !addr.trim()}
-            onClick={() => startA(async () => {
-              const r = await distanceToAddress(pin.lat, pin.lng, addr);
-              setAddrRes(r);
-              if (r.ok && r.lat != null && r.lng != null) onAddress({ lat: r.lat, lng: r.lng, label: r.label ?? addr });
-            })}
-            className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            onClick={calculateAddress}
+            className="inline-flex min-h-11 min-w-11 max-w-full shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50"
           >
             {loadingA ? <Loader2 className="size-3.5 animate-spin" /> : <Navigation className="size-3.5" />}
+            Calculate distance
           </button>
         </div>
+        <p id={hintId} className="mt-1 text-ui-status leading-relaxed text-muted">Use the arrow keys to choose a suggestion, then Enter. Enter also calculates a typed address; Escape closes suggestions.</p>
+        {suggestionMessage && <p role="status" className="mt-2 text-ui-status leading-relaxed text-muted">{suggestionMessage}</p>}
+        {addressMessage && <p role="alert" className="mt-2 text-ui-status leading-relaxed text-danger">{addressMessage}</p>}
+        {loadingA && <p role="status" className="mt-2 text-ui-status text-muted">Calculating the distance to the submitted address…</p>}
         {addrRes && (
           addrRes.drive ? (
             <div className="mt-2">
-              {addrRes.label && <div className="mb-1 truncate text-[11px] text-muted-2">{addrRes.label}</div>}
+              {addrRes.label && <div className="mb-1 break-words text-ui-status text-muted-2">{addrRes.label}</div>}
               <DriveLine drive={addrRes.drive} />
               {territory && (
                 <div
                   className={cn(
-                    "mt-1.5 flex items-start gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium",
+                    "mt-1.5 flex items-start gap-1.5 rounded-lg px-3 py-2 text-ui-status font-medium leading-relaxed",
                     territory.covered
                       ? "bg-success/10 text-success"
                       : territory.inService
@@ -503,7 +641,7 @@ function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: H
               )}
             </div>
           ) : (
-            <div className="mt-2 text-xs text-danger">{addrRes.message}</div>
+            <div role="alert" className="mt-2 text-ui-status leading-relaxed text-danger">{addrRes.message}</div>
           )
         )}
       </div>
@@ -535,7 +673,7 @@ function TerritoryLegend({ territories }: { territories: Territory[] }) {
   if (territories.length === 0) return null;
   return (
     <div className="rounded-2xl border border-border bg-surface p-4">
-      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+      <div className="mb-2 flex items-center gap-1.5 text-ui-secondary font-semibold text-muted">
         <MapPin className="size-3.5" /> Service territories
       </div>
       <ul className="space-y-2">
@@ -543,22 +681,22 @@ function TerritoryLegend({ territories }: { territories: Territory[] }) {
           <li key={t.uuid} className="flex items-start gap-2">
             <span className="mt-0.5 size-3 shrink-0 rounded-sm" style={{ backgroundColor: t.color, boxShadow: `0 0 0 1px ${t.color}` }} />
             <div className="min-w-0">
-              <div className="truncate text-sm font-medium leading-tight">{t.name}</div>
-              <div className="truncate text-[11px] text-muted-2">{t.members.join(", ") || "Unassigned"}</div>
+              <div className="break-words text-ui-secondary font-medium leading-relaxed">{t.name}</div>
+              <div className="break-words text-ui-status text-muted-2">{t.members.join(", ") || "Unassigned"}</div>
             </div>
           </li>
         ))}
       </ul>
-      <p className="mt-2.5 text-[10px] leading-snug text-muted-2">Synced from Aryeo. Tap a shoot to highlight its shooter&rsquo;s area.</p>
+      <p className="mt-2.5 text-ui-status leading-relaxed text-muted-2">Synced from Aryeo. Tap a shoot to highlight its shooter&rsquo;s area.</p>
     </div>
   );
 }
 
 function Row({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="flex w-16 shrink-0 items-center gap-1.5 text-xs text-muted-2">{icon}{label}</span>
-      <span className="min-w-0 flex-1 truncate">{children}</span>
+    <div className="flex items-start gap-2">
+      <span className="flex w-20 shrink-0 items-center gap-1.5 text-ui-secondary text-muted-2">{icon}{label}</span>
+      <span className="min-w-0 flex-1 break-words">{children}</span>
     </div>
   );
 }

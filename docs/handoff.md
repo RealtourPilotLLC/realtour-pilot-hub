@@ -2,6 +2,28 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — exact-pin Map reads and keyboard suggestions
+
+ProjectMap preserves providers, action calls, coordinates, travel/mileage,
+territory definitions and routes. Weather/home/address/suggestion results are
+scoped to exact pin/project/coordinates/time, home coordinates and typed query.
+Synchronous request guards and cleanup counters exclude late replies; the parent
+also rejects an old pin's destination overlay. Failed reads have visible scoped
+feedback and retain input. Native combobox/listbox has Arrow/Enter/Escape, IME
+guard, pointer selection without the prior blur race, visible labels and44px
+controls; list/detail text wraps. No live Leaflet or provider operation occurred.
+
+Root focused review and agent's own exact edge check repaired two bounded cases:
+picking an already-typed suggestion label no longer suppresses the first newer
+query, and keyboard-active wrapped suggestions scroll within their list only,
+without page scroll/animation. Actual handlers/effects fake fixture36/0 at
+`/tmp/u5-project-map-recovery-reviewed/u5-project-map-recovery.ts.log`;
+scoped lint/diff and root exact repair recheck pass. Initial32/1 was fake Row
+text traversal plus delayed Leaflet import outside the intended fake boundary;
+the fixture now explicitly omits that browser-only initialization. No actual
+canvas/tiles, screen reader, pointer layout, provider or normal-role browser proof
+is claimed. Combined exact-candidate types/lint/build follow this checkpoint.
+
 ### Oct 1 U5 checkpoint — Team/Slack identity and send recovery
 
 Slack controls use shared native targets/fields, exact submitted-ID snapshots,

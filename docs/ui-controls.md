@@ -51,5 +51,33 @@ MonthHeader's existing picker/Skip controls and native SubNav links now inherit
 44px targets, focus and readable type. The staff library's native summaries,
 status/identity/release text and named cut-history overflow region share these
 scales. Its all-month default remains. ClientReview fee/clock/hold forms,
-LibraryIdentityEditor/dialogs and MonthControls action logic are untouched and
-still need acceptance; no month filter or financial policy was introduced.
+LibraryIdentityEditor and MonthControls subsequently received exact receipt,
+newer-draft and unknown-state recovery (`59af2da`,38/0). Office review fee/clock/
+hold controls now use the shared native action contract with exact-record
+recovery (`59af2da`,25/0). No month filter or financial policy was introduced.
+
+## High-use secondary source coverage and remaining acceptance
+
+These entries reconcile the earlier generic "embedded editors" remainder with
+completed, bounded source batches. They do not close U1/U5/UX16 or UA10–UA12.
+
+| Surface | Local source/checkpoint evidence | Acceptance still required |
+|---|---|---|
+| Clients list/workspace | `d57cbe9`, `dc925a3`21/0; native headings/actions and snapshot-specific drafts/AI/copy/partial save | Long names, tables, keyboard and mounted refresh/failure |
+| Appointments/Schedule | `681030b`, `9a721dc` UI23/0/action13/0; readable exact-date/email controls and device holds | Normal role/calendar navigation, provider/phone and partial outcomes |
+| Resources | `f154bb4`, `d9f5306`33/0; retained per-guide sessions, read failures and typed outcomes | Group/removal remounts in browser, Markdown selection, publication/owner focus |
+| Month/library | `1570ba5`, `59af2da`38/0+25/0; native stage/history/identity/review controls | Normal money/creative roles, exact-cut browser/media, long history/overflow |
+| Team/Logins | `d57cbe9`, `5ae370a`26/0, `41c8baf`29/0+15/0+13/0 | Clipboard, long roster, native focus, actual authorized provider/identity outcomes |
+| Capacity/WeekCalendar | `6972796`20/0; native disclosure, newer-draft/unknown guards and all-day count | Normal editor/admin, retained mounted input, phone/date controls |
+| Settings/delivery/readiness | `018f22f`9/0+12/0; `0cd3d71`21/0; `4a189d4`12/0; `3c6b2d2`22/0; `9e04cd3` | Search/anchors, themes/zoom, disabled/unknown recovery under real role sessions |
+
+Map's focused source batch adds keyboard suggestions and exact-pin read recovery
+with actual fake handlers/effects36/0, lint and root review. The handoff records
+its exact skip/scroll repairs. Leaflet canvas/tiles, rendered listbox placement/
+scroll, both themes and phone/zoom acceptance remain open.
+
+Individual Finance/Trends, My Pay/HR, Catalog, Training, Assistant, Feedback and
+Connections interiors are explicitly unreviewed in the current rendered
+comparison. Include their existing permissions and shared-shell/theme effects
+in U6; preserve content and monetary/pay policy. A broad rewrite of all interiors
+is not required by the audit's initial-release control contract.

@@ -20,6 +20,10 @@ instructions and batch evidence remain in `handoff.md`.
 | Resources drafts and uncertain-write recovery | Local implementation; current-tab retention | Actual handler/action/page fixture33/0 and focused review, including group/removal remounts; browser open | Yes | No | No publishing or automation change | No new release |
 | Exact-cut removal/move dialog and recovery | Local correction; preserved destructive confirmation and file rules | Actual fake UI/action30/0; lint/types/review; native browser/provider open | Yes | No | No provider operation activated | No new release |
 | Month/library corrections and office review controls | Local correction; preserved fee/clock/identity rules | Fake actual UI/action38/0; office handler/wrapper/CAS25/0; lint/review; browser open | Yes | No | No switch or billing changes | No new release |
+| Logins/access conflict and recovery | Local correction; shared account guards and atomic override reset | Fake actual handler/action/CAS26/0; types/lint/review; browser open | `5ae370a` | No | No account/invite change | No new release |
+| Capacity/calendar controls | Local correction; exact newer drafts and unknown guards | Fake actual handlers/wrappers20/0 including all-day count repair; lint/review; browser open | `6972796` | No | No capacity/date/pay change | No new release |
+| Team/Slack identity and DM recovery | Local correction; Find/Sync conditional writes, no fallback after uncertain direct post | Fake UI29/0, wrappers15/0, transport13/0; types/lint/review; real browser/provider/DB concurrency open | `41c8baf` | No | No real Slack call or ID change | No new release |
+| Map read/keyboard recovery | Local correction; exact pin/home/query scopes and native suggestions | Actual fake handlers/read effects36/0; lint/review; Leaflet/normal-role browser/provider open | Yes; Map checkpoint in handoff | No | No provider or route changes | No new release |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | No | No | No |
 
 Latest known deployment before takeover: `bf2e0b4`. This is historical evidence,
@@ -81,9 +85,18 @@ decision after deployment and acceptance.
 
 ## Scope still deliberately open
 
-U0–U5 are partial and U6 is not accepted. Remaining work includes complete normal
-client journeys, generated-task deadline override policy, consistent feedback across remaining
-panels, operational recovery navigation, broader typography and secondary-page
-consistency, team usability sessions and the fixed screenshot set. Finance
-calculations and pay rules are outside visual cleanup. No efficiency or
-performance gain is claimed without measurement.
+U0–U5 are partial and U6 is not accepted. Complete normal client journeys,
+generated-task deadline override policy, team usability sessions and the fixed
+visual/keyboard/phone comparison remain. The named high-use secondary editors
+have local source slices and targeted evidence, recorded in `ui-controls.md`;
+their rendered typography, table overflow, focus and honest-failure acceptance
+remain open. Broader UI migration stays on the checklist, and any defect found
+in that comparison requires its own local repair and focused verification.
+
+Individual Finance/Trends, My Pay/HR, Catalog, Training, Assistant, Feedback and
+Connections interiors have not had a full rendered comparison in this run.
+They remain explicit shared-shell/theme and role-boundary regression surfaces,
+not claimed migrated or accepted. Preserve monetary calculations, pay policies,
+content and permissions. No efficiency or performance gain is claimed without
+measurement. Browser/tool access and approved test setup are required for the
+remaining comparison; no alternate browser transport is authorized.

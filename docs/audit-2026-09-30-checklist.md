@@ -74,6 +74,19 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 Map read/keyboard recovery:** native named address combobox supports
+  Arrow/Enter/Escape, IME and pointer selection without blur loss. Weather,
+  home drive, address distance and suggestions keep exact pin/home/query scopes;
+  late replies cannot replace a newer selection/input/overlay, and read failures
+  preserve the address. Primary providers/actions, territory, mileage, coordinates
+  and routes are unchanged. One focused review repaired a same-label suggestion
+  skip and ensured active wrapped options scroll within the list only. Actual
+  handlers/read effects36/0 (`/tmp/u5-project-map-recovery-reviewed/`), scoped
+  lint/diff and root review/recheck pass. The fixture omits browser-only Leaflet
+  initialization and fakes all reads; canvas/tiles/layout/provider/normal-role
+  acceptance is open, not proved by hook/geometry doubles. No external read,
+  booking/send or database mutation occurred.
+
 - **U5 Team/Slack recovery:** Save/Find retains newer typed IDs after late
   results, catches failures and uses opaque current-tab unknown holds. Find
   compares the previously read ID before saving; Sync writes only a still-empty

@@ -9,7 +9,7 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `6972796` plus the Team/Slack commit containing this update;
+  checkpoint: `41c8baf` plus the Map commit containing this update;
   inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
@@ -62,7 +62,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `59af2da` | Identity/month and office fee/clock/hold receipts |Actualfake38/0+25/0; lint/review; fee CAS/read ambiguity repaired |
 | `5ae370a` | Shared account recovery, atomic reset and role/permission CAS |Actual fake26/0; typecheck/lint/diff/root review |
 | `6972796` | Exact newer drafts/unknown guards and native calendar disclosure |Actual fake20/0; lint/diff/peer review; all-day count repair |
-| Team/Slack commit containing this update | ID/save conflict and uncertain-DM recovery |Actual fake UI29/0; wrappers15/0; transport13/0; types/lint/review |
+| `41c8baf` | ID/save conflict and uncertain-DM recovery |Actual fake UI29/0; wrappers15/0; transport13/0; types/lint/review |
+| Map commit containing this update | Exact-pin reads and keyboard/pointer suggestions |Actual fake36/0; lint/diff/root review with narrow skip/scroll repairs |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -90,11 +91,12 @@ The Resources checkpoint passed combined gates. Access, month/identity,
 review fee/clock/hold, take-back and Users recovery now have completed local
 source/targeted checks. Capacity/calendar now has fixture20/0, lint/diff and
 peer review with one all-day count repair. Its earlier numeric/whitespace
-assertion was repaired in the fake helper. Remaining concrete local controls are
-Map from the bounded remaining-scope review. Slack source/targeted checks are
+assertion was repaired in the fake helper. Slack source/targeted checks are
 complete:29/0 UI,15/0 wrapper/CAS doubles,13/0 fake transport and types/lint/review.
-Preserve ownership and evidence;
-finish/checkpoint each, then run one final combined gate for the new stable SHA.
+Map's last bounded batch is complete locally with36/0, lint/diff and root review
+including exact skip/scroll repairs. No agent-owned command remains. The next
+operation is one final combined types/changed-file lint/separate-checkout build
+for the exact committed candidate, followed by ledger alignment.
 Do not repeat already-passed whole drill suites. Business and browser acceptance
 remainders below stay open; this continuation is not a new broad audit.
 
