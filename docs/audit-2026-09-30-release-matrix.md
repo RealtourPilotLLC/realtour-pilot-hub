@@ -53,7 +53,7 @@ for normal authorized client/editor access.
 | General welcome destination | Jordan | Supply the approved listing consultation destination or call/text wording; do not replay welcomes |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |
 | Client identities | Kyle/Jordan | Resolve Janice/Arielle and other named conflicts using source evidence; investigate Joe/Joseph without assuming they should merge |
-| Intended first client roster | Jordan | Confirm intended clients, then read a fresh per-client inventory including seats, strategy version, bank/pillars, month choices, scripts, sessions/addresses, brand, videos and prior content |
+| Intended first client roster | Jordan | Confirm the intended first roster using the private Sep 30 22:33 ET inventory of 13 candidates; then prepare the exact seats, strategy/bank, month and source evidence. No invitations are authorized by the inventory |
 | Browser evidence | Engineering/environment | Restore authorized local-browser access; the current tool policy refusal must not be bypassed with another browser transport |
 | Provider and real-media acceptance | Jordan + engineering | Agree on isolated/sandbox recipients, booking/media records and destinations before any external write; keep clients and real bookings untouched |
 | Production deployment | Jordan | Review the exact local candidate, completed evidence, schema diff and rollback plan before approving deployment |

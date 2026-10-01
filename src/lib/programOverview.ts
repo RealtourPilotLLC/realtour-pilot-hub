@@ -8,6 +8,8 @@ import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } 
 import { contentHref, type StaffTab } from "@/lib/contentNav";
 import type { JourneyInput } from "@/lib/contentStatus";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { isAutomationEnabled } from "@/lib/programAutomation";
+import { programCallEvidence } from "@/lib/programCallEvidence";
 
 // ---------------------------------------------------------------------------
 // THE MONTHLY PORTFOLIO OVERVIEW (spec §16). One row per (client, program
@@ -300,7 +302,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 
   const [
     owners, progressRead, interviews, scripts, strategyVersions,
-    calls, sessionRequests, reminders, failures, jobs,
+    calls, sessionRequests, reminders, failures, jobs, transcriptProcessorEnabled,
   ] = await Promise.all([
     ownersForMany(rowsSpec.map((r) => ({ enrollmentId: r.enrollment.id, monthId: r.month?.id ?? null }))),
     toRead.length ? monthProgressMany(toRead, { now }) : Promise.resolve(new Map<string, MonthProgress>()),
@@ -316,6 +318,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     prisma.programReminder.findMany({ where: { enrollmentId: { in: enrollmentIds } }, orderBy: { createdAt: "desc" }, take: 400, select: { enrollmentId: true, monthKey: true, action: true, state: true, createdAt: true, sentAt: true, nextEligibleAt: true, suppressionReason: true, lastError: true, outcome: true } }),
     failedAutomationIndex({ includeTest: opts.includeTest }),
     monthIds.length ? prisma.programTranscriptJob.findMany({ where: { enrollmentId: { in: enrollmentIds } }, select: { callRecordId: true, kind: true, state: true, reviewReason: true, lastError: true }, orderBy: { updatedAt: "desc" }, take: 300 }) : [],
+    isAutomationEnabled("transcript_jobs").catch(() => null),
   ]);
 
   const nameOf = new Map(allClients.map((c) => [c.id, c.name]));
@@ -404,42 +407,19 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const bookedCall = monthly.find((c) => c.status === "SCHEDULED" && c.scheduledStart && c.scheduledStart >= now) ?? null;
     const call = heldCall ?? bookedCall ?? monthly[0] ?? null;
     const callJobs = call ? jobs.filter((j) => j.callRecordId === call.id) : [];
-    const jobWord = callJobs.length
-      ? callJobs.some((j) => j.state === "FAILED") ? "transcript job failed"
-        : callJobs.some((j) => j.state === "NEEDS_REVIEW") ? "transcript job needs a person"
-        : callJobs.some((j) => j.state === "RUNNING") ? "transcript processing"
-        : callJobs.some((j) => j.state === "QUEUED") ? "transcript queued"
-        : "transcript processed"
-      : null;
-    const analysed = call?.transcriptState === "ANALYZED";
-    const evidence = call
-      ? analysed ? "transcript analysed"
-        : call.transcriptState === "CONFIRMED" ? "transcript held, not analysed yet"
-        : call.transcriptState === "CANDIDATES" ? "possible transcripts found — none confirmed"
-        : call.transcriptState === "FAILED" ? "transcript import failed"
-        : call.transcriptState === "NEEDS_REVIEW" ? "transcript needs a person"
-        : call.transcriptState === "AWAITING" ? "waiting for the transcript"
-        : m?.transcriptText ? "transcript pasted by hand" : "no transcript"
-      : m?.transcriptText ? "transcript pasted by hand" : null;
     // RULE 2: a call that was held but whose evidence never landed is NOT
     // completed preparation — and the row must say why, not just go quiet.
     // HELD, not "dealt with": SKIPPED means a person decided this month runs
     // without a call, so there is no missing transcript to complain about.
     const callHeld = !!heldCall || m?.strategyCallStatus === "COMPLETED";
     const callSkipped = m?.strategyCallStatus === "SKIPPED";
-    const evidenceMissing = callHeld && !analysed && !m?.transcriptProcessedAt && !m?.transcriptText;
     // A transcript that FAILED or was handed back for review is a hard block:
     // an automation stopped and a person has to act, whatever else is on the
     // month. "The call happened and nothing was recorded" is softer — if the
     // scripts got written anyway (Jordan's archive imports do exactly this),
     // it is a note, not the thing standing in the way.
-    const hardCallProblem = evidenceMissing
-      ? call?.transcriptState === "FAILED" ? `Call was held — the transcript import failed${call.lastError ? ` (${call.lastError.slice(0, 80)})` : ""}`
-        : call?.transcriptState === "NEEDS_REVIEW" ? "Call was held — the transcript needs a person before it can be used"
-        : call?.transcriptState === "CANDIDATES" ? "Call was held — a transcript was found but nobody confirmed it belongs to this call"
-        : null
-      : null;
-    const callProblem = hardCallProblem ?? (evidenceMissing ? "Call was held — no transcript or notes came back from it" : null);
+    const callEvidence = programCallEvidence({ held: callHeld, call, jobs: callJobs, manualText: !!m?.transcriptText, processed: !!m?.transcriptProcessedAt, processorEnabled: transcriptProcessorEnabled });
+    const { evidence, processing: jobWord, hardProblem: hardCallProblem, problem: callProblem } = callEvidence;
 
     // Preparation is DERIVED with programMonths.deriveMonthState, not read off
     // the column: the column is null on most live months (nothing has recalced
@@ -467,7 +447,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const planningMode = (derived?.planningMode ?? "UNDECIDED") as "CALL" | "WRITTEN" | "UNDECIDED";
     const blockingCallProblem = hardCallProblem ?? (callProblem && !preparationComplete && myScripts.length === 0 ? callProblem : null);
     const preparationWord = blockingCallProblem
-      ? "incomplete — the call happened, the evidence did not land"
+      ? callEvidence.preparationWord
       : preparationStatus ? PREP_WORD[preparationStatus]
       : callMode === "NOT_INCLUDED" ? "no call — written preparation"
       : "not started";
@@ -601,7 +581,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (m.historical) {
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
-      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: "Fix the transcript" };
+      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: callEvidence.cta };
     } else if ((pp?.awaitingClient ?? 0) > 0) {
       // The entitlement reader, not a stale video status, says these exact
       // cuts are released. Their live decision or send takes priority over

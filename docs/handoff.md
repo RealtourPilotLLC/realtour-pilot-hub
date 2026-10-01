@@ -2,6 +2,35 @@
 
 ## Sep 30 takeover addendum
 
+### C11 / launch inventory checkpoint — held evidence and actual launch gaps
+
+The monthly roster no longer says a confirmed queued transcript never arrived.
+The shared wording distinguishes confirmed, queued/off, running, failed,
+human-review, genuinely absent, imported and analysed evidence. Import success
+alone does not claim analysis completed. The existing hard/soft blocker priority,
+script/downstream work and all worker/backlog/rollout settings are preserved.
+Focused isolated overview checks passed 17/0, lint and TypeScript passed; one
+focused source review completed (`/tmp/c14-call-evidence-status-logs/`).
+
+The SELECT-only October candidate inventory finished at 2026-10-01 02:33:46 UTC
+(Sep 30 ET). The private report is
+`/private/tmp/realtour-launch-candidates-2026-10-final.json`, mode 0600, outside
+Git. The reusable reader is `scripts/_recon/launch-inventory.ts`; it pins read-only
+database settings before Prisma import, verifies them using SELECT, blocks fetch,
+omits bodies/contact addresses/provider URLs and refuses output outside private
+temporary storage or overwriting an existing export. Review repaired omission of
+month-linked calls and export of unconstrained onboarding free text.
+
+All 13 active non-synthetic candidates have zero recorded active client login
+seats and no released strategy; the canonical approved available bank is empty.
+Only three have October workspaces. Kristin and Erica hold confirmed monthly-call
+sources queued while processing is off; Ashley still needs a planning-route choice.
+No section read failed. These are candidate readiness facts, not an approved
+launch audience or a signed browser/media acceptance test. Jordan's roster choice,
+identity/source verification, strategy/bank preparation, access setup, provider
+and phone acceptance, schema release and deployment approval remain concrete gates.
+No client records, seats, switch, backlog job or provider was changed.
+
 ### W03 checkpoint — durable intake before task and attachment effects
 
 Staff submissions now save the exact words, contact/actor, video/output, first
