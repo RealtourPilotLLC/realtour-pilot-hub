@@ -5,7 +5,27 @@ Use this page first. The full backlog is in
 `audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.
 Do not restart the audit or repeat green checks without a specific changed risk.
 
-## Current checkpoint — cache deployed, W05 stage building
+## Current checkpoint — W05 deployed, C14 failure repair verified
+
+Production now serves `4354aca113ef`, Ready `dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp`,
+promoted17:15:02Z (1:15 PM EDT). Exact clean local/remote builds/stage and
+canonical HTTP/auth/assets pass. Readonly comparison confirms unchanged saved
+business settings, automation/rollout and raw seat totals. Seven existing Aryeo
+operational webhook markers moved while live business continued; sanitized
+prefix/count evidence records this separately. Existing webhook token is usable
+locally; real callback acceptance remains open. No source activation or provider
+call was performed. `audit-2026-10-01-w05-release.md` is current release authority.
+
+C14 actual Home/Review/Editing/Schedule named read failures and recovery pass
+14/0. Home's silent-empty exceptions fallback is repaired with unavailable
+status, native Retry and only permitted scoped links. Other three primary reads
+propagate the controlled error; retry restores exact records. Tasks/cuts/
+appointments/manual work unchanged; providers fenced. Scoped lint0, types0 and
+focused review clear. Four source/fixture files await commit/build/release.
+Evidence `/tmp/c14-page-read-recovery-final/`; disposable5601 stopped. Browser/
+error-boundary mounted acceptance remains open; do not claim this is HTTP.
+
+### Previous cache checkpoint and verification history
 
 Production serves `a38715d5ecef`, Ready `dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf`,
 promoted17:07:26Z (1:07 PM EDT). Exact clean local/remote build, protected stage,

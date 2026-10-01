@@ -1,0 +1,194 @@
+{
+  "candidate": "4354aca113ef75e0c17fe72f42c1b33e42541973",
+  "deployment": {
+    "candidate": "4354aca113ef75e0c17fe72f42c1b33e42541973",
+    "id": "dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+    "url": "https://realtour-pilot-gwas4lidg-realtour-pilot-s-projects.vercel.app",
+    "state": "READY",
+    "target": "production",
+    "releaseCommit": null
+  },
+  "build": {
+    "candidate": "4354aca113ef75e0c17fe72f42c1b33e42541973",
+    "startedAt": "2026-10-01T17:08:13.306850+00:00",
+    "finishedAt": "2026-10-01T17:09:03.616460+00:00",
+    "exitCode": 0,
+    "node": "20.20.2",
+    "environment": "clean; no provider credentials; dead loopback database",
+    "mainPreviewUntouched": true
+  },
+  "staging": {
+    "at": "2026-10-01T17:13:59.407Z",
+    "candidate": "4354aca113ef75e0c17fe72f42c1b33e42541973",
+    "stagedUrl": "https://realtour-pilot-gwas4lidg-realtour-pilot-s-projects.vercel.app",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "4354aca113ef"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      }
+    ],
+    "canonicalStill": "a38715d5ecef",
+    "protectionRetained": true
+  },
+  "promotion": {
+    "candidate": "4354aca113ef75e0c17fe72f42c1b33e42541973",
+    "id": "dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+    "stagedUrl": "https://realtour-pilot-gwas4lidg-realtour-pilot-s-projects.vercel.app",
+    "startedAt": "2026-10-01T17:14:58.219Z",
+    "finishedAt": "2026-10-01T17:15:02.810Z",
+    "exitCode": 0,
+    "promoted": true
+  },
+  "productionHTTP": {
+    "at": "2026-10-01T17:15:51.783Z",
+    "base": "https://hub.realtourpilot.com",
+    "expected": "4354aca113ef",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "4354aca113ef"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/",
+        "status": 307,
+        "location": "/login?next=%2F"
+      },
+      {
+        "path": "/editing",
+        "status": 307,
+        "location": "/login?next=%2Fediting"
+      },
+      {
+        "path": "/review",
+        "status": 307,
+        "location": "/login?next=%2Freview"
+      },
+      {
+        "path": "/tasks",
+        "status": 307,
+        "location": "/login?next=%2Ftasks"
+      },
+      {
+        "path": "/portal/me",
+        "status": 200,
+        "location": null,
+        "streamedSignInRedirect": true
+      },
+      {
+        "path": "/api/review/cut/invalidcut12345678/final?f=fixture",
+        "status": 403,
+        "location": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "/_next/static/chunks/3z7c3n2rdf9py.css?dpl=dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/3r8h98x5pdyho.css?dpl=dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2gokyol_h_2zh.js?dpl=dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2pzafz57-h46r.js?dpl=dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2fzkd0kh4cb41.js?dpl=dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2g05-lers809t.js?dpl=dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp",
+        "status": 200
+      }
+    ],
+    "failures": [],
+    "oldHost": {
+      "status": 307,
+      "location": "https://hub.realtourpilot.com/login"
+    }
+  },
+  "stateComparison": {
+    "enforcedReadOnly": true,
+    "automationUnchanged": true,
+    "savedBusinessSettingsUnchanged": true,
+    "operationalMarkerChangesByPrefix": {
+      "aryeo-wh-seen-": 4,
+      "aryeo-wh-activity-": 2,
+      "aryeo-reconciled:": 1
+    },
+    "operationalChangeContext": "Existing Aryeo webhook idempotency/reconciliation markers advanced during the release; no agent invoked provider events or altered switches. Source aryeoDelivery.ts MARK/tooSoon and aryeo route recentlyReconciled.",
+    "clientSeatCountsUnchanged": true,
+    "rawActiveClientUsers": 2,
+    "rawUnrevokedMemberships": 3,
+    "rawCountsAreNotEligibleRealSeats": true,
+    "rollout": "TEST_ONLY (default)",
+    "enabledStoredAutomations": []
+  },
+  "webhookPrerequisite": {
+    "at": "2026-10-01T17:18:09.899Z",
+    "enforcedReadOnly": true,
+    "openPhoneWebhookTokenUsableLocally": true,
+    "providerRequestPerformed": false,
+    "configurationChanged": false
+  },
+  "behavioralEvidence": {
+    "exactWebhookOutboxConcurrencyNotice": {
+      "passed": 36,
+      "failed": 0
+    },
+    "types": 0,
+    "changedFileLint": 0,
+    "focusedReview": "clear after pre-intent-time repair"
+  },
+  "activation": false,
+  "realClientSends": false,
+  "realInvitations": false,
+  "realProviderBookings": false,
+  "schemaChanges": false,
+  "gitPush": false,
+  "acceptanceOpen": [
+    "mounted browser/phone/provider/full-watch",
+    "first roster strategy/topic/seat preparation",
+    "historical source reconciliation",
+    "manual unknown-text authority"
+  ],
+  "rollback": {
+    "candidate": "a38715d5ecefccf7185ac8928581e9e0bd218a5c",
+    "deployment": "dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf",
+    "url": "https://realtour-pilot-nbul1c6h3-realtour-pilot-s-projects.vercel.app",
+    "preserveDatabaseAndNewerWrites": true
+  }
+}

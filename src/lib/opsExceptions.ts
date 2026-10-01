@@ -87,9 +87,11 @@ export type ExceptionTotal = { all: number; high: number };
 export type OpsExceptionBoard = {
   rows: OpsException[];
   totals: Record<ExceptionKind, ExceptionTotal>;
+  /** A failed pool read is unknown, never an empty checked board. */
+  unavailable?: boolean;
 };
 
-/** An empty board — what the dashboard shows when the read itself failed. */
+/** A healthy empty board. Failed readers must also mark it unavailable. */
 export function emptyExceptionBoard(): OpsExceptionBoard {
   const none: ExceptionTotal = { all: 0, high: 0 };
   return {

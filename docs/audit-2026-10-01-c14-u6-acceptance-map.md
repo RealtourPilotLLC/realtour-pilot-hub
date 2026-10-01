@@ -5,9 +5,10 @@ checklist, release matrix and fixtures. It is not a new audit or a completed
 browser pass. This update changes only this acceptance map. The policy release
 history starts at `e6eac69`. The subsequent monthly portal cache/failure repair
 is verified at35/0 and deployed as `a38715d` with exact build/HTTP evidence in
-`audit-2026-10-01-cache-release.md`. C14 actual Home/Review/Editing/Schedule
-page-read failure verification is active separately; Home's silent-empty
-exception fallback has a concrete pending source repair.
+`audit-2026-10-01-cache-release.md`; current production4354aca also includes W05.
+C14 actual Home/Review/Editing/Schedule page-read failure verification passes
+14/0; Home's silent-empty exception fallback is repaired locally and awaits
+its separate exact commit/build/release.
 
 ## Supported browser access is blocked
 
@@ -39,6 +40,7 @@ cannot establish layout, focus, native menus, mounted navigation or phone saves.
 | Queue layout and filters | `u3-editing-queue-focus.ts` 15/0; `u3-editing-stage-filters.ts` 14/0, including 1,903 rendered count/URL transitions and zero-match recovery |
 | Review Room truth | `c15-review-room-state.ts` 12/0: Kyle/James signed rendering, no first-cut queue while exact revision/delivery/unknown-text work remains |
 | Stored failure scope | `c14-failure-scope.ts` 5/0: synthetic failure filtering and real global failures on an otherwise empty normal roster. This is not a database-read failure test. |
+| Actual page critical read failure and recovery | `c14-page-read-recovery.ts`14/0: signed Kyle/James and denied-review/editing ADMIN. Home named aging-review pool failure shows unavailable with native retry/permitted scoped links; healthy empty hidden. Review submissions, Editing inflight projects and Schedule List appointments propagate the exact controlled read error, then retry restores exact records. No task/cut/appointment/manual work mutation or provider traffic. This is page/domain evidence, not mounted error boundary or HTTP. |
 | Map reads | `u5-project-map-recovery.ts` 36/0: fake actual handlers/effects, late/read-failure/empty address and exact-pin recovery |
 | Calendar availability | `u5-capacity-recovery.ts` 20/0: unavailable versus empty calendar, all-day count, capacity draft/unknown recovery |
 | Normal-role HTTP identity and journey | `normal-role-http-acceptance.ts` 37/0, no skips, against the built `e6eac69` app on port 3211: actual password/session and one-use client login cookies, role routes, seven client tabs, exact script/cut approvals, download/range bytes, foreign-scope refusals and manual Start/Pause. This is isolated HTTP evidence, not browser acceptance. |
@@ -56,7 +58,8 @@ Evidence logs:
 
 The source/cap/count C14 work and the normal-role HTTP identity boundary are
 verified. The remaining C14 checks are the mounted normal/test/empty/failure/
-return experience and the explicitly listed page-level read-failure gaps.
+return experience. The four named critical page-read seams now have14/0
+isolated evidence; that does not establish mounted error-boundary recovery.
 Do not compare totals that intentionally use different date, status, location
 or financial definitions.
 
@@ -123,11 +126,12 @@ or point mutation acceptance at production.
 - **Stored failed work:** use failed automation/unknown delivery fixture rows;
   this does not simulate an unreadable database.
 - **Read failure:** no existing documented URL or query parameter injects a
-  Home/Review/Editing/Schedule database-read failure. Do not invent `?fail=1`,
+  Home/Review/Editing/Schedule database-read failure. Their14/0 fixture now
+  intercepts one actual named read per page and verifies recovery. Do not invent `?fail=1`,
   stop the shared demo database, or call an unrelated HTTP 500 a passed page
-  state. A narrow isolated-server/fixture read interception is still needed
-  if an actual page-level failure replay is attempted. Preserve real auth,
-  target one read, verify explicit unknown/error feedback and then recovery.
+  state. The fixture establishes page/domain failure; mounted error-boundary
+  replay remains open. Preserve real auth, target one read, verify explicit
+  unknown/error feedback and then recovery.
 - **Existing focused error seams:** EditingWorkSummary's failed/stale view,
   WeekCalendar `calendarOk=false`, and map weather/drive/address deferred reads
   are already covered by isolated component evidence. Mounted browser recovery
@@ -135,7 +139,7 @@ or point mutation acceptance at production.
 - **Portal release-status failure:** the 35/0 cache fixture now covers actual
   failed-library SSR and recovered detail in both portal layouts after an
   unreadable marker. This does not close the separate Home/Review/Editing/
-  Schedule mounted or page-level read-failure observations above.
+  Schedule mounted observations above; their named page-read seams now pass14/0.
 - **Rollout disabled:** retain the stored off/test-only state and show its
   explanation. Do not activate automation to obtain a screenshot.
 

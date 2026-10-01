@@ -7,6 +7,15 @@ instructions and batch evidence remain in `handoff.md`.
 
 ## Release state
 
+Current production is W05 checkpoint4354aca113ef, Ready
+dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp, promoted17:15:02Z.36/0 exact proof tests,
+types/lint/review, clean builds/stage and canonical HTTP pass. Saved business
+settings/automation/rollout/seat counts unchanged; seven operational Aryeo
+markers moved, separately recorded. Existing webhook prerequisite true, real
+callback acceptance open. No switch or provider operation. a38715d rollback.
+Home/C14 read-failure repair14/0, types/lint/review clear is next local source
+checkpoint. Other entries below retain earlier release history.
+
 Latest production is cache checkpoint `a38715d5ecef`, Ready
 `dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf`, promoted17:07:26Z. Exact local/remote
 build/stage, canonical HTTP/auth/assets and readonly checks pass; saved business

@@ -8,6 +8,25 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Oct 1 authorized release checkpoint
 
+### Current production — W05 checkpoint4354aca; C14 next
+
+W05 exact proof source is deployed at4354aca113ef, Ready
+dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp, promoted17:15:02Z. Clean exact local/remote
+build/stage and canonical version/login/assets/access pass.36/0 proof fixture,
+types/lint/review pass. Readonly saved business settings/automation/rollout/seats
+unchanged; seven existing Aryeo operational markers changed during live work,
+recorded by prefix/count separately. Existing webhook-token prerequisite true;
+real provider callback acceptance remains open. No source switch/provider call.
+See `audit-2026-10-01-w05-release.md` and its sanitized JSON. a38715d rollback.
+
+New C14 actual named page-read failure/recovery:14/0 with signed Kyle/James and
+restricted ADMIN. Home's silent-empty exception fallback is repaired with
+unavailable status/native retry/permitted scoped links; other three primary
+reads propagate unavailable honestly, then recover exact cut/editor/visit.
+Healthy empty unchanged. No task/cut/appointment/manual work mutation or provider
+traffic;5601 stopped. Types0/lint0/focused review clear. Four-file source
+checkpoint/build/release next; browser/error-boundary mounting still open.
+
 ### Latest deployed checkpoint — a38715d cache repair
 
 Ready dpl_EmkwoicgF6Lp7PeKGNg7P7Bvvomf promoted17:07:26Z (1:07 PM EDT).

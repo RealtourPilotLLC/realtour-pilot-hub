@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 current production — W05 checkpoint4354aca
+
+Canonical now4354aca113ef, Ready dpl_JAen2oGKAa4ZLunmbZzrz1u1kcNp,
+promoted17:15:02Z. Exact clean builds/stage/HTTP gates pass;36/0 proof tests,
+types/lint/review clear. Saved business settings, automation/rollout and raw
+seats unchanged;7 existing operational Aryeo markers changed during live work,
+sanitized by prefix/count. Existing OpenPhone webhook token usable locally;
+no source activation/provider call/replay. Real callback acceptance open.
+Current authority `audit-2026-10-01-w05-release.md`, sanitized JSON; a38715d
+rollback, preserve all newer DB writes. No schema/send/invite/booking/push.
+
+Next four-file C14 source: page.tsx, opsExceptions.ts, ops/ExceptionsCard.tsx,
+c14-page-read-recovery.ts. Actual signed page failures/recovery14/0; Home no
+longer hides unreadable exceptions as empty, retry and permitted destinations
+retain testscope. Other three primary page reads throw honestly and recover
+exact records. No tasks/cuts/appointments/manual work mutation/provider traffic.
+Scoped lint0/types0/focused review clear;5601 stopped. Commit/build/deploy next.
+Browser mounted error/focus/navigation/U6/phone remains separate and blocked.
+
 ### Oct 1 latest production — cache checkpoint a38715d
 
 Canonical https://hub.realtourpilot.com serves a38715d5ecef, Ready

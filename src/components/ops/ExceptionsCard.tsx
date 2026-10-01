@@ -25,10 +25,33 @@ import { EXCEPTION_LABEL, type ExceptionKind, type ExceptionTotal, type OpsExcep
 export function ExceptionsCard({
   rows,
   totals,
+  unavailable = false,
+  includeTest = false,
+  canReview = false,
+  canEdit = false,
 }: {
   rows: OpsException[];
   totals: Record<ExceptionKind, ExceptionTotal>;
+  unavailable?: boolean;
+  includeTest?: boolean;
+  canReview?: boolean;
+  canEdit?: boolean;
 }) {
+  if (unavailable) {
+    const scope = includeTest ? "?test=1" : "";
+    return (
+      <section role="status" className="panel-shadow rounded-2xl border border-warning/30 bg-surface p-4 sm:p-5">
+        <h2 className="flex items-center gap-2 text-base font-semibold"><TriangleAlert aria-hidden="true" className="size-4 shrink-0 text-warning" />Exceptions could not be checked</h2>
+        <p className="mt-2 text-sm text-muted">Review, assignment, or delivery exceptions may still be waiting. Retry Home or inspect the work lists.</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {/* A full navigation retries this dynamic page even at the same URL. */}
+          <a href={`/${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Retry Home</a>
+          {canReview && <Link href={`/review${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open Review Room</Link>}
+          {canEdit && <Link href={`/editing${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open Editing Room</Link>}
+        </div>
+      </section>
+    );
+  }
   if (rows.length === 0) return null;
   const kinds = [...new Set(rows.map((r) => r.kind))];
   const sum = (pick: (t: ExceptionTotal) => number) => Object.values(totals).reduce((n, t) => n + pick(t), 0);

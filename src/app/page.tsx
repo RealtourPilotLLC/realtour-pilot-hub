@@ -479,12 +479,12 @@ export default async function HomePage({ searchParams }: { searchParams?: Promis
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
       // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
       newClientsForDashboard({ includeTest }).catch(() => []),
-      // The five quiet failures (R08). Reporting only, and a failed read is an
-      // empty card rather than a page that will not render. The BOARD, not the
-      // bare rows: the card has to be able to say how many it is not showing.
+      // The quiet failures (R08). Reporting only: the rest of Home can render
+      // when this read fails, but the card must say it could not check the pool.
+      // The board's totals still report how many healthy capped rows it omits.
       opsExceptionsBoard({ includeTest }).catch((e: unknown): OpsExceptionBoard => {
         console.warn("opsExceptions failed", (e as Error).message);
-        return emptyExceptionBoard();
+        return { ...emptyExceptionBoard(), unavailable: true };
       }),
       canReview ? getReviewQueue({ includeTest }).catch(() => null) : Promise.resolve(null),
       canReview ? reviewerChain().catch(() => null) : Promise.resolve(null),
@@ -845,7 +845,7 @@ export default async function HomePage({ searchParams }: { searchParams?: Promis
         {flaggedSection}
         {readySection}
         {needsSection}
-        <ExceptionsCard rows={exceptions.rows.map((r) => ({ ...r, href: scopeHref(r.href) }))} totals={exceptions.totals} />
+        <ExceptionsCard rows={exceptions.rows.map((r) => ({ ...r, href: scopeHref(r.href) }))} totals={exceptions.totals} unavailable={exceptions.unavailable} includeTest={includeTest} canReview={canReview} canEdit={!me || canAccess(me, "editing")} />
         {stuckSection}
         {shootsSection}
         {daySection}
