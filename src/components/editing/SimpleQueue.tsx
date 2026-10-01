@@ -713,9 +713,9 @@ export function SimpleQueue({
     return rows.filter((r) => byWho(r) && matchesDue(w, r.late, dueKeys.get(r.id) ?? null, todayKey, week)).length;
   };
   const VIEWS = [
-    { key: "notdone" as const, label: "Not Done", n: countOn("notdone", notDone) },
+    { key: "notdone" as const, label: "Open work", n: countOn("notdone", notDone) },
     { key: "upcoming" as const, label: "Upcoming", n: countOn("upcoming", upcoming) },
-    { key: "done" as const, label: "Done", n: countOn("done", done) },
+    { key: "done" as const, label: "Completed", n: countOn("done", done) },
   ];
   // Keeps click-to-open from firing when the click was really for a control
   // inside the row (status pill, editor select, a link).
@@ -732,14 +732,14 @@ export function SimpleQueue({
       {/* Slack's saved views, as pills. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {VIEWS.map((v) => (
-          <button key={v.key} onClick={() => updateFilters({ view: v.key })}
+          <button key={v.key} type="button" aria-pressed={view === v.key} onClick={() => updateFilters({ view: v.key })}
             className={cn("min-h-11 rounded-lg px-3 py-1.5 text-sm font-medium",
               view === v.key ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2")}>
             {v.label}
             {/* A zero is worth printing while a filter is on: "Done 0" is the
                 answer to "is there any of Kim's in there", and a bare pill
                 would read as a tab nobody has counted. */}
-            {(v.n > 0 || filtering) && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}</span>}
+            {(v.n > 0 || filtering) && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}<span className="sr-only"> projects</span></span>}
           </button>
         ))}
         {/* Not pills: the editor list grows, the due list is four words long,

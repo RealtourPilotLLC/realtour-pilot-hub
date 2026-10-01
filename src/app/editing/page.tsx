@@ -15,6 +15,7 @@ import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
 import { recentlyRemovedFromQueue } from "@/app/editing/actions";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { WorkingNowPanel } from "@/components/editing/WorkingNowPanel";
+import { EditingWorkSummary } from "@/components/editing/EditingWorkSummary";
 import { EditorDesk } from "@/components/editing/EditorDesk";
 import { myDesk, workingNow } from "@/lib/editorWork";
 import { editorActivityToday, editorLines, rowEvidence } from "@/lib/editorActivity";
@@ -233,13 +234,16 @@ export default async function EditorQueuePage() {
   // throws; each says so when it failed.
   const now = new Date();
   const [wn, act] = await Promise.all([workingNow({ now }), editorActivityToday({ now })]);
+  const today = editorLines(wn, act, now);
+  const workload = await editingWorkload(workloadRows([...notDone, ...upcomingRows]));
+  const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);
 
   return (
     <div>
       <PageHeader
         eyebrow="Video projects only"
         title="Editing Room"
-        subtitle={`${notDone.length} open · ${upcomingRows.length} upcoming`}
+        subtitle={`${notDone.length} open projects · ${upcomingRows.length} upcoming projects`}
         // Pop-up Style Guide — a draggable floating window (remembers where
         // you put it), so the guide can sit beside the queue while working.
         actions={
@@ -252,34 +256,43 @@ export default async function EditorQueuePage() {
       {/* Wide on purpose — the Slack List is a wide table; max-w-4xl squeezed
           every column into a horizontal scroll. */}
       <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
-        {/* Manual add — the human override for jobs the automatic handoff never
-            picks up (video added after booking, old footage, non-Aryeo work). */}
-        <AddToQueue />
         {/* EDITORS TODAY (§7.1) — their own Start/Pause, and, when there is
             no Start, what they did today as evidence. Separate from the
             backlog below. The page re-reads every minute while the tab is
             visible; the panel says when it read and says so when that read
             has gone stale or failed. */}
         <AutoRefresh seconds={60} />
-        <WorkingNowPanel view={editorLines(wn, act, now)} />
-        {/* Whose desk each job is on, and whether the person it is on can
-            actually move it. See lib/editorWorkload for why there is not a
-            single invented hour in it. */}
-        <WorkloadPanel view={await editingWorkload(workloadRows([...notDone, ...upcomingRows]))} />
+        <EditingWorkSummary view={today} />
         {/* THE BACKLOG. Rows click straight through to /edit/<id> — the notes
             (customer + shoot) live there now, not in the table. A row reads
             "In editing" only while somebody has pressed Start on it; a row an
             editor touched today without a Start carries that as evidence
             under its pill ("Kim uploaded a version · 12:14pm"). */}
-        <div>
-          <h2 className="mb-2 text-sm font-semibold text-foreground">
-            Backlog <span className="font-normal text-muted">— every job owed</span>
-          </h2>
+        <section aria-labelledby="editing-queue-heading">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 id="editing-queue-heading" className="text-base font-semibold">Work queue</h2>
+              <p className="mt-0.5 text-sm text-muted">Open a project for its brief, files and latest cut.</p>
+            </div>
+            {/* The manual handoff stays available beside its queue. */}
+            <div className="contents [&>div]:basis-full"><AddToQueue /></div>
+          </div>
           <SimpleQueue notDone={notDone.map((r) => ({ ...r, lastAction: rowEvidence(r, act, now) }))} upcoming={upcomingRows} done={done} />
-        </div>
+        </section>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}
         <RecentlyRemoved rows={await recentlyRemovedFromQueue()} />
+        <details className="group rounded-xl border border-border bg-surface" id="editing-capacity">
+          <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-brand">
+            <span className="font-semibold">Capacity and activity details</span>
+            <span className="text-muted"> · {workload.totals.editing.videos} videos to edit · {workload.overdue} overdue projects</span>
+            {capacityNow.length > 0 && <span className="text-warning"> · {capacityNow.length} recorded availability {capacityNow.length === 1 ? "change" : "changes"} in force</span>}
+          </summary>
+          <div className="space-y-3 border-t border-border p-3">
+            <WorkloadPanel view={workload} />
+            <WorkingNowPanel view={today} />
+          </div>
+        </details>
       </div>
     </div>
   );

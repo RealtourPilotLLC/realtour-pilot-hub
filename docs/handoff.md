@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### U3 checkpoint — Editing queue before diagnostics
+
+Editing Room now leads with a compact evidence-aware Editors today strip and
+its work queue. Add to queue stays alongside it; removal undo stays visible.
+Detailed capacity/activity moves below the queue in a collapsed section whose
+summary retains overdue and availability-change counts. Open work / Completed
+labels retain existing URL values. Mobile cards, status/More menus, exact due,
+assignment, active editor desk and manual Start/Pause are unchanged.
+
+Actual signed owner/editor/photographer/unmapped page SSR passed 15/0
+(`/tmp/u3-editing-queue-focus-logs/u3-editing-queue-focus.ts.log`), lint, full
+nonincremental TypeScript and one focused source review passed. The first test
+attempts had an invalid fixture MediaNote field; no product failure. Named stage
+filters remain a separate next slice. Mounted responsive/keyboard/visual proof
+is still browser-blocked; no workflow/provider/database state was changed.
+
 ### W03 checkpoint — finish saved revision receipts after partial failure
 
 A repeated staff request now finishes its saved receipt instead of reporting
