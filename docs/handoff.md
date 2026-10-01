@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — reminder policy form and activation separation
+
+Reminder policy has ordinary cadence/timing/limits/safeguard/template fields,
+fictional canonical template previews and retained advanced JSON. Unknown nested
+keys round-trip unchanged. Validation and saved status identify the exact draft;
+late responses cannot mark newer edits saved, and failure keeps the draft.
+Policy save previously read enabled and replayed it through setAutomation,
+rewriting activation receipts and risking reversal of a concurrent disable. It
+now upserts config only; a missing automation row is created OFF.
+
+Isolated `u5-reminder-policy-editor` 27/0 includes actual signed owner/admin/preview
+rules, ON/OFF receipt preservation, failure/retry, malformed advanced JSON and
+first-paint render. Lint, nonincremental TypeScript and one focused review passed.
+Browser interactions and broader U5 panels remain open. No settings were changed
+in production, and no reminder/provider/client message or activation occurred.
+
 ### C16 checkpoint — confirmed causes and consistent editor reports
 
 Review Room now separates reviewer-confirmed revision causes from optional QC

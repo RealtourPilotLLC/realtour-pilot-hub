@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
-import { getAutomation, setAutomation } from "@/lib/programAutomation";
+import { getAutomation } from "@/lib/programAutomation";
 import {
   REMINDER_DEFAULTS, REMINDERS_KEY, validateReminderPolicy, evaluateReminders, reminderLedger, sendReminderNow, copyReminderLink,
   snoozeMonthReminders, unsnoozeMonthReminders, type ReminderLedgerRow,
@@ -94,13 +94,19 @@ export async function validateReminderPolicyAction(json: string): Promise<{ ok: 
 /** Save the policy. Keeps the switch exactly as it is (off stays off). */
 export async function saveReminderPolicy(json: string): Promise<R> {
   try {
-    const me = await owner();
+    await owner();
     let parsed: unknown;
     try { parsed = JSON.parse(json); } catch (e) { return { ok: false, message: `Not valid JSON: ${e instanceof Error ? e.message : "parse error"}` }; }
     const v = validateReminderPolicy(parsed);
     if (!v.ok) return { ok: false, message: v.errors.join(" · ") };
-    const current = await getAutomation(REMINDERS_KEY);
-    await setAutomation(REMINDERS_KEY, current.enabled, me.email, JSON.stringify(v.policy));
+    // Saving policy must not replay a stale switch snapshot or rewrite the
+    // activation receipt. A concurrent disable remains disabled.
+    const current = await prisma.programAutomation.upsert({
+      where: { key: REMINDERS_KEY },
+      create: { key: REMINDERS_KEY, enabled: false, configJson: JSON.stringify(v.policy) },
+      update: { configJson: JSON.stringify(v.policy) },
+      select: { enabled: true },
+    });
     revalidatePath("/settings");
     return { ok: true, message: `Policy saved. The switch is ${current.enabled ? "ON" : "OFF"} — unchanged.${v.warnings.length ? ` Warnings: ${v.warnings.join(" · ")}` : ""}` };
   } catch (e) { return fail(e); }
