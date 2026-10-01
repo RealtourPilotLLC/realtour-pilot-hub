@@ -4,6 +4,15 @@
 
 ### Oct 1 resume point — C14 Home exception scope
 
+The New clients card now also removes synthetic arrivals before its six-row
+cap. The isolated `c14-new-clients` drill passed 3/0: eight newer fixture
+arrivals did not crowd out a real arrival or a protected real client renamed
+TEST; the explicit full reader retains fixtures. Node20 TypeScript and focused
+lint passed. A browser security policy blocked opening the loopback demo tab
+in this run; no alternate browser path was attempted. A demo process already
+running from this checkout was inspected and left untouched. The remaining
+Home workload readers and signed browser identity still need focused checks.
+
 The normal Home exception board now excludes synthetic client rows at each
 source query, before its row caps and totals are computed. It covers editing
 assignment, review, follow-up, render, library, reopened delivery, order scope,

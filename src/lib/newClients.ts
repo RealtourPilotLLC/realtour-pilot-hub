@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { clip } from "@/lib/text";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // NEW CLIENTS — the ping, and the list behind the home-dashboard card.
@@ -50,15 +51,22 @@ export type NewClientRow = {
 /** Everyone the hub met in the last `days`, newest first. Cheap by design:
  *  one indexed scan on firstSeenAt plus each row's own bookings. */
 export async function newClientsForDashboard(
-  opts: { days?: number; limit?: number } = {},
+  opts: { days?: number; limit?: number; includeTest?: boolean } = {},
 ): Promise<NewClientRow[]> {
   const days = opts.days ?? NEW_CLIENT_WINDOW_DAYS;
   const limit = Math.min(opts.limit ?? 6, 25);
   const since = new Date(Date.now() - days * 86_400_000);
+  // Resolve fixture IDs among recent candidates before the display limit.
+  // Filtering the six returned cards would let recent TEST clients crowd a
+  // real arrival out of the normal Home view.
+  const excludedIds = opts.includeTest === false
+    ? (await prisma.client.findMany({ where: { firstSeenAt: { gte: since }, parentClientId: null }, select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    : [];
 
   const rows = await prisma.client.findMany({
     where: {
       firstSeenAt: { gte: since },
+      ...(excludedIds.length ? { id: { notIn: excludedIds } } : {}),
       // An assistant folded under their agent is not a new client, they are the
       // same relationship reached from a second address (see parentClientId).
       parentClientId: null,

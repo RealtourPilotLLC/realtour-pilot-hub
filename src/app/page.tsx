@@ -526,7 +526,7 @@ export default async function HomePage() {
       // exactly as /day was ownerOnly in PAGES.
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
       // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
-      newClientsForDashboard().catch(() => []),
+      newClientsForDashboard({ includeTest: false }).catch(() => []),
       // The five quiet failures (R08). Reporting only, and a failed read is an
       // empty card rather than a page that will not render. The BOARD, not the
       // bare rows: the card has to be able to say how many it is not showing.
