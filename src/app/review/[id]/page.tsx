@@ -291,6 +291,7 @@ export default async function CutReviewPage({
               )}
               {reviewerStrip && reviewerStrip.rows.length > 0 && <ReviewerStrip data={reviewerStrip} />}
               <CutReviewPanel
+                key={active.id}
                 projectId={w.projectId}
                 submission={active}
                 notes={w.notes}
@@ -300,6 +301,7 @@ export default async function CutReviewPage({
                 canDecide={!shotThis}
                 heldForCheck={active.heldForCheck}
                 fixesToCheck={fixesToCheck}
+                readStamp={new Date().toISOString()}
               />
               {deliveryBoard && <DeliveryExitSummary board={deliveryBoard} />}
             </>

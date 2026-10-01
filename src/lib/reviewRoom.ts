@@ -601,6 +601,8 @@ export type CutSubmission = {
   completedAt: string | null;
   /** §8.2: PENDING but held for the editor's check — nothing to rule on yet. */
   heldForCheck: boolean;
+  /** True only when this exact round has a saved editor check receipt. */
+  selfChecked?: boolean;
 };
 
 export type CutNote = {
@@ -743,6 +745,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
     hasHubCopy: !!s.blobUrl,
     completedAt: s.completedAt ? s.completedAt.toISOString() : null,
     heldForCheck: isHeldForSelfCheck(s),
+    selfChecked: !!s.selfCheckId && !!s.selfCheckedAt,
   }));
   // A WITHDRAWN round is history, not the thing to rule on (Sep 16) — it is
   // still reachable by ?cut=<id> (the Earlier-rounds list links to it) but it

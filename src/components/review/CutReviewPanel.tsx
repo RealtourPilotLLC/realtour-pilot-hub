@@ -14,6 +14,8 @@ import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
 import { StaffCutRevisionForm } from "./StaffCutRevisionForm";
 import type { CutTakeBackInfo } from "./types";
 import { fmtClock, parseClock } from "./types";
+import { reviewStage, verifiedFixIds } from "@/lib/reviewStage";
+import { reviewActionReceipt, reviewRetryBlocked, type UnknownReviewRead } from "@/lib/reviewActionReceipt";
 
 // ---------------------------------------------------------------------------
 // The Review Room's cut workspace panel (client): the submitted video with
@@ -82,6 +84,7 @@ export function CutReviewPanel({
   canDecide = true,
   heldForCheck = false,
   fixesToCheck = [],
+  readStamp,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -104,6 +107,8 @@ export function CutReviewPanel({
    *  missed in this version (the missed-correction count), and approving is
    *  refused until they are fixed or marked not needed. */
   fixesToCheck?: { id: string; text: string }[];
+  /** A successful server read; refresh retains drafts on this exact cut. */
+  readStamp?: string;
 }) {
   const router = useRouter();
   const [notFixed, setNotFixed] = useState<Set<string>>(() => new Set());
@@ -118,11 +123,14 @@ export function CutReviewPanel({
   const lanes = canDecide ? CHOICES : PHOTOGRAPHER_CHOICES;
   const [choice, setChoice] = useState(0);
   const [clock, setClock] = useState("");
+  const currentDraft = useRef({ body: "", clock: "", reply: "" });
   const [openId, setOpenId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [uncertainRead, setUncertainRead] = useState<UnknownReviewRead | null>(null);
+  const needsReload = reviewRetryBlocked(uncertainRead, readStamp);
   const [staffRevisionOpen, setStaffRevisionOpen] = useState(false);
 
   const src = submission.assetUrl;
@@ -134,8 +142,8 @@ export function CutReviewPanel({
   // says what happened instead. Only rows from the afternoon of Sep 16 can
   // still be in this state — a take-back deletes the version now — but they
   // exist, so this stays (Jordan, Sep 16).
-  const withdrawn = submission.status === "WITHDRAWN";
   const decided = submission.status !== "PENDING";
+  const stage = reviewStage({ ...submission, heldForCheck });
   const openEditorNotes = notes.filter((n) => n.lane === "EDITOR" && n.status === "OPEN").length;
   const sorted = [...notes].sort(
     (a, b) => (a.timeSec ?? Infinity) - (b.timeSec ?? Infinity) || a.createdAt.localeCompare(b.createdAt),
@@ -162,21 +170,40 @@ export function CutReviewPanel({
     el.pause();
   }
 
+  function refreshRecordedCut() {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("cut") === submission.id) router.refresh();
+    else {
+      // Keep the reviewed round mounted even when a sibling becomes the next
+      // default after this verdict. Newer unsent words stay with their cut.
+      url.searchParams.set("cut", submission.id);
+      router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false });
+    }
+  }
+
   const run = (fn: () => Promise<{ ok: boolean; message?: string }>, after?: () => void) =>
     start(async () => {
+      if (needsReload) return;
       setErr(null);
       setMsg(null);
-      const r = await fn();
+      const r = await reviewActionReceipt(fn);
+      setUncertainRead(r.needsReload ? { stamp: readStamp, requested: false } : null);
       if (!r.ok) setErr(r.message ?? "That didn't work — try again.");
       else {
         if (r.message) setMsg(r.message);
         after?.();
-        router.refresh();
+        refreshRecordedCut();
       }
     });
 
   return (
     <div className="space-y-3">
+      {needsReload && <div role="alert" className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm"><p>{err}</p><button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-border px-3 font-medium" onClick={() => {
+        // A background read made before this unknown outcome cannot unlock a
+        // retry. Only the explicitly requested subsequent read can do that.
+        setUncertainRead((current) => current ? { stamp: readStamp, requested: true } : null);
+        refreshRecordedCut();
+      }}>Reload recorded cut state</button></div>}
       {/* Player */}
       <div className="overflow-hidden rounded-2xl border bg-black">
         {src ? (
@@ -212,55 +239,52 @@ export function CutReviewPanel({
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={startNote}
-          disabled={pending}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          disabled={pending || needsReload}
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           <MessageSquarePlus className="size-4" /> {src ? `Add note at ${fmtClock(now)}` : "Add note"}
         </button>
         {/* The escape hatch, deliberately quiet beside the verdict buttons. */}
         {canDecide && takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
         <span className="flex-1" />
-        {withdrawn ? (
-          <span className="inline-flex items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-sm font-medium text-muted">
-            <Undo2 className="size-4" /> Withdrawn — waiting on the next version
-          </span>
-        ) : decided ? (
+        {decided ? (
           <span className="flex flex-col items-end gap-0.5">
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium",
-                submission.status === "APPROVED" ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
+                stage.tone === "success" ? "bg-success/10 text-success" : stage.tone === "warning" ? "bg-warning/10 text-warning" : "bg-surface-2 text-muted",
               )}
             >
               {submission.status === "APPROVED" ? <ThumbsUp className="size-4" /> : <Undo2 className="size-4" />}
-              {submission.status === "APPROVED" ? "Approved" : `Changes requested — waiting on ${editorLabel}`}
+              {stage.label}{submission.status === "CHANGES_REQUESTED" ? ` — waiting on ${editorLabel}` : ""}
             </span>
             {/* WHO RULED, AND WHEN (Sep 28) — the badge said what, never who. A
                 client's send-back on an approved cut says it was the client. */}
-            {verdictLine(submission.verdict) && <span className="text-[11px] text-muted">{verdictLine(submission.verdict)}</span>}
+            {verdictLine(submission.verdict) && <span className="text-[13px] text-muted">{verdictLine(submission.verdict)}</span>}
           </span>
         ) : heldForCheck ? (
-          <span className="text-xs text-muted">Waiting on {editorLabel}&rsquo;s check — nothing to rule on yet.</span>
+          <span className="text-sm text-muted">Waiting on {editorLabel}&rsquo;s check — nothing to rule on yet.</span>
         ) : !canDecide ? (
-          <span className="text-xs text-muted">
+          <span className="text-sm text-muted">
             {editorLabel} is cutting this and the office rules on it — you can leave a capture note, or ask{" "}
             {editorLabel} for a change and it travels with the cut when it goes back.
           </span>
         ) : (
           <>
+            <span className="text-sm text-muted">{stage.label} · version {submission.round}</span>
             <button
               onClick={() => run(() => requestCutChanges(submission.id, notFixed.size ? { notFixedIssueIds: [...notFixed] } : undefined))}
-              disabled={pending || openEditorNotes === 0}
+              disabled={pending || needsReload || openEditorNotes === 0}
               title={openEditorNotes === 0 ? "Add at least one editor note first" : `Send ${openEditorNotes} open note${openEditorNotes === 1 ? "" : "s"} back to ${editorLabel}`}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-1.5 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50"
             >
               <Undo2 className="size-4" /> Request changes{openEditorNotes > 0 ? ` (${openEditorNotes})` : ""}
             </button>
             <button
-              onClick={() => run(() => approveCut(submission.id))}
-              disabled={pending || notFixed.size > 0}
+              onClick={() => run(() => approveCut(submission.id, submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : undefined))}
+              disabled={pending || needsReload || notFixed.size > 0}
               title={notFixed.size > 0 ? "A fix is marked not done — send it back, or tick it once it's right" : undefined}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-success px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-4 animate-spin" /> : <ThumbsUp className="size-4" />} Approve cut
             </button>
@@ -269,7 +293,7 @@ export function CutReviewPanel({
       </div>
       {canDecide && submission.status === "APPROVED" && submission.deliverableId && (
         <div className="space-y-2">
-          <button type="button" onClick={() => setStaffRevisionOpen((v) => !v)} className="text-xs font-medium text-brand hover:underline">
+          <button type="button" onClick={() => setStaffRevisionOpen((v) => !v)} className="inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium text-brand hover:bg-surface-2 hover:underline">
             {staffRevisionOpen ? "Close revision form" : "Request changes to this video"}
           </button>
           {staffRevisionOpen && (
@@ -280,14 +304,14 @@ export function CutReviewPanel({
       {/* Somebody other than the chain took this version (gap 15) — say who
           and when, not just "covering". */}
       {canDecide && submission.reviewerMove && (
-        <p className="text-[11px] text-muted-2">
+        <p className="text-[13px] text-muted-2">
           {submission.reviewerMove.words} by {byLine(submission.reviewerMove.by, submission.reviewerMove.atISO)}
         </p>
       )}
       {/* The fixes this version's check claimed — the reviewer's one chance to
           say "not actually fixed" (§8.3). Only while there is a verdict to give. */}
       {canDecide && !decided && !heldForCheck && fixesToCheck.length > 0 && (
-        <div className="rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-xs">
+        <div className="rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-sm">
           <p className="font-medium text-foreground">The editor says these earlier asks are fixed in this version — untick any that aren&rsquo;t:</p>
           <ul className="mt-1.5 space-y-1">
             {fixesToCheck.map((f) => (
@@ -297,7 +321,7 @@ export function CutReviewPanel({
                     type="checkbox"
                     className="mt-0.5"
                     checked={!notFixed.has(f.id)}
-                    disabled={pending}
+                    disabled={pending || needsReload}
                     onChange={(e) =>
                       setNotFixed((cur) => {
                         const next = new Set(cur);
@@ -314,8 +338,8 @@ export function CutReviewPanel({
           </ul>
         </div>
       )}
-      {msg && <p className="text-xs text-success">{msg}</p>}
-      {err && <p className="text-xs text-danger">{err}</p>}
+      {msg && <p role="status" className="text-sm text-success">{msg}</p>}
+      {err && !needsReload && <p role="alert" className="text-sm text-danger">{uncertainRead ? "The recorded cut state was refreshed. Check the saved notes and verdict before trying again; your draft is still here." : err}</p>}
 
       {/* Composer */}
       {composing && (
@@ -327,7 +351,7 @@ export function CutReviewPanel({
           <MentionTextarea
             autoFocus
             value={body}
-            onChange={setBody}
+            onChange={(value) => { currentDraft.current.body = value; setBody(value); }}
             rows={2}
             placeholder="What needs to change here… (@ to tag someone)"
             className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
@@ -354,7 +378,7 @@ export function CutReviewPanel({
               <span>Timestamp (optional)</span>
               <input
                 value={clock}
-                onChange={(e) => setClock(e.target.value)}
+                onChange={(e) => { currentDraft.current.clock = e.target.value; setClock(e.target.value); }}
                 placeholder="mm:ss"
                 className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm tabular-nums outline-none focus:border-brand"
               />
@@ -382,13 +406,15 @@ export function CutReviewPanel({
                         });
                   },
                   () => {
-                    setBody("");
-                    setClock("");
-                    setComposing(false);
+                    if (currentDraft.current.body === body && currentDraft.current.clock === clock) {
+                      currentDraft.current.body = "";
+                      currentDraft.current.clock = "";
+                      setBody(""); setClock(""); setComposing(false);
+                    } else setMsg((message) => `${message ?? "The submitted note was recorded."} Newer note edits are still unsaved.`);
                   },
                 )
               }
-              disabled={pending || !body.trim()}
+              disabled={pending || needsReload || !body.trim()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />}{" "}
@@ -462,7 +488,7 @@ export function CutReviewPanel({
                 {!canDecide ? null : n.status !== "RESOLVED" ? (
                   <button
                     onClick={() => run(() => setCutNoteStatus(n.id, "RESOLVED"))}
-                    disabled={pending}
+                    disabled={pending || needsReload}
                     title="Resolve — this is handled"
                     className="shrink-0 rounded-lg p-1.5 text-muted-2 hover:bg-success/10 hover:text-success"
                   >
@@ -471,7 +497,7 @@ export function CutReviewPanel({
                 ) : (
                   <button
                     onClick={() => run(() => setCutNoteStatus(n.id, "OPEN"))}
-                    disabled={pending}
+                    disabled={pending || needsReload}
                     title="Reopen"
                     className="shrink-0 rounded-lg p-1.5 text-muted-2 hover:bg-surface-2 hover:text-foreground"
                   >
@@ -496,15 +522,15 @@ export function CutReviewPanel({
                   <div className="flex items-center gap-2">
                     <MentionTextarea
                       value={reply}
-                      onChange={setReply}
-                      onEnter={() => { if (reply.trim() && !pending) run(() => replyCutNote(n.id, reply), () => setReply("")); }}
+                      onChange={(value) => { currentDraft.current.reply = value; setReply(value); }}
+                      onEnter={() => { if (reply.trim() && !pending && !needsReload) run(() => replyCutNote(n.id, reply), () => { if (currentDraft.current.reply === reply) { currentDraft.current.reply = ""; setReply(""); } else setMsg((message) => `${message ?? "The submitted reply was recorded."} Newer reply edits are still unsent.`); }); }}
                       rows={1}
                       placeholder="Reply… (@ to tag)"
                       className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-brand"
                     />
                     <button
-                      onClick={() => run(() => replyCutNote(n.id, reply), () => setReply(""))}
-                      disabled={pending || !reply.trim()}
+                      onClick={() => run(() => replyCutNote(n.id, reply), () => { if (currentDraft.current.reply === reply) { currentDraft.current.reply = ""; setReply(""); } else setMsg((message) => `${message ?? "The submitted reply was recorded."} Newer reply edits are still unsent.`); })}
+                      disabled={pending || needsReload || !reply.trim()}
                       className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
                     >
                       <Send className="size-3.5" /> Send

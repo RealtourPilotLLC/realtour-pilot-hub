@@ -2,6 +2,28 @@
 
 ## Sep 30 takeover addendum
 
+### U3 / W03 checkpoint — exact review stage and safe action receipts
+
+The exact-cut panel now distinguishes replaced/withdrawn/incomplete versions,
+held editor checks, creative review changes, recorded client requests and creative
+approval. A historical automatic delivery stamp says so; it does not invent a
+human verdict. Checked cuts send only the displayed fix IDs left checked by the
+reviewer, including an explicit empty list; the legacy no-check fallback remains.
+Newer note/reply input survives an older confirmed save. Thrown responses keep
+words and block retry until an explicitly requested successful exact-cut read.
+Refreshes pin the current round, preserving its mounted draft when another
+sibling becomes the default; switching rounds keys the panel to that round.
+
+Pure fake-action/stage/SSR fixture passed 15/0
+(`/tmp/ops-u3-review-stage-receipts-reviewed/`), lint and focused independent
+review passed after fixing its two findings: implicit success navigation could
+remount away newer drafts, and a background read could unlock an unknown outcome.
+The revised retry gate covers both read generations. Stable integration gate
+follows. Actual browser late input, exact-cut refresh and phone/focus acceptance
+remain untested; no claim of mounted interaction proof. Existing W03 receipts,
+staff approval writer and client-revision ledger are preserved. No provider,
+production mutation, Start/Pause or delivery policy changed.
+
 ### C14 checkpoint — matching office Editing and Schedule record scopes
 
 Office Editing normal/test scope now filters all project rails before their caps,

@@ -74,6 +74,12 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U3 exact-cut review:** truthful historical/client/creative stage wording,
+  visible checked-fix IDs, retained newer note/reply input and explicit unknown
+  outcome recovery are implemented. Fake-action/read-generation/SSR 15/0,
+  lint and focused review pass. Legacy no-check policy is retained. Browser
+  refresh/late-input and complete W03 per-cut stage acceptance remain open.
+
 - **U5 automation confirmation:** errors identify the attempted stage, partial
   backlog saves require a fresh recorded batch, unread transcript audiences and
   stale responses cannot confirm activation. Pure fake-action/SSR 12/0,
