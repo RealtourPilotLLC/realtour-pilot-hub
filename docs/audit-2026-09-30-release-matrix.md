@@ -1,21 +1,31 @@
-# September 30 release evidence — Oct 1 production candidate
+# September 30 release evidence — Oct 1 production checkpoints
 
 This is an acceptance ledger. Jordan explicitly authorized the Oct1 deployment;
-reviewed candidate3c3c2d7 is now live, with existing gates unchanged. The detailed C01–C19,
+reviewed candidate e6eac69 is now live, with existing gates unchanged. The detailed C01–C19,
 W01–W06 and U0–U6 backlog remains in `audit-2026-09-30-checklist.md`; the resume
 instructions and batch evidence remain in `handoff.md`.
 
 ## Release state
 
-Policy candidate974327f built/staged successfully but is held, not promoted:
+Policy candidate 974327f built/staged successfully but was held, never promoted:
 recording monthly portal availability must not grant client download/caption
-permission. The atomic AuditLog marker and entitlement repair have backend41/0
-and actual signed approval-gate21/0 evidence; combined types/lint and focused
-review pass. New exact build/release remains. Production was freshly confirmed3c3c2d741aaf at15:39:27Z. No activation,
-client verdict, invitation, provider booking or message was performed.
+permission. The atomic AuditLog marker and entitlement repair have backend 41/0
+and actual signed approval-gate 21/0 evidence; combined types/lint and focused
+review pass. Replacement e6eac69 passed exact local/remote builds and protected
+stage smoke, then promoted 11:47 AM EDT. Production version/login/assets/access
+and read-only unchanged-state checks pass. Ready dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv;
+settings/automation/seats unchanged, rollout TEST_ONLY. No activation, client
+verdict, invitation, provider booking, message or Git push was performed.
+
+Rows naming3c3c2d7 identify their first deployment; all remain included in the
+current e6eac69 application. Source and targeted evidence do not close the
+browser/client acceptance column.
 
 | Area | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
 |---|---|---|---|---|---|---|
+| Approved general welcome link | Approved default/fallback; monthly link preserved | Actual fenced26/0; lint/review; no saved auto_texts row | `7220dca` | Yes;e6eac69 | No automation activation | Default live; no welcome sent/replayed; provider acceptance open |
+| Explicit no-brand and returning editor receipt | Exact versioned choice and owner generation; Start/Pause preserved | Signed PG 44/0; affected15/0+61/0; combined gates/review | `0334622` | Yes;e6eac69 | Existing permissions/gates | Staff source live; normal editor/browser acceptance open |
+| Monthly portal/exact Dropbox and client approval | Exact canonical backup/check/access; atomic portal marker | Backend 41/0, approval gate 21/0, UI19/0, listing34/0+mixed25/0; exact builds/review | `148440a`, `974327f`, `e6eac69` | Yes;e6eac69 | No rollout expansion/send/approval fabricated | Code live under existing gates; client/phone/provider acceptance open |
 | Access, manual work state, draft preservation, rollout guards | Local corrections | Targeted isolated signed-role/action tests; normal browser journey open | Yes; see C01–C03/C09/C12 | Yes;3c3c2d7 | Existing switches unchanged | Code live under existing gates; client acceptance open |
 | Client sign-in and teammate invitation feedback | Local correction; privacy-generic acknowledgement and newer-draft retention | Actual fake UI29/0 + wrapper10/0; typecheck/lint/review; real email/browser open | Yes | Yes;3c3c2d7 | No invite or login switch changes | Public login verified; sends remain gated |
 | Written and call planning; exact script acceptance | Local corrections | Written 23/0, call 25/0; fake model/provider evidence only | Yes | Yes;3c3c2d7 | No worker or rollout activation | Code live under existing gates; client acceptance open |
@@ -35,11 +45,12 @@ client verdict, invitation, provider booking or message was performed.
 | Mixed photo/video final handoff | Existing implementation verified; no app change | New actual signed/domain fixture25/0 with fake Aryeo; manual/automatic video and converse photo-task paths | `953e680` | Yes;3c3c2d7 | No delivery or switch changes | No distinct source change; delivery acceptance open |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | Completed slices at3c3c2d7 | No | Complete journey/UI acceptance open |
 
-Fresh Oct1 production:3c3c2d741aaf, Ready deployment
-dpl_FaUomN98Qz8EDuFnUopYgtnt55HS, at https://hub.realtourpilot.com. Remote build
+Fresh Oct1 production: e6eac69f1d41, Ready deployment
+dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv, at https://hub.realtourpilot.com. Remote build
 and HTTP deployment smoke passed; automation/rollout remain unchanged. Previous
-productionbf2e0b48a0dd was freshly verified for rollback. No branch push occurred.
-See `audit-2026-10-01-production-release.md` for backup/schema/smoke evidence.
+production3c3c2d741aaf was freshly verified before promotion and remains the rollback target.
+No branch push occurred. See `audit-2026-10-01-policy-release.md` for the latest
+evidence and `audit-2026-10-01-production-release.md` for the earlier backup/schema.
 
 Application candidate `2b87cc2` passed non-incremental types, changed-file lint
 (41 files plus type-only fixture repair) and the separate clean-environment
@@ -47,7 +58,8 @@ production build. Logs are in the checklist/handoff. These gates establish a
 local build, not deployment, activation, browser acceptance or launch readiness.
 The later W04 fixture953e680 passed25/0, lint/root review and final
 non-incremental types (`/tmp/ops-hub-types-953e680.log`). Git comparison confirms
-no app/schema/config changes after2b87cc2; later commits contain only tests/docs.
+no app/schema/config changes between2b87cc2 and953e680; the subsequent approved
+policy application changes have their separate evidence above.
 The restored isolated preview intentionally runs on3200, with saved fixture
 data and provider fences; it is not normal-role/browser or real-provider proof.
 
@@ -79,15 +91,17 @@ for normal authorized client/editor access.
 
 | Item | Required owner | Concrete next step |
 |---|---|---|
-| Monthly delivery destination | Engineering; local source prepared | Portal plus exact final Dropbox backup implemented; final backend40/0, UI19/0, affected listing34/0+mixed25/0, lint/types/focused review pass. Atomic current cut/access claim and backup/preview/history recovery, including legacy canonical source equality, verified in fixtures. Clean build/release and real browser/phone/provider acceptance remain; not implemented in deployed3c3c2d7. |
-| Editor brand/brief receipt policy | Engineering; local source prepared | Explicit no-brand and fresh returning-editor generation implemented; signed PG44/0, affected15/0+61/0, lint and focused review pass. Stable combined types/build and mounted browser acceptance open. Not deployed; historical receipts and manual Start/Pause preserved. |
-| General welcome destination | Engineering; local source prepared | Approved general default/fallback implemented; actual fenced fixture26/0, lint and root review pass. Fresh live read found no `auto_texts` row, so no stored write. New source not yet deployed; retain monthly mapping and never replay welcomes. |
+| Monthly delivery destination | Engineering; deployed, normal acceptance open | Portal/exact final Dropbox implemented; marker backend 41/0, signed approval gate 21/0, UI19/0, affected listing34/0+mixed25/0 and exact gates/review pass. Deployed ate6eac69. Next: normal client/browser/phone/provider final-file and incident acceptance; no client approval fabricated. |
+| Editor brand/brief receipt policy | Engineering; deployed, normal acceptance open | Explicit no-brand/fresh returning-editor generation implemented; signed PG 44/0, affected15/0+61/0 and exact gates/review pass. Deployed ate6eac69. Next: mounted normal editor/office receipt and multi-output journey; historical receipts/manual Start/Pause preserved. |
+| General welcome destination | Engineering; deployed, sends remain gated | Approved general default/fallback implemented; actual fenced26/0 and exact gates/review pass. No `auto_texts` row or stored write. Deployed ate6eac69; monthly mapping preserved, no welcome replay. Next: provider/client acceptance under an approved test scope. |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |
 | Client identities | Kyle/Jordan | Resolve Janice/Arielle and other named conflicts using source evidence; investigate Joe/Joseph without assuming they should merge |
 | Intended first client roster | Jordan | Confirm the intended first roster using the private Sep 30 22:33 ET inventory of 13 candidates; then prepare the exact seats, strategy/bank, month and source evidence. No invitations are authorized by the inventory |
 | Browser evidence | Engineering/environment | Restore authorized local-browser access; the current tool policy refusal must not be bypassed with another browser transport |
 | Provider and real-media acceptance | Jordan + engineering | Agree on isolated/sandbox recipients, booking/media records and destinations before any external write; keep clients and real bookings untouched |
-| Production deployment | Completed under Jordan authorization |3c3c2d7 promoted and HTTP verified; existing gates unchanged. No activation/client sends authorized. Future source batches need their own exact release evidence. |
+| Generated-workflow dates | Jordan | Answer pending policy question; ad hoc editing is shipped, automatic editing/revision/SLA clocks remain unchanged |
+| Unknown delivery-text settlement | Jordan | Decide manual evidence-backed Kyle resolution versus automatic provider confirmation; question pending, existing unknown holds never offer a blind resend |
+| Production deployment | Completed under Jordan authorization |e6eac69 promoted and HTTP/unchanged-state verified; existing gates unchanged. No activation/client sends authorized. Future source batches need their own exact release evidence. |
 
 ## Schema and rollback gate
 

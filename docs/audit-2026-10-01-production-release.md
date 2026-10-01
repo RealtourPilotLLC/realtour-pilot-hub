@@ -1,6 +1,10 @@
-# Oct 1 production release — Ops Hub audit candidate
+# Oct 1 first production release — Ops Hub audit candidate
 
-## Authorization and current state
+Latest policy source e6eac69 subsequently replaced this first release. See
+`audit-2026-10-01-policy-release.md`; the schema/backup and first-release evidence
+below remain historical and valid.
+
+## Authorization and state at this release
 
 Jordan explicitly requested: “And deploy whats been done to production.”
 This authorizes the reviewed deployment and required additive schema release.

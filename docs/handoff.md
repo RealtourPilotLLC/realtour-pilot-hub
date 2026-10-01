@@ -2,9 +2,37 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 latest production checkpoint — e6eac69
+
+Policy code is deployed at https://hub.realtourpilot.com. Exact app commit
+`e6eac69f1d41f4697a9cb64c8011644be458a3ea`, Ready deployment
+`dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted 11:47 AM EDT. Local Node20 clean
+build, remote compile/types/build, protected exact stage and canonical
+version/login/assets/auth smoke pass. Fresh read-only25006 comparison confirms
+unchanged settings hashes, automation OFF, rollout TEST_ONLY and raw2/3 seat counts.
+No schema, send/invite, approval verdict, booking, financial change, activation or
+push. Previous3c3c2d7 deployment is the verified rollback; preserve tables and
+all receipt/marker/newer business rows. Held 974327f stage was never promoted.
+
+Approved general welcome, explicit no-brand/returning assignment and monthly
+portal/exact final Dropbox backup are shipped. Final marker backend 41/0, signed
+approval gate 21/0, W02 44/0 and C19 26/0 plus affected checks pass. Full release
+and sanitized receipts: `audit-2026-10-01-policy-release.md`,
+`release-evidence/2026-10-01-policy-release.json`. Private receipts are separate
+from the held stage; no secrets/backup/production env are committed.
+
+Current next work is existing browser/phone/provider/media acceptance, U6,
+intended first client roster and exact staff source/strategy/bank/access setup.
+Tool policy blocked browser access; do not bypass it. Generated-workflow dates
+and W05 manual unknown-text settlement need business answers; keep existing
+clocks and conservative holds. No documented autonomous source gap remains
+once these follow-ups supersede older rows. U0–U5 are partial/U6 open; real-client
+onboarding is not accepted. Preserve the3200 preview and do not repeat green
+suites or restart investigation. Earlier local/staging history below is retained.
+
 ### Oct 1 staged policy candidate held — exact approval repair
 
-Candidate974327f completed clean Node20 build and Vercel remote build/staging
+Candidate 974327f completed clean Node20 build and Vercel remote build/staging
 at15:33:14Z. Protected version/login smoke passed; canonical remained3c3c2d741aaf
 at15:39:27Z. Stagebr6mfk7cs is **held, not promoted**. Existing entitlement
 classified the new portal handoff's sentToClientAt as outside delivery, bypassing
@@ -15,17 +43,17 @@ AuditLog action `monthly_portal_handoff`, exact target and opaque fingerprint/ch
 in the same Serializable transaction as first stamp. cutEntitlement.ts excludes
 that marker from external-send and paused/ended fallback, and from finishing
 original fallback. Read errors propagate. Old unmarked delivery, listing,
-pre-gate and prior-approved v1 rules remain. Backend41/0 and actual signed
+pre-gate and prior-approved v1 rules remain. Backend 41/0 and actual signed
 playback/download/caption fixture21/0 passed; scoped lint0, non-incremental types0
 and focused peer/root review pass. Logs:
 `/tmp/monthly-portal-handoff-marker/`, `/tmp/monthly-portal-approval-gate/`.
-Next: new commit/build/stage, then promote
-the repaired candidate under existing deployment authorization. Never promote
+Those next gates were completed for e6eac69 in the latest release above; do not
+repeat them without a new changed risk. Never promote
 974327f or replay a delivery. No schema/live mutation/activation was used.
 
 ### Oct 1 monthly destination follow-up — local source ready
 
-Supplemental pre-build repair to148440a binds the no-blob canonical `assetPath`
+Supplemental pre-build repair to 148440a binds the no-blob canonical `assetPath`
 metadata when it differs from the final backup. Hash/size must match; checking
 a good backup cannot certify a separately overwritten client source. New
 equal-copy/mismatch assertions give final backend40/0
@@ -84,7 +112,7 @@ pending; non-incremental types for the current policy snapshot now pass
 
 `src/lib/settings.ts` separates the approved general strategy-call welcome URL
 from monthly Content Program booking. `scripts/_drill/c19-general-welcome.ts`
-passed26/0 with the actual resolver/sweep/template and monthly classifier behind
+passed 26/0 with the actual resolver/sweep/template and monthly classifier behind
 fenced providers/Prisma. Scoped lint and root review passed; saved custom text,
 URLs and switches remain. Log `/tmp/ops-hub-c19-general-welcome/c19-general-welcome.ts.log`.
 Fresh guarded read-only production check found no `auto_texts` row; no default

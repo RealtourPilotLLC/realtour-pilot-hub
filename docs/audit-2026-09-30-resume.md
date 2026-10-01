@@ -5,19 +5,47 @@ Use this page first. The full backlog is in
 `audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.
 Do not restart the audit or repeat green checks without a specific changed risk.
 
+## Latest checkpoint — policy code deployed, launch acceptance open
+
+Production now serves `e6eac69f1d41` at https://hub.realtourpilot.com, Ready
+`dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted Oct1 11:47 AM EDT. Exact local/remote
+build, protected stage smoke, canonical version/login/assets/auth gates and
+read-only settings/automation/seat comparison passed. No settings changed;
+rollout TEST_ONLY and stored automation OFF remain. No client send/invite, real
+booking, financial change, activation or Git push. See
+`audit-2026-10-01-policy-release.md` and its sanitized evidence.
+
+Commits 7220dca/0334622/148440a/974327f/e6eac69 implement the approved welcome,
+no-brand/returning-editor receipt and portal/exact Dropbox policies. The atomic
+portal marker preserves exact client approval/download/caption and legacy rules.
+Backend 41/0, approval gate 21/0, W02 44/0, welcome 26/0 and affected checks pass.
+Held 974327f stage is superseded and must never be promoted. Build checkout is
+clean/detached e6eac69; the main3200 fenced preview remains intentional.
+
+No documented autonomous source gap remains after these follow-ups. Do not
+restart the audit or repeat green suites. Next work needs supported browser
+access for UA01–UA14/U6 and phone/provider/media acceptance, Jordan's first real
+roster, Kyle's exact C13/C18/Sarina source reconciliation, and prepared released
+strategy/topic bank/eligible seats. Generated-workflow date overrides and W05
+manual unknown-text settlement questions remain pending; existing clocks and
+no-blind-resend holds stand. U0–U5 are partial; U6 is open. The platform is not
+accepted for real-client onboarding.
+
 ## Checkout and execution boundary
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
-- Working branch: `codex/audit-2026-09-30`. Authorized release candidate:
-  `3c3c2d741aaf7a30d6c5fe1314fbb6611348e0e3`; application build evidence is at
-  `2b87cc2`, and the mixed-handoff test/final types are at `953e680`.
-  A fresh main fetch found no main commits missing from the candidate; it was161 commits ahead.
+- Working branch: `codex/audit-2026-09-30`. Latest application release:
+  `e6eac69f1d41f4697a9cb64c8011644be458a3ea`; exact build/release evidence is in
+  `audit-2026-10-01-policy-release.md`. First-release source evidence at
+  `2b87cc2` and mixed-handoff953e680 remains historical.
+  At first-release3c3c2d7, the fresh main fetch found no missing main commits;
+  that candidate was161 commits ahead. No push/main merge followed.
   Inspect actual HEAD/status when resuming; do not overwrite local work.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. On Oct 1 the user explicitly authorized
   production deployment of the committed work. The reviewed additive schema was
   applied under that release authorization; remote build and promotion passed.
-  Canonical production now serves3c3c2d741aaf. This supersedes the historical deployment prohibition
+  Canonical production now serves e6eac69f1d41; first-release 3c3c2d7 is rollback. This supersedes the historical deployment prohibition
   only. No reset/seed, live mutation tests, client messages/invitations, real
   bookings, financial changes or automation activation is authorized. A branch
   push is not part of this release.
@@ -34,8 +62,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
   is0600 and contains synthetic one-time links; never stage/publish it.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
-  Advanced by inspected fast-forward to clean/detached `3c3c2d7` for the
-  successful remote release; its source matches the passing `2b87cc2` build.
+  Advanced by inspected fast-forward to clean/detached `e6eac69` for the
+  latest successful remote release; exact clean Node20 build and remote gates pass.
   Non-incremental types and changed-file lint (41 files plus type-only fixture
   repair) passed; logs are in the checklist/handoff.
   Advance only
@@ -105,7 +133,7 @@ browser, real provider/model output, real rendition/watch or phone-file proof.
 - Vercel remote compile/types/build passed; staged version and login responses
   were checked with authenticated Vercel requests, retaining deployment protection.
   Promotion succeeded: dpl_FaUomN98Qz8EDuFnUopYgtnt55HS (r6ajwlsup), canonical
-  https://hub.realtourpilot.com serves3c3c2d741aaf. HTTP version/login/assets/auth
+  https://hub.realtourpilot.com serves 3c3c2d741aaf. HTTP version/login/assets/auth
   redirects and old-host redirect passed. Anonymous portal uses a verified
   streamed sign-in redirect. See `audit-2026-10-01-production-release.md`.
   Normal-role/browser/client visibility and launch acceptance remain open.
@@ -116,21 +144,23 @@ browser, real provider/model output, real rendition/watch or phone-file proof.
   Deployment authorization does not authorize sends, invitations, bookings,
   financial changes, automation activation or rollout expansion.
 
-## Next slice after deployment
+## Policy implementation and release history
 
-Current safe checkpoint: policy commits7220dca,0334622,148440a,974327f are
-preserved. Candidate974327f clean/local and remote builds passed; stage
+Historical held-stage checkpoint, resolved by the e6eac69 release above:
+policy commits 7220dca,0334622,148440a,974327f are
+preserved. Candidate 974327f clean/local and remote builds passed; stage
 `https://realtour-pilot-br6mfk7cs-realtour-pilot-s-projects.vercel.app` completed
 successfully, but **must not be promoted**. Protected stage smoke passed and
 canonical stayed3c3c2d741aaf at15:39:27Z. A concrete entitlement regression was
 found: a new portal handoff reused the historical external-send stamp and could
 unlock downloads/captions before approval. The focused repair is frozen in
-monthlyFinal.ts/cutEntitlement.ts and two fixtures: atomic marker41/0 and signed
-approval gate21/0, lint0. Combined types0 and focused peer/root review pass.
-Root must commit, advance the clean build checkout to the new exact commit, build/stage again,
-and promote only that repaired candidate. No schema change or live backfill.
+monthlyFinal.ts/cutEntitlement.ts and two fixtures: atomic marker 41/0 and signed
+approval gate 21/0, lint0. Combined types0 and focused peer/root review pass.
+The repair was then committed, the build checkout advanced, exact builds/stage
+passed and only e6eac69 was promoted. These gates are complete; do not repeat
+them without a new changed risk. No schema change or live backfill.
 Preserve the held stage receipts under `/private/tmp/ops-hub-policy-release-2026-10-01`.
-The intentional preview remains running; no stalled deployment command remains.
+At the held-stage checkpoint the intentional preview remained running; no stalled deployment command remained.
 
 User decisions received after release: monthly finals go to the portal with a
 backup in the final Dropbox folder; intentional no-brand requires acknowledgment;
@@ -150,7 +180,7 @@ Monthly source is now complete locally with final backend40/0, UI19/0, affected 
 34/0 and mixed25/0, lint/diff and focused repair review. Final non-incremental types
 pass (`/tmp/ops-hub-monthly-final-types.log`). Preserve all source and continue to
 the exact clean build/release. Mounted browser/phone/provider acceptance remains
-open. Supplemental legacy source/backup equality proof after148440a passed lint
+open. Supplemental legacy source/backup equality proof after 148440a passed lint
 and non-incremental types0 (`/tmp/monthly-final-legacy-types.log`). Do not repeat
 completed drills.
 
@@ -211,8 +241,10 @@ remainders below stay open; this continuation is not a new broad audit.
   zero active client login seats, zero released strategies and no approved
   available topic bank. Three October workspaces existed. The export is private
   outside Git; this is launch preparation evidence, not permission to invite.
-- Jordan resolved monthly destination, no-brand/reassignment and welcome URL
-  above; source/config alignment remains. Intended first real roster still needed.
+- Jordan resolved monthly destination, no-brand/reassignment and welcome URL;
+  their source is deployed at e6eac69. Intended first real roster still needed.
+- W05 manual-versus-automatic unknown-text settlement is a pending business
+  question; preserve the current evidence/unknown hold and never blindly resend.
 - Kyle: verify exact C13 historical links, C18 wrong-property source, Sarina's
   owed scope/topic binding and identity conflicts before any live repair.
 - Generated-task date override policy remains open; ad hoc edits preserve
