@@ -77,7 +77,7 @@ decision after deployment and acceptance.
 ## Scope still deliberately open
 
 U0–U5 are partial and U6 is not accepted. Remaining work includes complete normal
-client journeys, queue/task detail density, consistent feedback across remaining
+client journeys, task deadline override design, consistent feedback across remaining
 panels, operational recovery navigation, broader typography and secondary-page
 consistency, team usability sessions and the fixed screenshot set. Finance
 calculations and pay rules are outside visual cleanup. No efficiency or

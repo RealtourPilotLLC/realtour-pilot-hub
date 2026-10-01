@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 /** Native top-layer dialog: the browser contains focus and makes the page inert. */
 export function ModalDialog({
   label,
+  open = true,
   busy = false,
   holdEscape = false,
   onCancel,
@@ -13,6 +14,8 @@ export function ModalDialog({
   className,
 }: {
   label: string;
+  /** Controlled visibility keeps children and their drafts mounted when closed. */
+  open?: boolean;
   busy?: boolean;
   /** Keep a nested confirmation visible until its own buttons decide. */
   holdEscape?: boolean;
@@ -24,7 +27,7 @@ export function ModalDialog({
 
   useEffect(() => {
     const dialog = ref.current;
-    if (!dialog) return;
+    if (!dialog || !open) return;
     const prior = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialog.showModal();
     dialog.querySelector<HTMLElement>("[data-modal-initial-focus]")?.focus();
@@ -32,9 +35,11 @@ export function ModalDialog({
       if (dialog.open) dialog.close();
       if (prior?.isConnected) prior.focus();
     };
-  }, []);
+  }, [open]);
 
   function cancel(event: SyntheticEvent<HTMLDialogElement>) {
+    // React may propagate a nested dialog's synthetic cancel through this tree.
+    if (event.target !== event.currentTarget) return;
     event.preventDefault();
     if (!busy) onCancel();
   }

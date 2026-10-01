@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 import { CheckSquare, Loader2, Mail, Maximize2, MessageSquare, Phone, Hash, Square, X } from "lucide-react";
 import { etDateTime } from "@/lib/datetime";
 import { getTaskConversation, type SourceMessage } from "@/app/queue/fullViewActions";
@@ -27,13 +27,10 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
   const [conv, setConv] = useState<SourceMessage[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [canSee, setCanSee] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open || editorView) return;
     let alive = true;
-    setLoading(true);
     void getTaskConversation(task.id)
       .then((r) => {
         if (!alive) return;
@@ -60,45 +57,6 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
     };
   }, [open, editorView, task.id]);
 
-  // While open: lock page scroll, take focus, close on Escape, keep Tab inside
-  // (the portal sits at the end of <body>, so an uncontained Tab would land on
-  // the card's Complete button behind the scrim).
-  useEffect(() => {
-    if (!open) return;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    panelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setOpen(false);
-        return;
-      }
-      if (e.key === "Tab" && panelRef.current) {
-        const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-          'button, a[href], [tabindex]:not([tabindex="-1"])',
-        );
-        if (focusables.length === 0) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        const active = document.activeElement;
-        if (e.shiftKey && (active === first || active === panelRef.current)) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && active === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      document.removeEventListener("keydown", onKey);
-      triggerRef.current?.focus();
-    };
-  }, [open]);
-
   const cameIn = task.createdAt ? etDateTime(new Date(task.createdAt)) : null;
   // Legacy rows stored description = summary + "\n\n" + message; show only the
   // part that isn't already on screen as "What happened".
@@ -111,14 +69,9 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
   const showConversation = !editorView && (loading || canSee);
 
   const modal = open
-    ? createPortal(
-        <div className="fixed inset-0 z-[1500] flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label={task.title}>
-          <button aria-label="Close" onClick={() => setOpen(false)} className="absolute inset-0 bg-black/60" />
-          <div
-            ref={panelRef}
-            tabIndex={-1}
-            className="relative flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-2xl outline-none sm:rounded-2xl"
-          >
+    ? (
+        <ModalDialog label={`Source context: ${task.title}`} onCancel={() => setOpen(false)} className="max-h-[90dvh] w-[min(96vw,48rem)] p-0 sm:p-0">
+          <div className="flex max-h-[88dvh] flex-col">
             <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
               <div className="min-w-0">
                 <h2 className="break-words text-sm font-semibold leading-snug">{task.title}</h2>
@@ -128,7 +81,7 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
                     .join(" · ")}
                 </p>
               </div>
-              <button onClick={() => setOpen(false)} className="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-foreground" aria-label="Close full view">
+              <button type="button" data-modal-initial-focus onClick={() => setOpen(false)} className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand" aria-label="Close full view">
                 <X className="size-4" />
               </button>
             </div>
@@ -200,18 +153,18 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
               )}
             </div>
           </div>
-        </div>,
-        document.body,
+        </ModalDialog>
       )
     : null;
 
   return (
     <>
       <button
-        ref={triggerRef}
-        onClick={() => setOpen(true)}
+        type="button"
+        aria-haspopup="dialog"
+        onClick={() => { setLoading(!editorView); setOpen(true); }}
         title="Open the full task — complete message + original conversation"
-        className="inline-flex items-center gap-1.5 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground"
+        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-2 text-sm font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand"
       >
         <Maximize2 className="size-3.5" /> Full view
       </button>

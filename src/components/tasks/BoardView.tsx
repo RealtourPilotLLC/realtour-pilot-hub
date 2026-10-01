@@ -93,16 +93,16 @@ function scrubTaskMoney<T extends QueueTask>(v: T): T {
   };
 }
 
-// Collapsible group panel — collapsed by default (native <details>, so no client
-// JS needed). The header (counts + overdue) stays visible; click to expand.
-function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt, editorView }: {
+// Compact work rows stay visible initially; native disclosure keeps each
+// group's count and overdue evidence visible when a person folds it away.
+function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt, editorView, focusTaskId }: {
   icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
-  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean; editorView?: boolean;
+  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean; editorView?: boolean; focusTaskId?: string;
 }) {
   return (
-    <details open={defaultOpen} className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2">
-        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+    <details open={defaultOpen ?? true} className="group/task-group panel-shadow overflow-hidden rounded-2xl border bg-surface">
+      <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
+        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/task-group:rotate-0" />
         <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: `${accent}22`, color: accent }}>
           <Icon className="size-4" />
         </span>
@@ -112,8 +112,8 @@ function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees
       </summary>
       <div className="border-t border-border">
         {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
-        <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
-          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} editorView={editorView} />)}
+        <div className="divide-y divide-border">
+          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} editorView={editorView} compact initialDetailOpen={focusTaskId === t.id} />)}
         </div>
       </div>
     </details>
@@ -220,13 +220,22 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
     return others.length ? others.map((s) => ({ id: s.id, title: s.title, assignedKey: s.assignedKey })) : undefined;
   };
 
+  // Only a stored output binding on the same project gets a prominent output
+  // link. Missing, removed, or cross-project references stay in task context.
+  const outputIds = [...new Set(tasks.filter((t) => t.taskType === "revision" && t.outputId).map((t) => t.outputId!))];
+  const taskOutputs = outputIds.length ? await prisma.deliverableOutput.findMany({
+    where: { id: { in: outputIds }, waivedAt: null, removedFromOrderAt: null },
+    select: { id: true, projectId: true },
+  }).catch(() => []) : [];
+  const outputProjects = new Map(taskOutputs.map((output) => [output.id, output.projectId]));
+
   // flaggedBy rides alongside taskToView's shape (which other callers build
   // without it) so the source chip can read "Flagged by Harrison".
   // Sessionless (local dev, a probe) renders as the owner, the same rule the
   // home applies; "view as Kyle" carries Kyle's role and gets Kyle's scrub.
   const isOwner = !me || me.role === "OWNER";
   const allViews = tasks
-    .map((t) => ({ ...taskToView(t), flaggedBy: t.flaggedBy, siblings: siblingsOf(t) }))
+    .map((t) => ({ ...taskToView(t), flaggedBy: t.flaggedBy, siblings: siblingsOf(t), outputId: t.outputId && outputProjects.get(t.outputId) === t.projectId ? t.outputId : null }))
     .map((v) => (isOwner ? v : scrubTaskMoney(v)));
   const views = allViews.filter((v) => (!sp.source || v.source === sp.source) && (!sp.type || v.taskType === sp.type));
   const sources = [...new Set([...allViews.map((v) => v.source), ...(sp.source ? [sp.source] : [])])].sort();
@@ -284,23 +293,23 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
           <span className="text-xs text-muted-2">· {set.length}</span>
         </div>
         {comms.length > 0 && (
-          <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Messages to reply to, new leads, and decisions." />
         )}
         {confirmations.length > 0 && (
-          <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
         )}
         {deliveries.length > 0 && (
-          <GroupCard icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="The “your gallery is ready” text to the client after delivery — pre-drafted, just review and send." />
         )}
         {revisions.length > 0 && (
-          <GroupCard icon={PencilLine} title="Edits & revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} icon={PencilLine} title="Edits & revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Client change requests after delivery — auto-routed to the deliverable's editor; reassign if it should go to someone else." />
         )}
         {qc.length > 0 && (
-          <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard focusTaskId={sp.task} icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Quality-check content as it lands, then deliver." />
         )}
       </div>
@@ -321,7 +330,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
         <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#d97706" }}>Needs assignment</h2>
         <span className="text-xs text-muted-2">· {triage.length}</span>
       </div>
-      <GroupCard icon={UserPlus} title="Pick who owns each" accent="#f59e0b" items={triage.slice().sort(cmp)} overdue={oc(triage)} assignees={assigneeChips} defaultOpen assignPrompt
+      <GroupCard focusTaskId={sp.task} icon={UserPlus} title="Pick who owns each" accent="#f59e0b" items={triage.slice().sort(cmp)} overdue={oc(triage)} assignees={assigneeChips} defaultOpen assignPrompt
         blurb="Assign each task to the right person and it moves to their work list." />
     </div>
   );

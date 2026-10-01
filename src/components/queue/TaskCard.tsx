@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   CheckCircle2, Clock, MapPin, Loader2, Sparkles, Copy, Send, ExternalLink,
   MessageSquarePlus, ChevronDown, Hash, Mail, Phone, Camera, Star, Clapperboard,
-  PencilLine, Cpu, CircleDot, User, Users, Square, CheckSquare, ShieldAlert, Repeat,
+  PencilLine, Cpu, CircleDot, User, Users, Square, CheckSquare, ShieldAlert, Repeat, X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem, editCardWork, type EditCardWork } from "@/app/actions";
@@ -19,6 +19,9 @@ import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 import { TaskFullView } from "@/components/queue/TaskFullView";
 import { TaskSlackPing } from "@/components/queue/TaskSlackPing";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { ModalDialog } from "@/components/ui/ModalDialog";
+import { TaskCompactRow } from "@/components/queue/TaskCompactRow";
+import type { TaskRowAction } from "@/lib/taskRowPresentation";
 
 // Friendly display label per task type (QA → QC, etc.) — the one shared map in
 // src/lib/taskSource.ts, so this chip and the Done ledger can't drift apart.
@@ -78,6 +81,8 @@ export type QueueTask = {
   sourceDetail: string | null;
   assignedKey: string | null;
   projectId: string | null;
+  /** Board-verified output on this same project; never guessed from text. */
+  outputId?: string | null;
   clientId: string | null;
   clientName: string | null;
   contactName: string | null;
@@ -516,7 +521,7 @@ function EditWorkChip({ task }: { task: QueueTask }) {
 // own surfaces instead: the project goes to /edit/<id> (the editor brief), and
 // the client chip renders unlinked (audit crack #38). Admin-only actions that
 // would bounce them (AI draft / OpenPhone send) are hidden too.
-export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean }) {
+export function TaskCard({ task, assignees, assignPrompt, editorView, compact = false, initialDetailOpen = false }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean; compact?: boolean; initialDetailOpen?: boolean }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [draftText, setDraftText] = useState("");
@@ -530,8 +535,19 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [noteMsg, setNoteMsg] = useState<string | null>(null);
+  const [noteError, setNoteError] = useState(false);
   const [savingNote, startNote] = useTransition();
   const [assigning, startAssign] = useTransition();
+  const [assignmentNote, setAssignmentNote] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(compact && initialDetailOpen);
+  const [detailFocus, setDetailFocus] = useState<TaskRowAction["focus"]>("details");
+  const detailRef = useRef<HTMLDivElement>(null);
+  const busy = pending || emailing || drafting || sending || savingNote || assigning;
+  useEffect(() => {
+    if (!compact || !detailOpen || detailFocus === "details") return;
+    const target = detailFocus === "assign" ? "[data-task-assignee]" : "[data-task-draft]";
+    detailRef.current?.querySelector<HTMLElement>(target)?.focus();
+  }, [compact, detailOpen, detailFocus]);
   // A status the server refused (an edit card's "In progress" — §7.1): its
   // reason, shown in the footer instead of a silently snapped-back select.
   const [statusNote, setStatusNote] = useState<string | null>(null);
@@ -586,22 +602,30 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
   // raw message, or a drafted message to review.
   const hasBody = !!summary || task.deliverables.length > 0 || (!!task.description && !predrafted);
   // Drafted-message tasks open expanded so the message is visible to review/send.
-  const [open, setOpen] = useState(predrafted);
+  const [open, setOpen] = useState(compact || predrafted);
 
   const run = (status: string) =>
     start(async () => {
       setStatusNote(null);
-      const r = await setSmartTaskStatus(task.id, status);
-      if (r && !r.ok) setStatusNote(r.message);
+      try {
+        const r = await setSmartTaskStatus(task.id, status);
+        if (r && !r.ok) setStatusNote(r.message);
+      } catch { setStatusNote("The status change was not confirmed. Reload to check this task before trying again."); }
     });
   const isEditCard = task.taskType === "edit_video";
-  const assign = (key: string) => startAssign(async () => setTaskAssignee(task.id, key));
+  const assign = (key: string) => startAssign(async () => {
+    setAssignmentNote(null);
+    try { await setTaskAssignee(task.id, key); }
+    catch { setAssignmentNote("The assignment was not confirmed. Reload to check the current owner before trying again."); }
+  });
   const sendText = () =>
     startSend(async () => {
-      const r = task.taskType === "confirmation_text"
-        ? await sendConfirmationText(task.id)
-        : await sendDeliveryText(task.id);
-      setSendMsg(r.message);
+      try {
+        const r = task.taskType === "confirmation_text"
+          ? await sendConfirmationText(task.id)
+          : await sendDeliveryText(task.id);
+        setSendMsg(r.message);
+      } catch { setSendMsg("The send was not confirmed. Check the conversation before trying again."); }
     });
   // Email tasks can send the reviewed draft straight back into the thread.
   const canEmailSend = task.source === "gmail" && !!task.sourceDetail?.startsWith("gmail-thread:") && !editorView;
@@ -611,29 +635,41 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
       setCopied(false);
       setEmailMsg(null);
       if (!open) setOpen(true);
-      const [d, rcpt] = await Promise.all([
-        draftTaskReply(task.id),
-        canEmailSend ? resolveEmailRecipient(task.id) : Promise.resolve(null),
-      ]);
-      setDraft(d);
-      setDraftText(d.text ?? "");
-      setEmailTo(rcpt?.ok ? rcpt.to ?? null : null);
+      try {
+        const [d, rcpt] = await Promise.all([
+          draftTaskReply(task.id),
+          canEmailSend ? resolveEmailRecipient(task.id) : Promise.resolve(null),
+        ]);
+        if (d.error) { setStatusNote(d.error); return; }
+        setDraft(d);
+        setDraftText(d.text ?? "");
+        setEmailTo(rcpt?.ok ? rcpt.to ?? null : null);
+      } catch { setStatusNote("A new draft could not be loaded. Any text you already entered is still here."); }
     });
   const sendEmail = () =>
     startEmail(async () => {
       // Recipient shown = recipient sent-to; the server re-verifies (expectedTo).
-      const r = await sendEmailReply(task.id, draftText, emailTo ? { expectedTo: emailTo } : undefined);
-      setEmailMsg(r.message);
+      try {
+        const r = await sendEmailReply(task.id, draftText, emailTo ? { expectedTo: emailTo } : undefined);
+        setEmailMsg(r.message);
+      } catch { setEmailMsg("The email send was not confirmed. Your draft is still here; check the conversation before trying again."); }
     });
   const saveNote = () =>
     startNote(async () => {
-      const r = await addTaskNote(task.id, noteText);
-      setNoteMsg(r.message);
-      if (r.ok) { setNoteText(""); setNoteOpen(false); }
+      setNoteMsg(null);
+      try {
+        const r = await addTaskNote(task.id, noteText);
+        setNoteMsg(r.message);
+        setNoteError(!r.ok);
+        if (r.ok) { setNoteText(""); setNoteOpen(false); }
+      } catch {
+        setNoteError(true);
+        setNoteMsg("The note was not confirmed. Your text is still here; check project messages before trying again.");
+      }
     });
 
-  return (
-    <div id={`task-${task.id}`} className={`panel-shadow scroll-mt-24 rounded-2xl border bg-surface p-3 sm:p-4 transition-shadow ${done ? "opacity-60" : ""}`}>
+  const card = (
+    <div ref={detailRef} id={compact ? undefined : `task-${task.id}`} className={`panel-shadow scroll-mt-24 rounded-2xl border bg-surface p-3 sm:p-4 transition-shadow ${done ? "opacity-60" : ""}`}>
       {/* Meta row: priority + type on the left, due on the right. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Badge color={p.color} soft={p.soft}>{task.priority.toLowerCase()}</Badge>
@@ -811,6 +847,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             value={task.status}
             disabled={pending}
             onChange={(e) => run(e.target.value)}
+            aria-label="Task status"
             title="Set status"
             className="w-[6.5rem] min-w-0 rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none"
           >
@@ -828,6 +865,8 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             value={task.assignedKey || (assignPrompt ? "" : "kyle")}
             disabled={assigning}
             onChange={(e) => assign(e.target.value)}
+            data-task-assignee
+            aria-label="Assign this task"
             title="Assign this task"
             className={`w-[7.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${
               task.assignedKey && task.assignedKey !== "kyle"
@@ -890,6 +929,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             <button
               onClick={makeDraft}
               disabled={drafting}
+              data-task-draft
               title="AI draft a reply"
               className="inline-flex items-center gap-1.5 rounded-lg bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/20 disabled:opacity-60"
             >
@@ -918,9 +958,10 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
           )}
         </div>
       </div>
-      {sendMsg && <p className="mt-2 text-xs text-muted">{sendMsg}</p>}
+      {assignmentNote && <p role="alert" className="mt-2 text-sm text-danger">{assignmentNote}</p>}
+      {sendMsg && <p role="status" className="mt-2 text-xs text-muted">{sendMsg}</p>}
       {statusNote && (
-        <p className="mt-2 text-xs text-warning">
+        <p role="alert" className="mt-2 text-sm text-warning">
           {statusNote}
           {isEditCard && task.projectId && (
             <> <Link href={`/edit/${task.projectId}`} className="font-medium underline">Open the edit page</Link></>
@@ -931,6 +972,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
       {noteOpen && (
         <div className="mt-3 rounded-xl border bg-surface-2/60 p-3">
           <AutoTextarea
+            aria-label="Project note"
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
             minRows={2}
@@ -951,7 +993,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
           <p className="mt-1.5 text-[10px] text-muted-2">Posts to the job&rsquo;s team thread — not sent to the client.</p>
         </div>
       )}
-      {noteMsg && !noteOpen && <p className="mt-2 text-xs text-success">{noteMsg}</p>}
+      {noteMsg && <p role={noteError ? "alert" : "status"} className={`mt-2 text-sm ${noteError ? "text-danger" : "text-success"}`}>{noteMsg}</p>}
 
       {draft && (
         <div className="mt-3 rounded-xl border bg-surface-2/60 p-3">
@@ -972,6 +1014,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
                 </button>
               </div>
               <AutoTextarea
+                aria-label="Reply draft"
                 value={draftText}
                 onChange={(e) => setDraftText(e.target.value)}
                 rows={Math.min(10, Math.max(3, draftText.split("\n").length + 1))}
@@ -996,11 +1039,24 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
                     : "Review before sending. The hub never sends on its own."}
                 </p>
               </div>
-              {emailMsg && <p className="mt-1.5 text-xs font-medium text-foreground/85">{emailMsg}</p>}
+              {emailMsg && <p role="status" className="mt-1.5 text-xs font-medium text-foreground/85">{emailMsg}</p>}
             </>
           )}
         </div>
       )}
     </div>
+  );
+  if (!compact) return card;
+  return (
+    <>
+      <TaskCompactRow task={task} assignees={roster} editorView={editorView} busy={busy} dueInfo={due} assignmentNote={assignmentNote} onAssign={assign} onOpen={(focus) => { setDetailFocus(focus); setDetailOpen(true); }} />
+      <ModalDialog open={detailOpen} label={`Task details: ${task.title}`} busy={busy} onCancel={() => setDetailOpen(false)} className="left-auto right-0 top-0 h-dvh max-h-dvh w-[min(100vw,48rem)] translate-x-0 translate-y-0 rounded-none p-0 sm:p-0">
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3">
+          <div><h2 className="font-semibold">Task details</h2><p className="text-sm text-muted">{busy ? "Updating… keep this task open until the result arrives." : "Closing keeps your unsent draft and note on this page."}</p></div>
+          <button type="button" data-modal-initial-focus disabled={busy} onClick={() => setDetailOpen(false)} aria-label="Close task details" className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50"><X className="size-5" /></button>
+        </div>
+        <div className="p-3 [&_button]:min-h-11 [&_button]:min-w-11 [&_select]:min-h-11">{card}</div>
+      </ModalDialog>
+    </>
   );
 }

@@ -2,6 +2,26 @@
 
 ## Sep 30 takeover addendum
 
+### U4 checkpoint — compact task rows and retained detail drafts
+
+The operational board shows concise work rows with source, property, owner,
+status and exact due context. Quick ownership uses the existing guarded action.
+The full TaskCard stays mounted inside a controlled native detail drawer, so
+closing it retains an unsent note or draft on the current page. Nested source
+context also uses the native dialog. Known same-project output references link
+to that exact brief; unbound, removed and mismatched outputs stay in task context.
+No latest cut is guessed. Existing filters and task deep links remain intact.
+
+Signed SSR/context checks passed 26/0 and the existing navigation regression
+21/0 (`/tmp/ops-u4-task-rows/`); Node20 TypeScript, focused lint and diff checks
+passed. One focused review repaired nested cancel propagation and retained draft
+text on returned or thrown failures. Note/send/assignment uncertainty is explicit.
+Money scrubbing and manual Start/Pause are unchanged; opening a row reads or
+sends nothing. Browser focus/draft persistence acceptance remains open. Editing
+a SmartTask deadline remains unimplemented because the existing guarded actions
+do not define a task-specific due-date override; retain its displayed due date
+until that behavior is explicitly designed.
+
 ### C11 / launch inventory checkpoint — held evidence and actual launch gaps
 
 The monthly roster no longer says a confirmed queued transcript never arrived.
