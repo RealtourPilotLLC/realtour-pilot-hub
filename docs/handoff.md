@@ -4,6 +4,26 @@
 
 ### Current resume point — C13 month next-action reconciliation
 
+`3ffef4f` adds the missing output-link check to both staff readers. The second
+read-only Neon replay found Rick has four September topics and four draft
+scripts linked to topics, but his two delivered videos have no topic link.
+Mike Flatley's two delivered videos are likewise unlinked; Erica, John and
+Mike Ciunci have confirmed filming without September topic rows. All five
+now show staff-owned topic-link reconciliation in the roster and client file.
+Rick's drafts remain intact; the UI does not guess which are for the two
+remaining videos. The portal topic reader reports four selected for Rick but
+zero visible September selections, so normal signed-role portal replay is
+still required. No production record was edited.
+
+The isolated CP-10 drill now passes 135/0. It creates an unlinked filmed
+allowance video over selected topics, sees reconciliation in both readers,
+then links that exact video to a topic and sees script review resume. It also
+keeps a released cut's live client approval or staff send ahead of the older
+link repair. Final Node20 TypeScript and focused lint pass. The production
+build passed after the output-link code and before the final narrow roster
+review-priority refinement; that final code has TypeScript/lint and the
+isolated drill, but has not had another build run. No schema changed.
+
 `759d2fb` repairs the second staff next-action ladder (`monthProgress`), which
 still told filmed legacy clients to plan or called existing drafts ready for
 approval even after the roster had been corrected. Confirmed filming with
@@ -11,10 +31,9 @@ missing topic/route links now stays with staff reconciliation. A draft says it
 needs work; only a current internal-review script asks for approval. The v1
 portal Home also stops offering a new planning call after filmed work.
 
-The read-only Neon replay `scripts/_recon/c13-current.ts` on Sep 30 checked
-Erica Walker, John Collins, Mike Ciunci, Mike Flatley and Rick Schultz. Both
-staff readers now assign the first four to topic-link reconciliation; Rick's
-four existing drafts are described as draft work. It made no database write.
+The first read-only Neon replay `scripts/_recon/c13-current.ts` on Sep 30
+checked Erica Walker, John Collins, Mike Ciunci, Mike Flatley and Rick Schultz.
+It made no database write.
 The isolated CP-10 drill passed 132/0, including a filmed legacy Pro reminder
 that offered the remaining session without a planning chase, a partial Pro
 with five selected topics, a separately counted filmed extra, a next-month
@@ -32,8 +51,8 @@ Do not treat that old full-tree snapshot as proof that current v1 behavior is
 unchanged. Refresh or replace that assertion in a separate, focused UI-01
 test-maintenance batch if needed.
 
-C13 stays partial: inspect the exact month/topic/video links for the named
-records without rewriting history, replay normal signed client v1/v2 and
+C13 stays partial: have staff verify the source identity for the named missing
+links before any targeted repair, replay normal signed client v1/v2 and
 provider-backed reminder outcomes, and determine any genuine policy choices
 before client rollout. No client send, invitation, provider booking, automation,
 production DB mutation, push or deployment was performed.
