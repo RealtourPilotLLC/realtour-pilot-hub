@@ -670,7 +670,7 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
     // day so Home still makes ONE pass at the database, and so the badge on the
     // block, the row in "What needs you today" and the card itself are all the
     // length of the same array.
-    readyToSend({ recordFollowUpHealth: true, includeNoticeIncidents: true }).catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard),
+    readyToSend({ recordFollowUpHealth: true, includeNoticeIncidents: true, excludeClientIds: excludedClientIds }).catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard),
   ]);
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;

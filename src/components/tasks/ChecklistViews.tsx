@@ -48,19 +48,27 @@ function Shell({ tabs, title, subtitle, children }: { tabs: ReactNode; title: st
 
 // ---------------- COMMS ----------------
 
-export async function CommsView({ tabs, channel }: { tabs: ReactNode; channel: "phone" | "email" }) {
-  const [phone, email, scrub] = await Promise.all([unansweredCommsBoard("phone"), unansweredCommsBoard("email"), moneyScrubber()]);
+export async function CommsView({ tabs, channel, excludeClientIds, showTest = false }: { tabs: ReactNode; channel: "phone" | "email"; excludeClientIds?: string[]; showTest?: boolean }) {
+  const scope = { excludeClientIds };
+  const commsHref = `/tasks?tab=comms${showTest ? "&test=1" : ""}`;
+  const [phone, email, scrub] = await Promise.all([unansweredCommsBoard("phone", new Date(), scope), unansweredCommsBoard("email", new Date(), scope), moneyScrubber()]);
   const groups = channel === "phone" ? phone : email;
   const sub = "Everything still owed an answer, grouped by who's waiting. Rows clear on their own when a reply goes out — tick only what you handled outside the hub.";
   return (
     <Shell tabs={tabs} title="Unanswered Comms" subtitle={sub}>
       {/* Promises at risk (AU-24, Sep 26): get ahead of the client's "where is it?". */}
-      <AtRiskUpdates />
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
+        <span>{showTest ? "Showing real and test records" : "Showing real client work"}</span>
+        <Link href={`/tasks?tab=comms&via=${channel}${showTest ? "" : "&test=1"}`} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
+          {showTest ? "Hide test records" : "Show test records"}
+        </Link>
+      </div>
+      <AtRiskUpdates excludeClientIds={excludeClientIds} />
       <div className="mb-4 flex gap-1.5">
-        <Link href="/tasks?tab=comms" className={channel === "phone" ? subActive : subIdle}>
+        <Link href={`${commsHref}&via=phone`} className={channel === "phone" ? subActive : subIdle}>
           <Phone className="mr-1.5 inline size-3.5" />Phone {phone.length > 0 && <b className="ml-1">{phone.length}</b>}
         </Link>
-        <Link href="/tasks?tab=comms&via=email" className={channel === "email" ? subActive : subIdle}>
+        <Link href={`${commsHref}&via=email`} className={channel === "email" ? subActive : subIdle}>
           <Mail className="mr-1.5 inline size-3.5" />Email {email.length > 0 && <b className="ml-1">{email.length}</b>}
         </Link>
       </div>
@@ -288,10 +296,10 @@ function SlackRow({ t, focused, assignOptions }: { t: SlackTaskRow; focused?: bo
 }
 
 // Tab-badge counts, shared with the page so the badges match the tabs.
-export async function checklistCounts(opts: { excludeRevisionClientIds?: string[] } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
+export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeCommsClientIds?: string[] } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
   const [phone, email, revs, slack] = await Promise.all([
-    unansweredCommsBoard("phone"),
-    unansweredCommsBoard("email"),
+    unansweredCommsBoard("phone", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
+    unansweredCommsBoard("email", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
     revisionsBoard(new Date(), { excludeClientIds: opts.excludeRevisionClientIds }),
     slackBoard(),
   ]);

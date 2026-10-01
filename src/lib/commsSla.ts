@@ -161,15 +161,14 @@ export async function findUnansweredInbound(
   now: Date = new Date(),
   opts: { families?: WaitingFamily[]; windowDays?: number; excludeClientIds?: string[] } = {},
 ): Promise<UnansweredInbound[]> {
-  const allThreads = await unansweredComms({
+  const threads = await unansweredComms({
     now,
     families: opts.families,
     windowDays: opts.windowDays,
+    excludeClientIds: opts.excludeClientIds,
     includeUnmatched: false, // a page needs a client to point at
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
   });
-  const excluded = new Set(opts.excludeClientIds ?? []);
-  const threads = excluded.size ? allThreads.filter((t) => !t.clientId || !excluded.has(t.clientId)) : allThreads;
   // One lookup for the headshots (a few dozen ids at most) — the thread
   // engine only carries names, and the home card shows the face beside them.
   const ids = Array.from(new Set(threads.map((t) => t.clientId).filter((id): id is string => Boolean(id))));

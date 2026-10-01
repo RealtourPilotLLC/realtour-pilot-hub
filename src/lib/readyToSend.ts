@@ -316,10 +316,10 @@ export type ReadyBoard = {
 // Each recovery lane may fail independently. A failed read is never an empty
 // lane. Only the global office board records durable health; a project-scoped
 // read or a dry-run caller must not claim to have checked the entire desk.
-async function deliveryFollowUps(projectId?: string, recordHealth = false): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess">> {
+async function deliveryFollowUps(projectId?: string, recordHealth = false, excludeClientIds?: string[]): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess">> {
   const [finishing, notification] = await Promise.allSettled([
-    deliveriesNeedingFinishing({ projectId }),
-    clientNotToldYet({ projectId }),
+    deliveriesNeedingFinishing({ projectId, excludeClientIds }),
+    clientNotToldYet({ projectId, excludeClientIds }),
   ]);
   const checkedAt = new Date();
   let last: { needsFinishing: string | null; notTold: string | null } | undefined;
@@ -345,12 +345,12 @@ async function deliveryFollowUps(projectId?: string, recordHealth = false): Prom
   };
 }
 
-async function deliveryExitExtras(projectId?: string, recordHealth = false, includeNoticeIncidents = false): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck">> {
-  const followUps = await deliveryFollowUps(projectId, recordHealth);
+async function deliveryExitExtras(projectId?: string, recordHealth = false, includeNoticeIncidents = false, excludeClientIds?: string[]): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck">> {
+  const followUps = await deliveryFollowUps(projectId, recordHealth, excludeClientIds);
   if (!includeNoticeIncidents) return followUps;
   try {
     const { deliveryNoticeIncidents } = await import("@/lib/deliveryNoticeIncidents");
-    return { ...followUps, noticeIncidents: await deliveryNoticeIncidents(projectId), noticeIncidentCheck: new Date().toISOString() };
+    return { ...followUps, noticeIncidents: await deliveryNoticeIncidents(projectId, { excludeClientIds }), noticeIncidentCheck: new Date().toISOString() };
   } catch {
     return { ...followUps, noticeIncidents: [], noticeIncidentCheck: null };
   }
@@ -829,7 +829,7 @@ type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE
  * get that answer from this module rather than re-deriving the eligibility
  * rules beside it — see cutsOnTheCardFor.
  */
-export async function readyToSend(opts?: { projectId?: string; recordFollowUpHealth?: boolean; includeNoticeIncidents?: boolean }): Promise<ReadyBoard> {
+export async function readyToSend(opts?: { projectId?: string; recordFollowUpHealth?: boolean; includeNoticeIncidents?: boolean; excludeClientIds?: string[] }): Promise<ReadyBoard> {
   const subs = await prisma.reviewSubmission.findMany({
     where: {
       ...(opts?.projectId ? { projectId: opts.projectId } : {}),
@@ -837,7 +837,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
       // A person already said this exact cut went out.
       sentToClientAt: null,
       // Nothing is owed on a job that was cancelled or parked.
-      project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } },
+      project: { status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...(opts?.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
       // It must have bytes somewhere: the 1080p render, the hub's own copy of
       // the editor's upload, or a file in Dropbox.
       OR: [
@@ -854,7 +854,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents)) };
+  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
 
   // Still the live version of its cut, and not already with the client.
   // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
@@ -875,7 +875,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
       : [],
   );
   const open = subs.filter((s) => !wentOut(s, portalClientIds));
-  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents)) };
+  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -991,7 +991,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
-  return { ready, rendering, ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents)) };
+  return { ready, rendering, ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
 }
 
 /**
@@ -1703,7 +1703,7 @@ export async function recordClientNotice(
 }
 
 /** The card's "client not told yet" list: sent, marked not-yet, still unrecorded. */
-export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: number; max?: number } = {}): Promise<NotTold[]> {
+export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: number; max?: number; excludeClientIds?: string[] } = {}): Promise<NotTold[]> {
   const since = new Date(Date.now() - (opts.sinceDays ?? 30) * 86_400_000);
   const rows = await prisma.reviewSubmission.findMany({
     where: {
@@ -1711,7 +1711,7 @@ export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: n
       sentToClientAt: { not: null, gte: since },
       clientNoticeAt: null,
       clientNoticeVia: "not-yet",
-      project: { status: { not: "CANCELLED" } },
+      project: { status: { not: "CANCELLED" }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     },
     select: { id: true, projectId: true, fileName: true, assetPath: true, sentToClientAt: true, sentToClientBy: true, clientNoticeBy: true, project: { select: { title: true } } },
     orderBy: { sentToClientAt: "asc" },
@@ -2081,10 +2081,10 @@ export async function repairIncompleteDeliveries(opts: { sinceDays?: number; max
 //     Kyle's ordinary chase card and must never be listed as a fault.)
 //   · a sent cut whose per-video delivery row was never minted for its slot.
 // ---------------------------------------------------------------------------
-export async function deliveriesNeedingFinishing(opts: { projectId?: string; sinceDays?: number; max?: number } = {}): Promise<NeedsFinishing[]> {
+export async function deliveriesNeedingFinishing(opts: { projectId?: string; sinceDays?: number; max?: number; excludeClientIds?: string[] } = {}): Promise<NeedsFinishing[]> {
   const since = new Date(Date.now() - (opts.sinceDays ?? 14) * 86_400_000);
   const sent = await prisma.reviewSubmission.findMany({
-    where: { ...(opts.projectId ? { projectId: opts.projectId } : {}), sentToClientAt: { not: null, gte: since } },
+    where: { ...(opts.projectId ? { projectId: opts.projectId } : {}), sentToClientAt: { not: null, gte: since }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
     select: {
       id: true, projectId: true, slot: true, deliverableId: true, sentToClientAt: true, sentToClientBy: true,
       project: { select: { title: true } },

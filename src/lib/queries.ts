@@ -358,9 +358,9 @@ export { CLIENT_TEXT_TYPES };
 // Everything the /texts tab lists — and exactly what the /today rollup counts.
 // Membership comes from the ONE shared rule (clientTextWhere) that the badge
 // and the send-all batch also use, so no surface can drift from another.
-export async function getClientTextTasks() {
+export async function getClientTextTasks(opts: { excludeClientIds?: string[] } = {}) {
   return prisma.smartTask.findMany({
-    where: clientTextWhere(),
+    where: clientTextWhere(new Date(), opts),
     // Phone decides whether Send is even possible; the client name feeds chips.
     include: { client: { select: { name: true, phone: true, avatarUrl: true } } },
     // Soonest due first; no-date confirmations (a shoot date still to chase)

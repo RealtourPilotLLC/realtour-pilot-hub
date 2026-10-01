@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### C14 checkpoint — Comms, Outbox and delivery follow-ups
+
+`c14-comms-delivery-scope` passed 15/0. Normal Home/Tasks unanswered email,
+Communications Email/Outbox and the draft-review batch filter synthetic clients
+before caps; explicit test views retain them. More than 3,000 fixture messages
+cannot crowd out real/protected clients, and old real obligations remain.
+Phone navigation preserves explicit channel choice. The draft modal discards
+obsolete load results and remounts when scope changes, preventing stale test
+rows from replacing the real-client view. No send execution changed.
+
+Home and Review Room now share scoped ready/rendering cuts, incomplete delivery,
+client-not-told and notification incident readers. Fixture piles cannot consume
+follow-up caps. Office health timestamps remain live; project reads cannot
+claim global success. Default complete readers remain available. Focused lint
+passed; two in-flight drill typing errors were corrected. Final stable-tree
+shared typecheck/build pending. Slack/Done and signed browser identity remain
+open; no live mutation, provider call or send occurred.
+
+
 ### W03 checkpoint — signed roles and concurrent revision receipts
 
 The signed action drill exposed two simultaneous submissions with the same

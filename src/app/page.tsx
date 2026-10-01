@@ -165,10 +165,10 @@ async function offPageNumbers(excludeClientIds: string[] = []) {
     prisma.smartTask.count({ where: photoQcWhere({ excludeClientIds }) }),
     // The comms Outbox lists exactly clientTextWhere() (ClientTextsPanel), and
     // its tab badge is this same count.
-    prisma.smartTask.count({ where: clientTextWhere() }),
+    prisma.smartTask.count({ where: clientTextWhere(new Date(), { excludeClientIds }) }),
     // The Comms tab's Email sub-tab renders one card per sender-group; its own
     // "Email N" pill is this number.
-    unansweredCommsBoard("email").then((g) => g.length).catch(() => 0),
+    unansweredCommsBoard("email", new Date(), { excludeClientIds }).then((g) => g.length).catch(() => 0),
   ]);
   // BoardView's overdue rule verbatim: due before the START of today in ET, so
   // something due later today is not "late".

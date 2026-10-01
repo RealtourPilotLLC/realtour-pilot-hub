@@ -14,8 +14,8 @@ import { cn } from "@/lib/utils";
 // ignore a full one).
 // ---------------------------------------------------------------------------
 
-export async function AtRiskUpdates() {
-  const rows = await atRiskOutputs().catch(() => null);
+export async function AtRiskUpdates({ excludeClientIds }: { excludeClientIds?: string[] } = {}) {
+  const rows = await atRiskOutputs(new Date(), { excludeClientIds }).catch(() => null);
   if (!rows || rows.length === 0) return null;
   return (
     <section className="panel-shadow mb-4 overflow-hidden rounded-2xl border border-warning/30 bg-surface" id="at-risk">

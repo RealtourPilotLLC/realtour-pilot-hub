@@ -13,12 +13,13 @@ export type TasksTab = "comms" | "revisions" | "slack" | "other" | "done";
 // and a page whose numbers you can't date is a page you stop trusting. The
 // badges beside each tab are that tab's own count query, so the strip reads
 // as one live line: what is open, and when we last looked.
-export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false, showTestOther = false }: {
+export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTestRevisions = false, showTestOther = false, showTestComms = false }: {
   tab: TasksTab; otherCount: number; doneCount: number;
   commsCount?: number; revisionsCount?: number; slackCount?: number;
   updatedAt?: Date;
   showTestRevisions?: boolean;
   showTestOther?: boolean;
+  showTestComms?: boolean;
 }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
@@ -30,7 +31,7 @@ export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revision
     ) : null;
   return (
     <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <Link href="/tasks" className={tab === "comms" ? active : idle}>
+      <Link href={showTestComms ? "/tasks?tab=comms&test=1" : "/tasks"} className={tab === "comms" ? active : idle}>
         <MessageSquare className="mr-1.5 inline size-3.5" />
         Comms
         {badge(commsCount, tab === "comms")}

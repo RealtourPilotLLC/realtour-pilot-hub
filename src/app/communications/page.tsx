@@ -34,7 +34,7 @@ function fmtPhone(p: string) {
 // loads ONLY its own data (the heavy OpenPhone pull never runs for the others).
 type CommsTab = "inbox" | "replies" | "email" | "team" | "outbox";
 
-function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTab; pending: number; emailFresh?: number; waiting?: number }) {
+function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0, showTest = false }: { tab: CommsTab; pending: number; emailFresh?: number; waiting?: number; showTest?: boolean }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
   return (
@@ -54,7 +54,7 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
           </span>
         )}
       </Link>
-      <Link href="/communications?tab=email" className={tab === "email" ? active : idle}>
+      <Link href={showTest && tab === "email" ? "/communications?tab=email&test=1" : "/communications?tab=email"} className={tab === "email" ? active : idle}>
         <Mail className="mr-1.5 inline size-3.5" />
         Email
         {/* "Unread-ish": threads where the client wrote last, in the past 48h.
@@ -70,7 +70,7 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
         <Users className="mr-1.5 inline size-3.5" />
         Team
       </Link>
-      <Link href="/communications?tab=outbox" className={tab === "outbox" ? active : idle}>
+      <Link href={showTest && tab === "outbox" ? "/communications?tab=outbox&test=1" : "/communications?tab=outbox"} className={tab === "outbox" ? active : idle}>
         <Send className="mr-1.5 inline size-3.5" />
         Outbox
         {pending > 0 && (
@@ -83,13 +83,16 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
   );
 }
 
-export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string; view?: string; incident?: string }> }) {
+export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string; view?: string; incident?: string; test?: string }> }) {
   await requirePageAccess("communications");
   const sp = await searchParams;
   const tab: CommsTab =
     sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" || sp.tab === "replies" ? sp.tab : "inbox";
+  const showTest = (tab === "outbox" || tab === "email") && sp.test === "1";
+  const syntheticClientIds = (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  const excludedOutboxClientIds = tab === "outbox" && showTest ? [] : syntheticClientIds;
   const [pendingTexts, waiting] = await Promise.all([
-    getClientTextTasks().then((t) => t.length),
+    getClientTextTasks({ excludeClientIds: excludedOutboxClientIds }).then((t) => t.length),
     replyWaitingSummary().then((s) => s.count),
   ]);
 
@@ -135,12 +138,16 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
           subtitle="Today's confirmation and delivery texts — review each draft, then send."
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="outbox" pending={pendingTexts} waiting={waiting} />
+          <CommsTabs tab="outbox" pending={pendingTexts} waiting={waiting} showTest={showTest} />
+          <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
+            <span>{showTest ? "Showing real and test records" : "Showing real client drafts"}</span>
+            <Link href={showTest ? "/communications?tab=outbox" : "/communications?tab=outbox&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{showTest ? "Hide test records" : "Show test records"}</Link>
+          </div>
           {/* The batch send-all lives HERE now — the Outbox is the one home for
               drafted texts (it was also a panel on /tasks + a rollup card, three
               surfaces for the same rows — audit). */}
-          <div className="mb-3"><SendAllTexts count={pendingTexts} /></div>
-          <ClientTextsPanel />
+          <div className="mb-3"><SendAllTexts key={showTest ? "test" : "real"} count={pendingTexts} includeTest={showTest} /></div>
+          <ClientTextsPanel excludeClientIds={excludedOutboxClientIds} />
         </div>
       </div>
     );
@@ -149,7 +156,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
   // Email: read-only client/lead threads from the Gmail sync (CommLog rows) —
   // no OpenPhone involved. Replies happen in Gmail (no send scope connected).
   if (tab === "email") {
-    const { threads, fresh } = await getEmailThreads();
+    const { threads, fresh } = await getEmailThreads({ excludeClientIds: showTest ? [] : syntheticClientIds });
     return (
       <div>
         <PageHeader
@@ -158,7 +165,11 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
           actions={<Badge soft="var(--surface-2)">Synced from Gmail</Badge>}
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="email" pending={pendingTexts} emailFresh={fresh} waiting={waiting} />
+          <CommsTabs tab="email" pending={pendingTexts} emailFresh={fresh} waiting={waiting} showTest={showTest} />
+          <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
+            <span>{showTest ? "Showing real and test records" : "Test records hidden"}</span>
+            <Link href={showTest ? "/communications?tab=email" : "/communications?tab=email&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{showTest ? "Hide test records" : "Show test records"}</Link>
+          </div>
           <EmailThreadList threads={threads} />
         </div>
       </div>

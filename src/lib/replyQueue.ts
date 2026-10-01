@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { taskClientScopeWhere } from "@/lib/taskBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
 import { phoneKey } from "@/lib/integrations/openphone";
@@ -428,6 +429,8 @@ export type WaitingThread = {
 };
 
 export type UnansweredOptions = {
+  /** Presentation scope only; the default pager/reply readers remain complete. */
+  excludeClientIds?: string[];
   now?: Date;
   /** default both. Phone = texts + calls; email = the Gmail sync. */
   families?: WaitingFamily[];
@@ -924,7 +927,7 @@ export function requestTaskIdFrom(key: string | null | undefined): string | null
  * obligation so it cannot be lost the other way round.
  */
 export async function openObligations(
-  opts: { now?: Date; families?: WaitingFamily[]; windowDays?: number; clientId?: string } = {},
+  opts: { now?: Date; families?: WaitingFamily[]; windowDays?: number; clientId?: string; excludeClientIds?: string[] } = {},
 ): Promise<Obligation[]> {
   const now = opts.now ?? new Date();
   const families = opts.families ?? (["phone", "email"] as WaitingFamily[]);
@@ -940,6 +943,7 @@ export async function openObligations(
       taskType: { in: [...OBLIGATION_TYPES] },
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       ...(opts.clientId ? { clientId: opts.clientId } : {}),
+      AND: [taskClientScopeWhere(opts)],
     },
     select: {
       id: true, taskType: true, title: true, summary: true, description: true, source: true,
@@ -1470,9 +1474,9 @@ export async function requestsOffThread(clientId: string, now: Date = new Date()
  */
 async function ledgerThreads(
   shown: WaitingThread[],
-  o: { now: Date; families: WaitingFamily[]; windowDays: number; includeUnmatched: boolean; includeTeam: boolean },
+  o: { now: Date; families: WaitingFamily[]; windowDays: number; includeUnmatched: boolean; includeTeam: boolean; excludeClientIds?: string[] },
 ): Promise<WaitingThread[]> {
-  const ledger = await openObligations({ now: o.now, families: o.families, windowDays: o.windowDays });
+  const ledger = await openObligations({ now: o.now, families: o.families, windowDays: o.windowDays, excludeClientIds: o.excludeClientIds });
   if (ledger.length === 0) return [];
   const shownKeys = new Set(shown.map((t) => t.key));
   const shownClients = new Set(shown.map((t) => `${t.family}:${t.clientId ?? ""}`));
@@ -1605,13 +1609,20 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     fromPhone: true, projectId: true, subject: true, body: true, occurredAt: true, source: true,
   } as const;
   const roleGate = opts.minRoles ? { minRole: { in: opts.minRoles } } : {};
+  const excludedProjectIds = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
+  const clientScope = opts.excludeClientIds?.length ? { AND: [
+    { OR: [{ clientId: null }, { clientId: { notIn: opts.excludeClientIds } }] },
+    ...(excludedProjectIds.length ? [{ OR: [{ projectId: null }, { projectId: { notIn: excludedProjectIds } }] }] : []),
+  ] } : {};
   // Clients we have already written down that we owe an answer to. Read before
   // the window so their threads can be fetched past it — see OWED_LOOKBACK_DAYS.
   const owedClientIds = [
     ...new Set(
       (
         await prisma.smartTask.findMany({
-          where: { taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null } },
+          where: { taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null }, AND: [taskClientScopeWhere(opts)] },
           select: { clientId: true },
         })
       )
@@ -1623,7 +1634,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   // blown-out window must drop the OLDEST rows, never the live ones.
   const [fresh, owed] = await Promise.all([
     prisma.commLog.findMany({
-      where: { channel: { in: channels }, occurredAt: { gte: since }, ...roleGate },
+      where: { channel: { in: channels }, occurredAt: { gte: since }, ...roleGate, ...clientScope },
       orderBy: { occurredAt: "desc" },
       take: SCAN_CAP,
       select: ROW_SELECT,
@@ -1635,6 +1646,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
             clientId: { in: owedClientIds },
             occurredAt: { lt: since, gte: new Date(now.getTime() - OWED_LOOKBACK_DAYS * 86_400_000) },
             ...roleGate,
+            ...clientScope,
           },
           orderBy: { occurredAt: "desc" },
           take: OWED_SCAN_CAP,
@@ -1651,7 +1663,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   // disappear (audit R07).
   if (rows.length === 0) {
     return opts.includeOwed
-      ? await ledgerThreads([], { now, families, windowDays, includeUnmatched, includeTeam })
+      ? await ledgerThreads([], { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })
       : [];
   }
 
@@ -1969,7 +1981,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   const live = [...buckets.values()].filter((b) => b.pending.length > 0 || b.courtesy.length > 0);
   if (live.length === 0) {
     return opts.includeOwed
-      ? await ledgerThreads([], { now, families, windowDays, includeUnmatched, includeTeam })
+      ? await ledgerThreads([], { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })
       : [];
   }
   const allClientIds = [...new Set(live.flatMap((b) => (b.clientId ? [b.clientId] : [])))];
@@ -2254,7 +2266,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     });
   }
 
-  if (opts.includeOwed) out.push(...(await ledgerThreads(out, { now, families, windowDays, includeUnmatched, includeTeam })));
+  if (opts.includeOwed) out.push(...(await ledgerThreads(out, { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })));
 
   // Longest wait first — VIPs ahead of the rest of an equal wait. The message
   // that's been sitting two days is the one that costs us a client, not the one

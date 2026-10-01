@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Clock, Loader2, MessageSquareText, Send, X } from "lucide-react";
@@ -26,7 +26,7 @@ const TYPE_LABEL: Record<DraftedText["taskType"], string> = {
   delivery_text: "Delivery",
 };
 
-export function SendAllTexts({ count }: { count: number }) {
+export function SendAllTexts({ count, includeTest = false }: { count: number; includeTest?: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<RowState[] | null>(null);
@@ -35,15 +35,16 @@ export function SendAllTexts({ count }: { count: number }) {
 
   useEffect(() => {
     if (!open) return;
-    setRows(null);
-    setLoadErr(null);
-    void listDraftedTexts()
+    let current = true;
+    void listDraftedTexts({ includeTest })
       .then((r) => {
+        if (!current) return;
         if (!r.ok || !r.rows) { setLoadErr(r.message ?? "Couldn't load the drafts."); return; }
         setRows(r.rows.map((d) => ({ ...d, checked: !d.blocked && !d.warnStale, text: d.body, state: "idle" })));
       })
-      .catch(() => setLoadErr("Couldn't load the drafts — try again."));
-  }, [open]);
+      .catch(() => { if (current) setLoadErr("Couldn't load the drafts — try again."); });
+    return () => { current = false; };
+  }, [open, includeTest]);
 
   useEffect(() => {
     if (!open) return;
@@ -181,7 +182,7 @@ export function SendAllTexts({ count }: { count: number }) {
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => { setRows(null); setLoadErr(null); setOpen(true); }}
         className="inline-flex items-center gap-1.5 rounded-lg bg-brand/10 px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand/20"
         title="Review every drafted confirmation/delivery text, edit or untick, then send all"
       >

@@ -16,11 +16,15 @@ export type DeliveryNoticeIncident = {
  * to distinguish it from another kind of failed message on this project.
  * An accepted newer attempt supersedes an older failure. An unknown row keeps
  * its key and must be reconciled in OpenPhone before anyone sends again. */
-export async function deliveryNoticeIncidents(projectId?: string): Promise<DeliveryNoticeIncident[]> {
+export async function deliveryNoticeIncidents(projectId?: string, opts: { excludeClientIds?: string[] } = {}): Promise<DeliveryNoticeIncident[]> {
+  const excludedProjectIds = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
   const messages = await prisma.outboxMessage.findMany({
     where: {
       ...(projectId ? { projectId } : { projectId: { not: null } }),
       state: { in: ["pending", "attempting", "failed", "unknown", "accepted"] },
+      ...(excludedProjectIds.length ? { AND: [{ projectId: { notIn: excludedProjectIds } }] } : {}),
       OR: [{ dedupeKey: { startsWith: "delivery:" } }, { state: "failed", taskId: { not: null } }],
     },
     select: { id: true, projectId: true, taskId: true, dedupeKey: true, state: true, createdAt: true },

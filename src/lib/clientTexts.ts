@@ -46,7 +46,7 @@ export function etEndOfTodayUtc(now = new Date()): Date {
 // · due by END OF TODAY (ET). Confirmation texts exist from booking day with
 //   dueAt = shoot−1d; surfacing one for a shoot weeks out invites an insane
 //   early send.
-export function clientTextWhere(now = new Date()): Prisma.SmartTaskWhereInput {
+export function clientTextWhere(now = new Date(), opts: { excludeClientIds?: string[] } = {}): Prisma.SmartTaskWhereInput {
   return {
     taskType: { in: [...CLIENT_TEXT_TYPES] },
     status: { notIn: ["COMPLETED", "CANCELLED"] },
@@ -54,6 +54,10 @@ export function clientTextWhere(now = new Date()): Prisma.SmartTaskWhereInput {
     AND: [
       { OR: [{ dueAt: { lte: etEndOfTodayUtc(now) } }, { dueAt: null }] },
       { project: recentProjectWhere() },
+      ...(opts.excludeClientIds?.length ? [
+        { OR: [{ clientId: null }, { clientId: { notIn: opts.excludeClientIds } }] },
+        { project: { clientId: { notIn: opts.excludeClientIds } } },
+      ] : []),
     ],
   };
 }

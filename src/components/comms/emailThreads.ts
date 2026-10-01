@@ -76,7 +76,7 @@ const WINDOW_DAYS = 60;
 const THREAD_CAP = 50;
 const FRESH_MS = 48 * 3600_000;
 
-export async function getEmailThreads(): Promise<{ threads: EmailThread[]; fresh: number }> {
+export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}): Promise<{ threads: EmailThread[]; fresh: number }> {
   // Sessionless local dev renders the full owner view — same convention as the
   // dashboard (src/app/page.tsx). contentTier folds app roles (EDITOR,
   // PHOTOGRAPHER, …) onto the CREATIVE/ADMIN/OWNER sensitivity ladder.
@@ -84,9 +84,16 @@ export async function getEmailThreads(): Promise<{ threads: EmailThread[]; fresh
   const tier = contentTier(me?.role ?? "OWNER");
   const allowed = Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= ROLE_RANK[tier]);
 
+  const excludedProjectIds = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
   const rows = await prisma.commLog.findMany({
     where: {
       channel: "email",
+      ...(opts.excludeClientIds?.length ? { AND: [
+        { OR: [{ clientId: null }, { clientId: { notIn: opts.excludeClientIds } }] },
+        ...(excludedProjectIds.length ? [{ OR: [{ projectId: null }, { projectId: { notIn: excludedProjectIds } }] }] : []),
+      ] } : {}),
       occurredAt: { gte: new Date(Date.now() - WINDOW_DAYS * 86400_000) },
       minRole: { in: allowed },
     },

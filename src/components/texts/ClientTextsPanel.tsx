@@ -7,10 +7,10 @@ import { ClientTextsList, type ClientTextRow } from "@/components/texts/ClientTe
 // Communications "Outbox" tab (Jordan: "keep comms all in one tab"). Same
 // SmartTasks and send actions as the /today cards it replaced; every text is a
 // draft a HUMAN sends — nothing goes out on its own.
-export async function ClientTextsPanel() {
+export async function ClientTextsPanel({ excludeClientIds }: { excludeClientIds?: string[] } = {}) {
   const startToday = etDayStartUtc(new Date());
   const now = new Date();
-  const tasks = await getClientTextTasks();
+  const tasks = await getClientTextTasks({ excludeClientIds });
 
   // A delivery text sent while the job's QC is still open would tell the client
   // "everything's over" prematurely — flag it. Check ALL open QC tasks (any

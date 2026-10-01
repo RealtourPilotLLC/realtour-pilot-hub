@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/guards";
 import { clientTextWhere } from "@/lib/clientTexts";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // "Send all" for the drafted client texts (confirmation + delivery). This is
@@ -35,7 +36,7 @@ export type DraftedText = {
   overdue: boolean;
 };
 
-export async function listDraftedTexts(): Promise<{ ok: boolean; message?: string; rows?: DraftedText[] }> {
+export async function listDraftedTexts(opts: { includeTest?: boolean } = {}): Promise<{ ok: boolean; message?: string; rows?: DraftedText[] }> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -44,8 +45,10 @@ export async function listDraftedTexts(): Promise<{ ok: boolean; message?: strin
 
   // ONE membership rule for every client-text surface (panel, badge, /today
   // rollup, this batch) — see clientTextWhere for why each clause exists.
+  const excludeClientIds = opts.includeTest ? []
+    : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
   const tasks = await prisma.smartTask.findMany({
-    where: clientTextWhere(),
+    where: clientTextWhere(new Date(), { excludeClientIds }),
     select: { id: true, taskType: true, projectId: true, dueAt: true },
     orderBy: [{ taskType: "asc" }, { dueAt: "asc" }],
   });

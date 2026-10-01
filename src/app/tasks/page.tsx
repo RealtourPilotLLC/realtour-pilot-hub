@@ -66,17 +66,19 @@ export default async function TasksHubPage({ searchParams }: {
 
   const showTestRevisions = tab === "revisions" && sp.test === "1";
   const showTestOther = tab === "other" && sp.test === "1";
+  const showTestComms = tab === "comms" && sp.test === "1";
   const syntheticClientIds = boardOnly ? []
     : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
   const excludedRevisionClientIds = showTestRevisions ? [] : syntheticClientIds;
   const excludedOtherClientIds = showTestOther ? [] : syntheticClientIds;
+  const excludedCommsClientIds = showTestComms ? [] : syntheticClientIds;
 
   const [otherN, doneN, checklists, phoneWaiting] = await Promise.all([
     boardOpenCount({ excludeClientIds: excludedOtherClientIds }),
     boardOnly ? 0 : doneTodayCount(),
-    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds }),
+    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeCommsClientIds: excludedCommsClientIds }),
     // Only to decide which side of Comms to open on — see commsChannel below.
-    boardOnly ? 0 : unansweredCommsBoard("phone").then((g) => g.length).catch(() => 0),
+    boardOnly ? 0 : unansweredCommsBoard("phone", new Date(), { excludeClientIds: excludedCommsClientIds }).then((g) => g.length).catch(() => 0),
   ]);
   // The Comms badge counts Phone + Email, so defaulting to Phone when nobody is
   // waiting on a text lands a "Comms 5" tab on "Nobody is waiting on a text
@@ -102,6 +104,7 @@ export default async function TasksHubPage({ searchParams }: {
       revisionsCount={checklists.revisions}
       showTestRevisions={showTestRevisions}
       showTestOther={showTestOther}
+      showTestComms={showTestComms}
       slackCount={checklists.slack}
       updatedAt={new Date()}
     />
@@ -113,5 +116,5 @@ export default async function TasksHubPage({ searchParams }: {
   // ?task=<id> lands on the row and highlights it — the digests deep-link here
   // now, and a link that drops you at the top of a 21-row list is not a link.
   if (tab === "slack") return <SlackView tabs={tabs} focusTaskId={sp.task ?? null} />;
-  return <CommsView tabs={tabs} channel={commsChannel} />;
+  return <CommsView tabs={tabs} channel={commsChannel} excludeClientIds={excludedCommsClientIds} showTest={showTestComms} />;
 }

@@ -63,10 +63,11 @@ function snippetOf(body: string): string {
  *  record. Unmatched numbers and our own team's texts are real and still
  *  counted — they show on the Replies tab, which can actually answer them.
  *  Same rows, same ages, same order as every other surface. */
-export async function unansweredCommsBoard(family: "phone" | "email", now: Date = new Date()): Promise<CommsGroup[]> {
+export async function unansweredCommsBoard(family: "phone" | "email", now: Date = new Date(), opts: { excludeClientIds?: string[] } = {}): Promise<CommsGroup[]> {
   const threads = await unansweredComms({
     now,
     families: [family],
+    excludeClientIds: opts.excludeClientIds,
     includeUnmatched: false, // the tick needs a client record
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
     // A WORK ITEM MUST NOT VANISH FROM A LIST OF WORK (audit R07, Sep 18). The
