@@ -2,6 +2,29 @@
 
 ## Sep 30 takeover addendum
 
+### Signed editor and photographer checkpoint
+
+C01 configured fake-provider regression found that owner preview could import
+changed script words just by loading `/edit/[id]` (14/2). The page now skips
+`autoSyncScript` while impersonating, preserving ordinary authorized sync.
+The actual signed page function passes 16/0, covering anonymous/unassigned,
+disabled account, retired per-output ownership, authorized office/editor and
+read-only preview. HTTP middleware and actual browser behavior remain open.
+
+C07 signed editor receipt/actions pass 13/0: loaded-message watermark, newer
+unread message, old-tab monotonicity, failed create/update and retry, foreign
+message refusal, preview/unassigned refusal. It writes no work/brief/task
+completion. No C07 production source change was needed.
+
+CP09 now enforces authentication with a real signed photographer and assigned
+shoots. Final run 142/0 covers report failure/recovery, exact approved script
+and topic/output identity, Pro chronology, fake Dropbox partial/retry behavior,
+and refusal of other photographers or preview. A test-ordering mistake left
+preview active before later sections; moving that case to the end fixed the
+drill. All provider traffic stayed fenced. Final stable-tree typecheck/build
+pending; no production write, send, activation or deployment.
+
+
 ### C14 checkpoint — Comms, Outbox and delivery follow-ups
 
 `c14-comms-delivery-scope` passed 15/0. Normal Home/Tasks unanswered email,

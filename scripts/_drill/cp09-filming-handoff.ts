@@ -209,7 +209,7 @@ async function main() {
   // The Dropbox app key/secret are stand-ins so the integration counts as
   // configured; with no refresh token saved (until section 12) it still reads
   // as not connected, which is what sections 1–11 have always seen.
-  const { server, stop } = await bootDrillDb({ port: PORT, env: { DROPBOX_APP_KEY: "drill-app-key", DROPBOX_APP_SECRET: "drill-app-secret" } });
+  const { server, stop } = await bootDrillDb({ port: PORT, env: { AUTH_ENFORCE: "true", APP_SECRET: "cp09-isolated-signed-shoot-secret", DROPBOX_APP_KEY: "drill-app-key", DROPBOX_APP_SECRET: "drill-app-secret" } });
   const quiet = quietPrismaErrors();
   const c = makeChecker();
   const { prisma } = await import("@/lib/prisma");
@@ -224,21 +224,24 @@ async function main() {
   const { finalizeUpload } = await import("@/app/upload/actions");
   const { outputsForProject } = await import("@/lib/deliverableOutputs");
   const { mintEditTask } = await import("@/lib/tasks");
-  const { establishSession } = await import("@/lib/auth/session");
+  const { establishSession, setSession } = await import("@/lib/auth/session");
   const { syncEnrollmentVideos } = await import("@/lib/contentVideos");
 
   // ---- the world every section shares -----------------------------------
   await prisma.appSetting.create({ data: { key: "editor_routing", value: JSON.stringify({ personalBranding: "kim" }) } });
   const kyle = await prisma.teamMember.create({ data: { name: "Kyle Drill", email: "kyle-drill@example.com" }, select: { id: true } });
-  const harrison = await prisma.appUser.create({ data: { email: "harrison-drill@example.com", name: "Harrison", role: "PHOTOGRAPHER", status: "ACTIVE" }, select: { id: true } });
+  const photographer = await prisma.teamMember.create({ data: { email: "harrison-drill@example.com", name: "Harrison", role: "PHOTOGRAPHER" } });
+  const harrison = await prisma.appUser.create({ data: { email: "harrison-drill@example.com", name: "Harrison", role: "PHOTOGRAPHER", status: "ACTIVE", teamMemberId: photographer.id }, select: { id: true } });
   await establishSession(harrison.id); // the stubbed cookie jar now carries his session
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  c.ok("photographer resolves through a real signed session with auth enforced", process.env.AUTH_ENFORCE === "true" && (await getCurrentUser())?.teamMemberId === photographer.id);
   const HOUR = 3_600_000;
   const A1 = new Date(Math.floor((Date.now() - 26 * HOUR) / 60_000) * 60_000); // yesterday, 2h session
   const A1_END = new Date(A1.getTime() + 120 * 60_000);
   const NEXT_WEEK = new Date(A1.getTime() + 8 * 24 * HOUR);
 
-  const month = (name: string, over: Partial<Parameters<typeof buildContentMonth>[1]> = {}) =>
-    buildContentMonth(prisma, {
+  const month = async (name: string, over: Partial<Parameters<typeof buildContentMonth>[1]> = {}) => {
+    const fixture = await buildContentMonth(prisma, {
       name: `${name} TEST`,
       package: "Starter",
       videosPerMonth: 3,
@@ -251,6 +254,9 @@ async function main() {
       ],
       ...over,
     });
+    if (fixture.projectId) await prisma.project.update({ where: { id: fixture.projectId }, data: { photographerId: photographer.id } });
+    return fixture;
+  };
   const script = async (f: ContentMonthFixture, i: number, approved: boolean) => {
     const sc = await prisma.contentScript.create({
       data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthId: f.monthId, topicId: f.topicIds[i], title: `Script ${i + 1}`, body: "body", status: "APPROVED", releaseState: "released" },
@@ -549,6 +555,8 @@ async function main() {
   c.ok("nothing retries it after that — not a direct call, not the sweep", !seventh.claimed && sweep10.due === 0 && (await prisma.contentFilmingReport.findUniqueOrThrow({ where: { id: r7 } })).attempts === 6);
   await unblock();
 
+
+
   // =========================================================================
   c.head("11 · the real GET /api/cron/sync lands a due report, before the library");
   // =========================================================================
@@ -746,6 +754,20 @@ async function main() {
   const text15b = pdfText(await buildEditorBriefPdf((await getProject(f11.projectId!))!));
   c.ok("…and the printed brief stops saying the hub is still saving them", text15b.includes("not recorded yet (the office is recording these by hand)") && !text15b.includes("the hub is still saving these"));
   await unblock();
+
+  c.head("16 · the handoff belongs to the assigned photographer, never a preview");
+  const reportCount = await prisma.contentFilmingReport.count();
+  const otherPhotographer = await prisma.teamMember.create({ data: { name: "Other photographer", email: "other-cp09@example.test", role: "PHOTOGRAPHER" } });
+  const otherUser = await prisma.appUser.create({ data: { name: otherPhotographer.name, email: otherPhotographer.email!, role: "PHOTOGRAPHER", status: "ACTIVE", teamMemberId: otherPhotographer.id } });
+  const owner = await prisma.appUser.create({ data: { name: "Owner CP09", email: "owner-cp09@example.test", role: "OWNER", status: "ACTIVE" } });
+  const refusedSubmit = async () => {
+    try { await finalizeUpload(f1.projectId!, submitFor(f1)); return false; }
+    catch (e) { return e instanceof Error && /access|assigned|preview/i.test(e.message); }
+  };
+  await establishSession(otherUser.id);
+  c.ok("another signed photographer cannot submit this shoot", await refusedSubmit());
+  await setSession({ uid: owner.id, email: owner.email, role: owner.role, actingAs: harrison.id });
+  c.ok("assigned-photographer preview cannot submit or create another report", await refusedSubmit() && await prisma.contentFilmingReport.count() === reportCount);
 
   console.log(`\n    fence: ${fence.blocked.length} outbound call(s) blocked in total${fence.blocked.length ? ` (${[...new Set(fence.blocked.map((u) => { try { return new URL(u).host; } catch { return u.slice(0, 40); } }))].join(", ")})` : ""}; ${quiet.count} Prisma error line(s) quietened; socket patch ${JSON.stringify(server.patchStats)}`);
   c.summary();

@@ -163,8 +163,9 @@ export default async function EditBriefPage({
 
   // Scripts sync THEMSELVES from the Script Writing platform (by this project
   // id) — cheap freshness gate inside; run before getProject so a just-pulled
-  // script renders on this very load.
-  await autoSyncScript(id);
+  // script renders on this very load. Owner preview is read-only: even this
+  // background refresh can replace saved words and stamp sync timestamps.
+  if (!viewer?.impersonating) await autoSyncScript(id);
 
   const [project, team, submissions] = await Promise.all([
     getProject(id),
