@@ -136,6 +136,7 @@ async function main() {
   const team = await import("@/lib/portalTeam");
   const { grantProgramAccess, cancelOwedAccess } = await import("@/lib/portalAccess");
   const { resolvePortalViewer } = await import("@/lib/portal");
+  const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout } = await import("@/lib/programRolloutCore");
   const { signClientSession, CLIENT_COOKIE } = await import("@/lib/auth/clientSession");
   const { NextRequest } = await import("next/server");
   const uploadRoute = await import("@/app/api/portal/upload/route");
@@ -223,12 +224,39 @@ async function main() {
     c.ok("OLD: an upload reached Dropbox", bodyOld.ok && dbxUploads.length === before + 1, dbxUploads.at(-1));
     c.ok("  …and nothing else: zero ClientAsset rows for the client", (await prisma.clientAsset.count({ where: { clientId: o.clientId } })) === 0);
     await signIn(o.ownerId, `${"olive.oldham"}@example.com`);
+    const cookieSrc = { get: (n: string) => jar.get(n) };
+    const excluded = await resolvePortalViewer({ enrollmentId: o.enrollmentId, cookies: cookieSrc });
+    c.ok("current auth refuses this real client's seat while rollout is TEST_ONLY", !excluded.ok && excluded.reason === "no_membership");
+    // R03 added a rollout check to the shared resolver after this historical
+    // comparison was written. Admit only this disposable fixture's SIGN-IN
+    // so the old/new actions reach the team-list behavior they compare.
+    // Invitation/sign-in email switches stay off, as do their rollout ops.
+    const admittedAt = new Date().toISOString();
+    await prisma.appSetting.create({ data: {
+      key: PROGRAM_ROLLOUT_SETTING_KEY,
+      value: serializeProgramRollout({
+        mode: "PILOT", modeSince: admittedAt,
+        pilot: {
+          clientIds: [o.clientId], operations: ["portal_sign_in"],
+          approvedBy: "cp06-disposable-fixture", approvedAt: admittedAt,
+          expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+          note: "Isolated historical team-list comparison; no sends enabled.",
+          joinedAt: { [o.clientId]: admittedAt },
+        },
+      }),
+    } });
+    const admitted = await resolvePortalViewer({ enrollmentId: o.enrollmentId, cookies: cookieSrc });
+    c.ok("the named disposable sign-in pilot admits the actual owner seat", admitted.ok && admitted.viewer.actor.kind === "CLIENT" && admitted.viewer.actor.clientUserId === o.ownerId);
     const inv = await old.portalInviteTeammate({ enrollmentId: o.enrollmentId }, { name: "Pat Helper", email: "pat.helper@example.com" });
     const listed = await old.portalTeamMembers({ enrollmentId: o.enrollmentId });
     c.ok("OLD: a real client's invitation is HELD", inv.ok && inv.held === true, inv.message);
     c.ok("  …and the team list does not show it (it vanished on reload, and could not be revoked)", listed.ok && !listed.seats.some((s) => s.email === "pat.helper@example.com"), listed.seats.map((s) => s.email).join(","));
     const nowList = await newActions.portalTeamMembers({ enrollmentId: o.enrollmentId });
     c.ok("NEW: the same action lists it as held", nowList.ok && nowList.seats.some((s) => s.email === "pat.helper@example.com" && s.held), nowList.seats.map((s) => `${s.email}${s.held ? "(held)" : ""}`).join(","));
+    c.ok("the fixture enabled no client-send switch and created no outbox email", (await prisma.programAutomation.count({ where: { key: { in: ["portal_invites", "portal_login_email"] }, enabled: true } })) === 0 && (await prisma.outboxMessage.count()) === 0);
+    await prisma.appSetting.delete({ where: { key: PROGRAM_ROLLOUT_SETTING_KEY } });
+    const removed = await resolvePortalViewer({ enrollmentId: o.enrollmentId, cookies: cookieSrc });
+    c.ok("removing the fixture pilot refuses the same cookie on its next request", !removed.ok && removed.reason === "no_membership");
     signOut();
   }
 

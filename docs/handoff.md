@@ -25,14 +25,17 @@ needed solely to recover that state. A later 21:12 ET snapshot found the isolate
 demo launcher running from the main checkout since 21:02 on 3200/5599. It was
 identified and left untouched; use the separate managed worktree for builds.
 
-`client-written-journey` passed 21/0: actual one-time login route, normal named
+`client-written-journey` passed 23/0: actual one-time login route, normal named
 pilot owner cookie, first-month call protection, later written planning and
 answer submission, staff-only approval/canonical release, exact client
 acceptance, newer release needing a fresh decision, stale refusal and revoked
 seat denial. Only request cookie transport is injected; the real resolver and
 signed staff/client authorization execute. The manually authored script uses
 that interview's exact answer IDs. No model/provider/outbox/booking request.
-This does not close browser, discovery/monthly-call or final-media acceptance.
+The newer-version replay exposed a script-wide office-notification key; it now
+includes the accepted version. Both acceptances create distinct notices and a
+retry creates neither another decision nor notice. This does not close browser,
+discovery/monthly-call or final-media acceptance.
 
 CP06 is now 130/0. Its previous three failures came from a normal-client test
 seat being correctly excluded under TEST_ONLY; the isolated fixture now admits

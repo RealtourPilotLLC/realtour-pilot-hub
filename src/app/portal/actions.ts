@@ -114,7 +114,7 @@ export async function portalApproveScript(auth: PortalAuth, scriptId: string, re
       `Script signed off — ${v.enrollment.clientName || "a client"}`,
       `${actorLabel(v)} approved "${script?.title ?? "a script"}" as written.`,
       contentHref(v.enrollment.id, { tab: "plan", view: "scripts" }),
-      `portal-script-ok-${scriptId}`,
+      `portal-script-ok-${scriptId}-${readVersionId}`,
     );
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
   }
