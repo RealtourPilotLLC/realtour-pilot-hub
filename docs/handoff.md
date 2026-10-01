@@ -2,6 +2,25 @@
 
 ## Sep 30 takeover addendum
 
+### C11 checkpoint — signed first-month call processing and recovery
+
+`client-call-journey` passes 25/0 using the actual one-time client login route,
+signed owner/Kyle actions, worker and source records, with six fake model
+responses. It covers required first-month CALL, discovery transcript/strategy,
+manual approval and suppressed release, distinct monthly call/confirmed topic
+selection, script switch hold, exact drafting/release/client acceptance, and
+idempotent next sweep. No real model quality, booking or browser proof implied.
+
+The failed-analysis retry correctly recovered its job but left the call's old
+error visible. Successful processing now clears only the same-kind error it
+captured before running, using an exact error/timestamp comparison; a newer
+error during the job or another kind's error survives. Failed ProgramAiRun
+history remains. No queue/scope/backlog or client-send policy changed. Real
+production transcript worker remains OFF with its previously recorded backlog.
+Focused lint passed; the shared typecheck saw the draft test's old invalid
+version-month predicates, now corrected. Stable rerun/build is the next gate.
+
+
 ### C14 checkpoint — Slack/Done and recap scope
 
 The interrupted agent's Slack/Done source edits were preserved and integrated.

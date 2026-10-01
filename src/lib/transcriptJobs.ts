@@ -515,6 +515,11 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
     if (claim.count === 0) continue; // another runner took it
     ran++;
     const job: TranscriptJobRow = { ...candidate, kind, attempts: candidate.attempts + 1 };
+    // Retain the error we are recovering from. Another job on this call may
+    // fail while this handler runs; success must not erase that newer signal.
+    const callError = await prisma.programCallRecord.findUnique({
+      where: { id: job.callRecordId }, select: { lastError: true, lastErrorAt: true },
+    });
     const heartbeat = async () => {
       await prisma.programTranscriptJob.updateMany({ where: { id: job.id, leaseBy }, data: { leaseUntil: new Date(Date.now() + LEASE_MS) } }).catch(() => {});
     };
@@ -530,6 +535,12 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
         where: { id: job.id },
         data: { state: "SUCCEEDED", finishedAt, leaseUntil: null, leaseBy: null, lastError: null, lastErrorAt: null, resultJson: outcome.produced ? JSON.stringify(outcome.produced) : null, aiRunId: outcome.aiRunId ?? undefined },
       });
+      if (callError?.lastError?.startsWith(`${kind}:`)) {
+        await prisma.programCallRecord.updateMany({
+          where: { id: job.callRecordId, lastError: callError.lastError, lastErrorAt: callError.lastErrorAt },
+          data: { lastError: null, lastErrorAt: null },
+        });
+      }
       succeeded++;
     } else if ("paused" in outcome) {
       // Give the attempt back. The claim incremented it, and an attempt that
