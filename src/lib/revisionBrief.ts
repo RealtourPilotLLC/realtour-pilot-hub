@@ -1,4 +1,5 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { aiJson } from "@/lib/integrations/ai";
 import { stripMoneySentences } from "@/lib/text";
@@ -446,29 +447,41 @@ export async function createRevisionBrief(opts: {
   const at = new Date();
   const clock = await clientRoundClockFor(opts, at);
 
+  const data: Prisma.RevisionBriefUncheckedCreateInput = {
+    projectId: opts.projectId,
+    taskId: opts.taskId ?? null,
+    source: opts.source,
+    sourceDetail: opts.sourceDetail ?? null,
+    originalText: text,
+    twoSided: !!opts.twoSided,
+    createdAt: at,
+    ...requesterColumns(opts.requestedBy),
+    ...(clock ?? {}),
+    ...(pin
+      ? {
+          submissionId: pin.submissionId, decisionId: pin.decisionId, roundId: pin.roundId,
+          ...(pin.cutKey ? { outputId: pin.outputId } : {}),
+          ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: opts.references ?? [], questions: [] }), analyzedAt: new Date() } : {}),
+        }
+      : {}),
+  };
   let brief;
   try {
-    brief = await prisma.revisionBrief.create({
-      data: {
-        projectId: opts.projectId,
-        taskId: opts.taskId ?? null,
-        source: opts.source,
-        sourceDetail: opts.sourceDetail ?? null,
-        originalText: text,
-        twoSided: !!opts.twoSided,
-        createdAt: at,
-        ...requesterColumns(opts.requestedBy),
-        ...(clock ?? {}),
-        ...(pin
-          ? {
-              submissionId: pin.submissionId, decisionId: pin.decisionId, roundId: pin.roundId,
-              ...(pin.cutKey ? { outputId: pin.outputId } : {}),
-              ...(items ? { headline: `Changes on ${pin.label ?? "this video"}`.slice(0, 300), itemsJson: JSON.stringify({ items, keep: [], references: opts.references ?? [], questions: [] }), analyzedAt: new Date() } : {}),
-            }
-          : {}),
-      },
-      select: { id: true },
-    });
+    // A browser retry can arrive before the staff action's optimistic lookup
+    // sees its first request. Keep that request's exact words, version and
+    // clock in one row, even across concurrent server processes. Other sources
+    // may legitimately reuse a thread reference for several distinct asks.
+    const staffSourceDetail = opts.source === "review_room_staff" ? opts.sourceDetail : null;
+    brief = staffSourceDetail
+      ? await prisma.$transaction(async (tx) => {
+          await lockAdvisory(tx, `staff-revision:${opts.projectId}:${staffSourceDetail}`);
+          const prior = await tx.revisionBrief.findFirst({
+            where: { projectId: opts.projectId, source: "review_room_staff", sourceDetail: staffSourceDetail },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
+          });
+          return prior ?? tx.revisionBrief.create({ data, select: { id: true } });
+        })
+      : await prisma.revisionBrief.create({ data, select: { id: true } });
   } catch {
     return null; // never break a revision over its paperwork
   }

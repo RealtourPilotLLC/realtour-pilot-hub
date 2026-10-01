@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### W03 checkpoint — signed roles and concurrent revision receipts
+
+The signed action drill exposed two simultaneous submissions with the same
+request key creating two revision briefs. `createRevisionBrief` now uses the
+existing transaction advisory lock for `review_room_staff` source/request keys,
+reusing the first exact words/version/clock. Other sources can still record
+separate asks on one thread. PGlite 25/0 and disposable Postgres 26/0 passed;
+four backends and an actual advisory-lock wait confirm the race ran. Kyle and
+James's named creative-review seat pass; editor, other photographer, signed-out
+and owner-preview sessions are refused. Removing James's saved seat takes
+effect on his current cookie. Delivered history stays intact; the task routes
+to Kim without Start. Earlier activity or attachment attempts are outside this
+receipt transaction. Focused lint/diff passed; shared typecheck in progress.
+No schema, production write, provider action, push or deployment.
+
+
 ### C14 local checkpoint — radar and destination counts
 
 Strategic flags now scope delivery exceptions, AR, VIP and stale revisions
