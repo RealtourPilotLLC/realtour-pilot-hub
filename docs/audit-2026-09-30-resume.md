@@ -9,7 +9,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `2b87cc2` (Map fixture type repair after source4681377);
+  checkpoint: `2b87cc2` (application build), `953e680` (mixed-handoff test),
+  plus the final handoff commit containing this update;
   inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
@@ -70,7 +71,7 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `41c8baf` | ID/save conflict and uncertain-DM recovery |Actual fake UI29/0; wrappers15/0; transport13/0; types/lint/review |
 | `4681377` | Exact-pin reads and keyboard/pointer suggestions |Actual fake36/0; lint/diff/root review with narrow skip/scroll repairs |
 | `2b87cc2` | Map fixture type-only boundary; combined candidate |Non-incremental types0; ESLint41 files+repair0; isolated build0 |
-| W04 test commit containing this update | Exact mixed photo/video final-delivery separation |Actual signed/domain fixture25/0; lint/root review; no app changes |
+| `953e680` | Exact mixed photo/video final-delivery separation |Actual signed/domain fixture25/0; lint/root review; final non-incremental types0; no app changes |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -104,11 +105,15 @@ Map's last bounded batch is complete locally with36/0, lint/diff and root review
 including exact skip/scroll repairs. Combined types/changed-file lint/separate
 build passed at2b87cc2. The bounded W04 mixed photo/video acceptance fixture
 passed25/0, lint and root review; disposable DB5793 stopped. It closes the older
-final-rendition fixture's photoCount0 coverage gap without app changes. Only the
-intentionally running demo remains. Checkpoint this evidence, run the relevant
-type gate for the new test and align the ledger. Application files have not changed
-since the passing build; any later fixture-only change needs its relevant type/
-lint check, not automatic repeats of green app behavioral suites.
+final-rendition fixture's photoCount0 coverage gap without app changes. Final non-incremental types passed at953e680;
+`git diff 2b87cc2 HEAD` shows no app/schema/config changes after the successful
+build. Only the intentionally running demo remains; no test/build/migration/
+deployment is active or stalled, and no approval is waiting. The working tree
+was clean before this final documentation update. The next required work is the
+blocked normal-role browser/phone/provider acceptance and recorded business/
+release decisions below. Keep broader UI comparison on the checklist. Do not
+repeat green suites or restart investigation; inspect process/HEAD state first
+on the next resume and act on the specific restored access or decision.
 Do not repeat already-passed whole drill suites. Business and browser acceptance
 remainders below stay open; this continuation is not a new broad audit.
 

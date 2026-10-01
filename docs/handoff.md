@@ -2,6 +2,42 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 final safe checkpoint — verified local source, release acceptance open
+
+Source checkpoints: Users5ae370a (26/0), Capacity6972796 (20/0), Slack41c8baf
+(UI29/0, wrappers15/0, transport13/0), Map4681377 (36/0). Each has its focused
+review and targeted evidence below. Combined application build/types/lint passed
+at2b87cc2 after the type-only Map fixture repair. Mixed photo/video acceptance
+953e680 passed25/0, lint/root review and final non-incremental types exit0 at
+`/tmp/ops-hub-types-953e680.log`. Git comparison shows no app/schema/config
+changes since the passing2b87cc2 build; subsequent changes are tests/docs only.
+No broad audit or whole green suite was repeated. All source/test work is locally
+committed; working tree was clean before this documentation update.
+
+Only the intentional fenced demo remains: shell34822 / exec28483, server34961
+on3200, isolated DB/media34884 on5599/5598. New W04 DB5793 stopped; no test/build/
+migration/deployment is active or stalled. Unrelated Premium Reel3100 was left
+untouched. No approvals await action. Inspect processes and actual HEAD/status
+when resuming; never build/start a second main-checkout server blindly.
+
+C14's count/scope/link source checks are complete; normal browser identity,
+filtered-empty/read-failure and mounted scope/return checks remain. U0–U5 have
+implemented slices but are partial; U6 is unaccepted. `ui-controls.md` maps the
+high-use source coverage and names unreviewed secondary interiors; broader UI
+comparison stays on the backlog. Browser tool policy still blocks automated
+local-tab acceptance; do not use another transport to bypass it. Actual phone/
+provider/model/rendition/watch and Kyle/James task-finding evidence remains open.
+
+Real onboarding is not ready: five production tables are unapplied, last private
+inventory had no active seats/released strategies/approved available bank, and
+Jordan/Kyle decisions/record reconciliation remain as listed in the release
+matrix. No production mutation, invitation/message/booking, financial change,
+automation activation, branch push or deployment occurred. Existing settings,
+manual Start/Pause, permissions and exact versions remain. Next work requires
+restored authorized browser/test access or the recorded business/release
+decisions; complete their specific acceptance checks and fix only discovered
+issues. Do not treat this local build as a finished or client-visible platform.
+
 ### Oct 1 W04 acceptance checkpoint — mixed final-delivery isolation
 
 New `scripts/_drill/w04-mixed-delivery-isolation.ts` closes the exact mixed-job

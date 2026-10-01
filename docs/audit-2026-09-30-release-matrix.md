@@ -24,7 +24,7 @@ instructions and batch evidence remain in `handoff.md`.
 | Capacity/calendar controls | Local correction; exact newer drafts and unknown guards | Fake actual handlers/wrappers20/0 including all-day count repair; lint/review; browser open | `6972796` | No | No capacity/date/pay change | No new release |
 | Team/Slack identity and DM recovery | Local correction; Find/Sync conditional writes, no fallback after uncertain direct post | Fake UI29/0, wrappers15/0, transport13/0; types/lint/review; real browser/provider/DB concurrency open | `41c8baf` | No | No real Slack call or ID change | No new release |
 | Map read/keyboard recovery | Local correction; exact pin/home/query scopes and native suggestions | Actual fake handlers/read effects36/0; lint/review; Leaflet/normal-role browser/provider open | `4681377` + fixture type repair `2b87cc2` | No | No provider or route changes | No new release |
-| Mixed photo/video final handoff | Existing implementation verified; no app change | New actual signed/domain fixture25/0 with fake Aryeo; manual/automatic video and converse photo paths | Yes; W04 test checkpoint in handoff | No | No delivery or switch changes | No new release |
+| Mixed photo/video final handoff | Existing implementation verified; no app change | New actual signed/domain fixture25/0 with fake Aryeo; manual/automatic video and converse photo-task paths | `953e680` | No | No delivery or switch changes | No new release |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | No | No | No |
 
 Latest known deployment before takeover: `bf2e0b4`. This is historical evidence,
@@ -34,6 +34,11 @@ Application candidate `2b87cc2` passed non-incremental types, changed-file lint
 (41 files plus type-only fixture repair) and the separate clean-environment
 production build. Logs are in the checklist/handoff. These gates establish a
 local build, not deployment, activation, browser acceptance or launch readiness.
+The later W04 fixture953e680 passed25/0, lint/root review and final
+non-incremental types (`/tmp/ops-hub-types-953e680.log`). Git comparison confirms
+no app/schema/config changes after2b87cc2; later commits contain only tests/docs.
+The restored isolated preview intentionally runs on3200, with saved fixture
+data and provider fences; it is not normal-role/browser or real-provider proof.
 
 ## Usability acceptance ledger
 
