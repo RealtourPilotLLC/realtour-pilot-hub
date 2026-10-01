@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -9,13 +9,17 @@ import {
   FolderUp,
   Loader2,
   MessageSquare,
+  MoreHorizontal,
   Pin,
+  SlidersHorizontal,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDayKey, etMonthDay } from "@/lib/datetime";
 import { Avatar } from "@/components/ui/Avatar";
 import { badgeColors } from "@/components/ui/Badge";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { ActionMenu } from "@/components/ui/ActionMenu";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
 import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
@@ -202,10 +206,6 @@ const EXTERNAL = "external_agency";
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "—";
 
-// Height of the 7-option menu — used to flip it above the pill near the
-// viewport bottom, since it renders position:fixed (see below).
-const MENU_H = 244;
-
 // One id per status click (§7.1) — the server's idempotency key.
 const newRequestId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -223,12 +223,6 @@ function rememberQueueScroll(queueHref: string) {
 // so a note under the pill is never seen — the queue shows it above the tabs
 // instead (Sep 11 review).
 function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean; onReceipt?: (msg: string) => void }) {
-  // The menu is position:fixed, NOT absolute: the table wrapper is an
-  // overflow-x-auto scroll container, which clips absolutely-positioned
-  // children — on the bottom row (and short queues are all bottom rows) the
-  // menu was cut off below the table edge. Fixed positioning escapes the clip;
-  // the invisible fixed backdrop gives outside-click dismissal for free.
-  const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
   const [status, setStatus] = useState(row.status);
   // The server's reason when it refused (Sep 8): "Completed" on a job with a
   // client revision open is turned away with the way forward — upload the
@@ -272,15 +266,8 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
             ? "Only a job on Ready for editing or In editing can be put back to Waiting"
             : "Only a job In editing or Waiting can be put to Ready for editing";
 
-  const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (menu) return setMenu(null);
-    const r = e.currentTarget.getBoundingClientRect();
-    const flipUp = window.innerHeight - r.bottom < MENU_H + 16;
-    setMenu({ left: r.left, top: flipUp ? r.top - MENU_H - 4 : r.bottom + 4 });
-  };
-
   const pick = (next: string) => {
-    setMenu(null);
+    if (pending) return;
     if (next === status && !WORK_MOVES.has(next)) return;
     const prev = status;
     if (!WORK_MOVES.has(next)) setStatus(next);
@@ -319,44 +306,58 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
 
   return (
     <>
-      <button
-        onClick={toggle}
+      <ActionMenu
+        label={`Change status for ${row.street}: ${status}`}
         title={note ?? pinTitle ?? undefined}
-        className="inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-xs"
+        busy={pending}
+        className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold"
         style={badgeColors(meta.color)}
+        items={Object.entries(STATUSES).map(([name, m]) => ({
+          id: name.replaceAll(" ", "-"),
+          text: name,
+          label: <><span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: m.color }} />{name}</>,
+          checked: name === status,
+          disabled: !canPick(name, m.selectable),
+          description: canPick(name, m.selectable) ? undefined : whyNot(name, m.selectable),
+          onSelect: () => pick(name),
+        }))}
       >
         {pending ? <Loader2 className="size-3 animate-spin" /> : null}
         {pinned && <Pin className="size-3" aria-label="Pinned by the office" />}
         {status}
         <ChevronDown className="size-3 opacity-70" />
-      </button>
+      </ActionMenu>
       {note && (
-        <span className="mt-1 block max-w-64 whitespace-normal text-[11px] leading-snug text-warning">{note}</span>
-      )}
-      {menu && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} />
-          <div className="fixed z-40 w-44 rounded-xl border border-border bg-surface p-1 shadow-xl" style={menu}>
-            {Object.entries(STATUSES).map(([name, m]) => (
-              <button
-                key={name}
-                disabled={!canPick(name, m.selectable)}
-                onClick={() => pick(name)}
-                title={canPick(name, m.selectable) ? undefined : whyNot(name, m.selectable)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium",
-                  canPick(name, m.selectable) ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
-                )}
-              >
-                <span className="size-2 rounded-full" style={{ backgroundColor: m.color }} />
-                {name}
-              </button>
-            ))}
-          </div>
-        </>
+        <span role="status" className="mt-1 block max-w-64 whitespace-normal text-sm leading-snug text-warning">{note}</span>
       )}
     </>
   );
+}
+
+/** Office-only rare actions retain their existing dialogs and server guards. */
+function QueueActions({ row, onReceipt }: { row: QueueRow; onReceipt: (message: string) => void }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = () => triggerRef.current?.focus();
+  return <EditOverridesButton
+    job={{ projectId: row.id, street: row.street, status: row.status, editorKey: row.editorKey, editorName: row.editor, editorAuto: row.auto, overrides: row.overrides, computed: row.computed }}
+    onReceipt={onReceipt}
+    onDialogClose={returnFocus}
+    renderTrigger={(openOverride) => <RemoveFromQueueButton
+      projectId={row.id}
+      street={row.street}
+      onReceipt={onReceipt}
+      onDialogClose={returnFocus}
+      renderTrigger={(openRemove) => <ActionMenu
+        triggerRef={triggerRef}
+        label={`More actions for ${row.street}`}
+        className="inline-flex items-center justify-center rounded-lg border border-border text-muted hover:bg-surface-2 hover:text-foreground"
+        items={[
+          { id: "override", text: "Override job details", label: <><SlidersHorizontal aria-hidden="true" className="size-4" />Override job details</>, onSelect: openOverride },
+          { id: "remove", text: "Remove from this queue", label: <><Trash2 aria-hidden="true" className="size-4" />Remove from this queue</>, onSelect: openRemove },
+        ]}
+      ><MoreHorizontal aria-hidden="true" className="size-4" /></ActionMenu>}
+    />}
+  />;
 }
 
 // The Editor cell IS the reassign control — pick a name and the job moves
@@ -907,7 +908,7 @@ export function SimpleQueue({
                         {r.videos > 1 ? ` · ${r.videos} videos` : ""}
                       </span>
                     </td>
-                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5 sm:[&_button]:min-h-0 sm:[&_button]:min-w-0" onClick={swallow}>
+                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5 " onClick={swallow}>
                       <span className="mb-1 block text-xs font-medium text-muted sm:hidden">Stage</span>
                       <span className="inline-flex items-center gap-1">
                         {view === "upcoming" ? (
@@ -933,39 +934,12 @@ export function SimpleQueue({
                           // is on a job without always changing its word.
                           <StatusPill key={`${r.status}|${r.workChip ?? ""}`} row={r} office={!hideEditor} onReceipt={setReceipt} />
                         )}
-                        {/* THE OVERRIDE (Sep 13) — office only. A bare glyph
-                            beside the pill, muted until you reach for it, and
-                            always there (no row hover: Jordan has to be able
-                            to FIND it, and there is no hover on his phone).
-                            Its receipt goes above the tabs like the pill's.
-                            The dialog it opens is a child of this cell, so
-                            the cell's swallow keeps clicks inside it from
-                            opening the edit page. key = server truth again:
-                            a fresh row from a revalidation remounts it with
-                            the values the server now holds. */}
-                        {!hideEditor && (
-                          <EditOverridesButton
-                            key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
-                            job={{
-                              projectId: r.id,
-                              street: r.street,
-                              status: r.status,
-                              editorKey: r.editorKey,
-                              editorName: r.editor,
-                              editorAuto: r.auto,
-                              overrides: r.overrides,
-                              computed: r.computed,
-                            }}
-                            onReceipt={setReceipt}
-                          />
-                        )}
-                        {/* OFF THIS BOARD (Jordan, Sep 18). Office only, beside
-                            the override for the same reason: this cell is where
-                            the per-row office controls live, and the cell's
-                            swallow keeps a click inside it from opening the
-                            edit page. It is not a delete — see the dialog's own
-                            words and lib/queueRemoved. */}
-                        {!hideEditor && <RemoveFromQueueButton projectId={r.id} street={r.street} onReceipt={setReceipt} />}
+                        {/* Rare office actions keep their confirmation and undo flows. */}
+                        {!hideEditor && <QueueActions
+                          key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
+                          row={r}
+                          onReceipt={setReceipt}
+                        />}
                       </span>
                       {/* FOUR VIDEOS, ONE WORD (Jordan, Sep 18). The pill names
                           the loudest state, which on a batch is true of ONE

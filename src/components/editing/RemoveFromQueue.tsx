@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useId, useRef, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Undo2 } from "lucide-react";
 import { removeFromEditorQueue, restoreToEditorQueue } from "@/app/editing/actions";
@@ -19,43 +19,55 @@ export function RemoveFromQueueButton({
   projectId,
   street,
   onReceipt,
+  renderTrigger,
+  onDialogClose,
 }: {
   projectId: string;
   street: string;
   onReceipt?: (msg: string) => void;
+  renderTrigger?: (open: () => void) => ReactNode;
+  onDialogClose?: () => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [why, setWhy] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [busy, start] = useTransition();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const labelId = useId();
+  const close = () => { setOpen(false); setWhy(""); setError(null); onDialogClose?.(); triggerRef.current?.focus(); };
+  useEffect(() => { if (open) inputRef.current?.focus(); }, [open]);
 
-  if (!open) {
-    return (
+  return <span className="inline-flex flex-col items-start">
+    {renderTrigger ? renderTrigger(() => setOpen(true)) : (
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(true)}
         title="Take this job off the Editing Room — nothing else about it changes, and it can come back for 7 days"
-        className="rounded-lg border border-border px-1.5 py-1 text-muted-2 hover:border-danger/40 hover:text-danger"
+        aria-label={`Remove ${street} from this queue`}
+        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-border px-1.5 py-1 text-muted-2 hover:border-danger/40 hover:text-danger"
       >
         <Trash2 className="size-3.5" />
       </button>
-    );
-  }
-
-  return (
-    <div className="mt-1 w-64 rounded-xl border border-danger/35 bg-danger-soft/30 p-2.5">
-      <p className="text-xs font-semibold">Take {street} off this board?</p>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-foreground/80">
+    )}
+    {open && <span role="group" aria-labelledby={labelId} className="mt-1 block w-64 rounded-xl border border-danger/35 bg-danger-soft/30 p-2.5"
+      onKeyDown={(event) => { if (event.key === "Escape" && !busy) { event.preventDefault(); event.stopPropagation(); close(); } }}>
+      <span id={labelId} className="block text-sm font-semibold">Take {street} off this board?</span>
+      <span className="mt-0.5 block text-sm leading-relaxed text-foreground/80">
         The edit card is cancelled. Nothing else changes — the job keeps its status, its videos, its
         cuts and its delivery. You can bring it back for 7 days.
-      </p>
+      </span>
       <input
+        ref={inputRef}
+        aria-label="Reason for removing from this queue (optional)"
         value={why}
         onChange={(e) => setWhy(e.target.value)}
         placeholder="Why? (optional)"
-        className="mt-2 w-full rounded-lg border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-brand"
+        className="mt-2 min-h-11 w-full rounded-lg border border-border bg-surface px-2 py-1 text-sm outline-none focus:border-brand"
       />
-      <div className="mt-2 flex items-center gap-2">
+      <span className="mt-2 flex items-center gap-2">
         <button
           type="button"
           disabled={busy}
@@ -66,26 +78,27 @@ export function RemoveFromQueueButton({
                 message: "Couldn't do that — try again.",
               }));
               onReceipt?.(r.message);
-              setOpen(false);
-              setWhy("");
+              if (!r.ok) { setError(r.message); return; }
+              close();
               router.refresh();
             })
           }
-          className="rounded-lg bg-danger px-2.5 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+          className="min-h-11 rounded-lg bg-danger px-2.5 py-1 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
         >
           {busy ? "Removing" : "Remove it"}
         </button>
         <button
           type="button"
           disabled={busy}
-          onClick={() => { setOpen(false); setWhy(""); }}
-          className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2"
+          onClick={close}
+          className="min-h-11 rounded-lg border border-border px-2.5 py-1 text-sm font-medium text-muted hover:bg-surface-2"
         >
           Keep it
         </button>
-      </div>
-    </div>
-  );
+      </span>
+      {error && <span role="alert" className="mt-2 block text-sm text-danger">{error} Your reason is still here; try again.</span>}
+    </span>}
+  </span>;
 }
 
 export type RemovedRow = {

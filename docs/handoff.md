@@ -2,6 +2,18 @@
 
 ## Sep 30 takeover addendum
 
+### U1/U3 checkpoint — keyboard status and rare queue actions
+
+Added shared ActionMenu (arrows/Home/End/type-to-focus/Escape/Tab, focus return,
+disabled reasons, viewport limits and 44px targets). Status uses the same guarded
+actions and request IDs. Office overrides/removal are under More actions. Override
+now uses the existing native ModalDialog and holds dismissal while saving or
+escalating. Failed queue removal keeps its reason and shows an inline retry error;
+successful removal/undo and permissions are unchanged. Focused lint and source
+review passed. The concurrent reminder batch's full TypeScript run passed before
+the last modal/failure-retention correction; final integrated gate remains. Browser
+keyboard, mobile/zoom, screen-reader and pending/error acceptance are still blocked.
+
 ### Resume checkpoint — interrupted build recovered; C14 summary scope
 
 The interrupted build at `cd3fc86` completed with exit 0 in the separate managed

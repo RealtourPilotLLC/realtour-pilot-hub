@@ -66,6 +66,8 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Current checks and environment
 
+- **U1/U3 queue controls:** shared ActionMenu now covers status/rare actions with keyboard navigation and 44px targets; office overrides reuse native ModalDialog and block dismissal during pending saves/escalation. Failed removal retains the reason for retry. Original guards, request IDs, confirmation and undo remain. Lint/source review passed; final integrated type/build pending after the last modal correction. Browser acceptance remains blocked, so neither phase is complete.
+
 - **Latest resume:** interrupted `cd3fc86` production build exited 0 in the isolated managed checkout; stable-tree TypeScript passed. No Ops Hub commands or 3200/5599 listeners remained at the resume check; unrelated Premium Reel commands were untouched. Earlier running-demo notes below are historical.
 - **C14 Home summaries:** owner project totals, delivery/reply/SLA/QC dials, active-edit count, personal flags, handled-today and operational pulse fields now use the same normal client scope. Isolated drill 15/0, focused lint, TypeScript and one source review passed. Deleted/unlinked markers and catch-up context survive; bank/ledger/AR formulas and stored state remain unchanged. Initial test date/appointment assumptions were corrected. Signed-browser identity and summary test-view UI acceptance remain open; do not mark all C14 acceptance complete.
 

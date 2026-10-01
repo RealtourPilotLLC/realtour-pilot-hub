@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useState, useTransition, type ReactNode } from "react";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 import { AlertTriangle, Check, Loader2, Pin, PinOff, Send, SlidersHorizontal, X, Zap } from "lucide-react";
 import { escalateRushToJordan, previewPriorityImpact, saveEditOverrides, type RushGate } from "@/app/editing/actions";
 import { etAt, etDateTime } from "@/lib/datetime";
@@ -429,13 +429,6 @@ function OverridesDialog({
       onClose();
     });
 
-  // Escape closes, like clicking the backdrop.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const { computed, overrides } = job;
   const statusKnown = isStatusLabel(d.status);
   const knownEditor = d.editorKey === EXTERNAL || VIDEO_EDITORS.some((e) => e.key === d.editorKey);
@@ -470,20 +463,14 @@ function OverridesDialog({
       onClose();
     });
 
-  // Portalled to <body>: the /edit header is a sticky bar with a backdrop
-  // blur, and backdrop-filter makes it the containing block for anything
-  // position:fixed inside it — the overlay would have been pinned inside the
-  // header strip. React still bubbles the synthetic events up the component
-  // tree, so on a queue row the cell's swallow keeps clicks in here from
-  // opening the edit page.
-  return createPortal(
-    <>
-      <div className="fixed inset-0 z-[60] bg-black/50" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${rushOnly ? "Rush" : "Override"} ${job.street}`}
-        className="fixed left-1/2 top-1/2 z-[70] max-h-[90vh] w-[min(94vw,36rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:p-5"
+  // The shared native dialog sits above sticky headers and keeps the covered
+  // page inert. Pending saves/escalations retain focus and cannot be dismissed.
+  return (
+      <ModalDialog
+        label={`${rushOnly ? "Rush" : "Override"} ${job.street}`}
+        busy={busy || escalating}
+        onCancel={onClose}
+        className="w-[min(94vw,36rem)] [&_button]:min-h-11 [&_button]:min-w-11"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -496,7 +483,7 @@ function OverridesDialog({
                 : "Whatever you set here wins over what the hub works out on its own. Clear a field to hand it back."}
             </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-md p-1 text-muted hover:bg-surface-2 hover:text-foreground">
+          <button type="button" data-modal-initial-focus disabled={busy || escalating} onClick={onClose} aria-label="Close" className="rounded-md p-1 text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
             <X className="size-4" />
           </button>
         </div>
@@ -685,17 +672,15 @@ function OverridesDialog({
           >
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save
           </button>
-          <button type="button" onClick={onClose} className="rounded-xl border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+          <button type="button" disabled={busy || escalating} onClick={onClose} className="rounded-xl border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
             Cancel
           </button>
-          {msg && <span className="text-[13px] font-medium text-warning">{msg}</span>}
+          {msg && <span role="status" className="text-sm font-medium text-warning">{msg}</span>}
         </div>
         {hasOverride(overrides) && (
           <p className="mt-2 text-[11px] text-muted-2">{provenance(overrides)}</p>
         )}
-      </div>
-    </>,
-    document.body,
+      </ModalDialog>
   );
 }
 
@@ -706,11 +691,13 @@ function OverridesDialog({
     survives the row moving to another view); without it, the sentence is
     shown as a note under the control. */
 export function EditOverridesButton({
-  job, variant = "row", onReceipt,
+  job, variant = "row", onReceipt, renderTrigger, onDialogClose,
 }: {
   job: EditOverridesJob;
   variant?: "row" | "header";
   onReceipt?: (msg: string) => void;
+  renderTrigger?: (open: () => void) => ReactNode;
+  onDialogClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -718,7 +705,7 @@ export function EditOverridesButton({
   const saved = (m: string) => (onReceipt ? onReceipt(m) : setNote(m));
   return (
     <span className={variant === "header" ? "inline-flex flex-col items-end gap-1" : "inline-flex"}>
-      {variant === "header" ? (
+      {renderTrigger ? renderTrigger(() => setOpen(true)) : variant === "header" ? (
         <span className="inline-flex items-center gap-2">
           <OverrideChip overrides={job.overrides} />
           <button
@@ -749,7 +736,7 @@ export function EditOverridesButton({
           </button>
         </span>
       )}
-      {open && <OverridesDialog job={job} onClose={() => setOpen(false)} onSaved={saved} />}
+      {open && <OverridesDialog job={job} onClose={() => { setOpen(false); onDialogClose?.(); }} onSaved={saved} />}
     </span>
   );
 }
