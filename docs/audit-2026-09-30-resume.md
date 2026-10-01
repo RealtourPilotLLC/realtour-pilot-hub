@@ -9,7 +9,7 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `4ee68bb`; inspect actual HEAD/status when resuming.
+  checkpoint: `f154bb4`; inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
   messages/invitations, real bookings, financial changes, automation activation,
@@ -44,6 +44,10 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `dc925a3` | Workspace tab/AI/copy/partial note receipts |21/0; non-incremental typecheck/lint |
 | `fde699a` | Newer task notes and reply drafts |16/0; retained details26/0 |
 | `4ee68bb` | Real month-stage destinations, visible unknown evidence |14/0; review caught and removed falsely month-scoped library link |
+| `587d389` | Exact upload/size recovery and retained draft-conflict holds |PostgreSQL26/0; hook/refresh18/0; CP09 142/0; B4 69/0 |
+| `1570ba5` | Month/library readability, focus and exact history |Lint/diff/source review; browser open |
+| `a642e79` | Exact clipboard receipts and native Markdown controls |Fake clipboard handlers12/0; lint/review; browser open |
+| `681030b` / `f154bb4` | Appointment/Resources authoring and common navigation |Lint/diff/source review; behavior fixes separate |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -60,9 +64,13 @@ No new schema. If an absent/core_saved receipt cannot settle, office staff must
 inspect its request logs and saved handoff/task/notification evidence; no blind
 retry/expiry is offered. See handoff for logs and actual browser/provider limits.
 
-Remaining active local slices are bounded content-library/month controls and
-shared CopyButton/MarkdownEditor controls. Freeze/review/commit them before the
-combined gate; neither their source checks nor clipboard fakes prove browser use.
+The remaining active local slices are appointment and Resources recovery:
+typed known refusal versus unknown outcomes, retained native/editor drafts,
+pending/unknown holds and explicit guide/owner read failures. Appointment action
+annotations preserve provider/notify behavior; resource annotations preserve
+all validation/publish/ownership policy. No real mutation is authorized. Finish
+the focused fake/contract evidence and review, commit, then run the combined
+gate. Resource/appointment presentation is already committed; do not repeat it.
 
 After that stable checkpoint, run the combined typecheck/changed-file lint and
 one production build in the separate clean checkout. Record the exact source
