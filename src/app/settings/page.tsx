@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
+import { canAccess } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, payVisibilityRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
 import { commsCoachingSettings } from "@/lib/commsCoaching";
@@ -118,12 +119,12 @@ async function TopazCard({ initial }: { initial: TopazSettings }) {
 // Calendly & calls (content program, spec §26): lists the account's event types
 // live, so it is capped like Topaz and renders as "unreachable" rather than
 // holding the card open.
-async function CalendlyCard() {
+async function CalendlyCard({ canOpenOperations }: { canOpenOperations: boolean }) {
   const calendly = await capped(loadCalendlyPanelState().catch(() => null), 8000);
   return (
     <Section icon={CalendarCheck} title="Calendly & content-program calls">
       {calendly
-        ? <CalendlyMappingsPanel state={calendly} />
+        ? <CalendlyMappingsPanel state={calendly} canOpenOperations={canOpenOperations} />
         : <p className="text-sm text-muted">Calendly could not be reached just now — reload to try again.</p>}
     </Section>
   );
@@ -315,7 +316,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
     calendly: card("calendly",
       <Suspense fallback={<ProviderCardSkeleton icon={CalendarCheck} title="Calendly & content-program calls" note="asking Calendly for the event types…" />}>
-        <CalendlyCard />
+        <CalendlyCard canOpenOperations={me ? canAccess(me, "content") : !authEnforced()} />
       </Suspense>, "calendly"),
 
     "product-categories": card("product-categories",

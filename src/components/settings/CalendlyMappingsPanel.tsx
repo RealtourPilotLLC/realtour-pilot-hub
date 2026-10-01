@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { Loader2, RefreshCw, Check, AlertTriangle, ExternalLink, ShieldCheck, CircleSlash, FileText, ListChecks } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -47,20 +48,24 @@ function Chip({ tone, children }: { tone: "ok" | "warn" | "bad" | "muted"; child
 function Btn({ onClick, children, busy, tone = "default" }: { onClick: () => void; children: React.ReactNode; busy?: boolean; tone?: "default" | "brand" | "danger" }) {
   return (
     <button type="button" onClick={onClick} disabled={busy} className={cn(
-      "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium disabled:opacity-50",
-      tone === "brand" && "border-brand bg-brand text-white", tone === "danger" && "border-danger/40 text-danger", tone === "default" && "border-border bg-surface-2",
+      "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50",
+      tone === "brand" && "border-brand bg-brand-action text-brand-fg", tone === "danger" && "border-danger/40 text-danger", tone === "default" && "border-border bg-surface-2",
     )}>{busy ? <Loader2 className="size-3 animate-spin" /> : null}{children}</button>
   );
 }
 
-export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) {
+export function CalendlyMappingsPanel({ state, canOpenOperations = false }: { state: CalendlyPanelState; canOpenOperations?: boolean }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, { purpose: string; enabled: boolean }>>(() =>
     Object.fromEntries(state.eventTypes.map((t) => [t.uri, { purpose: t.mapping?.purpose ?? "", enabled: t.mapping?.enabled ?? false }])),
   );
   const [nextDay, setNextDay] = useState(state.rules.nextMonthFromDay);
-  const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setMsg({ ok: r.ok, text: r.message }); });
+  const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => {
+    setMsg(null);
+    try { const r = await fn(); setMsg({ ok: r.ok, text: r.message }); }
+    catch { setMsg({ ok: false, text: "The update was not confirmed. Reload to check its current state before trying again. Your choices are still here." }); }
+  });
 
   // Three states for the brand-discovery hint: the type is not on the account
   // (create it), it is there but unmapped (map it), or it is mapped (quiet).
@@ -79,7 +84,7 @@ export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) 
         </span>
       </div>
       {state.fetchError && <p className="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">Could not read the account&rsquo;s event types: {state.fetchError}</p>}
-      {msg && <p className={cn("rounded-lg px-3 py-2 text-xs", msg.ok ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{msg.text}</p>}
+      {msg && <p role={msg.ok ? "status" : "alert"} className={cn("rounded-lg px-3 py-2 text-xs", msg.ok ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{msg.text}</p>}
 
       {/* Configuration exceptions — the panel's whole reason to exist */}
       {!state.monthlyMapped && (
@@ -126,7 +131,7 @@ export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) 
                     </div>
                   </td>
                   <td className="px-3 py-2">
-                    <select value={d.purpose} onChange={(e) => setDrafts({ ...drafts, [t.uri]: { ...d, purpose: e.target.value, enabled: e.target.value ? d.enabled : false } })} className="rounded-lg border border-border bg-surface-2 px-2 py-1">
+                    <select value={d.purpose} onChange={(e) => setDrafts({ ...drafts, [t.uri]: { ...d, purpose: e.target.value, enabled: e.target.value ? d.enabled : false } })} className="min-h-11 max-w-full rounded-lg border border-border bg-surface-2 px-3 py-2">
                       {PURPOSES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                     </select>
                   </td>
@@ -183,8 +188,17 @@ export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) 
         </div>
       </div>
 
-      {/* Review queue */}
-      <div className="rounded-xl border">
+      {/* Operational matching belongs in the existing queue. Keep the prior
+          owner-action surface only when a page-access override blocks it. */}
+      {canOpenOperations ? (
+        <div className="rounded-xl border p-4">
+          <h3 className="flex items-center gap-2 font-medium"><ListChecks className="size-4 text-muted" /> Calls and transcripts needing review</h3>
+          <p className="mt-2 text-sm text-muted">Loaded for review: {state.reviewRecords.length} calls · {state.queue.aliases.length} email proposals · {state.queue.unlinkedTranscripts.length} transcripts without a confirmed call.</p>
+          <p className="mt-1 text-sm text-muted">Identify clients, confirm transcript ownership, and resolve matching questions in program operations.</p>
+          <Link href="/content/monitoring#calls" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open call review queue <ExternalLink className="size-4" /></Link>
+        </div>
+      ) : <div className="rounded-xl border">
+        <p className="px-3 pt-3 text-sm text-muted">Call recovery stays here because this account cannot open program operations.</p>
         <div className="flex items-center gap-2 border-b px-3 py-2 font-medium"><ListChecks className="size-4 text-muted" /> Needs a person <Chip tone={state.reviewRecords.length + state.queue.aliases.length ? "warn" : "muted"}>{state.reviewRecords.length + state.queue.aliases.length}</Chip></div>
         <div className="divide-y">
           {state.reviewRecords.map((r) => <ReviewRow key={r.id} r={r} clients={state.enrolledClients} busy={pending} run={run} />)}
@@ -198,7 +212,7 @@ export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) 
               </span>
             </div>
           ))}
-          {state.reviewRecords.length === 0 && state.queue.aliases.length === 0 && <p className="px-3 py-3 text-xs text-muted">Nothing waiting.</p>}
+          {state.reviewRecords.length === 0 && state.queue.aliases.length === 0 && state.queue.unlinkedTranscripts.length === 0 && <p className="px-3 py-3 text-xs text-muted">Nothing waiting.</p>}
         </div>
         {state.queue.unlinkedTranscripts.length > 0 && (
           <div className="border-t px-3 py-2 text-xs">
@@ -210,7 +224,7 @@ export function CalendlyMappingsPanel({ state }: { state: CalendlyPanelState }) 
             </ul>
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Recent records */}
       <div className="overflow-x-auto rounded-xl border">
@@ -329,12 +343,12 @@ function ReviewRow({ r, clients, busy, run }: { r: CalendlyPanelState["reviewRec
       {r.matchNote && <div className="text-muted">{r.matchNote}</div>}
       {identityOpen && (
         <div className="flex flex-wrap items-center gap-2">
-          <select value={clientId} onChange={(e) => setClientId(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2 py-1">
+          <select aria-label="Client on this call" disabled={busy} value={clientId} onChange={(e) => setClientId(e.target.value)} className="min-h-11 max-w-full rounded-lg border border-border bg-surface-2 px-3 py-2">
             <option value="">Pick the client…</option>
             {r.candidates.map((c) => <option key={c.clientId} value={c.clientId}>{c.name} (candidate: {c.reason})</option>)}
             {clients.filter((c) => !r.candidates.some((x) => x.clientId === c.id)).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <label className="flex items-center gap-1"><input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} /> verify {r.inviteeEmail ?? "this address"} as their alias</label>
+          <label className="flex min-h-11 items-center gap-2"><input type="checkbox" disabled={busy} checked={verify} onChange={(e) => setVerify(e.target.checked)} /> verify {r.inviteeEmail ?? "this address"} as their alias</label>
           <Btn busy={busy} tone="brand" onClick={() => clientId && run(() => confirmCallClient(r.id, clientId, verify))}>Confirm client</Btn>
           <Btn busy={busy} tone="danger" onClick={() => run(() => ignoreCall(r.id))}>Not a program call</Btn>
         </div>
@@ -342,7 +356,7 @@ function ReviewRow({ r, clients, busy, run }: { r: CalendlyPanelState["reviewRec
       {!identityOpen && r.callType === "MONTHLY_STRATEGY" && (
         <div className="flex items-center gap-2">
           <span className="text-muted">plans</span>
-          <input value={monthKey} onChange={(e) => setMonthKey(e.target.value)} placeholder="2026-10" className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1" />
+          <input aria-label="Month this call planned" disabled={busy} value={monthKey} onChange={(e) => setMonthKey(e.target.value)} placeholder="2026-10" className="min-h-11 w-28 rounded-lg border border-border bg-surface-2 px-3 py-2" />
           <Btn busy={busy} onClick={() => run(() => retargetCall(r.id, monthKey))}>Retarget</Btn>
         </div>
       )}

@@ -41,14 +41,14 @@ export default async function ContentMonitoringPage() {
     aiQuotaUse().catch(() => null),
     transcriptJobsSnapshot().catch(() => null),
     transcriptQueueBatch().catch(() => null),
-    listCallRecords({ onlyReview: true, limit: 40 }).catch(() => []),
-    callReviewQueue().catch(() => ({ aliases: [], unlinkedTranscripts: [] })),
+    listCallRecords({ onlyReview: true, limit: 40 }).catch(() => null),
+    callReviewQueue().catch(() => null),
     sessionRequestState().catch(() => ({ counts: [], stuck: [] })),
     reminderLedger({ take: 60 }).catch(() => []),
     failedAutomations({ sinceDays: 30 }).catch(() => []),
     allAutomations().catch(() => []),
     importOverview().catch(() => ({ batches: [], unapplied: 0 })),
-    prisma.contentMonth.findMany({ select: { monthKey: true }, distinct: ["monthKey"], orderBy: { monthKey: "desc" }, take: 18 }).catch(() => []),
+    prisma.contentMonth.findMany({ select: { monthKey: true }, distinct: ["monthKey"], orderBy: { monthKey: "desc" }, take: 18 }).catch(() => null),
     lastRunDeploy("sync").catch(() => null),
   ]);
   // CP-15: which build is answering, and which build the hourly run that wrote
@@ -57,9 +57,9 @@ export default async function ContentMonitoringPage() {
   const pageBuild = deployStamp();
   // ContentEnrollment.clientId is a plain ref, so the enrolled clients are
   // resolved in two steps rather than through a relation filter.
-  const enrolled = await prisma.contentEnrollment.findMany({ select: { clientId: true } }).catch(() => [] as { clientId: string }[]);
-  const clientList = enrolled.length
-    ? await prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { id: true, name: true }, orderBy: { name: "asc" } }).catch(() => [] as { id: string; name: string }[])
+  const enrolled = await prisma.contentEnrollment.findMany({ select: { clientId: true } }).catch(() => null);
+  const clientList = enrolled === null ? null : enrolled.length
+    ? await prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { id: true, name: true }, orderBy: { name: "asc" } }).catch(() => null)
     : [];
 
   const money = (c: number | null | undefined) => (c == null ? "—" : `$${(c / 100).toFixed(2)}`);
@@ -130,18 +130,18 @@ export default async function ContentMonitoringPage() {
         {/* CALL REVIEW QUEUE — unmatched invitees, alias proposals, ambiguous transcripts. */}
         <div id="calls" className="scroll-mt-20">
           <CallReviewQueue
-            calls={calls.map((c) => ({
+            calls={calls?.map((c) => ({
               id: c.id, callType: c.callType, status: c.status, matchState: c.matchState, matchNote: c.matchNote,
               transcriptState: c.transcriptState, scheduledStartISO: c.scheduledStart?.toISOString() ?? null,
               clientName: c.client?.name ?? null, inviteeEmail: c.inviteeEmail, inviteeName: c.inviteeName,
               eventTypeName: c.eventTypeName, targetMonthKey: c.targetMonthKey, lastError: c.lastError,
               candidates: c.candidates, jobs: c.jobs,
               transcripts: c.transcripts.map((t) => ({ id: t.id, title: t.title, sourceUrl: t.sourceUrl, matchState: t.matchState, recordedAtISO: t.recordedAt?.toISOString() ?? null })),
-            }))}
-            aliases={queue.aliases.map((a) => ({ id: a.id, clientName: a.clientName, email: a.email, source: a.source, createdAtISO: a.createdAt.toISOString() }))}
-            unlinked={queue.unlinkedTranscripts.map((u) => ({ id: u.id, title: u.title, sourceUrl: u.sourceUrl, recordedAtISO: u.recordedAt?.toISOString() ?? null, candidates: u.candidates }))}
+            })) ?? null}
+            aliases={queue?.aliases.map((a) => ({ id: a.id, clientName: a.clientName, email: a.email, source: a.source, createdAtISO: a.createdAt.toISOString() })) ?? null}
+            unlinked={queue?.unlinkedTranscripts.map((u) => ({ id: u.id, title: u.title, sourceUrl: u.sourceUrl, recordedAtISO: u.recordedAt?.toISOString() ?? null, legacyMonthId: u.legacyMonthId, candidates: u.candidates })) ?? null}
             clients={clientList}
-            monthKeys={months.map((m) => m.monthKey)}
+            monthKeys={months?.map((m) => m.monthKey) ?? null}
             isOwner={ownerEyes}
           />
         </div>

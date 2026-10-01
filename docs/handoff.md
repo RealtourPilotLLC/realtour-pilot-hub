@@ -2,6 +2,24 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — call recovery in the existing operations queue
+
+Settings links to Content → Monitoring → Calls when the viewer has content
+access. Settings-only users retain their existing recovery controls and owner
+mutation guards; no access override is widened. Monitoring distinguishes failed
+call/alias/transcript/client/month reads from empty queues, retains legacy-month
+transcript provenance, catches lost action responses and shows check-before-retry
+feedback. Controls now have explicit names/44px targets. Typed month entry remains
+available alongside known-month choices, preserving Settings' prior capability.
+
+Signed SSR and injected-read-failure drill passed 26/0
+(`/tmp/ops-u5-call-recovery-final/u5-call-recovery.ts.log`); lint, diff checks
+and one focused review passed. Fixtures/transcript records were unchanged and no
+provider was called. Initial test cleanup socket race and Prisma mock typings
+were fixed. Browser interaction/visual acceptance remains open. Full removal of
+the Settings fallback would require a deliberate permission design decision;
+this batch preserves the existing settings-versus-content access distinction.
+
 ### U3 checkpoint — Editing queue before diagnostics
 
 Editing Room now leads with a compact evidence-aware Editors today strip and
