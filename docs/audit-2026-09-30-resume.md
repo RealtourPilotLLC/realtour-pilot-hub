@@ -9,7 +9,7 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `d9f5306` plus the access recovery commit containing this update;
+  checkpoint: `59af2da` plus the Logins/access commit containing this update;
   inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
@@ -19,7 +19,9 @@ Do not restart the audit or repeat green checks without a specific changed risk.
   was absent at an earlier resume check. Latest Oct 1 inspection found a new
   `scripts/demo/run-demo-dev.sh` process started at 00:38 ET, with the fenced
   demo database and Next server on port 3200 in the main checkout. It is left
-  running; no process was stopped or restarted. Inspect before any build/start.
+  running at that check. At Oct 1 01:32 ET the process and port3200 listener were
+  absent; no process was stopped or restarted by this continuation. Inspect
+  before any build/start.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
   Last observed clean/detached at `d9f5306`, whose clean-environment build passed.
@@ -55,11 +57,10 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `681030b` / `f154bb4` | Appointment/Resources authoring and common navigation |Lint/diff/source review; behavior fixes separate |
 | `9a721dc` | Appointment uncertainty and retained date/email choices |Signed fake-provider action13/0; actual form/refresh23/0; lint/types/review |
 | `d9f5306` | Guide drafts/read failures/uncertain-write recovery |Actual handler/action/page33/0; remount repair reviewed; combined types/lint/build |
-| Access commit containing this update | Privacy-generic sign-in and newer invitation drafts |Actual fake UI29/0 + wrapper10/0; typecheck/lint/root review |
-| `8f708b7` | Client access recovery |See exact29/0+10/0 evidence above |
-| Take-back commit containing this update | Native exact-cut dialog and retry recovery |Actualfake30/0; typecheck/lint/review and narrow remount recheck |
-| `aab1f99` | Take-back recovery |Exact30/0 evidence above |
-| Month/review commit containing this update | Identity/month and office fee/clock/hold receipts |Actualfake38/0+25/0; lint/review; fee CAS/read ambiguity repaired |
+| `8f708b7` | Privacy-generic sign-in and newer invitation drafts |Actual fake UI29/0 + wrapper10/0; typecheck/lint/root review |
+| `aab1f99` | Native exact-cut dialog and retry recovery |Actualfake30/0; typecheck/lint/review and narrow remount recheck |
+| `59af2da` | Identity/month and office fee/clock/hold receipts |Actualfake38/0+25/0; lint/review; fee CAS/read ambiguity repaired |
+| Logins/access commit containing this update | Shared account recovery, atomic reset and role/permission CAS |Actual fake26/0; typecheck/lint/diff/root review |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -83,10 +84,12 @@ are not provider receipts; Resources retention is current-tab only. Unknown
 requests still require staff inspection. Provider/notify, validation/publication,
 ownership and backfill rules remain intact. No real mutation is authorized.
 
-The Resources checkpoint passed combined gates. Remaining concrete local forms
-are in progress: month/identity receipts, review fee/clock/hold and native
-take-back dialog recovery, then Users/Slack/Map/Calendar/capacity controls named
-by the bounded remaining-scope review. Preserve the frozen evidence and ownership;
+The Resources checkpoint passed combined gates. Access, month/identity,
+review fee/clock/hold, take-back and Users recovery now have completed local
+source/targeted checks. Remaining concrete local controls are Slack/Map/Calendar/
+capacity from the bounded remaining-scope review. Capacity fixture19/0 and lint
+pass; its single earlier failure was numeric/whitespace extraction in the fake
+text helper, repaired without a product change. Preserve ownership and evidence;
 finish/checkpoint each, then run one final combined gate for the new stable SHA.
 Do not repeat already-passed whole drill suites. Business and browser acceptance
 remainders below stay open; this continuation is not a new broad audit.

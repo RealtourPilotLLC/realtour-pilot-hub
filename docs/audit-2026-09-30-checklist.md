@@ -74,6 +74,20 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 Logins/access recovery:** one per-account guard covers role, permissions,
+  link, status and removal; opaque current-tab markers hold unknown writes
+  across reload without storing names, emails or tokens. Newer invite fields
+  survive older success, and clipboard status uses confirmed CopyButton receipts.
+  Role/permission writes compare the displayed raw baseline and use server-read
+  CAS; concurrent changes cannot overwrite another grant. Reset is one atomic
+  write of the same valid overridable keys as before, retaining unknown and
+  owner-only keys; an explicit reset still clears a My Pay override. Existing
+  owner, preview, self, role and default-pruning rules remain. Actual fake
+  handlers/actions/CAS26/0 (`/tmp/u5-users-manager-recovery-final/`), typecheck,
+  lint/diff and root review pass. No real user/token/invite/send changed.
+  Unknown results need account/activity inspection; markers are device guards,
+  not backend receipts or cross-tab locks. Browser acceptance remains open.
+
 - **U5 month/library and office review receipts:** month refusals now show their
   exact result; unconfirmed/partial moves retain the selected month without a
   false rollback. Identity fields merge untouched refreshed values before

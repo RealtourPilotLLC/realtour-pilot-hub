@@ -2,6 +2,30 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U5 checkpoint — Logins/access conflict and recovery
+
+UsersManager shares a synchronous per-account pending/unknown guard across role,
+access, token link, status and removal. Opaque current-tab markers survive reload
+and contain no email/name/token/link. Native controls are labeled, readable and
+44px; hidden invite/access regions retain mounted drafts, and later invite input
+survives older confirmed success. CopyButton proves actual clipboard completion.
+
+Permission and role writes compare a supplied raw displayed role/permissions
+baseline, then updateMany CAS against the current server read. Legacy callers
+may omit the displayed baseline but retain CAS. Atomic reset removes exactly the
+same valid non-owner-only page overrides as the old loop, including an explicitly
+reset My Pay grant, retaining unknown/owner-only keys. A no-op reset does not
+normalize stored JSON. Existing permissions, preview/self and role-pruning rules
+remain. No real users, tokens, invites or providers were touched.
+
+Actual fake handlers/action/CAS fixture26/0 at
+`/tmp/u5-users-manager-recovery-final/u5-users-manager-recovery.ts.log`;
+typecheck/lint/diff and root focused review pass. Unknown outcomes require exact
+account/activity inspection; device markers are not server terminal receipts or
+cross-tab serialization. Native browser focus/layout and actual clipboard
+acceptance remain open. Remaining Slack/Map/capacity batches need their own
+checkpoint, then a combined exact-candidate gate.
+
 ### Oct 1 U5 checkpoint — month/library and office review receipts
 
 Month picker/mover/skip controls use labeled44px native controls and readable
