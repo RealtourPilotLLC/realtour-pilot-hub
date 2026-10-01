@@ -74,6 +74,12 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U1/U5 Resources/common navigation controls:** labeled readable authoring
+  fields and owner/review/publication evidence, focused44px actions/disclosures;
+  shared BackLink/ShowMore preserve destinations/history/toggle behavior, with
+  an explicit non-submit ShowMore button. Lint/diff/source review passed.
+  Resource retention/unconfirmed feedback is active separately; browser open.
+
 - **U5 appointment controls:** native shared buttons and labeled datetime field,
   existing device-local-time interpretation explained, readable facts/brief/
   feedback and focused44px targets. Conditions/provider payloads/time conversion

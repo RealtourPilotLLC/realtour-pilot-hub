@@ -2,6 +2,20 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 U1/U5 checkpoint — Resources and common navigation
+
+Staff Resources authoring now has visible native Title/Group/Summary/Guide labels,
+readable owner/review/publication evidence and wrapped44px action/field/disclosure
+targets with focus. Exact payload/category/order/publication/role checks and
+handlers are unchanged. Shared BackLink and ShowMore get native focus/44px
+targets; BackLink's history/explicit-fallback logic is unchanged. ShowMore uses
+type=button and aria-expanded, so it cannot implicitly submit a containing form.
+
+Focused lint/diff and root source review passed. No mirrored style tests or
+visual claim. Resource draft retention and caught unconfirmed mutations are a
+separate active recovery slice; browser/zoom/theme and nested role/access forms
+remain open. No publishing, provider or production operation occurred.
+
 ### Oct 1 U5 checkpoint — appointment controls
 
 Existing appointment detail/reschedule/cancel controls now use shared native

@@ -33,9 +33,9 @@ export function BackLink({ href, label, className, preferHref = false }: { href:
         }
         // else: no in-app history — follow the href to the section page.
       }}
-      className={cn("inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground", className)}
+      className={cn("inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-md px-1 py-2 text-sm text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", className)}
     >
-      <ArrowLeft className="size-4" /> {label}
+      <ArrowLeft className="size-4 shrink-0" /> <span className="min-w-0 break-words">{label}</span>
     </a>
   );
 }

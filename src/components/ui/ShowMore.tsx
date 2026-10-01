@@ -23,8 +23,10 @@ export function ShowMore({
       {shown}
       {extra > 0 && (
         <button
+          type="button"
+          aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
-          className={`flex w-full items-center justify-center gap-1.5 py-2 text-xs font-medium text-muted hover:text-foreground ${className}`}
+          className={`flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-2 py-2 text-sm font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${className}`}
         >
           <ChevronDown className={`size-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
           {open ? "Show less" : `Show ${extra} more`}
