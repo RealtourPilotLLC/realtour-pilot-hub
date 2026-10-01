@@ -17,6 +17,7 @@ import { ReplyQueue } from "@/components/comms/ReplyQueue";
 import { replyQueue, replyWaitingSummary } from "@/lib/replyQueue";
 import { formatDistanceToNow } from "date-fns";
 import { deliveryNoticeFocus } from "@/lib/deliveryNoticeIncidents";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 export const dynamic = "force-dynamic";
 
@@ -269,7 +270,11 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
   const clientByPhone = new Map<string, { id: string; name: string }>();
   for (const c of clients) {
     const k = phoneKey(c.phone);
-    if (k) clientByPhone.set(k, { id: c.id, name: c.name });
+    if (!k) continue;
+    const prior = clientByPhone.get(k);
+    // A fixture can share a person's number; it must not replace a real
+    // client merely because Postgres returned the fixture row last.
+    if (!prior || (isSyntheticClientRow(prior) && !isSyntheticClientRow(c))) clientByPhone.set(k, { id: c.id, name: c.name });
   }
 
   // Fall back to synced OpenPhone/HubSpot contact names for numbers that aren't
@@ -303,7 +308,9 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
 
   const nameFor = (ph: string) => {
     const k = phoneKey(ph);
-    return clientByPhone.get(k)?.name || contactByPhone.get(k)?.name || teamByPhone.get(k) || fmtPhone(ph);
+    // Jordan's TEST client also has Jordan's team number. A group participant
+    // is the person on that number, not the fixture account that uses it.
+    return teamByPhone.get(k) || clientByPhone.get(k)?.name || contactByPhone.get(k)?.name || fmtPhone(ph);
   };
 
   const DISPLAY_CAP = 150;
@@ -313,10 +320,11 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
       const others = (conv.participants ?? []).filter((p) => !ourNumbers.has(phoneKey(p)));
       const isGroup = others.length > 1;
       const phone = others[0] ?? conv.participants?.[0] ?? "";
-      const client = clientByPhone.get(phoneKey(phone));
-      const contact = client ? undefined : contactByPhone.get(phoneKey(phone));
+      const teamName = teamByPhone.get(phoneKey(phone));
+      const client = teamName ? undefined : clientByPhone.get(phoneKey(phone));
+      const contact = teamName || client ? undefined : contactByPhone.get(phoneKey(phone));
       const groupName = isGroup ? (conv.name || others.map(nameFor).join(", ")) : "";
-      return { conv, phone, others, isGroup, groupName, client, contact };
+      return { conv, phone, others, isGroup, groupName, teamName, client, contact };
     })
     .filter((r) => !incident || (incidentPhone?.length === 10 && r.others.some((p) => phoneKey(p) === incidentPhone)))
     .sort((a, b) => new Date(b.conv.lastActivityAt ?? 0).getTime() - new Date(a.conv.lastActivityAt ?? 0).getTime())
@@ -337,8 +345,8 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
           <p className="text-sm text-muted">{incident ? "No matching OpenPhone conversation was returned. Check the provider directly before deciding whether this text needs a retry." : "No conversations found."}</p>
         ) : (
           <div className="overflow-hidden rounded-2xl border bg-surface">
-            {rows.map(({ conv, phone, others, isGroup, groupName, client, contact }) => {
-              const name = isGroup ? groupName : (client?.name || contact?.name || conv.name || fmtPhone(phone));
+            {rows.map(({ conv, phone, others, isGroup, groupName, teamName, client, contact }) => {
+              const name = isGroup ? groupName : (teamName || client?.name || contact?.name || conv.name || fmtPhone(phone));
               const pParam = isGroup ? others.join(",") : phone;
               const href = `/communications/thread?pn=${encodeURIComponent(conv.phoneNumberId ?? "")}&p=${encodeURIComponent(pParam)}&name=${encodeURIComponent(name)}`;
               return (
@@ -352,6 +360,10 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
                       {isGroup ? (
                         <span className="inline-flex items-center gap-0.5 rounded bg-brand-soft px-1.5 text-[10px] font-medium text-brand">
                           <Users className="size-2.5" /> group · {others.length}
+                        </span>
+                      ) : teamName ? (
+                        <span className="inline-flex items-center gap-0.5 rounded bg-brand-soft px-1.5 text-[10px] font-medium text-brand">
+                          <User className="size-2.5" /> team
                         </span>
                       ) : client ? (
                         <span className="inline-flex items-center gap-0.5 rounded bg-success-soft px-1.5 text-[10px] font-medium text-success">

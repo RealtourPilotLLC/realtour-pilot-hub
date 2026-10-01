@@ -11,6 +11,8 @@ import { parseChecklist } from "@/lib/checklist";
 import { countQcMisses } from "@/lib/tasks";
 import { DEBRIEF_QC_LABELS } from "@/lib/debrief";
 import { pinnedPromise } from "@/lib/turnaround";
+import { isSyntheticClientRow } from "@/lib/testClients";
+import { rankClientRows } from "@/lib/contacts";
 
 // Re-export the QC types so the dashboard can consume them without reaching
 // past this module — queries.ts is the dashboard's single data door.
@@ -87,17 +89,65 @@ export type ConvoMember = {
   avatarUrl: string | null; // the agent's Aryeo headshot — null when Aryeo has none
 };
 
+/** Apply the existing comms ranking only to the client rows actually eligible
+ * for this number. A shared TEST phone must not bring in another fixture row. */
+async function rankedPhoneClientId(ids: string[]): Promise<string | null> {
+  if (ids.length === 0) return null;
+  const rows = await prisma.client.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true, parentClientId: true, aryeoCustomerId: true, createdAt: true,
+      projects: {
+        orderBy: [
+          { orderedAt: { sort: "desc", nulls: "last" } },
+          { shootDate: { sort: "desc", nulls: "last" } },
+          { createdAt: "desc" },
+        ],
+        take: 1,
+        select: { orderedAt: true, shootDate: true, createdAt: true },
+      },
+    },
+  });
+  return rankClientRows(rows)[0]?.id ?? null;
+}
+
 // Resolve a set of phone numbers (group participants) to names/clients, for the
 // group-chat header, sender labels, and the members sidebar.
 export async function resolveParticipants(phones: string[]): Promise<ConvoMember[]> {
   const keys = phones.map((p) => (p || "").replace(/\D/g, "").slice(-10)).filter((k) => k.length === 10);
   if (keys.length === 0) return [];
-  const [clients, contacts] = await Promise.all([
+  const [clients, contacts, team] = await Promise.all([
     prisma.client.findMany({ select: { id: true, name: true, phone: true, segment: true, socialClient: true, socialPlan: true, avatarUrl: true } }),
     prisma.contact.findMany({ where: { phones: { not: null } }, select: { firstName: true, lastName: true, company: true, phones: true } }),
+    prisma.teamMember.findMany({ where: { phone: { not: null } }, select: { name: true, phone: true } }),
   ]);
+  const candidatesByPhone = new Map<string, (typeof clients)[number][]>();
+  for (const c of clients) {
+    const k = (c.phone ?? "").replace(/\D/g, "").slice(-10);
+    if (k.length !== 10) continue;
+    const candidates = candidatesByPhone.get(k) ?? [];
+    candidates.push(c);
+    candidatesByPhone.set(k, candidates);
+  }
   const byClient = new Map<string, (typeof clients)[number]>();
-  for (const c of clients) { const k = (c.phone ?? "").replace(/\D/g, "").slice(-10); if (k.length === 10) byClient.set(k, c); }
+  await Promise.all([...new Set(keys)].map(async (key) => {
+    const candidates = candidatesByPhone.get(key) ?? [];
+    const real = candidates.filter((c) => !isSyntheticClientRow(c));
+    const eligible = real.length ? real : candidates;
+    if (eligible.length === 1) byClient.set(key, eligible[0]);
+    else if (eligible.length > 1) {
+      // Reuse the comms resolver's existing activity/parent ranking for shared
+      // real numbers; never choose whichever database row happened to load last.
+      const rankedId = await rankedPhoneClientId(eligible.map((c) => c.id));
+      const row = eligible.find((c) => c.id === rankedId);
+      if (row) byClient.set(key, row);
+    }
+  }));
+  const byTeam = new Map<string, string>();
+  for (const member of team) {
+    const k = (member.phone ?? "").replace(/\D/g, "").slice(-10);
+    if (k.length === 10) byTeam.set(k, member.name);
+  }
   const byContact = new Map<string, string>();
   for (const ct of contacts) {
     const name = [ct.firstName, ct.lastName].filter(Boolean).join(" ").trim() || ct.company;
@@ -110,11 +160,12 @@ export async function resolveParticipants(phones: string[]): Promise<ConvoMember
     .map((phone) => {
       const key = phone.replace(/\D/g, "").slice(-10);
       if (key.length !== 10) return null;
-      const c = byClient.get(key);
+      const teamName = byTeam.get(key);
+      const c = teamName ? undefined : byClient.get(key);
       const fmt = `(${key.slice(0, 3)}) ${key.slice(3, 6)}-${key.slice(6)}`;
       return {
         phone, key,
-        name: c?.name ?? byContact.get(key) ?? fmt,
+        name: teamName ?? c?.name ?? byContact.get(key) ?? fmt,
         clientId: c?.id ?? null,
         segment: c?.segment ?? null,
         socialClient: c?.socialClient ?? false,
@@ -131,6 +182,13 @@ export async function getConversationContext(rawPhone: string) {
   const k = (rawPhone || "").replace(/\D/g, "").slice(-10);
   if (k.length !== 10) return { client: null, projects: [], activities: [] };
 
+  // A team person's number can also be on a synthetic client record. Keep
+  // their conversation and name, without attaching that fixture's projects.
+  const team = await prisma.teamMember.findMany({ where: { phone: { not: null } }, select: { phone: true } });
+  if (team.some((member) => (member.phone ?? "").replace(/\D/g, "").slice(-10) === k)) {
+    return { client: null, projects: [], activities: [] };
+  }
+
   const clients = await prisma.client.findMany({
     select: {
       id: true, name: true, phone: true, email: true, backupEmail: true,
@@ -138,7 +196,11 @@ export async function getConversationContext(rawPhone: string) {
       avatarUrl: true, // headshot for the conversation header (ConversationView)
     },
   });
-  let client = clients.find((c) => c.phone && c.phone.replace(/\D/g, "").slice(-10) === k) ?? null;
+  const matchedClients = clients.filter((c) => c.phone && c.phone.replace(/\D/g, "").slice(-10) === k);
+  const realClients = matchedClients.filter((c) => !isSyntheticClientRow(c));
+  const eligible = realClients.length ? realClients : matchedClients;
+  const rankedId = eligible.length > 1 ? await rankedPhoneClientId(eligible.map((c) => c.id)) : null;
+  let client = rankedId ? eligible.find((c) => c.id === rankedId) ?? null : eligible[0] ?? null;
   if (!client) {
     const contacts = await prisma.contact.findMany({
       where: { clientId: { not: null } },

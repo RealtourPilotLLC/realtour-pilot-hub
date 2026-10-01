@@ -250,7 +250,7 @@ export async function resolveClientByPhones(phones: string[]): Promise<{
 // prefer the agent over a folded assistant, then the row with the freshest
 // project activity, then a row with an Aryeo identity, then the OLDEST row
 // (the canonical original beats a freshly-minted twin).
-function rankClientRows<T extends {
+export function rankClientRows<T extends {
   id: string;
   parentClientId: string | null;
   aryeoCustomerId: string | null;

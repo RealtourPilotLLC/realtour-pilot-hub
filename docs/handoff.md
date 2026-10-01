@@ -17,13 +17,24 @@ second ask resolving to its own confirmed row. TypeScript and focused lint pass.
 The fixture's manual confirmation has no Aryeo appointment and does not prove
 provider-backed booking. No production database or provider write occurred.
 
-C14 communication identity remains open. A read-only Neon inventory
+C14 communication identity source is now measured. A read-only Neon inventory
 (`scripts/_recon/c14-identity.ts`) found two real Jordan Spackman client rows,
 one Jordan Spackman TEST row, and **no direct phone collision** between the
-real and TEST rows. The communications inbox currently prioritizes client
-names from a phone map and uses OpenPhone's group name when present. Inspect
-the specific provider group/contact mapping before changing that display or
-filtering any real conversation. Read-only snapshots also found an empty
+real and TEST rows. The TEST phone instead matches Jordan's team member row
+and a generic Realtour Pilot contact. A bounded read-only OpenPhone list
+(`scripts/_recon/c14-openphone.ts`) returned 469 conversations; 24 include the
+TEST phone, many in groups, and their provider group names are null. The old
+inbox and thread participant readers named that phone from the synthetic
+client before the team row. The new readers name the team person first, keep
+the conversations visible, and do not attach the fixture's client context to
+a team member. Duplicate real client numbers are ranked among real candidate
+rows using the existing activity/parent rule instead of database row order.
+Read-only replay prints Jordan Spackman/no client context for the TEST/team
+phone and Jordan Spackman/real client context for both real phone rows. This
+passed Node20 typecheck, focused lint (one pre-existing `isProjectRecent`
+warning in `queries.ts`) and production build. It still needs a normal signed
+browser replay; the two real Jordan client rows
+remain distinct and were not merged. Read-only snapshots also found an empty
 global failed-automation index and 11 Home exceptions with no TEST-labeled
 title; those snapshots do not prove all production counts are isolated.
 
