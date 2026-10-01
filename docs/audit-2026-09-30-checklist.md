@@ -66,6 +66,9 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ## Current checks and environment
 
+- **Latest resume:** interrupted `cd3fc86` production build exited 0 in the isolated managed checkout; stable-tree TypeScript passed. No Ops Hub commands or 3200/5599 listeners remained at the resume check; unrelated Premium Reel commands were untouched. Earlier running-demo notes below are historical.
+- **C14 Home summaries:** owner project totals, delivery/reply/SLA/QC dials, active-edit count, personal flags, handled-today and operational pulse fields now use the same normal client scope. Isolated drill 15/0, focused lint, TypeScript and one source review passed. Deleted/unlinked markers and catch-up context survive; bank/ledger/AR formulas and stored state remain unchanged. Initial test date/appointment assumptions were corrected. Signed-browser identity and summary test-view UI acceptance remain open; do not mark all C14 acceptance complete.
+
 - `npm run build` passed on Node 20 after the Edge-compatible drill backstop correction.
 - Focused lint and TypeScript passed for changed files; existing unrelated lint warnings remain in older code.
 - Five isolated drills passed, 479 checks total: delivery truth 22, real Postgres Start 76, draft topics 138, rollout scope 112, isolation boundary 131. No skips or failures.

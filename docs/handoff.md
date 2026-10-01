@@ -2,6 +2,30 @@
 
 ## Sep 30 takeover addendum
 
+### Resume checkpoint — interrupted build recovered; C14 summary scope
+
+The interrupted build at `cd3fc86` completed with exit 0 in the separate managed
+checkout. Stable-tree TypeScript also passed. On the latest resume, no Ops Hub
+build/test/migration/deployment process or listener on 3200/5599 remained; the
+previous Claude demo stopped outside this work. Unrelated Premium Reel Claude
+commands were left alone. Main branch is still `codex/audit-2026-09-30`.
+
+Remaining Home summary sources now receive the same client identity exclusions:
+owner project totals, delivery/reply/SLA/QC dials, active-work count, personal
+flags before their cap, operational owner pulse fields, and handled-today.
+Historical markers for deleted/unlinked work survive. Catch-up detection retains
+its full activity context. Bank/ledger/AR figures keep Finance's existing full
+definitions; scoping does not reclassify money or change a stored record.
+`c14-home-summaries` passes 15/0; focused lint (one older queries.ts warning),
+TypeScript and one focused source review passed. Two initial fixture assumptions
+about appointment anchors and accounting dates were corrected, not product rules.
+C14 signed-browser identity and summary test-view UI acceptance remain open.
+
+Agent capacity recovered. Separate U1/U3 queue-menu, U4 task navigation and U5
+reminder policy batches are underway. No approval pending, deployment, switch
+change, production mutation or client/provider send. Browser access remains
+policy-blocked; do not work around it with another browser or CDP.
+
 ### C11 checkpoint — signed first-month call processing and recovery
 
 `client-call-journey` passes 25/0 using the actual one-time client login route,

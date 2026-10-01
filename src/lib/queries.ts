@@ -749,15 +749,20 @@ async function backfillStampedDeliveries(since: Date): Promise<Map<string, Date>
   return stamped;
 }
 
-export async function getOwnerPulse(): Promise<OwnerPulse> {
+export async function getOwnerPulse(opts: TaskClientScope = {}): Promise<OwnerPulse> {
   const now = Date.now();
   const d30 = new Date(now - 30 * 86400000);
   const d60 = new Date(now - 60 * 86400000);
+  const clientScope = opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {};
+  // CommLog keeps plain references, so scope both the client and job identity.
+  const excludedProjectIds = opts.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+    : [];
 
   const [allDelivered, texts, openRevisions, backfilled] = await Promise.all([
     // Both 30d windows in one fetch, bucketed in JS below.
     prisma.project.findMany({
-      where: { deliveredAt: { gte: d60 }, status: { not: "CANCELLED" } },
+      where: { ...clientScope, deliveredAt: { gte: d60 }, status: { not: "CANCELLED" } },
       // promisedDueAt is the deadline the job was SOLD under (Sep 18). It has
       // to be read here, not Project.deliveryDue alone: deliveryDue is
       // RECOMPUTED by the status sweep on every pass, so the day a turnaround
@@ -772,11 +777,15 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
     // inbound/outbound can be paired per conversation. Ordered ASC so "the next
     // outbound" is a forward scan.
     prisma.commLog.findMany({
-      where: { channel: "text", occurredAt: { gte: d60 }, clientId: { not: null } },
+      where: {
+        channel: "text", occurredAt: { gte: d60 },
+        clientId: { not: null, ...(opts.excludeClientIds?.length ? { notIn: opts.excludeClientIds } : {}) },
+        ...(excludedProjectIds.length ? { OR: [{ projectId: null }, { projectId: { notIn: excludedProjectIds } }] } : {}),
+      },
       select: { direction: true, clientId: true, occurredAt: true },
       orderBy: { occurredAt: "asc" },
     }),
-    prisma.smartTask.count({ where: { taskType: "revision", status: { in: BRIEF_ACTIVE } } }),
+    prisma.smartTask.count({ where: { AND: [taskClientScopeWhere(opts)], taskType: "revision", status: { in: BRIEF_ACTIVE } } }),
     backfillStampedDeliveries(d60),
   ]);
 
@@ -946,10 +955,10 @@ export type OwnerQcDial = {
   basis: string; // one plain-English line for the dashboard
 };
 
-async function ownerQcDial(days = 30): Promise<OwnerQcDial> {
+async function ownerQcDial(days = 30, opts: TaskClientScope = {}): Promise<OwnerQcDial> {
   const since = new Date(Date.now() - days * 24 * 3600_000);
   const records = await prisma.qcRecord.findMany({
-    where: { completedAt: { gte: since } },
+    where: { completedAt: { gte: since }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
     select: { itemsChecked: true, missCount: true, reopenedByRevisionAt: true, completedBy: true },
   });
 
@@ -1022,13 +1031,14 @@ async function ownerQcDial(days = 30): Promise<OwnerQcDial> {
   };
 }
 
-export async function getOwnerDials(): Promise<OwnerDials> {
+export async function getOwnerDials(opts: TaskClientScope = {}): Promise<OwnerDials> {
+  const clientScope = opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {};
   const [projects, qc] = await Promise.all([
     // Mirror /editing's `inflightVideo`: non-delivered production stages that
     // ordered a video/reel. Same statuses + deliverable filter the Editor Queue
     // uses, so the dashboard's count can't drift from that page.
     prisma.project.findMany({
-      where: { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+      where: { ...clientScope, status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
       select: {
         shootDate: true,
         status: true,
@@ -1039,13 +1049,13 @@ export async function getOwnerDials(): Promise<OwnerDials> {
         deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       },
     }),
-    ownerQcDial(30),
+    ownerQcDial(30, opts),
   ]);
   // Being edited NOW (§7.1, A64): the Working-now panel's answer, so the dial
   // never calls owed work "editing" (review fix, Sep 25).
   const editingNow = await prisma.editorWorkItem
     .findMany({ where: { state: "ACTIVE" }, select: { projectId: true }, distinct: ["projectId"] })
-    .then((r) => prisma.project.count({ where: { id: { in: r.map((x) => x.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED"] } } }))
+    .then((r) => prisma.project.count({ where: { ...clientScope, id: { in: r.map((x) => x.projectId) }, status: { notIn: ["DELIVERED", "CANCELLED"] } } }))
     .catch(() => 0);
 
   let inEditing = 0;
@@ -1120,7 +1130,7 @@ export type ShootWindow = Awaited<ReturnType<typeof getShootWindow>>;
 // The owner's money glance — three aggregates, no row fetches. (Replaced the
 // old getDashboardData, which pulled every project row for stat cards nobody
 // acted on.)
-export async function getOwnerStats(): Promise<{
+export async function getOwnerStats(opts: TaskClientScope = {}): Promise<{
   revenueThisMonth: number;
   deliveredThisMonth: number;
   pipelineRevenue: number;
@@ -1130,14 +1140,15 @@ export async function getOwnerStats(): Promise<{
   // ET-evening rollover on the 1st.
   const startOfMonth = etDayStartUtc(new Date(etDayKey(new Date()).slice(0, 8) + "01T12:00:00Z"));
   const ACTIVE = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as ProjectStatus[];
+  const clientScope = opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {};
   const [month, pipeline] = await Promise.all([
     prisma.project.aggregate({
-      where: { deliveredAt: { gte: startOfMonth }, status: { not: "CANCELLED" } },
+      where: { ...clientScope, deliveredAt: { gte: startOfMonth }, status: { not: "CANCELLED" } },
       _sum: { price: true },
       _count: true,
     }),
     prisma.project.aggregate({
-      where: { status: { in: ACTIVE } },
+      where: { ...clientScope, status: { in: ACTIVE } },
       _sum: { price: true },
       _count: true,
     }),
@@ -1659,7 +1670,7 @@ export type FlaggedItem = {
   projectTitle: string | null;
 };
 
-export async function getFlaggedForMe(opts: {
+export async function getFlaggedForMe(opts: TaskClientScope & {
   /** the viewer's editor/assignee key ("kyle", "kim", …), when they have one */
   assignedKey?: string | null;
   /** the viewer's TeamMember id, when they have one */
@@ -1678,6 +1689,7 @@ export async function getFlaggedForMe(opts: {
     where: {
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       flaggedAt: { not: null },
+      AND: [taskClientScopeWhere(opts)],
       OR: mine,
     },
     orderBy: [{ flaggedAt: "desc" }],

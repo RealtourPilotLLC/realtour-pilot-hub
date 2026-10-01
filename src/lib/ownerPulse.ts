@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown } from "@/lib/financeCategories";
 import { etDayKey } from "@/lib/datetime";
+import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
 // "WHERE IS THE BUSINESS AT" — the glance panel.
@@ -40,7 +41,9 @@ export type OwnerPulseSnapshot = {
   overdueTasks: number;
 };
 
-export async function ownerPulse(): Promise<OwnerPulseSnapshot> {
+export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulseSnapshot> {
+  // Scope workload only. Ledger/bank/AR figures retain Finance's definition.
+  const clientScope = opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {};
   const now = new Date();
   const todayKey = etDayKey(now);
   const monthStartKey = `${todayKey.slice(0, 7)}-01`;
@@ -80,12 +83,12 @@ export async function ownerPulse(): Promise<OwnerPulseSnapshot> {
         },
       })
       .catch(() => null),
-    prisma.appointment.count({ where: { startAt: { gte: weekStart, lt: weekEnd } } }).catch(() => 0),
+    prisma.appointment.count({ where: { project: clientScope, startAt: { gte: weekStart, lt: weekEnd } } }).catch(() => 0),
     prisma.project
-      .count({ where: { deliveredAt: { gte: new Date(`${monthStartKey}T00:00:00Z`) } } })
+      .count({ where: { ...clientScope, deliveredAt: { gte: new Date(`${monthStartKey}T00:00:00Z`) } } })
       .catch(() => 0),
     prisma.smartTask
-      .findMany({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { dueAt: true } })
+      .findMany({ where: { AND: [taskClientScopeWhere(opts)], status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { dueAt: true } })
       .catch(() => []),
   ]);
 

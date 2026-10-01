@@ -461,7 +461,7 @@ export default async function HomePage() {
       getShootWindow({ excludeClientIds: excludedClientIds }), // only for the week-ahead strip; today's shoots come from buildOpsDay
       getProactiveFlags({ excludeClientIds: excludedClientIds }),
       // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
-      handledByPeopleToday(),
+      handledByPeopleToday({ excludeClientIds: excludedClientIds }),
       // The Project Tracker's delivery board, merged into the Pipeline block.
       // A failed read is NOT a clean board: it is marked unavailable so the
       // Pipeline block says it could not load and the "0 past due" reassurance
@@ -481,15 +481,16 @@ export default async function HomePage() {
           assignedKey: me ? me.editorKey ?? viewerAssigneeKey(me, roster) ?? (me.name ? slugForName(me.name) : null) : null,
           memberId: me?.teamMemberId ?? null,
           role: me?.role ?? "OWNER",
+          excludeClientIds: excludedClientIds,
         }),
       ),
-      isOwner ? getOwnerStats() : Promise.resolve(null),
-      isOwner ? getOwnerPulse() : Promise.resolve(null),
+      isOwner ? getOwnerStats({ excludeClientIds: excludedClientIds }) : Promise.resolve(null),
+      isOwner ? getOwnerPulse({ excludeClientIds: excludedClientIds }) : Promise.resolve(null),
       // Owner-only quality dials (video-SLA roll-up + QC health) — same gate.
-      isOwner ? getOwnerDials() : Promise.resolve(null),
+      isOwner ? getOwnerDials({ excludeClientIds: excludedClientIds }) : Promise.resolve(null),
       // My Day's money glance (bank / profit / owed). Every figure in it is a
       // cheap indexed read by contract — see the header of ownerPulse.ts.
-      isOwner ? ownerPulse().catch(() => null) : Promise.resolve(null),
+      isOwner ? ownerPulse({ excludeClientIds: excludedClientIds }).catch(() => null) : Promise.resolve(null),
       // My Day's personal list. Owner-only: it is one person's private list,
       // exactly as /day was ownerOnly in PAGES.
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),

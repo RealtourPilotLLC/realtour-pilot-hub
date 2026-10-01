@@ -16,6 +16,7 @@ import type { StatusEvidence } from "@/lib/projectStatus";
 import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
 import { readyToSend, type ReadyBoard } from "@/lib/readyToSend";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -1279,13 +1280,14 @@ export async function stampHandledByHand(taskId: string, by: string | null, emai
     .catch(() => {});
 }
 
-export async function handledByPeopleToday(): Promise<number> {
+export async function handledByPeopleToday(opts: TaskClientScope = {}): Promise<number> {
   const since = etDayWindow(0).start;
   const [stamped, marked] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
         status: "COMPLETED",
         completedAt: { gte: since },
+        AND: [taskClientScopeWhere(opts)],
         OR: [{ sourceDetail: CLOSED_BY_HAND }, { source: "manual" }],
       },
       select: { id: true },
@@ -1297,6 +1299,14 @@ export async function handledByPeopleToday(): Promise<number> {
   ]);
   // One set, so a manual row closed through "Handled" is one thing, not two.
   const ids = new Set(stamped.map((t) => t.id));
-  for (const m of marked) ids.add(m.key.slice(HANDLED_BY_HAND_PREFIX.length));
+  const markedIds = marked.map((m) => m.key.slice(HANDLED_BY_HAND_PREFIX.length));
+  // Keep historical markers for removed/unlinked work; exclude only a known
+  // synthetic identity, whether saved directly on the task or through its job.
+  const excluded = new Set(opts.excludeClientIds ?? []);
+  const linked = excluded.size && markedIds.length ? await prisma.smartTask.findMany({
+    where: { id: { in: markedIds } }, select: { id: true, clientId: true, project: { select: { clientId: true } } },
+  }) : [];
+  const hidden = new Set(linked.filter((t) => excluded.has(t.clientId ?? "") || excluded.has(t.project?.clientId ?? "")).map((t) => t.id));
+  for (const id of markedIds) if (!hidden.has(id)) ids.add(id);
   return ids.size;
 }
