@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — schedule and email normalized save receipts
+
+Quiet-schedule rows retain a stable person key when the returned save timestamp
+advances. Exact submitted drafts adopt the server's normalized windows/source;
+newer windows and typed time fields remain. Explicit saved-empty schedules remain
+distinct from the office rota and owner preset. Email alert saves likewise
+acknowledge the exact submitted normalized values without replacing newer enabled
+or threshold edits. The shared helper is additive; existing save callers retain
+their behavior. Server actions, defaults, permissions and activation are intact.
+
+Isolated receipt-race/first-paint fixture passed 21/0
+(`/tmp/ops-u5-normalized-settings-save/`); lint/diff and focused review passed.
+The shared typecheck identified only the in-progress integration test's fixture
+typing errors, which its owner is correcting; final stable gate follows. Browser
+late-save/refresh acceptance remains open. No production state or provider changed.
+
 ### C14 checkpoint — explicit Home test view and supported return links
 
 Home now accepts `?test=1` across its existing operating workload readers and

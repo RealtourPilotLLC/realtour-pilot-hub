@@ -72,6 +72,11 @@ scope acceptance remain open. Exact cut links and Finance definitions are intact
 
 ## Current checks and environment
 
+- **U5 schedule/email receipts:** stable rows and normalized snapshot receipts
+  preserve newer edits; saved-empty/rota/preset and enabled flags remain distinct.
+  Isolated 21/0, lint/diff and focused review pass. Final stable integration gate
+  and actual browser late-save/refresh remain open. No action/policy changes.
+
 - **W03 saved-receipt recovery:** missing/partial issues and timing retry safely from immutable saved metadata. Exact original version and editor survive a newer cut; legacy closed/moved/unknown cases refuse. Real PG 22/0 plus existing W03 26/0, lint/review pass. Pre-receipt task/activity/upload windows remain a separate active item; browser proof open.
 - **Integrated build:** committed candidate through `c5e619e` passed isolated production build + TypeScript (exit 0, `/tmp/ops-hub-build-c5e619e.log`). W03 and later active batches are not covered by this build.
 

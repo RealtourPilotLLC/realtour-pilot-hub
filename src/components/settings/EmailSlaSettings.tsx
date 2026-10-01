@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { Check, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { Loader2 } from "lucide-react";
 import { loadEmailSla, saveEmailSla } from "@/components/settings/emailSla.actions";
 import type { EmailSlaRules } from "@/lib/commsSla";
 import { cn } from "@/lib/utils";
+import { finishNormalizedSettingsSave, settingsDraftDirty, type SettingsDraft } from "@/lib/settingsDraft";
+import { Button } from "@/components/ui/Action";
+import { SaveStatus } from "@/components/ui/SaveStatus";
 
 // Unanswered client email (O06, Sep 26 2026) — Jordan: "bell only, counting
 // covered hours only; Kyle's bell after 4, mine after 9; an unhappy client at
@@ -24,7 +27,7 @@ function Hours({ value, onChange, label }: { value: number; onChange: (n: number
           const n = Number(e.target.value.replace(/[^\d.]/g, ""));
           if (!Number.isNaN(n)) onChange(Math.min(45, Math.max(1, n)));
         }}
-        className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm tabular-nums outline-none focus:border-brand"
+        className="min-h-11 w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm tabular-nums outline-none focus:border-brand"
       />
       <span className="text-xs text-muted">covered hours</span>
     </span>
@@ -32,20 +35,52 @@ function Hours({ value, onChange, label }: { value: number; onChange: (n: number
 }
 
 export function EmailSlaSettings() {
-  const [r, setR] = useState<EmailSlaRules | null>(null);
-  const [since, setSince] = useState<string | null>(null);
+  const [data, setData] = useState<{ rules: EmailSlaRules; since: string | null } | null>(null);
   const [failed, setFailed] = useState(false);
-  const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => {
-    loadEmailSla()
-      .then((d) => { setR(d.rules); setSince(d.since); })
-      .catch(() => setFailed(true));
+    loadEmailSla().then(setData).catch(() => setFailed(true));
   }, []);
-  const set = (patch: Partial<EmailSlaRules>) => { setR((p) => (p ? { ...p, ...patch } : p)); setMsg(null); };
 
   if (failed) return <p className="rounded-lg border border-border p-3 text-[13px] text-muted">The email reply alert settings could not be read just now — reload to try again.</p>;
-  if (!r) return <p className="rounded-lg border border-border p-3 text-[13px] text-muted"><Loader2 className="mr-1.5 inline size-3.5 animate-spin" />Loading email reply alerts…</p>;
+  if (!data) return <p className="rounded-lg border border-border p-3 text-[13px] text-muted"><Loader2 className="mr-1.5 inline size-3.5 animate-spin" />Loading email reply alerts…</p>;
+  return <EmailSlaForm initial={data.rules} initialSince={data.since} />;
+}
+
+export function EmailSlaForm({ initial, initialSince }: { initial: EmailSlaRules; initialSince: string | null }) {
+  const [state, setState] = useState<SettingsDraft<EmailSlaRules>>({ value: initial, saved: initial, feedback: null });
+  const { value: r, feedback } = state;
+  const [since, setSince] = useState<string | null>(initialSince);
+  const [busy, start] = useTransition();
+  const saving = useRef(false);
+  const dirty = settingsDraftDirty(state);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+  const set = (patch: Partial<EmailSlaRules>) => setState((current) => ({ ...current, value: { ...current.value, ...patch }, feedback: null }));
+
+  const save = () => {
+    if (saving.current) return;
+    saving.current = true;
+    const submitted = r;
+    start(async () => {
+      try {
+        const res = await saveEmailSla(submitted).catch(() => ({ ok: false, message: "The save could not be confirmed. Your edits are still here; try Save again.", rules: undefined }));
+        if (res.ok && res.rules) {
+          const accepted = res.rules;
+          setState((current) => finishNormalizedSettingsSave(current, submitted, res, accepted));
+          const again = await loadEmailSla().catch(() => null);
+          if (again) setSince(again.since);
+        } else {
+          setState((current) => ({ ...current, feedback: res.ok
+            ? { ok: false, message: "The saved email alert settings were not returned. Your edits are still here; reload before saving again." }
+            : res }));
+        }
+      } finally { saving.current = false; }
+    });
+  };
 
   const sinceWords = since
     ? new Date(since).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
@@ -64,9 +99,11 @@ export function EmailSlaSettings() {
         <button
           type="button" role="switch" aria-checked={r.enabled} aria-label="Unanswered client email alerts"
           onClick={() => set({ enabled: !r.enabled })}
-          className={cn("relative h-6 w-11 shrink-0 rounded-full transition-colors", r.enabled ? "bg-success" : "bg-surface-2 ring-1 ring-border")}
+          className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand"
         >
-          <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", r.enabled ? "left-[22px]" : "left-0.5")} />
+          <span aria-hidden className={cn("relative h-6 w-11 rounded-full transition-colors", r.enabled ? "bg-success" : "bg-surface-2 ring-1 ring-border")}>
+            <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", r.enabled ? "left-[22px]" : "left-0.5")} />
+          </span>
         </button>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
@@ -86,22 +123,11 @@ export function EmailSlaSettings() {
           : "Email already waiting when this is switched on is listed, never rung."}
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <button
-          onClick={() => start(async () => {
-            const res = await saveEmailSla(r).catch(() => ({ ok: false, message: "Couldn’t save — try again.", rules: undefined }));
-            setMsg(res.message);
-            if (res.ok && res.rules) {
-              setR(res.rules);
-              const again = await loadEmailSla().catch(() => null);
-              if (again) setSince(again.since);
-            }
-          })}
-          disabled={busy}
-          className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
-        >
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save
-        </button>
-        {msg && <span className="text-[13px] font-medium text-muted">{msg}</span>}
+        <Button onClick={save} busy={busy} busyLabel="Saving…">Save email reply alerts</Button>
+        <SaveStatus
+          state={busy ? "saving" : feedback?.ok === false ? "error" : dirty ? "dirty" : feedback?.ok ? "saved" : "loaded"}
+          message={!busy && feedback ? <>{feedback.message}{feedback.ok && dirty ? " Newer edits are still unsaved." : ""}</> : undefined}
+        />
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { Check, Loader2, Plus, RotateCcw, X } from "lucide-react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { Loader2, Plus, RotateCcw, X } from "lucide-react";
 import { loadNotifySchedules, saveNotifySchedule } from "@/app/settings/actions";
 import {
   OVERNIGHT_FROM,
@@ -15,6 +15,9 @@ import {
   type QuietWindow,
 } from "@/lib/notifyPrefDefaults";
 import { cn } from "@/lib/utils";
+import { finishNormalizedSettingsSave, settingsDraftDirty, type SettingsDraft } from "@/lib/settingsDraft";
+import { Button } from "@/components/ui/Action";
+import { SaveStatus } from "@/components/ui/SaveStatus";
 
 // THE NOTIFICATION SCHEDULE (Jordan, Sep 26 2026: "I just don't want
 // notifications on Saturdays, until 7:30pm. Implement in settings a setting for
@@ -28,6 +31,9 @@ import { cn } from "@/lib/utils";
 // this page: one card's read must not hold the others up).
 
 type Loaded = { rows: NotifyScheduleRow[]; canEditAll: boolean };
+type ScheduleInput = { windows: QuietWindow[]; explicitEmpty: boolean };
+
+export const notificationScheduleDraft = (row: NotifyScheduleRow): ScheduleInput => ({ windows: row.windows, explicitEmpty: row.windows.length === 0 && row.source === "saved" });
 
 const toMinutes = (hhmm: string): number | null => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
@@ -48,9 +54,6 @@ function whenLabel(iso: string | null): string | null {
 export function NotificationSchedule() {
   const [data, setData] = useState<Loaded | null>(null);
   const [failed, setFailed] = useState(false);
-  // The server's answer to the last save, per person — kept up here because a
-  // save remounts that person's block (see the key below).
-  const [notes, setNotes] = useState<Record<string, string>>({});
   useEffect(() => {
     loadNotifySchedules().then(setData).catch(() => setFailed(true));
   }, []);
@@ -79,14 +82,12 @@ export function NotificationSchedule() {
       ) : (
         <div className="mt-2 space-y-2">
           {data.rows.map((row) => (
-            // Keyed on the stored stamp: a save hands back a fresh row, and the
-            // block starts again from what the server now holds.
+            // Keep the same block when its stored stamp advances: an in-flight
+            // save must not remount away windows or time fields edited meanwhile.
             <PersonSchedule
-              key={`${row.teamMemberId}:${row.setAt ?? ""}`}
+              key={row.teamMemberId}
               row={row}
-              note={notes[row.teamMemberId] ?? null}
-              onSaved={(next, message) => {
-                setNotes((n) => ({ ...n, [next.teamMemberId]: message }));
+              onSaved={(next) => {
                 setData((d) => (d ? { ...d, rows: d.rows.map((r) => (r.teamMemberId === next.teamMemberId ? next : r)) } : d));
               }}
             />
@@ -97,20 +98,29 @@ export function NotificationSchedule() {
   );
 }
 
-function PersonSchedule({ row, note, onSaved }: { row: NotifyScheduleRow; note: string | null; onSaved: (row: NotifyScheduleRow, message: string) => void }) {
+export function PersonSchedule({ row, onSaved }: { row: NotifyScheduleRow; onSaved: (row: NotifyScheduleRow) => void }) {
   const first = row.name.split(/\s+/)[0];
-  const [windows, setWindows] = useState<QuietWindow[]>(row.windows);
-  const [touched, setTouched] = useState(false);
+  const [state, setState] = useState<SettingsDraft<ScheduleInput>>(() => ({ value: notificationScheduleDraft(row), saved: notificationScheduleDraft(row), feedback: null }));
   const [day, setDay] = useState(6);
   const [from, setFrom] = useState("00:00");
   const [to, setTo] = useState("19:30");
   const [busy, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(note);
-
-  const dirty = touched && JSON.stringify(windows) !== JSON.stringify(row.windows);
-  // An emptied list is a real answer ("no quiet time, weekends included"), so
-  // it only counts as a change once the person has actually touched it.
-  const dirtyEmpty = touched && windows.length === 0 && row.source !== "saved";
+  const saving = useRef(false);
+  const { windows } = state.value;
+  const { feedback } = state;
+  // An explicit empty list is a saved answer; it differs from no personal
+  // schedule even when both lists are empty. Keep that intent in the snapshot.
+  const dirty = settingsDraftDirty(state);
+  const changeWindows = (next: QuietWindow[] | ((current: QuietWindow[]) => QuietWindow[])) => setState((current) => {
+    const windows = typeof next === "function" ? next(current.value.windows) : next;
+    return { ...current, value: { windows, explicitEmpty: windows.length === 0 }, feedback: null };
+  });
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   const fromMin = toMinutes(from);
   const toMinRaw = toMinutes(to);
@@ -123,21 +133,32 @@ function PersonSchedule({ row, note, onSaved }: { row: NotifyScheduleRow; note: 
     if (!draft || problem) return;
     const merged = parseQuietWindows([...windows, draft]);
     if (!merged) return;
-    setWindows(merged);
-    setTouched(true);
-    setMsg(null);
+    changeWindows(merged);
   };
   const remove = (i: number) => {
-    setWindows((ws) => ws.filter((_, j) => j !== i));
-    setTouched(true);
-    setMsg(null);
+    changeWindows((ws) => ws.filter((_, j) => j !== i));
   };
-  const save = (next: QuietWindow[] | null) =>
+  const save = (next: QuietWindow[] | null) => {
+    if (saving.current) return;
+    saving.current = true;
+    const submitted = state.value;
     start(async () => {
-      const res = await saveNotifySchedule(row.teamMemberId, next, row.setAt).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
-      setMsg(res.message);
-      if (res.ok && "row" in res && res.row) onSaved(res.row, res.message);
+      try {
+        const res = await saveNotifySchedule(row.teamMemberId, next, row.setAt).catch(() => ({ ok: false, message: "The save could not be confirmed. Your edits are still here; reload the schedule before saving again." }));
+        if (res.ok && "row" in res && res.row) {
+          const accepted = notificationScheduleDraft(res.row);
+          setState((current) => finishNormalizedSettingsSave(current, submitted, res, accepted));
+          // The returned stamp is needed for the next optimistic-concurrency check,
+          // including when a newer draft remains on screen.
+          onSaved(res.row);
+        } else {
+          setState((current) => ({ ...current, feedback: res.ok
+            ? { ok: false, message: "The updated schedule could not be read back. Your edits are still here; reload before saving again." }
+            : res }));
+        }
+      } finally { saving.current = false; }
     });
+  };
 
   const sourceChip =
     row.source === "saved" ? "saved" : row.source === "preset" ? "Jordan’s preset" : "not set — office rota";
@@ -155,7 +176,7 @@ function PersonSchedule({ row, note, onSaved }: { row: NotifyScheduleRow; note: 
         <span className="text-sm font-semibold">{row.name}</span>
         <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", row.source === "none" ? "bg-surface-2 text-muted" : "bg-brand/10 text-brand")}>{sourceChip}</span>
       </div>
-      <p className="mt-1 text-[13px]">{touched ? describeQuietWindows(first, windows) : row.summary}</p>
+      <p className="mt-1 text-[13px]">{dirty ? describeQuietWindows(first, windows) : row.summary}</p>
       {heldWords && <p className="text-[12px] text-warning">{heldWords}</p>}
 
       {windows.length > 0 && (
@@ -163,7 +184,7 @@ function PersonSchedule({ row, note, onSaved }: { row: NotifyScheduleRow; note: 
           {windows.map((w, i) => (
             <li key={`${w.day}-${w.from}-${w.to}`} className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[12px]">
               {WEEKDAY_NAMES[w.day]} {clockLabel(w.from)}–{clockLabel(w.to)}
-              <button type="button" onClick={() => remove(i)} aria-label={`Remove ${WEEKDAY_NAMES[w.day]} ${clockLabel(w.from)} to ${clockLabel(w.to)}`} className="rounded-full p-0.5 text-muted hover:bg-surface hover:text-foreground">
+              <button type="button" onClick={() => remove(i)} aria-label={`Remove ${WEEKDAY_NAMES[w.day]} ${clockLabel(w.from)} to ${clockLabel(w.to)}`} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full p-0.5 text-muted hover:bg-surface hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">
                 <X className="size-3" />
               </button>
             </li>
@@ -173,43 +194,39 @@ function PersonSchedule({ row, note, onSaved }: { row: NotifyScheduleRow; note: 
 
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
         <span className="text-[13px] text-muted">Quiet</span>
-        <select value={day} onChange={(e) => setDay(Number(e.target.value))} aria-label={`Day for ${first}'s quiet time`} className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand">
+        <select value={day} onChange={(e) => setDay(Number(e.target.value))} aria-label={`Day for ${first}'s quiet time`} className="min-h-11 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand">
           {WEEKDAY_NAMES.map((d, i) => <option key={d} value={i}>{d}</option>)}
         </select>
         <span className="text-[13px] text-muted">from</span>
-        <input type="time" step={900} value={from} onChange={(e) => setFrom(e.target.value)} aria-label="From" className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand" />
+        <input type="time" step={900} value={from} onChange={(e) => setFrom(e.target.value)} aria-label={`Start of ${first}'s quiet time`} className="min-h-11 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand" />
         <span className="text-[13px] text-muted">to</span>
-        <input type="time" step={900} value={to} onChange={(e) => setTo(e.target.value)} aria-label="To (00:00 means midnight)" className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand" />
-        <button type="button" onClick={add} disabled={!!problem} className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50">
+        <input type="time" step={900} value={to} onChange={(e) => setTo(e.target.value)} aria-label={`End of ${first}'s quiet time (00:00 means midnight)`} className="min-h-11 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand" />
+        <Button variant="secondary" onClick={add} disabled={!!problem}>
           <Plus className="size-3.5" /> Add
-        </button>
+        </Button>
         {problem && (from || to) && <span className="w-full text-[12px] text-warning">{problem}</span>}
         <span className="w-full text-[11px] text-muted-2">An end of 00:00 means midnight. Overnight quiet is two windows — the evening, then the next morning; they join up.</span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         {/* Its own Save button, not OperatingRules' SaveRow: that file renders
             this card, and importing back from it would make the two modules a cycle. */}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => (dirty || dirtyEmpty ? save(windows) : setMsg("Nothing to save — add or remove a window first."))}
-          className="mt-3 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
-        >
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save {first}&rsquo;s schedule
-        </button>
+        <Button busy={busy} busyLabel="Saving…" disabled={!dirty} onClick={() => save(windows)}>Save {first}&rsquo;s schedule</Button>
         {windows.length > 0 && (
-          <button type="button" onClick={() => { setWindows([]); setTouched(true); setMsg(null); }} className="mt-3 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2">
+          <Button variant="secondary" onClick={() => changeWindows([])}>
             No quiet time
-          </button>
+          </Button>
         )}
         {row.source === "saved" && (
-          <button type="button" disabled={busy} onClick={() => save(null)} className="mt-3 inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-50" title={row.isOwner ? "Back to the preset: Saturday until 7:30 PM" : "Back to no schedule of their own — the office rota"}>
+          <Button variant="secondary" disabled={busy} onClick={() => save(null)} title={row.isOwner ? "Back to the preset: Saturday until 7:30 PM" : "Back to no schedule of their own — the office rota"}>
             <RotateCcw className="size-3.5" /> {row.isOwner ? "Back to the preset" : "Back to the office rota"}
-          </button>
+          </Button>
         )}
       </div>
-      {msg && <p className="mt-1.5 text-[13px] font-medium text-muted">{msg}</p>}
+      <div className="mt-1.5"><SaveStatus
+        state={busy ? "saving" : feedback?.ok === false ? "error" : dirty ? "dirty" : feedback?.ok ? "saved" : "loaded"}
+        message={!busy && feedback ? <>{feedback.message}{feedback.ok && dirty ? " Newer edits are still unsaved." : ""}</> : undefined}
+      /></div>
       {row.setBy && row.setAt && (
         <p className="mt-1 text-[11px] text-muted-2">Last changed by {row.setBy} · {whenLabel(row.setAt)}</p>
       )}
