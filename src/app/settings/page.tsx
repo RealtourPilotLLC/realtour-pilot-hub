@@ -28,9 +28,10 @@ import { RemindersPanel } from "@/components/settings/RemindersPanel";
 import { loadRemindersPanelState } from "@/app/settings/reminderActions";
 import { SettingsGroup, settingsGroupsFor, SETTINGS_LAYOUT, type SettingsGroupDef, type SettingsCardKey } from "@/components/settings/SettingsGroup";
 import { SettingsNav } from "@/components/settings/SettingsNav";
+import { SettingsSearchCard, SettingsSearchOverview } from "@/components/settings/SettingsGroupDisclosure";
 import { ReadinessPanel, IntegrationsReadiness } from "@/components/settings/ReadinessPanel";
 import { readinessReport } from "@/lib/readiness";
-import type { SettingsGroupId } from "@/lib/readiness";
+import type { ReadinessReport, SettingsGroupId } from "@/lib/readiness";
 
 export const dynamic = "force-dynamic";
 // The two provider cards stream (see the <Suspense> boundaries below), so the
@@ -128,6 +129,13 @@ async function CalendlyCard() {
   );
 }
 
+async function IntegrationSummary({ report }: { report: Promise<ReadinessReport | null> }) {
+  const current = await report;
+  if (!current) return <>Connection status could not be read.</>;
+  const errors = current.providers.filter((provider) => provider.status === "error").length;
+  return <>{current.providers.filter((provider) => provider.connected).length} of {current.providers.length} providers connected{errors ? ` · ${errors} reported an error on the last check` : ""}. Run timing and dependencies are below.</>;
+}
+
 // SETTINGS — the rules the business runs on, editable by Jordan and Kyle
 // without a deploy. First resident: editor auto-routing (who gets standard /
 // premium / personal-branding video work). New rule groups get their own
@@ -185,7 +193,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // renders once, inside one group. Where each card goes is decided below, in
   // one list, so a card cannot be dropped or shown twice by editing a group.
   const card = (key: SettingsCardKey, node: React.ReactNode, anchor?: string) => (
-    <div key={key} data-settings-card={key} id={anchor} className={anchor ? "scroll-mt-28" : undefined}>{node}</div>
+    <SettingsSearchCard key={key} settingKey={key} anchor={anchor}>{node}</SettingsSearchCard>
   );
   const cards = {
     "editor-routing": card("editor-routing",
@@ -375,8 +383,22 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   };
 
   const groups = settingsGroupsFor(isOwner);
+  const primaryReviewer = reviewRoom.creativeApproverTeamMemberId
+    ? notifyRows?.find((person) => person.teamMemberId === reviewRoom.creativeApproverTeamMemberId)?.name ?? "Selected reviewer; name unavailable in this roster"
+    : "No primary reviewer selected";
+  // Summaries describe the same loaded values passed to the existing forms.
+  // A saved switch is not proof of its effective scope or provider health.
+  const snapshots: Record<SettingsGroupId, React.ReactNode> = {
+    team: `${notifyRows ? `${notifyRows.length} active notification profiles` : "Notification roster could not be read"} · ${coaching ? `coaching includes ${coaching.teamMemberIds.length} people; sending ${coaching.sendEnabled ? "on" : "off"}` : "coaching settings could not be read"}.`,
+    scheduling: `Photos: ${turns.photos} hours · standard video: ${turns.standardVideoHours} hours · monthly content: ${turns.monthlyBusinessDays} business days.`,
+    production: `Primary review: ${primaryReviewer} · backup offered after ${reviewRoom.coverOfferHours} covered hours · 1080p pass switch ${topaz.enabled ? "on" : "off"}.`,
+    program: `${automations ? `${automations.filter((automation) => automation.enabled).length} of ${automations.length} automation switches on` : "Automation switches could not be read"} · ${reminders ? `reminder policy uses ${reminders.policySource === "stored" ? "saved values" : "defaults"}; its switch is ${reminders.switch.enabled ? "on" : reminders.switch.missing ? "not configured" : "off"}` : "reminder policy could not be read"}.`,
+    comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
+    integrations: <Suspense fallback={<>Reading connection status…</>}><IntegrationSummary report={readiness} /></Suspense>,
+    financial: `Photographer pay view ${payVisibility.paused ? "paused" : "not paused"}. Individual access rules still apply.`,
+  };
   const render = (g: SettingsGroupDef) => (
-    <SettingsGroup key={g.id} group={g}>
+    <SettingsGroup key={g.id} group={g} snapshot={snapshots[g.id]}>
       {SETTINGS_LAYOUT[g.id].map((k) => cards[k])}
       {extras[g.id]}
     </SettingsGroup>
@@ -395,15 +417,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         subtitle="The rules the platform runs on — most changes apply within a minute; the automated texts wait for the next hourly run"
       />
       <div className="mx-auto max-w-3xl space-y-8 p-4 pb-16 sm:p-6">
-        <div className="space-y-4">
-          <SettingsNav groups={groups} />
+        <SettingsNav groups={groups}>
+          <SettingsSearchOverview>
           <div id="readiness" className="scroll-mt-28">
             <Suspense fallback={<ProviderCardSkeleton icon={Gauge} title="Readiness" note="reading every switch…" />}>
               <ReadinessPanel report={readiness} />
             </Suspense>
           </div>
-        </div>
+          </SettingsSearchOverview>
         {groups.map(render)}
+        </SettingsNav>
         {/* RETIRED Sep 20: the "More settings" card promised that turnaround
             promises, alert thresholds and text templates were "next to move in
             here". All three have shipped on this very page for months — they

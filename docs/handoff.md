@@ -2,6 +2,22 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — searchable Settings without losing drafts
+
+Seven purpose groups now collapse independently, show already-loaded summaries,
+and support label/keyword search. Filtering hides rather than unmounts forms so
+unsaved input survives. Old hash links reveal the matching group/card and focus
+the target. Owner-only financial groups are omitted server-side. No saved values,
+permissions, connections or automation state changed.
+
+Pure/SSR navigation drill passed 21/0 through the existing fenced runner
+(`/tmp/ops-u5-settings-navigation-runner/u5-settings-navigation.ts.log`);
+actual signed Settings/UI03 passed 56/0 (`/tmp/ops-u5-settings-ia.log`).
+Owner/admin rendering, editor/anonymous refusal, unique legacy anchors and
+unchanged settings/automation/connection/calendar/team/audit records are covered.
+Focused lint and one review passed. Browser interaction, per-section save/error
+consistency and remaining recovery/secondary-page work stay open.
+
 ### C15 checkpoint — existing no-cuts/other-work behavior verified
 
 Actual signed Kyle and James Review Room page rendering passes 12/0 with no

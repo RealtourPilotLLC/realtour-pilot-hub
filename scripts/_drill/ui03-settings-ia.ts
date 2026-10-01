@@ -263,7 +263,7 @@ async function parent() {
   const c = makeChecker();
   const { prisma } = await import("@/lib/prisma");
   const db = prisma as unknown as PrismaClient;
-  const { SETTINGS_CARD_KEYS, SETTINGS_LAYOUT, SETTINGS_GROUPS } = await import("@/components/settings/SettingsGroup");
+  const { SETTINGS_CARD_KEYS, SETTINGS_LAYOUT, SETTINGS_GROUPS } = await import("@/lib/settingsNavigation");
   const { readinessReport } = await import("@/lib/readiness");
 
   // ---- seed: three people, some saved rules, a switch or two -----------------
@@ -481,7 +481,7 @@ async function parent() {
     const panel = read("src/components/settings/ReadinessPanel.tsx");
     const group = read("src/components/settings/SettingsGroup.tsx");
     c.ok("the section nav wraps (flex-wrap) and never scrolls sideways (no overflow-x / nowrap)", /flex flex-wrap/.test(nav) && !/overflow-x|whitespace-nowrap|flex-nowrap/.test(nav));
-    c.ok("chips are at least 36 px tall (min-h-9) — a thumb-sized target", /min-h-9/.test(nav));
+    c.ok("chips are at least 44 px tall (min-h-11) — a thumb-sized target", /min-h-11/.test(nav));
     c.ok("the new surfaces set no fixed width and no nowrap", ![nav, panel, group].some((s) => /\bw-\[\d|min-w-\[\d|whitespace-nowrap|overflow-x-(auto|scroll)/.test(s)));
     c.ok("readiness rows wrap their chips and break long words", /flex flex-wrap gap-1/.test(panel) && /break-words/.test(panel));
   }
