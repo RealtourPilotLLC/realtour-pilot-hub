@@ -181,6 +181,12 @@ async function main() {
     const beforePrune = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: lost.id } });
     await prisma.reviewSubmission.update({ where: { id: lost.id }, data: { blobUrl: null, blobPathname: null, assetPath: beforePrune.finalPath } });
     c.ok("verified exact backup survives normal source retention without timestamp-only trust", (await monthlyFinalSnapshot(lost.id)).ok);
+    const legacySource = "/isolated/legacy/source-original.mp4";
+    put(legacySource, WRONG);
+    await prisma.reviewSubmission.update({ where: { id: lost.id }, data: { assetPath: legacySource } });
+    c.ok("changed canonical original cannot be certified by a different intact final backup", !(await monthlyFinalSnapshot(lost.id)).ok);
+    put(legacySource, ORIGINAL);
+    c.ok("distinct legacy source and backup with matching exact bytes remain verifiable", (await monthlyFinalSnapshot(lost.id)).ok);
     await prisma.reviewSubmission.update({ where: { id: lost.id }, data: { blobUrl: beforePrune.blobUrl, blobPathname: beforePrune.blobPathname, assetPath: beforePrune.assetPath } });
     const raceClaim = async (cutId: string, mutate: () => Promise<void>) => {
       const transaction = prisma.$transaction;

@@ -76,12 +76,21 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
   if (!path || path.slice(0, path.lastIndexOf("/") + 1).toLowerCase() !== folder.toLowerCase()) return { ok: false, message: "The exact client file needs a verified backup in this job’s final Dropbox folder." };
   const backup = file.kind === "processed" ? await readDropboxFile(path) : await proveOriginalBackup(cut, path);
   if (!backup) return { ok: false, message: "Dropbox could not confirm the exact final bytes. A saved path or timestamp alone cannot certify the backup." };
+  // The canonical stream prefers assetPath after hub retention. Legacy imports
+  // can keep a different original there; checking a backup must not certify an
+  // overwritten client source merely because finalPath still holds good bytes.
+  let canonicalSource = backup;
+  if (file.kind === "original" && !cut.blobUrl && cut.assetPath && cut.assetPath.toLowerCase() !== path.toLowerCase()) {
+    const source = await readDropboxFile(cut.assetPath);
+    if (!source || source.hash !== backup.hash || source.size !== backup.size) return { ok: false, message: "The client’s original file and its final Dropbox backup do not match. Reconcile these exact files before recording delivery." };
+    canonicalSource = source;
+  }
   const access = (await monthlyOwnerAccess([cut.project.contentMonthId!])).get(cut.project.contentMonthId!);
   if (!access?.ok || access.clientId !== cut.project.clientId) return { ok: false, message: access?.message ?? "Client access could not be confirmed." };
   const fresh = await loadMonthlyCut(id);
   if (!fresh || monthlyCutStamp(fresh) !== monthlyCutStamp(cut) || !(await currentMonthlyCut(fresh))) return { ok: false, message: "The approved version or final file changed during the read. Check the current version again." };
   const mediaId = digest([file.kind, backup.id, backup.rev, backup.hash, backup.size, digest(backup.path)]);
-  const fingerprint = digest([monthlyCutStamp(cut), mediaId, access.stamp]);
+  const fingerprint = digest([monthlyCutStamp(cut), mediaId, access.stamp, canonicalSource]);
   return { ok: true, cut, fingerprint, mediaId, previewUrl: `/api/review/cut/${id}/final?f=${fingerprint}`, fileName: file.kind === "processed" ? file.fileName : cut.fileName ?? path.split("/").pop()!, file: file.kind === "processed" ? { kind: "processed", path: file.path } : { kind: "original" }, backup, access };
 }
 

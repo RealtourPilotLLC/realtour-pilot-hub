@@ -4,6 +4,14 @@
 
 ### Oct 1 monthly destination follow-up — local source ready
 
+Supplemental pre-build repair to148440a binds the no-blob canonical `assetPath`
+metadata when it differs from the final backup. Hash/size must match; checking
+a good backup cannot certify a separately overwritten client source. New
+equal-copy/mismatch assertions give final backend40/0
+(`/tmp/monthly-final-acceptance/`), lint0 and types0
+(`/tmp/monthly-final-legacy-types.log`). This follows the38/0 evidence below;
+no broad rerun or production operation was performed.
+
 Jordan's portal + final Dropbox decision is implemented. Exact canonical client
 bytes, final-folder content proof, this enrollment's owner/rollout access and
 staff final attestation gate monthly first delivery; a Serializable claim locks

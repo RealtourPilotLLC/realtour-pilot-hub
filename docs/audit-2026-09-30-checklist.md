@@ -10,6 +10,14 @@ Status terms: **done in code** still requires its named acceptance check; **part
 
 ### Follow-up W04 — monthly portal plus final Dropbox backup (local)
 
+Supplemental canonical legacy-original check: when the portal's no-blob
+`assetPath` differs from the final backup, both files must have matching hash
+and size, and source metadata is bound to the check fingerprint. Equal-copy and
+overwritten-source fixtures raise the backend to40/0
+(`/tmp/monthly-final-acceptance/`); scoped lint and non-incremental types0
+(`/tmp/monthly-final-legacy-types.log`). This is a small follow-up to148440a,
+before build/deployment. The38/0 checkpoint below remains historical evidence.
+
 - Monthly handoffs now require the current approved/released canonical client
   file, exact final-folder Dropbox proof, an eligible owner on this enrollment
   under the existing rollout, and a matching staff final-file attestation.
