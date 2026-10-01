@@ -2,6 +2,26 @@
 
 ## Sep 30 takeover addendum
 
+### U5 checkpoint — client workspace drafts and precise feedback
+
+Email/Notes sections stay mounted with native hidden state and client-specific
+keys, retaining unsent words and pending receipts across tab switches. Notes read
+only while active, and an older read cannot replace a completed save receipt or
+restore an intentionally cleared draft. Late AI results replace only their exact
+request-start draft; newer input remains with explicit not-applied feedback.
+Clipboard success is awaited and tied to the exact copied text; denied/unavailable
+copy and AI errors preserve words. Known hub-saved/provider-failed notes render a
+partial receipt; unknown saves render an error without inheriting an older partial
+state. Newer notes remain visibly unsaved after an earlier save completes.
+
+Pure delayed-promise/receipt and first-paint checks passed 21/0
+(`/tmp/ops-u5-client-workspace-feedback-receipts/`), focused lint, non-incremental
+TypeScript and diff checks passed. Root focused review added the explicit partial
+receipt correction; the existing action/provider/send policy is unchanged. No
+mutation auto-retry, real clipboard, provider, client send or production write
+occurred. Actual mounted tab/focus, hidden textarea sizing, browser clipboard and
+read/save overlap acceptance remain open.
+
 ### U4 checkpoint — office ad hoc task dates
 
 OWNER/ADMIN may change or clear an active ad hoc task date using the same 5pm

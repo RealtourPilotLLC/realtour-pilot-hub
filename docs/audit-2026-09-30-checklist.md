@@ -74,6 +74,12 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **U5 client workspace reliability:** retained section drafts, snapshot-specific
+  AI result/copy receipts, explicit failures and distinct partial notes saves
+  passed delayed-promise/first-paint 21/0, lint, TypeScript and focused review.
+  Existing handlers/provider policy remain; actual mounted browser acceptance
+  remains open. No real copy/send/provider was executed.
+
 - **U4 office ad hoc dates:** same existing manual/explicit-instruction creation
   rules, strict date→5pm Eastern, transaction eligibility/date CAS and atomic
   audit; exact read-only recovery retains the chosen draft. Signed isolated
