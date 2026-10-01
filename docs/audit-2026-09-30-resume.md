@@ -9,7 +9,7 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 
 - Main checkout: `/Users/jordanspackman/Realtour Pilot POT Dashboard`.
 - Working branch: `codex/audit-2026-09-30`. Last recorded completed source
-  checkpoint: `41c8baf` plus the Map commit containing this update;
+  checkpoint: `2b87cc2` (Map fixture type repair after source4681377);
   inspect actual HEAD/status when resuming.
 - Use Node 20.20.2 at `/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin`.
 - Local `.env` is live production. No reset/seed, live mutation tests, client
@@ -22,10 +22,15 @@ Do not restart the audit or repeat green checks without a specific changed risk.
   running at that check. At Oct 1 01:32 ET the process and port3200 listener were
   absent; no process was stopped or restarted by this continuation. Inspect
   before any build/start.
+  This continuation subsequently restored the inspected fenced demo without
+  reset for user review:3200 pid34961, isolated DB/media5599/5598 pid34884,
+  exec28483 intentionally running. Private log `/tmp/ops-hub-demo-resume-2026-10-01.log`
+  is0600 and contains synthetic one-time links; never stage/publish it.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
-  Last observed clean/detached at `d9f5306`, whose clean-environment build passed.
-  Main-checkout non-incremental types and changed-file lint passed at that SHA.
+  Last observed clean/detached at `2b87cc2`, whose clean-environment build passed.
+  Non-incremental types and changed-file lint (41 files plus type-only fixture
+  repair) passed; logs are in the checklist/handoff.
   Advance only
   with an inspected fast-forward to an exact committed candidate; use a clean
   environment and dead loopback DB. Never copy production env/credentials there.
@@ -63,7 +68,8 @@ Do not restart the audit or repeat green checks without a specific changed risk.
 | `5ae370a` | Shared account recovery, atomic reset and role/permission CAS |Actual fake26/0; typecheck/lint/diff/root review |
 | `6972796` | Exact newer drafts/unknown guards and native calendar disclosure |Actual fake20/0; lint/diff/peer review; all-day count repair |
 | `41c8baf` | ID/save conflict and uncertain-DM recovery |Actual fake UI29/0; wrappers15/0; transport13/0; types/lint/review |
-| Map commit containing this update | Exact-pin reads and keyboard/pointer suggestions |Actual fake36/0; lint/diff/root review with narrow skip/scroll repairs |
+| `4681377` | Exact-pin reads and keyboard/pointer suggestions |Actual fake36/0; lint/diff/root review with narrow skip/scroll repairs |
+| `2b87cc2` | Map fixture type-only boundary; combined candidate |Non-incremental types0; ESLint41 files+repair0; isolated build0 |
 
 These are local commits. None is a takeover deployment, activation or new
 client-visible release. Signed action/SSR/fake handler evidence is not mounted
@@ -94,9 +100,14 @@ peer review with one all-day count repair. Its earlier numeric/whitespace
 assertion was repaired in the fake helper. Slack source/targeted checks are
 complete:29/0 UI,15/0 wrapper/CAS doubles,13/0 fake transport and types/lint/review.
 Map's last bounded batch is complete locally with36/0, lint/diff and root review
-including exact skip/scroll repairs. No agent-owned command remains. The next
-operation is one final combined types/changed-file lint/separate-checkout build
-for the exact committed candidate, followed by ledger alignment.
+including exact skip/scroll repairs. Combined types/changed-file lint/separate
+build passed at2b87cc2. Only the intentionally running demo and one new bounded
+W04 mixed photo/video acceptance fixture remain active. The new fixture closes
+the existing final-rendition fixture's photoCount0 coverage gap; no production
+mutation/provider or app source change is authorized. Finish that fixture,
+checkpoint evidence and align the ledger. Application files have not changed
+since the passing build; any later fixture-only change needs its relevant type/
+lint check, not automatic repeats of green app behavioral suites.
 Do not repeat already-passed whole drill suites. Business and browser acceptance
 remainders below stay open; this continuation is not a new broad audit.
 

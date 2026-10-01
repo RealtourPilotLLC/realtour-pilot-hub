@@ -74,6 +74,21 @@ and scope acceptance remain open. Exact cut links and Finance definitions are in
 
 ## Current checks and environment
 
+- **Combined application candidate `2b87cc2`:** non-incremental TypeScript
+  exit0 (`/tmp/ops-hub-types-2b87cc2.log`), changed-file ESLint41 files exit0
+  (`/tmp/ops-hub-lint-4681377.log`) plus the exact fixture repair lint exit0
+  (`/tmp/ops-hub-lint-2b87cc2-repair.log`), and separate clean-checkout production
+  build exit0 (`/tmp/ops-hub-build-2b87cc2.log`). The first candidate4681377
+  compiled but type/build failed on the Map fixture's unknown React child
+  annotation; two type-only lines were repaired in2b87cc2. No runtime code or
+  passing behavior changed; only the failed gates were retried. Build used env-i,
+  no copied env files/provider credentials and dead loopback database.
+  The existing Next middleware-convention deprecation warning remains nonfatal.
+  Main checkout preview was restored through the existing fenced demo script,
+  reusing saved fixtures without reset: port3200 pid34961 and isolated DB/media
+  5599/5598 pid34884, exec28483. It is intentionally running, not acceptance
+  proof. No production process, schema, deployment or setting changed.
+
 - **U5 Map read/keyboard recovery:** native named address combobox supports
   Arrow/Enter/Escape, IME and pointer selection without blur loss. Weather,
   home drive, address distance and suggestions keep exact pin/home/query scopes;

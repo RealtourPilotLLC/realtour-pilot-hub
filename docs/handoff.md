@@ -2,6 +2,35 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 combined application checkpoint — `2b87cc2`
+
+Completed resumed source batches: Users5ae370a, Capacity6972796, Slack41c8baf,
+Map4681377. The first combined4681377 gate compiled but failed types/build on
+one fake Map portal annotation (`unknown` instead of ReactNode). Type-only repair
+2b87cc2 changes no runtime or fixture semantics. Final non-incremental types
+exit0 at `/tmp/ops-hub-types-2b87cc2.log`; changed-file ESLint41 files exit0 at
+`/tmp/ops-hub-lint-4681377.log`, plus exact repair lint0 at
+`/tmp/ops-hub-lint-2b87cc2-repair.log`; separate clean checkout production build
+exit0 at `/tmp/ops-hub-build-2b87cc2.log`. No green behavioral suites were rerun.
+Build checkout clean/detached2b87cc2, no copied env files, env-i, no provider
+credentials, dead loopback DB. Existing middleware deprecation is nonfatal.
+
+Initial resume process check found no Ops Hub operation or3200 listener. The
+existing isolated demo was later restored for user review through inspected
+`scripts/demo/run-demo-dev.sh`, without reset; saved fixture data is reused.
+At startup readiness/fence check: port3200 pid34961, DB/media5599/5598 pid34884,
+exec28483 intentionally running. Private startup log is
+`/tmp/ops-hub-demo-resume-2026-10-01.log` (0600; contains synthetic one-time links,
+do not publish or stage it). No provider/live DB/browser acceptance occurred.
+Inspect listeners/processes again before a conflicting main-checkout operation.
+
+Ledger-only W04 review located existing final-rendition34/0 and prior automated
+proof/notice/photo-separation evidence. It identified one exact acceptance gap:
+the final-video fixture used photoCount0. A separate fenced mixed photo/video
+handoff fixture is in progress, without app source changes or old suite reruns.
+Record its result/commit before the final handoff; all business/browser/provider/
+schema/activation/deployment restrictions remain.
+
 ### Oct 1 U5 checkpoint — exact-pin Map reads and keyboard suggestions
 
 ProjectMap preserves providers, action calls, coordinates, travel/mileage,
