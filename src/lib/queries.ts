@@ -573,11 +573,12 @@ export type StuckJob = {
   daysLate: number; // whole days behind, for sorting/AC display
 };
 
-export async function getStuckJobs(): Promise<StuckJob[]> {
+export async function getStuckJobs(opts: { excludeClientIds?: string[] } = {}): Promise<StuckJob[]> {
   const now = new Date();
   const DAY = 86400000;
   const projects = await prisma.project.findMany({
     where: {
+      ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}),
       // "Active" = anything not finished — cancelled/delivered can't be stuck.
       // Neither can a job that was never shot (BOOKED, no shoot date) nor one
       // parked by decision (ON_HOLD): both headlined Kyle's fire panel as
@@ -1073,7 +1074,7 @@ export async function getOwnerDials(): Promise<OwnerDials> {
 // Shoots happening today / tomorrow — driven off APPOINTMENTS, not the single
 // project.shootDate, so an order with multiple appointments shows every shoot
 // on its own day (and with the photographer assigned to that specific visit).
-export async function getShootWindow() {
+export async function getShootWindow(opts: { excludeClientIds?: string[] } = {}) {
   // Day boundaries in EASTERN time (the business runs on ET) so a late-evening
   // shoot doesn't roll into "tomorrow" under UTC.
   const startToday = etDayStartUtc(new Date());
@@ -1089,7 +1090,7 @@ export async function getShootWindow() {
     where: {
       startAt: { gte: startToday, lt: endWindow },
       status: { not: "CANCELED" },
-      project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
+      project: { status: { notIn: ["CANCELLED", "DELIVERED"] }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     },
     orderBy: { startAt: "asc" },
     include: {

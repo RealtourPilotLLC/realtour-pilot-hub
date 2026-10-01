@@ -4,6 +4,17 @@
 
 ### Oct 1 resume point — C14 Home exception scope
 
+Home's Stuck jobs panel and seven-day appointment strip now exclude synthetic
+project/client rows at their database reads. The same client ID list is passed
+into the operating-day reader so this does not add another all-client scan.
+The isolated `c14-home-windows` drill passed 5/0: real TEST Avenue and a
+protected real client remain in both readers, synthetic fire/appointment rows
+do not, and default full readers retain them. Node20 TypeScript and focused
+lint passed (one pre-existing unused-import warning in `queries.ts`); the
+isolated-worktree build is pending final confirmation for this narrow
+batch. Delivery board, off-page task badges, ready-to-send and strategic flags
+remain open for C14 scoping; no production or provider mutation was made.
+
 A read-only Neon probe (`scripts/_recon/c14-home-workload.ts`) found five
 synthetic clients, three active TEST Review projects, and two open TEST tasks;
 this was a current Home operating-day count issue, not only a theoretical cap.

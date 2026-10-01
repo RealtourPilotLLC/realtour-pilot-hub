@@ -53,6 +53,7 @@ import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
 import { NewClientCard } from "@/components/clients/NewClientCard";
 import { newClientsForDashboard } from "@/lib/newClients";
 import { listAssignees, slugForName, viewerAssigneeKey } from "@/lib/assignees";
+import { isSyntheticClientRow } from "@/lib/testClients";
 
 export const dynamic = "force-dynamic";
 
@@ -481,16 +482,17 @@ export default async function HomePage() {
   // rather than letting a null viewer read as owner (Sep 2 review).
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
+  const excludedClientIds = (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
 
   const [dRaw, counts, stuck, shoots, radar, handledToday, boardRaw, flaggedRaw, ownerStats, pulse, dials, money, todos, newClients, exceptions] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
       // no longer calls openLoopsList() a second time.
-      buildOpsDay({ includeTest: false }),
+      buildOpsDay({ excludeClientIds: excludedClientIds }),
       offPageNumbers(),
-      getStuckJobs(),
-      getShootWindow(), // only for the week-ahead strip; today's shoots come from buildOpsDay
+      getStuckJobs({ excludeClientIds: excludedClientIds }),
+      getShootWindow({ excludeClientIds: excludedClientIds }), // only for the week-ahead strip; today's shoots come from buildOpsDay
       getProactiveFlags(),
       // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
       handledByPeopleToday(),

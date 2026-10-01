@@ -532,13 +532,13 @@ function parseEvidence(json: string | null): { ev: StatusEvidence | null; qc: Qc
   }
 }
 
-export async function buildOpsDay(opts: { includeTest?: boolean } = {}): Promise<OpsDay> {
+export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientIds?: string[] } = {}): Promise<OpsDay> {
   const now = new Date();
   const today = etDayWindow(0);
   const tomorrow = etDayWindow(1);
-  const excludedClientIds = opts.includeTest === false
+  const excludedClientIds = opts.excludeClientIds ?? (opts.includeTest === false
     ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
-    : [];
+    : []);
   const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
 
   const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList] =
