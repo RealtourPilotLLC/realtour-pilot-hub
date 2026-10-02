@@ -30,7 +30,7 @@ export async function confirmedProgramSessionQuantities(projectIds: string[]): P
       select: { id: true, projectId: true, clientId: true, enrollmentId: true, monthId: true,
         kind: true, sessionIndex: true, status: true, confirmedAt: true, cancelledAt: true,
         matchState: true, bookingState: true, pendingChangeJson: true,
-        aryeoAppointmentId: true, aryeoOrderId: true, slotStart: true },
+        aryeoAppointmentId: true, aryeoOrderId: true },
     }),
     prisma.contentMonth.findMany({
       where: { id: { in: projects.map((p) => p.contentMonthId!) } },
@@ -63,10 +63,12 @@ export async function confirmedProgramSessionQuantities(projectIds: string[]): P
       r.monthId !== month.id || r.enrollmentId !== enrollment.id ||
       r.clientId !== project.clientId || month.clientId !== project.clientId || enrollment.clientId !== project.clientId ||
       (r.aryeoOrderId && r.aryeoOrderId !== project.aryeoOrderId) ||
-      !r.aryeoAppointmentId || !r.slotStart) continue;
+      !r.aryeoAppointmentId) continue;
     const appointment = project.appointments.find((a) => a.aryeoId === r.aryeoAppointmentId);
-    if (!appointment || appointment.postponedAt || /cancel|postpon/i.test(appointment.status ?? "") ||
-      appointment.startAt?.getTime() !== r.slotStart.getTime()) continue;
+    // slotStart is the client's ASK, retained by the real reconciliation and
+    // desk writers for flex/near-slot/provider bookings. The named confirmed
+    // appointment is the current booking; do not impose a second time policy.
+    if (!appointment?.startAt || appointment.postponedAt || /cancel|postpon/i.test(appointment.status ?? "")) continue;
     const planned = planSessions([], {
       videosPerMonth: month.videosOwed > 0 ? month.videosOwed : enrollment.videosPerMonth,
       sessionsPerMonth: enrollment.sessionsPerMonth,

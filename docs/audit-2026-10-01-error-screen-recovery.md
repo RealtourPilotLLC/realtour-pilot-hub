@@ -35,21 +35,19 @@ The fallback is deployed for existing authorized users when a page fails.
 No client audience or switch was enabled. Mounted browser/phone acceptance
 remains open; source deployment is not full journey acceptance.
 
-## New acceptance work found at this checkpoint
+## Subsequent acceptance work
 
-The earlier HTTP37/0 seeded already released scripts/cuts. A new continuous
-first CALL month HTTP fixture begins without strategy/topics/scripts/project/
-cuts and follows actual manual source actions to exact client release. Its
-first run stopped at an overstrict fixture assertion requiring stored CALL
-instead of the current first-month canonical fallback. The fixture expectation
-is being corrected; no product defect is established by that failed assertion.
-Only its own3211/5601 processes were torn down.
+The earlier HTTP37/0 seeded already released scripts/cuts. The new continuous
+first CALL fixture now passes18/0 from empty strategy/topics/scripts/project/
+cuts through actual source actions, exact release and final download. A later
+WRITTEN month passes22/0. Localc298fba records both; fake provider/media/import
+inputs and mounted/device/human limits are explicit in the causal journey record.
 
 A separate W05 defect was found: swallowed database errors could consume a
 verified delivery echo, and stored replay lost authentication provenance.
-Durable exact receipts and strict replay are implemented in a separate pending
-batch; isolated real PostgreSQL21/0 and existing echo regression36/0 pass,
-scoped lint/types pass, and focused peer review is pending. No resend.
+Durable exact receipts and strict replay are separately committed/deployed
+ind22c582, PostgreSQL25/0 plus existing36/0, lint/types/focused review and exact
+release gates pass. See the durable-delivery-proof release record. No resend.
 
 These findings supersede the earlier statement that no autonomous source or
 journey verification gap remained. C14 mounted acceptance and U0–U6 acceptance
