@@ -64,6 +64,20 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
   }, { isolationLevel: "Serializable" });
 }
 
+
+/** Read-only recovery of a lost acknowledgement response. Never consult providers
+ * or write another receipt; the exact current source and destination must match. */
+export async function uploadReceiptStatus(id: string, expectedFingerprint: string) {
+  return prisma.$transaction(async (tx) => {
+    const cut = await loadCut(id, tx);
+    const missing = { ok: true, recorded: false, message: "No matching current upload receipt was found." };
+    if (!cut || cut.project.contentMonthId || !cut.project.aryeoListingId || !(await currentApproved(cut, tx)) || sourceFingerprint(cut) !== expectedFingerprint) return missing;
+    const receipt = (await uploadsFor([id], tx)).get(id);
+    if (!receipt || receipt.sourceFingerprint !== expectedFingerprint || receipt.listingId !== cut.project.aryeoListingId) return missing;
+    return { ok: true, recorded: true, sent: !!cut.sentToClientAt, message: `Upload confirmed from the saved receipt by ${receipt.actor}.` };
+  }, { isolationLevel: "RepeatableRead" });
+}
+
 /** Counts, duration and a reused provider ID cannot identify replacement bytes.
  * The existing matcher proposes a media ID; this guard only subtracts matches.
  * Missing trustworthy event/file evidence remains an office fallback. */

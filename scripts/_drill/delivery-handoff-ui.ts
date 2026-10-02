@@ -99,7 +99,7 @@ async function main() {
     c.ok("refusal keeps row visible with reason", removed === 1 && words(tree()).includes("This cut changed"));
     markers.clear(); await mountUpload(); uploadResult = deferred();
     const realTimer = globalThis.setTimeout;
-    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimer(callback, ms === 15_000 ? 1 : ms, ...args)) as typeof setTimeout;
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimer(callback, ms === 15_000 || ms === 20_000 ? 1 : ms, ...args)) as typeof setTimeout;
     try { click("Mark as Uploaded"); await until(() => elements(tree(), "Button")[0].busy === false); }
     finally { globalThis.setTimeout = realTimer; }
     c.ok("hung confirmation ends spinner and retains recoverable ordinary retry", markers.size === 1 && removed === 1 && !!button("Mark as Uploaded") && !elements(tree(), "Button")[0].disabled);
@@ -222,8 +222,8 @@ async function main() {
     let apiAllowed = true, apiWrites = 0;
     stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (!apiAllowed) throw new Error("Forbidden"); } });
     stub(req.resolve("../../src/lib/auth/user.ts"), { getCurrentUser: async () => ({ id: "fixture-office", name: "Kyle", impersonating: false }) });
-    stub(req.resolve("../../src/lib/deliveryUploads.ts"), { recordUploaded: async (id: string, actor: { id: string }, fingerprint: string) => { apiWrites++; return { ok: id === props.submissionId && actor.id === "fixture-office" && fingerprint === "exact-file-v3", message: "Receipt saved" }; } });
-    const { POST } = await import("../../src/app/api/ops/video-upload/route");
+    stub(req.resolve("../../src/lib/deliveryUploads.ts"), { uploadReceiptStatus: async () => ({ ok: true, recorded: true, message: "Original saved receipt" }), recordUploaded: async (id: string, actor: { id: string }, fingerprint: string) => { apiWrites++; return { ok: id === props.submissionId && actor.id === "fixture-office" && fingerprint === "exact-file-v3", message: "Receipt saved" }; } });
+    const { POST, GET: uploadGET } = await import("../../src/app/api/ops/video-upload/route");
     const apiRequest = (origin = "https://hub.example.test", body: unknown = { submissionId: props.submissionId, fingerprint: "exact-file-v3" }) => new Request("https://hub.example.test/api/ops/video-upload", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     c.ok("upload API rejects cross-origin requests before any write", (await POST(apiRequest("https://other.example.test"))).status === 403 && apiWrites === 0);
     apiAllowed = false;
@@ -232,6 +232,13 @@ async function main() {
     c.ok("upload API rejects malformed confirmation before any write", (await POST(apiRequest(undefined, {}))).status === 400 && apiWrites === 0);
     const apiReceipt = await (await POST(apiRequest())).json();
     c.ok("upload API returns exact authenticated receipt directly without dashboard render", apiReceipt.ok === true && apiWrites === 1);
+    const statusRequest = new Request("https://hub.example.test/api/ops/video-upload?submissionId=exact-cut&fingerprint=exact-source");
+    apiAllowed = false;
+    c.ok("upload receipt reader preserves office authorization", (await uploadGET(statusRequest)).status === 403 && apiWrites === 1);
+    apiAllowed = true;
+    c.ok("upload receipt reader requires exact ID and source", (await uploadGET(new Request("https://hub.example.test/api/ops/video-upload"))).status === 400 && apiWrites === 1);
+    const readReceipt = await uploadGET(statusRequest);
+    c.ok("upload receipt reader is uncached and writes nothing", (await readReceipt.json()).recorded === true && readReceipt.headers.get("cache-control") === "private, no-store" && apiWrites === 1);
     const { POST: sentPOST } = await import("../../src/app/api/ops/video-sent/route");
     const callsBeforeAPI = calls.length;
     c.ok("sent API rejects cross-origin before recording", (await sentPOST(apiRequest("https://other.example.test"))).status === 403 && calls.length === callsBeforeAPI);

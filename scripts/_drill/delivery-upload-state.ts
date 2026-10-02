@@ -23,6 +23,9 @@ async function main() {
     c.ok('staff upload acknowledgement succeeds without provider reads', (await d.recordUploaded(cut.id, actor, await fingerprint(cut.id))).ok);
     const receipt = (await d.uploadsFor([cut.id])).get(cut.id)!;
     c.ok('receipt pins version/file/listing/actor/time', receipt.round === 1 && receipt.listingId === 'listing-fixture' && receipt.actor === actor.name && !!receipt.sourceFingerprint && !!receipt.uploadedAt);
+    const statusBeforeRetry = await d.uploadReceiptStatus(cut.id, await fingerprint(cut.id));
+    c.ok('lost response reader confirms exact existing receipt without writes', statusBeforeRetry.recorded && await prisma.auditLog.count({ where: { target: cut.id, action: 'video_uploaded' } }) === 1);
+    c.ok('receipt reader refuses wrong source', !(await d.uploadReceiptStatus(cut.id, 'wrong-finished-file')).recorded);
     await d.recordUploaded(cut.id, actor, await fingerprint(cut.id));
     c.ok('repeat acknowledgement preserves original receipt', (await d.uploadsFor([cut.id])).get(cut.id)?.id === receipt.id && await prisma.auditLog.count({ where: { target: cut.id, action: 'video_uploaded' } }) === 1);
     await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { assetPath: '/fake/replaced.mp4' } });
@@ -30,6 +33,7 @@ async function main() {
     await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { assetPath: '/fake/final.mp4' } });
     c.ok('correction requires reason', !(await d.correctUpload(cut.id, receipt.id, '', actor)).ok);
     c.ok('audited upload correction succeeds', (await d.correctUpload(cut.id, receipt.id, 'Wrong listing upload', actor)).ok);
+    c.ok('corrected upload cannot be recovered as still uploaded', !(await d.uploadReceiptStatus(cut.id, await fingerprint(cut.id))).recorded);
     c.ok('correction removes active proof, retains historical receipt', !(await d.uploadsFor([cut.id])).has(cut.id) && await prisma.auditLog.count({ where: { target: cut.id } }) === 2);
     await d.recordUploaded(cut.id, actor, await fingerprint(cut.id));
     const v2 = await prisma.reviewSubmission.create({ data: { projectId: w.projectId!, deliverableId: w.deliverableId, slot: 1, round: 2, status: 'PENDING', source: 'upload', assetPath: '/fake/v2.mp4' } });
@@ -57,6 +61,8 @@ async function main() {
     const original = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: v2.id } });
     await d.claimListingDelivery(v2.id, 'Other fixture');
     const repeated = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: v2.id } });
+    const sentStatus = await d.uploadReceiptStatus(v2.id, await fingerprint(v2.id));
+    c.ok('receipt reader distinguishes already-sent exact version', sentStatus.recorded && 'sent' in sentStatus && sentStatus.sent === true);
     c.ok('single exact-version send preserves first actor/time on repeat', sent.ok && sent.count === 1 && repeated.sentToClientBy === actor.name && repeated.sentToClientAt?.getTime() === original.sentToClientAt?.getTime());
     c.ok('correction refuses an empty reason', !(await d.correctSent(v2.id, original.sentToClientAt!.toISOString(), '', actor)).ok);
     const corrected = await d.correctSent(v2.id, original.sentToClientAt!.toISOString(), 'Wrong upload acknowledged in fixture', actor);

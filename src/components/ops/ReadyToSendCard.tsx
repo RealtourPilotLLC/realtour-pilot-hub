@@ -92,7 +92,10 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
   const { rendering, needsFinishing } = board;
   const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint));
   const uploadedRows = ready.filter((v) => !v.monthlyProgram && (v.uploaded || (recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)));
-  const uploaded = (v: ReadyVideo) => setRecorded((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
+  const uploaded = (v: ReadyVideo, delivered = false) => {
+    setRecorded((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
+    if (delivered) setSent((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
+  };
   // 9.2: sent, and the client not told yet — its own short list (NotTold).
   const notTold = board.notTold ?? [];
   const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
@@ -139,7 +142,7 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       {[
         { title: "Ready for upload", rows: ready.filter((v) => !v.monthlyProgram && !v.uploaded && !(recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)) },
         { title: "Portal delivery needs attention", rows: ready.filter((v) => v.monthlyProgram) },
-      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={() => uploaded(v)} />)}</section>)}
+      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={(delivered) => uploaded(v, delivered)} />)}</section>)}
       {uploadedRows.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedRows.length})</span></h4>{uploadedRows.map((v) => <UploadedRow key={`${v.submissionId}:${v.uploadFingerprint ?? "none"}`} v={v} onSent={() => setSent((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint))} />)}</section>}
       <Rendering rows={rendering} />
     </div>
@@ -246,7 +249,7 @@ function Running({ rows }: { rows: RenderingVideo[] }) {
  *  work at most, and past that the silence is the story again. */
 const IN_HAND_HOURS = 4;
 
-function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: () => void }) {
+function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boolean) => void }) {
   // SOMEBODY STARTED THE HANDOFF — so stop shouting at them briefly (Jordan,
   // Sep 21). A row pulled ten minutes ago rendered identically to one nobody had
   // ever opened, both in red, both reading "ready 3 days". The red goes away
