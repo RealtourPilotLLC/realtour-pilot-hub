@@ -446,7 +446,7 @@ export function EditTracker({
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
             <History className="size-3.5" /> Cuts sent to review
           </div>
-          <ul className={`mt-2 grid gap-2 ${rounds.length > 4 ? "xl:grid-cols-2" : ""}`}>
+          <ul aria-label="Review history" tabIndex={0} className={`mt-2 grid max-h-80 gap-2 overflow-y-auto overscroll-contain rounded-lg pr-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${rounds.length > 4 ? "xl:grid-cols-2" : ""}`}>
             {rounds.map((r) => {
               const chip = ROUND_CHIP[r.status] ?? { text: r.status, cls: "bg-surface-2 text-muted" };
               // A withdrawn version is struck through — it was pulled back, so
@@ -471,7 +471,7 @@ export function EditTracker({
                     </span>
                   </a>
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.cls}`}>{chip.text}</span>
-                  {r.verdictLine && <span className="text-xs text-muted-2">{r.verdictLine}</span>}
+                  {r.verdictLine && r.verdictLine !== chip.text && <span className="text-xs text-muted-2">{r.verdictLine}</span>}
                   {r.note && <span className="w-full pl-0.5 text-xs italic text-muted">“{r.note}”</span>}
                 </li>
               );

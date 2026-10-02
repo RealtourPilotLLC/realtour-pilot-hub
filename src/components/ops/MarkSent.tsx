@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check } from "lucide-react";
 import { markVideoSentAction } from "@/app/ops/actions";
+import { recordDeliveryRequest } from "@/lib/recordDeliveryRequest";
+import { boundedWait } from "@/lib/boundedWait";
 import { Button } from "@/components/ui/Action";
 import { SaveStatus, type SaveState } from "@/components/ui/SaveStatus";
 
@@ -20,7 +22,7 @@ const UNKNOWN = "The delivery record is unconfirmed. It may already have saved. 
 /** The server owns destination proof, authorization and idempotent bookkeeping.
  * Keep explicit reconciliation after an uncertain save. Persist only an opaque retry
  * guard, never client details, notice choices or a claim of server completion. */
-export function MarkSent({ submissionId, street, monthly = false, expectedFingerprint }: { submissionId: string; street: string; monthly?: boolean; expectedFingerprint?: string }) {
+export function MarkSent({ submissionId, street, monthly = false, expectedFingerprint, onRecorded }: { submissionId: string; street: string; monthly?: boolean; expectedFingerprint?: string; onRecorded?: () => void }) {
   const router = useRouter();
   const [receipt, setReceipt] = useState<{ state: SaveState; message: string } | null>(null);
   const [done, setDone] = useState(false), [incomplete, setIncomplete] = useState(false);
@@ -51,7 +53,9 @@ export function MarkSent({ submissionId, street, monthly = false, expectedFinger
     setReceipt(null);
     start(async () => {
       try {
-        const r = await markVideoSentAction(submissionId, reconcile || incomplete ? undefined : notice, expectedFingerprint);
+        const r = await boundedWait(onRecorded
+          ? recordDeliveryRequest(submissionId, reconcile || incomplete ? undefined : notice, expectedFingerprint)
+          : markVideoSentAction(submissionId, reconcile || incomplete ? undefined : notice, expectedFingerprint), 15_000);
         if (!r || typeof r.ok !== "boolean" || typeof r.message !== "string") { hold(); return; }
         // A refused recovery did not perform a new write, but cannot establish
         // whether the earlier request finished. Keep its recoverable guard.
@@ -76,7 +80,7 @@ export function MarkSent({ submissionId, street, monthly = false, expectedFinger
           uncertain.current = true; setHeld(true);
           setReceipt({ state: partial ? "partial" : r.ok ? "saved" : "error", message: `${message} The local recovery guard could not be cleared. Inspect the exact cut before another change.` });
         }
-        if (r.ok && !partial) router.refresh();
+        if (r.ok && !partial) { if (onRecorded) onRecorded(); else router.refresh(); }
       } catch { hold(); }
       finally { pending.current = false; }
     });

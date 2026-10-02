@@ -3,6 +3,7 @@ export function PageHeader({
   subtitle,
   eyebrow,
   actions,
+  sticky = true,
 }: {
   title: string;
   /** a string, or a node — e.g. the client's headshot beside their name */
@@ -10,9 +11,10 @@ export function PageHeader({
   /** small uppercase copper label above the title (the brand motif) */
   eyebrow?: string;
   actions?: React.ReactNode;
+  sticky?: boolean | "desktop";
 }) {
   return (
-    <div className="sticky top-0 z-10 flex flex-wrap items-end justify-between gap-3 border-b border-border bg-background/70 px-4 py-4 backdrop-blur-xl sm:px-6">
+    <div className={`${sticky === "desktop" ? "relative lg:sticky" : sticky ? "sticky" : "relative"} top-0 z-10 flex flex-wrap items-end justify-between gap-3 border-b border-border bg-background/70 px-4 py-4 backdrop-blur-xl sm:px-6`}>
       <div className="min-w-0 flex-1 basis-64">
         {eyebrow && <div className="eyebrow mb-1">{eyebrow}</div>}
         <h1 className="break-words text-xl font-semibold tracking-tight">{title}</h1>

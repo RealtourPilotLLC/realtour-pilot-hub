@@ -89,7 +89,10 @@ async function main() {
     const actual = await buildEditorQueue();
     c.ok("queue keeps exact status, due and assignment from existing reader", rows.every((r) => { const original = actual.notDone.find((value) => value.id === r.id); return original?.status === r.status && original.dueISO === r.dueISO && original.assignmentState === r.assignmentState; }));
     c.ok("saved assignment, routing suggestion and explicit unassignment remain distinct", rows.find((r) => r.id === active.id)?.assignmentState === "assigned" && rows.find((r) => r.id === predicted.id)?.assignmentState === "predicted" && rows.find((r) => r.id === unassigned.id)?.assignmentState === "unassigned");
-    c.ok("queue retains stacked mobile cards and office More menu", html.includes("sm:table-row") && html.includes("More actions") && html.includes("Open work") && html.includes("Completed"));
+    const suggested = rows.find((r) => r.id === predicted.id)!;
+    c.ok("predicted routing is displayed as Unassigned with a separate suggestion", html.includes(`Change editor for ${suggested.street}: Unassigned`) && html.includes(`Suggested: ${suggested.editor}`));
+    c.ok("saved editor assignment uses floating menu instead of an inline select drawer", html.includes(`Change editor for ${rows.find((r) => r.id === active.id)!.street}: Kim`) && !html.includes('aria-label="Assign editor"'));
+    c.ok("queue retains stacked mobile cards and office More menu", html.includes("lg:table-row") && html.includes("More actions") && html.includes("Open work") && html.includes("Completed"));
     search = "editor=kim&due=overdue";
     const filtered = renderToStaticMarkup(await page({}));
     c.ok("Kim overdue URL survives queue-to-brief links", filtered.includes(`href="/edit/${active.id}?queue=editor%3Dkim%26due%3Doverdue"`) && !filtered.includes(`href="/edit/${johnJob.id}?queue=`));

@@ -260,6 +260,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   return (
     <div>
       <PageHeader
+        sticky="desktop"
         eyebrow="Video projects only"
         title="Editing Room"
         subtitle={`${notDone.length} open projects · ${upcomingRows.length} upcoming projects · ${includeTest ? "real and test records" : "test records hidden"}`}

@@ -148,7 +148,7 @@ export function EditorCutPanel({
         {cutLabel && <span className="truncate text-xs text-muted">{cutLabel}</span>}
         <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", meta.cls)}>{meta.label}</span>
         {verdictLine(verdict) && <span className="text-[11px] text-muted">{verdictLine(verdict)}</span>}
-        {fileName && <span className={cn("truncate text-xs text-muted-2", withdrawn && "line-through")}>{fileName}</span>}
+        {fileName && <span title={fileName} className={cn("min-w-0 max-w-full truncate text-xs text-muted-2", withdrawn && "line-through")}>{fileName}</span>}
       </div>
 
       {assetUrl && player ? (

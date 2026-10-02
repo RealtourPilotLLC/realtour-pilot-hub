@@ -70,6 +70,7 @@ async function main() {
     readFinalFileCheckReceiptAction: () => { throw new Error("receipt not invoked by this fixture"); },
   });
   stub(req.resolve("../../src/lib/recordUploadRequest.ts"), { recordUploadRequest: async (id: string, fingerprint: string) => { uploadCalls.push({ id, fingerprint }); return uploadResult.promise; } });
+  stub(req.resolve("../../src/lib/recordDeliveryRequest.ts"), { recordDeliveryRequest: async (id: string, notice?: string) => { calls.push({ id, notice }); return result.promise; } });
   const windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window");
   let confirms = true, removed = 0;
   Object.defineProperty(globalThis, "window", { configurable: true, value: { confirm: () => confirms } });
@@ -80,7 +81,7 @@ async function main() {
     const mount = async (monthly = true) => { card?.stop(); card = mountHooks(() => MarkSent({ ...props, monthly })); card.render(); await Promise.resolve(); };
     const tree = () => card!.render();
     const button = (label: string) => elements(tree(), "Button").find((p) => words(p.children).trim() === label);
-    const click = (label: string) => { const p = button(label); if (!p) throw new Error(`Missing button ${label}`); (p.onClick as () => void)(); };
+    const click = (label: string) => { const p = button(label); if (!p) throw new Error(`Missing button ${label}`); (p.onClick as () => void)(); if (label === "Mark as Uploaded") { const confirm = button(confirms ? "Confirm uploaded" : "Cancel"); if (confirm) (confirm.onClick as () => void)(); } };
     const status = () => elements(tree(), "SaveStatus")[0];
     const { MarkUploaded } = await import("../../src/components/ops/MarkUploaded");
     const mountUpload = async () => { card?.stop(); card = mountHooks(() => MarkUploaded({ submissionId: props.submissionId, fingerprint: "exact-file-v3", onUploaded: () => removed++ })); tree(); await Promise.resolve(); };
@@ -159,6 +160,25 @@ async function main() {
     const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source" }] } }));
     c.ok("actual listing row retains Aryeo destination, link and original Mark-as-sent action", listingHTML.includes("example.test/listing") && !listingHTML.includes("Mark as sent") && listingHTML.includes("Mark as Uploaded"));
     c.ok("files and upload is an always-visible section, never a disclosure", listingHTML.includes('aria-label="Files and upload"') && !listingHTML.includes('<summary class="cursor-pointer text-sm font-medium">Files and upload'));
+    const listing = { ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source", overdue: true };
+    const uploadedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: { id: "receipt", at: ready.approvedAtISO, by: "Kyle" } }] } }));
+    c.ok("uploaded-not-sent is expanded with only title, overdue and requested actions", uploadedHTML.includes("Uploaded, not sent") && uploadedHTML.includes("Past due") && uploadedHTML.includes("Aryeo listing") && uploadedHTML.includes(">Watch</a>") && uploadedHTML.includes("Mark as sent") && !uploadedHTML.includes("Files and upload") && !uploadedHTML.includes("Download") && !uploadedHTML.includes("Mark as Uploaded") && !uploadedHTML.includes("<details"));
+    card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [listing] } }));
+    const uploadRow = namedComponent(tree(), "ReadyRow")!;
+    (uploadRow.props.onUploaded as () => void)();
+    const uploadedRow = namedComponent(tree(), "UploadedRow")!;
+    c.ok("confirmed upload moves exact row between queues immediately", !!uploadedRow && !namedComponent(tree(), "ReadyRow") && words(tree()).includes("Uploaded, not sent"));
+    (uploadedRow.props.onSent as () => void)();
+    c.ok("confirmed send removes exact row from uploaded-not-sent immediately", !namedComponent(tree(), "UploadedRow") && words(tree()).includes("No new files ready"));
+    listing.uploadFingerprint = "replacement-source";
+    c.ok("replacement source is not hidden by earlier upload/send acknowledgement", !!namedComponent(tree(), "ReadyRow") && !namedComponent(tree(), "UploadedRow"));
+    markers.clear(); result = deferred(); let sentRemoved = 0;
+    card!.stop(); card = mountHooks(() => MarkSent({ ...props, monthly: false, expectedFingerprint: "fixture-source", onRecorded: () => sentRemoved++ }));
+    tree(); await Promise.resolve(); const refreshBeforeSend = refreshes;
+    click("Mark as sent"); result.resolve({ ok: true, message: "Recorded", incomplete: ["Task update pending"] }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("partial bookkeeping retains row and explains follow-up", sentRemoved === 0 && words(tree()).includes("Task update pending") && !!button("Finish the bookkeeping"));
+    result = deferred(); click("Finish the bookkeeping"); result.resolve({ ok: true, already: true, message: "Original actor retained" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("direct send receipt removes row once without heavy dashboard refresh", sentRemoved === 1 && refreshes === refreshBeforeSend && markers.size === 0);
     const partialHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [], needsFinishing: [{ submissionId: ready.submissionId, projectId: ready.projectId, street: ready.street, sentAtISO: ready.approvedAtISO, sentBy: "Kyle", why: "Fixture partial" }] } }));
     c.ok("partial follow-up no longer claims client possession from a handoff stamp", !partialHTML.includes("The client has these") && partialHTML.includes("does not prove client approval, notification or receipt"));
     const exitHTML = renderToStaticMarkup(createElement(DeliveryExitSummary, { board }));
@@ -212,6 +232,16 @@ async function main() {
     c.ok("upload API rejects malformed confirmation before any write", (await POST(apiRequest(undefined, {}))).status === 400 && apiWrites === 0);
     const apiReceipt = await (await POST(apiRequest())).json();
     c.ok("upload API returns exact authenticated receipt directly without dashboard render", apiReceipt.ok === true && apiWrites === 1);
+    const { POST: sentPOST } = await import("../../src/app/api/ops/video-sent/route");
+    const callsBeforeAPI = calls.length;
+    c.ok("sent API rejects cross-origin before recording", (await sentPOST(apiRequest("https://other.example.test"))).status === 403 && calls.length === callsBeforeAPI);
+    apiAllowed = false;
+    c.ok("sent API enforces office permissions", (await sentPOST(apiRequest())).status === 403 && calls.length === callsBeforeAPI);
+    apiAllowed = true;
+    c.ok("sent API requires exact version before recording", (await sentPOST(apiRequest(undefined, { submissionId: props.submissionId }))).status === 400 && calls.length === callsBeforeAPI);
+    result = deferred(); result.resolve({ ok: true, message: "Original exact delivery action" });
+    const sentReceipt = await (await sentPOST(apiRequest())).json();
+    c.ok("sent API delegates original delivery safeguards and returns direct receipt", sentReceipt.ok === true && calls.length === callsBeforeAPI + 1);
     c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === 0 && fence.blocked.length === 0);
     c.summary();
   } finally {

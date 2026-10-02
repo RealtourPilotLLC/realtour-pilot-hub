@@ -87,10 +87,12 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
 
 export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBoard; includeTest?: boolean }) {
   const router = useRouter();
-  const [recorded, setRecorded] = useState<Set<string>>(() => new Set());
+  const [recorded, setRecorded] = useState<Map<string, string | null | undefined>>(() => new Map());
+  const [sent, setSent] = useState<Map<string, string | null | undefined>>(() => new Map());
   const { rendering, needsFinishing } = board;
-  const ready = board.ready.filter((v) => !recorded.has(v.submissionId));
-  const uploaded = (id: string) => setRecorded((previous) => new Set(previous).add(id));
+  const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint));
+  const uploadedRows = ready.filter((v) => !v.monthlyProgram && (v.uploaded || (recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)));
+  const uploaded = (v: ReadyVideo) => setRecorded((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
   // 9.2: sent, and the client not told yet — its own short list (NotTold).
   const notTold = board.notTold ?? [];
   const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
@@ -135,13 +137,24 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       <NotTold rows={notTold} />
       <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
       {[
-        { title: "Ready to upload", rows: ready.filter((v) => !v.monthlyProgram && !v.uploaded) },
+        { title: "Ready for upload", rows: ready.filter((v) => !v.monthlyProgram && !v.uploaded && !(recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)) },
         { title: "Portal delivery needs attention", rows: ready.filter((v) => v.monthlyProgram) },
-      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={() => uploaded(v.submissionId)} />)}</section>)}
-      {ready.some((v) => !v.monthlyProgram && v.uploaded) && <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-sm font-medium">Uploaded history and delivery follow-up</summary><div className="mt-3 space-y-2">{ready.filter((v) => !v.monthlyProgram && v.uploaded).map((v) => <ReadyRow key={v.submissionId} v={v} />)}</div></details>}
+      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={() => uploaded(v)} />)}</section>)}
+      {uploadedRows.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedRows.length})</span></h4>{uploadedRows.map((v) => <UploadedRow key={`${v.submissionId}:${v.uploadFingerprint ?? "none"}`} v={v} onSent={() => setSent((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint))} />)}</section>}
       <Rendering rows={rendering} />
     </div>
   );
+}
+
+function UploadedRow({ v, onSent }: { v: ReadyVideo; onSent: () => void }) {
+  return <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2">
+    <div className="min-w-0 flex-1 basis-48"><p className="break-words text-sm font-medium">{v.street} · {v.cutLabel} · v{v.round}</p>{v.overdue && <span className="text-xs font-medium text-danger">Past due</span>}</div>
+    <div className="flex max-w-full flex-wrap items-center gap-2">
+      <Link href={v.uploadFingerprint ? `/api/review/cut/${v.submissionId}/final?f=${v.uploadFingerprint}` : v.reviewHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Watch</Link>
+      {v.aryeoUrl && <a href={v.aryeoUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Aryeo listing</a>}
+      <MarkSent submissionId={v.submissionId} street={v.street} expectedFingerprint={v.uploadFingerprint ?? undefined} onRecorded={onSent} />
+    </div>
+  </div>;
 }
 
 function DeliveryTextIncidents({ rows, includeTest = false }: { rows: DeliveryNoticeIncident[]; includeTest?: boolean }) {

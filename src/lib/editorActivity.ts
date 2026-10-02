@@ -372,7 +372,7 @@ export function editorLines(wn: WorkingNow, act: ActivityToday, now: Date): Edit
       const laterStart = startsToday.find((s) => s > last.atISO);
       const tail = laterStart
         ? `· last pressed Start ${t(laterStart)}`
-        : startsToday.length ? "· hasn't pressed Start since" : "· hasn't pressed Start today";
+        : startsToday.length ? "· hasn't pressed Start since that action" : "· hasn't pressed Start today";
       return line({
         key: e.key, name: e.name, tone: "evidence",
         lead: `Last action ${t(last.atISO)} — ${LEAD_WORDS[last.kind]}`,

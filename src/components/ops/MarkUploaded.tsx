@@ -3,9 +3,11 @@ import { useRef, useState } from "react";
 import { boundedWait } from "@/lib/boundedWait";
 import { recordUploadRequest } from "@/lib/recordUploadRequest";
 import { Button } from "@/components/ui/Action";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 import { SaveStatus } from "@/components/ui/SaveStatus";
 
 export function MarkUploaded({ submissionId, fingerprint, onUploaded }: { submissionId: string; fingerprint: string; onUploaded?: () => void }) {
+  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -13,7 +15,7 @@ export function MarkUploaded({ submissionId, fingerprint, onUploaded }: { submis
   const key = `rtp:upload-record:${submissionId}`;
   function save() {
     if (guard.current || done) return;
-    if (!window.confirm("Confirm you would like to mark this as uploaded.")) return;
+    setConfirming(false);
     try {
       const previous = sessionStorage.getItem(key);
       if (previous && JSON.parse(previous).fingerprint !== fingerprint) {
@@ -41,7 +43,15 @@ export function MarkUploaded({ submissionId, fingerprint, onUploaded }: { submis
     })();
   }
   return <div className="space-y-2">
-    <Button className="border-transparent bg-emerald-700 text-white hover:bg-emerald-800 hover:brightness-100" busy={busy} busyLabel="Saving…" disabled={done} onClick={save}>{done ? "Uploaded" : "Mark as Uploaded"}</Button>
+    <Button className="border-transparent bg-emerald-700 text-white hover:bg-emerald-800 hover:brightness-100" busy={busy} busyLabel="Saving…" disabled={done} onClick={() => { if (!guard.current && !done) setConfirming(true); }}>{done ? "Uploaded" : "Mark as Uploaded"}</Button>
+    {confirming && <ModalDialog label="Confirm upload" onCancel={() => setConfirming(false)} className="max-w-md">
+      <h3 className="text-lg font-semibold">Confirm upload</h3>
+      <p className="mt-2 text-sm">Confirm you would like to mark this as uploaded.</p>
+      <div className="mt-5 flex flex-wrap justify-end gap-2">
+        <Button variant="secondary" data-modal-initial-focus onClick={() => setConfirming(false)}>Cancel</Button>
+        <Button className="border-transparent bg-emerald-700 text-white hover:bg-emerald-800" onClick={save}>Confirm uploaded</Button>
+      </div>
+    </ModalDialog>}
     {message && <SaveStatus state="error" message={message} className="block" />}
   </div>;
 }

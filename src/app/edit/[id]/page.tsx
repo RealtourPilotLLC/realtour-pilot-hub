@@ -901,6 +901,7 @@ export default async function EditBriefPage({
         <BackLink href={queueReturnHref(queue)} label="Editing Room" preferHref={!!queue} />
       </div>
       <PageHeader
+        sticky="desktop"
         eyebrow="Editor brief"
         title={street}
         // The agent's headshot beside their name — Aryeo's customer avatar,
@@ -1050,9 +1051,9 @@ export default async function EditBriefPage({
         </div>
       )}
 
-      <div className="grid gap-6 p-4 sm:p-6 ">
+      <div className="grid min-w-0 grid-cols-1 gap-5 p-4 sm:p-6">
 
-      <section className="mx-4 mt-4 rounded-xl border border-border px-4 py-3 sm:mx-6"><h2 className="font-semibold">Client · {project.client.name}</h2><div className="mt-1 flex flex-wrap gap-2 text-sm">{["vip", "heavy", "one_timer", "never_converted"].includes(project.client.segment ?? "") && <span className="rounded bg-surface-2 px-2 py-1" title={project.client.segment === "one_timer" ? "One non-cancelled order recorded" : project.client.segment === "never_converted" ? "No non-cancelled orders recorded" : "Existing client segment"}>{project.client.segment === "one_timer" ? "First Timer" : project.client.segment === "never_converted" ? "New" : project.client.segment === "vip" ? "VIP" : "Heavy"}</span>}<Link href="#brand-assets" className="inline-flex min-h-11 items-center text-brand">Brand assets</Link></div>{brandBrief?.music && <p className="text-sm">Music: {brandBrief.music}</p>}{brandBrief?.acceptedPreferences.slice(0, 3).map((text, index) => <p key={index} className="text-sm">{text}</p>)}</section>
+      <section className="min-w-0 rounded-xl border border-border px-4 py-3"><h2 className="font-semibold">Client · {project.client.name}</h2><div className="mt-1 flex flex-wrap gap-2 text-sm">{["vip", "heavy", "one_timer", "never_converted"].includes(project.client.segment ?? "") && <span className="rounded bg-surface-2 px-2 py-1" title={project.client.segment === "one_timer" ? "One non-cancelled order recorded" : project.client.segment === "never_converted" ? "No non-cancelled orders recorded" : "Existing client segment"}>{project.client.segment === "one_timer" ? "First Timer" : project.client.segment === "never_converted" ? "New" : project.client.segment === "vip" ? "VIP" : "Heavy"}</span>}<Link href="#brand-assets" className="inline-flex min-h-11 items-center text-brand">Brand assets</Link></div>{brandBrief?.music && <p className="text-sm">Music: {brandBrief.music}</p>}{brandBrief?.acceptedPreferences.slice(0, 3).map((text, index) => <p key={index} className="text-sm">{text}</p>)}</section>
       {outputBriefs.length > 0 && <section className="px-4 pt-4 sm:px-6" aria-label="Video selector"><div className="flex flex-wrap justify-between gap-2"><h2 className="font-semibold">Videos</h2><p className="text-sm text-muted">{approvedSlots} of {slots.length} approved · {slots.length - approvedSlots} remaining</p></div><nav className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-2">{outputBriefs.map((brief) => {
         const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
         const selected = brief.key === selectedKey;
