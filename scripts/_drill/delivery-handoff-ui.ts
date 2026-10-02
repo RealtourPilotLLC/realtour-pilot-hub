@@ -69,6 +69,10 @@ async function main() {
     recordFinalFileCheckAction: () => { throw new Error("save not invoked by this fixture"); },
     readFinalFileCheckReceiptAction: () => { throw new Error("receipt not invoked by this fixture"); },
   });
+  stub(req.resolve("../../src/lib/recordUploadRequest.ts"), { recordUploadRequest: async (id: string, fingerprint: string) => { uploadCalls.push({ id, fingerprint }); return uploadResult.promise; } });
+  const windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let confirms = true, removed = 0;
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { confirm: () => confirms } });
   let card: ReturnType<typeof mountHooks> | null = null;
   try {
     const { MarkSent } = await import("../../src/components/ops/MarkSent");
@@ -79,30 +83,27 @@ async function main() {
     const click = (label: string) => { const p = button(label); if (!p) throw new Error(`Missing button ${label}`); (p.onClick as () => void)(); };
     const status = () => elements(tree(), "SaveStatus")[0];
     const { MarkUploaded } = await import("../../src/components/ops/MarkUploaded");
-    const mountUpload = async () => { card?.stop(); card = mountHooks(() => MarkUploaded({ submissionId: props.submissionId, fingerprint: "exact-file-v3" })); tree(); await Promise.resolve(); };
-    await mountUpload(); click("Mark as Uploaded"); click("Mark as Uploaded");
-    c.ok("upload acknowledgement serializes the exact version even on same-tick clicks", uploadCalls.length === 1 && uploadCalls[0].fingerprint === "exact-file-v3" && uploadCalls[0].id === props.submissionId);
-    uploadResult.reject(new Error("response lost")); await until(() => elements(tree(), "Button")[0].busy === false);
-    await mountUpload(); click("Mark as Uploaded");
-    c.ok("lost upload response survives remount and refuses automatic duplicate saves", uploadCalls.length === 1 && JSON.parse(markers.get(`rtp:upload-record:${props.submissionId}`)!).fingerprint === "exact-file-v3" && elements(tree(), "Button")[0].disabled === true);
-    uploadResult = deferred(); click("Reconcile upload record"); click("Reconcile upload record");
-    c.ok("explicit upload reconciliation dispatches once for the unchanged exact source", uploadCalls.length === 2 && uploadCalls[1].fingerprint === "exact-file-v3");
-    uploadResult.resolve({ ok: true, message: "Already uploaded by Kyle at the original time." }); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("confirmed upload reconciliation clears its hold and preserves original receipt feedback", markers.size === 0 && status().state === "saved" && words(tree()).includes("original time"));
-    await mountUpload(); uploadResult = deferred(); click("Mark as Uploaded"); uploadResult.resolve({ ok: false, message: "Not saved: this cut changed." }); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("known upload refusal leaves the previous state, shows an error and allows a corrected attempt", markers.size === 0 && !elements(tree(), "Button")[0].disabled && status().state === "error" && words(tree()).includes("Not saved"));
-    await mountUpload(); storageFails = true; click("Mark as Uploaded"); storageFails = false;
-    c.ok("upload refuses locally when recovery storage is unavailable", uploadCalls.length === 3 && words(tree()).includes("Nothing was submitted"));
+    const mountUpload = async () => { card?.stop(); card = mountHooks(() => MarkUploaded({ submissionId: props.submissionId, fingerprint: "exact-file-v3", onUploaded: () => removed++ })); tree(); await Promise.resolve(); };
+    await mountUpload(); confirms = false; click("Mark as Uploaded"); confirms = true;
+    c.ok("cancelling confirmation submits nothing", uploadCalls.length === 0 && markers.size === 0);
+    click("Mark as Uploaded"); click("Mark as Uploaded");
+    c.ok("confirmed upload serializes exact version despite repeated clicks", uploadCalls.length === 1 && uploadCalls[0].fingerprint === "exact-file-v3");
+    uploadResult.reject(new Error("lost response")); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("lost response ends spinner with ordinary retry and no reconciliation control", !!button("Mark as Uploaded") && !button("Reconcile upload record") && markers.size === 1 && removed === 0);
+    await mountUpload(); uploadResult = deferred(); click("Mark as Uploaded");
+    c.ok("ordinary confirmed retry preserves exact source after remount", uploadCalls.length === 2 && uploadCalls[1].fingerprint === "exact-file-v3");
+    uploadResult.resolve({ ok: true, message: "Already recorded by original actor" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("authoritative receipt removes row immediately without dashboard refresh", removed === 1 && markers.size === 0 && !!button("Uploaded") && elements(tree(), "Button")[0].disabled === true && refreshes === 0);
+    await mountUpload(); uploadResult = deferred(); click("Mark as Uploaded"); uploadResult.resolve({ ok: false, message: "This cut changed" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("refusal keeps row visible with reason", removed === 1 && words(tree()).includes("This cut changed"));
     markers.clear(); await mountUpload(); uploadResult = deferred();
     const realTimer = globalThis.setTimeout;
     globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimer(callback, ms === 15_000 ? 1 : ms, ...args)) as typeof setTimeout;
     try { click("Mark as Uploaded"); await until(() => elements(tree(), "Button")[0].busy === false); }
     finally { globalThis.setTimeout = realTimer; }
-    c.ok("hung upload stops its spinner and retains exact-version recovery without automatic retry", markers.size === 1 && status().state === "error" && !!button("Reconcile upload record") && elements(tree(), "Button")[0].disabled === true);
-    uploadResult.resolve({ ok: true, message: "Late original response" }); await Promise.resolve(); await Promise.resolve();
-    c.ok("late response after timeout cannot clear the held record or falsely claim success", markers.size === 1 && status().state === "error");
-    uploadResult = deferred(); click("Reconcile upload record"); uploadResult.resolve({ ok: true, message: "Original upload confirmed" }); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("explicit reconciliation after timeout confirms the original receipt", markers.size === 0 && status().state === "saved");
+    c.ok("hung confirmation ends spinner and retains recoverable ordinary retry", markers.size === 1 && removed === 1 && !!button("Mark as Uploaded") && !elements(tree(), "Button")[0].disabled);
+    uploadResult.resolve({ ok: true, message: "Late response" }); await Promise.resolve(); await Promise.resolve();
+    c.ok("late response cannot falsely remove the row", removed === 1 && markers.size === 1);
     markers.clear();
     await mount(false); click("Mark as sent");
     const staleChoice = button("Mark as sent")!.onClick as () => void;
@@ -198,10 +199,24 @@ async function main() {
     c.ok("first known refusal preserves exact reason and permits corrected notice recording", !markers.size && words(tree()).includes("Known no-write refusal") && !elements(tree(), "Button")[0].disabled);
     const noticeExit = renderToStaticMarkup(createElement(DeliveryExitSummary, { board: { ...board, ready: [], notTold: [noticeRows[0]] } }));
     c.ok("review-exit monthly notification state names portal handoff without claiming delivery to or approval by client", noticeExit.includes("Portal handoff recorded; client notification owed") && noticeExit.includes("does not establish client approval or receipt") && !noticeExit.includes("video is marked sent"));
+    let apiAllowed = true, apiWrites = 0;
+    stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (!apiAllowed) throw new Error("Forbidden"); } });
+    stub(req.resolve("../../src/lib/auth/user.ts"), { getCurrentUser: async () => ({ id: "fixture-office", name: "Kyle", impersonating: false }) });
+    stub(req.resolve("../../src/lib/deliveryUploads.ts"), { recordUploaded: async (id: string, actor: { id: string }, fingerprint: string) => { apiWrites++; return { ok: id === props.submissionId && actor.id === "fixture-office" && fingerprint === "exact-file-v3", message: "Receipt saved" }; } });
+    const { POST } = await import("../../src/app/api/ops/video-upload/route");
+    const apiRequest = (origin = "https://hub.example.test", body: unknown = { submissionId: props.submissionId, fingerprint: "exact-file-v3" }) => new Request("https://hub.example.test/api/ops/video-upload", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    c.ok("upload API rejects cross-origin requests before any write", (await POST(apiRequest("https://other.example.test"))).status === 403 && apiWrites === 0);
+    apiAllowed = false;
+    c.ok("upload API enforces office permissions before any write", (await POST(apiRequest())).status === 403 && apiWrites === 0);
+    apiAllowed = true;
+    c.ok("upload API rejects malformed confirmation before any write", (await POST(apiRequest(undefined, {}))).status === 400 && apiWrites === 0);
+    const apiReceipt = await (await POST(apiRequest())).json();
+    c.ok("upload API returns exact authenticated receipt directly without dashboard render", apiReceipt.ok === true && apiWrites === 1);
     c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === 0 && fence.blocked.length === 0);
     c.summary();
   } finally {
     card?.stop();
+    if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window");
     for (const [file, original] of originals) { if (original) req.cache[file] = original; else delete req.cache[file]; }
     if (storageBefore) Object.defineProperty(globalThis, "sessionStorage", storageBefore); else Reflect.deleteProperty(globalThis, "sessionStorage");
     fence.restore();

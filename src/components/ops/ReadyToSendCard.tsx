@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
@@ -86,7 +87,10 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
 
 export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBoard; includeTest?: boolean }) {
   const router = useRouter();
-  const { ready, rendering, needsFinishing } = board;
+  const [recorded, setRecorded] = useState<Set<string>>(() => new Set());
+  const { rendering, needsFinishing } = board;
+  const ready = board.ready.filter((v) => !recorded.has(v.submissionId));
+  const uploaded = (id: string) => setRecorded((previous) => new Set(previous).add(id));
   // 9.2: sent, and the client not told yet — its own short list (NotTold).
   const notTold = board.notTold ?? [];
   const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
@@ -132,9 +136,9 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
       {[
         { title: "Ready to upload", rows: ready.filter((v) => !v.monthlyProgram && !v.uploaded) },
-        { title: "Uploaded, not sent", rows: ready.filter((v) => !v.monthlyProgram && v.uploaded) },
         { title: "Portal delivery needs attention", rows: ready.filter((v) => v.monthlyProgram) },
-      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} />)}</section>)}
+      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={() => uploaded(v.submissionId)} />)}</section>)}
+      {ready.some((v) => !v.monthlyProgram && v.uploaded) && <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-sm font-medium">Uploaded history and delivery follow-up</summary><div className="mt-3 space-y-2">{ready.filter((v) => !v.monthlyProgram && v.uploaded).map((v) => <ReadyRow key={v.submissionId} v={v} />)}</div></details>}
       <Rendering rows={rendering} />
     </div>
   );
@@ -229,7 +233,7 @@ function Running({ rows }: { rows: RenderingVideo[] }) {
  *  work at most, and past that the silence is the story again. */
 const IN_HAND_HOURS = 4;
 
-function ReadyRow({ v }: { v: ReadyVideo }) {
+function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: () => void }) {
   // SOMEBODY STARTED THE HANDOFF — so stop shouting at them briefly (Jordan,
   // Sep 21). A row pulled ten minutes ago rendered identically to one nobody had
   // ever opened, both in red, both reading "ready 3 days". The red goes away
@@ -399,7 +403,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         >
           <Eye className="size-3.5" /> Watch it
         </Link>
-        {!v.monthlyProgram && !v.uploaded && v.uploadFingerprint && <MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} />}
+        {!v.monthlyProgram && !v.uploaded && v.uploadFingerprint && <MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} onUploaded={onUploaded} />}
         {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
             way to retry the render without going into connections"). Offered
             only on a row whose 1080p pass did NOT produce the file — there is a
