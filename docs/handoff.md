@@ -2,6 +2,31 @@
 
 ## Sep 30 takeover addendum
 
+### Oct 1 evening — current continuation
+
+Use `audit-2026-09-30-resume.md` first. Production830a559b8e02 is Ready,
+promoted8:43:51 PM EDT, exact build/stage/HTTP/read-only verified. Prior
+ab6cfdf current-data retry andd22c582 durable delivery proof were separately
+released. Saved business settings, automation OFF/TEST_ONLY and seats unchanged;
+only recorded operational markers moved. d22c582 is rollback. No send/invite/
+real booking/financial change/activation/rollout/push. Five-table schema and
+backup already complete; no new schema.
+
+Localc298fba records first CALL18/0 and later WRITTEN22/0 continuous HTTP
+journeys (exactab6 build, normal roles, disposable PG, fake providers/media).
+Pro uncovered actual first-session quantity4→8 inflation. Confirmed-session
+repair +single/batched reader parity passes20/0/lint/types/root review;
+new immutable build and same two-session causal fixture are next. No live
+retroactive lowering. Historical toolingb7909ab20/0/seven-pointer read-only
+plan is committed and **NOT APPLIED**. Private source plans remain outsideGit.
+
+C14 mounted checks, U0–U5 partial/U6 open, normal browser/phone/team/provider/
+human rendition acceptance, real roster/strategy/topic/access preparation,
+exact historical/identity/property/owed decisions and two business policies
+remain open. Supported browser access is policy-blocked and inventory times
+out; do not bypass. Preserve main preview3200/5599/5598 and existing work.
+Older "current/no unfinished source" headings below are dated history.
+
 ### Oct 1 current production — f123eca, no unfinished source batch
 
 Canonical f123eca38cf2, Ready dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq,

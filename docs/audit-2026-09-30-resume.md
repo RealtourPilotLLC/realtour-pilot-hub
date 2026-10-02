@@ -1,5 +1,34 @@
 # Ops Hub audit — current resume point
 
+## Oct 1 evening — current autonomous work
+
+Canonical https://hub.realtourpilot.com serves830a559b8e02, Ready
+dpl_JVhUdakNwrD3NmD24Pvcfky7En2a, promoted8:43:51 PM EDT. ErrorScreenab6cfdf,
+durable authenticated delivery proofd22c582 and portal-aware fallback830a559
+are separately built/staged/deployed and HTTP/read-only verified. Settings/
+automation OFF/TEST_ONLY/seats preserved; only recorded operational markers
+moved. d22c582 rollback; retain database/newer writes. Historical toolingb7909ab
+is committed, PG20/0, bounded25006 dry-run7 ready pointers, **NOT APPLIED**.
+
+Localc298fba commits continuous built normal-role first CALL18/0 (including
+returning-editor/no-brand receipts) and later WRITTEN22/0. Both traverse exact
+source→script decisions→filming/editor/manual clocks→James v1/v2→fake final
+Dropbox→portal handoff→client verdict→exact bytes; providers/media are fake,
+workers OFF, no real invitations. Pro two-session/four-hour/eight-output
+causal fixture reproduced actual first-session output inflation4→8. Confirmed
+session quota repair +single/batched reader parity passes domain20/0, lint/types
+and root review; exact new build and same causal fixture are next. No Pro
+journey pass yet. See `audit-2026-10-01-causal-client-journeys.md`.
+
+Browser binding was previously policy-rejected, prohibiting workarounds; current
+supported inventory still times out. Mounted C14 and U0–U6/phone/team/provider/
+human-watch acceptance remain open. Pending business evidence remains exact
+historical topic/cut/property/owed scope, first roster, generated-date override
+policy and optional manual proofless unknown settlement. No new receipt
+enforcement policy is needed or assumed; current separate receipt/Start behavior
+is preserved. All older “current/no unfinished source” headings below are dated
+history and superseded here. Preserve main preview3200/5599/5598.
+
 Use this page first. The full backlog is in
 `audit-2026-09-30-checklist.md`; acceptance and release boundaries are in
 `audit-2026-09-30-release-matrix.md`; `handoff.md` preserves batch history.

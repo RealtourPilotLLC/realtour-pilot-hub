@@ -1909,17 +1909,21 @@ export async function syncProjectStatuses(
           .filter(Boolean)
           .map(Number)
           .filter((n) => n > 0 && n <= 60);
-        // Never LOWER the plan's own number with a stated one (Sep 16 review):
-        // a Pro label that happens to say "4 videos" in its blurb must not
-        // drop the quota from 8. The bigger of the two wins, and this whole
-        // block never lowers a row's quantity either.
-        const quota = Math.max(...stated, monthlyVideoQuota(names));
+        // For an unbound legacy job, a Pro label that happens to say "4
+        // videos" must not drop its monthly quota from 8. An exact confirmed
+        // session binding below is separate evidence of the job's allocation.
+        const { confirmedProgramSessionQuantities } = await import("@/lib/programSessionQuantity");
+        const sessionQuantity = (await confirmedProgramSessionQuantities([p.id])).get(p.id);
+        // A confirmed Pro appointment owes its own allocation, not all eight
+        // videos again. Unproved legacy jobs keep the original monthly floor;
+        // stated custom batches and already larger rows are never lowered.
+        const quota = Math.max(...stated, sessionQuantity ?? monthlyVideoQuota(names));
         let lifted = 0;
         for (const d of p.deliverables) {
           if (d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") continue;
           if ((d.quantity ?? 1) >= quota) continue;
-          await prisma.deliverable.update({ where: { id: d.id }, data: { quantity: quota } }).catch(() => {});
-          lifted++;
+          const updated = await prisma.deliverable.updateMany({ where: { id: d.id, quantity: { lt: quota } }, data: { quantity: quota } }).catch(() => null);
+          lifted += updated?.count ?? 0;
         }
         // ONE OF THE TWO QUANTITY PATHS THE REVIEW NAMED (R06, Sep 18). Lifting
         // a monthly batch from 1 to 8 changes how many videos are owed, and

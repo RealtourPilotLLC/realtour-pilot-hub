@@ -798,6 +798,11 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
   const { videoTier } = await import("@/lib/projectStatus");
   const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
   const tier = videoTier(p.deliverables);
+  const { confirmedProgramSessionQuantities, sessionQuantityFloor } = await import("@/lib/programSessionQuantity");
+  const names = [p.packageName, ...p.deliverables.map((d) => d.label)];
+  const sessionQuantity = monthly && p.contentMonthId && p.videosFilmed == null
+    ? (await confirmedProgramSessionQuantities([projectId])).get(projectId) : undefined;
+  const quota = sessionQuantity === undefined ? monthlyVideoQuota(names) : sessionQuantityFloor(names, sessionQuantity);
   // The hub's own count per row, then the office's total laid over it
   // (Sep 13, editOverrides.effectiveSlotCounts): "videos owed 6" on a 4-video
   // month makes six slots here, six on the QC card, six before the approved
@@ -805,7 +810,7 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
   const baseCounts = p.deliverables.map((d, i) => {
     let count = Math.max(1, d.quantity ?? 1);
     if (monthly && i === 0) {
-      count = Math.max(count, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((x) => x.label)]));
+      count = Math.max(count, p.videosFilmed ?? quota);
     }
     return count;
   });
@@ -2516,7 +2521,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     prisma.project.findMany({
       where: { id: { in: projectIds } },
       select: {
-        id: true, title: true, status: true, deliveredAt: true, packageName: true, videosFilmed: true, statusEvidence: true,
+        id: true, title: true, status: true, deliveredAt: true, packageName: true, videosFilmed: true, contentMonthId: true, statusEvidence: true,
         videosOwedOverride: true, // the office's batch size (Sep 13)
         client: { select: { name: true, avatarUrl: true } },
         // Same order as cutSlots() — the monthly batch count lands on the FIRST
@@ -2541,6 +2546,10 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     workStateFor(projectIds).catch(() => new Map<string, import("@/lib/editorWork").ProjectWork>()),
   ]);
   const notesByAsset = new Map(notes.map((n) => [n.assetUrl, n._count]));
+  const { confirmedProgramSessionQuantities, sessionQuantityFloor } = await import("@/lib/programSessionQuantity");
+  const sessionQuantities = await confirmedProgramSessionQuantities(projects
+    .filter((p) => p.contentMonthId && p.videosFilmed == null && isMonthlyContentJob(p.deliverables, p.packageName))
+    .map((p) => p.id));
   const editByProject = new Map(editTasks.map((t) => [t.projectId, t.assignedKey]));
   const subsByProject = new Map<string, typeof subs>();
   const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
@@ -2555,7 +2564,8 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
   }
   for (const p of projects) {
     const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
-    const quota = monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]);
+    const names = [p.packageName, ...p.deliverables.map((d) => d.label)], sessionQuantity = sessionQuantities.get(p.id);
+    const quota = sessionQuantity === undefined ? monthlyVideoQuota(names) : sessionQuantityFloor(names, sessionQuantity);
     const slots = pureSlots(p, monthly, quota, videoTier(p.deliverables));
     const rows = subsByProject.get(p.id) ?? [];
     // latest round per cut

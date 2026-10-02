@@ -2,33 +2,47 @@
 
 This tracks the user's full workflow audit at `/Users/jordanspackman/Downloads/Realtour-Pilot-Full-Workflow-Audit-2026-09-30.md` against the local checkout. The audit is evidence and backlog, not an instruction to turn on client-facing features. Update each row with a commit and acceptance evidence before calling it complete. See `docs/handoff.md` for the current resume point.
 
-**Current release boundary (Oct 1):** the user explicitly authorized production deployment after each verified checkpoint on `codex/audit-2026-09-30`. Latest exact application candidate: `f123eca38cf2d384df5431b7ceb24bcf4c63eecc`; previous verified4354aca is rollback. The reviewed five-table additive schema has been applied and verified; Vercel remote compile/types/build, staging checks and promotion passed. Canonical https://hub.realtourpilot.com serves `f123eca38cf2`; exact deployment HTTP and read-only state comparisons passed, with existing operational marker/cursor movement recorded separately. Normal-role/browser journeys and gated real-client visibility remain unaccepted. This authorization supersedes historical deployment prohibitions only. No production mutation test, seed, reset, client send, invitation, real booking, financial change or automation activation is authorized. A branch push is not part of this release. The production database remains shared with local `.env`.
+**Current release boundary (Oct 1 evening):** production serves exact application
+`830a559b8e02`, Ready `dpl_JVhUdakNwrD3NmD24Pvcfky7En2a`, promoted8:43:51 PM EDT.
+Error recoveryab6cfdf, durable delivery proofd22c582 and portal-safe recovery830a559
+were separately built/staged/deployed and HTTP/read-only verified. Saved business
+settings, automation OFF/TEST_ONLY and seats remain unchanged; recorded operational
+markers are separate. User authorized deployment after verified checkpoints, without
+Git push, sends/invitations, real bookings, financial changes, activation or rollout
+expansion. Five additive tables and backup are already verified; no new schema.
+C298fba commits passing causal HTTP fixtures, not a distinct application feature.
+Pro quantity repair passes20/0 locally; its rebuilt two-session journey is next.
+All older "current" headings below preserve dated history and are superseded here.
 
 Status terms: **done in code** still requires its named acceptance check; **partial** means a concrete remainder; **open** means implementation remains. At takeover `origin/main` was the audit's pinned `1075a5b`, and local `main` had eight newer commits. The Oct 1 fresh main fetch found the exact release candidate 0 commits missing from main / 161 commits ahead.
 
 ## Oct 1 authorized release checkpoint
 
-### Active continuation — recovery and causal HTTP acceptance
+### Active continuation — Pro quantity and remaining acceptance
 
-- ErrorScreen uses installed Next16 current-data retry with duplicate guard and
-  truthful interrupted-save/send guidance. Actual handler/runtime/SSR14/0,
-  scoped lint and whole-tree nonincremental types pass; root review clear.
-  Commit/build/deployment pending. Mounted transition acceptance remains open.
-- Separate W05 authenticated receipt/replay fixes a concrete transient database
-  proof-loss defect; expanded PostgreSQL25/0 plus existing echo36/0 pass,
-  lint/types pass. Focused review identified/corrected automatic receipt-read
-  queue starvation and cold workspace-line proof loss; correction check clear.
-  No schema or resend. Release pending. See durable-delivery-proof record.
-- Continuous first CALL-month HTTP acceptance begins with no planning or
-  production artifacts. First run stopped at an overstrict fixture assertion
-  about nullable stored CALL mode; canonical fallback is being used before
-  rerun. This establishes no product defect and no full journey pass yet.
-- Historical surgical repair mechanics are being prepared read-only with private
-  plans and disposable fixtures; semantic bindings remain held for Kyle/source
-  confirmation. Guarded preparation is now tested PostgreSQL20/0, lint/types
-  and root review clear; bounded25006 read-only probe7 ready/0 held mechanical
-  pointer candidates. No live repair or client preparation occurred. See
-  `audit-2026-10-01-historical-repair-preparation.md`.
+- First CALL18/0 and later WRITTEN22/0 are continuous actual built normal-role
+  HTTP journeys through exact source/script decisions, photographer handoff,
+  manual editor clocks, James's revision, fake exact final Dropbox backup,
+  portal handoff, distinct client verdict and exact bytes. Local checkpoint
+  `c298fba`; fake provider/media and declared import inputs only. Cleanup
+  error paths were hardened without repeating successful journeys.
+- A real Pro defect was reproduced: photographer finalization lifted a proven
+  four-video session to the eight-video monthly quantity. Exact confirmed
+  session allocation now governs that repair and both cut-count readers;
+  actual domain20/0, lint/types and root review pass. Build and same-fixture
+  two-session/eight-output acceptance are next. Existing larger/legacy/custom
+  quantities and manual overrides are preserved; no retrospective live repair.
+- Error boundary current-data refetchab6cfdf14/0, portal-safe recovery830a55924/0,
+  durable authenticated delivery replayd22c58225/0 + existing36/0 are released.
+  The corresponding exact release records/JSON are current evidence.
+- C14 named source gaps are closed. Mounted normal/test/filtered-empty/failure/
+  return/error-boundary checks remain blocked by supported browser access.
+  U0–U5 remain partial; U6 open, with phone/team/provider/human-watch acceptance.
+- Historical toolingb7909ab is committed, PG20/0, bounded read-only25006 dry-run
+  seven mechanical pointers ready; **NOT APPLIED**. Exact semantic/property/
+  owed reconciliation and intended real-client roster/preparation remain held.
+  Generated-workflow date policy and optional proofless manual settlement are
+  unresolved business decisions; existing clocks and unknown holds remain.
 
 ### Current production — f123eca; remaining acceptance held
 

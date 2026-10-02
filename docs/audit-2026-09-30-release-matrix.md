@@ -1,25 +1,28 @@
 # September 30 release evidence — Oct 1 production checkpoints
 
-This is an acceptance ledger. Jordan explicitly authorized the Oct1 deployment;
-reviewed candidate f123eca is now live, with existing gates unchanged. The detailed C01–C19,
-W01–W06 and U0–U6 backlog remains in `audit-2026-09-30-checklist.md`; the resume
-instructions and batch evidence remain in `handoff.md`.
+This is an acceptance ledger. Jordan authorized production checkpoint releases.
+Detailed C01–C19/W01–W06/U0–U6 evidence is in the checklist; current resume and
+batch history remain in resume.md and handoff.md. Deployment does not close
+normal-client, browser, phone, provider or team acceptance.
 
-## Release state
+## Current release state — Oct 1 evening
 
-Current production f123eca38cf2, Ready dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq,
-promoted17:31:41Z (1:31 PM EDT). All three app checkpoints deployed separately,
-with clean builds/stages/HTTP and readonly comparison evidence. Saved business
-settings/automation/rollout/seats unchanged; existing operational marker/cursor
-movement recorded separately. Rollback4354aca; no client/provider/activation
-operation. Current authority `audit-2026-10-01-c14-release.md`.
+Canonical https://hub.realtourpilot.com serves830a559b8e02, Ready
+`dpl_JVhUdakNwrD3NmD24Pvcfky7En2a`, promoted8:43:51 PM EDT. Exact clean
+Node20/remote builds, protected stage and production version/login/assets/auth
+checks pass. Saved business settings, automation OFF/TEST_ONLY and seats
+unchanged; two mailbox read-health timestamps advanced independently. Rollback
+d22c582; preserve all database records/newer writes. No agent sends, invitation,
+real booking, financial/schema change, activation, rollout expansion or push.
 
-| Latest work | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
+| Checkpoint | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
 |---|---|---|---|---|---|---|
-| Portal cache and failed detail | Canonical markers/status/pointers; both layouts fail closed |35/0 PG/SSR; exact build/release gates |a38715d |Yes |Existing gates |Source live; mounted/real-client acceptance open |
-| Exact delivery-text recovery | Authenticated unambiguous provider proof, original time, no resend |36/0 PG/webhook/concurrency/notice; exact gates |4354aca |Yes |Existing verified callback path; no switch change |Future callbacks may settle staff status; real provider outcome unobserved |
-| Home unavailable exceptions | Honest status/native retry/permitted scoped destinations; healthy empty retained |14/0 actual signed pages/recovery; exact gates |f123eca |Yes |Existing Home permissions |Staff notice live; mounted/error-boundary acceptance open |
-| Normal-role HTTP fixture |No distinct product change |37/0 against prior exact e6 build; cookie/action/range/manual work |a38715d |Local evidence only |No activation |No distinct feature or real client invitation |
+| Current-data error retry | Installed Next refetch, duplicate guard, interrupted-action guidance |14/0 handler/runtime/SSR; exact release gates |ab6cfdf |Yes |Existing users/gates |Fallback live; mounted acceptance open |
+| Durable exact delivery proof | Atomic authenticated receipt; strict stored replay; no resend |25/0 + existing36/0; exact release gates |d22c582 |Yes |Existing authenticated callback; no switch change |Staff settlement path live; real callback unobserved |
+| Portal-safe error destinations | Client portal return and ordinary team guidance |24/0 handler/runtime/SSR; exact release gates |830a559 |Yes |Existing users/gates |Fallback live; mounted acceptance open |
+| First CALL/later WRITTEN causal journeys |Verification fixtures; no distinct app feature |18/0 +22/0 against exact builtab6; signed HTTP/bytes |c298fba |Local evidence |No activation |No audience/invitation change |
+| Pro confirmed-session quota |Quota sweep/single and batch count repair |Domain20/0/lint/types/review; rebuilt causal test pending |Pending |No |No policy/switch change |Not yet shipped |
+| Historical repair preparation |Read-only plan; guarded transactional tool |PG20/0; seven ready pointers in bounded read-only probe |b7909ab |Local tooling |No live apply |No record changed |
 
 All following release paragraphs/tables preserve earlier checkpoint history.
 U0–U5 remain partial and U6 open; none is accepted by these source/HTTP gates.
@@ -128,11 +131,11 @@ for normal authorized client/editor access.
 |---|---|---|
 | UA01 — role work discovery | Home role rendering, saved reviewer seat, preserved actions | Kyle, James and Jordan each identify their next owned action without narration; record time and hints, not an invented score |
 | UA02 — authorized navigation | Sidebar identical destination sets for 12 role/override profiles; old Settings anchors | Engineering: keyboard/cold-link/back navigation under normal role sessions |
-| UA03 — written month | Signed written path 23/0; connected strategy/bank→written month→exact scripts→filming→final decisions 19/0 | Engineering: complete normal client browser journey with carried and client-added topics |
-| UA04 — call and Pro sessions | Signed call route 25/0, fake transcript/model output; Pro action evidence | Engineering: normal client browser and approved provider sandbox booking; Jordan decides historical worker backlog |
+| UA03 — written month | Later WRITTEN causal built HTTP22/0 with exact carry/client-added topics/typed answers through final bytes; earlier23/0+19/0 retained | Engineering: complete normal client browser journey with carried and client-added topics |
+| UA04 — call and Pro sessions | First CALL causal built HTTP18/0 from empty strategy/bank through final bytes; prior25/0. Pro first-session inflation reproduced; fix20/0, rebuilt two-session journey pending | Engineering: normal client browser and approved provider sandbox booking; Jordan decides historical worker backlog |
 | UA05 — draft recovery | Existing draft/recovery and failed save fixtures | Engineering: normal client refresh/navigation and denied browser storage; ensure saved choices and words survive |
 | UA06 — exact version decisions | Pinned revisions/role guards; connected v1→checked v2 decision/download; multi-session stale verdict/issue and finishing regression 11/0 | Engineering: browser newer-cut and failed revision submission, captions/download gates |
-| UA07 — editor context | Kim + overdue isolated demo return/refresh; Start/Pause 76/0 and connected two-output handoff 19/0 | Kim/engineering: normal signed editor, two-session monthly scope and receipt, keyboard/phone checks |
+| UA07 — editor context | Actual HTTP18/0 includes no-brand, return/reassignment stale receipt/fresh acknowledgment and manual clocks; prior queue76/0+19/0 retained | Kim/engineering: normal signed editor, two-session monthly scope and receipt, keyboard/phone checks |
 | UA08 — photographer handoff | Signed CP09 142/0 with fake partial Dropbox failure/retry | Photographer/engineering: actual phone partial/mixed raw files, upload interruption, receipt and exact script/output |
 | UA09 — delivery and communication | Ready-file context, final-rendition34/0, mixed photo/video25/0, notice10/0, comms recovery; connected approved v2 fixture download and foreign/revoked denial | Kyle/engineering: approved exact final media, explicit destination policy, provider sandbox handoff and incident recovery |
 | UA10 — failures and honest state | Delivery read failures, notification failure demo, reminder late-save/failure proof | Engineering: browser saves/data fetches fail and recover; no false zero/success or lost input |
