@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronDown,
+  Copy,
   FolderOpen,
   FolderUp,
   Loader2,
@@ -18,7 +19,6 @@ import { cn } from "@/lib/utils";
 import { etDayKey, etMonthDay } from "@/lib/datetime";
 import { Avatar } from "@/components/ui/Avatar";
 import { badgeColors } from "@/components/ui/Badge";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { ActionMenu } from "@/components/ui/ActionMenu";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
@@ -336,27 +336,43 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
 }
 
 /** Office-only rare actions retain their existing dialogs and server guards. */
-function QueueActions({ row, onReceipt }: { row: QueueRow; onReceipt: (message: string) => void }) {
+function QueueActions({ row, office, chatHref, queueHref, onReceipt }: {
+  row: QueueRow; office: boolean; chatHref: string; queueHref: string;
+  onReceipt: (message: string, ok?: boolean) => void;
+}) {
+  const router = useRouter();
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const copyGuard = useRef(false);
   const returnFocus = () => triggerRef.current?.focus();
+  const common = [
+    { id: "chat", text: "Open project chat", label: <><MessageSquare aria-hidden="true" className="size-4" />Project chat <span className="ml-auto text-xs text-muted">{row.comments}</span></>, onSelect: () => { rememberQueueScroll(queueHref); router.push(chatHref); } },
+    { id: "copy", text: "Copy project link", label: <><Copy aria-hidden="true" className="size-4" />Copy project link</>, onSelect: () => {
+      if (copyGuard.current) return;
+      copyGuard.current = true;
+      Promise.resolve().then(() => navigator.clipboard.writeText(row.url)).then(() => onReceipt("Project link copied."), () => onReceipt("Copy failed. Open the brief and copy its address, or try again.", false)).finally(() => { copyGuard.current = false; });
+    } },
+  ];
+  const menu = (extra: import("@/components/ui/ActionMenu").ActionMenuItem[] = []) => <ActionMenu
+    triggerRef={triggerRef}
+    label={`${office ? "More actions" : "Files and chat"} for ${row.street}`}
+    className="inline-flex items-center justify-center rounded-md border border-transparent text-muted hover:bg-surface-2 hover:text-foreground sm:min-h-8 sm:min-w-7"
+    items={[...common, ...extra]}
+    footer={row.revisionContext || row.lastAction ? <div className="space-y-2 break-words">
+      {row.revisionContext && <p>{row.revisionContext}</p>}
+      {row.lastAction && <p>{row.lastAction.name} {row.lastAction.words} · {row.lastAction.at}. Activity alone does not mean they pressed Start.</p>}
+    </div> : undefined}
+  ><MoreHorizontal aria-hidden="true" className="size-4" /></ActionMenu>;
+  if (!office) return menu();
   return <EditOverridesButton
     job={{ projectId: row.id, street: row.street, status: row.status, editorKey: row.editorKey, editorName: row.editor, editorAuto: row.auto, overrides: row.overrides, computed: row.computed }}
     onReceipt={onReceipt}
     onDialogClose={returnFocus}
     renderTrigger={(openOverride) => <RemoveFromQueueButton
-      projectId={row.id}
-      street={row.street}
-      onReceipt={onReceipt}
-      onDialogClose={returnFocus}
-      renderTrigger={(openRemove) => <ActionMenu
-        triggerRef={triggerRef}
-        label={`More actions for ${row.street}`}
-        className="inline-flex items-center justify-center rounded-lg border border-border text-muted hover:bg-surface-2 hover:text-foreground"
-        items={[
-          { id: "override", text: "Override job details", label: <><SlidersHorizontal aria-hidden="true" className="size-4" />Override job details</>, onSelect: openOverride },
-          { id: "remove", text: "Remove from this queue", label: <><Trash2 aria-hidden="true" className="size-4" />Remove from this queue</>, onSelect: openRemove },
-        ]}
-      ><MoreHorizontal aria-hidden="true" className="size-4" /></ActionMenu>}
+      projectId={row.id} street={row.street} onReceipt={onReceipt} onDialogClose={returnFocus}
+      renderTrigger={(openRemove) => menu([
+        { id: "override", text: "Override job details", label: <><SlidersHorizontal aria-hidden="true" className="size-4" />Override job details</>, onSelect: openOverride },
+        { id: "remove", text: "Remove from this queue", label: <><Trash2 aria-hidden="true" className="size-4" />Remove from this queue</>, onSelect: openRemove },
+      ])}
     />}
   />;
 }
@@ -601,6 +617,8 @@ export function SimpleQueue({
   // the table empty under a control claiming otherwise.
   // The last thing a status click did beyond writing the label (see StatusPill).
   const [receipt, setReceipt] = useState<string | null>(null);
+  const [receiptOk, setReceiptOk] = useState(true);
+  const receive = (message: string, ok = true) => { setReceipt(message); setReceiptOk(ok); };
   const all = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
   const upcomingTab = view === "upcoming";
   const word = upcomingTab ? ("shoot" as const) : ("due" as const);
@@ -731,7 +749,7 @@ export function SimpleQueue({
   return (
     <div>
       {receipt && (
-        <div className="mb-3 flex items-start gap-2 rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-sm text-foreground/90">
+        <div role="status" className={cn("mb-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-sm", receiptOk ? "border-success/30 bg-success/10 text-foreground/90" : "border-warning/30 bg-warning-soft text-warning")}>
           <span className="min-w-0 flex-1">{receipt}</span>
           <button onClick={() => setReceipt(null)} aria-label="Dismiss" className="rounded-md px-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">Dismiss</button>
         </div>
@@ -912,7 +930,7 @@ export function SimpleQueue({
                           // else looking at this table is the office.
                           // The chip is in the key too: Start / Pause change who
                           // is on a job without always changing its word.
-                          <StatusPill key={`${r.status}|${r.workChip ?? ""}`} row={r} office={!hideEditor} onReceipt={setReceipt} />
+                          <StatusPill key={`${r.status}|${r.workChip ?? ""}`} row={r} office={!hideEditor} onReceipt={receive} />
                         )}
                         {!hideEditor && r.workChip && <span className={`ml-1 text-xs ${r.work.active.length ? "text-success" : "text-muted"}`} title={r.workChip}>{r.work.active.length ? "Working" : "Paused"}</span>}
                         {/* Rare office actions keep their confirmation and undo flows. */}
@@ -982,27 +1000,11 @@ export function SimpleQueue({
                         title="Open editing brief" className="inline-flex min-h-11 items-center justify-center rounded-md border border-border bg-surface px-3 py-2 text-sm font-medium sm:min-h-8 sm:px-2 sm:py-1 sm:text-xs hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                         Open
                       </Link>
-                      <details className="relative text-sm text-muted">
-                        <summary className="flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center rounded-md border border-transparent sm:min-h-8 sm:min-w-7 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
-                          <span aria-label={`Files and chat${r.comments > 0 ? ` · ${r.comments}` : ""}`}>•••</span>
-                        </summary>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <Link href={`${jobHref(r.id)}#messages`} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel"
-                            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                            <MessageSquare aria-hidden="true" className="size-4" />Chat · {r.comments}
-                          </Link>
-                          {r.revisionContext && <p className="w-full text-sm">{r.revisionContext}</p>}
-                          {r.lastAction && <p className="w-full text-sm">{r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}. Activity alone does not mean they pressed Start.</p>}
-                        {!hideEditor && <QueueActions
-                          key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
-                          row={r}
-                          onReceipt={setReceipt}
-                        />}
-                          {/* The shared job URL remains the server's canonical public URL. */}
-                          <CopyButton value={r.url} title={`Copy this job's link to send to an editor — ${r.url}`}
-                            label="Copy link" className="min-h-11 min-w-11 justify-center text-sm text-muted hover:text-brand" />
-                        </div>
-                      </details></div>
+                      <QueueActions
+                        key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
+                        row={r} office={!hideEditor} chatHref={`${jobHref(r.id)}#messages`} queueHref={queueHref}
+                        onReceipt={receive}
+                      /></div>
                     </td>
                   </tr>
                 );

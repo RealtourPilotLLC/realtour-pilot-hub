@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 
@@ -15,7 +15,7 @@ export type ActionMenuItem = {
 };
 
 /** A menu button for commands, including commands that open another dialog. */
-export function ActionMenu({ label, children, items, className, style, title, busy = false, triggerRef: suppliedRef }: {
+export function ActionMenu({ label, children, items, className, style, title, busy = false, footer, triggerRef: suppliedRef }: {
   label: string;
   children: ReactNode;
   items: ActionMenuItem[];
@@ -23,6 +23,8 @@ export function ActionMenu({ label, children, items, className, style, title, bu
   style?: CSSProperties;
   title?: string;
   busy?: boolean;
+  /** Read-only context below commands; never part of the row layout. */
+  footer?: ReactNode;
   triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const localRef = useRef<HTMLButtonElement>(null);
@@ -40,7 +42,7 @@ export function ActionMenu({ label, children, items, className, style, title, bu
     if (busy || !items.length || !triggerRef.current) return;
     const r = triggerRef.current.getBoundingClientRect();
     const width = Math.min(288, window.innerWidth - 16);
-    const height = Math.min(items.length * 44 + 8, window.innerHeight - 16);
+    const height = Math.min(items.length * 44 + 8 + (footer ? 112 : 0), window.innerHeight - 16);
     const top = window.innerHeight - r.bottom >= height + 12 ? r.bottom + 4 : Math.max(8, r.top - height - 4);
     firstFocus.current = last ? items.length - 1 : Math.max(0, items.findIndex((item) => item.checked));
     setPosition({
@@ -49,6 +51,16 @@ export function ActionMenu({ label, children, items, className, style, title, bu
       top,
     });
   };
+
+  // Context can wrap: position using the mounted height so an upward menu
+  // stays beside its trigger instead of leaving a large estimated gap.
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current || !triggerRef.current) return;
+    const r = triggerRef.current.getBoundingClientRect();
+    const height = Math.min(menuRef.current.scrollHeight + 2, window.innerHeight - 16);
+    const top = window.innerHeight - r.bottom >= height + 12 ? r.bottom + 4 : Math.max(8, r.top - height - 4);
+    setPosition((previous) => previous && { ...previous, top, maxHeight: window.innerHeight - top - 8 });
+  }, [open, triggerRef]);
 
   useEffect(() => {
     if (!open) return;
@@ -139,7 +151,7 @@ export function ActionMenu({ label, children, items, className, style, title, bu
       >
         {item.label}
         {item.description && <span id={`${id}-${item.id}-reason`} className="sr-only">{item.description}</span>}
-      </button>)}</div>, document.body,
+      </button>)}{footer && <div role="none" className="mx-2 mt-1 border-t border-border px-1 py-3 text-xs leading-relaxed text-muted">{footer}</div>}</div>, document.body,
     )}
   </>;
 }
