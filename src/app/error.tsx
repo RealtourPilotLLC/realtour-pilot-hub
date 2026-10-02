@@ -3,6 +3,7 @@
 import { useEffect, useRef, useTransition } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { ActionLink, Button } from "@/components/ui/Action";
+import { usePathname } from "next/navigation";
 
 // Something broke on a page. Before this existed, a failure showed the browser's
 // own blank error screen: the person had nothing to read, nothing to press and
@@ -12,6 +13,8 @@ export default function ErrorScreen({ error, unstable_retry }: {
   error: Error & { digest?: string };
   unstable_retry: () => void;
 }) {
+  const pathname = usePathname();
+  const clientPortal = pathname === "/portal" || pathname?.startsWith("/portal/");
   const [pending, startTransition] = useTransition();
   const retrying = useRef(false);
   useEffect(() => {
@@ -47,7 +50,9 @@ export default function ErrorScreen({ error, unstable_retry }: {
           Unsaved text may need to be entered again.
         </p>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          If the page still won’t load, report it to Jordan with the reference below, if shown.
+          {clientPortal
+            ? "If the page still won’t load, let the team know through your usual contact channel with the reference below, if shown."
+            : "If the page still won’t load, report it to Jordan with the reference below, if shown."}
         </p>
         {error.digest && (
           <p className="mt-3 rounded-lg bg-surface-2 px-3 py-2 font-mono text-xs text-muted">
@@ -58,12 +63,14 @@ export default function ErrorScreen({ error, unstable_retry }: {
           <Button onClick={retry} busy={pending} busyLabel="Loading current information…">
             <RefreshCw aria-hidden className="size-4" /> Try again
           </Button>
-          <ActionLink href="/" prefetch={false}>
-            Back to home
+          <ActionLink href={clientPortal ? "/portal/me" : "/"} prefetch={false}>
+            {clientPortal ? "Back to your portal" : "Back to home"}
           </ActionLink>
-          <ActionLink href="/feedback" prefetch={false}>
-            Report it
-          </ActionLink>
+          {!clientPortal && (
+            <ActionLink href="/feedback" prefetch={false}>
+              Report it
+            </ActionLink>
+          )}
         </div>
       </div>
     </div>

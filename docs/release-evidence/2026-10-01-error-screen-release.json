@@ -1,0 +1,181 @@
+{
+  "candidate": "ab6cfdf37314c2107f4a286446f95e396811c5b2",
+  "deployment": {
+    "candidate": "ab6cfdf37314c2107f4a286446f95e396811c5b2",
+    "id": "dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+    "url": "https://realtour-pilot-rj300fpzx-realtour-pilot-s-projects.vercel.app",
+    "state": "READY",
+    "target": "production",
+    "releaseCommit": null
+  },
+  "build": {
+    "candidate": "ab6cfdf37314c2107f4a286446f95e396811c5b2",
+    "startedAt": "2026-10-01T23:58:10.613752+00:00",
+    "finishedAt": "2026-10-01T23:59:01.696210+00:00",
+    "exitCode": 0,
+    "node": "20.20.2",
+    "environment": "clean; no provider credentials; dead loopback database",
+    "mainPreviewUntouched": true
+  },
+  "staging": {
+    "at": "2026-10-02T00:04:29.273Z",
+    "candidate": "ab6cfdf37314c2107f4a286446f95e396811c5b2",
+    "stagedUrl": "https://realtour-pilot-rj300fpzx-realtour-pilot-s-projects.vercel.app",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "ab6cfdf37314"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      }
+    ],
+    "canonicalStill": "f123eca38cf2",
+    "protectionRetained": true
+  },
+  "promotion": {
+    "candidate": "ab6cfdf37314c2107f4a286446f95e396811c5b2",
+    "id": "dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+    "stagedUrl": "https://realtour-pilot-rj300fpzx-realtour-pilot-s-projects.vercel.app",
+    "startedAt": "2026-10-02T00:05:22.104Z",
+    "finishedAt": "2026-10-02T00:05:25.764Z",
+    "exitCode": 0,
+    "promoted": true
+  },
+  "productionHTTP": {
+    "at": "2026-10-02T00:08:07.555Z",
+    "base": "https://hub.realtourpilot.com",
+    "expected": "ab6cfdf37314",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "ab6cfdf37314"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/",
+        "status": 307,
+        "location": "/login?next=%2F"
+      },
+      {
+        "path": "/editing",
+        "status": 307,
+        "location": "/login?next=%2Fediting"
+      },
+      {
+        "path": "/review",
+        "status": 307,
+        "location": "/login?next=%2Freview"
+      },
+      {
+        "path": "/tasks",
+        "status": 307,
+        "location": "/login?next=%2Ftasks"
+      },
+      {
+        "path": "/portal/me",
+        "status": 200,
+        "location": null,
+        "streamedSignInRedirect": true
+      },
+      {
+        "path": "/api/review/cut/invalidcut12345678/final?f=fixture",
+        "status": 403,
+        "location": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "/_next/static/chunks/3-ljlp1zqzl63.css?dpl=dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/3r8h98x5pdyho.css?dpl=dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2gokyol_h_2zh.js?dpl=dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2pzafz57-h46r.js?dpl=dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2fzkd0kh4cb41.js?dpl=dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2g05-lers809t.js?dpl=dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM",
+        "status": 200
+      }
+    ],
+    "failures": [],
+    "oldHost": {
+      "status": 307,
+      "location": "https://hub.realtourpilot.com/login"
+    }
+  },
+  "stateComparison": {
+    "enforcedReadOnly": true,
+    "automationUnchanged": true,
+    "savedBusinessSettingsUnchanged": true,
+    "operationalCursorChanges": [
+      "content-video-sweep-cursor"
+    ],
+    "operationalHealthMarkerChanges": {
+      "deliverableOutputs": 1,
+      "gmailReadOk": 2
+    },
+    "clientSeatCountsUnchanged": true,
+    "rollout": "TEST_ONLY (default)",
+    "enabledStoredAutomations": [],
+    "operationalChangeContext": "Existing library/output sweep and mailbox read-health markers advanced during ordinary live activity; no agent worker/provider event."
+  },
+  "behavioralEvidence": {
+    "actualHandlerInstalledRuntimeAndSSR": {
+      "passed": 14,
+      "failed": 0
+    },
+    "types": 0,
+    "changedFileLint": 0,
+    "focusedReview": "clear",
+    "mountedBrowserAcceptance": false
+  },
+  "schemaChanges": false,
+  "activation": false,
+  "realClientSends": false,
+  "realInvitations": false,
+  "realProviderBookings": false,
+  "gitPush": false,
+  "rollback": {
+    "candidate": "f123eca38cf2d384df5431b7ceb24bcf4c63eecc",
+    "deployment": "dpl_9gGBvmH9HkuGyyzHkr1gNeiNvUXq",
+    "preserveDatabaseAndNewerWrites": true
+  },
+  "initialPostPromotionAttempt": "unconfirmed; bounded second read-only/HTTP checks passed; no operation replay or rollback"
+}

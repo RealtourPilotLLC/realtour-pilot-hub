@@ -1,6 +1,14 @@
 # C14 / U5 — current-page error recovery checkpoint
 
-## Implemented and tested; release pending
+## Implemented, tested, committed and deployed
+
+Application checkpoint `ab6cfdf37314c2107f4a286446f95e396811c5b2` is live at
+https://hub.realtourpilot.com, Ready `dpl_8TMRVjE3VMP1vUnnTswPd7y5MfBM`,
+promoted Oct1 at8:05:25 PM EDT (Oct2 00:05:25Z). Exact clean Node20 build,
+Vercel remote build, protected stage and canonical version/login/six assets/
+office and portal anonymous auth/final403/old-host307 gates pass. The first
+post-promotion check was unconfirmed; bounded second read-only/HTTP checks
+passed without replaying the promotion. No first-failure cause is claimed.
 
 `src/app/error.tsx` now uses the installed Next16 `unstable_retry` contract to
 refetch current server information before resetting the boundary. The old
@@ -16,8 +24,16 @@ Whole-tree nonincremental Node20 TypeScript passes at
 completion; it is not mounted-browser or real-user acceptance.
 
 No schema, business records, provider action, send, invitation, clock change,
-automation activation or rollout expansion. Exact build/stage/promotion and
-canonical checks are pending. Production remains f123eca until promotion.
+automation activation or rollout expansion. Read-only comparison verifies saved
+business settings, automation OFF/TEST_ONLY and raw seat counts unchanged.
+Existing library/output sweep and two mailbox-health markers advanced during
+ordinary business activity; no agent worker/provider event was invoked.
+Sanitized proof: `release-evidence/2026-10-01-error-screen-release.json`.
+Previous f123eca is rollback; preserve all DB records and newer writes.
+
+The fallback is deployed for existing authorized users when a page fails.
+No client audience or switch was enabled. Mounted browser/phone acceptance
+remains open; source deployment is not full journey acceptance.
 
 ## New acceptance work found at this checkpoint
 

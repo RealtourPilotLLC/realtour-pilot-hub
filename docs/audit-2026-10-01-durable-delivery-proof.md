@@ -1,6 +1,16 @@
 # W05 — durable authenticated delivery proof
 
-## Implemented and tested; deployment pending
+## Implemented, tested, committed and deployed
+
+Checkpoint `d22c5823643fd223e7ed61a5f84affdfe4a64e5f` is live at
+https://hub.realtourpilot.com, Ready `dpl_DtWVEc8NjExmdsdtgT54sXTrQnMC`,
+promoted Oct1 8:23:28 PM EDT (Oct2 00:23:28Z). Clean exact Node20 build,
+Vercel remote build, protected stage, canonical version/login/six assets,
+office/client anonymous permissions, final403 and old-host307 all pass.
+Guarded read-only comparison confirms all saved settings, automation OFF/
+TEST_ONLY and raw seat counts unchanged. Sanitized evidence:
+`release-evidence/2026-10-01-durable-proof-release.json`. Previous ab6cfdf is
+rollback; preserve all receipts/provider identities/dedupe and newer DB writes.
 
 An authenticated exact delivery echo could be marked PROCESSED despite a
 transient settlement failure. A later stored replay also lost the authentication
@@ -31,6 +41,11 @@ check is clear, with no residual defect found in these paths.
 
 No client send, invitation, booking, financial action, automation activation,
 rollout change, new schema or pushed branch. Production callback acceptance and
-manual unknown-text settlement authority remain open. Exact build/stage/
-promotion and canonical checks are pending. This extends the deployed4354aca
+manual unknown-text settlement authority remain open. This extends deployed4354aca
 exact-evidence recovery, without granting new manual policy.
+
+Existing authenticated callbacks can use this recovery under unchanged gates.
+No client audience, outbound automation or switch was enabled; real callback
+acceptance is not claimed. First CALL-month causal HTTP evidence now passes14/0
+against the unchanged journey code in compiledab6cfdf; providers/media remain
+fake and returning-editor extension is in progress separately.

@@ -66,6 +66,10 @@ function mount(render: () => ReactNode) {
 
 function main() {
   const c = makeChecker(), fence = fenceFetch();
+  const navigation = createRequire(__filename)("next/navigation") as { usePathname: () => string | null };
+  const originalPathname = navigation.usePathname;
+  let pathname: string | null = "/review";
+  navigation.usePathname = () => pathname;
   const originalError = console.error, logged: unknown[][] = [];
   console.error = (...args: unknown[]) => { logged.push(args); };
   try {
@@ -112,8 +116,19 @@ function main() {
     c.ok("ordinary home and report navigation remain available", html.includes('href="/"') && html.includes('href="/feedback"') && html.includes("Try again"));
     const noReference = renderToStaticMarkup(createElement(ErrorScreen, { error: new Error("fixture"), unstable_retry: boundary.unstable_retry }));
     c.ok("missing digest does not invent a reference or lose recovery controls", !noReference.includes("Reference:") && noReference.includes("if shown") && noReference.includes('href="/feedback"'));
+    for (const path of ["/portal", "/portal/me", "/portal/login", "/portal/opaque-test-token"]) {
+      pathname = path;
+      const portal = renderToStaticMarkup(createElement(ErrorScreen, { error, unstable_retry: boundary.unstable_retry }));
+      c.ok(`${path} offers portal recovery without staff-only destinations`, portal.includes('href="/portal/me"') && portal.includes("Back to your portal") && portal.includes("usual contact channel") && !portal.includes('href="/feedback"') && !portal.includes('href="/"') && portal.includes("check its recorded status") && portal.includes("fixture-reference-2"));
+      c.ok(`${path} keeps native retry and shared portal touch/focus targets`, (portal.match(/<(?:button|a)\b[^>]*>/g) ?? []).length === 2 && portal.includes("Try again") && portal.includes("min-h-11") && portal.includes("focus-visible:outline-2"));
+    }
+    for (const path of ["/portals", null]) {
+      pathname = path;
+      const office = renderToStaticMarkup(createElement(ErrorScreen, { error, unstable_retry: boundary.unstable_retry }));
+      c.ok("segment boundary or unavailable pathname retains existing office destinations", office.includes('href="/"') && office.includes('href="/feedback"') && !office.includes("Back to your portal"));
+    }
     c.ok("fixture performs no provider or network requests", fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();
-  } finally { console.error = originalError; fence.restore(); }
+  } finally { console.error = originalError; navigation.usePathname = originalPathname; fence.restore(); }
 }
 main();
