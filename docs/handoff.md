@@ -1,3 +1,23 @@
+## Mobile scrolling fix deployed — October 2, 12:14 PM ET
+
+Application commit `0a03deec466ae93f4d2c3971e35ea562b3b710d7` is live on hub.realtourpilot.com,
+Ready deployment `dpl_7127RKyLEwrSAdH27hjy1JRXXdU8`. Source fix: main vertical scroller
+uses horizontal overflow containment and minimum size constraints; long radar
+rows use a bounded single-column grid and wrapping header. Only JSX classes changed
+in Shell.tsx and dashboard/ProactiveFlags.tsx. No business logic/settings changed.
+
+Verified: scoped lint/diff review; clean Node20 build/fresh types; protected stage;
+canonical version/auth/assets/redirect checks. Isolated normal OWNER long-row
+fixture passes320/375/390px. Live signed-in production390px: document390px,
+main clientWidth=scrollWidth=382px (previously1250px scrollWidth), horizontal
+gesture keeps x=0, vertical gesture advances y4929→5773. No production business
+action invoked. Settings/automation hashes and access counts unchanged; enabled
+`[]`, TEST_ONLY, users2/memberships3 retained. Rollback b2868f2 preserves DB writes.
+Evidence: `/private/tmp/ops-hub-mobile-lock-2026-10-02/`. Physical phone acceptance
+for the broader client journey remains separate. The private long-row proof route
+is not committed or deployed. Application source is committed; this record is the
+requested post-deployment Git checkpoint. Historical checkpoints below are retained.
+
 ## Mobile horizontal scrolling fix — October 2
 
 Shared main scroller now restricts horizontal overflow; long On your radar rows
