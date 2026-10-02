@@ -27,20 +27,20 @@ async function main() {
     c.ok("explicit retry without receipt still permits the confirmed idempotent write", result.ok && calls.map(v=>v.method).join() === "GET,POST");
     post = async () => { throw new Error("Lost response"); }; calls.length = 0;
     result = await recordUploadRequest("exact-cut", "changed-source");
-    c.ok("missing or mismatched receipt never claims success", !result.ok && result.unconfirmed && calls.filter(v=>v.method === "POST").length === 1);
+    c.ok("missing or mismatched receipt never claims success", !result.ok && result.unconfirmed === true && calls.filter(v=>v.method === "POST").length === 1);
     post = async () => Response.json({ ok: false, message: "Current version changed" }); calls.length = 0;
     result = await recordUploadRequest("exact-cut", "exact-source");
     c.ok("known no-write refusal keeps precise reason without recovery reads", !result.ok && !result.unconfirmed && result.message === "Current version changed" && calls.length === 1);
     post = async () => Response.json({ ok: false, unconfirmed: true, message: "Unconfirmed commit" }, { status: 503 }); get = async () => Response.json({ ok: true, recorded: true, sent: true, message: "Original receipt" }); calls.length = 0;
     result = await recordUploadRequest("exact-cut", "exact-source");
-    c.ok("unconfirmed server response recovers already-sent state without another send", result.ok && result.sent && calls.map(v=>v.method).join() === "POST,GET");
+    c.ok("unconfirmed server response recovers already-sent state without another send", result.ok && result.sent === true && calls.map(v=>v.method).join() === "POST,GET");
     post = async () => new Promise<Response>(() => {}); calls.length = 0;
     globalThis.setTimeout = ((cb: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimer(cb, ms === 8_000 || ms === 5_000 ? 1 : ms, ...args)) as typeof setTimeout;
     result = await recordUploadRequest("exact-cut", "exact-source");
     c.ok("hung POST ends bounded wait and verifies committed receipt", result.ok && calls.map(v=>v.method).join() === "POST,GET");
     get = async () => new Promise<Response>(() => {}); calls.length = 0;
     result = await recordUploadRequest("exact-cut", "exact-source");
-    c.ok("hung save and receipt read end with unconfirmed status, never endless saving", !result.ok && result.unconfirmed && calls.length === 2);
+    c.ok("hung save and receipt read end with unconfirmed status, never endless saving", !result.ok && result.unconfirmed === true && calls.length === 2);
     c.ok("all network requests explicitly faked and no external provider reached", fence.blocked.length === 0);
     c.summary();
   } finally { globalThis.setTimeout = realTimer; fence.restore(); }

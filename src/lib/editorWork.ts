@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type ProjectStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
-import { EDITORS, TEAM_MEMBER_EDITOR_KEYS, editorMeta } from "@/lib/editors";
+import { EDITORS, TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
 import { etDayKey, etMonthDay, etTime } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
@@ -159,10 +159,26 @@ export async function holdersFor(projectIds: string[], db: Db = prisma): Promise
     out.set(pid, s);
   };
   const tasks = await db.smartTask.findMany({
-    where: { projectId: { in: projectIds }, taskType: { in: ["edit_video", "revision"] }, status: OPEN_TASK, assignedKey: { in: [...WORK_EDITOR_KEYS] } },
-    select: { projectId: true, assignedKey: true },
+    where: { projectId: { in: projectIds }, taskType: { in: ["edit_video", "revision"] }, status: OPEN_TASK },
+    select: { projectId: true, assignedKey: true, taskType: true, assignedManually: true },
   });
-  for (const t of tasks) add(t.projectId, t.assignedKey);
+  for (const t of tasks) {
+    if (t.taskType === "edit_video" || VIDEO_LANE_KEYS.some((key) => key === t.assignedKey)) add(t.projectId, t.assignedKey);
+  }
+  // The queue also recognises a manual Project editor when no live card carries
+  // an assignment. A manually assigned Kim with no card must be startable by
+  // Kim, not displayed as Kim then refused as "Nobody is assigned". Routing
+  // predictions and automatic project routing never enter this fallback, and an explicit task unassignment
+  // or agency handoff takes precedence over an old project editor.
+  const projects = await db.project.findMany({
+    where: { id: { in: projectIds }, editorManual: true, editorId: { not: null } },
+    select: { id: true, editor: { select: { name: true } } },
+  });
+  for (const p of projects) {
+    const lane = tasks.filter((t) => t.projectId === p.id && (t.taskType === "edit_video" || t.assignedKey == null || VIDEO_LANE_KEYS.some((key) => key === t.assignedKey)));
+    if (lane.some((t) => t.assignedKey || t.assignedManually)) continue;
+    add(p.id, editorKeyForTeamName(p.editor?.name));
+  }
   const outs = await db.deliverableOutput.findMany({
     where: { projectId: { in: projectIds }, ownerKey: { in: [...WORK_EDITOR_KEYS] }, removedFromOrderAt: null, waivedAt: null, approvedSubmissionId: null },
     select: { projectId: true, ownerKey: true },

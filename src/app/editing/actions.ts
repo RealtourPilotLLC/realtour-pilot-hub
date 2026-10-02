@@ -768,7 +768,20 @@ async function officeIsClosingAHandDelivery(projectId: string): Promise<boolean>
   }
 }
 
-export async function setQueueStatus(projectId: string, label: string, requestId?: string): Promise<{ ok: boolean; message: string }> {
+export async function setQueueStatus(projectId: string, label: string, requestId?: string, officeOverride = false, fromLabel?: string): Promise<{ ok: boolean; message: string }> {
+  // The office's primary picker is the same stage override as the details
+  // dialog. Changing a stage must not silently press Start for an editor.
+  // saveEditOverrides checks the real role and view-as state on the server;
+  // the flag is an intent, never permission supplied by the browser.
+  if (officeOverride) {
+    if (!(EDIT_STATUS_LABELS as readonly string[]).includes(label)) {
+      return { ok: false, message: "Pick a queue stage. Pause is a separate work action." };
+    }
+    const result = await saveEditOverrides(projectId, { status: label as import("@/lib/editOverrideDefaults").EditStatusLabel, fromLabel });
+    return result.ok
+      ? { ok: true, message: `Stage set to ${label} and pinned.${label === "In editing" ? " The editor still uses Start to record their work." : ""}` }
+      : result;
+  }
   // PAUSED IS A WORK MOVE, NOT A STAGE (§7.1, Sep 25). It changes nothing about
   // the job — not the status, the card, the due date or the asks — only that
   // this editor is not on it right now. lib/editorWork authorizes it (the

@@ -23,7 +23,7 @@ import { ActionMenu } from "@/components/ui/ActionMenu";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
 import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
-import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefaults";
+import { EDIT_STATUS_LABELS, type EditComputedView, type EditOverrideView } from "@/lib/editOverrideDefaults";
 import { editingQueueFilters, editingQueueHref, type EditingDueFilter } from "@/lib/editingQueueUrl";
 import { EDITING_STAGES, matchesEditingStage, type EditingStageFilter } from "@/lib/editingQueueStage";
 
@@ -77,7 +77,8 @@ import { EDITING_STAGES, matchesEditingStage, type EditingStageFilter } from "@/
 // `computed` keeps what the hub would have said, so the dialog can show both
 // and hand a field back. A row wearing any override shows the Override chip
 // (hover = who, when, note) and a pinned status wears a pin on its pill. The
-// pill and the editor select keep working exactly as before.
+// office status picker uses that same override directly. Editor Start/Pause
+// remains a separate declaration of work.
 
 /** One editor's declared work on a row (§7.1, lib/editorWork). */
 export type WorkPersonView = { key: string; name: string; sinceISO: string | null; outputTitle: string | null; onBehalfBy: string | null };
@@ -158,13 +159,13 @@ const TIER = {
 
 // The Slack status ladder, colors matched to how a Slack List reads.
 // selectable: true = anyone with the pill; "office" = owner/admin only, and
-// only as an undo — see OFFICE_FROM in the pill for which rows (the editor
-// sees it greyed with the reason); false = evidence sets it.
+// editors see office-only choices greyed with the reason. Office stage
+// choices use the audited override directly; false = evidence sets it.
 // "working" = Pause: only on a row somebody has actually started (§7.1).
 const STATUSES: Record<string, { color: string; selectable: boolean | "office" | "working" }> = {
   Waiting: { color: "#94a3b8", selectable: "office" }, // raws flip it off; the office can put a Ready for editing / In editing job back here (Sep 11)
   "Ready for editing": { color: "#38bdf8", selectable: "office" }, // raws flip it on; the office can put an In editing job back here (Sep 10) or move a Waiting one on (Sep 11)
-  "In editing": { color: "#a78bfa", selectable: true }, // Start / Resume — the editor's own (Sep 10), or the office's correction, logged as the office (§7.1)
+  "In editing": { color: "#a78bfa", selectable: true }, // Editor Start / Resume; office stage override never declares active work.
   Paused: { color: "#8b5cf6", selectable: "working" }, // Pause — the job stays theirs, due date and asks untouched (§7.1)
   "Ready for review": { color: "#f59e0b", selectable: true },
   Revisions: { color: "#f87171", selectable: true },
@@ -232,46 +233,32 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
   const [note, setNote] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const meta = STATUSES[status] ?? { ...(WORN_ONLY[status] ?? { color: "#94a3b8" }), selectable: false };
-  // The office's two undo moves (Jordan, Sep 10 "put them back"; Sep 11 "change
-  // projects back to waiting"), each only on the rows where it IS an undo:
-  // "Ready for editing" on an In editing row (put it back) or a Waiting row
-  // (move it on — that releases the hold); "Waiting" on a Ready for editing or
-  // In editing row. On a Revisions row neither would stick: the client's ask
-  // keeps the job in Revisions on the next recompute and the click would leave
-  // nothing but a stray "Put back…" line on the timeline (Sep 10 review). A
-  // cut already in the Review Room is refused by the server with the reason.
-  // "Waiting on instructions" is a Ready-for-editing job the handoff is still
-  // short on, so the office can put it back to Waiting like any other.
-  const OFFICE_FROM: Record<string, string[]> = {
-    Waiting: ["Ready for editing", "In editing", "Paused", "In editing — not confirmed", "Waiting on instructions"],
-    "Ready for editing": ["In editing", "Waiting", "Paused", "In editing — not confirmed"],
-  };
+  // Office picks all six stages through the existing audited override.
+  // Editors retain their guarded transitions and manual work controls.
   // A job the office is HOLDING in Waiting is nobody else's to move (Sep 11
   // review): the editor's pill greys every option on it — In editing there
   // would have walked past the hold. The server refuses the same click.
   const heldFromEditor = !office && row.held && status === "Waiting";
   const working = row.work.active.length > 0;
+  const stageOverride = (name: string) => office && (EDIT_STATUS_LABELS as readonly string[]).includes(name);
   const canPick = (name: string, s: boolean | "office" | "working") =>
-    !heldFromEditor &&
-    (s === true || (s === "working" && working) || (s === "office" && office && (OFFICE_FROM[name] ?? []).includes(status)));
+    stageOverride(name) || (!heldFromEditor &&
+    (s === true || (s === "working" && working)));
   const whyNot = (name: string, s: boolean | "office" | "working") =>
     heldFromEditor
       ? "The office is holding this job in Waiting — it can't be started until the footage is in"
       : s === "working"
         ? status === "Paused" ? "It's already paused — In editing resumes it" : "Nobody has started this one — there is nothing to pause"
-      : s !== "office"
-        ? "Set automatically from upload/delivery evidence"
-        : !office
-          ? `Only the office can put a job back to ${name}`
-          : name === "Waiting"
-            ? "Only a job on Ready for editing or In editing can be put back to Waiting"
-            : "Only a job In editing or Waiting can be put to Ready for editing";
+      : s === "office"
+        ? `Only the office can put a job back to ${name}`
+        : "Set automatically from upload/delivery evidence";
 
   const pick = (next: string) => {
     if (pending) return;
+    const override = stageOverride(next);
     if (next === status && !WORK_MOVES.has(next)) return;
     const prev = status;
-    if (!WORK_MOVES.has(next)) setStatus(next);
+    if (override || !WORK_MOVES.has(next)) setStatus(next);
     setNote(null);
     // One id per click (§7.1): the server logs a retried or doubled request
     // once, and a replay comes back as "Already recorded".
@@ -279,7 +266,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
     start(async () => {
       // .catch too: a rejected action (DB hiccup, deleted project) must snap
       // back like a refusal, not crash the whole queue view.
-      const r = await setQueueStatus(row.id, next, requestId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await setQueueStatus(row.id, next, requestId, override, prev).catch(() => ({ ok: false, message: "That didn't save — try again." }));
       if (!r.ok) {
         setStatus(prev); // server refused — snap back, no silent lie
         setNote(r.message || "That didn't save — try again.");
@@ -319,7 +306,9 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
           label: <><span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: m.color }} />{name}</>,
           checked: name === status,
           disabled: !canPick(name, m.selectable),
-          description: canPick(name, m.selectable) ? undefined : whyNot(name, m.selectable),
+          description: stageOverride(name)
+            ? name === "In editing" ? "Set and pin the stage. The editor records work with Start." : "Set and pin this stage. Existing files and review records are kept."
+            : canPick(name, m.selectable) ? undefined : whyNot(name, m.selectable),
           onSelect: () => pick(name),
         }))}
       >
