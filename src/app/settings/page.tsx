@@ -340,14 +340,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <Section key="people-access" icon={KeyRound} title="People & access">
         <div className="-mx-2 space-y-0.5">
           <Link href={isOwner ? "/users?tab=logins" : "/users?tab=team"} className={linkRow}>
-            <span>
+            <span className="min-w-0 flex-1">
               <span className="font-medium">{isOwner ? "Logins & access" : "The team"}</span>
               <span className="block text-[12px] text-muted">{isOwner ? "Who can sign in, their role, and what each role can open." : "Who is on the team and how to reach them."}</span>
             </span>
             <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
           </Link>
           <a href="#internal-alerts" className={linkRow}>
-            <span>
+            <span className="min-w-0 flex-1">
               <span className="font-medium">Coverage hours & on call</span>
               <span className="block text-[12px] text-muted">When somebody is here, and who answers urgent alerts outside it. In Internal alerts, below.</span>
             </span>
@@ -365,14 +365,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <Section key="money-links" icon={Wallet} title="Payroll & bank feeds">
         <div className="-mx-2 space-y-0.5">
           <Link href="/sales?tab=payroll" className={linkRow}>
-            <span>
+            <span className="min-w-0 flex-1">
               <span className="font-medium">Payroll</span>
               <span className="block text-[12px] text-muted">Each creative&rsquo;s pay by period, mileage and adjustments.</span>
             </span>
             <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
           </Link>
           <Link href="/connections/banks" className={linkRow}>
-            <span>
+            <span className="min-w-0 flex-1">
               <span className="font-medium">Bank feeds</span>
               <span className="block text-[12px] text-muted">The read-only bank and card connections behind Finance.</span>
             </span>
@@ -417,7 +417,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         title="Settings"
         subtitle="The rules the platform runs on — most changes apply within a minute; the automated texts wait for the next hourly run"
       />
-      <div className="mx-auto max-w-3xl space-y-8 p-4 pb-16 sm:p-6">
+      <div className="mx-auto min-w-0 max-w-3xl space-y-8 p-4 pb-16 [overflow-wrap:anywhere] sm:p-6">
         <SettingsNav groups={groups}>
           <SettingsSearchOverview>
           <div id="readiness" className="scroll-mt-28">

@@ -1055,8 +1055,8 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey, includeTest
             <Icon className="size-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2">
-              <h3 className="text-[15px] font-semibold">{def.title}</h3>
+            <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+              <h3 className="min-w-0 [overflow-wrap:anywhere] text-[15px] font-semibold">{def.title}</h3>
               {current && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand">Now</span>}
             </div>
             <p className="text-xs text-muted-2"><Clock className="mr-1 inline size-3 -translate-y-px" />{def.time}</p>
@@ -1271,8 +1271,8 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
               <div className="mt-2 space-y-2">
                 {d.pipeline.rows.map((r) => (
                   <Link key={r.projectId} href={`/edit/${r.projectId}`} className="block rounded-xl border border-border px-3.5 py-2.5 transition-colors hover:bg-surface-2/60">
-                    <div className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-sm font-semibold">{r.title}</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="min-w-0 flex-1 basis-48 [overflow-wrap:anywhere] text-sm font-semibold">{r.title}</span>
                       <span className={cn(
                         "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
                         r.status === "REVISION" ? "bg-warning/15 text-warning" : r.status === "REVIEW" ? "bg-brand/15 text-brand" : "bg-surface-2 text-muted",
@@ -1280,7 +1280,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
                         {/* §7.1: an EDITING row says who is on it, not the stage — the pill above counts active work only. */}
                         {r.status === "REVISION" ? "revision" : r.status === "REVIEW" ? "in review" : r.workWord ?? "In editing — not confirmed"}
                       </span>
-                      {r.editor && <span className="shrink-0 text-xs text-muted">→ {r.editor}</span>}
+                      {r.editor && <span className="min-w-0 max-w-full [overflow-wrap:anywhere] text-xs text-muted">→ {r.editor}</span>}
                     </div>
                     {/* Who it's for + what was ordered (Jordan: "more details on
                         who it is, what it's for"). */}
@@ -1366,7 +1366,7 @@ function ClientName({ name, src, size = 18 }: { name: string; src: string | null
   return (
     <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
       <Avatar name={name} src={src} size={size} />
-      <span className="truncate">{name}</span>
+      <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{name}</span>
     </span>
   );
 }
@@ -1378,9 +1378,9 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
       {shoots.map((s) => (
         <div key={s.id} className="rounded-xl border border-border px-4 py-3">
           {/* Header: time · address · quick links */}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Camera className="size-4 shrink-0 text-muted-2" />
-            <Link href={`/projects/${s.id}`} className="min-w-0 flex-1 truncate text-[15px] font-semibold hover:text-brand">{s.title}</Link>
+            <Link href={`/projects/${s.id}`} className="min-w-0 flex-1 basis-48 [overflow-wrap:anywhere] text-[15px] font-semibold hover:text-brand">{s.title}</Link>
             {s.timeISO && <span className="shrink-0 text-sm font-semibold tabular-nums text-brand">{fmtTime(s.timeISO)}</span>}
             {/* The listing editor when the job has a listing, the ORDER
                 editor when it doesn't: a job imported from a ghost order

@@ -1,6 +1,119 @@
+## Latest release candidate — October 2 wrapping checkpoint
+
+Home and Settings wrapping passed scoped lint, class-only AST review and normal
+OWNER fixture at390px with no page overflow; all four Settings links fit298px.
+N04 brand save refusal/retry/Clear and probe restoration are complete. N05 stale
+script/revision failure acceptance remains next. Production still serves9292bee
+until the candidate build, protected staging and promotion receipts pass.
+No client sends, permissions, automation or business rules changed.
+Evidence: `/private/tmp/ops-hub-wrap-release-2026-10-02/`.
+
 # September 30 release evidence — Oct 1 production checkpoints
 
-## Active checkpoint — appointment deployed; Brand Profile verified candidate
+## Active checkpoint — Brand Profile deployed; client recovery verified
+
+Production serves `9292beee1a15cb9ff4cf8caae04f2be41e1ec13d`, Ready
+`dpl_2CixJn8EcBzv87Apt2x5VPBjtYbR`, promoted October 2 at06:39:40.233 UTC.
+PortalProfile44px controls,14px readable actions, keyboard focus and filename
+wrapping pass390/1280 normal OWNER comparisons. Non-class AST is unchanged.
+Scoped lint/diff/review, clean Node20 build/types, protected stage and canonical
+HTTP/auth/assets/redirect checks pass0. BuildID `QpQSCPQTtTqPjDjwR71f1`;
+server-action manifest `dc5026f87a3912f208a5db283f3928467814c7ce309ae393e076367303b49cd6`.
+Rollback11b4a67 retains database and newer writes. Release evidence:
+`/private/tmp/ops-hub-brand-profile-release-2026-10-02/`.
+
+Read-only production checks retain users2/memberships3, automation/enabled `[]`
+and `TEST_ONLY (default)`. Only existing Aryeo appointment/full-reconcile
+operational markers moved after promotion; their unchanged existing sources
+are bound to the comparison. No audience, business setting or worker was
+activated by this release. No all-business-record verification claim is made.
+No active build/deployment remains; intentional3200/3215/3216 development and
+isolated5607/5608 database/media processes are preserved.
+
+### Completed finite client acceptance — October 2
+
+- N01 complete: normal later written month shows4/4 allowance, carried exact
+  script, three declared client ideas, one current filming step and separate
+  Sent receipt. Declared fixture arrivals are not real publication/submission.
+- N02 complete: required first call, optional later planning, partial Pro's own
+  session2 address and last of8dates. No provider booking request occurred.
+- N03 complete: explicit suggestion Add/Replace/Undo/Cancel; synthetic one-key
+  local-storage refusal/retry preserves exact unsent words; failed answer Save
+  persists nothing, retry appends exactlyone v2 and retains all8original answers.
+  No Submit/model/message/provider/worker action occurred. All44protected
+  business/source hashes and visible cache fields remain equal after the exact
+  allowed answer/interview normalization. Browser storage identity and current
+  server delegate restored; exact private Prisma/layout preimages restored,
+  probe route/script removed and healthy normal refresh shows the same v2.
+- N06 existing Self-QC/Draft keyboard/cancel/retention/focus evidence remains
+  credited; duplicate guard is source-covered, not newly claimed mounted.
+- N07 complete: prior notification failure/retry retained; actual Settings
+  pre-write refusal keeps input, retry confirms Saved, original blank wording
+  reloads. Original storage was ABSENT; one declared defaults row remains PRESENT,
+  so raw absence was not restored. Private source/current delegate restored.
+- N08 complete: cold exact brief and explicit Editing Room return remain credited.
+- N10 complete: prior Clients/People and deployed appointment comparisons plus
+  normal existing Jordan OWNER Logins390,5roster rows/all visible controls44px/
+  focus2px+2px/no overflow. One create-only declared fictional SOP renders long
+  title/body390, keyboard open/close/focus and final paragraph fully visible by
+  native scroll. No permission/account/business action was invoked; renderer
+  source hashes match current committed source. Untouched interiors stay listed.
+- N09 actual rendered primary/secondary/Saved/error text passes4.5:1 in both
+  staff themes. Existing375/390/768/1440 comparisons are retained. Supported
+  browser zoom keys did not change actual zoom;200% is not claimed.
+
+Native/state receipts: `/private/tmp/ops-hub-written-month-native-2026-10-02/`,
+`/private/tmp/ops-hub-month-planning-native-2026-10-02/`,
+`/private/tmp/ops-hub-interview-recovery-native-2026-10-02/`,
+`/private/tmp/ops-hub-n07-settings-2026-10-02/` and
+`/private/tmp/ops-hub-rendered-contrast-2026-10-02/` and
+`/private/tmp/ops-hub-secondary-native-2026-10-02/`. Preserve existing causal
+WRITTEN22/0, CALL18/0, Pro28/0 and CP06brand130/0 without replay.
+
+### Continue here
+
+N04 brand skip/putback, failed Replace/Save and recovery/Clear; N05 genuine
+stale released versions and failed revision retention remain. Exact private
+fixture additions
+are declared in reviewed plans; no production writes. Original C14 scope/count/
+identity/demo is covered. U0 and bounded U5 are complete; U1–U4 have the stated
+acceptance holds, and U6 remains open for these dispositions
+and H01–H04: actual phone upload/share/full-watch, staff finding owned work,
+approved provider/media outcomes and named client canonical/call-source/month/
+strategy/assets/seats preparation. Do not claim real-client readiness from fake
+media or desktop/browser tests. The settled12-client roster is preserved; only
+Sutow's October call is complete per Jordan, Rich filmed and Ashley has not.
+
+Priority editor brief, Editing Room and exact portal+Dropbox handoff remain
+implemented/tested/committed/deployed from46dbcaf. Notice, handoff and approval
+stay separate; UNKNOWN cannot silently resend; manual Start/Pause is unchanged.
+Checkpoint deployments are authorized. Real sends/invitations/provider bookings,
+financial changes, worker/automation activation, audience expansion, schema
+changes and Git push remain held. Older headings below are historical and are
+superseded by this active block.
+
+### October 2 continuation — N04 closed; wrapping release candidate
+
+N04 normal client Headshot skip/putback, one failed Replace preserving declared
+v1, failed preferences Save with exact draft retained, retry Saved, native Clear
+and healthy blank refresh pass.45 protected model hashes match after only the
+explicit allowed fixture deltas. Saved personal-brand routing resolves Kim;
+alerts remain OFF/pending. Two unacknowledged Kim receipt requirements and one
+Kyle acknowledgment task are retained, plus2brand changes/1internal notification.
+The original no-editor fixture expectation was incorrect and preserved privately;
+no business rule or routing setting was changed to satisfy it. Intentional empty
+preference/setup tombstones remain. The exact private Prisma preimage and both
+active delegate identities are restored, nonce89e7d52c. Evidence:
+`/private/tmp/ops-hub-n04-brand-native-2026-10-02/mounted.private.json` and
+fixture runtime `n04-native-failure/after/final-restored.private.json`.
+
+N05 stale released-version/refused revision acceptance remains open; no actual
+phone/team/provider acceptance is claimed. Home/Settings class-only wrapping
+changes found on resume are preserved for focused verification and immediate
+user-authorized deployment. Current application production is still9292bee until
+the new candidate's protected stage/promotion is confirmed.
+
+## Historical checkpoint — appointment deployed; Brand Profile candidate
 
 Production serves `11b4a67caa7c`, full commit
 `11b4a67caa7cc3f4f73e92359d99fba7550246f1`, Ready
