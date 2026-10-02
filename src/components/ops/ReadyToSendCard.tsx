@@ -399,6 +399,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         >
           <Eye className="size-3.5" /> Watch it
         </Link>
+        {!v.monthlyProgram && !v.uploaded && v.uploadFingerprint && <MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} />}
         {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
             way to retry the render without going into connections"). Offered
             only on a row whose 1080p pass did NOT produce the file — there is a
@@ -409,7 +410,6 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>
-        {!v.monthlyProgram && !v.uploaded && v.uploadFingerprint && <div className="mt-2"><MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} /></div>}
         {v.uploaded && <CorrectUpload submissionId={v.submissionId} receiptId={v.uploaded.id} />}
       </section>
     </div>

@@ -48,7 +48,7 @@ export function MarkUploaded({ submissionId, fingerprint }: { submissionId: stri
     })();
   }
   return <div className="space-y-2">
-    <Button variant="secondary" busy={busy} busyLabel="Saving…" disabled={held} onClick={() => save()}>Mark as Uploaded</Button>
+    <Button className="border-transparent bg-emerald-700 text-white hover:bg-emerald-800 hover:brightness-100" busy={busy} busyLabel="Saving…" disabled={held} onClick={() => save()}>Mark as Uploaded</Button>
     {message && <SaveStatus state={status} message={message} className="block" />}
     {held && <div className="space-y-2 text-sm"><p>Upload status is unconfirmed. Check this version before another action.</p><Button variant="secondary" busy={busy} onClick={() => save(true)}>Reconcile upload record</Button></div>}
   </div>;
