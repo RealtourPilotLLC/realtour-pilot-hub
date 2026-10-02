@@ -1,6 +1,76 @@
 # Ops Hub audit — current resume point
 
-## Active checkpoint — client download controls deployed October 2
+## Active checkpoint — appointment deployed; Brand Profile verified candidate
+
+Production serves `11b4a67caa7c`, full commit
+`11b4a67caa7cc3f4f73e92359d99fba7550246f1`, Ready
+`dpl_6XQiApUZQ1v45VG9K4zYY6Nwp4LJ`, promoted October 2 at06:08:53.929 UTC.
+ShootScreen, ProjectMessages and FeedbackWidget have readable44px controls,
+purpose labels and visible keyboard focus. All other AST elements are unchanged.
+Actual rendered primary text contrast is5.060 dark/5.527 light. Native390/1280,
+no overflow, focused review, scoped lint/diff, clean Node20 build and types pass.
+FeedbackWidget's pre-existing lint error/warning remain unchanged. Protected
+stage, canonical production HTTP/auth/assets/redirect and read-only state checks
+completed0. Rollback is3e9dc7a, retaining database/newer writes.
+
+Production automation/enabled `[]`, `TEST_ONLY (default)`, users2 and memberships3
+remain unchanged. Before promotion only two Gmail successful-read timestamps
+advanced; the source-bound comparison attributes them. After promotion four
+existing operational markers moved: those Gmail timestamps, content-video sweep
+cursor and deliverable-output sweep health. Their existing reader/worker sources
+were inspected; no business setting, audience or automation was changed by this
+release. Do not claim every setting hash remained identical during live activity.
+Evidence: `/private/tmp/ops-hub-appointment-controls-release-2026-10-02/`.
+
+### Brand Profile — implemented and visually tested; build/deployment pending
+
+The next bounded commit changes only PortalProfile classes:44px inputs, upload/
+save/setup actions,14px readable action text, keyboard outline/offset2px and
+long-filename wrapping. Existing save token, handlers, labels, assets, settings,
+skip rules and read-only behavior are unchanged by recomputed non-class AST.
+Baseline/current scoped lint0, diff0 and one independent focused review clear.
+Normal isolated OWNER Cedar comparison passes390/1280 with all measured profile
+controls at least44px, no overflow, visible Website keyboard focus and existing
+white/dark-orange5.527 contrast. Home's three Skip-for-now controls remain44px.
+No save/upload/skip business action was invoked in this presentation comparison;
+those separate behavior/failure cases remain in N04.
+Source SHA `f433ba2dc971fde8e388fc3e7a48d5b52cf7fd6278c27cfdca06b5d6831c5393`.
+Evidence: `/private/tmp/ops-hub-brand-profile-targets-2026-10-02/` and
+`/private/tmp/ops-hub-brand-profile-native-2026-10-02/`. Clean build/typecheck,
+exact commit-bound protected stage/promotion/HTTP/state checks follow this commit.
+
+### Finite acceptance and remaining client launch work
+
+N02 is complete on normal isolated OWNER: first required call/filming block;
+later optional call or written choice; partial Pro session1 booked/session2 own
+address and last of eight available dates selected. No booking request/provider
+write occurred. Earlier invalid synthetic IDs were fixture inputs, corrected with
+protected canonical identity receipts; they are not a product defect. Final
+149-table read comparison preserves original source/history and attributes normal
+visits, two read caches and one usage event. CALL18/0, WRITTEN22/0 and Pro28/0
+backend evidence remains credited without replay.
+
+Original C14 scope/count/identity/demo is covered. N06 existing Self-QC/Draft and
+N07 notifications failure/retry, N08 cold exact brief and explicit Editing return
+remain credited. N01 written carried/client-added topics; N03 save/storage/suggestion
+recovery; N04 brand setup/upload/save; N05 stale versions/revision text; separate
+N07 Settings failure/retry; N09 actual zoom/device acceptance; and remaining N10
+Owner Logins/populated SOP evidence remain open. U0–U5 are partial, U6 open.
+Real phone upload/share/full-watch, staff task-finding, approved provider/media
+outcomes and named client canonical/call-source/strategy/seat preparation remain
+H01–H04. No real launch is claimed from fake media or declared fixture inputs.
+
+Editor brief, Editing Room and portal+exact Dropbox handoff improvements remain
+implemented/tested/committed/deployed from46dbcaf; notices remain distinct from
+handoff and approval, UNKNOWN outcomes cannot silently resend, and manual
+Start/Pause remains unchanged. User-authorized checkpoint deployments continue.
+Real sends/invitations/bookings/financial changes, worker activation, audience
+expansion, schema changes and Git push remain held. No active build/deployment
+command remained at the pre-candidate process check;3200/3215/3216 dev and private
+fixture database/media processes are intentional and preserved. The sections
+below are dated historical checkpoints, superseded by this active block.
+
+## Previous checkpoint — client download controls deployed October 2
 
 Production serves `3e9dc7afd222` from commit
 `3e9dc7afd222b6337e444ccdfc8a0cd59611aa97`, promoted at05:31:52.783 UTC,

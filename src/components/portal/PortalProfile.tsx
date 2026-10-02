@@ -44,8 +44,8 @@ function socialFrom(text: string | null): Record<SocialKey, string> {
 const socialText = (o: Record<SocialKey, string>) => SOCIAL.map((s) => (o[s.key].trim() ? `${s.label}: ${o[s.key].trim()}` : null)).filter(Boolean).join("\n");
 
 type Status = { state: "idle" | "saving" | "saved" | "failed"; message?: string };
-const input = "mt-1 w-full rounded-lg border border-border bg-surface-2/60 px-3 py-2 text-sm outline-none focus:border-brand";
-const quiet = "inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50";
+const input = "mt-1 min-h-11 min-w-0 w-full rounded-lg border border-border bg-surface-2/60 px-3 py-2 text-sm focus:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+const quiet = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-1 rounded-lg border border-border px-2.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 
 export function PortalProfile({
   view, suggested, readOnly = false,
@@ -116,13 +116,13 @@ function FolderFiles({ files, readOnly }: { files: PortalBrandView["folderOnly"]
         {files.map((f, i) => (
           <li key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-xs">
             <FileImage className="size-3.5 shrink-0 text-muted-2" />
-            {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="min-w-0 flex-1 truncate hover:text-brand">{f.name}</a> : <span className="min-w-0 flex-1 truncate">{f.name}</span>}
+            {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 min-w-0 flex-1 items-center break-all rounded-lg text-sm hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{f.name}</a> : <span className="min-w-0 flex-1 break-all text-sm">{f.name}</span>}
             {filed[f.name] ? (
               <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3.5" /> {filed[f.name]}</span>
             ) : !readOnly ? (
-              <span className="flex shrink-0 gap-1">
-                <button type="button" disabled={busy} onClick={() => use(f.name, "LOGO")} className="rounded-md border border-border px-1.5 py-0.5 text-[11px] font-medium hover:border-brand hover:text-brand disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">This is my logo</button>
-                <button type="button" disabled={busy} onClick={() => use(f.name, "HEADSHOT")} className="rounded-md border border-border px-1.5 py-0.5 text-[11px] font-medium hover:border-brand hover:text-brand disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">My headshot</button>
+              <span className="flex max-w-full flex-wrap gap-1.5">
+                <button type="button" disabled={busy} onClick={() => use(f.name, "LOGO")} className="min-h-11 rounded-md border border-border px-2.5 py-2 text-sm font-medium hover:border-brand hover:text-brand disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">This is my logo</button>
+                <button type="button" disabled={busy} onClick={() => use(f.name, "HEADSHOT")} className="min-h-11 rounded-md border border-border px-2.5 py-2 text-sm font-medium hover:border-brand hover:text-brand disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">My headshot</button>
               </span>
             ) : null}
           </li>
@@ -167,7 +167,7 @@ function SaveRow({ onSave, onClear, busy, status, canClear, readOnly }: { onSave
   if (readOnly) return null;
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2">
-      <button onClick={onSave} disabled={busy} className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
+      <button onClick={onSave} disabled={busy} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
         {busy && <Loader2 className="size-3.5 animate-spin" />} Save
       </button>
       {onClear && canClear && <button onClick={onClear} disabled={busy} className={quiet}><X className="size-3" /> Clear</button>}
@@ -194,7 +194,7 @@ function ColorsSection({ initial, suggested, readOnly }: { initial: string; sugg
             <span className="size-4 rounded-full border border-border-strong" style={{ backgroundColor: c }} />
             {c.toUpperCase()}
             {!readOnly && (
-              <button onClick={() => setColors((cur) => cur.filter((x) => x !== c))} aria-label={`Remove ${c}`} className="text-muted-2 hover:text-danger">
+              <button onClick={() => setColors((cur) => cur.filter((x) => x !== c))} aria-label={`Remove ${c}`} className="inline-flex size-11 shrink-0 items-center justify-center rounded-full text-muted-2 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                 <X className="size-3" />
               </button>
             )}
@@ -202,7 +202,7 @@ function ColorsSection({ initial, suggested, readOnly }: { initial: string; sugg
         ))}
         {!readOnly && (
           <span className="inline-flex items-center gap-1.5">
-            <input type="color" value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Pick a brand color" className="size-8 cursor-pointer rounded-lg border border-border bg-surface-2/60 p-0.5" />
+            <input type="color" value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Pick a brand color" className="size-11 cursor-pointer rounded-lg border border-border bg-surface-2/60 p-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" />
             <button onClick={() => setColors((cur) => (cur.includes(pick.toLowerCase()) ? cur : [...cur, pick.toLowerCase()]))} className={quiet}>
               <Plus className="size-3" /> Add
             </button>
@@ -213,7 +213,7 @@ function ColorsSection({ initial, suggested, readOnly }: { initial: string; sugg
       {words && (
         <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-2">
           Also on file: {words}
-          {!readOnly && <button onClick={() => setWords("")} className="text-muted-2 underline hover:text-danger">remove</button>}
+          {!readOnly && <button onClick={() => setWords("")} className="inline-flex min-h-11 items-center rounded-lg px-2 text-sm text-muted-2 underline hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">remove</button>}
         </p>
       )}
       <SaveRow
@@ -337,11 +337,11 @@ function FilesSection({
       {files.length > 0 && (
         <ul className="grid gap-1.5 sm:grid-cols-2">
           {files.map((f) => (
-            <li key={f.assetId} className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-xs">
+            <li key={f.assetId} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-sm">
               <FileImage className="size-3.5 shrink-0 text-muted-2" />
-              {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate hover:text-brand">{f.fileName ?? f.name}</a> : <span className="min-w-0 truncate">{f.fileName ?? f.name}</span>}
+              {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 min-w-0 flex-1 items-center break-all rounded-lg hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{f.fileName ?? f.name}</a> : <span className="min-w-0 flex-1 break-all">{f.fileName ?? f.name}</span>}
               {!readOnly && (
-                <button onClick={() => { setReplacing(f.assetId); pickRef.current?.click(); }} className="ml-auto shrink-0 text-[11px] font-medium text-brand hover:underline">Replace</button>
+                <button onClick={() => { setReplacing(f.assetId); pickRef.current?.click(); }} className="ml-auto inline-flex min-h-11 shrink-0 items-center rounded-lg px-2 text-sm font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Replace</button>
               )}
             </li>
           ))}
@@ -349,7 +349,7 @@ function FilesSection({
       )}
       {files.length === 0 && readOnly && <p className="text-xs text-muted-2">Nothing uploaded yet.</p>}
       {!readOnly && (
-        <button onClick={() => { setReplacing(null); pickRef.current?.click(); }} className={`${files.length ? "mt-2 " : ""}inline-flex items-center gap-1.5 rounded-xl border border-dashed border-border px-4 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground`}>
+        <button onClick={() => { setReplacing(null); pickRef.current?.click(); }} className={`${files.length ? "mt-2 " : ""}inline-flex min-h-11 min-w-0 max-w-full items-center gap-1.5 rounded-xl border border-dashed border-border px-4 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand`}>
           <Upload className="size-4" /> {files.length ? `Add another` : `Upload ${title.toLowerCase()}`}
         </button>
       )}
@@ -359,11 +359,11 @@ function FilesSection({
           {uploads.map((u) => (
             <li key={u.id} className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs">
               <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate">{u.replaceAssetId ? "Replacing with " : ""}{u.file.name}</span>
+                <span className="min-w-0 flex-1 break-all text-sm">{u.replaceAssetId ? "Replacing with " : ""}{u.file.name}</span>
                 {u.state === "uploading" && <span className="tabular-nums text-muted">{u.progress}%</span>}
                 {u.state === "done" && <CheckCircle2 className="size-3.5 text-success" />}
                 {u.state === "failed" && (
-                  <button onClick={() => { patch(u.id, { state: "uploading", progress: 0, message: "" }); send({ ...u, state: "uploading", progress: 0 }); }} className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline">
+                  <button onClick={() => { patch(u.id, { state: "uploading", progress: 0, message: "" }); send({ ...u, state: "uploading", progress: 0 }); }} className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-2 text-sm font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                     <RotateCcw className="size-3" /> Retry
                   </button>
                 )}
@@ -410,7 +410,7 @@ export function SetupCard({ d }: { d: SetupCardData }) {
         <ListChecks className="size-4 shrink-0 text-brand" />
         <span className="font-medium">Account setup {d.done} of {d.total}</span>
         <span className="text-muted">· finish any time</span>
-        {firstHref && <Link href={firstHref} className="ml-auto text-xs font-medium text-brand hover:underline">Pick up where you left off →</Link>}
+        {firstHref && <Link href={firstHref} className="ml-auto inline-flex min-h-11 max-w-full items-center break-words rounded-lg px-2 text-sm font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Pick up where you left off →</Link>}
         <SkippedList items={skipped} busy={busy} onRestore={(k) => toggle(k, false)} />
         {err && <p className="w-full text-xs text-danger">{err}</p>}
       </div>
@@ -428,11 +428,11 @@ export function SetupCard({ d }: { d: SetupCardData }) {
       <ol className="mt-3 space-y-1.5">
         {required.slice(0, 3).map((i) => (
           <li key={i.key} className="flex items-center gap-2">
-            <Link href={i.href} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-              <span className="min-w-0 flex-1">{i.label}{i.optional ? <span className="ml-1 text-xs font-normal text-muted-2">(optional)</span> : null}</span>
+            <Link href={i.href} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+              <span className="min-w-0 flex-1 break-words">{i.label}{i.optional ? <span className="ml-1 text-xs font-normal text-muted-2">(optional)</span> : null}</span>
               <ChevronRight className="size-4 shrink-0 text-muted-2" />
             </Link>
-            <button disabled={busy} onClick={() => toggle(i.key, true)} className="shrink-0 text-xs text-muted hover:text-foreground hover:underline disabled:opacity-50">Skip for now</button>
+            <button disabled={busy} onClick={() => toggle(i.key, true)} className="inline-flex min-h-11 shrink-0 items-center rounded-lg px-2 text-sm text-muted hover:text-foreground hover:underline disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Skip for now</button>
           </li>
         ))}
       </ol>
@@ -446,12 +446,12 @@ function SkippedList({ items, busy, onRestore }: { items: (SetupItem & { href: s
   if (items.length === 0) return null;
   return (
     <details className="mt-2 w-full text-xs">
-      <summary className="cursor-pointer text-muted">Skipped ({items.length})</summary>
+      <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-2 text-sm text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Skipped ({items.length})</summary>
       <ul className="mt-1.5 space-y-1">
         {items.map((i) => (
           <li key={i.key} className="flex items-center gap-2">
-            <Link href={i.href} className="min-w-0 flex-1 truncate hover:text-brand">{i.label}</Link>
-            <button disabled={busy} onClick={() => onRestore(i.key)} className="shrink-0 text-muted hover:text-foreground hover:underline disabled:opacity-50">Put back</button>
+            <Link href={i.href} className="inline-flex min-h-11 min-w-0 flex-1 items-center break-all rounded-lg text-sm hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{i.label}</Link>
+            <button disabled={busy} onClick={() => onRestore(i.key)} className="inline-flex min-h-11 shrink-0 items-center rounded-lg px-2 text-sm text-muted hover:text-foreground hover:underline disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Put back</button>
           </li>
         ))}
       </ul>
