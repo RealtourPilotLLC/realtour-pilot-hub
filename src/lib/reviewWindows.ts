@@ -870,7 +870,9 @@ export async function releaseReviewHold(windowId: string): Promise<Ok> {
 async function sentOutsidePortal(submissionIds: string[]): Promise<Set<string>> {
   if (!submissionIds.length) return new Set();
   const rows = await prisma.reviewSubmission.findMany({ where: { id: { in: submissionIds }, sentToClientAt: { not: null } }, select: { id: true } });
-  return new Set(rows.map((r) => r.id));
+  const { monthlyPortalHandoffsFor } = await import("@/lib/cutEntitlement");
+  const published = await monthlyPortalHandoffsFor(rows.map((r) => r.id));
+  return new Set(rows.filter((r) => !published.has(r.id)).map((r) => r.id));
 }
 
 export type ReviewLaneWindow = { openedAt: Date; deadlineAt: Date };

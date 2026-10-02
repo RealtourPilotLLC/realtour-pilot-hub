@@ -93,6 +93,19 @@ async function main() {
     c.ok("sync caches marked availability as client review without approved or final pointers", v.status === "CLIENT_REVIEW" && v.currentSubmissionId === v1 && v.approvedSubmissionId === null && v.finalSubmissionId === null && v.finalFileRef === null && v.deliveredAt === null);
     const initialList = await libraryRow(v.id), initialAttention = await libraryAttention(pair);
     c.ok("actual library and Home attention require review instead of advertising a ready file", initialList?.state === "FOR_REVIEW" && initialList.needsDecision && !initialList.downloadable && !initialList.hasFinalFile && initialAttention.needReview === 1 && initialAttention.readyToUse === 0 && initialAttention.readyWithFile === 0);
+    const windows = await import("@/lib/reviewWindows");
+    const enabledAt = new Date(Date.now() - 86_400_000);
+    await prisma.programAutomation.upsert({ where: { key: "revision_policy" }, create: { key: "revision_policy", enabled: true, enabledAt, enabledBy: "isolated regression" }, update: { enabled: true, enabledAt } });
+    const window = await windows.openReviewWindow(v1);
+    const panel = await windows.reviewPanelFor(viewer, v1);
+    const lane = await windows.reviewLaneFacts([world.projectId!]);
+    c.ok("portal publication marker retains client deadline and reminder lane", !!window && !!panel?.deadlineISO && lane.count === 1 && lane.deadlineAt?.getTime() === window.deadlineAt.getTime());
+    if (window) {
+      await prisma.contentReviewWindow.update({ where: { id: window.id }, data: { deadlineAt: new Date(Date.now() - 1_000) } });
+      await windows.sweepReviewWindows({ now: new Date(), max: 1 });
+      const expired = await prisma.contentReviewWindow.findUniqueOrThrow({ where: { id: window.id } });
+      c.ok("published version expiry follows client policy, never outside-portal send", expired.expiryOutcome !== "SENT_OUTSIDE_PORTAL" && expired.expiryOutcome !== null);
+    }
     // Reproduce the pre-fix cache, not only a row created after the repair.
     await prisma.contentVideo.update({ where: { id: v.id }, data: { status: "DELIVERED", finalSubmissionId: v1, finalFileRef: `/Final/${v1}.mp4`, finalVersionLabel: "v1", deliveredAt: new Date() } });
     const staleCache = await video(v1);
