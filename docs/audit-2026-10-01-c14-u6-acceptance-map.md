@@ -1,14 +1,54 @@
 # C14 / U6 — remaining acceptance map
 
-## October 2 active priority checkpoint — release pending
+## Additional October2 mounted acceptance
 
-Video delivery, editor brief and Editing Room simplification are implemented
-and frozen locally. Delivery39/0, queue18/0, brief13/0 and dry build/types0 pass.
+Kyle's populated Schedule native pass now covers normal List3/expanded List4,
+the exact near/later/missing-coordinate records, and normal TEST-address
+retention. Map's existing near/later/delivered calendar cases remain, with the
+synthetic client added only in explicit test scope. Cancelled and beyond-window
+records are absent. List↔Map/refresh keep scope. Missing-coordinate appointments
+stay listed and never fabricate a map pin; no geocoding/provider outcome is
+claimed. Evidence: `/private/tmp/ops-hub-c14-populated-schedule-2026-10-02/`.
+
+Normal OWNER monthly native acceptance covers explicit enrollment/October
+return context, exact scriptv1 reading and retained unsent change notes,
+same-question away/Back/refresh recovery and second-question isolation, plus
+client exact-cut confirmation/cancel and390px portrait/44px controls. The
+written-answer38px defect found here is a separate style-only repair, measured
+44px with visible keyboard focus. Its commit/build/release gate is separate.
+See `audit-2026-10-02-production-workspace.md`. The ordinary login used a
+declared no-send disposable token arrival, not a staff-mint or email-delivery
+proof. Preseeded records do not establish onboarding from scratch.
+
+Task drawer opening, initial Close focus, unsent-note close/reopen retention and
+focus return are observed for James. Status menu keyboard opening/navigation/
+Escape also passed without any mutation. Browser-chrome focus behavior and
+full containment/assistive-technology acceptance remain unclaimed. Broader
+permission/identity/deferred-failure and phone/provider/team scenarios remain;
+do not repeat the populated or four-failure passes merely to increase counts.
+
+## October 2 active checkpoint — four named mounted recoveries verified
+
+Video delivery, editor brief and Editing Room simplification are committed in
+`46dbcaff86a5dd250f54b49a4c037cd185d06a92`. Delivery39/0, queue18/0,
+brief13/0 and the final exact-commit build/types0 pass.
 Signed Kim/Kyle mounted comparisons cover exact video context, selected queue
-return/refresh, filtered empty, keyboard fragments and375/390/768/1440 widths.
-Small issues found in the mounted pass were corrected; the final exact commit
-build and deployment remain pending. Production still servesfa346fa. See
-`audit-2026-10-02-production-workspace.md` for exact current evidence/remainder.
+return/refresh, filtered empty, keyboard fragments and 375/390/768/1440 widths.
+Small issues found in that mounted pass were corrected.
+
+The supported native browser now also verifies the four named critical read
+failures on this candidate as signed James/ADMIN. Each guarded fault was hit
+exactly once. Review, Editing and Schedule recovered through the actual
+**Try again** button; Home showed explicit unavailable feedback and recovered
+through the native **Retry Home** link. Expanded Review → Home delivery
+(`/?test=1#video-review`), Back and refresh preserved the observed test scope.
+Before/after counts and history were identical, and the probe was restored.
+Schedule recovered to zero saved appointments: populated visits and missing
+coordinates were not covered by this pass. This closes these named mounted
+failure/retry checks, not all C14 or U6. See the table and remaining subset below.
+
+Release/deployment status remains in
+`audit-2026-10-02-production-workspace.md`; this map records acceptance evidence.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
@@ -19,6 +59,7 @@ and U6 open. No real-client sends, invitations, bookings, financial changes,
 activation, rollout expansion, schema change or Git push. Older current headings
 below retain dated history and are superseded by this active checkpoint.
 
+## Historical October 1 evening checkpoint
 
 Updated October 1 evening. This bounded map uses the existing backlog and fixed
 fixtures; no new audit or completed browser pass. Current production fa346fa
@@ -30,7 +71,7 @@ later WRITTEN 22/0 and Pro two-session28/0, with exact fake final bytes and expl
 provider/import/watch boundaries. See the causal journey record and final
 checkpoint summary. C14's remaining mounted checks and U6 are still open.
 
-## Supported browser access is blocked
+## Historical October 1 — supported browser access was blocked
 
 The root agent retried the supported browser entrypoint on October 1:
 
@@ -61,15 +102,21 @@ cannot establish layout, focus, native menus, mounted navigation or phone saves.
 | Review Room truth | `c15-review-room-state.ts` 12/0: Kyle/James signed rendering, no first-cut queue while exact revision/delivery/unknown-text work remains |
 | Stored failure scope | `c14-failure-scope.ts` 5/0: synthetic failure filtering and real global failures on an otherwise empty normal roster. This is not a database-read failure test. |
 | Actual page critical read failure and recovery | `c14-page-read-recovery.ts`14/0: signed Kyle/James and denied-review/editing ADMIN. Home named aging-review pool failure shows unavailable with native retry/permitted scoped links; healthy empty hidden. Review submissions, Editing inflight projects and Schedule List appointments propagate the exact controlled read error, then retry restores exact records. No task/cut/appointment/manual work mutation or provider traffic. This is page/domain evidence, not mounted error boundary or HTTP. |
+| Mounted critical read failure and recovery — October 2 | Supported native browser, exact `46dbcaff`, signed James/ADMIN; Home/Review/Editing/Schedule guarded reads each hit once. Actual Try again recovered the three error boundaries; native Retry Home recovered explicit unavailable feedback. Review restored exact v2/revision v1/final v1 context. Editing retained `stage=changes` and the same assignment/revision clock. Schedule restored healthy empty (zero appointments), not populated or missing-coordinate data. Expanded Review → Home delivery, Back and refresh retained the observed test scope. Counts/history unchanged and probe restored; no provider traffic or business mutation. |
 | Map reads | `u5-project-map-recovery.ts` 36/0: fake actual handlers/effects, late/read-failure/empty address and exact-pin recovery |
 | Calendar availability | `u5-capacity-recovery.ts` 20/0: unavailable versus empty calendar, all-day count, capacity draft/unknown recovery |
 | Normal-role HTTP identity and journey | `normal-role-http-acceptance.ts` 37/0, no skips, against the built `e6eac69` app on port 3211: actual password/session and one-use client login cookies, role routes, seven client tabs, exact script/cut approvals, download/range bytes, foreign-scope refusals and manual Start/Pause. This is isolated HTTP evidence, not browser acceptance. |
-| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released; mounted transition/navigation remains open. |
+| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released. The four named staff-page mounted recoveries now have separate October 2 evidence; portal mounted error recovery and other transition/navigation combinations remain open. |
 | Continuous causal client journeys | First CALL 18/0 and later WRITTEN 22/0 exact ab6; final Pro 28/0 exact fa346fa. Normal password/client cookies, exact source/script/client decisions, handoff/manual work, approvals and fake final bytes. These add causal HTTP evidence, not browser/phone/provider/watch acceptance. |
 | Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d; mounted acceptance stays open. |
 
 Evidence logs:
 
+- Mounted critical reads: `/private/tmp/ops-hub-c14-mounted-2026-10-02/mounted.private.json`,
+  with the recorded runtime hits, before/after snapshot references and failure/recovery
+  screenshots in that private evidence set. History was unchanged with hash
+  `f77de66496028457daf6e411de257a34a56675cfd4fd1cdc03b39be6e71cd7b1`.
+  This is recorded native-browser evidence; it was not rerun for this map update.
 - Normal-role HTTP: `/tmp/normal-role-http-acceptance/normal-role-http-acceptance.ts_postgres.log`
   (runner summary `/tmp/normal-role-http-acceptance-run.log`). Durable fixtures:
   `scripts/_drill/normal-role-http-acceptance.ts` and
@@ -79,9 +126,11 @@ Evidence logs:
   source; the earlier built-app HTTP run does not certify this later repair.
 
 The source/cap/count C14 work and the normal-role HTTP identity boundary are
-verified. The remaining C14 checks are the mounted normal/test/empty/failure/
-return experience. The four named critical page-read seams now have14/0
-isolated evidence; that does not establish mounted error-boundary recovery.
+verified. The four named critical reads now have both 14/0 isolated evidence
+and the bounded October 2 native mounted recovery above. Remaining C14 work is
+the unobserved role/scope, populated and missing-coordinate Schedule, empty-work
+and return combinations below, plus other named deferred/stale reads. Do not
+repeat the four completed guarded failures without a changed risk.
 Do not compare totals that intentionally use different date, status, location
 or financial definitions.
 
@@ -130,14 +179,14 @@ documented at `http://localhost:3200`; the completed signed HTTP origin on 3211
 is stopped. Do not treat the open-development demo as the signed-role fixture
 or point mutation acceptance at production.
 
-| Surface and URLs | Remaining observation |
+| Surface and URLs | Verified subset and remaining observation |
 |---|---|
 | `/` and `/?test=1` | Normal signed Kyle/James/owner identity, appropriate owned work and money permissions; test banner; normal client/real TEST-address rows remain while synthetic rows are omitted. Only scalar `test=1` selects the expanded view. |
-| Home → `/review?test=1` → `/?test=1#video-review` | Mounted scope survives forward navigation, explicit return, Back and refresh. Exact `/review/<project>?cut=<submission>` links retain their exact version. Normal Home destinations do not silently add test scope. |
-| `/review` and `/review?test=1` | Empty first-cut queue still names remaining exact revisions, media/delivery checks and unknown notification incidents. Do not equate “no cuts awaiting your verdict” with “all work done.” |
-| `/editing?editor=kim&due=overdue&stage=changes&test=1` | Selected filters, counts and rows survive queue→brief→return, refresh and copied link. Mapped editors retain their own assigned fixture work, cannot use test/editor queries to broaden access, and preserve explicit Start/Pause. |
+| Home → `/review?test=1` → `/?test=1#video-review` | James/ADMIN expanded Review → Home delivery, Back and refresh now retain the observed test scope and exact cut links. Remaining: normal-scope destinations and the other signed roles; do not generalize the expanded James pass to them. |
+| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Remaining: empty first-cut queue still naming revisions, media/delivery checks and unknown notification incidents across the other scope/role combinations. Do not equate “no cuts awaiting your verdict” with “all work done.” |
+| `/editing?editor=kim&due=overdue&stage=changes&test=1` | The earlier Kim selected queue→brief→return/refresh pass is recorded above. James/ADMIN `/editing?stage=changes` now recovers its named read failure with the selected stage and unchanged assignment/revision clock. Remaining: the full combined editor/due/test filter URL, copied link and role-broadening combinations; preserve explicit Start/Pause. |
 | `/editing?stage=changes&view=upcoming&editor=kim&due=overdue&test=1` | On the fixed stage fixture this is zero-match: selection remains visible, All/Clear filters remain reachable and the message describes filtered results. Confirm current fixture membership before assuming this URL is empty in the saved demo. |
-| `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | List↔Map and Home week links retain the record scope. Missing coordinates are distinguished from no appointments; cancelled/delivered/date-window differences retain their existing meanings. Exact shoot links remain exact. |
+| `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | James/ADMIN named List read failure → actual Try again recovered zero saved appointments; expanded empty Map linked to normal Map and expanded List. Remaining: populated appointments, missing-coordinate versus empty feedback, Home week links, cancelled/delivered/date-window distinctions and exact shoot links. No populated-row restoration is claimed. |
 | Signed out or wrong role at the same URLs | Cookie/middleware HTTP gate and foreign-scope refusals already passed in the signed fixture. Mounted reauthentication and return context remain open where supported; query flags must not grant office access. |
 
 ## Empty, failed and disabled are separate states
@@ -147,21 +196,23 @@ or point mutation acceptance at production.
   a TEST-only fixture. Preserve the escape path and active filters.
 - **Stored failed work:** use failed automation/unknown delivery fixture rows;
   this does not simulate an unreadable database.
-- **Read failure:** no existing documented URL or query parameter injects a
-  Home/Review/Editing/Schedule database-read failure. Their14/0 fixture now
-  intercepts one actual named read per page and verifies recovery. Do not invent `?fail=1`,
-  stop the shared demo database, or call an unrelated HTTP 500 a passed page
-  state. The fixture establishes page/domain failure; mounted error-boundary
-  replay remains open. Preserve real auth, target one read, verify explicit
-  unknown/error feedback and then recovery.
+- **Read failure:** no public URL or query parameter is documented as a
+  Home/Review/Editing/Schedule database fault trigger. The 14/0 fixture covers
+  the actual named reads. On October 2, the isolated guarded runtime probe
+  targeted these four reads once each under signed James/ADMIN; supported
+  native controls recovered them, and the probe was restored. Home displayed
+  “Exceptions could not be checked”; the three boundary pages displayed
+  “This page hit a problem.” Do not invent `?fail=1`, stop the shared demo
+  database, or substitute an unrelated HTTP 500 for this evidence. Other
+  deferred/stale reads and role/context combinations remain open.
 - **Existing focused error seams:** EditingWorkSummary's failed/stale view,
   WeekCalendar `calendarOk=false`, and map weather/drive/address deferred reads
   are already covered by isolated component evidence. Mounted browser recovery
   remains open; these are not query-string triggers.
 - **Portal release-status failure:** the 35/0 cache fixture now covers actual
   failed-library SSR and recovered detail in both portal layouts after an
-  unreadable marker. This does not close the separate Home/Review/Editing/
-  Schedule mounted observations above; their named page-read seams now pass14/0.
+  unreadable marker. Portal mounted recovery remains separate from the four
+  staff-page native recoveries now recorded above.
 - **Rollout disabled:** retain the stored off/test-only state and show its
   explanation. Do not activate automation to obtain a screenshot.
 
@@ -170,7 +221,12 @@ fixed visual fixture. It shows loaded/dirty/saving/saved/error/partial/empty/
 filtered-empty/disabled controls without domain mutations. It proves shared
 presentation only, not an actual operational page's failed read.
 
-## Minimum U6 rendered comparison after access restoration
+## Remaining U6 rendered comparison
+
+Supported access is restored. The bounded Kim/Kyle queue/brief/monthly-delivery
+comparisons and widths above, plus James's four guarded failure/retry flows,
+are complete for their named records and controls. They do not close all U6
+pages, themes, zoom, keyboard sequences or real-device behavior below.
 
 Use the same fixed records/screens at 375, 390, 768 and laptop widths, staff
 light/dark themes and the client light palette, plus 200% browser zoom. Capture

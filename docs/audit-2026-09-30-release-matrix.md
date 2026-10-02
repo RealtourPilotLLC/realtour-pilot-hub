@@ -1,14 +1,31 @@
 # September 30 release evidence — Oct 1 production checkpoints
 
-## October 2 active priority checkpoint — release pending
+## October 2 active release — 46dbcaff deployed; broader acceptance open
 
-Video delivery, editor brief and Editing Room simplification are implemented
-and frozen locally. Delivery39/0, queue18/0, brief13/0 and dry build/types0 pass.
-Signed Kim/Kyle mounted comparisons cover exact video context, selected queue
-return/refresh, filtered empty, keyboard fragments and375/390/768/1440 widths.
-Small issues found in the mounted pass were corrected; the final exact commit
-build and deployment remain pending. Production still servesfa346fa. See
-`audit-2026-10-02-production-workspace.md` for exact current evidence/remainder.
+Production serves `46dbcaff86a5` from source commit
+`46dbcaff86a5dd250f54b49a4c037cd185d06a92`, promoted October 2 at
+03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
+`dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`. The editor brief, Editing Room and exact
+video-delivery priority batch is implemented, tested, committed and deployed.
+Queue18/0, delivery39/0, brief13/0, scoped lint0, exact Node20 build/types0,
+focused review, protected stage and canonical HTTP/security/access checks pass.
+The first exact build's generated Sora artifact failure was preserved; a fresh
+artifact build passed with no source change.
+
+Supported native Kim/Kyle comparisons cover the named brief/queue/delivery
+flows and 375/390/768/1440 widths. James/ADMIN also completed four guarded
+critical read failures and native retries, each hit once, with unchanged
+history and restored probe. Expanded Review → Home delivery, Back and refresh
+retained the observed test scope. Schedule recovered to healthy empty only;
+populated visits and missing-coordinate acceptance remain open.
+
+The enforced read-only comparison found unchanged automation (enabled `[]`),
+rollout `TEST_ONLY (default)`, two active client users and three unrevoked
+memberships. Two existing `gmail-read-ok` mailbox-health timestamp keys changed
+through the existing reader; this is not an all-settings-unchanged claim. No
+new client audience or automation was enabled. Rollback is verified `fa346fa`,
+retaining the database and newer writes. Exact release evidence and remaining
+work: `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
@@ -25,7 +42,21 @@ Detailed C01–C19/W01–W06/U0–U6 evidence is in the checklist; current resum
 batch history remain in resume.md and handoff.md. Deployment does not close
 normal-client, browser, phone, provider or team acceptance.
 
-## Current release state — Oct 1 evening
+## Current priority release gates — October 2
+
+| Checkpoint | Implemented | Tested | Committed | Deployed | Enabled / visible |
+|---|---|---|---|---|---|
+| Editor brief, Editing Room and destination-aware delivery | Yes; original business actions retained | Queue 18/0, delivery 39/0, brief 13/0; lint/types/exact build/review and release gates pass |46dbcaff |Yes |Existing authorized staff; no new client audience or automation |
+| Bounded native priority acceptance | Verification only | Signed Kim/Kyle; selected brief/queue/delivery, keyboard and 375/390/768/1440 widths |Evidence in this documentation checkpoint |No distinct feature |Fenced providers/media; physical phone/team/full-watch acceptance remains open |
+| Four C14 critical-read recoveries | Existing recovery source | James/ADMIN; each named failure hit once, native recovery, exact version/assignment retention, unchanged history |Evidence in this documentation checkpoint |Source live |Schedule healthy empty only; full C14/U6 remain open |
+
+Exact promotion, HTTP and read-only state evidence is recorded in
+`audit-2026-10-02-production-workspace.md`. Two reader-updated Gmail health
+timestamps are explicitly separated from unchanged automation, rollout and
+audience counts. The release adds no schema or client activation; rollback
+`fa346fa` preserves all database state and newer writes.
+
+## Historical release state — Oct 1 evening
 
 Canonical https://hub.realtourpilot.com serves fa346fa1d9a4, Ready
 `dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG`, promoted 9:22:45 PM EDT. Exact clean
@@ -166,7 +197,7 @@ for normal authorized client/editor access.
 | UA11 — keyboard | Existing isolated dialog/drawer walkthrough; shared queue menu source proof | Engineering: normal-role pending/failure menus and dialogs; focus return, Escape, Tab and screen reader |
 | UA12 — responsive/contrast | Earlier fenced desktop/390px samples; partial token improvements | Engineering: fixed fixtures at 375/390/768/laptop, light/dark, 200% zoom and long names; capture matching screenshots and measure rendered contrast |
 | UA13 — phone file save | Honest download wording implemented; no real-device proof | Engineering with iPhone and Android: interruption/retry, correct approved file, save/share instructions; no Photos auto-save claim |
-| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; Home test-view links 22/0; Office Editing/Schedule scope 23/0 | Engineering: normal browser identity, filtered-empty/read failure/rollout-disabled states and mounted scope/return checks |
+| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; Home test-view links 22/0; Office Editing/Schedule scope 23/0; normal-role HTTP 37/0, portal SSR 35/0 and page-read 14/0. October 2 native James/ADMIN four critical-read failures/retries each hit once with unchanged history; selected Kim/Kyle filtered-empty/return and expanded Review → Home/Back/refresh observed | Engineering: broader normal/test roles and permissions, populated/missing-coordinate Schedule, other deferred/stale and rollout-disabled paths, remaining scope/return scenarios. Named native checks are complete; UA14 as a whole remains open |
 
 ## Approval and external evidence needed
 

@@ -1,4 +1,47 @@
-# Production workspace priority — current batch
+# Production workspace priority — deployed 46dbcaff
+
+## Follow-up checkpoint — normal client and populated Schedule
+
+The next source change is limited to InterviewFlow control sizes and keyboard
+focus classes. Native390px observation found Save new answer and Cancel at38px;
+they now measure44px, all six edit buttons measure44×44px, the saved local draft
+is retained and Tab shows the Save button's2px outline/offset. Scoped lint0 and
+one focused review are clear. No handler, predicate, payload, state, provider or
+draft logic changed. Exact-source build/commit/deployment follow this record.
+
+Additional acceptance on the deployed46 application source:
+
+- Normal OWNER used the ordinary one-use portal route after a declared,
+  no-send token arrival on the disposable existing seat. October/enrollment
+  links stay scoped, guided current work and extra capacity are distinct, and
+  the exact October scriptv1 has readable text and an unsent change note that
+  survives closing/reopening with Enter. A written question draft survives
+  away/Back/refresh/reopen; another question stays blank. No answer save,
+  script decision, suggestion/model call, send or booking was invoked.
+- Exact client cutv1 confirmation opens with Enter and cancels without a
+  verdict. Portrait media is324×576 at390px with no document overflow; note and
+  confirmation controls measure44px. This is fake fixture media, not a human
+  full-rendition watch or real provider/download acceptance.
+- Kyle's populated normal Schedule List has3 exact appointments and expanded
+  List4; Map has the existing near/later/delivered calendar cases, with the
+  test client added only in expanded scope. Normal TEST-address work stays.
+  Missing coordinates remain listed but do not create a pin; cancelled
+  project/appointment and beyond-window cases remain excluded. List↔Map and
+  refresh preserve scope. The existing List/Map status/date rules are retained.
+- James's task drawer opens with Enter, initially focuses Close, retains an
+  unsent project note through close/reopen, and returns focus to Open task.
+  Status menu Enter/End/Home/Escape reach the displayed choices/explanations
+  and return focus without any status change. No full Tab containment,
+  assistive technology or actual team task-finding acceptance is claimed.
+
+Private native receipts and pictures: `/private/tmp/ops-hub-u2-mounted-2026-10-02/`
+and `/private/tmp/ops-hub-c14-populated-schedule-2026-10-02/`. The private Schedule
+fixture adds separate disposable records after the four-failure history check;
+its protected existing-history hash matches before/after. This does not change
+production data. Preseeded monthly records do not prove onboarding from scratch.
+The existing18/22/28 causal HTTP journey evidence is preserved, not rerun.
+U0–U5 remain partial and U6 open; the broader device/provider/team/role cases and
+named October record/call reconciliation still have their concrete next steps.
 
 Started October 1, 10:33 PM EDT. The user made video delivery, the editor brief
 and Editing Room clarity the first priority. Preserve the existing full backlog;
@@ -21,7 +64,7 @@ this record adds the focused batch and current user decisions.
   client messages/invitations, real bookings, financial changes, automation
   activation, audience expansion, reset/seed of existing data or Git push.
 
-## Focused source changes awaiting final batch gates
+## Focused source changes — implemented and deployed
 
 - Editing Room: compact manual desk, explicit Open brief, fewer queue columns,
   readable stages/units and quiet file/chat/activity disclosures. Existing
@@ -42,9 +85,44 @@ this record adds the focused batch and current user decisions.
   mobile sticky-header offset and a squeezed mobile active-job title. Shared
   job instructions have their own direct link. Stored clocks are unchanged.
 
-Current source is implemented locally, **not yet committed or deployed**. Main
-production remains fa346fa. Existing18/22/28 causal journey proofs are preserved;
-this UI batch needs its own changed-behavior and mounted checks.
+Source commit `46dbcaff86a5dd250f54b49a4c037cd185d06a92` is deployed to
+`https://hub.realtourpilot.com`. Existing 18/22/28 causal journey proofs are
+preserved; this batch's separate changed-behavior and mounted checks passed.
+
+## October 2 release record
+
+- **Promotion:** October 2, 03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
+  `dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`.
+- **Exact staged deployment:**
+  `https://realtour-pilot-5x1n4wloc-realtour-pilot-s-projects.vercel.app`;
+  protected stage checks passed, with production still on `fa346fa` before
+  promotion. Ready metadata matched the full source commit.
+- **Local gates:** exact clean Node 20 build exit0, nonincremental types0,
+  scoped lint0 and one focused final review. The first exact build failed in
+  generated Sora/Turbopack font resolution; its `.next` and attempt-one logs
+  were preserved. A fresh artifact build passed without changing source.
+- **Canonical HTTP after promotion:** exact version `46dbcaff86a5`; both sign-in
+  pages200 with `nosniff`/`SAMEORIGIN`; six static assets200; signed-out staff
+  routes307 to sign-in; client page's streamed sign-in redirect; unauthorized
+  final-file route403; old host307 to the canonical login. HTTP check failures0.
+- **Read-only state comparison:** the25006 refusal guard was confirmed.
+  Automation configuration unchanged, enabled keys `[]`; rollout remains
+  `TEST_ONLY (default)`; active client users2 and unrevoked memberships3 are
+  unchanged. Exactly two `gmail-read-ok` mailbox-health timestamp keys advanced
+  through the existing reader (`gmailHealth.ts`). Business/rollout settings
+  were preserved; do not describe every settings row as unchanged.
+- **Enabled/client-visible:** existing authorized staff see the updated brief,
+  queue and delivery controls. No new client audience, invitation, automation,
+  worker/backlog activation or rollout expansion. This release did not send
+  client messages, create real bookings, change finances or alter schema.
+- **Rollback:** verified `fa346fa`; retain all database state and newer writes.
+- **Evidence:** private release receipts in
+  `/private/tmp/ops-hub-editor-delivery-release-2026-10-02/` (`build.json`,
+  `types.json`, `batch-verified.json`, `staged-verified.json`,
+  `deployment-ready.json`, `promote.json`, `http-verified.json` and the before/
+  after state receipts). Failed artifacts remain in `next-attempt-1` with
+  `*-attempt-1` logs/receipts. No private media, credentials or contacts are
+  included in this durable record.
 
 ## New named-roster preparation
 
@@ -73,13 +151,19 @@ confirming the current record/source. The private operator plan provides steps.
       return/refresh, filtered-empty escape and exact monthly confirmation.
       Fixed375/390/768/1440 widths; no document horizontal overflow. Light/dark
       samples retained. Matching source and image hashes are private evidence.
-- [x] Dry clean Node20 production build and nonincremental types0; final exact
-      commit build follows the small mounted corrections.
-- [ ] Combined typecheck and clean exact candidate build.
-- [ ] One final focused batch review; source checkpoint.
-- [ ] Protected production stage and promotion; exact canonical HTTP and
+- [x] Dry clean Node20 production build and nonincremental types0.
+- [x] Final exact46dbcaff nonincremental typecheck and clean Node20 build0 after
+      the small mounted corrections and artifact-preserving Sora retry.
+- [x] One final focused batch review; source checkpoint46dbcaff.
+- [x] Protected production stage and promotion; exact canonical HTTP and
       read-only saved-settings/automation/audience comparison.
-- [ ] Durable release/checklist/handoff update with exact evidence and remainder.
+- [x] James/ADMIN four named guarded critical reads, each hit once: actual
+      Try again on Review/Editing/Schedule; native Retry Home for explicit
+      unavailable feedback. Exact review versions, Editing assignment/clock
+      and observed expanded return scope restored; counts/history unchanged.
+      Schedule was healthy empty, not a populated/missing-coordinate pass.
+- [x] Durable release/checklist/handoff update with exact evidence and remainder
+      prepared for the separate documentation checkpoint.
 
 Real phones, real provider outcomes, human full-rendition review and Kyle/James
 task finding remain separate required acceptance. A browser screenshot or a fake
@@ -95,6 +179,10 @@ provider action does not satisfy them. U0–U5 remain partial; U6 remains open.
   media5608 and Next3215 are separate from the preserved damaged old demo.
 - Dry build/types0:
   `/private/tmp/ops-hub-delivery-workspace-build-2026-10-02-o4qummmq/`.
+- Final exact build, deployment and state receipts:
+  `/private/tmp/ops-hub-editor-delivery-release-2026-10-02/`.
+- Four native critical-read recoveries:
+  `/private/tmp/ops-hub-c14-mounted-2026-10-02/mounted.private.json`.
 - Private named-roster operator packet:
   `/private/tmp/ops-hub-october-named-roster-2026-10-02/readiness.private.md`.
   Twelve people (ten regular/two trials), thirteen active candidate enrollments
@@ -104,9 +192,11 @@ provider action does not satisfy them. U0–U5 remain partial; U6 remains open.
   does not establish that earlier scripts, footage or cut history are absent.
 
 This is a focused priority acceptance pass, not complete C14/U6 acceptance.
-Remaining C14: broader signed Home/Review/Schedule scope/return, mounted named
-read-failure/retry, permission overrides and normal/test identities. Remaining
-U2/U4/U5 mounted scenarios stay on their existing map. Physical phones,
+Remaining C14: broader signed Home/Review/Schedule scope/return, populated and
+missing-coordinate Schedule cases, other deferred/stale reads, permission
+overrides and normal/test identity combinations. The four named mounted
+critical-read failures/retries above are complete for their exact scenarios.
+Remaining U2/U4/U5 mounted scenarios stay on their existing map. Physical phones,
 assistive technology, 200% zoom, exact real-media/provider outcomes and team
 task finding remain open. The isolated fence blocked Google Fonts, so both
 baseline and candidate use matching fallback font metrics. No full real-media

@@ -1,14 +1,31 @@
 # Ops Hub audit — current resume point
 
-## October 2 active priority checkpoint — release pending
+## October 2 active release — 46dbcaff deployed; broader acceptance open
 
-Video delivery, editor brief and Editing Room simplification are implemented
-and frozen locally. Delivery39/0, queue18/0, brief13/0 and dry build/types0 pass.
-Signed Kim/Kyle mounted comparisons cover exact video context, selected queue
-return/refresh, filtered empty, keyboard fragments and375/390/768/1440 widths.
-Small issues found in the mounted pass were corrected; the final exact commit
-build and deployment remain pending. Production still servesfa346fa. See
-`audit-2026-10-02-production-workspace.md` for exact current evidence/remainder.
+Production serves `46dbcaff86a5` from source commit
+`46dbcaff86a5dd250f54b49a4c037cd185d06a92`, promoted October 2 at
+03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
+`dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`. The editor brief, Editing Room and exact
+video-delivery priority batch is implemented, tested, committed and deployed.
+Queue18/0, delivery39/0, brief13/0, scoped lint0, exact Node20 build/types0,
+focused review, protected stage and canonical HTTP/security/access checks pass.
+The first exact build's generated Sora artifact failure was preserved; a fresh
+artifact build passed with no source change.
+
+Supported native Kim/Kyle comparisons cover the named brief/queue/delivery
+flows and 375/390/768/1440 widths. James/ADMIN also completed four guarded
+critical read failures and native retries, each hit once, with unchanged
+history and restored probe. Expanded Review → Home delivery, Back and refresh
+retained the observed test scope. Schedule recovered to healthy empty only;
+populated visits and missing-coordinate acceptance remain open.
+
+The enforced read-only comparison found unchanged automation (enabled `[]`),
+rollout `TEST_ONLY (default)`, two active client users and three unrevoked
+memberships. Two existing `gmail-read-ok` mailbox-health timestamp keys changed
+through the existing reader; this is not an all-settings-unchanged claim. No
+new client audience or automation was enabled. Rollback is verified `fa346fa`,
+retaining the database and newer writes. Exact release evidence and remaining
+work: `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
@@ -18,6 +35,18 @@ is complete per Jordan; Schultz filmed and Ashley has not. U0–U5 remain partia
 and U6 open. No real-client sends, invitations, bookings, financial changes,
 activation, rollout expansion, schema change or Git push. Older current headings
 below retain dated history and are superseded by this active checkpoint.
+
+### Continue from here
+
+- The exact `46dbcaff` priority release is complete. Preserve its green checks
+  and release receipts; do not redeploy or restart the audit.
+- Continue the remaining C14/U6 scenarios from the acceptance map. The four
+  critical read/retry scenarios and selected Kim/Kyle native checks are done;
+  populated/missing-coordinate Schedule and the broader role/device matrix remain.
+- Kyle must resolve the named canonical-record and October call-source holds
+  in the private roster operator packet before client preparation/eligibility.
+  The roster and Joe/Joseph same-person decision are already settled.
+- Keep real sends, invitations, bookings, financial changes and activation held.
 
 
 ## Oct 1 final application checkpoint — deployed; remaining acceptance blocked

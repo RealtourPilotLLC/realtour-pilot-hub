@@ -161,7 +161,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
               <div className="text-xs text-muted-2">{a.questionText}</div>
               <div className="mt-0.5 flex items-start gap-2">
                 <div className="min-w-0 flex-1 whitespace-pre-wrap text-sm">{a.answerKind === "SKIPPED" ? <em className="text-muted">skipped</em> : a.answerKind === "DONT_KNOW" ? <em className="text-muted">don&rsquo;t know</em> : a.answerText}</div>
-                {canAct && <button type="button" onClick={() => { setEditKey(a.questionKey); setText(a.answerText ?? ""); setTextKey(keyFor(a.questionKey)); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} aria-label="Edit this answer" className="shrink-0 rounded-md p-1 text-muted-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Pencil className="size-3.5" /></button>}
+                {canAct && <button type="button" onClick={() => { setEditKey(a.questionKey); setText(a.answerText ?? ""); setTextKey(keyFor(a.questionKey)); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} aria-label="Edit this answer" className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg p-1 text-muted-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><Pencil className="size-3.5" /></button>}
               </div>
               {a.version > 1 && <div className="text-[10px] text-muted-2">edited · v{a.version} (earlier answers are kept)</div>}
             </div>
@@ -179,7 +179,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           <p role="status" className={cn("mt-1 text-xs", draftState === "failed" ? "text-danger" : "text-muted")}>
             {draftState === "saved" ? `Draft kept in this tab through a refresh. Use ${editKey ? "Save new answer" : "Save & next"} to send it to the team.` : draftState === "failed" ? `This tab couldn't access your draft. Try again; ${editKey ? "Save new answer" : "Save & next"} sends the words currently shown to the team.` : editKey ? "These are your saved words. Use Save new answer to send a change." : "This answer has not been sent yet."}
           </p>
-          {draftState === "failed" && <button type="button" onClick={retryDraft} className="min-h-11 text-sm font-semibold text-brand underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Try draft storage again</button>}
+          {draftState === "failed" && <button type="button" onClick={retryDraft} className="min-h-11 text-sm font-semibold text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Try draft storage again</button>}
           {/* WHAT THEY ALREADY SAID ON A CALL — optional and editable, with its
               source. Never pre-filled: they choose to start from it. */}
           {iv.suggestions.length > 0 && (
@@ -191,7 +191,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
                     <button type="button" onClick={() => {
                       if (visibleText.trim()) setSuggestionChoice(sg.id);
                       else { updateText(sg.text, sg.id); setSuggestionChoice(null); setReplacedDraft(null); }
-                    }} className={cn("w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", visibleSuggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
+                    }} className={cn("min-h-11 w-full rounded-lg border px-2.5 py-1.5 text-left text-xs hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", visibleSuggestionId === sg.id ? "border-brand bg-brand-soft" : "border-border bg-surface")}>
                       <span className="text-foreground">&ldquo;{sg.text}&rdquo;</span>
                       <span className="mt-0.5 block text-[10px] text-muted-2">
                         {sg.from === "profile"
@@ -204,22 +204,22 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
                       <p className="w-full whitespace-pre-wrap rounded-md bg-surface px-2 py-1 text-muted">Current draft: {visibleText}</p>
                       <p className="w-full whitespace-pre-wrap rounded-md bg-surface px-2 py-1">Suggestion: {sg.text}</p>
                       <span className="w-full text-muted">You can edit either result before Save. A replacement can be undone here.</span>
-                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { updateText(`${visibleText.trimEnd()}\n\n${sg.text}`, sg.id); setSuggestionChoice(null); setReplacedDraft(null); }}>Add to answer</button>
-                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold" onClick={() => { setReplacedDraft({ text: visibleText, suggestionId: visibleSuggestionId }); updateText(sg.text, sg.id); setSuggestionChoice(null); }}>Replace draft</button>
-                      <button type="button" className="min-h-11 px-3 text-muted" onClick={() => setSuggestionChoice(null)}>Cancel</button>
+                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" onClick={() => { updateText(`${visibleText.trimEnd()}\n\n${sg.text}`, sg.id); setSuggestionChoice(null); setReplacedDraft(null); }}>Add to answer</button>
+                      <button type="button" className="min-h-11 rounded-lg border border-border bg-surface px-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" onClick={() => { setReplacedDraft({ text: visibleText, suggestionId: visibleSuggestionId }); updateText(sg.text, sg.id); setSuggestionChoice(null); }}>Replace draft</button>
+                      <button type="button" className="min-h-11 rounded-lg px-3 text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" onClick={() => setSuggestionChoice(null)}>Cancel</button>
                     </div>}
                   </li>
                 ))}
               </ul>
               {visibleSuggestionId && <p className="mt-2 text-xs text-muted">This answer started from a suggestion. Your edits remain your own words.</p>}
-              {replacedDraft && <button type="button" onClick={() => { updateText(replacedDraft.text, replacedDraft.suggestionId); setReplacedDraft(null); }} className="mt-2 min-h-11 text-xs font-semibold text-brand underline">Undo replacement</button>}
+              {replacedDraft && <button type="button" onClick={() => { updateText(replacedDraft.text, replacedDraft.suggestionId); setReplacedDraft(null); }} className="mt-2 min-h-11 rounded-lg text-xs font-semibold text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Undo replacement</button>}
             </div>
           )}
           <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" disabled={busy || !visibleText.trim()} onClick={() => answer("TYPED")} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3.5 animate-spin" /> : null} {editKey ? "Save new answer" : "Save & next"}</button>
-            {!editKey && <button type="button" disabled={busy} onClick={() => answer("SKIPPED")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Skip</button>}
-            {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
-            {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>}
+            <button type="button" disabled={busy || !visibleText.trim()} onClick={() => answer("TYPED")} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3.5 animate-spin" /> : null} {editKey ? "Save new answer" : "Save & next"}</button>
+            {!editKey && <button type="button" disabled={busy} onClick={() => answer("SKIPPED")} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Skip</button>}
+            {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
+            {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Cancel</button>}
           </div>
           <p className="mt-2 text-xs text-muted">Only {editKey ? "Save new answer" : "Save & next"} records your answer for the team. The draft survives a refresh in this tab, but may be lost when the tab closes. It does not start script writing or the filming preparation clock.</p>
         </div>
@@ -234,12 +234,12 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           <p className={cn("text-sm font-medium", iv.ready ? "text-success" : "text-warning")}>{iv.ready ? "That's everything we need to draft this script." : "Not quite enough to write this one yet:"}</p>
           {!iv.ready && iv.gaps.length > 0 && <ul className="mt-1 list-inside list-disc text-xs text-muted">{iv.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>}
           {canAct && !submitted && iv.ready && (
-            <button type="button" onClick={() => submit(false)} disabled={busy} className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send my answers</button>
+            <button type="button" onClick={() => submit(false)} disabled={busy} className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send my answers</button>
           )}
           {canAct && !iv.ready && iv.canSendWithGaps && (
             <>
               <p className="mt-2 text-xs text-muted">Edit any answer above to fill a gap. Or send what you have: we&rsquo;ll follow up with a question or two, and nothing is drafted until then.</p>
-              <button type="button" onClick={() => submit(true)} disabled={busy} className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-brand/40 px-3 py-2 text-sm font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send what I have — we&rsquo;ll follow up</button>
+              <button type="button" onClick={() => submit(true)} disabled={busy} className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/40 px-3 py-2 text-sm font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send what I have — we&rsquo;ll follow up</button>
             </>
           )}
           {/* "We draft from these" only when they CAN carry a script: a row
