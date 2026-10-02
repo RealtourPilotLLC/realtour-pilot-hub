@@ -1,5 +1,27 @@
 # C14 / U6 — remaining acceptance map
 
+## Current release and acceptance — October 2
+
+Production is `1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted
+03:55:11.600 UTC, Ready `dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. Exact clean
+Node20 build/types0, scoped lint0, focused review, protected stage and canonical
+HTTP0 pass. Enforced read-only25006 comparison confirms unchanged settings
+hashes, automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3.
+InterviewFlow's target/focus-only correction is deployed. Rollback is verified
+`46dbcaff`, retaining the database and newer writes. The separate shared-control
+sizing repair is in progress and is not deployed in this checkpoint.
+
+Kyle/ADMIN additionally passed normal `/review` → `/#video-review` → Back →
+refresh: exact pending v2, revision v1 and two approved v1 links remain. The
+empty personal-verdict headline stays truthful while James's queue, revisions
+and two delivery handoffs remain visible. No verdict or delivery mutation.
+Evidence: `/private/tmp/ops-hub-normal-delivery-native-2026-10-02/`.
+
+Kyle's 390px mobile drawer opens with initial Close focus; Shift+Tab wraps to
+Sign out, Tab reaches Home, and Escape returns focus to Open menu. No mutation
+or document overflow. This does not establish general assistive-technology
+acceptance. U0–U5 remain partial and U6 open.
+
 ## Additional October2 mounted acceptance
 
 Kyle's populated Schedule native pass now covers normal List3/expanded List4,
@@ -15,7 +37,7 @@ return context, exact scriptv1 reading and retained unsent change notes,
 same-question away/Back/refresh recovery and second-question isolation, plus
 client exact-cut confirmation/cancel and390px portrait/44px controls. The
 written-answer38px defect found here is a separate style-only repair, measured
-44px with visible keyboard focus. Its commit/build/release gate is separate.
+44px with visible keyboard focus. Its separate commit/build/release is complete in `1490ef3`.
 See `audit-2026-10-02-production-workspace.md`. The ordinary login used a
 declared no-send disposable token arrival, not a staff-mint or email-delivery
 proof. Preseeded records do not establish onboarding from scratch.
@@ -27,7 +49,7 @@ full containment/assistive-technology acceptance remain unclaimed. Broader
 permission/identity/deferred-failure and phone/provider/team scenarios remain;
 do not repeat the populated or four-failure passes merely to increase counts.
 
-## October 2 active checkpoint — four named mounted recoveries verified
+## Earlier October 2 checkpoint — four named mounted recoveries verified
 
 Video delivery, editor brief and Editing Room simplification are committed in
 `46dbcaff86a5dd250f54b49a4c037cd185d06a92`. Delivery39/0, queue18/0,
@@ -86,8 +108,8 @@ The root agent retried the supported browser entrypoint on October 1:
 
 Earlier repository entries record only a security/tool-policy refusal for
 opening the loopback demo tab; they do not preserve the raw original rejection
-or a more specific cause. This latest supported retry supplies the current
-blocking evidence. An ambient open tab does not establish permission or a pass.
+or a more specific cause. That supported retry supplied the historical
+blocking evidence; supported access is now restored. An ambient open tab does not establish permission or a pass.
 
 Signed isolated HTTP/domain checks remain useful independent evidence. They
 cannot establish layout, focus, native menus, mounted navigation or phone saves.
@@ -128,19 +150,21 @@ Evidence logs:
 The source/cap/count C14 work and the normal-role HTTP identity boundary are
 verified. The four named critical reads now have both 14/0 isolated evidence
 and the bounded October 2 native mounted recovery above. Remaining C14 work is
-the unobserved role/scope, populated and missing-coordinate Schedule, empty-work
-and return combinations below, plus other named deferred/stale reads. Do not
+the unobserved role/scope, empty-work and return combinations below, plus other
+named deferred/stale reads. Kyle’s populated/missing-coordinate Schedule and
+normal Review return are now verified separately above. Do not
 repeat the four completed guarded failures without a changed risk.
 Do not compare totals that intentionally use different date, status, location
 or financial definitions.
 
 ## Fixed isolated data and identities
 
-Keep the existing fenced demo and saved work. Do not reset or overwrite it.
-Its documented default is owner/open development access and Avery/Parker/Morgan
-TEST clients; this alone cannot prove normal-role authentication or normal
-client readiness. Dynamic job/cut/enrollment URLs come from the local demo's
+The current native fixture is fenced on `http://localhost:3215`, with its own
+database5607/media5608 and ordinary signed staff/client sessions. Preserve it
+and its saved drafts; dynamic job/cut/enrollment URLs come from its private
 link manifest, not guessed IDs. Client login links are single-use and expire.
+The older3200 demo uses owner/open development access and is preserved despite
+its damaged temporary database; it is not the current native acceptance origin.
 
 The remaining mounted scope scenarios should retain enforced authentication and:
 
@@ -174,19 +198,18 @@ to increase counts.
 
 ## Minimum C14 replay
 
-All relative URLs below require a verified isolated origin. The saved demo is
-documented at `http://localhost:3200`; the completed signed HTTP origin on 3211
-is stopped. Do not treat the open-development demo as the signed-role fixture
-or point mutation acceptance at production.
+All relative URLs below use the current fenced native origin `http://localhost:3215`
+and its signed sessions. The completed HTTP origin3211 is stopped. Do not use
+the old open-development3200 demo as the signed fixture or target production.
 
 | Surface and URLs | Verified subset and remaining observation |
 |---|---|
 | `/` and `/?test=1` | Normal signed Kyle/James/owner identity, appropriate owned work and money permissions; test banner; normal client/real TEST-address rows remain while synthetic rows are omitted. Only scalar `test=1` selects the expanded view. |
-| Home → `/review?test=1` → `/?test=1#video-review` | James/ADMIN expanded Review → Home delivery, Back and refresh now retain the observed test scope and exact cut links. Remaining: normal-scope destinations and the other signed roles; do not generalize the expanded James pass to them. |
-| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Remaining: empty first-cut queue still naming revisions, media/delivery checks and unknown notification incidents across the other scope/role combinations. Do not equate “no cuts awaiting your verdict” with “all work done.” |
+| Home → `/review?test=1` → `/?test=1#video-review` | James/ADMIN expanded Review → Home delivery, Back and refresh now retain the observed test scope and exact cut links. Kyle/ADMIN normal Review → Home delivery → Back/refresh also passed with exact v2/v1 links retained. Remaining: other authorized role/context combinations; do not generalize these two passes to them. |
+| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Kyle/ADMIN normal empty personal-verdict state also retained James’s queue, revisions and two handoffs. Remaining: unknown notification incident handoff and other scope/role combinations. Do not equate “no cuts awaiting your verdict” with “all work done.” |
 | `/editing?editor=kim&due=overdue&stage=changes&test=1` | The earlier Kim selected queue→brief→return/refresh pass is recorded above. James/ADMIN `/editing?stage=changes` now recovers its named read failure with the selected stage and unchanged assignment/revision clock. Remaining: the full combined editor/due/test filter URL, copied link and role-broadening combinations; preserve explicit Start/Pause. |
 | `/editing?stage=changes&view=upcoming&editor=kim&due=overdue&test=1` | On the fixed stage fixture this is zero-match: selection remains visible, All/Clear filters remain reachable and the message describes filtered results. Confirm current fixture membership before assuming this URL is empty in the saved demo. |
-| `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | James/ADMIN named List read failure → actual Try again recovered zero saved appointments; expanded empty Map linked to normal Map and expanded List. Remaining: populated appointments, missing-coordinate versus empty feedback, Home week links, cancelled/delivered/date-window distinctions and exact shoot links. No populated-row restoration is claimed. |
+| `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | James/ADMIN named List read failure → actual Try again recovered zero saved appointments; expanded empty Map linked to normal Map and expanded List. Kyle’s later populated native pass verifies normal List3/expanded List4, List↔Map/refresh scope, normal TEST-address retention, missing-coordinate rows without pins, and cancelled/delivered/date-window distinctions. Remaining: Home week-to-exact-shoot links and other role/permission combinations. No provider/geocoding proof is claimed. |
 | Signed out or wrong role at the same URLs | Cookie/middleware HTTP gate and foreign-scope refusals already passed in the signed fixture. Mounted reauthentication and return context remain open where supported; query flags must not grant office access. |
 
 ## Empty, failed and disabled are separate states
@@ -233,9 +256,11 @@ light/dark themes and the client light palette, plus 200% browser zoom. Capture
 matching screenshots and inspect rendered contrast, long names, wrapped
 actions, error text, tables, menus, dialogs and portrait media clipping.
 
-Keyboard replay: Sidebar disclosures and phone drawer; Editing stage/status/
-More menus (Enter/Space, arrows, Home/End, Tab, Escape and focus return); task
-detail and review confirmations; Settings search/anchors; Map address listbox.
+Remaining keyboard replay: Sidebar disclosures, Editing More-menu and pending/
+failure combinations, full dialog containment and Map address listbox. Kyle’s
+mobile drawer wrap/Escape/focus return, James’s status menu and task note
+close/reopen, client confirmation/cancel, and Settings search/anchor draft
+retention have bounded native evidence; do not repeat those unchanged cases.
 Exercise pending and failed states without losing the active draft or allowing
 a duplicate/unknown mutation. Screen-reader announcements require actual
 assistive-technology observation, not SSR labels alone.

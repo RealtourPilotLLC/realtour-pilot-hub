@@ -418,8 +418,8 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
         onClick={toggle}
         aria-label="Notifications"
         className={cn(
-          "relative flex items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground",
-          variant === "header" ? "size-9 text-foreground/80" : "size-8",
+          "relative flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+          variant === "header" && "text-foreground/80",
         )}
       >
         <Bell className={variant === "header" ? "size-5" : "size-4"} />

@@ -587,7 +587,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
               <div className="text-[11px] text-muted-2">Content Program</div>
             </div>
             <details className="relative">
-              <summary className="relative flex size-9 cursor-pointer list-none items-center justify-center rounded-full border border-border bg-surface/80 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden" aria-label="Account menu">
+              <summary className="relative flex size-11 shrink-0 cursor-pointer list-none items-center justify-center rounded-full border border-border bg-surface/80 text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden" aria-label="Account menu">
                 <UserRound className="size-4" />
                 {messagesUnread > 0 && <span className="absolute right-0 top-0 size-2.5 rounded-full bg-brand ring-2 ring-background" aria-label={`${messagesUnread} new message${messagesUnread === 1 ? "" : "s"}`} />}
               </summary>

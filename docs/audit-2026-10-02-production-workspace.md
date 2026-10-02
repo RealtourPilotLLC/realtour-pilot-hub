@@ -1,13 +1,75 @@
-# Production workspace priority — deployed 46dbcaff
+# Production workspace priority — deployed 1490ef3
+
+## Current release — InterviewFlow controls deployed
+
+`1490ef3ebecece8a50b8878af61527f5c67d6eec` was promoted October 2 at
+03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
+`dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. The protected stage was
+`https://realtour-pilot-p6hj3byd2-realtour-pilot-s-projects.vercel.app`.
+Canonical `https://hub.realtourpilot.com` reports exact `1490ef3ebece`.
+
+The sole product delta from `46dbcaff` is InterviewFlow target/focus classes;
+handlers, payloads and saved values are unchanged. Native 390px source-matched
+evidence measures 44px answer controls, six 44×44px edit buttons, a visible 2px
+keyboard outline and retained draft. Scoped lint0, focused review, exact clean
+Node20 build0 and nonincremental types0 pass. Protected stage and canonical
+HTTP checks pass with failures0: sign-ins/security, six assets, staff307/client
+sign-in redirect, unauthorized final403 and old-host307. The enforced read-only
+25006 guard precedes the before/after comparison: settings hashes, automation
+hash/enabled `[]`, rollout `TEST_ONLY (default)`, client users2 and memberships3
+are unchanged. No automation/audience activation, send, invitation, booking,
+financial or schema change occurred. Existing authorized clients can see the
+larger controls; no new client was admitted. Rollback is `46dbcaff`, preserving
+all database state and newer writes.
+
+Private receipts: `/private/tmp/ops-hub-interview-controls-release-2026-10-02/`.
+Prior successful46 build artifacts remain intact in the previous release's
+`next-passed-46dbcaff`; the private helper naming correction happened before
+npm started, and the actual exact build passed its first run.
+
+Kyle/ADMIN's normal `/review` → `/#video-review` → Back → refresh also passes:
+exact pending v2, revision v1 and two approved v1 links remain. “No cuts awaiting
+your verdict” stays truthful while James's queue, revisions and two handoffs
+remain visible. No verdict or delivery mutation. Private receipt and screenshot:
+`/private/tmp/ops-hub-normal-delivery-native-2026-10-02/`.
+
+Kyle's native 390px mobile drawer also passed: initial Close focus, Shift+Tab
+wrap to Sign out, Tab to Home, Escape returning focus to Open menu, no overflow
+and no mutation. This is bounded keyboard evidence, not general assistive-
+technology acceptance. The separate shared-control sizing correction is now
+in progress; it is not deployed in `1490ef3`.
+
+### Shared-control sizing follow-up — implemented, not yet committed or deployed
+
+Five UI files (`Shell`, `Sidebar`, `ThemeToggle`, `NotificationsBell` and legacy
+`PortalPage`) have bounded class/layout changes for 44px controls and visible
+focus. Handlers, permissions and menu actions are unchanged. The Sidebar keeps
+the full identity above its controls, and the mobile drawer allocates the
+Sidebar only the height remaining below Close. At 390px, the previously clipped
+footer buttons (top836/bottom880) now fit at top780/bottom824 in an844px viewport.
+All observed staff header/footer targets measure44px. Close has a2px outline
+with2px offset; Shift+Tab reaches visible Sign out and Escape returns focus to
+Open menu. The native notification bell opens with3 unread; no Mark read or row
+click was performed, and no other business mutation was used.
+
+Source/image/mounted receipts are private in
+`/private/tmp/ops-hub-shared-targets-2026-10-02/`, with matching source hashes.
+Four-file lint0, diff check0 and focused source review pass. `ThemeToggle` has
+the same pre-existing line13 effect lint diagnostic as HEAD; its initialization
+and handler are unchanged. Legacy v1 Account's44px native check remains pending
+controlled fallback. A separate portal fault-probe attempt was inconclusive
+after development reload/context-guard issues; it adds no C14 acceptance pass.
+This follow-up has no new commit, exact build or deployment yet; current
+production `1490ef3` and its successful release gates remain unchanged.
 
 ## Follow-up checkpoint — normal client and populated Schedule
 
-The next source change is limited to InterviewFlow control sizes and keyboard
+The released `1490ef3` source change is limited to InterviewFlow control sizes and keyboard
 focus classes. Native390px observation found Save new answer and Cancel at38px;
 they now measure44px, all six edit buttons measure44×44px, the saved local draft
 is retained and Tab shows the Save button's2px outline/offset. Scoped lint0 and
 one focused review are clear. No handler, predicate, payload, state, provider or
-draft logic changed. Exact-source build/commit/deployment follow this record.
+draft logic changed. Its exact-source build, commit and deployment are complete.
 
 Additional acceptance on the deployed46 application source:
 
@@ -85,11 +147,11 @@ this record adds the focused batch and current user decisions.
   mobile sticky-header offset and a squeezed mobile active-job title. Shared
   job instructions have their own direct link. Stored clocks are unchanged.
 
-Source commit `46dbcaff86a5dd250f54b49a4c037cd185d06a92` is deployed to
-`https://hub.realtourpilot.com`. Existing 18/22/28 causal journey proofs are
+Source commit `46dbcaff86a5dd250f54b49a4c037cd185d06a92` was deployed to
+`https://hub.realtourpilot.com` and remains included in `1490ef3`. Existing 18/22/28 causal journey proofs are
 preserved; this batch's separate changed-behavior and mounted checks passed.
 
-## October 2 release record
+## Earlier October 2 priority release record — 46dbcaff
 
 - **Promotion:** October 2, 03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
   `dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`.
@@ -192,9 +254,9 @@ provider action does not satisfy them. U0–U5 remain partial; U6 remains open.
   does not establish that earlier scripts, footage or cut history are absent.
 
 This is a focused priority acceptance pass, not complete C14/U6 acceptance.
-Remaining C14: broader signed Home/Review/Schedule scope/return, populated and
-missing-coordinate Schedule cases, other deferred/stale reads, permission
-overrides and normal/test identity combinations. The four named mounted
+Remaining C14: broader signed Home/Review scope/return, Home week-to-shoot links,
+other deferred/stale reads, permission overrides and unobserved normal/test
+identity combinations. Populated/missing-coordinate Schedule and the four named
 critical-read failures/retries above are complete for their exact scenarios.
 Remaining U2/U4/U5 mounted scenarios stay on their existing map. Physical phones,
 assistive technology, 200% zoom, exact real-media/provider outcomes and team

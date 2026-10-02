@@ -1,31 +1,31 @@
 # Progress record — unified implementation handoff (Sep 25 2026)
 
-## October 2 active release — 46dbcaff deployed; broader acceptance open
+## October 2 active release — 1490ef3 deployed; broader acceptance open
 
-Production serves `46dbcaff86a5` from source commit
-`46dbcaff86a5dd250f54b49a4c037cd185d06a92`, promoted October 2 at
-03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
-`dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`. The editor brief, Editing Room and exact
-video-delivery priority batch is implemented, tested, committed and deployed.
-Queue18/0, delivery39/0, brief13/0, scoped lint0, exact Node20 build/types0,
-focused review, protected stage and canonical HTTP/security/access checks pass.
-The first exact build's generated Sora artifact failure was preserved; a fresh
-artifact build passed with no source change.
+Production serves `1490ef3ebece` from source commit
+`1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted October 2 at
+03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
+`dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. The only product change since the deployed
+`46dbcaff` priority batch is InterviewFlow touch-target/focus classes. Native
+390px checks verify 44px answer controls, 44×44px edit buttons, visible 2px
+keyboard focus and retained draft. Handlers and saved-state behavior are unchanged.
+Exact Node 20 build/types0, scoped lint0, focused review, protected stage,
+canonical HTTP/security/access checks0 and enforced read-only25006 checks pass.
+Settings hashes, automation (enabled `[]`), rollout `TEST_ONLY (default)`, two
+active client users and three unrevoked memberships are unchanged for this
+release. Rollback is verified `46dbcaff`; retain database state and newer writes.
 
-Supported native Kim/Kyle comparisons cover the named brief/queue/delivery
-flows and 375/390/768/1440 widths. James/ADMIN also completed four guarded
-critical read failures and native retries, each hit once, with unchanged
-history and restored probe. Expanded Review → Home delivery, Back and refresh
-retained the observed test scope. Schedule recovered to healthy empty only;
-populated visits and missing-coordinate acceptance remain open.
+Completed native subsets now include Kim/Kyle brief/queue/delivery; James's
+four critical-read recoveries and task/menu checks; Kyle's populated normal/
+expanded Schedule List/Map, missing coordinates and scope return; Kyle’s normal
+Review → Home delivery/Back/refresh with exact v2/v1 links; normal OWNER
+script/question drafts and exact-cut confirmation/cancel; and Kyle's 390px
+mobile drawer keyboard wrap/Escape/focus return without mutation or overflow.
+These do not prove full C14/U6, assistive technology, real phones or providers.
 
-The enforced read-only comparison found unchanged automation (enabled `[]`),
-rollout `TEST_ONLY (default)`, two active client users and three unrevoked
-memberships. Two existing `gmail-read-ok` mailbox-health timestamp keys changed
-through the existing reader; this is not an all-settings-unchanged claim. No
-new client audience or automation was enabled. Rollback is verified `fa346fa`,
-retaining the database and newer writes. Exact release evidence and remaining
-work: `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
+The separate shared-control sizing correction is in progress and is not part
+of this deployed checkpoint. Exact release evidence and remaining work are in
+`audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.

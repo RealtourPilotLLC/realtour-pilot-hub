@@ -151,14 +151,16 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         inert={!open}
         onKeyDown={containDrawerFocus}
         className={cn(
-          "fixed inset-y-0 left-0 z-[1300] transition-transform duration-200 ease-out lg:hidden",
+          "fixed inset-y-0 left-0 z-[1300] flex flex-col transition-transform duration-200 ease-out lg:hidden",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <button type="button" onClick={() => setOpen(false)} className="ml-3 mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border bg-surface px-3 text-sm font-medium">
+        <button type="button" onClick={() => setOpen(false)} className="ml-3 mt-3 inline-flex min-h-11 shrink-0 self-start items-center gap-2 rounded-lg border border-border bg-surface px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
           <X className="size-4" /> Close menu
         </button>
-        <Sidebar user={user} scriptingUrl={scriptingUrl} onNavigate={() => setOpen(false)} />
+        <div className="min-h-0 flex-1">
+          <Sidebar user={user} scriptingUrl={scriptingUrl} onNavigate={() => setOpen(false)} />
+        </div>
       </div>
 
       {/* Main column */}
@@ -171,7 +173,7 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
             aria-label={open ? "Close menu" : "Open menu"}
             aria-expanded={open}
             aria-controls="mobile-nav-drawer"
-            className="flex size-9 items-center justify-center rounded-lg text-foreground/80 hover:bg-surface-2"
+            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             {open ? <X className="size-5" /> : <Menu className="size-5" />}
           </button>

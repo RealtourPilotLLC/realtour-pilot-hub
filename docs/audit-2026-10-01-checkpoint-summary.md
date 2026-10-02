@@ -1,31 +1,31 @@
 # Ops Hub — current production and remaining acceptance
 
-## October 2 active release — 46dbcaff deployed; broader acceptance open
+## October 2 active release — 1490ef3 deployed; broader acceptance open
 
-Production serves `46dbcaff86a5` from source commit
-`46dbcaff86a5dd250f54b49a4c037cd185d06a92`, promoted October 2 at
-03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
-`dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`. The editor brief, Editing Room and exact
-video-delivery priority batch is implemented, tested, committed and deployed.
-Queue18/0, delivery39/0, brief13/0, scoped lint0, exact Node20 build/types0,
-focused review, protected stage and canonical HTTP/security/access checks pass.
-The first exact build's generated Sora artifact failure was preserved; a fresh
-artifact build passed with no source change.
+Production serves `1490ef3ebece` from source commit
+`1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted October 2 at
+03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
+`dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. The only product change since the deployed
+`46dbcaff` priority batch is InterviewFlow touch-target/focus classes. Native
+390px checks verify 44px answer controls, 44×44px edit buttons, visible 2px
+keyboard focus and retained draft. Handlers and saved-state behavior are unchanged.
+Exact Node 20 build/types0, scoped lint0, focused review, protected stage,
+canonical HTTP/security/access checks0 and enforced read-only25006 checks pass.
+Settings hashes, automation (enabled `[]`), rollout `TEST_ONLY (default)`, two
+active client users and three unrevoked memberships are unchanged for this
+release. Rollback is verified `46dbcaff`; retain database state and newer writes.
 
-Supported native Kim/Kyle comparisons cover the named brief/queue/delivery
-flows and 375/390/768/1440 widths. James/ADMIN also completed four guarded
-critical read failures and native retries, each hit once, with unchanged
-history and restored probe. Expanded Review → Home delivery, Back and refresh
-retained the observed test scope. Schedule recovered to healthy empty only;
-populated visits and missing-coordinate acceptance remain open.
+Completed native subsets now include Kim/Kyle brief/queue/delivery; James's
+four critical-read recoveries and task/menu checks; Kyle's populated normal/
+expanded Schedule List/Map, missing coordinates and scope return; Kyle’s normal
+Review → Home delivery/Back/refresh with exact v2/v1 links; normal OWNER
+script/question drafts and exact-cut confirmation/cancel; and Kyle's 390px
+mobile drawer keyboard wrap/Escape/focus return without mutation or overflow.
+These do not prove full C14/U6, assistive technology, real phones or providers.
 
-The enforced read-only comparison found unchanged automation (enabled `[]`),
-rollout `TEST_ONLY (default)`, two active client users and three unrevoked
-memberships. Two existing `gmail-read-ok` mailbox-health timestamp keys changed
-through the existing reader; this is not an all-settings-unchanged claim. No
-new client audience or automation was enabled. Rollback is verified `fa346fa`,
-retaining the database and newer writes. Exact release evidence and remaining
-work: `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
+The separate shared-control sizing correction is in progress and is not part
+of this deployed checkpoint. Exact release evidence and remaining work are in
+`audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
@@ -37,7 +37,7 @@ activation, rollout expansion, schema change or Git push. Older current headings
 below retain dated history and are superseded by this active checkpoint.
 
 
-Updated October 2, 2026, 03:26 UTC (October 1, 11:26 PM EDT). This supersedes older current-state prose; retain
+Updated October 2, 2026, 03:56 UTC (October 1, 11:56 PM EDT). This supersedes older current-state prose; retain
 the detailed backlog and batch history. The full project is **not launch-accepted**.
 
 ## 1. Audit findings
@@ -57,15 +57,17 @@ are shipped; targeted21/0 +7/0 and exact `fa346fa` candidate28/0 evidence are re
 
 ## 2. Checkpoints and deployment state
 
-Production: **46dbcaff86a5**, Ready `dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`,
-promoted October 1, 11:25 PM EDT to https://hub.realtourpilot.com. Exact clean
+Production: **1490ef3ebece**, Ready `dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`,
+promoted October 1, 11:55 PM EDT to https://hub.realtourpilot.com. Exact clean
 Node 20 build/types, remote build, protected stage, promotion, canonical
 version/login/assets/auth and enforced read-only state comparison pass. Scoped
-lint and focused reviews pass. The first exact local build's generated font
-artifact failure is preserved; a fresh artifact build passed with identical source.
+lint and focused review pass. This exact build passed its first npm run. The
+prior46 generated-font artifact failure and successful artifacts remain preserved.
 
 | Batch | Implemented | Tested | Committed | Deployed | Enabled / client-visible |
 |---|---|---|---|---|---|
+| InterviewFlow answer controls | Class names only | Native390px44px/2px focus/retained draft; lint/review/build/types/stage/HTTP0 |1490ef3 |Yes |Existing client seats; no activation or new audience. |
+| Shared-control sizing follow-up | Five class/layout UI files; actions unchanged | Staff390px44px/focus/footer/bell native pass; four-file lint0, unchanged ThemeToggle baseline diagnostic, diff0 and source review clear. Legacy v1 Account native check and exact build pending |Not yet |No |Current1490 production unchanged; see production-workspace evidence. |
 | Editor brief, Editing Room and exact delivery priority | Yes | Queue 18/0, delivery 39/0, brief 13/0; bounded native Kim/Kyle comparisons; exact release gates |46dbcaff |Yes |Updated controls visible to existing authorized staff; no new audience or activation. |
 | Current-data and portal-safe error recovery | Yes |14/0 expanded24/0; exact release gates |ab6cfdf/830a559 |Yes |Fallback live for existing authorized users; no new audience. Mounted acceptance open. |
 | Durable authenticated delivery proof | Yes |25/0 +36/0; exact gates |d22c582 |Yes |Existing authenticated callback path; real callback unobserved. No resend/switch change. |
@@ -73,7 +75,7 @@ artifact failure is preserved; a fresh artifact build passed with identical sour
 | CALL/WRITTEN/Pro causal fixtures | Verification only |18/0,22/0,28/0 |c298fba/009b00b |Local evidence; no distinct product feature |No invitation or activation. |
 | Historical repair tooling | Yes, guarded preparation |PG 20/0; seven pointer read-only plan |b7909ab |Local tooling |**NOT APPLIED**; no client record changed. |
 
-Verified fa346fa is this release's rollback; retain database/newer writes. Held bcfa41d and
+Verified46dbcaff is this release's rollback; retain database/newer writes. Held bcfa41d and
 67f5beb builds/stages must never be promoted. Five additive tables/backup were
 already applied/verified earlier; this checkpoint adds no schema or live repair.
 
@@ -85,12 +87,16 @@ boundary Try again, with exact Review versions and Editing assignment/clock
 retained. Each probe hit once, before/after history matched, and the probe was
 restored. Expanded Review → Home delivery, Back and refresh retained the observed
 test scope. The separate Kim/Kyle pass covers selected queue return and
-filtered-empty escape.
+filtered-empty escape. Kyle's later normal Review → Home delivery → Back/refresh
+also retains exact pending v2/revision v1/two approved v1 links; his empty
+personal-verdict headline still names James's queue, revisions and handoffs.
+Kyle's populated Schedule covers normal List3/expanded List4, missing-coordinate
+rows without pins, date/status distinctions and List↔Map/refresh scope.
 
 Still open: the broader normal/test role and permission matrix, queue/badge
-parity across remaining paths, populated and missing-coordinate Schedule,
-other deferred/stale reads and remaining portal/return scenarios. Schedule's
-new mounted recovery was healthy empty only. Source/page/runtime/SSR/HTTP and
+parity across remaining paths, Home week-to-shoot links, other deferred/stale
+reads and remaining portal/return scenarios. The earlier Schedule recovery was
+healthy empty; the separate later populated pass is now complete. Source/page/runtime/SSR/HTTP and
 these bounded native checks do not close the full interaction matrix. Use
 `audit-2026-10-01-c14-u6-acceptance-map.md`, not another broad audit.
 
@@ -98,7 +104,9 @@ these bounded native checks do not close the full interaction matrix. Use
 
 U0–U5 have substantial implemented/tested slices and remain **partial**. None is
 fully accepted. The priority batch has bounded native 375/390/768/1440-width,
-light/dark, keyboard, anchor and queue/delivery checks. U6 remains **open** for
+light/dark, keyboard, anchor and queue/delivery checks. Normal OWNER script/question
+draft and confirmation/cancel, plus Kyle390px mobile drawer keyboard wrap/Escape/
+focus return, also pass. U6 remains **open** for
 the broader viewport/theme/200% zoom and assistive-technology matrix, remaining
 menus/drafts/interiors, Kyle/James/Jordan work-finding, actual iPhone/Android
 upload/save/share interruption, provider outcomes and human full-rendition/audio/
@@ -123,15 +131,16 @@ Sutow's October call is complete per Jordan; Schultz filmed and Ashley has not.
 No client messages/invitations, real provider bookings, financial changes,
 client automation activation or rollout expansion are authorized. The release
 comparison confirms unchanged automation (enabled `[]`), rollout
-`TEST_ONLY (default)`, two active client users and three unrevoked memberships. Exactly
-two `gmail-read-ok` mailbox-health timestamps advanced through the existing
-reader; this is not an all-settings-unchanged claim.
+`TEST_ONLY (default)`, two active client users and three unrevoked memberships.
+All settings hashes are unchanged for1490ef3. The previous46 release separately
+recorded two reader-updated `gmail-read-ok` mailbox-health timestamps.
 
 ## 6. Commands, access and decisions
 
 The exact build, typecheck and production release commands completed. No
-deployment approval is pending. The initial generated Sora artifact failure
-was resolved by an artifact-preserving retry, without source changes. Earlier
+deployment approval is pending for1490ef3. Its actual build passed first run;
+a private helper naming conflict was corrected before npm started. The prior46
+Sora failure remains recorded separately. Earlier
 owned HTTP journey services stopped; the damaged old demo is preserved, and the
 separate native fixture's lifecycle remains with the release owner.
 
@@ -158,7 +167,8 @@ artifact retry. Completed green work was retained; checks were repeated only
 for changed source or concrete evidence gaps.
 
 Current release record: `audit-2026-10-02-production-workspace.md`; private
-receipts: `/private/tmp/ops-hub-editor-delivery-release-2026-10-02/`.
+receipts: `/private/tmp/ops-hub-interview-controls-release-2026-10-02/`.
+Prior priority release: `/private/tmp/ops-hub-editor-delivery-release-2026-10-02/`.
 Prior Pro release: `release-evidence/2026-10-01-pro-quantity-release.json`.
 Continuous journey details: `audit-2026-10-01-causal-client-journeys.md`.
 Resume: `audit-2026-09-30-resume.md`; full backlog: the existing checklist.

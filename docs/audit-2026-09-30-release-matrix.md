@@ -1,31 +1,31 @@
 # September 30 release evidence — Oct 1 production checkpoints
 
-## October 2 active release — 46dbcaff deployed; broader acceptance open
+## October 2 active release — 1490ef3 deployed; broader acceptance open
 
-Production serves `46dbcaff86a5` from source commit
-`46dbcaff86a5dd250f54b49a4c037cd185d06a92`, promoted October 2 at
-03:25:13.787 UTC (October 1, 11:25 PM EDT), Ready
-`dpl_6uQMabf67hZiHJmAmErn4fdeRVD9`. The editor brief, Editing Room and exact
-video-delivery priority batch is implemented, tested, committed and deployed.
-Queue18/0, delivery39/0, brief13/0, scoped lint0, exact Node20 build/types0,
-focused review, protected stage and canonical HTTP/security/access checks pass.
-The first exact build's generated Sora artifact failure was preserved; a fresh
-artifact build passed with no source change.
+Production serves `1490ef3ebece` from source commit
+`1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted October 2 at
+03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
+`dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. The only product change since the deployed
+`46dbcaff` priority batch is InterviewFlow touch-target/focus classes. Native
+390px checks verify 44px answer controls, 44×44px edit buttons, visible 2px
+keyboard focus and retained draft. Handlers and saved-state behavior are unchanged.
+Exact Node 20 build/types0, scoped lint0, focused review, protected stage,
+canonical HTTP/security/access checks0 and enforced read-only25006 checks pass.
+Settings hashes, automation (enabled `[]`), rollout `TEST_ONLY (default)`, two
+active client users and three unrevoked memberships are unchanged for this
+release. Rollback is verified `46dbcaff`; retain database state and newer writes.
 
-Supported native Kim/Kyle comparisons cover the named brief/queue/delivery
-flows and 375/390/768/1440 widths. James/ADMIN also completed four guarded
-critical read failures and native retries, each hit once, with unchanged
-history and restored probe. Expanded Review → Home delivery, Back and refresh
-retained the observed test scope. Schedule recovered to healthy empty only;
-populated visits and missing-coordinate acceptance remain open.
+Completed native subsets now include Kim/Kyle brief/queue/delivery; James's
+four critical-read recoveries and task/menu checks; Kyle's populated normal/
+expanded Schedule List/Map, missing coordinates and scope return; Kyle’s normal
+Review → Home delivery/Back/refresh with exact v2/v1 links; normal OWNER
+script/question drafts and exact-cut confirmation/cancel; and Kyle's 390px
+mobile drawer keyboard wrap/Escape/focus return without mutation or overflow.
+These do not prove full C14/U6, assistive technology, real phones or providers.
 
-The enforced read-only comparison found unchanged automation (enabled `[]`),
-rollout `TEST_ONLY (default)`, two active client users and three unrevoked
-memberships. Two existing `gmail-read-ok` mailbox-health timestamp keys changed
-through the existing reader; this is not an all-settings-unchanged claim. No
-new client audience or automation was enabled. Rollback is verified `fa346fa`,
-retaining the database and newer writes. Exact release evidence and remaining
-work: `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
+The separate shared-control sizing correction is in progress and is not part
+of this deployed checkpoint. Exact release evidence and remaining work are in
+`audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
@@ -46,15 +46,17 @@ normal-client, browser, phone, provider or team acceptance.
 
 | Checkpoint | Implemented | Tested | Committed | Deployed | Enabled / visible |
 |---|---|---|---|---|---|
+| InterviewFlow touch targets/focus | Class names only; handlers/drafts unchanged | Native390px44px/2px focus/draft evidence; lint/review/exact build/types/stage/HTTP0 |1490ef3 |Yes |Existing authorized clients; no new seat or automation |
+| Shared-control sizing follow-up | Five class/layout UI files; actions unchanged | Staff390px44px/focus/footer/bell native pass; four-file lint0, unchanged ThemeToggle baseline diagnostic, diff0 and source review clear. Legacy v1 Account native and exact build pending |Not yet |No |Current1490 production unchanged |
 | Editor brief, Editing Room and destination-aware delivery | Yes; original business actions retained | Queue 18/0, delivery 39/0, brief 13/0; lint/types/exact build/review and release gates pass |46dbcaff |Yes |Existing authorized staff; no new client audience or automation |
 | Bounded native priority acceptance | Verification only | Signed Kim/Kyle; selected brief/queue/delivery, keyboard and 375/390/768/1440 widths |Evidence in this documentation checkpoint |No distinct feature |Fenced providers/media; physical phone/team/full-watch acceptance remains open |
 | Four C14 critical-read recoveries | Existing recovery source | James/ADMIN; each named failure hit once, native recovery, exact version/assignment retention, unchanged history |Evidence in this documentation checkpoint |Source live |Schedule healthy empty only; full C14/U6 remain open |
 
 Exact promotion, HTTP and read-only state evidence is recorded in
-`audit-2026-10-02-production-workspace.md`. Two reader-updated Gmail health
-timestamps are explicitly separated from unchanged automation, rollout and
-audience counts. The release adds no schema or client activation; rollback
-`fa346fa` preserves all database state and newer writes.
+`audit-2026-10-02-production-workspace.md`. For the current `1490ef3` release, all settings hashes, automation, rollout and
+audience counts are unchanged. The prior `46dbcaff` release separately recorded
+two reader-updated Gmail timestamps. Current rollback `46dbcaff` preserves all
+database state and newer writes; no schema or activation was added.
 
 ## Historical release state — Oct 1 evening
 
@@ -185,19 +187,19 @@ for normal authorized client/editor access.
 | Scenario | Evidence retained | Concrete remaining step / owner |
 |---|---|---|
 | UA01 — role work discovery | Home role rendering, saved reviewer seat, preserved actions | Kyle, James and Jordan each identify their next owned action without narration; record time and hints, not an invented score |
-| UA02 — authorized navigation | Sidebar identical destination sets for 12 role/override profiles; old Settings anchors | Engineering: keyboard/cold-link/back navigation under normal role sessions |
+| UA02 — authorized navigation | Sidebar identical destination sets for 12 role/override profiles; old Settings anchors | Kyle390px drawer initial Close/Shift+Tab wrap/Tab Home/Escape focus return passed. Engineering: remaining role/cold-link/disclosure combinations |
 | UA03 — written month | Later WRITTEN causal built HTTP22/0 with exact carry/client-added topics/typed answers through final bytes; earlier23/0+19/0 retained | Engineering: complete normal client browser journey with carried and client-added topics |
 | UA04 — call and Pro sessions | First CALL causal built HTTP18/0 from empty strategy/bank through final bytes; prior25/0. Pro final current-candidate two-session HTTP28/0; quota writer21/0 + supported timing 7/0 | Engineering: normal client browser and approved provider sandbox booking; Jordan decides historical worker backlog |
-| UA05 — draft recovery | Existing draft/recovery and failed save fixtures | Engineering: normal client refresh/navigation and denied browser storage; ensure saved choices and words survive |
+| UA05 — draft recovery | Existing draft/recovery and failed save fixtures | Normal OWNER question away/Back/refresh/isolation and unsent script-note close/reopen passed. Engineering: denied browser storage and remaining saved/failed/pending choices |
 | UA06 — exact version decisions | Pinned revisions/role guards; connected v1→checked v2 decision/download; multi-session stale verdict/issue and finishing regression 11/0 | Engineering: browser newer-cut and failed revision submission, captions/download gates |
 | UA07 — editor context | Actual HTTP18/0 includes no-brand, return/reassignment stale receipt/fresh acknowledgment and manual clocks; prior queue76/0+19/0 retained | Kim/engineering: normal signed editor, two-session monthly scope and receipt, keyboard/phone checks |
 | UA08 — photographer handoff | Signed CP09 142/0 with fake partial Dropbox failure/retry | Photographer/engineering: actual phone partial/mixed raw files, upload interruption, receipt and exact script/output |
 | UA09 — delivery and communication | Ready-file context, final-rendition34/0, mixed photo/video25/0, notice10/0, comms recovery; connected approved v2 fixture download and foreign/revoked denial | Kyle/engineering: approved exact final media, explicit destination policy, provider sandbox handoff and incident recovery |
 | UA10 — failures and honest state | Delivery read failures, notification failure demo, reminder late-save/failure proof | Engineering: browser saves/data fetches fail and recover; no false zero/success or lost input |
-| UA11 — keyboard | Existing isolated dialog/drawer walkthrough; shared queue menu source proof | Engineering: normal-role pending/failure menus and dialogs; focus return, Escape, Tab and screen reader |
+| UA11 — keyboard | Existing isolated dialog/drawer walkthrough; shared queue menu source proof | James status menu/task draft return, normal client confirmation/cancel and Kyle390px mobile drawer wrap/Escape/focus return passed. Engineering: remaining pending/failure/dialog containment and actual screen reader |
 | UA12 — responsive/contrast | Earlier fenced desktop/390px samples; partial token improvements | Engineering: fixed fixtures at 375/390/768/laptop, light/dark, 200% zoom and long names; capture matching screenshots and measure rendered contrast |
 | UA13 — phone file save | Honest download wording implemented; no real-device proof | Engineering with iPhone and Android: interruption/retry, correct approved file, save/share instructions; no Photos auto-save claim |
-| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; Home test-view links 22/0; Office Editing/Schedule scope 23/0; normal-role HTTP 37/0, portal SSR 35/0 and page-read 14/0. October 2 native James/ADMIN four critical-read failures/retries each hit once with unchanged history; selected Kim/Kyle filtered-empty/return and expanded Review → Home/Back/refresh observed | Engineering: broader normal/test roles and permissions, populated/missing-coordinate Schedule, other deferred/stale and rollout-disabled paths, remaining scope/return scenarios. Named native checks are complete; UA14 as a whole remains open |
+| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; Home test-view links 22/0; Office Editing/Schedule scope 23/0; normal-role HTTP 37/0, portal SSR 35/0 and page-read 14/0. October 2 native James/ADMIN four critical-read failures/retries each hit once with unchanged history; selected Kim/Kyle filtered-empty/return and expanded Review → Home/Back/refresh observed | Kyle populated/missing-coordinate Schedule and normal Review/Home return also passed. Engineering: broader normal/test roles/permissions, Home week-to-shoot links, other deferred/stale/rollout-disabled and remaining return scenarios. Named native checks are complete; UA14 as a whole remains open |
 
 ## Approval and external evidence needed
 
@@ -207,13 +209,13 @@ for normal authorized client/editor access.
 | Editor brand/brief receipt policy | Engineering; deployed, normal acceptance open | Explicit no-brand/fresh returning-editor generation implemented; signed PG 44/0, affected15/0+61/0 and exact gates/review pass. Deployed ate6eac69. Next: mounted normal editor/office receipt and multi-output journey; historical receipts/manual Start/Pause preserved. |
 | General welcome destination | Engineering; deployed, sends remain gated | Approved general default/fallback implemented; actual fenced26/0 and exact gates/review pass. No `auto_texts` row or stored write. Deployed ate6eac69; monthly mapping preserved, no welcome replay. Next: provider/client acceptance under an approved test scope. |
 | Named historical links | Kyle | Verify source identity before changing C13 client/topic links, the C18 property task, and Sarina's month/output reconciliation |
-| Client identities | Kyle/Jordan | Resolve Janice/Arielle and other named conflicts using source evidence; investigate Joe/Joseph without assuming they should merge |
-| Intended first client roster | Jordan | Confirm the intended first roster using the private Sep 30 22:33 ET inventory of 13 candidates; then prepare the exact seats, strategy/bank, month and source evidence. No invitations are authorized by the inventory |
-| Browser evidence | Engineering/environment | Restore authorized local-browser access; the current tool policy refusal must not be bypassed with another browser transport |
+| Client identities | Kyle/Jordan | Resolve remaining canonical-record/source conflicts. Joe/Joseph is settled as one person; selecting the canonical record must preserve both histories |
+| Intended first client roster | Jordan | Roster is settled: ten regular/two trials. Kyle resolves the private October record/call-source holds and prepares exact seats, strategy/bank/month evidence; invitations remain unauthorized |
+| Browser evidence | Engineering/environment | Supported native access restored; complete only remaining map scenarios. Historical refusal was not bypassed with another transport |
 | Provider and real-media acceptance | Jordan + engineering | Agree on isolated/sandbox recipients, booking/media records and destinations before any external write; keep clients and real bookings untouched |
 | Generated-workflow dates | Jordan | Answer pending policy question; ad hoc editing is shipped, automatic editing/revision/SLA clocks remain unchanged |
 | Unknown delivery-text settlement | Jordan | Decide manual evidence-backed Kyle resolution versus automatic provider confirmation; question pending, existing unknown holds never offer a blind resend |
-| Production deployment | Completed under Jordan authorization |Latestfa346fa promoted and exact HTTP/read-only gates verified; existing switches unchanged. Prior checkpoints remain dated history. No client activation/send authorization. |
+| Production deployment | Completed under Jordan authorization |Latest1490ef3 promoted03:55:11.600Z; exact build/types/HTTP/read-only gates verified, settings hashes and switches unchanged. Prior checkpoints remain dated history. No client activation/send authorization. |
 
 ## Schema and rollback gate
 

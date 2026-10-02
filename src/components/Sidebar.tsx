@@ -302,18 +302,20 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
       <div className="space-y-1 border-t px-3 py-3">
         {/* Connections lives in the System nav section — no duplicate here. */}
         {user ? (
-          <div className="mt-1 flex items-center gap-2 rounded-lg bg-surface-2/60 px-3 py-2">
-            <div className="min-w-0 flex-1">
+          <div className="mt-1 space-y-2 rounded-lg bg-surface-2/60 px-3 py-2">
+            <div className="min-w-0">
               <div className="truncate text-sm font-medium">{user.name || user.email}</div>
               <div className="text-[11px] text-muted-2">{ROLE_LABEL[user.role] ?? user.role}</div>
             </div>
-            <ThemeToggle />
-            <NotificationsBell />
-            <form action="/api/auth/logout" method="post">
-              <button type="submit" title="Sign out" className="flex size-8 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground">
-                <LogOut className="size-4" />
-              </button>
-            </form>
+            <div className="flex items-center justify-end gap-2">
+              <ThemeToggle />
+              <NotificationsBell />
+              <form action="/api/auth/logout" method="post">
+                <button type="submit" title="Sign out" className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                  <LogOut className="size-4" />
+                </button>
+              </form>
+            </div>
           </div>
         ) : (
           // No session (open local dev): the theme switch must not vanish with
