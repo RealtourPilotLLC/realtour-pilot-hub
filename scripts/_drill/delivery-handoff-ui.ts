@@ -77,15 +77,13 @@ async function main() {
     const click = (label: string) => { const p = button(label); if (!p) throw new Error(`Missing button ${label}`); (p.onClick as () => void)(); };
     const status = () => elements(tree(), "SaveStatus")[0];
     await mount(false); click("Mark as sent");
-    c.ok("listing retains two-step Aryeo confirmation and all four original notice values", calls.length === 0 && words(tree()).includes("Only after the file is on Aryeo and the listing is delivered") && ["Aryeo emailed them", "We texted them", "Call or in person", "Not told yet"].every((label) => !!button(label)));
+    const staleChoice = button("Mark as sent")!.onClick as () => void;
+    staleChoice();
+    c.ok("one-click listing acknowledgement dispatches once without notice questionnaire", calls.length === 1 && calls[0].id === props.submissionId && calls[0].notice === undefined && !button("Not told yet"));
     const listingSSR = renderToStaticMarkup(tree() as ReactNode);
-    c.ok("confirmation uses named native 44px controls and shared visible focus", listingSSR.includes('type="button"') && listingSSR.includes("min-h-11") && listingSSR.includes("focus-visible:outline") && !listingSSR.includes("text-[11px]"));
-    await mount(); click("Record portal handoff");
-    c.ok("monthly handoff describes exact portal/Dropbox check and never claims Aryeo email", calls.length === 0 && words(tree()).includes("exact portal final file") && words(tree()).includes("final Dropbox backup") && words(tree()).includes("client approval is separate") && !words(tree()).includes("Aryeo") && !button("Aryeo emailed them") && !!button("Not told yet"));
-    const staleChoice = button("Not told yet")!.onClick as () => void; staleChoice(); staleChoice();
-    c.ok("same-tick confirmation targets exact cut once and keeps not-yet notice unchanged", calls.length === 1 && calls[0].id === props.submissionId && calls[0].notice === "not-yet" && elements(tree(), "Button")[0].busy === true);
+    c.ok("confirmation uses named native 44px controls and shared visible focus", listingSSR.includes('type="button"') && listingSSR.includes("min-h-11") && listingSSR.includes("focus-visible:outline"));
     result.reject(new Error("lost response after possible database commit")); await until(() => elements(tree(), "Button")[0].busy === false);
-    const heldCalls = calls.length; staleChoice(); click("Record portal handoff");
+    const heldCalls = calls.length; staleChoice(); click("Mark as sent");
     c.ok("lost response reports unknown rather than no-write and blocks immediate replay", calls.length === heldCalls && elements(tree(), "Button")[0].disabled === true && status().state === "error" && words(tree()).includes("may already have saved") && !words(tree()).includes("Couldn’t save"));
     c.ok("persisted guard contains only an opaque UUID, no client or notice words", markers.size === 1 && /^[a-f0-9-]{36}$/i.test([...markers.values()][0]) && ![...markers.values()].join().includes("Fixture") && ![...markers.values()].join().includes("not-yet"));
     const beforeRefresh = refreshes; click("Refresh delivery status"); await Promise.resolve();
@@ -100,10 +98,10 @@ async function main() {
     c.ok("known refusal of a recovery cannot disprove the earlier unknown write", markers.size === 1 && elements(tree(), "Button")[0].disabled === true && words(tree()).includes("earlier delivery record is still unconfirmed") && words(tree()).includes("changed exact-file check"));
     result = deferred(); click("Check and reconcile delivery record"); result.resolve({ ok: true, already: true, message: "Already marked sent by Kyle at the recorded time." }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("confirmed exact reconciliation clears its guard and truthfully retains the original actor receipt", !markers.size && status().state === "saved" && words(tree()).includes("by Kyle at the recorded time") && words(tree()).includes("Client approval and notification remain separate"));
-    markers.clear(); await mount(); result = deferred(); click("Record portal handoff"); click("Not told yet");
+    markers.clear(); await mount(); result = deferred(); click("Record portal handoff");
     result.resolve({ ok: false, message: "Exact final-file check is missing." }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("known server refusal keeps its exact reason and permits correction without a stale hold", status().state === "error" && words(tree()).includes("Exact final-file check is missing") && !markers.size && !elements(tree(), "Button")[0].disabled);
-    result = deferred(); click("Record portal handoff"); click("We texted them");
+    result = deferred(); click("Record portal handoff");
     const beforePartialRefresh = refreshes;
     result.resolve({ ok: true, message: "Marked sent, but a record failed.", incomplete: ["Kyle task update is incomplete"] }); await until(() => !!button("Finish the bookkeeping"));
     c.ok("known partial save retains named repair receipt without false complete success or refresh", status().state === "partial" && words(tree()).includes("Kyle task update is incomplete") && words(tree()).includes("without uploading or sending again") && refreshes === beforePartialRefresh && !markers.size);
@@ -114,7 +112,7 @@ async function main() {
     c.ok("confirmed monthly receipt preserves existing actor evidence and separate approval/notice facts", status().state === "saved" && words(tree()).includes("by Kyle at the recorded time") && words(tree()).includes("Client approval and notification remain separate") && !markers.size && refreshes === beforePartialRefresh + 1 && calls.length === savedCalls);
     await mount(); storageFails = true; click("Record portal handoff"); storageFails = false;
     c.ok("unavailable recovery storage refuses locally before a request", calls.length === savedCalls && words(tree()).includes("Nothing was submitted"));
-    result = deferred(); click("Record portal handoff"); click("Not told yet"); const other = randomUUID(); markers.set("rtp:delivery-record:fixture-exact-cut", other);
+    result = deferred(); click("Record portal handoff"); const other = randomUUID(); markers.set("rtp:delivery-record:fixture-exact-cut", other);
     result.resolve({ ok: false, message: "Known no-write refusal." }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("late known response never clears another attempt's guard", markers.get("rtp:delivery-record:fixture-exact-cut") === other && elements(tree(), "Button")[0].disabled === true && words(tree()).includes("different unconfirmed change"));
 
@@ -128,9 +126,9 @@ async function main() {
     };
     const board: ReadyBoard = { ready: [ready], rendering: [], needsFinishing: [], notTold: [] };
     const monthlyHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board }));
-    c.ok("actual monthly row passes destination into record control and orders final check before recording", monthlyHTML.includes("Record portal handoff") && !monthlyHTML.includes("uploaded to Aryeo") && !monthlyHTML.includes("example.test/listing") && monthlyHTML.indexOf("Check client-viewable file") < monthlyHTML.indexOf("2. Record the handoff") && monthlyHTML.includes("Client approval") === false);
-    const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false }] } }));
-    c.ok("actual listing row retains Aryeo destination, link and original Mark-as-sent action", listingHTML.includes("example.test/listing") && listingHTML.includes("Mark as sent") && listingHTML.includes("Only after") === false && listingHTML.includes("upload it to Aryeo"));
+    c.ok("actual monthly row passes destination into record control and orders final check before recording", !monthlyHTML.includes("Record portal handoff") && !monthlyHTML.includes("Check client-viewable file") && !monthlyHTML.includes("example.test/listing"));
+    const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source" }] } }));
+    c.ok("actual listing row retains Aryeo destination, link and original Mark-as-sent action", listingHTML.includes("example.test/listing") && !listingHTML.includes("Mark as sent") && listingHTML.includes("Mark as Uploaded"));
     const partialHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [], needsFinishing: [{ submissionId: ready.submissionId, projectId: ready.projectId, street: ready.street, sentAtISO: ready.approvedAtISO, sentBy: "Kyle", why: "Fixture partial" }] } }));
     c.ok("partial follow-up no longer claims client possession from a handoff stamp", !partialHTML.includes("The client has these") && partialHTML.includes("does not prove client approval, notification or receipt"));
     const exitHTML = renderToStaticMarkup(createElement(DeliveryExitSummary, { board }));

@@ -45,8 +45,8 @@ type LaneChoice = {
   ask?: true;
 };
 const CHOICES: LaneChoice[] = [
-  { lane: "EDITOR", kind: "fix", label: "Editor — fix", icon: "pencil" },
-  { lane: "EDITOR", kind: "coaching", label: "Editor — coaching", icon: "pencil" },
+  { lane: "EDITOR", kind: "coaching", label: "Comment", icon: "pencil" },
+  { lane: "EDITOR", kind: "fix", label: "Request a change", icon: "pencil" },
   { lane: "PHOTOGRAPHER", kind: "fix", label: "Photographer — capture", icon: "camera" },
 ];
 

@@ -388,7 +388,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     projectIds.length || pointerIds.length
       ? prisma.reviewSubmission.findMany({
           where: { status: { notIn: [...NOT_A_CUT] }, OR: [...(projectIds.length ? [{ projectId: { in: projectIds } }] : []), ...(pointerIds.length ? [{ id: { in: pointerIds } }] : [])] },
-          select: { id: true, projectId: true, status: true, createdAt: true, decidedBy: true, decidedAt: true, clientReleasedAt: true, clientRequestedAt: true },
+          select: { id: true, projectId: true, status: true, createdAt: true, decidedBy: true, decidedAt: true, clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true },
         })
       : Promise.resolve([]),
     versionIds.length ? prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, status: true } }) : Promise.resolve([]),

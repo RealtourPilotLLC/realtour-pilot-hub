@@ -332,9 +332,10 @@ export async function submissionForEnrollment(enrollment: { id: string; clientId
   if (!/^[a-z0-9]{10,40}$/i.test(submissionId)) return null;
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
-    select: { id: true, projectId: true, status: true, clientRequestedAt: true, clientReleasedAt: true, project: { select: { contentMonthId: true, title: true, clientId: true } } },
+    select: { id: true, projectId: true, status: true, clientRequestedAt: true, clientReleasedAt: true, portalPublicationRequiredAt: true, project: { select: { contentMonthId: true, title: true, clientId: true } } },
   });
   if (!sub?.project?.contentMonthId) return null;
+  if (sub.portalPublicationRequiredAt && !sub.clientReleasedAt) return null;
   const month = await prisma.contentMonth.findUnique({
     where: { id: sub.project.contentMonthId },
     select: { enrollmentId: true },

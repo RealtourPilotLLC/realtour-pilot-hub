@@ -239,7 +239,7 @@ export function EditorCutPanel({
             ? "This version was withdrawn — it is kept here as history. Upload a replacement above."
             : status === "PENDING"
               ? "No notes yet — you'll see them here the moment the review starts."
-              : "No notes on this round."}
+              : "No additional change requests here. Original comments and revision records are in Conversation and revision history."}
         </p>
       )}
     </section>

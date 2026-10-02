@@ -110,7 +110,7 @@ async function versionAuthor(sub: { submittedByKey: string | null; selfCheckId?:
 export async function ingestReviewNote(noteId: string, opts: { imported?: boolean } = {}): Promise<string | null> {
   try {
     const n = await prisma.mediaNote.findUnique({ where: { id: noteId } });
-    if (!n || n.parentId || n.lane !== "EDITOR" || n.kind === "coaching") return null;
+    if (!n || n.parentId || n.lane !== "EDITOR" || n.kind !== "fix") return null;
     if ((n.authorKey ?? "").startsWith("editor:")) return null;
     const existing = await prisma.revisionIssue.findUnique({ where: { sourceKind_sourceId: { sourceKind: "REVIEW_NOTE", sourceId: n.id } }, select: { id: true } });
     if (existing) return existing.id;
@@ -664,9 +664,11 @@ export async function markIssueNotApplicable(id: string, reason: string, actor: 
   if (r.length < 4) return { ok: false, message: "Say why it isn't needed." };
   const cur = await prisma.revisionIssue.findUnique({ where: { id }, select: { state: true } });
   if (!cur) return { ok: false, message: "That issue no longer exists." };
-  if (!LIVE.includes(cur.state)) return { ok: true, message: "Already closed." };
-  const won = await prisma.revisionIssue.updateMany({ where: { id, state: cur.state }, data: { state: "NOT_APPLICABLE" } });
-  if (won.count) await event(prisma, id, "NOT_APPLICABLE", actor, { from: cur.state, to: "NOT_APPLICABLE", note: r });
+  if (!LIVE.includes(cur.state) && cur.state !== "VERIFIED") return { ok: true, message: "Already closed." };
+  await prisma.$transaction(async (tx) => {
+    const won = await tx.revisionIssue.updateMany({ where: { id, state: cur.state }, data: { state: "NOT_APPLICABLE" } });
+    if (won.count) await event(tx, id, "NOT_APPLICABLE", actor, { from: cur.state, to: "NOT_APPLICABLE", note: r });
+  });
   return { ok: true, message: "Marked not needed." };
 }
 
@@ -819,6 +821,7 @@ export type IssueView = {
   summary: string | null;
   timeSec: number | null;
   sourceKind: string;
+  sourceId: string | null;
   sourceChannel: string | null;
   raisedByName: string | null;
   raisedOnSubmissionId: string | null;
@@ -883,6 +886,7 @@ export async function issuesForProject(projectId: string, opts: { scrub: boolean
       summary: clean(r.summary),
       timeSec: r.timeSec,
       sourceKind: r.sourceKind,
+      sourceId: r.sourceId,
       sourceChannel: r.sourceChannel,
       raisedByName: r.raisedByName,
       raisedOnSubmissionId: r.raisedOnSubmissionId,

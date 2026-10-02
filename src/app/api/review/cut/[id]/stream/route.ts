@@ -364,7 +364,6 @@ const PASS_THROUGH = ["content-type", "content-length", "content-range", "accept
 // decision is exactly how six paths ended up handing out a bare public URL.
 // Re-exported here because that is the path it shipped at and the probe that
 // proves it (scripts/_fix/G/probe-guard.ts) imports it from this file.
-export { blobFetchDecision } from "@/lib/reviewCuts";
 export type { BlobFetchDecision } from "@/lib/reviewCuts";
 
 async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | null, asAttachment = false): Promise<Response> {

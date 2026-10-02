@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
-import { FinalRenditionCheck } from "@/components/ops/FinalRenditionCheck";
+import { MarkUploaded } from "@/components/ops/MarkUploaded";
+import { CorrectUpload } from "@/components/ops/CorrectUpload";
 import { RetryRender } from "@/components/ops/RetryRender";
 import { HeldRender } from "@/components/ops/HeldRender";
 import { NotTold } from "@/components/ops/NotTold";
@@ -129,8 +130,11 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       <NeedsFinishing rows={needsFinishing ?? []} />
       <NotTold rows={notTold} />
       <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
-      <p className="text-sm text-muted">Each ready file still needs delivery proof. A download only starts the handoff.</p>
-      {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
+      {[
+        { title: "Ready to upload", rows: ready.filter((v) => !v.monthlyProgram && !v.uploaded) },
+        { title: "Uploaded, not sent", rows: ready.filter((v) => !v.monthlyProgram && v.uploaded) },
+        { title: "Portal delivery needs attention", rows: ready.filter((v) => v.monthlyProgram) },
+      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} />)}</section>)}
       <Rendering rows={rendering} />
     </div>
   );
@@ -262,10 +266,11 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         <span className="font-medium text-foreground">{v.cutLabel} · version {v.round}</span>
         <span>· Kyle · <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span></span>
       </p>
+      <p className="mt-1 text-sm text-muted">Approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}.</p>
       <p className="mt-1 text-sm text-foreground/85">
         {v.monthlyProgram
-          ? `Destination: client portal, with backup in the final Dropbox folder. ${v.monthlyPortalReleased ? "Portal release recorded." : "Portal release pending."} ${v.monthlyPortalAccess ? "This program has eligible owner access." : "Owner access to this exact program needs confirmation."} ${v.monthlyFinalCheckRecorded ? "A staff check is recorded; final bytes and access will be rechecked before delivery." : "Next: play and check the exact portal final file and its backup."}`
-          : "Destination: Aryeo listing. Next: verify this exact file, deliver the listing, then record the send."}
+          ? `Destination: client portal, with backup in the final Dropbox folder. ${v.monthlyPortalReleased ? "Portal release recorded." : "Portal release pending."} ${v.monthlyPortalAccess ? "This program has eligible owner access." : "Owner access to this exact program needs confirmation."} Portal publication needs attention.`
+          : "Upload this version to Aryeo, then record the upload."}
       </p>
 
       {/* The route records a successful handoff of a link or start of a stream.
@@ -372,9 +377,9 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         </div>
       </details>
 
-      <div className="mt-3 space-y-2 rounded-xl border border-border p-3">
-        <p className="text-sm font-semibold">1. Verify the destination file</p>
-        <p className="text-sm text-muted">{v.monthlyProgram ? "Play the portal final and confirm its exact Dropbox backup in the final-file check." : "Download this version, upload it to Aryeo, then check the actual Aryeo video before delivering the listing."}</p>
+      {v.uploaded && <p className="mt-2 text-sm">Uploaded by {v.uploaded.by} · {etDateTime(new Date(v.uploaded.at))}</p>}
+      {v.uploaded && <div className="mt-2"><MarkSent submissionId={v.submissionId} street={v.street} expectedFingerprint={v.uploadFingerprint ?? undefined} /></div>}
+      <details className="mt-3" open={!v.uploaded}><summary className="cursor-pointer text-sm font-medium">{v.uploaded ? "Details and files" : "Files and upload"}</summary>
       <div className="flex flex-wrap items-center gap-2">
         <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
         {!v.monthlyProgram && v.aryeoUrl && (
@@ -389,7 +394,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           </a>
         )}
         <Link
-          href={v.reviewHref}
+          href={v.uploadFingerprint && !v.monthlyProgram ? `/api/review/cut/${v.submissionId}/final?f=${v.uploadFingerprint}` : v.reviewHref}
           className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           <Eye className="size-3.5" /> Watch it
@@ -404,13 +409,9 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>
-        <FinalRenditionCheck submissionId={v.submissionId} label={v.cutLabel} round={v.round} monthly={v.monthlyProgram} />
-      </div>
-      <div className="mt-3 space-y-2 rounded-xl border border-border p-3">
-        <p className="text-sm font-semibold">2. Record the handoff</p>
-        <p className="text-sm text-muted">{v.monthlyProgram ? "Record only after the final-file check. This does not notify the client or approve the cut for them." : "Record only after the final-file check and delivery in Aryeo. This sends no client message."}</p>
-        <MarkSent key={v.submissionId} submissionId={v.submissionId} street={v.street} monthly={v.monthlyProgram} />
-      </div>
+        {!v.monthlyProgram && !v.uploaded && v.uploadFingerprint && <div className="mt-2"><MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} /></div>}
+        {v.uploaded && <CorrectUpload submissionId={v.submissionId} receiptId={v.uploaded.id} />}
+      </details>
     </div>
   );
 }
@@ -473,7 +474,7 @@ function DownloadFile({ href, taken }: { href: string; taken: boolean }) {
 export function ReadyToSendHeading({ n }: { n: number }) {
   return (
     <h4 className="flex items-center gap-1.5 text-ui-status font-bold uppercase tracking-widest text-success">
-      <Send className="size-3.5" /> Ready to send
+      <Send className="size-3.5" /> Video delivery
       <span className="rounded-full bg-success/15 px-1.5 text-ui-status tabular-nums text-success">{n}</span>
     </h4>
   );

@@ -41,14 +41,14 @@ export const SEGMENT_META: Record<SegmentKey, SegmentMeta> = {
     label: "Never Converted",
     short: "New",
     color: PALETTE.gray,
-    blurb: "No completed orders yet — a lead or first booking in flight.",
+    blurb: "No non-cancelled orders recorded.",
   },
   one_timer: {
     key: "one_timer",
     label: "One-Timer",
     short: "One-Timer",
     color: PALETTE.blue,
-    blurb: "One completed order. Win the second to start a habit.",
+    blurb: "One non-cancelled order recorded.",
   },
   casual_repeat: {
     key: "casual_repeat",

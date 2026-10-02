@@ -417,7 +417,8 @@ function NeedRow({ n }: { n: Need }) {
 
 // ---------------------------------------------------------------------------
 
-export default async function HomePage({ searchParams }: { searchParams?: Promise<{ test?: string | string[] }> } = {}) {
+export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[] }> }) {
+  const { searchParams } = props ?? {};
   const me = await getCurrentUser().catch(() => null);
   // Creatives never see the ops overview (middleware already bounces the roles;
   // this covers per-user "dashboard" permission overrides). Sessionless local

@@ -995,7 +995,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   }
   const submission = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
-    include: { project: { select: { title: true } } },
+    include: { project: { select: { title: true, contentMonthId: true } } },
   });
   if (!submission) return { ok: false, message: "That submission no longer exists." };
   if (submission.status === "APPROVED") return { ok: true, message: "Already approved." };
@@ -1092,7 +1092,8 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
     const moved = await tx.reviewSubmission.updateMany({
       where: { id: submissionId, status: submission.status },
       // decidedByUserId (Sep 28): the login behind the name, on every verdict.
-      data: { status: "APPROVED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId },
+      data: { status: "APPROVED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId,
+        ...(submission.project?.contentMonthId && !submission.clientReleasedAt ? { portalPublicationRequiredAt: decidedAt } : {}) },
     });
     return { ...moved, stale: false };
   });
@@ -1239,7 +1240,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
     // WHICH video was approved (WF-03). Without it the close falls back to
     // "nothing named is done", which holds the ask open — the row is right
     // here, so hand it over.
-    revisionResolved = (
+    revisionResolved = !submission.project?.contentMonthId && (
       await correctedCutApproved(submission.projectId, {
         cutCreatedAt: submission.createdAt,
         round: submission.round,
@@ -3125,8 +3126,8 @@ export async function markTopazDeliveredAction(jobId: string): Promise<{ ok: boo
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true, deliveredAt: true, submission: { select: { status: true } } } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
   if (!job.deliveredAt) {
-    const { manualListingCheckReady } = await import("@/lib/finalRendition");
-    const checked = await manualListingCheckReady(job.submissionId);
+    const { uploadedForDelivery } = await import("@/lib/deliveryUploads");
+    const checked = await uploadedForDelivery(job.submissionId);
     if (!checked.ok) return checked;
   }
   const by = await displayNameFor(me);

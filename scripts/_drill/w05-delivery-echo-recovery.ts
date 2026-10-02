@@ -28,7 +28,7 @@ async function main() {
     // Other communication classification is outside this named proof. These
     // stubs prevent an unrelated incoming test variant from minting a lead.
     stub("../../src/lib/contacts.ts", { resolveClientByPhones: async () => null, resolveSenderName: async () => ({ name: "system notification" }), findActiveProjectByText: async () => null, findClientProjectByText: async () => null });
-    const { POST } = await import("@/app/api/webhooks/openphone/route");
+    const { POST } = await import("@/lib/webhooks/openphone");
     const { NextRequest } = await import("next/server");
     await saveSecret("openphone_webhook", TOKEN);
     const client = await prisma.client.create({ data: { name: "W05 Exact Proof TEST" } });

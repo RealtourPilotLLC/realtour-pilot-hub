@@ -6,7 +6,7 @@
 // the difference is visible rather than asserted.
 import { readFileSync } from "node:fs";
 import { prisma } from "../../../src/lib/prisma";
-import { blobFetchDecision } from "../../../src/app/api/review/cut/[id]/stream/route";
+import { blobFetchDecision } from "../../../src/lib/reviewCuts";
 
 // tsx does not autoload .env (Prisma self-loads its own URL), and this worktree
 // runs without `source .env`, so read the one variable we need off disk.

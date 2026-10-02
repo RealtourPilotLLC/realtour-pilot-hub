@@ -122,7 +122,10 @@ async function main() {
     const newer = await prisma.reviewSubmission.create({ data: { projectId: project.id, deliverableId: d.id, slot: 1, round: 3, status: "PENDING", blobUrl: "https://example.test/v3.mp4" } });
     c.ok("newer round invalidates old approval", !(await manualListingCheckReady(cut.id)).ok);
     await prisma.reviewSubmission.update({ where: { id: newer.id }, data: { status: "WITHDRAWN", withdrawnAt: new Date() } });
-    const sent = await markVideoSentAction(cut.id, "not-yet");
+    const { recordUploaded } = await import("@/lib/deliveryUploads");
+    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    await recordUploaded(cut.id, { id: kyle.id, name: kyle.name! }, sourceFingerprint((await loadCut(cut.id))!)!);
+    const sent = await markVideoSentAction(cut.id);
     const deliveredCut = await prisma.reviewSubmission.findUnique({ where: { id: cut.id } });
     const deliveredOutput = await prisma.deliverableOutput.findFirst({ where: { projectId: project.id, deliverableId: d.id, slot: 1 } });
     c.ok("verified manual action records this exact cut and output as sent", sent.ok && !!deliveredCut?.sentToClientAt && deliveredOutput?.sentSubmissionId === cut.id);
@@ -142,6 +145,7 @@ async function main() {
       c.ok(`${who.label} cannot complete Kyle's checked delivery task`, denied && listingReads === readsBefore && (await prisma.smartTask.findUnique({ where: { id: task.id } }))?.status === "OPEN" && !(await prisma.topazJob.findUnique({ where: { id: topaz.id } }))?.deliveredAt && !(await prisma.reviewSubmission.findUnique({ where: { id: other.id } }))?.sentToClientAt);
     }
     await asKyle();
+    await recordUploaded(other.id, { id: kyle.id, name: kyle.name! }, sourceFingerprint((await loadCut(other.id))!)!);
     const taskDone = await setSmartTaskStatus(task.id, "COMPLETED");
     const topazAfter = await prisma.topazJob.findUnique({ where: { id: topaz.id } });
     const taskAfter = await prisma.smartTask.findUnique({ where: { id: task.id } });

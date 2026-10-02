@@ -147,6 +147,8 @@ export type ReadyFileSource =
   | "editor-dropbox";
 
 export type ReadyVideo = {
+  uploadFingerprint?: string | null;
+  uploaded?: { id: string; at: string; by: string } | null;
   submissionId: string;
   projectId: string;
   monthlyProgram: boolean;
@@ -790,7 +792,7 @@ const CANDIDATE_SELECT = {
   assetPath: true, blobUrl: true, finalPath: true,
   decidedAt: true, decidedBy: true, completedAt: true, createdAt: true,
   downloadedAt: true, downloadedBy: true,
-  clientReleasedAt: true, clientRequestedAt: true,
+  clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true,
   deliverable: { select: { type: true } },
   topazJob: {
     // sourceDurationSec: how long the file runs, probed off its own header when
@@ -912,6 +914,9 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   const now = Date.now();
   const ready: ReadyVideo[] = [];
   const rendering: RenderingVideo[] = [];
+  const { uploadsFor } = await import("@/lib/deliveryUploads");
+  const uploads = await uploadsFor(winners.map((w) => w.id));
+  const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
   for (const sub of winners) {
     const cut = byId.get(sub.id)!;
     const approvedAt = sub.decidedAt ?? sub.completedAt ?? sub.createdAt;
@@ -939,7 +944,13 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     if (!file) continue; // no bytes the hub can hand over
 
     const ev = parseEvidence(sub.project.statusEvidence);
+    const receipt = uploads.get(sub.id);
+    const uploadCut = await loadCut(sub.id);
+    const uploaded = receipt && uploadCut && receipt.listingId === uploadCut.project.aryeoListingId && receipt.sourceFingerprint === sourceFingerprint(uploadCut)
+      ? { id: receipt.id, at: receipt.uploadedAt, by: receipt.actor } : null;
     ready.push({
+      uploadFingerprint: uploadCut ? sourceFingerprint(uploadCut) : null,
+      uploaded,
       submissionId: sub.id,
       projectId: sub.projectId,
       monthlyProgram: Boolean(sub.project.contentMonthId),
@@ -1388,7 +1399,7 @@ export async function markCutDownloaded(
  * and exactly one wins. The loser is told the truth — who marked it and when —
  * instead of quietly overwriting the first person's name.
  */
-export async function markVideoSent(submissionId: string, by: string | null, opts: { notice?: NoticeChoice | null } = {}): Promise<SentResult> {
+export async function markVideoSent(submissionId: string, by: string | null, opts: { notice?: NoticeChoice | null; expectedFingerprint?: string } = {}): Promise<SentResult> {
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: { ...CANDIDATE_SELECT, status: true, sentToClientAt: true, sentToClientBy: true },
@@ -1422,7 +1433,7 @@ export async function markVideoSent(submissionId: string, by: string | null, opt
 
   const claimed = sub.project.contentMonthId
     ? await claimMonthlyFinalDelivery(submissionId, by)
-    : { ok: true as const, ...await prisma.reviewSubmission.updateMany({ where: { id: submissionId, sentToClientAt: null }, data: { sentToClientAt: new Date(), sentToClientBy: by } }) };
+    : await import("@/lib/deliveryUploads").then((m) => m.claimListingDelivery(submissionId, by, opts.expectedFingerprint));
   if (!claimed.ok) return claimed;
   if (claimed.count === 0) {
     // Somebody else won the race in the milliseconds since the read above.
@@ -1467,6 +1478,9 @@ async function settleDeliveryBookkeeping(
 ): Promise<{ repaired: string[]; incomplete: string[] }> {
   const repaired: string[] = [];
   const incomplete: string[] = [];
+  const delivery = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: sub.id }, select: { sentToClientAt: true } });
+  const sentAt = delivery.sentToClientAt;
+  if (!sentAt) throw new Error("Delivery bookkeeping requires an existing version-specific send stamp.");
 
   // 1. THE ONE FACT THE VIDEO'S OWN ROW EXISTS TO HOLD (audit WF-02): this
   // particular video reached the client, and how we know. The cut row says it
@@ -1487,11 +1501,11 @@ async function settleDeliveryBookkeeping(
         where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null },
         data: {
           sentSubmissionId: sub.id,
-          deliveredAt: new Date(),
+          deliveredAt: sentAt,
           deliveredBy: by,
           deliveredVia: via,
           evidenceSource: via === "aryeo-listing" ? "aryeo-listing" : "review-sent",
-          evidenceSucceededAt: new Date(),
+          evidenceSucceededAt: sentAt,
         },
       });
       if (r.count > 0 && !opts.first) repaired.push("the video's own delivery row");
@@ -1515,7 +1529,7 @@ async function settleDeliveryBookkeeping(
   if (j?.state === "done") {
     try {
       const { markTopazDelivered } = await import("@/lib/topazJobs");
-      const r = await markTopazDelivered(j.id, by);
+      const r = await markTopazDelivered(j.id, by, { at: sentAt, destination: sub.project.contentMonthId ? "client-portal" : "aryeo-listing" });
       if (r.incomplete) incomplete.push(r.incomplete);
       else if (r.repaired) repaired.push("the upload task the 1080p job left open");
     } catch (e) {
@@ -1529,11 +1543,11 @@ async function settleDeliveryBookkeeping(
     try {
       // Stamp the job anyway: its card on /connections and its "waiting on
       // Kyle" count must clear with the row it describes.
-      const stamped = await prisma.topazJob.updateMany({ where: { id: j.id, deliveredAt: null }, data: { deliveredAt: new Date(), deliveredBy: by } });
+      const stamped = await prisma.topazJob.updateMany({ where: { id: j.id, deliveredAt: null }, data: { deliveredAt: sentAt, deliveredBy: by } });
       if (stamped.count > 0 && !opts.first) repaired.push("the 1080p job's stamp");
       const task = await prisma.topazJob.findUnique({ where: { id: j.id }, select: { taskId: true } });
       if (task?.taskId) {
-        const closed = await prisma.smartTask.updateMany({ where: { id: task.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: new Date() } });
+        const closed = await prisma.smartTask.updateMany({ where: { id: task.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: sentAt } });
         if (closed.count > 0 && !opts.first) repaired.push("the upload task");
       }
     } catch (e) {
@@ -1847,7 +1861,7 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
   const j = sub.topazJob;
   const named = (path: string | null, fallback: string | null) => path?.split("/").pop() ?? fallback ?? "video.mp4";
 
-  if (j?.finalPath && j.savedAt) {
+  if (j?.state === "done" && j.finalPath && j.savedAt) {
     return {
       source: "topaz-1080p",
       fileName: named(j.finalPath, sub.fileName),

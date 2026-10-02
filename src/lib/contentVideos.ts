@@ -41,8 +41,9 @@ export type ClientVideoState = "FOR_REVIEW" | "CHANGES_IN_PROGRESS" | "APPROVED"
  * auto-stamp is treated as released at its QC time — exactly the rule the
  * portal has applied since Aug 28, now in one place.
  */
-export function cutReleasedAt(s: { status: string; decidedBy: string | null; decidedAt: Date | null; clientReleasedAt: Date | null; clientRequestedAt?: Date | null }): Date | null {
+export function cutReleasedAt(s: { status: string; decidedBy: string | null; decidedAt: Date | null; clientReleasedAt: Date | null; clientRequestedAt?: Date | null; portalPublicationRequiredAt?: Date | null }): Date | null {
   if (s.clientReleasedAt) return s.clientReleasedAt;
+  if (s.portalPublicationRequiredAt) return null;
   if (s.status === "APPROVED" && s.decidedBy !== DELIVERED_STAMP) return s.decidedAt ?? null;
   // A cut the client themselves bounced stays theirs to see (their request is the stamp).
   if (s.status === "CHANGES_REQUESTED" && s.clientRequestedAt) return s.clientRequestedAt;
@@ -122,7 +123,7 @@ type SubRow = {
 // Mark-as-sent stamp, and the bytes and identity an approval is checked against.
 const SUB_SELECT = {
   id: true, projectId: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, deliverableId: true, slot: true,
-  decidedAt: true, decidedBy: true, clientReleasedAt: true, clientRequestedAt: true, clientApprovedDecisionId: true, completedAt: true, finalPath: true, videoId: true, createdAt: true,
+  decidedAt: true, decidedBy: true, clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true, clientApprovedDecisionId: true, completedAt: true, finalPath: true, videoId: true, createdAt: true,
   sentToClientAt: true, blobUrl: true, blobPathname: true, sizeBytes: true, contentHash: true,
 } as const;
 
@@ -965,6 +966,21 @@ export async function publishApprovedCutToLibrary(submissionId: string): Promise
       await recordLibraryFailure(enrollment.id, `An approved cut did not reach the library (${submissionId}).`);
       return { published: false, why: "the rebuild ran but the cut is not on the library" };
     }
+    const { markVideoSent } = await import("@/lib/readyToSend");
+    const claimed = await markVideoSent(submissionId, "Automatic portal publication");
+    if (!claimed.ok) {
+      await recordLibraryFailure(enrollment.id, claimed.message);
+      return { published: false, why: claimed.message };
+    }
+    const { openReviewWindow } = await import("@/lib/reviewWindows");
+    await openReviewWindow(submissionId, { by: "Portal publication" });
+    // Rebuild after the atomic release/marker commit. A retry preserves the
+    // first publication time and repairs the window/library, never republishes.
+    const released = await syncEnrollmentLibrary(enrollment, { clearOnSuccess: false });
+    if (!released.ok) return { published: false, why: released.error };
+    const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: submissionId } });
+    const { correctedCutApproved } = await import("@/lib/reviewCuts");
+    await correctedCutApproved(cut.projectId, { cutCreatedAt: cut.createdAt, round: cut.round, cut: { id: cut.id, deliverableId: cut.deliverableId, slot: cut.slot, assetPath: cut.assetPath } });
     // Only this cut was checked: an older failure on the same client is left
     // for the hourly repair, which checks all of them before clearing it.
     return { published: true };

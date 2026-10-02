@@ -355,6 +355,20 @@ export function CutUploader({
   const [checked, setChecked] = useState<Record<string, { input: SelfCheckInput; name: string; size: number }>>({});
   const inputs = useRef<Record<string, HTMLInputElement | null>>({});
   const [busy, setBusy] = useState<Record<string, { pct: number; label: string }>>({});
+  const hasUploadInProgress = Object.keys(busy).length > 0;
+  useEffect(() => {
+    if (!hasUploadInProgress && !checking) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    const protectSelection = (event: MouseEvent) => {
+      const anchor = event.target instanceof Element ? event.target.closest("a") : null;
+      if (!anchor || anchor.target === "_blank" || anchor.getAttribute("href")?.startsWith("#")) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      setErr((previous) => ({ ...previous, [cuts[0] ? `${cuts[0].deliverableId}:${cuts[0].slot}` : "navigation"]: "Finish or cancel this upload before switching videos. This file remains attached to the selected output." }));
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", protectSelection, true);
+    return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", protectSelection, true); };
+  }, [hasUploadInProgress, checking, cuts]);
   const [err, setErr] = useState<Record<string, string>>({});
   // Messages typed before the file exists (held until the upload creates the
   // version they belong to) and messages already saved this session (so the row

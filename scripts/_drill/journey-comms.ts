@@ -1142,11 +1142,11 @@ async function main() {
   console.log("JOURNEY 6 — a canned or automated message never answers the client");
   console.log("-".repeat(78));
 
-  const { processOpenPhoneEvent, POST: openphonePOST } = await import("@/app/api/webhooks/openphone/route");
+  const { processOpenPhoneEvent, POST: openphonePOST } = await import("@/lib/webhooks/openphone");
   const { sweepRepliedOpenPhoneTasks } = await import("@/lib/integrations/openphone");
   const { outboundIsAnswer, isAutomatedOutbound, OPENPHONE_GREETING_SOURCE } = await import("@/lib/replyQueue");
   const oldOpenphone = await loadBase<typeof import("@/lib/integrations/openphone")>("src/lib/integrations/openphone.ts");
-  const oldRoute = await loadBase<typeof import("@/app/api/webhooks/openphone/route")>("src/app/api/webhooks/openphone/route.ts");
+  const oldRoute = await loadBase<typeof import("@/lib/webhooks/openphone")>("src/app/api/webhooks/openphone/route.ts");
   await saveSecret("openphone", ["op", "drill", "key"].join("-"));
   const at = (d: Date) => d.getTime() - RealDate.now();
   const msgEvent = (id: string, direction: "incoming" | "outgoing", phone: string, text: string) =>

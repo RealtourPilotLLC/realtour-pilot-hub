@@ -16,9 +16,6 @@ import { getFixPatterns, getQcStats } from "@/lib/qc";
 import { revisionQuality } from "@/lib/revisionQuality";
 import { RevisionQualitySummary } from "@/components/review/RevisionQualitySummary";
 import { verdictLine } from "@/lib/reviewAttribution";
-import { reviewDeliveryBoard } from "@/lib/reviewDelivery";
-import { DeliveryExitSummary } from "@/components/review/DeliveryExitSummary";
-import type { ReadyBoard } from "@/lib/readyToSend";
 
 export const dynamic = "force-dynamic";
 
@@ -140,11 +137,10 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   }
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const [q, patterns, qcStats, deliveryBoard, causes] = await Promise.all([
+  const [q, patterns, qcStats, causes] = await Promise.all([
     getReviewQueue({ includeTest }),
     getFixPatterns(60, { includeTest }),
     getQcStats(30, { includeTest }),
-    reviewDeliveryBoard({ includeTest }).catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard),
     revisionQuality(30, { includeTest }).catch(() => null),
   ]);
   // "Waiting on YOUR verdict" counts only the cuts that are yours (§8.1) —
@@ -223,7 +219,6 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           </Section>
         )}
 
-        <DeliveryExitSummary board={deliveryBoard} includeTest={includeTest} />
 
         {/* media_qa is a mixed-media task type. Do not present a video-only
             program job as a photo set. */}

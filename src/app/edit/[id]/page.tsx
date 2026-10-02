@@ -16,8 +16,6 @@ import { ActionLink, Button } from "@/components/ui/Action";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, canViewProject } from "@/lib/auth/guards";
-import { parseClientProfile } from "@/lib/clientProfile";
-import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { ScriptView } from "@/components/script/ScriptView";
@@ -57,12 +55,11 @@ import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, ov
 import { STATUS_LABEL } from "@/lib/editorQueue";
 import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta } from "@/lib/editors";
 import { openSlotKeys as openSlotKeysFor } from "@/lib/editorDesk";
-import { RevisionBriefCard, type BouncedCutView } from "@/components/editing/RevisionBriefCard";
+import { RevisionBriefCard } from "@/components/editing/RevisionBriefCard";
 import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
 // Per-CLIENT note (the merged, Aryeo-mirrored one) — distinct from
 // aryeoCustomerNote just above, which is the note on THIS order.
-import { customerNote } from "@/lib/clientNotes";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel, isMonthlyContentJob, videoTypeLabel } from "@/lib/pipeline";
@@ -140,12 +137,12 @@ export default async function EditBriefPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ cut?: string; slots?: string; notice?: string; queue?: string }>;
+  searchParams: Promise<{ cut?: string; output?: string; slots?: string; notice?: string; queue?: string }>;
 }) {
   const { id } = await params;
   // `slots=all` opens the empty cut slots a big job collapses by default
   // (Jordan, Sep 16 — see the Send to Review block below).
-  const { cut, slots: slotsParam, notice, queue } = await searchParams;
+  const { cut, output: outputParam, slots: slotsParam, notice, queue } = await searchParams;
   const showAllSlots = slotsParam === "all";
 
   const viewer = await getCurrentUser();
@@ -205,9 +202,10 @@ export default async function EditBriefPage({
   // The cuts this job owes (deliverable × slot) with the newest version of
   // each — the editor's upload panel and the cut switcher both hang off it.
   const { cutSlots, videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
-  const slots = await cutSlots(id).catch(() => []);
+  const slots = await cutSlots(id);
+  const { owedSlotKeyOf } = await import("@/lib/reviewCuts");
   const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
-    s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
+    owedSlotKeyOf(s, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) ?? (s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id));
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
   // Who may rewrite the customer/shoot notes (saveJobNotes enforces this
@@ -231,7 +229,6 @@ export default async function EditBriefPage({
   // re-checks either way.
   const strictOwnerAdmin = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
   const briefs = await getRevisionBriefs(id, !strictOwnerAdmin).catch(() => []);
-  const canTickBrief = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
   // §8.2 / §8.3 (Sep 25): the send-for-review checklist per video, the cuts
   // waiting on a check, and the job's revision issues — read BY THE JOB, so an
   // editor who inherits it sees what the last one was asked. Reviewers
@@ -260,7 +257,7 @@ export default async function EditBriefPage({
       for (const s of submissions.filter((x) => x.status !== "WITHDRAWN")) {
         const a = await attestationFor(s.id).catch(() => null);
         if (!a) continue;
-        const slotLabel = slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot)?.label ?? s.fileName ?? "Video";
+        const slotLabel = slots.find((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(s))?.label ?? s.fileName ?? "Video";
         attestations.push({
           submissionId: s.id, round: s.round, label: slotLabel, actorName: a.actorName, onBehalfOf: a.onBehalfOf, atISO: a.at.toISOString(), checklistKey: a.checklistKey,
           notApplicable: a.items.filter((i) => i.answer === "NA").map((i) => ({ label: i.label, reason: i.reason })),
@@ -279,7 +276,6 @@ export default async function EditBriefPage({
   // The client's asset shelf (logos, endcards, brand kit) — folder truth from
   // Dropbox; editors upload here too.
   const assets = await listClientAssets(project.client.id).catch(() => null);
-  const profile = parseClientProfile(project.client.profileJson);
   // The job's spec JSON — the office's Luma-form fields plus, since Sep 15,
   // the Epidemic Sound pick under `music` (src/lib/musicPick.ts).
   const editSpec = parseEditSpec(project.editSpec);
@@ -445,41 +441,39 @@ export default async function EditBriefPage({
   const latestLivePerCut = new Map<string, (typeof submissions)[number]>();
   for (const s of liveSubs) latestLivePerCut.set(cutKeyOf(s), s);
   const slotOf = (s: (typeof submissions)[number]) =>
-    slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot) ?? null;
+    slots.find((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(s)) ?? null;
   const slotLabelOf = (s: (typeof submissions)[number]) => slotOf(s)?.label ?? null;
   // WHICH of the job's cuts this is — "cut 1 of 16". The position in the owed
   // list, not the slot number, so a job with several deliverables still counts
   // straight through (Jordan, Sep 16: one bounced cut inside sixteen identical
   // slots named nothing at all).
   const cutIndexOf = (s: (typeof submissions)[number]) => {
-    const i = slots.findIndex((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot);
+    const i = slots.findIndex((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(s));
     return i === -1 ? null : i + 1;
   };
-  const activeSub =
-    (cut ? submissions.find((s) => s.id === cut) : null) ??
-    [...currentCuts].reverse().find((s) => s.status === "CHANGES_REQUESTED" || s.status === "PENDING") ??
-    // Never auto-open on a cut that was taken back — it is still reachable by
-    // ?cut=<id> from the round history (Sep 16).
-    liveSubs[liveSubs.length - 1] ??
-    latestRound;
+  const selectedOutput = outputParam ? await prisma.deliverableOutput.findFirst({ where: { id: outputParam, projectId: project.id, waivedAt: null, removedFromOrderAt: null }, select: { deliverableId: true, slot: true } }) : null;
+  const requestedCut = cut ? submissions.find((submission) => submission.id === cut) : null;
+  const selectedSlot = requestedCut ? slotOf(requestedCut) : selectedOutput ? slots.find((slot) => slot.deliverableId === selectedOutput.deliverableId && slot.slot === selectedOutput.slot) :
+    slots.find((slot) => latestLivePerCut.get(`${slot.deliverableId}:${slot.slot}`)?.status === "CHANGES_REQUESTED") ??
+    slots.find((slot) => !latestLivePerCut.has(`${slot.deliverableId}:${slot.slot}`)) ??
+    slots.find((slot) => latestLivePerCut.get(`${slot.deliverableId}:${slot.slot}`)?.status === "PENDING") ?? slots[0];
+  const selectedKey = selectedSlot ? `${selectedSlot.deliverableId}:${selectedSlot.slot}` : null;
+  const activeSub = requestedCut ?? (selectedKey ? latestLivePerCut.get(selectedKey) ?? null : liveSubs[liveSubs.length - 1] ?? latestRound);
   const assetKeyOf = (s: (typeof submissions)[number]) => s.assetUrl ?? `cut:${s.id}`;
-  const notesFor = (s: (typeof submissions)[number]) => feedback.filter((n) => n.assetUrl === assetKeyOf(s));
+  const linkedNoteIds = new Set(quality.issues.filter((issue) => issue.sourceKind === "REVIEW_NOTE" && issue.sourceId).map((issue) => issue.sourceId));
+  const notesFor = (s: (typeof submissions)[number]) => feedback.filter((note) => note.assetUrl === assetKeyOf(s) && !linkedNoteIds.has(note.id) && note.kind === "fix" && note.status !== "RESOLVED");
   const activeNotes = activeSub ? notesFor(activeSub) : [];
   // EVERY bounced cut gets its own panel, not just the active one — a link
   // that says "cut 3 of 16" has to land on cut 3 even when cut 1 is the one
   // the page opened on. Ordered the way the job owes them.
-  const bouncedCuts = [...latestLivePerCut.values()].filter((s) => s.status === "CHANGES_REQUESTED");
-  const panelSubs = [
-    ...new Map([...(activeSub ? [activeSub] : []), ...bouncedCuts].map((s) => [s.id, s])).values(),
-  ].sort((a, b) => (cutIndexOf(a) ?? 9999) - (cutIndexOf(b) ?? 9999) || a.round - b.round);
+  const bouncedCuts = [...latestLivePerCut.values()].filter((submission) => submission.status === "CHANGES_REQUESTED");
+  const panelSubs = activeSub ? [activeSub] : [];
   // ONE player on the page: the cut in front of them. Every other panel is
   // notes-only (Sep 16 review — four bounced cuts would otherwise mount four
   // <video> elements and fetch four sets of metadata); they still carry their
   // anchor, and one click makes them the cut in front.
   const playerSubId = activeSub?.id ?? panelSubs[0]?.id ?? null;
   const panelIds = new Set(panelSubs.map((s) => s.id));
-  const panelKeys = new Set(panelSubs.map(assetKeyOf));
-  const otherNotes = feedback.filter((n) => !panelKeys.has(n.assetUrl));
   // The cut a revision link must land on: the one in front of them if it is
   // the bounced one, else the first cut waiting on changes.
   const revisionCut = (activeSub?.status === "CHANGES_REQUESTED" ? activeSub : null) ?? bouncedCuts[0] ?? null;
@@ -553,7 +547,6 @@ export default async function EditBriefPage({
   // column as fallback. It used to read editingPreferences alone — NULL on all
   // 349 clients since the notes cards were merged, so this card was blank for
   // every job while 17 clients had a real note the editor needed.
-  const showPrefs = scrub(customerNote(project.client));
   // The client's OWN style notes, typed on their portal (client-owned column,
   // distinct from our internal editing notes) — scrubbed like everything else.
   const showTheirStyle = scrub(project.client.portalVideoStyle);
@@ -684,29 +677,6 @@ export default async function EditBriefPage({
   // rendered NOTHING for it and the notes lived only inside the cut panel,
   // wherever that happened to be on the page (Jordan, Sep 16: "the revision
   // requests are not showing up well in the editor brief").
-  const bouncedCards: BouncedCutView[] = bouncedCuts.map((s) => ({
-    submissionId: s.id,
-    index: cutIndexOf(s),
-    total: slots.length || null,
-    cutLabel: slotOf(s)?.deliverableLabel ?? null,
-    round: s.round,
-    fileName: s.fileName,
-    sentBackAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
-    sentBackBy: s.decidedBy,
-    // GAP 1 (Sep 28): whose send-back this is. A client's request on a cut the
-    // office approved left decidedAt/By as the APPROVAL, so the two fields
-    // above said "sent back <approval time> by <the approver>".
-    verdict: verdictOf(s),
-    notes: notesFor(s).map((n) => ({
-      id: n.id,
-      timeSec: n.timeSec,
-      body: n.body,
-      authorName: n.authorName,
-      createdAtISO: n.createdAt,
-      status: n.status,
-      kind: n.kind,
-    })),
-  }));
   // The tracker narrates a VIDEO edit — a photos-only or cancelled job has no
   // edit lifecycle to track (the brief below still renders for reference).
   const showTracker = videoDeliverables.length > 0 && project.status !== "CANCELLED";
@@ -868,15 +838,9 @@ export default async function EditBriefPage({
       )
     ).filter((k): k is string => k !== null),
   );
-  const nextEmptyIdx = cutRows.findIndex((r) => !r.latest);
-  const keepSlot = (r: (typeof cutRows)[number], i: number) => !!r.latest || i === nextEmptyIdx;
-  const hiddenSlots = cutRows.filter((r, i) => !keepSlot(r, i)).length;
-  // Worth a fold only when it hides a wall of rows; a normal job is untouched.
-  const collapseSlots = hiddenSlots >= 3 && !showAllSlots;
-  const shownCutRows = (collapseSlots ? cutRows.filter(keepSlot) : cutRows).map((r) => ({
-    ...r,
-    canReplace: replaceableCuts.has(`${r.deliverableId}:${r.slot}`),
-  }));
+  const hiddenSlots = 0;
+  const collapseSlots = false;
+  const shownCutRows = cutRows.filter((row) => `${row.deliverableId}:${row.slot}` === selectedKey).map((row) => ({ ...row, canReplace: replaceableCuts.has(`${row.deliverableId}:${row.slot}`) }));
   const uploadedSlots = cutRows.filter((r) => r.latest && isLive(r.latest)).length;
   // THE EDITOR'S OWN CLOCK (Sep 28): their Start / Pause read in their own
   // timezone (Manila for Kim and John Mark); everyone else reads Eastern.
@@ -1002,7 +966,7 @@ export default async function EditBriefPage({
       {showTracker && workBar && <div className="px-4 pt-4 sm:px-6"><WorkStateBar bar={workBar} tz={deskTz} /></div>}
 
       <div className="px-4 pt-4 sm:px-6">
-        {showTracker && <p className="mb-3 text-sm text-foreground">{statusLine}{trackerDue && <span className="text-muted"> · Due {trackerDue.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} {deadlineClock}</span>}</p>}
+        {showTracker && <p className="mb-3 text-sm text-foreground">{activeSub?.status === "CHANGES_REQUESTED" ? "Selected video: changes requested" : activeSub?.status === "APPROVED" ? "Selected video: approved" : activeSub ? "Selected video: in review" : "Selected video: awaiting edit"}{trackerDue && <span className="text-muted"> · Due {trackerDue.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} {deadlineClock}</span>}</p>}
         <nav aria-label="Edit brief sections" className="flex flex-wrap gap-2">
           <a href={rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand"><FolderOpen className="size-4 shrink-0" /> Open raw footage <UploadDot n={folderCounts.raw} stale={folderCounts.stale} /></a>
           {outputBriefs.length > 0 && <a href="#video-briefs" className={`${BRIEF_SECTION_LINK} border-border-strong bg-surface hover:bg-surface-2`}>Video briefs</a>}
@@ -1018,9 +982,9 @@ export default async function EditBriefPage({
           <span className="ml-auto font-semibold">Open exact cut →</span>
         </a>
       </div>}
-      {(briefs.length > 0 || bouncedCards.length > 0) && <div className="px-4 pt-4 sm:px-6">
-        <RevisionBriefCard briefs={briefs} bounced={bouncedCards} canTick={canTickBrief} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
-      </div>}
+      {briefs.length > 0 && <div className="px-4 pt-4 sm:px-6"><details><summary className="flex min-h-11 cursor-pointer items-center text-sm">Original client requests and source context</summary>
+        <RevisionBriefCard briefs={briefs} bounced={[]} canTick={false} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
+      </details></div>}
 
       {brandBrief && brandBrief.pending.length > 0 && <div className="px-4 pt-4 sm:px-6">
         <BrandUpdatesBanner projectId={project.id} items={brandBrief.pending.map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }))} canAck={canAckBrand} canOverride={canOverrideBrand} />
@@ -1040,30 +1004,12 @@ export default async function EditBriefPage({
         </div>
       )}
 
-      {outputBriefs.length > 0 && (
-        <div className="px-4 pt-4 sm:px-6">
-          <section aria-labelledby="assignment-index-heading" className="rounded-xl border border-border bg-surface">
-            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border px-4 py-3">
-              <h2 id="assignment-index-heading" className="text-base font-semibold">Your videos</h2>
-              <span className="text-sm text-muted">{outputBriefs.length} video{outputBriefs.length === 1 ? "" : "s"} · James: creative questions · Kyle: missing assets</span>
-            </div>
-            <ul className="divide-y divide-border">
-              {outputBriefs.map((o) => {
-                const latest = cutRows.find((r) => `${r.deliverableId}:${r.slot}` === o.key)?.latest ?? null;
-                const due = o.promisedAtISO ? new Date(o.promisedAtISO) : trackerDue;
-                return <li key={o.outputId}>
-                  <a href={`#brief-${o.outputId}`} className="flex min-h-11 flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
-                    <span className="min-w-0 flex-1 text-sm font-medium">{o.index}. {o.topicTitle || o.label}</span>
-                    <span className="text-[13px] text-muted">{latest ? `Cut v${latest.round} · ${latest.status.toLowerCase().replace(/_/g, " ")}` : "No cut yet"}{o.version ? ` · brief v${o.version}` : o.directionSource === "job" ? " · job instructions" : " · brief not set"}</span>
-                    <span className="text-[13px] text-muted">{due ? `Due ${due.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ${deadlineClock}` : "Due date not set"}</span>
-                    <span className="text-sm font-medium text-brand">Open brief →</span>
-                  </a>
-                </li>;
-              })}
-            </ul>
-          </section>
-        </div>
-      )}
+      <section className="mx-4 mt-4 rounded-xl border border-border px-4 py-3 sm:mx-6"><h2 className="font-semibold">Client · {project.client.name}</h2><div className="mt-1 flex flex-wrap gap-2 text-sm">{["vip", "heavy", "one_timer", "never_converted"].includes(project.client.segment ?? "") && <span className="rounded bg-surface-2 px-2 py-1" title={project.client.segment === "one_timer" ? "One non-cancelled order recorded" : project.client.segment === "never_converted" ? "No non-cancelled orders recorded" : "Existing client segment"}>{project.client.segment === "one_timer" ? "First Timer" : project.client.segment === "never_converted" ? "New" : project.client.segment === "vip" ? "VIP" : "Heavy"}</span>}<Link href="#brand-assets" className="inline-flex min-h-11 items-center text-brand">Brand assets</Link></div>{brandBrief?.music && <p className="text-sm">Music: {brandBrief.music}</p>}{brandBrief?.acceptedPreferences.slice(0, 3).map((text, index) => <p key={index} className="text-sm">{text}</p>)}</section>
+      {outputBriefs.length > 0 && <section className="px-4 pt-4 sm:px-6" aria-label="Video selector"><div className="flex flex-wrap justify-between gap-2"><h2 className="font-semibold">Videos</h2><p className="text-sm text-muted">{approvedSlots} of {slots.length} approved · {slots.length - approvedSlots} remaining</p></div><nav className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-2">{outputBriefs.map((brief) => {
+        const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
+        const selected = brief.key === selectedKey;
+        return <Link key={brief.outputId} aria-current={selected ? "page" : undefined} title={brief.topicTitle ?? brief.label} href={`/edit/${project.id}?output=${brief.outputId}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}`} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${selected ? "border-brand bg-brand-soft text-brand" : "border-border"}`}>Video {brief.index} of {slots.length} · {latest ? `V${latest.round} · ${latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? "Changes requested" : "In review"}` : "Awaiting edit"}</Link>;
+      })}</nav></section>}
 
       {editorMonth && (
         <div className="px-4 pt-4 sm:px-6">
@@ -1149,7 +1095,7 @@ export default async function EditBriefPage({
         </div>
       )}
 
-      <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
+      <div className="grid gap-6 p-4 sm:p-6 ">
         {/* LEFT — where the media is, what to make, how to make it, the work, the history */}
         {/* min-w-0: a grid item's automatic minimum is its MIN-CONTENT, so one
             line of non-wrapping text anywhere in this column stretches the
@@ -1157,7 +1103,7 @@ export default async function EditBriefPage({
             (white-space: nowrap, ellipsised) did exactly that — on a 375px
             phone the column measured 1144px and every card in it, Media
             included, ran off the right edge. */}
-        <div className="min-w-0 space-y-6 lg:col-span-2">
+        <div className="min-w-0 space-y-6 ">
           {/* 2 · WHERE THE MEDIA IS — footage in, footage out, and everything
               of the client's that goes on top of it. ABOVE the instructions:
               the RAW download is the slow part of starting an edit, so the
@@ -1179,7 +1125,7 @@ export default async function EditBriefPage({
                   </a>
                 )}
               </div>
-              <details className="border-t border-border pt-2">
+              <details id="brand-assets" className="scroll-mt-24 border-t border-border pt-2">
                 <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Client brand kit and reference assets</summary>
               {/* The client's asset shelf — "Assets available" vs "No assets"
                   is the Dropbox folder truth; editors, admin and owner can all
@@ -1295,11 +1241,13 @@ export default async function EditBriefPage({
                 printed brief and the agency packet read the same rows. */}
             {outputBriefs.length > 0 && (
               <div id="video-briefs" className="mt-4 scroll-mt-24 space-y-4">
-                <h3 className="text-base font-semibold">Video briefs</h3>
+                <h3 className="text-base font-semibold">Selected video · files and instructions</h3>
+                {quality.issues.some((issue) => !issue.cutKey && !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state)) && <div className="rounded-lg border border-warning/30 p-3 text-sm"><p className="font-medium">Requests not yet assigned to a video · James/Kyle to confirm scope</p><RevisionIssuesPanel issues={quality.issues.filter((issue) => !issue.cutKey && !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state))} canReview={false} /></div>}
+            <RevisionIssuesPanel issues={quality.issues.filter((issue) => !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state) && (selectedKey ? issue.cutKey === selectedKey : issue.raisedOnSubmissionId === activeSub?.id))} canReview={false} />
                 {pageNotice?.where === "brief" && (
                   <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
                 )}
-                {outputBriefs.map((o) => {
+                {outputBriefs.filter((o) => o.key === selectedKey).map((o) => {
                   const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === o.key)?.latest ?? null;
                   const chosenFile = o.brandAsset?.state === "current" ? brandBrief?.files.find((file) => file.versionId === o.brandAsset?.versionId) : null;
                   const due = o.promisedAtISO ? new Date(o.promisedAtISO) : trackerDue;
@@ -1503,7 +1451,7 @@ export default async function EditBriefPage({
                 section — no deliverables listed, and then an export spec for
                 nothing. */}
             {videoDeliverables.length > 0 && (
-              <div className="mt-4 rounded-xl border border-brand/25 bg-brand-soft/40 p-3">
+              <details className="mt-4 rounded-xl border border-brand/25 p-3"><summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium">1080p export guide</summary>
                 <p className="flex items-center gap-1.5 text-sm font-semibold">
                   <FileVideo className="size-4 text-brand" /> {EXPORT_SPEC.headline}
                 </p>
@@ -1515,7 +1463,7 @@ export default async function EditBriefPage({
                     Sep 17 — a PCM export is what sent a client a silent video). */}
                 <p className="mt-1 text-xs font-medium leading-relaxed text-foreground">{EXPORT_SPEC.audio}</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted">{EXPORT_SPEC.why}</p>
-              </div>
+              </details>
             )}
           </Section>
 
@@ -1635,6 +1583,7 @@ export default async function EditBriefPage({
           {/* 4 · HOW TO MAKE IT, in words — the spec, the customer's own words
               on this order, and everything that came off the shoot, in one
               card. */}
+          {!!brandBrief?.scopedInstructions.length && <section className="rounded-xl border border-border p-4"><h2 className="font-semibold">Instructions for this production</h2><ul className="mt-2 space-y-2 text-sm">{brandBrief.scopedInstructions.map((fact) => <li key={fact.id}><span className="font-medium">{fact.scope === "MONTH" ? "This month" : "This project"}:</span> {fact.body}</li>)}</ul></section>}
           <div id="job-instructions" className="scroll-mt-24"><EditInstructionsCard
             projectId={project.id}
             spec={{ ...editSpec, music: musicPick }}
@@ -1651,7 +1600,7 @@ export default async function EditBriefPage({
               "No script on file yet" to wait on. */}
           {showScript && (project.reelHook || project.reelScript || outputBriefs.length === 0) && (
             (project.reelHook || project.reelScript) ? (
-              <ReelScriptCard
+              <div><p className="mb-2 text-sm text-muted">Shared job script · output-specific mapping is not recorded</p><ReelScriptCard
                 hook={project.reelHook}
                 script={project.reelScript}
                 song={project.reelSong}
@@ -1660,7 +1609,7 @@ export default async function EditBriefPage({
                 studioUrl={isOwnerAdmin ? (project.scriptingUrl ?? project.reelScriptUrl) : null}
                 projectId={project.id}
                 canEdit={isOwnerAdmin}
-              />
+              /></div>
             ) : (
               <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
                 <span className="font-semibold">No script on file yet.</span>{" "}
@@ -1675,8 +1624,8 @@ export default async function EditBriefPage({
               review with the owner's timestamped notes under it. #submit-cut
               is the anchor the tracker's "Done? Send to review" jumps to. */}
           <div id="submit-cut" className="scroll-mt-20 space-y-6">
-            {reviewerStrip && <ReviewerStrip data={reviewerStrip} />}
-            {currentCuts.length > 1 && (
+            {reviewerStrip && <details><summary className="flex min-h-11 cursor-pointer items-center text-sm">Review assignments and coverage</summary><ReviewerStrip data={reviewerStrip} /></details>}
+            {slots.length === 0 && currentCuts.length > 1 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 {currentCuts.map((c, i) => (
                   <Link
@@ -1723,6 +1672,27 @@ export default async function EditBriefPage({
               canFinish={canUploadCuts && !viewer?.impersonating}
               onBehalfOf={quality.onBehalfOf}
             />
+            {panelSubs.map((s) => (
+              <EditorCutPanel
+                key={s.id}
+                projectId={project.id}
+                submissionId={s.id}
+                round={s.round}
+                status={s.status}
+                cutIndex={cutIndexOf(s)}
+                cutTotal={slots.length || null}
+                cutLabel={slotOf(s)?.deliverableLabel ?? null}
+                assetUrl={s.assetUrl}
+                streamable={!!s.blobUrl}
+                fileName={s.fileName}
+                finalFolderUrl={finalUrl}
+                notes={notesFor(s)}
+                canFix={!isOwnerAdmin}
+                viewerName={viewer?.name}
+                player={s.id === playerSubId}
+                verdict={verdictOf(s)}
+              />
+            ))}
             <CutUploader
               projectId={project.id}
               canUpload={canUploadCuts}
@@ -1771,34 +1741,14 @@ export default async function EditBriefPage({
                 and every cut sitting at "changes requested". Each carries its
                 own anchor (id="cut-<id>"), which is where every revision link
                 on this page, and every cut-note bell, now lands (Sep 16). */}
-            {panelSubs.map((s) => (
-              <EditorCutPanel
-                key={s.id}
-                projectId={project.id}
-                submissionId={s.id}
-                round={s.round}
-                status={s.status}
-                cutIndex={cutIndexOf(s)}
-                cutTotal={slots.length || null}
-                cutLabel={slotOf(s)?.deliverableLabel ?? null}
-                assetUrl={s.assetUrl}
-                streamable={!!s.blobUrl}
-                fileName={s.fileName}
-                finalFolderUrl={finalUrl}
-                notes={notesFor(s)}
-                canFix={!isOwnerAdmin}
-                viewerName={viewer?.name}
-                player={s.id === playerSubId}
-                verdict={verdictOf(s)}
-              />
-            ))}
+
             {/* Review-Room notes that aren't on the active cut (renders nothing
                 when the list is empty). */}
-            <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
+            <details className="rounded-xl border border-border p-4"><summary className="min-h-11 cursor-pointer text-sm font-medium">Conversation and revision history</summary><EditFeedback notes={feedback} canFix={false} viewerName={viewer?.name} /><RevisionIssuesPanel issues={quality.issues} canReview={quality.canReview} attestations={quality.attestations} /></details>
             {/* Every revision issue on the job, by video and version (§8.3) —
                 what is open, what the editor says is fixed, what the reviewer
                 verified, and (for reviewers) why each one happened. */}
-            <RevisionIssuesPanel issues={quality.issues} canReview={quality.canReview} attestations={quality.attestations} />
+
             {viewer?.role === "EDITOR" && (
               <Link href="/quality?tab=editors" className="inline-flex text-xs font-medium text-brand hover:underline">
                 Your review results →
@@ -1836,7 +1786,7 @@ export default async function EditBriefPage({
               instruction card — and ABOVE the profile: the client's own words
               outrank the AI's read of them (Jordan, Sep 2: "How they like it
               should be above the working profile"). */}
-          {unconfirmedAsks.length > 0 && (
+          {isOwnerAdmin && unconfirmedAsks.length > 0 && (
             <Section icon={Quote} title="Asked for on site, not confirmed yet">
               <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
                 {unconfirmedAsks.map((f) => (
@@ -1848,15 +1798,9 @@ export default async function EditBriefPage({
               </ul>
             </Section>
           )}
-          {(showPrefs || showTheirStyle || showTheirPrefs || !!brandBrief?.music || !!brandBrief?.productionDefaults.length || !!brandBrief?.acceptedPreferences.length) && (
+          {(showTheirStyle || showTheirPrefs || !!brandBrief?.music || !!brandBrief?.productionDefaults.length || !!brandBrief?.acceptedPreferences.length) && (
             <Section icon={Quote} title="How they like it">
               <div className="space-y-3">
-                {showPrefs && (
-                  <div>
-                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Customer notes on file</div>
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showPrefs}</p>
-                  </div>
-                )}
                 {showTheirStyle && (
                   <div>
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">In their own words — from their portal</div>
@@ -1903,12 +1847,6 @@ export default async function EditBriefPage({
               3: "The working profile still hasn't changed" — the brief had
               been gated to the EDITOR role). The full card lives on
               /clients/<id>. */}
-          <ClientProfileCard
-            clientId={project.client.id}
-            profile={profile}
-            updatedAt={project.client.profileUpdatedAt ? formatDistanceToNow(project.client.profileUpdatedAt, { addSuffix: true }) : null}
-            variant="brief"
-          />
           {/* Reference, not instruction — there when they want it, folded away
               when they don't. */}
           {videoDeliverables.length > 0 && (

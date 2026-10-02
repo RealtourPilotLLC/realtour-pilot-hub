@@ -881,6 +881,7 @@ export type BrandBrief = {
   productionDefaults: { name: string; text: string; versionNo: number; source: string }[];
   /** Accepted, AI-allowed production facts (clientFacts.productionFactsForProject — no caller until now). */
   acceptedPreferences: string[];
+  scopedInstructions: import("@/lib/clientFacts").PromptFact[];
   pending: PendingBrandChange[];
 };
 
@@ -899,13 +900,13 @@ export async function brandBriefFor(clientId: string, opts: { projectId?: string
     if (!t) return null;
     return opts.scrub ? stripMoneySentences(t) || null : t;
   };
-  const { productionFactsForProject } = await import("@/lib/clientFacts");
+  const { productionFactsForBrief } = await import("@/lib/clientFacts");
   const [client, slots, registry, defaults, accepted, pending] = await Promise.all([
     prisma.client.findUnique({ where: { id: clientId }, select: { brandColors: true, portalVideoStyle: true, portalPreferences: true } }),
     slotValues(clientId),
     assetRegistry(clientId, { links: opts.links !== false }),
     productionDefaults(clientId).catch(() => []),
-    productionFactsForProject(clientId, opts.projectId ?? null).catch(() => [] as string[]),
+    productionFactsForBrief(clientId, opts.projectId ?? null),
     pendingBrandChanges(clientId, { editorKey: opts.editorKey }),
   ]);
   const raw = client?.brandColors ?? "";
@@ -919,7 +920,8 @@ export async function brandBriefFor(clientId: string, opts: { projectId?: string
     fontNames: s(slots.fonts), files, website: s(slots.website), social: s(slots.social), music: s(slots.music),
     videoStyle: s(client?.portalVideoStyle), preferences: s(client?.portalPreferences),
     productionDefaults: defaults.map((d) => ({ name: d.name, text: s(d.text) ?? "", versionNo: d.versionNo, source: d.source })).filter((d) => d.text),
-    acceptedPreferences: accepted.map((x) => s(x)).filter((x): x is string => !!x),
+    acceptedPreferences: accepted.filter((fact) => fact.scope === "PERMANENT").map((fact) => s(fact.body)).filter((x): x is string => !!x),
+    scopedInstructions: accepted.filter((fact) => fact.scope !== "PERMANENT").map((fact) => ({ ...fact, body: s(fact.body) ?? "" })).filter((fact) => !!fact.body),
     pending: opts.scrub ? pending.map((p) => ({ ...p, fromText: s(p.fromText), toText: s(p.toText), line: scrubMoney(p.line) })) : pending,
   };
 }

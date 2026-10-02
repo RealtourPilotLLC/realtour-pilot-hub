@@ -692,14 +692,14 @@ export async function dismissWebhookEvent(id: string, by?: string | null): Promi
 // stored raw payload (mirrors each route's POST handler exactly).
 async function dispatch(provider: string, eventType: string | null, payload: Record<string, unknown>, stored: StoredOpenPhoneEvent) {
   if (provider === "openphone") {
-    const { processOpenPhoneEvent } = await import("@/app/api/webhooks/openphone/route");
+    const { processOpenPhoneEvent } = await import("@/lib/webhooks/openphone");
     const verifiedProvider = await hasVerifiedOpenPhoneDeliveryProof(stored);
     await processOpenPhoneEvent((payload.type as string) || eventType || "unknown", payload, { verifiedProvider });
   } else if (provider === "aryeo") {
-    const { processAryeoEvent } = await import("@/app/api/webhooks/aryeo/route");
+    const { processAryeoEvent } = await import("@/lib/webhooks/aryeo");
     await processAryeoEvent(eventType || "unknown", payload);
   } else if (provider === "slack") {
-    const { processSlackEvent } = await import("@/app/api/webhooks/slack/route");
+    const { processSlackEvent } = await import("@/lib/webhooks/slack");
     await processSlackEvent((payload.event as Record<string, unknown>) || {});
   } else if (provider === "stripe") {
     // CP-14. Stripe rows store only the event's identity ({id, type, objectId,
@@ -714,7 +714,7 @@ async function dispatch(provider: string, eventType: string | null, payload: Rec
     await handleStripeEvent(ev);
   } else if (provider === "scripting") {
     // Scripting rows store the raw {event, data} body.
-    const { processScriptingEvent } = await import("@/app/api/webhooks/scripting/route");
+    const { processScriptingEvent } = await import("@/lib/webhooks/scripting");
     type StudioData = Parameters<typeof processScriptingEvent>[1];
     await processScriptingEvent((payload.event as string) || eventType || "unknown", ((payload.data as StudioData) || {}) as StudioData);
   } else {

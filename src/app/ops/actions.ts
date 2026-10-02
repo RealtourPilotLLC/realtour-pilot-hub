@@ -317,7 +317,7 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
  * gate the QC closes above use (Kyle is ADMIN); no editor or photographer lane
  * reaches a client delivery surface.
  */
-export async function markVideoSentAction(submissionId: string, notice?: string | null): Promise<SentResult> {
+export async function markVideoSentAction(submissionId: string, notice?: string | null, expectedFingerprint?: string): Promise<SentResult> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -325,8 +325,8 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
   }
   const me = await getCurrentUser().catch(() => null);
   if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording delivery." };
-  const { manualFinalCheckReady } = await import("@/lib/finalRendition");
-  const checked = await manualFinalCheckReady(submissionId);
+  const { uploadedForDelivery } = await import("@/lib/deliveryUploads");
+  const checked = await uploadedForDelivery(submissionId);
   if (!checked.ok) return { ok: false, message: checked.message };
   const { markVideoSent, isNoticeChoice } = await import("@/lib/readyToSend");
   // 9.2: HOW THE CLIENT WAS TOLD rides on the same press — the card asks it
@@ -334,7 +334,7 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
   // here rather than stored; an absent one (an older tab) records the send and
   // leaves the question open, which is what every send before today did.
   if (notice != null && !isNoticeChoice(notice)) return { ok: false, message: "Say how the client was told." };
-  const r = await markVideoSent(submissionId, me?.name ?? me?.email ?? null, { notice: notice ?? null });
+  const r = await markVideoSent(submissionId, me?.name ?? me?.email ?? null, { notice: notice ?? null, expectedFingerprint });
   // R5 (follow-up audit, Sep 22 2026) — TWO THINGS HERE USED TO SWALLOW THE
   // BACKEND'S OWN "press it again" AND MAKE IT IMPOSSIBLE TO DO.
   //
@@ -356,6 +356,31 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
     revalidatePath("/tasks");
   }
   return r;
+}
+
+export async function markVideoUploadedAction(submissionId: string, expectedFingerprint: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+    const me = await getCurrentUser();
+    if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording an upload." };
+    const { recordUploaded } = await import("@/lib/deliveryUploads");
+    const result = await recordUploaded(submissionId, { id: me?.id ?? null, name: me?.name ?? me?.email ?? "Office" }, expectedFingerprint);
+    if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); revalidatePath("/tasks"); }
+    return result;
+  } catch (error) {
+    console.error("Upload acknowledgement failed", error);
+    return { ok: false, message: "Upload status could not be confirmed. Refresh this exact video before reconciling; do not upload it again merely because this save failed." };
+  }
+}
+
+export async function correctVideoUploadAction(submissionId: string, receiptId: string, reason: string) {
+  await requireAdmin();
+  const me = await getCurrentUser();
+  if (me?.impersonating) return { ok: false, message: "Leave preview mode before correcting an upload." };
+  const { correctUpload } = await import("@/lib/deliveryUploads");
+  const result = await correctUpload(submissionId, receiptId, reason, { id: me?.id ?? null, name: me?.name ?? me?.email ?? "Office" });
+  if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); }
+  return result;
 }
 
 /**
@@ -407,3 +432,13 @@ export async function recordClientNoticeAction(submissionId: string, notice: str
 // press-triggered version of this back: the way to know a person has a file is
 // to have given them one.
 // ---------------------------------------------------------------------------
+
+export async function correctVideoSentAction(submissionId: string, expectedSentAt: string, reason: string) {
+  await requireAdmin();
+  const me = await getCurrentUser();
+  if (!me || me.impersonating) return { ok: false, message: "Leave preview mode before correcting delivery." };
+  const { correctSent } = await import("@/lib/deliveryUploads");
+  const result = await correctSent(submissionId, expectedSentAt, reason, { id: me.id, name: me.name ?? me.email });
+  if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } }); if (cut) revalidatePath(`/review/${cut.projectId}`); }
+  return result;
+}

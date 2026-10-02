@@ -214,7 +214,7 @@ export async function outputIdFor(s: { projectId: string; deliverableId?: string
 }
 
 const SUB_SELECT = {
-  id: true, projectId: true, round: true, status: true, decidedAt: true, decidedBy: true, clientReleasedAt: true, clientRequestedAt: true,
+  id: true, projectId: true, round: true, status: true, decidedAt: true, decidedBy: true, clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true,
   assetUrl: true, assetPath: true, fileName: true, deliverableId: true, slot: true, videoId: true, createdAt: true,
 } as const;
 type SubRow = { id: string; projectId: string; round: number; status: string; decidedAt: Date | null; decidedBy: string | null; clientReleasedAt: Date | null; clientRequestedAt: Date | null; assetUrl: string | null; assetPath: string | null; fileName: string | null; deliverableId: string | null; slot: number; videoId: string | null; createdAt: Date };
@@ -243,6 +243,7 @@ async function programOf(contentMonthId: string | null, projectClientId: string 
 export async function openReviewWindow(submissionId: string, opts: { at?: Date; by?: string | null; source?: "RELEASE" | "REPAIR" } = {}): Promise<ContentReviewWindow | null> {
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { ...SUB_SELECT, project: { select: { clientId: true, contentMonthId: true } } } });
   if (!sub || sub.status !== "APPROVED" || sub.decidedBy === DELIVERED_STAMP || !sub.assetUrl || !sub.project?.contentMonthId) return null;
+  if (sub.portalPublicationRequiredAt && !sub.clientReleasedAt) return null;
   const owner = await programOf(sub.project.contentMonthId, sub.project.clientId);
   if (!owner) return null;
   // The TRUE release time is kept: a repair that runs an hour late must not

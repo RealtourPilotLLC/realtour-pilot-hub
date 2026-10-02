@@ -346,6 +346,8 @@ export async function GET(req: NextRequest) {
   // approve-time write is best-effort by design (an approval must not fail over
   // it) and nothing looked again afterwards. Normally repairs nothing.
   await step("libraryRepair", async () => {
+    const { repairMonthlyPublications } = await import("@/lib/monthlyFinal");
+    const publications = await repairMonthlyPublications(100);
     const { repairApprovedCutLibrary } = await import("@/lib/portalLibrary");
     const library = await repairApprovedCutLibrary({ sinceDays: 45, max: 200 });
     // R2: a client change request whose work item never reached the queue. The
@@ -378,7 +380,7 @@ export async function GET(req: NextRequest) {
     const notices = await stampNoticesFromDeliveryTexts({ sinceDays: 30, max: 200 });
     const { closeProgramUploadCards } = await import("@/lib/topazJobs");
     const programCards = await closeProgramUploadCards({ max: 100 });
-    return { library, changes, deliveries, reviewWindows, portalRequests, programLibrary, notices, programCards };
+    return { publications, library, changes, deliveries, reviewWindows, portalRequests, programLibrary, notices, programCards };
     // 45s (was 30s): the A42 check can rebuild a client's library, which is a
     // few seconds each on the rare hour one is missing a cut.
   }, { maxMs: 45_000 });

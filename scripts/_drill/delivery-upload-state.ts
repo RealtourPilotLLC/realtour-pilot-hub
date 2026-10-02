@@ -1,0 +1,68 @@
+// @drill-run: engine=postgres needs=tools/realpg timeout=180
+import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, portFree } from './_harness';
+import { buildContentMonth } from './_fixtures/contentMonth';
+installNextStubs();
+const fence = fenceFetch(() => null);
+async function main() {
+  if (!(await portFree(5971))) throw new Error('Fixture port 5971 busy; existing process untouched');
+  const db = await bootDrillDb({ port: 5971, engine: 'postgres', pool: 5 });
+  const c = makeChecker();
+  try {
+    const { prisma } = await import('@/lib/prisma');
+    const d = await import('@/lib/deliveryUploads');
+    const w = await buildContentMonth(prisma, { name: 'Upload state TEST', package: 'Starter' });
+    await prisma.project.update({ where: { id: w.projectId! }, data: { contentMonthId: null, aryeoListingId: 'listing-fixture' } });
+    const cut = await prisma.reviewSubmission.create({ data: { projectId: w.projectId!, deliverableId: w.deliverableId, slot: 1, round: 1, status: 'APPROVED', source: 'upload', assetPath: '/fake/final.mp4', fileName: 'Final.mp4', decidedAt: new Date() } });
+    await prisma.deliverableOutput.create({ data: { projectId: w.projectId!, deliverableId: w.deliverableId!, slot: 1, category: "VIDEO", currentSubmissionId: cut.id, approvedSubmissionId: cut.id } });
+    const actor = { id: null, name: 'Kyle fixture' };
+    const { loadCut, sourceFingerprint } = await import('@/lib/finalRendition');
+    const fingerprint = async (id: string) => sourceFingerprint((await loadCut(id))!)!;
+    c.ok('download without acknowledgement is not upload evidence', !(await d.uploadedForDelivery(cut.id)).ok);
+    await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { downloadedAt: new Date(), downloadedBy: actor.name } });
+    c.ok('successful download still cannot authorize delivery', !(await d.claimListingDelivery(cut.id, actor.name)).ok);
+    c.ok('staff upload acknowledgement succeeds without provider reads', (await d.recordUploaded(cut.id, actor, await fingerprint(cut.id))).ok);
+    const receipt = (await d.uploadsFor([cut.id])).get(cut.id)!;
+    c.ok('receipt pins version/file/listing/actor/time', receipt.round === 1 && receipt.listingId === 'listing-fixture' && receipt.actor === actor.name && !!receipt.sourceFingerprint && !!receipt.uploadedAt);
+    await d.recordUploaded(cut.id, actor, await fingerprint(cut.id));
+    c.ok('repeat acknowledgement preserves original receipt', (await d.uploadsFor([cut.id])).get(cut.id)?.id === receipt.id && await prisma.auditLog.count({ where: { target: cut.id, action: 'video_uploaded' } }) === 1);
+    await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { assetPath: '/fake/replaced.mp4' } });
+    c.ok('changed finished bytes invalidate upload evidence', !(await d.claimListingDelivery(cut.id, actor.name)).ok);
+    await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { assetPath: '/fake/final.mp4' } });
+    c.ok('correction requires reason', !(await d.correctUpload(cut.id, receipt.id, '', actor)).ok);
+    c.ok('audited upload correction succeeds', (await d.correctUpload(cut.id, receipt.id, 'Wrong listing upload', actor)).ok);
+    c.ok('correction removes active proof, retains historical receipt', !(await d.uploadsFor([cut.id])).has(cut.id) && await prisma.auditLog.count({ where: { target: cut.id } }) === 2);
+    await d.recordUploaded(cut.id, actor, await fingerprint(cut.id));
+    const v2 = await prisma.reviewSubmission.create({ data: { projectId: w.projectId!, deliverableId: w.deliverableId, slot: 1, round: 2, status: 'PENDING', source: 'upload', assetPath: '/fake/v2.mp4' } });
+    await prisma.deliverableOutput.updateMany({ where: { projectId: w.projectId!, slot: 1 }, data: { currentSubmissionId: v2.id } });
+    c.ok('stale V1 cannot be delivered while V2 is current', !(await d.claimListingDelivery(cut.id, actor.name)).ok);
+    await prisma.reviewSubmission.update({ where: { id: v2.id }, data: { status: 'APPROVED', contentHash: 'exact-final-v2-hash' } });
+    await prisma.deliverableOutput.updateMany({ where: { projectId: w.projectId!, slot: 1 }, data: { approvedSubmissionId: v2.id } });
+    await d.recordUploaded(v2.id, actor, await fingerprint(v2.id));
+    const uploadV2 = (await d.uploadsFor([v2.id])).get(v2.id)!;
+    const eventAt = new Date();
+    const listing = { id: 'listing-fixture', videos: [{ id: 'same-provider-id', content_hash: 'exact-final-v2-hash' }] };
+    c.ok('exact replacement bytes support reused provider ID', await d.providerUploadMatches(v2.id, 'same-provider-id', listing, eventAt));
+    c.ok('old delivery occurrence cannot close a new upload', !(await d.providerUploadMatches(v2.id, 'same-provider-id', listing, new Date(Date.parse(uploadV2.uploadedAt) - 1))));
+    c.ok('listing count or matching ID without file identity is insufficient', !(await d.providerUploadMatches(v2.id, 'same-provider-id', { id: listing.id, videos: [{ id: 'same-provider-id' }] }, eventAt)));
+    c.ok('wrong listing cannot settle this upload', !(await d.providerUploadMatches(v2.id, 'same-provider-id', { ...listing, id: 'wrong-listing' }, eventAt)));
+    c.ok('future event cannot settle this upload', !(await d.providerUploadMatches(v2.id, 'same-provider-id', listing, new Date(Date.now() + 86400000))));
+    const matches = new Map<string, string>();
+    await d.extendExactUploadMatches(matches, [{ key: v2.id, submissionId: v2.id }], listing, eventAt);
+    c.ok('in-place replacement reaches existing settlement candidates', matches.get(v2.id) === 'same-provider-id');
+    const staleFingerprint = await fingerprint(v2.id);
+    await prisma.project.update({ where: { id: w.projectId! }, data: { aryeoListingId: 'changed-listing' } });
+    c.ok('stale acknowledgement cannot target a changed destination', !(await d.recordUploaded(v2.id, actor, staleFingerprint)).ok && !(await d.claimListingDelivery(v2.id, actor.name)).ok);
+    await prisma.project.update({ where: { id: w.projectId! }, data: { aryeoListingId: 'listing-fixture' } });
+    const sent = await d.claimListingDelivery(v2.id, actor.name);
+    const original = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: v2.id } });
+    await d.claimListingDelivery(v2.id, 'Other fixture');
+    const repeated = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: v2.id } });
+    c.ok('single exact-version send preserves first actor/time on repeat', sent.ok && sent.count === 1 && repeated.sentToClientBy === actor.name && repeated.sentToClientAt?.getTime() === original.sentToClientAt?.getTime());
+    c.ok('correction refuses an empty reason', !(await d.correctSent(v2.id, original.sentToClientAt!.toISOString(), '', actor)).ok);
+    const corrected = await d.correctSent(v2.id, original.sentToClientAt!.toISOString(), 'Wrong upload acknowledged in fixture', actor);
+    c.ok('audited mistaken-send correction retains history and requires fresh upload', corrected.ok && !(await d.uploadedForDelivery(v2.id)).ok && await prisma.auditLog.count({ where: { target: v2.id, action: 'video_delivery_corrected' } }) === 1 && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: v2.id } })).sentToClientAt);
+    c.ok('no provider calls, client messages or forged final checks', fence.blocked.length === 0 && await prisma.finalRenditionCheck.count() === 0);
+    c.summary();
+  } finally { await db.stop(); }
+}
+main().catch((error) => { console.error(error); process.exitCode = 1; });

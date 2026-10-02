@@ -26,7 +26,7 @@ async function child() {
   if (process.argv[2] === "cold-post") {
     const op = await import("@/lib/integrations/openphone");
     op.OpenPhone.phoneNumbers = async () => { throw new Error("isolated workspace-number lookup unavailable"); };
-    const { POST } = await import("@/app/api/webhooks/openphone/route");
+    const { POST } = await import("@/lib/webhooks/openphone");
     const { NextRequest } = await import("next/server");
     const response = await POST(new NextRequest(`http://localhost/api/webhooks/openphone?t=${TOKEN}`, { method: "POST", body: process.argv[3] }));
     result = { ok: response.status === 200 };
@@ -47,7 +47,7 @@ async function main() {
     const outbox = await import("@/lib/outbox");
     const { saveSecret } = await import("@/lib/integrations/connections");
     const proof = await import("@/lib/openPhoneDeliveryProof");
-    const { POST } = await import("@/app/api/webhooks/openphone/route");
+    const { POST } = await import("@/lib/webhooks/openphone");
     const { NextRequest } = await import("next/server");
     const { retryWebhookEventNow, retryFailedWebhooks } = await import("@/lib/webhookRetry");
     const { stampNoticesFromDeliveryTexts } = await import("@/lib/readyToSend");

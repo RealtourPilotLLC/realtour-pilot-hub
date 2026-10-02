@@ -16,11 +16,9 @@ import { cutTakeBackFlags } from "@/app/review/actions";
 import { BackLink } from "@/components/ui/BackLink";
 // §8.1: the one person each waiting cut is waiting on, and the take / cover /
 // hand-on doors — the same strip /edit/<id> carries, here where review happens.
+import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
 import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
-import { reviewDeliveryBoard } from "@/lib/reviewDelivery";
-import { DeliveryExitSummary } from "@/components/review/DeliveryExitSummary";
-import type { ReadyBoard } from "@/lib/readyToSend";
 
 export const dynamic = "force-dynamic";
 
@@ -37,10 +35,10 @@ export default async function CutReviewPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ cut?: string }>;
+  searchParams: Promise<{ cut?: string; output?: string }>;
 }) {
   const { id } = await params;
-  const { cut } = await searchParams;
+  const { cut, output } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
   // THE SAME QUESTION THE ACTIONS ASK (§8.1, review fix Sep 25): owner/admin,
   // or a login seated as a reviewer — the desk is drawn exactly where approveCut
@@ -78,26 +76,26 @@ export default async function CutReviewPage({
   const clientNoteCount = clientNoteGroups.reduce((n, g) => n + g.notes.length, 0);
   // The client's own words to the office are not the photographer's to read.
   if (!w) notFound();
-  const deliveryBoard = shotThis ? null : await reviewDeliveryBoard({ includeTest: true, projectId: id })
-    .catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard);
+
 
   // Sep 16: a withdrawn cut is history, not the thing to rule on — getCutWorkspace
   // skips past it when nothing asked for it by id. That choice lives THERE, with
   // the note read: swapping the cut here left `w.notes` (built for the workspace's
   // own pick) hanging off the wrong version (reviewer, Sep 16).
-  const active = w.active;
+  let active = w.active;
   // The job's CURRENT cuts — latest round per video file. One video job = one
   // chip (hidden); a monthly package = a switcher so each video is reviewed
   // individually (Jordan: "review each one individually in a timely manner").
   // A cut = (deliverable × slot) for uploaded rows, the file for legacy
   // folder rows; the newest round of each is the current cut.
   const cutKeyOf = (s: (typeof w.submissions)[number]) => (s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id));
+  const { cutSlots, owedSlotKeyOf } = await import("@/lib/reviewCuts");
+  const slots = await cutSlots(w.projectId);
   const latestPerCut = new Map<string, (typeof w.submissions)[number]>();
   // WITHDRAWN rounds don't speak for a cut (Sep 16) — a slot whose only round
   // was taken back reads as "nothing in yet", exactly like the editor's page.
-  for (const s of [...w.submissions].filter((s) => s.status !== "WITHDRAWN").sort((a, b) => a.round - b.round)) latestPerCut.set(cutKeyOf(s), s);
-  const { cutSlots } = await import("@/lib/reviewCuts");
-  const slots = await cutSlots(w.projectId).catch(() => []);
+  for (const s of [...w.submissions].filter((s) => s.status !== "WITHDRAWN").sort((a, b) => a.round - b.round)) latestPerCut.set(owedSlotKeyOf(s, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) ?? cutKeyOf(s), s);
+  if (output && slots.some((slot) => `${slot.deliverableId}:${slot.slot}` === output) && !latestPerCut.has(output)) active = null;
   const slotLabel = (s: (typeof w.submissions)[number]) =>
     slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot)?.label ?? null;
   const earlierRounds = w.submissions.filter((s) => s.id !== active?.id && (!active || cutKeyOf(s) === cutKeyOf(active)));
@@ -211,30 +209,16 @@ export default async function CutReviewPage({
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the cut */}
         <div className="space-y-4 lg:col-span-2">
-          {currentCuts.length > 1 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {currentCuts.map((c, i) => (
-                <Link
-                  key={c.id}
-                  // Every cut answers #cut-<id> on this page too (Sep 16), so
-                  // the same anchor works whichever desk the link came from —
-                  // the active cut carries it below, the rest carry it here.
-                  id={active?.id === c.id ? undefined : `cut-${c.id}`}
-                  href={`/review/${w.projectId}?cut=${c.id}`}
-                  className={`inline-flex scroll-mt-24 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
-                    active?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
-                  }`}
-                >
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
-                  />
-                  <span className="max-w-48 truncate">{slotLabel(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
-                  {c.round > 1 && <span className="text-[10px] text-muted-2">v{c.round}</span>}
-                </Link>
-              ))}
-            </div>
-          )}
+          {slots.length > 0 && <nav aria-label="Project videos" className="flex max-w-full gap-2 overflow-x-auto pb-2">
+            {slots.map((slot, index) => {
+              const key = `${slot.deliverableId}:${slot.slot}`;
+              const current = latestPerCut.get(key);
+              const selected = current ? active?.id === current.id : output === key;
+              return <Link key={key} aria-current={selected ? "page" : undefined} href={current ? `/review/${w.projectId}?cut=${current.id}#cut-${current.id}` : `/review/${w.projectId}?output=${key}`} title={slot.topicTitle ?? slot.deliverableLabel} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${selected ? "border-brand bg-brand-soft text-brand" : "border-border"}`}>Video {index + 1} of {slots.length} · {current ? `V${current.round}` : "Awaiting edit"}</Link>;
+            })}
+          </nav>}
+          {slots.length === 0 && currentCuts.length > 1 && <nav aria-label="Legacy videos" className="flex flex-wrap gap-2">{currentCuts.map((current) => <Link key={current.id} href={`/review/${w.projectId}?cut=${current.id}`} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm">{current.fileName ?? "Unmapped video"} · V{current.round}</Link>)}</nav>}
+          {!shotThis && <ProjectVideoStatus projectId={w.projectId} selectedKey={active?.deliverableId ? `${active.deliverableId}:${active.slot ?? 1}` : output} />}
           {active ? (
             <>
               <div id={`cut-${active.id}`} className="flex scroll-mt-24 flex-wrap items-center gap-2 text-sm text-muted">
@@ -303,7 +287,7 @@ export default async function CutReviewPage({
                 fixesToCheck={fixesToCheck}
                 readStamp={new Date().toISOString()}
               />
-              {deliveryBoard && <DeliveryExitSummary board={deliveryBoard} />}
+
             </>
           ) : (
             <Section icon={Film} title="No cut uploaded yet">

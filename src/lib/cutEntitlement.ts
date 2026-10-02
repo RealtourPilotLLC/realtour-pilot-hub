@@ -75,7 +75,7 @@ const ID_RE = /^[a-z0-9]{10,40}$/i;
 
 /** One round of a cut chain, with every field the rule and the stream route read. */
 export const CHAIN_SELECT = {
-  id: true, projectId: true, round: true, status: true, decidedAt: true, decidedBy: true, clientReleasedAt: true, clientRequestedAt: true,
+  id: true, projectId: true, round: true, status: true, decidedAt: true, decidedBy: true, clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true,
   completedAt: true, sentToClientAt: true, assetUrl: true, assetPath: true, finalPath: true, blobUrl: true, blobPathname: true,
   sizeBytes: true, fileName: true, contentHash: true, deliverableId: true, slot: true, createdAt: true,
 } as const;
@@ -478,6 +478,11 @@ export async function clientCutFiles(submissionIds: string[]): Promise<Map<strin
   const out = new Map<string, ClientCutFile>();
   const ids = [...new Set(submissionIds.filter((x) => ID_RE.test(x)))];
   if (ids.length === 0) return out;
+  const pending = await prisma.reviewSubmission.findMany({ where: { id: { in: ids }, portalPublicationRequiredAt: { not: null }, clientReleasedAt: null }, select: { id: true, topazJob: { select: { state: true, finalPath: true, savedAt: true, outputCheck: true } } } });
+  for (const cut of pending) {
+    const job = cut.topazJob;
+    if (!(job?.state === "done" && job.finalPath && job.savedAt && VERIFIED_OUTPUT.has(job.outputCheck ?? ""))) out.set(cut.id, { kind: "finishing", state: job?.state ?? "awaiting-render" });
+  }
   const jobs = await prisma.topazJob.findMany({
     where: { submissionId: { in: ids }, submission: { project: { contentMonthId: { not: null } } } },
     select: {
@@ -490,6 +495,7 @@ export async function clientCutFiles(submissionIds: string[]): Promise<Map<strin
   const { laneStillOwesWork } = await import("@/lib/readyToSend");
   const gate = CLIENT_APPROVAL_GATE_SINCE.getTime();
   for (const j of jobs) {
+    if (out.has(j.submissionId)) continue;
     if (laneStillOwesWork(j.state)) {
       const s = j.submission;
       const deliveredElsewhere =

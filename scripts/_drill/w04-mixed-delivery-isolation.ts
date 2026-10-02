@@ -35,9 +35,9 @@ interceptModule(
           if (method === "listing") return async (id: string) => {
             reads.automatic++;
             const l = listingFor(id);
-            return { delivery_status: "DELIVERED",
+            return { id, delivery_status: "DELIVERED",
               images: [{ id: "photo-with-open-correction", url: "https://example.test/photo.jpg" }],
-              videos: [{ id: l.mediaId, title: l.title, duration: l.duration }] };
+              videos: [{ id: l.mediaId, title: l.title, duration: l.duration, content_hash: "fixture-final-hash" }] };
           };
           return aryeo[method];
         },
@@ -152,7 +152,10 @@ async function main() {
     const check = await prisma.finalRenditionCheck.findFirst({ where: { submissionId: manual.cut.id } });
     c.ok("final-file check records signed staff and the exact video identity on this mixed listing",
       checked.ok && check?.checkedByUserId === user.id && check.destinationMediaId === manual.mediaId);
-    const sent = await markVideoSentAction(manual.cut.id, "not-yet");
+    const { recordUploaded } = await import("@/lib/deliveryUploads");
+    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    await recordUploaded(manual.cut.id, { id: user.id, name: user.name! }, sourceFingerprint((await loadCut(manual.cut.id))!)!);
+    const sent = await markVideoSentAction(manual.cut.id);
     c.ok("verified manual send confirms its own receipt", sent.ok, sent.message);
     await sentExactVideo("manual video delivery", manual);
     await photoStillOwed("manual video delivery", manual);
@@ -168,9 +171,18 @@ async function main() {
       fileName: "automatic-v2.mov", sourceDurationSec: 62, savedAt, finishedAt: savedAt,
       finalPath: "/Final/automatic-v2-1080p.mp4",
     } });
+    const uploaded = await recordUploaded(auto.cut.id, { id: user.id, name: user.name! }, sourceFingerprint((await loadCut(auto.cut.id))!)!);
+    c.ok("automatic proof starts from exact staff upload", uploaded.ok);
+    // Private exact-file receipt: fake Dropbox is intentionally not contacted.
+    const receipt = await prisma.auditLog.findFirstOrThrow({ where: { target: auto.cut.id, action: "video_uploaded" } });
+    await prisma.auditLog.update({ where: { id: receipt.id }, data: { detail: JSON.stringify({ ...JSON.parse(receipt.detail), finalContentHash: "fixture-final-hash" }) } });
+    const withoutEvent = await proveListingNow(auto.listingId, "drill: no trusted occurrence");
+    c.ok("delivered listing alone does not close uploaded file", withoutEvent.closed === 0 && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: auto.cut.id } })).sentToClientAt);
+    await prisma.auditLog.create({ data: { action: "aryeo_listing_delivery_event", target: auto.listingId, actor: "authenticated-webhook", detail: JSON.stringify({ listingId: auto.listingId, occurredAt: new Date().toISOString() }) } });
+    await prisma.appSetting.updateMany({ where: { key: `aryeo-wh-seen-prove-listing-${auto.listingId}` }, data: { updatedAt: new Date(Date.now() - 10 * 60_000) } });
     const proof = await proveListingNow(auto.listingId, "drill: W04 mixed delivery");
     c.ok("actual automatic proof reads the fake mixed listing and closes exactly its upload card",
-      proof.looked && proof.closed === 1 && reads.automatic === 1, proof.note);
+      proof.looked && proof.closed === 1 && reads.automatic === 2, proof.note);
     const [jobAfter, uploadAfter] = await Promise.all([
       prisma.topazJob.findUniqueOrThrow({ where: { id: topaz.id } }),
       prisma.smartTask.findUniqueOrThrow({ where: { id: upload.id } }),

@@ -17,7 +17,7 @@ export function EditingWorkSummary({ view }: { view: EditorsTodayView }) {
   return (
     <section aria-label="Editors today" className="rounded-xl border border-border bg-surface px-3 py-2.5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
-        <h2 className="font-semibold">Editors today</h2>
+        <h2 className="font-semibold">Working now</h2>
         <span className={cn("text-muted", freshness.state !== "fresh" && "text-warning")} role={freshness.state !== "fresh" ? "status" : undefined}>{freshness.words}</span>
       </div>
       {view.ok ? (

@@ -553,7 +553,7 @@ async function refusalNamesKnownResource(payload: Record<string, unknown>): Prom
  *  static import back would be a cycle. */
 async function classifyPayload(payload: Record<string, unknown>) {
   try {
-    const { classifyAryeoPayload } = await import("@/app/api/webhooks/aryeo/route");
+    const { classifyAryeoPayload } = await import("@/lib/webhooks/aryeo");
     return classifyAryeoPayload(payload);
   } catch {
     return null;

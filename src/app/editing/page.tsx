@@ -73,7 +73,8 @@ function MessagesButton({ unread }: { unread: number }) {
   );
 }
 
-export default async function EditorQueuePage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> } = {}) {
+export default async function EditorQueuePage(props: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
+  const { searchParams } = props ?? {};
   await requirePageAccess("editing");
   const me = await getCurrentUser().catch(() => null);
   // ONE ANSWER, NOT A THIRD COPY (review, Sep 18). This page had its own

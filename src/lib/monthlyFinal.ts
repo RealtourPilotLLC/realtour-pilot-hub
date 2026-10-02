@@ -2,7 +2,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { actualFolderPaths } from "@/lib/dropboxFolders";
-import { videoCutKey, cutReleasedAt } from "@/lib/contentVideos";
+import { videoCutKey } from "@/lib/contentVideos";
 import { clientCutFiles } from "@/lib/cutEntitlement";
 import { PROGRAM_ROLLOUT_SETTING_KEY, parseProgramRollout, rolloutDecision } from "@/lib/programRolloutCore";
 import { digest, proveOriginalBackup, readDropboxFile } from "@/lib/finalDropbox";
@@ -39,7 +39,7 @@ export async function loadMonthlyCut(id: string, db: Prisma.TransactionClient = 
   return db.reviewSubmission.findUnique({ where: { id }, include: { topazJob: true, project: { include: { client: { select: { id: true, name: true } } } } } });
 }
 export type MonthlyCut = NonNullable<Awaited<ReturnType<typeof loadMonthlyCut>>>;
-export const monthlyCutStamp = (s: MonthlyCut) => digest([s.id, s.projectId, s.status, s.round, s.deliverableId, s.slot, s.fileName, s.assetPath, s.finalPath, s.blobUrl, s.blobPathname, s.sizeBytes, s.contentHash, s.sourceRev, s.decidedAt, s.clientReleasedAt, s.project.contentMonthId, s.project.clientId, s.project.status, s.project.dropboxFolder, s.topazJob]);
+export const monthlyCutStamp = (s: MonthlyCut) => digest([s.id, s.projectId, s.status, s.round, s.deliverableId, s.slot, s.fileName, s.assetPath, s.finalPath, s.blobUrl, s.blobPathname, s.sizeBytes, s.contentHash, s.sourceRev, s.decidedAt, s.portalPublicationRequiredAt, s.project.contentMonthId, s.project.clientId, s.project.status, s.project.dropboxFolder, s.topazJob ? { id: s.topazJob.id, state: s.topazJob.state, finalPath: s.topazJob.finalPath, savedAt: s.topazJob.savedAt, outputCheck: s.topazJob.outputCheck } : null]);
 
 /** Keep access writers ordered with the final check/claim. Serializable reads
  * alone do not require a revocation writer to wait until the stamp commits. */
@@ -53,7 +53,7 @@ export async function lockMonthlyFinalAccess(tx: Prisma.TransactionClient, month
 }
 
 export async function currentMonthlyCut(s: MonthlyCut, db: Prisma.TransactionClient = prisma): Promise<boolean> {
-  if (!s.project.contentMonthId || s.status !== "APPROVED" || ["CANCELLED", "ON_HOLD"].includes(s.project.status) || !cutReleasedAt(s)) return false;
+  if (!s.project.contentMonthId || s.status !== "APPROVED" || ["CANCELLED", "ON_HOLD"].includes(s.project.status)) return false;
   const rounds = await db.reviewSubmission.findMany({ where: { projectId: s.projectId, withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } }, orderBy: [{ round: "desc" }, { createdAt: "desc" }] });
   if (rounds.find((r) => videoCutKey(r) === videoCutKey(s))?.id !== s.id) return false;
   if (!s.deliverableId) return true;
@@ -67,7 +67,8 @@ export type MonthlyFinalSnapshot = { ok: true; cut: MonthlyCut; fingerprint: str
  * The Review Room's original is intentionally not repointed to this final file. */
 export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnapshot> {
   const cut = await loadMonthlyCut(id);
-  if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current or released." };
+  if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current." };
+  if (cut.portalPublicationRequiredAt && !(cut.topazJob?.state === "done" && cut.topazJob.finalPath && cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? ""))) return { ok: false, message: "The verified 1080p file is not ready. Retry finishing or resolve its hold before portal publication." };
   const files = await clientCutFiles([id]); // A read failure throws, never falls back to the original.
   const file = files.get(id) ?? { kind: "original" as const };
   if (file.kind === "finishing") return { ok: false, message: "The client file is still being finished or held for review." };
@@ -110,15 +111,31 @@ export async function claimMonthlyFinalDelivery(id: string, by: string | null): 
     if (current?.sentToClientAt) return { ok: true as const, count: 0 };
     const access = (await monthlyOwnerAccess([s.cut.project.contentMonthId!], tx)).get(s.cut.project.contentMonthId!);
     if (!current || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.ok || access.stamp !== s.access.stamp) return { ok: false as const, message: "The version or client access changed before delivery was recorded. Check the current final file again." };
-    const check = await tx.finalRenditionCheck.findFirst({ where: { submissionId: id, destination: "client-portal", sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId }, select: { id: true } });
-    if (!check) return { ok: false as const, message: "Check the exact portal final file and final Dropbox backup before recording delivery." };
-    const changed = await tx.reviewSubmission.updateMany({ where: { id, status: "APPROVED", sentToClientAt: null }, data: { sentToClientAt: new Date(), sentToClientBy: by } });
+    await tx.$queryRaw`SELECT id FROM "ContentVideoSource" WHERE kind = 'REVIEW_CUT' AND ref = ${id} FOR SHARE`;
+    const source = await tx.contentVideoSource.findFirst({ where: { kind: "REVIEW_CUT", ref: id }, select: { videoId: true } });
+    if (source) await tx.$queryRaw`SELECT id FROM "ContentVideo" WHERE id = ${source.videoId} FOR SHARE`;
+    const linked = source ? await tx.contentVideo.findFirst({ where: { id: source.videoId, enrollmentId: s.access.enrollmentId!, clientId: s.access.clientId!, status: { not: "ARCHIVED" }, projectId: current.projectId }, select: { id: true } }) : null;
+    if (!linked || current.videoId !== linked.id) return { ok: false as const, message: "This exact version is not linked to the correct client library. Retry library publication." };
+    const publishedAt = new Date();
+    const changed = await tx.reviewSubmission.updateMany({ where: { id, status: "APPROVED", sentToClientAt: null }, data: { sentToClientAt: publishedAt, sentToClientBy: by, clientReleasedAt: current.clientReleasedAt ?? publishedAt, clientReleasedBy: current.clientReleasedBy ?? "Portal publication" } });
     if (changed.count === 1) {
-      // Portal readiness is not a delivery outside the portal and must not
-      // bypass the client's verdict. The marker and first stamp commit together.
       await tx.auditLog.create({ data: { id: monthlyPortalHandoffId(id), actor: "system", action: "monthly_portal_handoff", target: id,
-        detail: JSON.stringify({ sourceFingerprint: s.fingerprint, finalCheckId: check.id }) } });
+        detail: JSON.stringify({ sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId, publishedAt: publishedAt.toISOString(), libraryVideoId: linked.id }) } });
     }
     return { ok: true as const, count: changed.count };
   }, { isolationLevel: "Serializable" });
+}
+
+/** Only new publication-gated approvals. No historical deadline repair or
+ * broad backfill is performed by this automatic retry. */
+export async function repairMonthlyPublications(max = 100) {
+  const cuts = await prisma.reviewSubmission.findMany({ where: { status: "APPROVED", portalPublicationRequiredAt: { not: null }, clientReleasedAt: null, project: { contentMonthId: { not: null }, status: { notIn: ["CANCELLED", "ON_HOLD"] } } }, orderBy: { decidedAt: "asc" }, take: max, select: { id: true } });
+  const { publishApprovedCutToLibrary } = await import("@/lib/contentVideos");
+  let published = 0;
+  const exceptions: { id: string; reason: string }[] = [];
+  for (const cut of cuts) {
+    const result = await publishApprovedCutToLibrary(cut.id);
+    if (result.published) published++; else exceptions.push({ id: cut.id, reason: result.why ?? "Publication unavailable" });
+  }
+  return { checked: cuts.length, published, exceptions };
 }

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { monthlyFinalSnapshot } from "@/lib/monthlyFinal";
+import { currentApproved, loadCut, sourceFingerprint } from "@/lib/finalRendition";
+import { readDropboxFile } from "@/lib/finalDropbox";
 import { blobFetchDecision } from "@/lib/reviewCuts";
 import { dbx } from "@/lib/integrations/dropbox";
 
@@ -18,7 +20,20 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const { id } = await ctx.params;
   if (!/^[a-z0-9]{10,40}$/i.test(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
-    const s = await monthlyFinalSnapshot(id);
+    const cut = await loadCut(id);
+    if (!cut) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    // Listing previews use exactly the same source order as Download, without
+    // recording a download or substituting the creative-review original.
+    const listing = async () => {
+      const fingerprint = sourceFingerprint(cut);
+      if (!fingerprint || !(await currentApproved(cut))) return { ok: false as const, message: "This is no longer the current approved finished file." };
+      const path = cut.topazJob?.state === "done" && cut.topazJob.finalPath && cut.topazJob.savedAt ? cut.topazJob.finalPath : cut.assetPath ?? cut.finalPath;
+      const processed = Boolean(cut.topazJob?.state === "done" && cut.topazJob.finalPath && cut.topazJob.savedAt);
+      const backup = path && (processed || !cut.blobUrl) ? await readDropboxFile(path) : null;
+      if (!(cut.blobUrl && !processed) && !backup) return { ok: false as const, message: "The finished file could not be read." };
+      return { ok: true as const, fingerprint, cut, file: processed ? { kind: "processed" as const, path: path! } : { kind: "original" as const }, backup };
+    };
+    const s = cut.project.contentMonthId ? await monthlyFinalSnapshot(id) : await listing();
     if (!s.ok) return NextResponse.json({ error: s.message }, { status: 409 });
     if (req.nextUrl.searchParams.get("f") !== s.fingerprint) return NextResponse.json({ error: "The final file or access changed. Reopen the current final check." }, { status: 409 });
     let url: string;
@@ -31,6 +46,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       url = s.cut.blobUrl;
       if (decision.authorization) headers.set("Authorization", decision.authorization);
     } else {
+      if (!s.backup) return NextResponse.json({ error: "The final source is unavailable." }, { status: 503 });
       const link = await dbx<{ link?: string; metadata?: { id?: string; rev?: string; content_hash?: string; size?: number; path_display?: string; path_lower?: string } }>("files/get_temporary_link", { path: s.file.kind === "processed" ? s.file.path : s.backup.path });
       if (!link.link) return NextResponse.json({ error: "The final file could not be opened." }, { status: 503 });
       // The path may have been replaced since the snapshot's metadata read.

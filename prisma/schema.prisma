@@ -1753,6 +1753,9 @@ model ReviewSubmission {
   // button: an additive pair that cannot change the meaning of any existing row.
   sentToClientAt           DateTime?
   sentToClientBy           String?
+  // New monthly approvals wait for verified finished-file publication. Null
+  // preserves existing releases and review windows; never bulk backfill.
+  portalPublicationRequiredAt DateTime?
 
   // SOMEBODY STARTED THE HAND-OFF (Jordan, Sep 21). Pressing Download on the
   // Ready-to-send card is the first half of a send: the file is on a laptop,

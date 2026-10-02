@@ -204,13 +204,13 @@ export type PromptFact = { id: string; category: FactCategory; body: string; sco
 export async function factsForPrompt(clientId: string, opts: { monthId?: string | null; projectId?: string | null; take?: number; production?: boolean } = {}): Promise<PromptFact[]> {
   const rows = await prisma.clientFact.findMany({
     where: {
-      clientId, status: "ACCEPTED", aiContext: "ALLOWED", confidential: false,
+      clientId, status: "ACCEPTED", aiContext: "ALLOWED", confidential: false, conflictsWithId: null,
       OR: [{ scope: "PERMANENT" }, ...(opts.monthId ? [{ scope: "MONTH", monthId: opts.monthId }] : []), ...(opts.projectId ? [{ scope: "PROJECT", projectId: opts.projectId }] : [])],
       // Narrowed IN the query, before `take` (review, Sep 24 2026): taking the
       // newest N of every category and filtering afterwards let twenty newer
       // goal or audience facts push every production preference out of the
       // editor's brief without a word.
-      ...(opts.production ? { AND: [{ OR: [{ category: "PRODUCTION_PREFERENCE" }, ...(opts.projectId ? [{ scope: "PROJECT", projectId: opts.projectId }] : [])] }] } : {}),
+      ...(opts.production ? { category: "PRODUCTION_PREFERENCE" } : {}),
     },
     orderBy: [{ factDate: "desc" }, { createdAt: "desc" }],
     take: opts.take ?? 40,
@@ -229,8 +229,15 @@ export function factLines(facts: PromptFact[]): string[] {
 
 /** Accepted production/editing preferences for an editor brief — reaches the editor only once accepted. */
 export async function productionFactsForProject(clientId: string, projectId: string | null): Promise<string[]> {
-  const facts = await factsForPrompt(clientId, { projectId, take: 20, production: true });
-  return factLines(facts.filter((f) => f.category === "PRODUCTION_PREFERENCE" || (f.scope === "PROJECT" && f.projectId === projectId)));
+  return factLines(await productionFactsForBrief(clientId, projectId));
+}
+
+/** Retain scope for presentation. Only the actual project association supplies
+ * a month; general notes and cross-project AI profiles are never a fallback. */
+export async function productionFactsForBrief(clientId: string, projectId: string | null): Promise<PromptFact[]> {
+  const project = projectId ? await prisma.project.findFirst({ where: { id: projectId, clientId }, select: { contentMonthId: true } }) : null;
+  const facts = await factsForPrompt(clientId, { projectId, monthId: project?.contentMonthId, take: 40, production: true });
+  return facts.filter((fact) => fact.category === "PRODUCTION_PREFERENCE");
 }
 
 // ---------------------------------------------------------------------------

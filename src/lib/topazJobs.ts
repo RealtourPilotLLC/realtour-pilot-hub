@@ -1977,6 +1977,9 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
       },
     })
     .catch(() => {});
+  if (job.project.contentMonthId && job.submissionId) {
+    await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
+  }
   return "done";
 }
 
@@ -2245,6 +2248,9 @@ async function finishHeldAsProcessed(
     })
     .catch(() => {});
   // A program video has no upload card (pingKyle's 9.6b branch makes none):
+  if (job.project.contentMonthId && job.submissionId) {
+    await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
+  }
   // the client's portal gives them this file, or the Ready-to-send card lists
   // it while they cannot sign in. Telling the reviewer "Kyle has the upload
   // card" was untrue for every one of them (review, Sep 25).
@@ -2859,7 +2865,7 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
  * reconciled on every call, and a failure to close the task is now reported
  * rather than swallowed, so the caller can say "press again".
  */
-export async function markTopazDelivered(jobId: string, by?: string | null): Promise<{ ok: boolean; message: string; repaired?: boolean; incomplete?: string }> {
+export async function markTopazDelivered(jobId: string, by?: string | null, opts?: { at: Date; destination: "client-portal" | "aryeo-listing" }): Promise<{ ok: boolean; message: string; repaired?: boolean; incomplete?: string }> {
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, taskId: true, projectId: true, deliveredAt: true, finalPath: true } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
   const first = !job.deliveredAt;
@@ -2867,7 +2873,7 @@ export async function markTopazDelivered(jobId: string, by?: string | null): Pro
   // The historical fact, written once. `deliveredAt: null` in the filter is
   // what makes a repeat call leave the original timestamp alone.
   if (first) {
-    await prisma.topazJob.updateMany({ where: { id: jobId, deliveredAt: null }, data: { deliveredAt: new Date(), deliveredBy: by ?? null } });
+    await prisma.topazJob.updateMany({ where: { id: jobId, deliveredAt: null }, data: { deliveredAt: opts?.at ?? new Date(), deliveredBy: by ?? null } });
   }
 
   // The associated state, reconciled EVERY time. An open task on a delivered
@@ -2878,7 +2884,7 @@ export async function markTopazDelivered(jobId: string, by?: string | null): Pro
     try {
       const closed = await prisma.smartTask.updateMany({
         where: { id: job.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        data: { status: "COMPLETED", completedAt: new Date() },
+        data: { status: "COMPLETED", completedAt: opts?.at ?? job.deliveredAt ?? new Date() },
       });
       if (closed.count > 0 && !first) repaired = true;
     } catch (e) {
@@ -2888,7 +2894,7 @@ export async function markTopazDelivered(jobId: string, by?: string | null): Pro
 
   if (first) {
     await prisma.activity
-      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video uploaded to Aryeo and delivered${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
+      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video ${opts?.destination === "client-portal" ? "published in the client portal" : "uploaded to Aryeo and delivered"}${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
       .catch(() => {});
   }
 

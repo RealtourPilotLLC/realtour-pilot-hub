@@ -1,4 +1,5 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
@@ -12,13 +13,13 @@ export type FinalCheckKey = (typeof FINAL_CHECK_KEYS)[number];
 
 type Cut = NonNullable<Awaited<ReturnType<typeof loadCut>>>;
 
-async function loadCut(submissionId: string) {
-  return prisma.reviewSubmission.findUnique({
+export async function loadCut(submissionId: string, db: Prisma.TransactionClient = prisma) {
+  return db.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: {
       id: true, projectId: true, status: true, deliverableId: true, slot: true, round: true,
       assetPath: true, finalPath: true, blobUrl: true, contentHash: true, sourceRev: true,
-      sentToClientAt: true, decidedAt: true,
+      sentToClientAt: true, sentToClientBy: true, decidedAt: true,
       project: { select: { aryeoListingId: true, status: true, contentMonthId: true } },
       topazJob: { select: { id: true, state: true, finalPath: true, savedAt: true } },
     },
@@ -27,26 +28,26 @@ async function loadCut(submissionId: string) {
 
 /** The identity of the source file Kyle is taking to Aryeo. A render that
  * lands later, or a changed path/hash, invalidates an earlier attestation. */
-function sourceFingerprint(cut: Cut): string | null {
+export function sourceFingerprint(cut: Cut): string | null {
   const job = cut.topazJob;
   if (job && !["done", "failed", "cancelled", "skipped"].includes(job.state)) return null;
-  const source = job?.finalPath && job.savedAt
+  const source = job?.state === "done" && job.finalPath && job.savedAt
     ? ["topaz", job.id, job.finalPath, job.savedAt.toISOString()]
     : cut.blobUrl ? ["hub", cut.blobUrl, cut.contentHash, cut.sourceRev]
     : cut.assetPath ? ["dropbox", cut.assetPath, cut.contentHash, cut.sourceRev]
     : cut.finalPath ? ["final", cut.finalPath, cut.contentHash, cut.sourceRev] : null;
-  return source ? createHash("sha256").update(JSON.stringify([cut.id, cut.round, source])).digest("hex") : null;
+  return source ? createHash("sha256").update(JSON.stringify([cut.id, cut.round, cut.project.aryeoListingId, source])).digest("hex") : null;
 }
 
-async function currentApproved(cut: Cut): Promise<boolean> {
-  if (cut.status !== "APPROVED" || cut.project.status === "CANCELLED") return false;
+export async function currentApproved(cut: Cut, db: Prisma.TransactionClient = prisma): Promise<boolean> {
+  if (cut.status !== "APPROVED" || ["CANCELLED", "ON_HOLD"].includes(cut.project.status)) return false;
   if (cut.deliverableId) {
-    const latest = await prisma.reviewSubmission.findFirst({
+    const latest = await db.reviewSubmission.findFirst({
       where: { projectId: cut.projectId, deliverableId: cut.deliverableId, slot: cut.slot,
         withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } },
       orderBy: [{ round: "desc" }, { createdAt: "desc" }], select: { id: true },
     });
-    const output = await prisma.deliverableOutput.findFirst({
+    const output = await db.deliverableOutput.findFirst({
       where: { projectId: cut.projectId, deliverableId: cut.deliverableId, slot: cut.slot, waivedAt: null, removedFromOrderAt: null },
       select: { id: true, currentSubmissionId: true, approvedSubmissionId: true },
     });
@@ -57,7 +58,7 @@ async function currentApproved(cut: Cut): Promise<boolean> {
   // Legacy folder cuts are keyed by file path. Do not pretend two distinct
   // paths on one job are the same video or let an older round certify a newer.
   if (!cut.assetPath) return false;
-  const latest = await prisma.reviewSubmission.findFirst({
+  const latest = await db.reviewSubmission.findFirst({
     where: { projectId: cut.projectId, deliverableId: null, assetPath: cut.assetPath,
       withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } },
     orderBy: [{ round: "desc" }, { createdAt: "desc" }], select: { id: true },

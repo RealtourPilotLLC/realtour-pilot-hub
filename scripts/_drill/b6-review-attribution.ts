@@ -816,7 +816,7 @@ async function main() {
       };
       const briefOf = (projectId: string) => prisma.revisionBrief.findFirst({ where: { projectId, source: { not: "office" } }, orderBy: { createdAt: "desc" } });
       const revTaskOf = (projectId: string) => prisma.smartTask.findFirst({ where: { projectId, taskType: "revision" } });
-      const { processOpenPhoneEvent } = await import("@/app/api/webhooks/openphone/route");
+      const { processOpenPhoneEvent } = await import("@/lib/webhooks/openphone");
       const LINE = "+12155550100";
       const text = (id: string, from: string, body: string) => processOpenPhoneEvent("message.received", { data: { object: { id, direction: "incoming", from, to: [LINE], text: body } } });
 

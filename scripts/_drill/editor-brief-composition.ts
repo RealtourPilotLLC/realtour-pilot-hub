@@ -14,10 +14,10 @@ import { createTestClientShell, seedRepresentativeMonth } from "../_fixtures/rep
 import { buildSampleMp4, ensureSampleClip, startSampleServer, DEMO_CLIP_URL } from "../demo/sample";
 
 const REPO = path.resolve(__dirname, "../..");
-const DB_PORT = 5607, SAMPLE_PORT = 5608, APP_PORT = 3215;
+const DB_PORT = process.env.DRILL_K === "editor-visual-serve" || process.argv.includes("--serve") ? 5617 : 5627, SAMPLE_PORT = 5618, APP_PORT = 3225;
 const BASE = `http://localhost:${APP_PORT}`;
-const BASELINE = "983c982";
-const serve = process.argv.includes("--serve");
+const BASELINE = "5596d4e";
+const serve = process.argv.includes("--serve") || process.env.DRILL_K === "editor-visual-serve";
 const c = makeChecker();
 installNextStubs();
 type Props = Record<string, unknown>;
@@ -88,7 +88,7 @@ function sourceCopy(runtime: string) {
     const current = fs.readFileSync(path.join(REPO, rel));
     const baseline = execFileSync("git", ["show", `${BASELINE}:${rel}`], { cwd: REPO });
     proof.push({ path: rel, baseline: createHash("sha256").update(baseline).digest("hex"), candidate: createHash("sha256").update(current).digest("hex") });
-    fs.writeFileSync(path.join(checkout, rel), baseline);
+    // Candidate source is retained; baseline hashes document the comparison.
   }
   if (fs.readdirSync(checkout).some((name) => name.startsWith(".env")) || fs.existsSync(path.join(checkout, ".git"))) throw new Error("Private visual copy must contain no environment or Git files.");
   return { checkout, baseline: BASELINE, files: proof };
@@ -141,25 +141,34 @@ async function main() {
     await saveSecret("dropbox", "isolated-visual-refresh");
     const yesterday = new Date(Date.now() - 864e5), tomorrow = new Date(Date.now() + 864e5);
     const mainJob = await prisma.project.create({ data: { clientId: shell.clientId, contentMonthId: rep.monthId, title: "117 Grove Lane — monthly content", addressLine: "117 Grove Lane, West Chester, PA 19382", status: "EDITING", source: "MANUAL", shootDate: yesterday, deliveryDue: tomorrow, videosFilmed: 2, editorId: kim.teamMemberId, editorManual: true, dropboxFolder: "/isolated/visual/grove/session-one", statusEvidence: JSON.stringify({ dropbox: { rawVideo: 8, finalVideo: 2, stale: false } }), videoInstructions: "Use natural speech and keep captions inside the safe area." } });
-    const deliverable = await prisma.deliverable.create({ data: { projectId: mainJob.id, type: "SOCIAL_REEL", label: "Video Accelerator", productTitle: "Video Accelerator", videoStyle: "personal_branding", quantity: 2 } });
+    const deliverable = await prisma.deliverable.create({ data: { projectId: mainJob.id, type: "SOCIAL_REEL", label: "Video Accelerator", productTitle: "Video Accelerator", videoStyle: "personal_branding", quantity: 16 } });
     await ensureOutputsForProject(mainJob.id);
     const outputs = await prisma.deliverableOutput.findMany({ where: { projectId: mainJob.id }, orderBy: { slot: "asc" } });
     const topicIds = [rep.topics.A, rep.topics.B], scriptIds = [rep.scripts.A, rep.scripts.B];
     const cuts: { id: string }[] = [];
     for (const [i, output] of outputs.entries()) {
-      const topic = await prisma.contentTopic.findUniqueOrThrow({ where: { id: topicIds[i] } });
-      const script = await prisma.contentScript.findUniqueOrThrow({ where: { id: scriptIds[i] } });
+      const topic = await prisma.contentTopic.findUniqueOrThrow({ where: { id: topicIds[i % 2] } });
+      const script = await prisma.contentScript.findUniqueOrThrow({ where: { id: scriptIds[i % 2] } });
       await prisma.deliverableOutput.update({ where: { id: output.id }, data: { title: topic.title, topicId: topic.id, filmingNote: i === 0 ? "Use take two; the opening was cleaner." : "Keep the walk past the bakery in the second half.", ownerKey: "kim", ownerName: "Kim", ownerSetAt: yesterday, rawInAt: yesterday, promisedAt: tomorrow } });
       const saved = await saveOutputBrief({ projectId: mainJob.id, outputId: output.id, actor: "Kyle — declared visual fixture", brandChoice: "none", sections: { purpose: i === 0 ? "Help a seller understand how the first weekend shapes pricing." : "Show the neighborhood through a Saturday morning walk.", direction: "Conversational vertical reel with readable captions.", mustShow: "Use the approved opening and the named footage folder.", footage: "Use the second take and retain the complete final sentence." } });
       if (!saved.ok) throw new Error("Declared visual brief could not be prepared.");
       await prisma.contentVideo.create({ data: { enrollmentId: shell.enrollmentId, clientId: shell.clientId, monthId: rep.monthId, monthKey, projectId: mainJob.id, deliverableId: deliverable.id, slot: output.slot, outputId: output.id, topicId: topic.id, title: topic.title, scriptId: script.id, scriptVersionId: script.currentVersionId, filmedAt: yesterday, filmedConfirmedAt: yesterday, filmedConfirmedBy: "Declared fixture photographer", filmedSource: "staff", status: "EDITING" } });
-      const cut = await prisma.reviewSubmission.create({ data: { projectId: mainJob.id, deliverableId: deliverable.id, outputId: output.id, slot: output.slot, round: i + 1, status: i === 0 ? "CHANGES_REQUESTED" : "PENDING", fileName: `grove-video-${i + 1}-v${i + 1}.mp4`, blobUrl: DEMO_CLIP_URL, source: "upload", sourceWidth: 1080, sourceHeight: 1920, sizeBytes: sampleBytes.length, contentHash: hash, submittedByKey: "kim", submittedByName: "Kim", reviewerTeamMemberId: james.teamMemberId, reviewerAssignedAt: yesterday, selfCheckedAt: yesterday, ...(i === 0 ? { decidedAt: yesterday, decidedBy: "James — declared fixture verdict" } : {}) } });
+      if (i >= 14) continue;
+      const cut = await prisma.reviewSubmission.create({ data: { projectId: mainJob.id, deliverableId: deliverable.id, outputId: output.id, slot: output.slot, round: i + 1, status: i === 0 ? "CHANGES_REQUESTED" : i === 1 ? "PENDING" : "APPROVED", fileName: `grove-video-${i + 1}-v${i + 1}.mp4`, blobUrl: DEMO_CLIP_URL, source: "upload", sourceWidth: 1080, sourceHeight: 1920, sizeBytes: sampleBytes.length, contentHash: hash, submittedByKey: "kim", submittedByName: "Kim", reviewerTeamMemberId: james.teamMemberId, reviewerAssignedAt: yesterday, selfCheckedAt: yesterday, ...(i === 0 ? { decidedAt: yesterday, decidedBy: "James — declared fixture verdict" } : {}) } });
       await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { assetUrl: `/api/review/cut/${cut.id}/stream` } });
       await prisma.deliverableOutput.update({ where: { id: output.id }, data: { currentSubmissionId: cut.id } });
       cuts.push(cut);
     }
     const note = await prisma.mediaNote.create({ data: { projectId: mainJob.id, assetUrl: `/api/review/cut/${cuts[0].id}/stream`, assetType: "video", lane: "EDITOR", editorKey: "kim", kind: "fix", timeSec: 5, body: "At 00:05 keep the opening caption on screen through the full sentence.", authorName: "James", authorUserId: james.id } });
     await prisma.revisionIssue.create({ data: { projectId: mainJob.id, outputId: outputs[0].id, deliverableId: deliverable.id, slot: 1, raisedOnSubmissionId: cuts[0].id, sourceKind: "REVIEW_NOTE", sourceId: note.id, originalText: note.body, summary: "Keep the opening caption through the full sentence", timeSec: 5, assignedEditorKey: "kim", versionEditorKey: "kim", raisedByName: "James", category: "Captions", state: "OPEN" } });
+    const praise = await prisma.mediaNote.create({ data: { projectId: mainJob.id, assetUrl: `/api/review/cut/${cuts[0].id}/stream`, assetType: "video", lane: "EDITOR", editorKey: "kim", kind: "fix", status: "OPEN", body: "The opening shot is beautiful", authorName: "James", authorUserId: james.id } });
+    const praiseIssue = await prisma.revisionIssue.create({ data: { projectId: mainJob.id, outputId: outputs[0].id, deliverableId: deliverable.id, slot: 1, raisedOnSubmissionId: cuts[0].id, sourceKind: "REVIEW_NOTE", sourceId: praise.id, originalText: praise.body, state: "VERIFIED", cause: "EDITOR_ERROR", causeConfirmedBy: "James", verifiedBy: "James", verifiedAt: yesterday } });
+    const issues = await import("@/lib/revisionIssues");
+    c.ok("reviewer can correct a verified misclassification without deleting its source", (await issues.markIssueNotApplicable(praiseIssue.id, "This is a comment, not a requested edit", { name: "James", userId: james.id })).ok && await prisma.revisionIssueEvent.count({ where: { issueId: praiseIssue.id, kind: "NOT_APPLICABLE" } }) === 1 && (await prisma.mediaNote.findUniqueOrThrow({ where: { id: praise.id } })).status === "OPEN");
+    const reopened = await prisma.revisionIssue.findUniqueOrThrow({ where: { sourceKind_sourceId: { sourceKind: "REVIEW_NOTE", sourceId: note.id } } });
+    await prisma.revisionIssue.update({ where: { id: reopened.id }, data: { state: "VERIFIED", verifiedAt: yesterday, verifiedBy: "James" } });
+    await issues.reopenIssue(reopened.id, { name: "James", userId: james.id });
+    c.ok("reopened change preserves a single linked root", await prisma.revisionIssue.count({ where: { sourceKind: "REVIEW_NOTE", sourceId: note.id } }) === 1 && (await prisma.revisionIssue.findUniqueOrThrow({ where: { id: reopened.id } })).state === "REOPENED");
     await prisma.smartTask.create({ data: { projectId: mainJob.id, clientId: shell.clientId, taskType: "video_revision", title: "Revise Grove video 1 · opening caption", assignedKey: "kim", assignedManually: true, status: "OPEN", dedupeKey: `visual-revision-${cuts[0].id}`, dueAt: tomorrow, outputId: outputs[0].id, source: "manual" } });
     await prisma.projectMessage.create({ data: { projectId: mainJob.id, body: "Creative questions go to James. Kyle can confirm the exact missing source file.", authorName: "Kyle", authorId: kyle.teamMemberId } });
     // This single shared-instruction output previously lacked its #brief target.
@@ -202,17 +211,37 @@ async function main() {
     const queue = "/editing?editor=kim&due=overdue&stage=changes";
     const tree = await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({ queue, cut: cuts[0].id }) });
     const flat = elements(tree), by = (name: string) => flat.filter((e) => e.name === name);
-    c.ok("one always-visible index links to each unique canonical full output article", outputs.every((o) => flat.filter((e) => e.props.id === `brief-${o.id}`).length === 1 && flat.some((e) => e.props.href === `#brief-${o.id}`)) && flat.some((e) => e.props.id === "assignment-index-heading"));
-    c.ok("exact assignment receipt exists once inside each canonical output, with unchanged digest and role", outputs.every((o) => { const r = by("EditorBriefReceiptCard").filter((e) => e.props.outputId === o.id); return r.length === 1 && r[0].props.canAcknowledge === true && r[0].ancestors.some((a) => a.props.id === `brief-${o.id}`) && (r[0].props.state as { digest?: string })?.digest === receiptStates.get(o.id)?.digest; }));
-    c.ok("canonical briefs retain exact filmed script words, source links and intentional no-brand choice", safeBriefs.every((b) => { const article = flat.find((e) => e.props.id === `brief-${b.outputId}`); const nested = elements(article?.props.children); return !!article && words(article.props.children).includes("intentionally none") && (!b.folder || nested.some((e) => e.props.href === b.folder?.url)) && (!b.script?.text || nested.some((e) => e.name === "ScriptView" && e.props.body === b.script?.text)); }));
-    c.ok("current revision and raw download precede assignment index and folded history", by("RevisionBriefCard").length === 1 && flat.indexOf(by("RevisionBriefCard")[0]) < flat.findIndex((e) => e.props.id === "assignment-index-heading") && flat.findIndex((e) => e.name === "nav" && e.props["aria-label"] === "Edit brief sections") < flat.findIndex((e) => e.props.id === "assignment-index-heading"));
+    c.ok("all canonical outputs are selectable while only one article expands", flat.filter((e) => typeof e.props.id === "string" && e.props.id.startsWith("brief-")).length === 1 && outputs.every((o) => flat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`output=${o.id}`))) && flat.some((e) => e.props["aria-label"] === "Video selector"));
+    c.ok("exact assignment receipt exists once inside each canonical output, with unchanged digest and role", outputs.filter((o) => flat.some((e) => e.props.id === `brief-${o.id}`)).every((o) => { const r = by("EditorBriefReceiptCard").filter((e) => e.props.outputId === o.id); return r.length === 1 && r[0].props.canAcknowledge === true && r[0].ancestors.some((a) => a.props.id === `brief-${o.id}`) && (r[0].props.state as { digest?: string })?.digest === receiptStates.get(o.id)?.digest; }));
+    c.ok("canonical briefs retain exact filmed script words, source links and intentional no-brand choice", safeBriefs.filter((b) => flat.some((e) => e.props.id === `brief-${b.outputId}`)).every((b) => { const article = flat.find((e) => e.props.id === `brief-${b.outputId}`); const nested = elements(article?.props.children); return !!article && words(article.props.children).includes("intentionally none") && (!b.folder || nested.some((e) => e.props.href === b.folder?.url)) && (!b.script?.text || nested.some((e) => e.name === "ScriptView" && e.props.body === b.script?.text)); }));
+    c.ok("selected revision instructions and raw files remain available", flat.some((e) => e.props.target === "_blank" && typeof e.props.href === "string" && e.props.href.includes("grove")) && by("RevisionIssuesPanel").some((e) => e.props.canReview === false));
     c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && flat.some((e) => e.props.href === `#cut-${cuts[0].id}`) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
-    c.ok("manual work bar and exact uploader/QC controls remain independent of receipt", by("WorkStateBar").length === 1 && by("CutUploader")[0].props.canUpload === true && by("CutUploader")[0].props.checks !== undefined && by("RevisionIssuesPanel").length === 1 && by("ProjectMessages")[0].props.readOnly === false);
+    const currentIssues = by("RevisionIssuesPanel").find((e) => e.props.canReview === false && !e.ancestors.some((a) => a.name === "details"));
+    c.ok("linked legacy OPEN notes do not duplicate verified or reopened instructions", (currentIssues?.props.issues as { id: string }[]).filter((issue) => issue.id === reopened.id).length === 1 && !(currentIssues?.props.issues as { id: string }[]).some((issue) => issue.id === praiseIssue.id) && by("EditorCutPanel").every((e) => !(e.props.notes as { id: string }[]).some((entry) => entry.id === praise.id || entry.id === note.id)));
+    c.ok("manual work bar and exact uploader/QC controls remain independent of receipt", by("WorkStateBar").length === 1 && by("CutUploader")[0].props.canUpload === true && by("CutUploader")[0].props.checks !== undefined && by("RevisionIssuesPanel").length === 2 && by("ProjectMessages")[0].props.readOnly === false);
     c.ok("folded history and sessions retain mounted children", by("EditTracker").some((e) => e.ancestors.some((a) => a.name === "details" && a.props.id === "edit-history" && a.props.open !== true)) && flat.some((e) => e.name === "details" && e.props.id === "month-sessions" && e.props.open !== true && !!e.props.children));
     c.ok("editor brief free-text remains creative-safe after recomposition", !words(tree).includes("$500") && !JSON.stringify(by("ScriptView").map((e) => e.props.body)).includes("$500"));
+    const empty = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({ queue, output: outputs[15].id }) }));
+    c.ok("sixteen mixed-state outputs include an unsubmitted selected workspace", outputs.length === 16 && empty.filter((e) => e.props["aria-current"] === "page").length === 1 && empty.some((e) => e.props.id === `brief-${outputs[15].id}`) && !empty.some((e) => e.name === "EditorCutPanel"));
+    for (const data of [
+      { body: "Standing natural music", scope: "PERMANENT", projectId: null, monthId: null },
+      { body: "Builder walkthrough only", scope: "PROJECT", projectId: mainJob.id, monthId: null },
+      { body: "Agent reel only", scope: "PROJECT", projectId: single.id, monthId: null },
+      { body: "Exact month instruction", scope: "MONTH", projectId: null, monthId: rep.monthId },
+      { body: "Another month instruction", scope: "MONTH", projectId: null, monthId: "unrelated-month" },
+    ]) await prisma.clientFact.create({ data: { clientId: shell.clientId, category: "PRODUCTION_PREFERENCE", source: "staff", status: "ACCEPTED", aiContext: "ALLOWED", ...data } });
+    await prisma.clientFact.createMany({ data: [
+      { clientId: shell.clientId, category: "PRODUCTION_PREFERENCE", body: "Unapproved AI command", source: "ai", status: "PROPOSED", aiContext: "ALLOWED" },
+      { clientId: shell.clientId, category: "PRODUCTION_PREFERENCE", body: "Private instruction", source: "staff", status: "ACCEPTED", aiContext: "ALLOWED", confidential: true },
+      { clientId: shell.clientId, category: "INTERNAL", body: "General CRM narrative", source: "staff", status: "ACCEPTED", aiContext: "ALLOWED", projectId: mainJob.id, scope: "PROJECT" },
+    ] });
+    const { productionFactsForBrief } = await import("@/lib/clientFacts");
+    const mainFacts = await productionFactsForBrief(shell.clientId, mainJob.id), singleFacts = await productionFactsForBrief(shell.clientId, single.id);
+    c.ok("standing preferences travel, project requests do not", mainFacts.some((f) => f.body === "Standing natural music") && mainFacts.some((f) => f.body === "Builder walkthrough only") && !mainFacts.some((f) => f.body === "Agent reel only") && singleFacts.some((f) => f.body === "Agent reel only") && !singleFacts.some((f) => f.body === "Builder walkthrough only"));
+    c.ok("actual project month controls scope; private, proposed AI and CRM narrative stay out", mainFacts.some((f) => f.body === "Exact month instruction") && !singleFacts.some((f) => f.scope === "MONTH") && !mainFacts.some((f) => ["Another month instruction", "Private instruction", "Unapproved AI command", "General CRM narrative"].includes(f.body)));
     const one = await page({ params: Promise.resolve({ id: single.id }), searchParams: Promise.resolve({ queue }) });
     const oneFlat = elements(one);
-    c.ok("single shared-instruction output now has its exact link target and one receipt", oneFlat.filter((e) => e.props.id === `brief-${singleOutput.id}`).length === 1 && oneFlat.some((e) => e.props.href === `#brief-${singleOutput.id}`) && oneFlat.filter((e) => e.name === "EditorBriefReceiptCard").length === 1);
+    c.ok("single shared-instruction output now has its exact link target and one receipt", oneFlat.filter((e) => e.props.id === `brief-${singleOutput.id}`).length === 1 && oneFlat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`output=${singleOutput.id}`)) && oneFlat.filter((e) => e.name === "EditorBriefReceiptCard").length === 1);
     const after = JSON.stringify({ work: await prisma.editorWorkItem.findMany({ orderBy: { id: "asc" } }), receipts: await prisma.editorBriefReceipt.findMany({ orderBy: { id: "asc" } }), cuts: await prisma.reviewSubmission.findMany({ orderBy: { id: "asc" } }) });
     c.ok("page recomposition never auto-starts, accepts a receipt or changes cut history", before === after && await prisma.outboxMessage.count() === 0);
     await signIn(owner, kim.id);
@@ -220,7 +249,7 @@ async function main() {
     c.ok("moved receipt and uploader stay read-only in owner preview", preview.filter((e) => e.name === "EditorBriefReceiptCard").every((e) => e.props.canAcknowledge === false) && preview.find((e) => e.name === "CutUploader")?.props.canUpload === false);
     await signIn(kyle);
     const office = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
-    c.ok("office brief forms remain mounted inside native disclosures with exact expected versions", outputs.every((o) => office.some((e) => e.name === "form" && e.ancestors.some((a) => a.name === "details") && elements(e.props.children).some((x) => x.props.name === "outputId" && x.props.value === o.id) && elements(e.props.children).some((x) => x.props.name === "expectedVersion" && x.props.value === 1))));
+    c.ok("office brief forms remain mounted inside native disclosures with exact expected versions", outputs.filter((o) => office.some((e) => e.props.id === `brief-${o.id}`)).every((o) => office.some((e) => e.name === "form" && e.ancestors.some((a) => a.name === "details") && elements(e.props.children).some((x) => x.props.name === "outputId" && x.props.value === o.id) && elements(e.props.children).some((x) => x.props.name === "expectedVersion" && x.props.value === 1))));
     c.ok("all providers remained declared fakes and workers/sends stayed off", fence.blocked.length === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { not: "portal_layout_v2" } } }) === 0 && await prisma.outboxMessage.count() === 0);
     c.summary();
     if (process.exitCode) throw new Error("New brief composition check failed; no visual server started.");
@@ -244,7 +273,7 @@ async function main() {
       await wait(500);
     }
     if (!up) throw new Error("Owned visual server did not become ready; inspect private log.");
-    console.log(`VISUAL READY: baseline batch ${BASELINE}; app3215/PG5607/sample5608. Private manifest: ${manifestFile}. Private source: ${copy.checkout}. Owned Next PID ${server.pid}. Main3200/5599/5598 and damaged saved demo untouched.`);
+    console.log(`VISUAL READY: candidate from ${BASELINE}; app3225/PG5617/sample5618. Private manifest: ${manifestFile}. Private source: ${copy.checkout}. Owned Next PID ${server.pid}. Main3200/5599/5598 and damaged saved demo untouched.`);
     console.log("Actual browser password login is required; no mounted visual pass is claimed by this runner. Stop this owned fixture with Ctrl-C after review.");
     await new Promise<void>((resolve, reject) => {
       const end = () => { process.removeListener("SIGINT", end); process.removeListener("SIGTERM", end); resolve(); };
@@ -254,7 +283,7 @@ async function main() {
   } finally {
     try { await stop(server); }
     finally { try { await sample?.stop(); } finally { try { if (logFd !== undefined) fs.closeSync(logFd); } finally { try { await db.stop(); } finally { fence.restore(); } } } }
-    console.log("Stopped only owned3215/5607/5608; preserved main3200/5599/5598 and saved demo files.");
+    console.log("Stopped only owned3225/5617/5618; preserved main3200/5599/5598 and saved demo files.");
   }
 }
 main().catch((error) => { console.error(error instanceof Error ? error.message : "Isolated visual fixture failed."); process.exitCode = 1; });

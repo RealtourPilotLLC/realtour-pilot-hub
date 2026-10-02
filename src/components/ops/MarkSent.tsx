@@ -18,18 +18,16 @@ export const NOTICE_OPTIONS: { value: string; label: string }[] = [
 const UNKNOWN = "The delivery record is unconfirmed. It may already have saved. Refresh delivery status, or explicitly reconcile this exact handoff. Nothing retries automatically. Refreshing alone does not prove that it failed.";
 
 /** The server owns destination proof, authorization and idempotent bookkeeping.
- * Keep the two-step irreversible confirmation. Persist only an opaque retry
+ * Keep explicit reconciliation after an uncertain save. Persist only an opaque retry
  * guard, never client details, notice choices or a claim of server completion. */
-export function MarkSent({ submissionId, street, monthly = false }: { submissionId: string; street: string; monthly?: boolean }) {
+export function MarkSent({ submissionId, street, monthly = false, expectedFingerprint }: { submissionId: string; street: string; monthly?: boolean; expectedFingerprint?: string }) {
   const router = useRouter();
   const [receipt, setReceipt] = useState<{ state: SaveState; message: string } | null>(null);
-  const [done, setDone] = useState(false), [asking, setAsking] = useState(false), [incomplete, setIncomplete] = useState(false);
+  const [done, setDone] = useState(false), [incomplete, setIncomplete] = useState(false);
   const [held, setHeld] = useState(false), [busy, start] = useTransition(), [refreshing, refresh] = useTransition();
   const pending = useRef(false), uncertain = useRef(false), completed = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storageKey = `rtp:delivery-record:${submissionId}`;
-  const options = monthly ? NOTICE_OPTIONS.filter((o) => o.value !== "aryeo-email") : NOTICE_OPTIONS;
-  const hold = () => { uncertain.current = true; setHeld(true); setAsking(false); setReceipt({ state: "error", message: UNKNOWN }); };
+  const hold = () => { uncertain.current = true; setHeld(true); setReceipt({ state: "error", message: UNKNOWN }); };
 
   useEffect(() => {
     let stopped = false;
@@ -38,30 +36,22 @@ export function MarkSent({ submissionId, street, monthly = false }: { submission
       try { if (sessionStorage.getItem(storageKey)) { uncertain.current = true; setHeld(true); setReceipt({ state: "error", message: UNKNOWN }); } }
       catch { /* Submission checks storage before any server action. */ }
     });
-    return () => { stopped = true; if (timer.current) clearTimeout(timer.current); };
+    return () => { stopped = true;  };
   }, [storageKey]);
 
   const press = (notice?: string, reconcile = false) => {
     if (pending.current || (uncertain.current && !reconcile) || completed.current) return;
     try { if (sessionStorage.getItem(storageKey) && !reconcile) { hold(); return; } }
     catch { setReceipt({ state: "error", message: "Browser recovery storage is unavailable. Nothing was submitted. Restore storage before recording delivery." }); return; }
-    if (!reconcile && !incomplete && (!asking || !notice)) {
-      setAsking(true);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setAsking(false), 15000);
-      return;
-    }
-    // Stale handlers must respect the same destination choices as the screen.
-    if (!reconcile && !incomplete && !options.some((o) => o.value === notice)) return;
     let attempt: string;
     try { attempt = crypto.randomUUID(); sessionStorage.setItem(storageKey, attempt); }
     catch { setReceipt({ state: "error", message: "This browser could not prepare a recoverable save. Nothing was submitted; keep this cut open and restore storage before trying again." }); return; }
     pending.current = true;
-    if (timer.current) clearTimeout(timer.current);
-    setAsking(false); setReceipt(null);
+
+    setReceipt(null);
     start(async () => {
       try {
-        const r = await markVideoSentAction(submissionId, reconcile || incomplete ? undefined : notice);
+        const r = await markVideoSentAction(submissionId, reconcile || incomplete ? undefined : notice, expectedFingerprint);
         if (!r || typeof r.ok !== "boolean" || typeof r.message !== "string") { hold(); return; }
         // A refused recovery did not perform a new write, but cannot establish
         // whether the earlier request finished. Keep its recoverable guard.
@@ -100,15 +90,8 @@ export function MarkSent({ submissionId, street, monthly = false }: { submission
           ? `Record ${street}'s verified portal handoff and final Dropbox backup. This does not notify the client or record their approval.`
           : `Record that ${street}'s video has been uploaded to Aryeo and delivered. This sends nothing to the client.`}>
       {done && <Check aria-hidden className="size-4" />}
-      {done ? (monthly ? "Portal handoff recorded" : "Delivery recorded") : incomplete ? "Finish the bookkeeping" : asking ? "Choose how the client was told" : monthly ? "Record portal handoff" : "Mark as sent"}
+      {done ? (monthly ? "Portal handoff recorded" : "Delivery recorded") : incomplete ? "Finish the bookkeeping" : monthly ? "Record portal handoff" : "Mark as sent"}
     </Button>
-    {asking && !busy && <div className="space-y-2">
-      <p className="text-sm text-muted">{monthly
-        ? "Only after checking this exact portal final file and its final Dropbox backup. This records the handoff; client approval is separate. This cannot be undone. How has the client been told?"
-        : "Only after the file is on Aryeo and the listing is delivered. This can’t be undone. Pick how the client heard it’s there:"}</p>
-      <div className="flex flex-wrap gap-2">{options.map((o) => <Button key={o.value} variant="secondary" onClick={() => press(o.value)}>{o.label}</Button>)}</div>
-      <p className="text-sm text-muted">These choices only record what happened. They send no message. Choose “Not told yet” if notification is still owed.</p>
-    </div>}
     {receipt && <SaveStatus state={receipt.state} message={receipt.message} className="block" />}
     {held && <div className="space-y-2">
       <p className="text-sm text-muted">Reconciliation checks this exact cut and records or repairs the handoff you already confirmed. It preserves any saved delivery and notice. It does not upload a file or send a message; notification remains owed if no notice was saved.</p>

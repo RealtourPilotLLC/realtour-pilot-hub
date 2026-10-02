@@ -73,7 +73,7 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
       </div>
       {issue.summary && issue.summary !== issue.text && <p className="mt-1 text-xs italic text-muted">&ldquo;{issue.text.slice(0, 400)}&rdquo;</p>}
       <p className="mt-1 text-[11px] text-muted-2">
-        {issue.category} · {issue.severity.toLowerCase()} · {issue.sourceKind === "BRIEF_ITEM" ? issue.sourceChannel === "review_room_staff" ? "staff recorded client ask" : `client ask${issue.sourceChannel ? ` (${issue.sourceChannel})` : ""}` : issue.sourceKind === "MANUAL" ? "split out" : issue.raisedByName ?? "review note"}
+        {canReview ? `${issue.category} · ${issue.severity.toLowerCase()} · ` : ""}{issue.sourceKind === "BRIEF_ITEM" ? issue.sourceChannel === "review_room_staff" ? "staff recorded client ask" : `client ask${issue.sourceChannel ? ` (${issue.sourceChannel})` : ""}` : issue.sourceKind === "MANUAL" ? "split out" : issue.raisedByName ?? "review note"}
         {issue.raisedOnRound ? ` · on v${issue.raisedOnRound}` : ""}
         {issue.addressedInRound ? ` · editor says fixed in v${issue.addressedInRound}` : ""}
         {issue.verifiedInRound ? ` · verified on v${issue.verifiedInRound}` : ""}
@@ -84,7 +84,7 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
       {/* The cause is a reviewer's verdict on a version: an editor sees it on
           their own versions only — the server leaves it out otherwise (§8.4,
           revisionIssues.issuesForProject `viewer`). */}
-      {!issue.causeHidden && (
+      {canReview && !issue.causeHidden && (
         <p className="mt-0.5 text-[11px]">
           <span className={cn("font-medium", issue.cause === "UNCLASSIFIED" ? "text-muted-2" : isEditorCaused(issue.cause) ? "text-danger" : "text-foreground/80")}>
             Cause: {issue.causeLabel}
@@ -134,7 +134,7 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
               Reopen
             </button>
           )}
-          {live && (
+          {(live || issue.state === "VERIFIED") && (
             <button type="button" disabled={pending} onClick={() => setMode(mode === "na" ? null : "na")} className="rounded-lg border border-border px-2 py-1 text-xs text-muted hover:bg-surface-2">
               Not needed
             </button>
@@ -204,7 +204,7 @@ export function RevisionIssuesPanel({ issues, canReview, attestations = [] }: { 
     <section id="issues" className="panel-shadow scroll-mt-20 overflow-hidden rounded-2xl border border-border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
         <ListChecks className="size-4 text-brand" />
-        <h2 className="text-sm font-semibold">Revision issues</h2>
+        <h2 className="text-sm font-semibold">{canReview ? "Revision history and classification" : "Changes to make"}</h2>
         <span className="text-xs text-muted">
           {open} open · {toVerify} waiting on a verify{canReview ? ` · ${unclassified} not classified` : ""}
         </span>

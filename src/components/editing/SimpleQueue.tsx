@@ -828,10 +828,10 @@ export function SimpleQueue({
             <thead className="sr-only sm:not-sr-only sm:table-header-group">
               <tr className="border-b border-border text-left text-sm font-medium text-muted">
                 <th className="px-3 py-2">Project</th>
-                <th className="px-3 py-2">Stage</th>
+                <th className="px-3 py-2">Progress</th>
                 <th className="px-3 py-2">Due</th>
                 {!hideEditor && <th className="px-3 py-2">Editor</th>}
-                <th className="px-3 py-2">Brief</th>
+                <th className="px-3 py-2">Action</th>
               </tr>
             </thead>
             <tbody className="block space-y-3 sm:table-row-group sm:space-y-0 sm:divide-y sm:divide-border">
@@ -863,9 +863,7 @@ export function SimpleQueue({
                             <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
                             <span className="break-words">{r.client}</span>
                           </span>
-                          <span className="mt-1 block text-sm text-muted" title={r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : undefined}>
-                            {r.typeDetail || t.label}{r.typeDetail && r.typeDetail !== t.label ? ` · ${t.label}` : ""} · {r.videos} video{r.videos === 1 ? "" : "s"}
-                          </span>
+                          <span className="mt-1 block text-sm text-muted" title={r.typeDetail || t.label}>{r.videos} video{r.videos === 1 ? "" : "s"} · {t.label}</span>
                           {/* One line for all the chips, not stacked blocks —
                               a job that is both URGENT and in revisions used to
                               grow the row by an extra line. The Override chip
@@ -990,7 +988,7 @@ export function SimpleQueue({
                           <span className="text-xs font-medium">{r.editor ?? "—"}</span>
                         ) : (
                           // key = server truth, same deal as the status pill.
-                          <EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} />
+                          <details><summary className="min-h-11 cursor-pointer text-sm"><span className="font-medium">{r.editor ?? "Unassigned"}</span> <span className="text-brand">Change</span></summary><EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} /></details>
                         )}
                       </td>
                     )}

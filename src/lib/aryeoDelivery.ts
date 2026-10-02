@@ -650,6 +650,13 @@ async function closeKylesUploadCards(
     videos,
     new Map(waiting.map((r) => [r.id, r.submission?.downloadedAt ?? null] as const)),
   );
+  const uploadEvidence = await import("@/lib/deliveryUploads");
+  const eventAt = occurredAt ?? await uploadEvidence.recordedListingDeliveryAt((await prisma.project.findUnique({ where: { id: projectId }, select: { aryeoListingId: true } }))?.aryeoListingId ?? null);
+  for (const [jobId, mediaId] of proven) {
+    const submissionId = waiting.find((r) => r.id === jobId)?.submissionId;
+    if (!submissionId || !(await uploadEvidence.providerUploadMatches(submissionId, mediaId, listing, eventAt))) proven.delete(jobId);
+  }
+  await uploadEvidence.extendExactUploadMatches(proven, open.map((job) => ({ key: job.id, submissionId: waiting.find((row) => row.id === job.id)!.submissionId, contested: job.contested })), listing, eventAt);
   if (refused.length > 0) {
     console.info(
       `[aryeo] left ${refused.length} upload card(s) open on ${projectId}: the video on the listing was already up before we took the file, so it is not that file.`,
@@ -675,24 +682,20 @@ async function closeKylesUploadCards(
   // This becomes the tail of markTopazDelivered's own timeline line, so it has
   // to finish the sentence "1080p video uploaded to Aryeo and delivered by …"
   // and say what the hub is going on — not just that a webhook arrived.
-  const by = occurredAt
-    ? `Aryeo itself (the video is on the listing, delivered ${etDateTime(occurredAt)} ET)`
-    : "Aryeo itself (the video is on the listing)";
-  const { markTopazDelivered } = await import("@/lib/topazJobs");
   const byVideoId = new Map(videos.map((v) => [v.id, v] as const));
   const submissionOf = new Map(waiting.map((r) => [r.id, r.submissionId] as const));
   let closed = 0;
   for (const [id, videoId] of proven) {
     // Best-effort per card: one job failing must not cost the others, or the
     // status pass that follows.
-    const r = await markTopazDelivered(id, by).catch(() => null);
-    if (!r?.ok) {
+    const submissionId = submissionOf.get(id);
+    const r = submissionId ? await import("@/lib/readyToSend").then((m) => m.markVideoSent(submissionId, aryeoSentBy(byVideoId.get(videoId)))).catch(() => null) : null;
+    if (!r?.ok || r.incomplete?.length) {
       // A card we tried and failed to close is still a card nobody proved.
       heldJobIds.add(id);
       continue;
     }
     closed++;
-    await stampTheCutItProved(submissionOf.get(id) ?? null, byVideoId.get(videoId));
   }
   return { closed, held: Math.max(0, waitingHere - closed), heldJobIds, wouldClose: [] };
 }
@@ -751,16 +754,6 @@ async function closeKylesUploadCards(
 // closed, cut unstamped. It must never undo the close or cost the jobs behind
 // it in the loop, so it is logged and the pass carries on.
 // ---------------------------------------------------------------------------
-async function stampTheCutItProved(submissionId: string | null, video: ListingVideo | undefined): Promise<void> {
-  if (!submissionId) return;
-  const { markVideoSent } = await import("@/lib/readyToSend");
-  const r = await markVideoSent(submissionId, aryeoSentBy(video)).catch(() => null);
-  if (!r?.ok) {
-    console.warn(
-      `[aryeo] closed the upload card for cut ${submissionId} but could not record the send on the cut itself${r ? `: ${r.message}` : ""}. The job is delivered; the per-video record is missing and the next sweep will not retry it.`,
-    );
-  }
-}
 
 // ---------------------------------------------------------------------------
 // AND THE CARD THAT IS STILL ASKING FOR IT (Sep 17 2026).
@@ -888,7 +881,7 @@ async function stampCutsTheDeliveryCovers(
   listing: { videos?: unknown[] } | null,
   /** See closeKylesUploadCards: same rules, no writes, so what this pass would
    *  do to real client jobs can be read before it is allowed to do it. */
-  opts?: { dryRun?: boolean },
+  opts?: { dryRun?: boolean; occurredAt?: Date | null },
 ): Promise<{ stamped: number; held: number; wouldStamp: string[] }> {
   const videos = videosOnListing(listing);
   // No dateable video on the listing means no evidence about any cut. Bail
@@ -1068,6 +1061,12 @@ async function stampCutsTheDeliveryCovers(
     videos,
     new Map(open.map((c) => [c.id, c.downloadedAt] as const)),
   );
+  const uploadEvidence = await import("@/lib/deliveryUploads");
+  const eventAt = opts?.occurredAt ?? await uploadEvidence.recordedListingDeliveryAt(project.aryeoListingId);
+  for (const [id, mediaId] of proven) {
+    if (!(await uploadEvidence.providerUploadMatches(id, mediaId, listing, eventAt))) proven.delete(id);
+  }
+  await uploadEvidence.extendExactUploadMatches(proven, open.filter((cut) => cut.stampable).map((cut) => ({ key: cut.id, submissionId: cut.id, contested: cut.contested })), listing, eventAt);
   if (refused.length > 0) {
     console.info(
       `[aryeo] left ${refused.length} cut(s) on the Ready-to-send card for ${projectId}: the video on the listing was already up before we took the file, so it is not that file.`,
@@ -1733,7 +1732,7 @@ function onMediaRequestDelivered(): string {
 /** Just enough of an Aryeo listing to reason about. Typed structurally so the
  *  caller can hand over the listing it has already read — the download handler
  *  and the receiver both have one in hand — instead of paying for a second. */
-type ListingForProof = { delivery_status?: string | null; videos?: unknown[] } | null;
+type ListingForProof = { id?: string; delivery_status?: string | null; videos?: unknown[] } | null;
 
 export type ProofResult = {
   /** did the matching actually run? false means a guard stopped it first */
@@ -2013,12 +2012,23 @@ export async function sweepReadyToSendAgainstAryeo(opts?: {
 export async function handleAryeoActivity(
   eventName: string,
   payload: Record<string, unknown>,
+  opts?: { authenticated?: boolean },
 ): Promise<{ handled: boolean; note: string }> {
   const name = eventName.toUpperCase();
   if (!isAryeoDeliveryActivity(name)) return { handled: false, note: "" };
   if (name === MEDIA_REQUEST_DELIVERED) return { handled: true, note: onMediaRequestDelivered() };
 
   const ev = readActivity(payload);
+  if (name === LISTING_DELIVERED && opts?.authenticated && ev.listingId && ev.occurredAt) {
+    // Store occurrence evidence before cooldown/dedupe so a distinct later
+    // delivery can be reconciled hourly even when the live handler is busy.
+    const id = `aryeo-delivery-event:${ev.listingId}:${ev.activityId ?? ev.occurredAt.toISOString()}`;
+    await prisma.auditLog.upsert({ where: { id }, update: {}, create: { id, actor: "Aryeo authenticated webhook", action: "aryeo_listing_delivery_event", target: ev.listingId,
+      detail: JSON.stringify({ listingId: ev.listingId, occurredAt: ev.occurredAt.toISOString(), activityId: ev.activityId }) } });
+  }
+  // Watching/holding webhook posts may prompt a read, but cannot attest the
+  // occurrence time needed to close a newly uploaded version.
+  if (!opts?.authenticated) ev.occurredAt = null;
   const note =
     name === LISTING_DELIVERED ? await onListingDelivered(ev) : await onContentDownloaded(ev);
   return { handled: true, note };

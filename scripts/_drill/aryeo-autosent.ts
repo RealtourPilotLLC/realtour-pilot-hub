@@ -43,7 +43,7 @@ import http from "node:http";
 
 // ---- the one stub, installed before any app module resolves ----------------
 /** listing id → the listing Aryeo.listing should hand back. */
-const LISTINGS = new Map<string, { delivery_status: string; videos: { id: string; duration: number; title: string }[] }>();
+const LISTINGS = new Map<string, { delivery_status: string; videos: { id: string; duration: number; title: string; content_hash?: string }[] }>();
 let aryeoReads = 0;
 
 const loader = Module as unknown as { _load: (r: string, p: unknown, m: boolean) => unknown };
@@ -68,7 +68,7 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
               aryeoReads++;
               const l = LISTINGS.get(id);
               if (!l) throw new Error(`404 no such listing ${id}`);
-              return l;
+              return { ...l, id };
             }
           : (t as Record<string | symbol, unknown>)[k],
     });
@@ -182,6 +182,10 @@ async function main() {
 
   const { prisma } = await import("@/lib/prisma");
   const { proveListingNow, handleAryeoActivity } = await import("@/lib/aryeoDelivery");
+  const { recordUploaded } = await import("@/lib/deliveryUploads");
+  const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+  const uploaded = async (id: string) => recordUploaded(id, { id: null, name: "Kyle isolated fixture" }, sourceFingerprint((await loadCut(id))!)!);
+  const trusted = async (listingId: string) => prisma.auditLog.create({ data: { target: listingId, actor: "authenticated-webhook", action: "aryeo_listing_delivery_event", detail: JSON.stringify({ listingId, occurredAt: new Date().toISOString() }) } });
   const { cutsOnTheCardFor } = await import("@/lib/readyToSend");
 
   console.log("=".repeat(74));
@@ -224,13 +228,14 @@ async function main() {
         status: "APPROVED",
         fileName: `${o.name}.mp4`,
         blobUrl,
-        sizeBytes: bytes.length,
+        sizeBytes: bytes.length, contentHash: `fixture-${o.name}`,
         decidedAt: o.approvedAt,
         downloadedAt: o.downloadedAt ?? null,
         downloadedBy: o.downloadedAt ? "Kyle" : null,
       },
       select: { id: true },
     });
+    await prisma.deliverableOutput.create({ data: { projectId, deliverableId: d.id, slot: 1, category: "VIDEO", currentSubmissionId: s.id, approvedSubmissionId: s.id } });
     return { id: s.id, blobUrl };
   };
 
@@ -254,8 +259,9 @@ async function main() {
   // One 60s video, uploaded 4 hours after both cuts were approved.
   LISTINGS.set(L1, {
     delivery_status: "DELIVERED",
-    videos: [{ id: v7(T0 + 4 * HOUR), duration: 60, title: "Cinematic Video" }],
+    videos: [{ id: v7(T0 + 4 * HOUR), duration: 60, title: "Cinematic Video", content_hash: "fixture-Cardigan reel" }],
   });
+  await uploaded(right.id); await uploaded(wrong.id); await trusted(L1);
 
   console.log("\n2. A LISTING THAT GAINED A VIDEO — the matching runs on the event, not on the hour");
   const r1 = await proveListingNow(L1, "drill: LISTING_CONTENT_DOWNLOADED");
@@ -309,7 +315,11 @@ async function main() {
   await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   const r2b = await proveListingNow(L2, "drill: the same case with no download stamp");
   const lateRow2 = await prisma.reviewSubmission.findUnique({ where: { id: late.id }, select: { sentToClientAt: true } });
-  ok("without the download stamp the very same case DOES stamp", r2b.stamped === 1 && lateRow2?.sentToClientAt != null, r2b.note);
+  ok("removing download does not fabricate upload or delivery evidence", r2b.stamped === 0 && lateRow2?.sentToClientAt == null, r2b.note);
+  await uploaded(late.id); await trusted(L2);
+  LISTINGS.get(L2)!.videos[0].content_hash = "fixture-Raymond reel";
+  const swept = await (await import("@/lib/aryeoDelivery")).sweepReadyToSendAgainstAryeo({ max: 12 });
+  ok("hourly sweep accepts exact replacement bytes with unchanged media ID", !!(await prisma.reviewSubmission.findUnique({ where: { id: late.id } }))?.sentToClientAt, JSON.stringify(swept.jobs));
 
   // ---- 5: the download EVENT carries it, end to end -----------------------
   console.log("\n5. THE EVENT ITSELF — LISTING_CONTENT_DOWNLOADED through the shipped handler");
@@ -331,7 +341,7 @@ async function main() {
   const ev1 = await handleAryeoActivity("LISTING_CONTENT_DOWNLOADED", activity);
   console.log(`   ${ev1.note}`);
   const limeRow = await prisma.reviewSubmission.findUnique({ where: { id: limeport.id }, select: { sentToClientAt: true, sentToClientBy: true } });
-  ok("the download event stamped the cut", ev1.handled && limeRow?.sentToClientAt != null, limeRow?.sentToClientBy ?? "");
+  ok("download event alone never stamps this cut", ev1.handled && limeRow?.sentToClientAt == null);
   ok("it cost ONE Aryeo read, not two", aryeoReads - readsBefore === 1, `${aryeoReads - readsBefore} reads`);
   const dl = await prisma.project.findUnique({ where: { id: p3.id }, select: { contentDownloadedAt: true } });
   ok("the download is still recorded on the job", dl?.contentDownloadedAt != null);
@@ -340,6 +350,16 @@ async function main() {
   const ev2 = await handleAryeoActivity("LISTING_CONTENT_DOWNLOADED", activity);
   const limeRow2 = await prisma.reviewSubmission.findUnique({ where: { id: limeport.id }, select: { sentToClientAt: true } });
   ok("the 10-second retry changes nothing", limeRow2?.sentToClientAt?.getTime() === limeRow?.sentToClientAt?.getTime(), ev2.note);
+
+  await uploaded(limeport.id);
+  LISTINGS.get(L3)!.videos[0].content_hash = "fixture-Limeport reel";
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
+  const deliveryEvent = { ...activity, id: "isolated-delivery-event", name: "LISTING_DELIVERED", occurred_at: new Date().toISOString() };
+  await handleAryeoActivity("LISTING_DELIVERED", deliveryEvent, { authenticated: true });
+  const delivered = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } });
+  ok("authenticated delivery occurrence settles the exact uploaded non-Topaz cut", !!delivered.sentToClientAt);
+  await handleAryeoActivity("LISTING_DELIVERED", deliveryEvent, { authenticated: true });
+  ok("duplicate authenticated occurrence preserves timestamp and one ledger record", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } })).sentToClientAt?.getTime() === delivered.sentToClientAt?.getTime() && await prisma.auditLog.count({ where: { target: L3, action: "aryeo_listing_delivery_event" } }) === 1);
 
   // ---- 6: an undelivered listing proves nothing ---------------------------
   console.log("\n6. NOTHING ON AN UNDELIVERED LISTING HAS REACHED ANYBODY");
