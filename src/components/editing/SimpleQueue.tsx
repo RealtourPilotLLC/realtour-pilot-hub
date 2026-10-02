@@ -99,6 +99,8 @@ export type QueueRow = {
    *  "1 ready for review · 3 more to edit". Null when the job owes one
    *  video, where the pill already says everything. */
   videoBreakdown: string | null;
+  progressSummary?: string | null;
+  revisionContext?: string | null;
   /** The same arithmetic as a number (Sep 28): videos still the editor's to
    *  make or redo — none in yet, sent back, or held for their check. Keeps a
    *  multi-video job on the editor's desk while one cut waits on a verdict. */
@@ -442,7 +444,7 @@ function LinkChip({
 }) {
   const external = href.startsWith("http");
   const classes = cn(
-    "inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+    "inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
     brand
       ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
       : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
@@ -824,14 +826,14 @@ export function SimpleQueue({
         </p>
       ) : (
         <div className="sm:overflow-x-auto sm:rounded-2xl sm:border sm:border-border sm:bg-surface">
-          <table className="block w-full min-w-0 text-sm sm:table sm:min-w-[700px]">
+          <table className="block w-full min-w-0 text-sm sm:table sm:table-fixed sm:min-w-[760px]">
             <thead className="sr-only sm:not-sr-only sm:table-header-group">
               <tr className="border-b border-border text-left text-sm font-medium text-muted">
-                <th className="px-3 py-2">Project</th>
-                <th className="px-3 py-2">Progress</th>
-                <th className="px-3 py-2">Due</th>
-                {!hideEditor && <th className="px-3 py-2">Editor</th>}
-                <th className="px-3 py-2">Action</th>
+                <th className="px-4 py-3 sm:w-[25%]">Project</th>
+                <th className="px-4 py-3 sm:w-[22%]">Progress</th>
+                <th className="px-3 py-3 sm:w-[8%]">Due</th>
+                {!hideEditor && <th className="px-3 py-3 sm:w-[14%]">Editor</th>}
+                <th className="px-3 py-3 sm:w-[31%]">Action</th>
               </tr>
             </thead>
             <tbody className="block space-y-3 sm:table-row-group sm:space-y-0 sm:divide-y sm:divide-border">
@@ -850,20 +852,20 @@ export function SimpleQueue({
                         Sumneytown Pike" started wrapping onto a second line —
                         every row a little taller, which is the opposite of
                         what Jordan asked for. */}
-                    <td className="block min-w-0 px-0 py-1 sm:table-cell sm:min-w-52 sm:px-3 sm:py-2.5">
+                    <td className="block min-w-0 px-0 py-1 sm:table-cell sm:min-w-52 sm:px-3 sm:py-3">
                       <span className="flex items-start gap-1.5">
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
                         <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
-                          <span className="text-base font-semibold break-words">{r.street}</span>
+                          <span className="block text-base font-semibold sm:truncate" title={r.street}>{r.street}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
                               Video-type cell beside it — the row doesn't grow. */}
                           <span className="mt-1 flex min-w-0 items-center gap-1.5 text-sm text-muted">
                             <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
-                            <span className="break-words">{r.client}</span>
+                            <span className="min-w-0 truncate">{r.client}</span><span className="shrink-0 text-muted-2">· {r.videos} video{r.videos === 1 ? "" : "s"}</span>
                           </span>
-                          <span className="mt-1 block text-sm text-muted" title={r.typeDetail || t.label}>{r.videos} video{r.videos === 1 ? "" : "s"} · {t.label}</span>
+                          <span className="sr-only">{t.label} · {r.typeDetail}</span>
                           {/* One line for all the chips, not stacked blocks —
                               a job that is both URGENT and in revisions used to
                               grow the row by an extra line. The Override chip
@@ -886,7 +888,7 @@ export function SimpleQueue({
                         </Link>
                       </span>
                     </td>
-                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5 " onClick={swallow}>
+                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-3 " onClick={swallow}>
                       <span className="mb-1 block text-xs font-medium text-muted sm:hidden">Stage</span>
                       <span className="inline-flex items-center gap-1">
                         {view === "upcoming" ? (
@@ -912,12 +914,9 @@ export function SimpleQueue({
                           // is on a job without always changing its word.
                           <StatusPill key={`${r.status}|${r.workChip ?? ""}`} row={r} office={!hideEditor} onReceipt={setReceipt} />
                         )}
+                        {!hideEditor && r.workChip && <span className={`ml-1 text-xs ${r.work.active.length ? "text-success" : "text-muted"}`} title={r.workChip}>{r.work.active.length ? "Working" : "Paused"}</span>}
                         {/* Rare office actions keep their confirmation and undo flows. */}
-                        {!hideEditor && <QueueActions
-                          key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
-                          row={r}
-                          onReceipt={setReceipt}
-                        />}
+
                       </span>
                       {/* FOUR VIDEOS, ONE WORD (Jordan, Sep 18). The pill names
                           the loudest state, which on a batch is true of ONE
@@ -927,7 +926,7 @@ export function SimpleQueue({
                           arithmetic under it. Never rendered on a one-video
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
-                        <span className="mt-1 block text-sm text-muted">{r.videoBreakdown}</span>
+                        <span className="mt-1 block text-sm text-muted" title={r.videoBreakdown}>{r.progressSummary ?? r.videoBreakdown}</span>
                       )}
                       {/* WHAT THE HANDOFF IS WAITING ON (O01) — the engine's
                           stored sentence, the one the edit card and Kyle's
@@ -940,12 +939,6 @@ export function SimpleQueue({
                           that. It never changes the pill: "Ready for editing"
                           with "Kim uploaded a version · 12:14pm" under it is
                           the truth — Kim has not pressed Start. Office only. */}
-                      {!hideEditor && view === "notdone" && r.lastAction && (
-                        <details className="mt-1 text-sm text-muted">
-                          <summary className="min-h-11 cursor-pointer content-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand">Latest activity</summary>
-                          <p className="max-w-80 leading-relaxed">{r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}. Activity alone does not mean they pressed Start.</p>
-                        </details>
-                      )}
                       {/* WHO IS ON IT (§7.1) — the editor's own Start/Pause,
                           with the time they said so. A declared status, not a
                           timer: nothing here counts hours. Office only (Sep
@@ -953,23 +946,9 @@ export function SimpleQueue({
                           says it, in the editor's own time — this chip is
                           Eastern, and the same Start twelve hours apart on one
                           screen was the confusion. */}
-                      {!hideEditor && r.workChip && (
-                        <span
-                          className={cn(
-                            "mt-1 flex items-center gap-1 text-sm",
-                            r.work.active.length ? "font-medium text-[#8b5cf6]" : "text-muted-2",
-                          )}
-                          title={r.work.active.concat(r.work.paused).some((x) => x.onBehalfBy)
-                            ? `Last change made by the office (${r.work.active.concat(r.work.paused).find((x) => x.onBehalfBy)?.onBehalfBy}) on the editor's behalf`
-                            : undefined}
-                        >
-                          <span className={cn("size-1.5 shrink-0 rounded-full", r.work.active.length ? "bg-[#8b5cf6]" : "border border-muted-2/70")} />
-                          {r.workChip}
-                        </span>
-                      )}
                     </td>
                     <td
-                      className={cn("block px-0 py-1 text-sm font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5", r.late ? "text-danger" : "")}
+                      className={cn("block px-0 py-1 text-sm font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-3", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
@@ -979,7 +958,7 @@ export function SimpleQueue({
                       {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
                     </td>
                     {!hideEditor && (
-                      <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5" onClick={swallow}>
+                      <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-3" onClick={swallow}>
                         <span className="mr-2 text-xs font-medium text-muted sm:hidden">Editor</span>
                         {view === "done" ? (
                           // Delivered = credit, not live work — no reassign here
@@ -992,29 +971,36 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td className="block px-0 py-2 sm:table-cell sm:px-3 sm:py-2.5" onClick={swallow}>
+                    <td className="block px-0 py-2 sm:table-cell sm:px-3 sm:py-3" onClick={swallow}><div className="flex flex-wrap items-start gap-1">
+                          {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="Raw" dot={r.rawCount > 0}
+                            title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"} />}
+                          {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" dot={r.finalCount > 0}
+                            title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
                       <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)}
-                        className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                        Open brief
+                        title="Open editing brief" className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                        Open
                       </Link>
-                      <details className="mt-1 text-sm text-muted">
-                        <summary className="min-h-11 cursor-pointer content-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand">
-                          Files and chat{r.comments > 0 ? ` · ${r.comments}` : ""}
+                      <details className="relative text-sm text-muted">
+                        <summary className="flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center rounded-lg border border-border focus-visible:outline-2 focus-visible:outline-brand">
+                          <span aria-label={`Files and chat${r.comments > 0 ? ` · ${r.comments}` : ""}`}>•••</span>
                         </summary>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
-                          {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="Raw footage" dot={r.rawCount > 0}
-                            title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"} />}
-                          {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final folder" dot={r.finalCount > 0}
-                            title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
                           <Link href={`${jobHref(r.id)}#messages`} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel"
                             className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                             <MessageSquare aria-hidden="true" className="size-4" />Chat · {r.comments}
                           </Link>
+                          {r.revisionContext && <p className="w-full text-sm">{r.revisionContext}</p>}
+                          {r.lastAction && <p className="w-full text-sm">{r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}. Activity alone does not mean they pressed Start.</p>}
+                        {!hideEditor && <QueueActions
+                          key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
+                          row={r}
+                          onReceipt={setReceipt}
+                        />}
                           {/* The shared job URL remains the server's canonical public URL. */}
                           <CopyButton value={r.url} title={`Copy this job's link to send to an editor — ${r.url}`}
                             label="Copy link" className="min-h-11 min-w-11 justify-center text-sm text-muted hover:text-brand" />
                         </div>
-                      </details>
+                      </details></div>
                     </td>
                   </tr>
                 );

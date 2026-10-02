@@ -1,3 +1,4 @@
+import { videoNavigationFor } from "@/lib/videoNavigation";
 import Link from "next/link";
 import { CorrectSent } from "@/components/ops/CorrectSent";
 import { prisma } from "@/lib/prisma";
@@ -8,9 +9,10 @@ import { etDateTime } from "@/lib/datetime";
 
 async function readStatus(projectId: string) {
   try {
-    const [slots, cuts] = await Promise.all([
+    const [slots, cuts, navigation] = await Promise.all([
       cutSlots(projectId),
       prisma.reviewSubmission.findMany({ where: { projectId, withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } }, orderBy: [{ round: "desc" }, { createdAt: "desc" }], include: { topazJob: true, project: { select: { contentMonthId: true } } } }),
+      videoNavigationFor(projectId),
     ]);
     const [portal, windows, reviewers] = await Promise.all([
       monthlyPortalHandoffsFor(cuts.map((cut) => cut.id)),
@@ -23,7 +25,7 @@ async function readStatus(projectId: string) {
       const reviewer = reviewers.find((member) => member.id === cut?.reviewerTeamMemberId)?.name ?? "Reviewer";
       const clientState = windows.find((window) => window.submissionId === cut?.id)?.state;
       const state = !cut ? "Awaiting edit · Editor" : cut.status === "CHANGES_REQUESTED" ? "Changes requested · Editor" : cut.status !== "APPROVED" ? `Needs review · ${reviewer}` : portal.has(cut.id) ? `In client portal · ${cut.clientReleasedAt ? etDateTime(cut.clientReleasedAt) : "Publication recorded"} · ${clientState === "APPROVED" || clientState === "AUTO_APPROVED" ? "Client approved" : clientState === "CHANGES_REQUESTED" ? "Client changes requested" : "Awaiting client review"}` : cut.sentToClientAt ? `Sent · ${cut.sentToClientBy ?? "Office"} · ${etDateTime(cut.sentToClientAt)}` : cut.project.contentMonthId ? "Approved · Portal publication pending" : uploaded ? "Uploaded, not sent · Kyle: send listing" : "Approved · Kyle: upload to Aryeo";
-      return { key: `${slot.deliverableId}:${slot.slot}`, label: `Video ${index + 1} of ${slots.length} · ${cut ? `V${cut.round}` : "Awaiting edit"}`, state, approval: cut?.status === "APPROVED" && cut.decidedAt ? `Approved by ${cut.decidedBy ?? "Reviewer"} · ${etDateTime(cut.decidedAt)}` : null, correction: cut?.sentToClientAt && !cut.project.contentMonthId ? { id: cut.id, at: cut.sentToClientAt.toISOString() } : null, href: cut ? `/review/${projectId}?cut=${cut.id}` : `/review/${projectId}?output=${slot.deliverableId}:${slot.slot}` };
+      return { key: `${slot.deliverableId}:${slot.slot}`, label: `Video ${navigation.get(`${slot.deliverableId}:${slot.slot}`)?.number ?? index + 1} of ${navigation.get(`${slot.deliverableId}:${slot.slot}`)?.total ?? slots.length} · ${cut ? `V${cut.round}` : "Awaiting edit"}`, state, approval: cut?.status === "APPROVED" && cut.decidedAt ? `Approved by ${cut.decidedBy ?? "Reviewer"} · ${etDateTime(cut.decidedAt)}` : null, correction: cut?.sentToClientAt && !cut.project.contentMonthId ? { id: cut.id, at: cut.sentToClientAt.toISOString() } : null, href: cut ? `/review/${projectId}?cut=${cut.id}` : `/review/${projectId}?output=${slot.deliverableId}:${slot.slot}` };
     }));
   } catch { return null; }
 }

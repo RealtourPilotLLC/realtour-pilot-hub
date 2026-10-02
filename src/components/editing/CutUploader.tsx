@@ -7,6 +7,7 @@ import { AlertTriangle, CheckCircle2, CloudUpload, Loader2, MessageSquarePlus, R
 import { cn } from "@/lib/utils";
 // The 1080p export spec and its words, from the file that owns both
 // (lib/videoStyles — plain data and pure functions, safe in a client bundle).
+import { protectUploadWorkspace } from "@/lib/uploadNavigation";
 import { EXPORT_SPEC, exportRefusal, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
 import { startCutUpload, finishCutUpload, abandonCutUpload, cutTakeBackFlags } from "@/app/review/actions";
 import { saveCutMessage } from "@/components/editing/cutMessage.actions";
@@ -358,16 +359,9 @@ export function CutUploader({
   const hasUploadInProgress = Object.keys(busy).length > 0;
   useEffect(() => {
     if (!hasUploadInProgress && !checking) return;
-    const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-    const protectSelection = (event: MouseEvent) => {
-      const anchor = event.target instanceof Element ? event.target.closest("a") : null;
-      if (!anchor || anchor.target === "_blank" || anchor.getAttribute("href")?.startsWith("#")) return;
-      event.preventDefault(); event.stopImmediatePropagation();
+    return protectUploadWorkspace(() => {
       setErr((previous) => ({ ...previous, [cuts[0] ? `${cuts[0].deliverableId}:${cuts[0].slot}` : "navigation"]: "Finish or cancel this upload before switching videos. This file remains attached to the selected output." }));
-    };
-    window.addEventListener("beforeunload", beforeUnload);
-    document.addEventListener("click", protectSelection, true);
-    return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", protectSelection, true); };
+    });
   }, [hasUploadInProgress, checking, cuts]);
   const [err, setErr] = useState<Record<string, string>>({});
   // Messages typed before the file exists (held until the upload creates the
@@ -580,11 +574,14 @@ export function CutUploader({
           which is the last minute it can still save somebody a re-render.
           Same words in both places (lib/videoStyles EXPORT_SPEC). */}
       <div className="border-b border-border bg-surface-2/40 px-4 py-2 sm:px-5">
-        <p className="text-xs leading-relaxed text-foreground/85">
+        <details className="text-sm leading-relaxed text-foreground/85">
+          <summary className="min-h-11 cursor-pointer py-2 font-medium">Export requirements · {EXPORT_SPEC.headline}</summary>
+        <p className="pb-2">
           <span className="font-semibold">{EXPORT_SPEC.headline}.</span> {EXPORT_SPEC.finalCut}{" "}
           <span className="text-muted">{EXPORT_SPEC.edit}</span>{" "}
           <span className="font-medium">{EXPORT_SPEC.audio}</span>
         </p>
+        </details>
       </div>
       <ul className="divide-y divide-border">
         {cuts.map((c) => {

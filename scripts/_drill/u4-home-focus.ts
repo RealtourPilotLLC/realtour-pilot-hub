@@ -64,14 +64,14 @@ async function main() {
     const signIn = (u: { id: string; email: string; role: string }) => setSession({ uid: u.id, email: u.email, role: u.role });
     await clearSession();
     let anonymous = "";
-    try { await page(); } catch (e) { if (e instanceof Redirect) anonymous = e.href; else throw e; }
+    try { await page({}); } catch (e) { if (e instanceof Redirect) anonymous = e.href; else throw e; }
     c.ok("anonymous Home still fails closed", anonymous === "/login");
     await signIn(editor);
     let creative = "";
-    try { await page(); } catch (e) { if (e instanceof Redirect) creative = e.href; else throw e; }
+    try { await page({}); } catch (e) { if (e instanceof Redirect) creative = e.href; else throw e; }
     c.ok("editor still reaches own editing surface instead of office Home", creative === "/editing");
     await signIn(james);
-    const reviewTree = await page();
+    const reviewTree = await page({});
     c.ok("creative orientation derives from saved primary seat, without name matching", textOf(reviewTree).includes("Your creative review desk"));
     const reviewNeeds = elements(reviewTree, "NeedsToday")[0]?.needs as { key: string; count: number; href: string; detail?: string }[];
     const actualQueue = await getReviewQueue({ includeTest: false });
@@ -80,12 +80,12 @@ async function main() {
     c.ok("other review owners remain explicit coverage rather than personal assignment", reviewNeeds.find((n) => n.key === "review-coverage")?.count === 1 && !reviewNeeds.some((n) => n.key === "cuts"));
     c.ok("creative lead receives no owner financial or private-task sections", elements(reviewTree, "MoneyStat").length === 0 && elements(reviewTree, "QuickAdd").length === 0 && elements(reviewTree, "PulseStrip").length === 0);
     failReviewRead = true;
-    const failedQueueTree = await page();
+    const failedQueueTree = await page({});
     failReviewRead = false;
     const failedNeeds = elements(failedQueueTree, "NeedsToday")[0]?.needs as { key: string; count: number }[];
     c.ok("failed assigned-review read retains known general queue and explicit warning", textOf(failedQueueTree).includes("The review queue could not be loaded") && failedNeeds.some((n) => n.key === "cuts" && n.count === 2));
     await signIn(kyle);
-    const opsTree = await page();
+    const opsTree = await page({});
     c.ok("backup reviewer retains the operations first screen", textOf(opsTree).includes("Deliveries and client follow-through") && !textOf(opsTree).includes("Your creative review desk"));
     const routine = elements(opsTree, "HomeRoutine")[0];
     const blocks = elements(routine.children, "Block");
@@ -109,7 +109,7 @@ async function main() {
     const renderedBody = isValidElement<Record<string, unknown>>(bodyElement) ? (bodyElement.type as (props: Record<string, unknown>) => unknown)(bodyElement.props) : null;
     c.ok("delivery evidence/actions remain reachable in the original video-review block", elements(renderedBody, "VideoReviewCard")[0]?.showReady === true);
     await signIn(owner);
-    const ownerTree = await page();
+    const ownerTree = await page({});
     c.ok("owner decision view preserves lower financial and private-task sections", textOf(ownerTree).includes("Decisions and delivery exceptions") && elements(ownerTree, "QuickAdd").length === 1 && elements(ownerTree, "PulseStrip").length === 1);
     c.ok("Home presentation never completes tasks or starts editing", (await prisma.smartTask.findUniqueOrThrow({ where: { id: task.id } })).status === "OPEN" && await prisma.editorWorkEvent.count() === 0);
     c.ok("Home checks reach no providers and send no client communication", fence.blocked.length === 0 && fence.faked.length === 0 && await prisma.outboxMessage.count() === 0);

@@ -96,7 +96,7 @@ const decode = (s: string) =>
   s.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const text = (html: string) => decode(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
 
-type RenderCase = { name: string; file: string; exp: string; props: Record<string, unknown>; fns?: string[] };
+type RenderCase = { name: string; file: string; exp: string; props: Record<string, unknown>; fns?: string[]; openChooser?: boolean };
 function baselineFile(rel: string): string {
   const src = execFileSync("git", ["show", `${BASE}:${rel}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
   fs.mkdirSync(CACHE, { recursive: true });
@@ -111,7 +111,8 @@ function render(cases: RenderCase[], nowISO: string): Record<string, string> {
   const seed = path.join(CACHE, "seed.cjs");
   // Seeds the module cache (the _client-drill-preload pattern): the router,
   // the link and the three work actions are stand-ins, so a render can never
-  // reach a server action — and nothing is clicked anyway.
+  // reach a server action. Expanded cases initialize the chooser hook only,
+  // preserving the default render alongside the requested chooser render.
   fs.writeFileSync(seed, `/* eslint-disable */
 const Module = require("module");
 const path = require("path");
@@ -120,6 +121,8 @@ const put = (file, exports) => { const m = new Module(file, null); m.filename = 
 const React = require(require.resolve("react", { paths: [root] }));
 put(require.resolve("next/navigation", { paths: [root] }), { useRouter: () => ({ refresh() {}, push() {}, replace() {}, back() {}, prefetch() {} }), usePathname: () => "/", useSearchParams: () => new URLSearchParams(), redirect() { throw new Error("redirect"); }, notFound() { throw new Error("notFound"); } });
 put(require.resolve("next/link", { paths: [root] }), { __esModule: true, default: (p) => React.createElement("a", { href: p.href, className: p.className }, p.children) });
+const originalState = React.useState;
+React.useState = (initial) => { const index = globalThis.C2_STATE_INDEX++; return originalState(globalThis.C2_OPEN_CHOOSER && index === 2 ? true : initial); };
 const noop = async () => ({ ok: true, message: "" });
 put(path.join(root, "src/app/editing/workActions.ts"), { __esModule: true, startEditingAction: noop, pauseEditingAction: noop, confirmCurrentWorkAction: noop });
 `);
@@ -135,7 +138,8 @@ globalThis.Date = new Proxy(RealDate, {
 }) as DateConstructor;
 const cases = JSON.parse(require("fs").readFileSync(process.env.C2_CASES as string, "utf8"));
 const out: Record<string, string> = {};
-for (const c of cases) {
+for (const c of [...cases, ...cases.filter((c) => c.exp === "EditorDesk").map((c) => ({ ...c, name: c.name + "Open", openChooser: true }))]) {
+  globalThis.C2_STATE_INDEX = 0; globalThis.C2_OPEN_CHOOSER = !!c.openChooser;
   try {
     const props = { ...c.props };
     for (const k of c.fns ?? []) props[k] = () => {};
@@ -281,10 +285,10 @@ async function main() {
       by.get("extraNoHolder")?.startable === false && by.get("revJohnsTask")?.startable === false &&
       by.get("ready")?.startable === true && by.get("ready1")?.startable === true /* null = not read → left to the server */ && by.get("legacy")?.startable === true);
     c.ok("deskHeader counts what Kim can START, with the late ones: 14 startable of 16 on the desk, 1 late",
-      desk.deskHeader(jobs) === "14 to edit · 1 late", desk.deskHeader(jobs));
+      desk.deskHeader(jobs) === "14 projects to edit · 1 late", desk.deskHeader(jobs));
     const only107 = desk.toDeskJobs([row("a107", "Ready for review", { videoBreakdown: "2 approved · 1 ready for review · 1 more to edit", videosToEdit: 1, startableBy: ["kim"] })], "kim", []);
     c.ok("REVIEW F1 case 2: 107 E as his ONLY job, video 3 in review, video 4 owed → one desk button and a header of \"1 to edit\", never \"Nothing to edit right now\"",
-      only107.length === 1 && only107[0].note === "1 more video to edit" && desk.deskHeader(only107) === "1 to edit", desk.deskHeader(only107));
+      only107.length === 1 && only107[0].note === "1 more video to edit" && desk.deskHeader(only107) === "1 project to edit", desk.deskHeader(only107));
     c.ok("…nothing startable → \"Nothing to edit right now\" (an empty desk, or only jobs not handed over yet)",
       desk.deskHeader([]) === "Nothing to edit right now" && desk.deskHeader(desk.toDeskJobs([row("x", "Extra video owed", { startableBy: [] })], "kim", [])) === "Nothing to edit right now");
     const fromQueue = new Set([...queue.WAITING_ON_OFFICE, queue.WAITING_ON_FOOTAGE, queue.WAITING_ON_INSTRUCTIONS, "Completed"]);
@@ -397,22 +401,22 @@ async function main() {
       Z("16:45"),
     );
     const errs = Object.entries(r).filter(([, h]) => h.startsWith("RENDER_ERROR"));
-    c.ok("every case rendered", Object.keys(r).length === 19 && errs.length === 0, errs.map(([k, h]) => `${k}: ${h.slice(0, 140)}`).join(" | "));
+    c.ok("every case rendered", Object.keys(r).length === 30 && errs.length === 0, errs.map(([k, h]) => `${k}: ${h.slice(0, 140)}`).join(" | "));
     const t = (k: string) => text(r[k] ?? "");
-    const jobButtons = (k: string) => ((r[k] ?? "").match(/min-h-11/g) ?? []).length;
+    const jobButtons = (k: string) => [...(r[k] ?? "").matchAll(/<button[^>]*class="[^"]*w-full[^"]*"[^>]*>/g)].length;
     const buttons = (k: string) => [...(r[k] ?? "").matchAll(/<button[^>]*>/g)].map((m) => decode(m[0]));
     const buttonWords = (k: string) => [...(r[k] ?? "").matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((m) => text(m[1]));
 
-    c.ok("on nothing: \"What are you working on now?\" / \"Tap the job you're editing. Tap Pause when you stop.\"",
-      t("idle").includes("What are you working on now?") && t("idle").includes("Tap the job you’re editing. Tap Pause when you stop."), t("idle").slice(0, 120));
-    c.ok("…one big button per job, the first 5, then \"Show all 7\"", jobButtons("idle") === 5 && t("idle").includes("Show all 7"), `${jobButtons("idle")} job buttons`);
+    c.ok("idle desk shows current work and opens the job chooser only on request",
+      t("idle").includes("Current work") && t("idle").includes("No job started in the hub.") && buttonWords("idle").includes("Start a job") && jobButtons("idle") === 0, t("idle").slice(0, 120));
+    c.ok("…one big button per job, the first 5, then \"Show all 7\"", jobButtons("idleOpen") === 5 && t("idleOpen").includes("Show all 7"), `${jobButtons("idle")} job buttons`);
     c.ok("…107 E first, with its due day and its per-video line",
-      t("idle").indexOf("107 E Old Baltimore Pike") < t("idle").indexOf("22 Switch Ave") && t("idle").includes("Due Sep 29") && t("idle").includes("2 approved · 2 more to edit"));
-    c.ok("…a late job says \"Late · was due Sep 27\" in red", t("idle").includes("Late · was due Sep 27") && /text-danger[^>]*>Late · was due Sep 27/.test(r.idle ?? ""));
-    c.ok("…a job they paused says \"Paused 12:10am your time\" and one with no date \"No due date\"", t("idle").includes("Paused 12:10am your time") && t("idle").includes("No due date"));
+      t("idleOpen").indexOf("107 E Old Baltimore Pike") < t("idleOpen").indexOf("22 Switch Ave") && t("idleOpen").includes("Due Sep 29") && t("idleOpen").includes("2 approved · 2 more to edit"));
+    c.ok("…a late job says \"Late · was due Sep 27\" in red", t("idleOpen").includes("Late · was due Sep 27") && /text-danger[^>]*>Late · was due Sep 27/.test(r.idleOpen ?? ""));
+    c.ok("…a job they paused says \"Paused 12:10am your time\" and one with no date \"No due date\"", t("idleOpen").includes("Paused 12:10am your time") && t("idleOpen").includes("No due date"));
     c.ok("…no Pause button while on nothing", !buttonWords("idle").some((w) => /\bPause\b/.test(w)), buttonWords("idle").join(" | "));
     c.ok("…footer: \"Not editing right now? You don't need to press anything.\", How this works (4 lines), the office link",
-      t("idle").includes("Not editing right now? You don’t need to press anything.") && t("idle").includes("How this works") &&
+      t("idle").includes("Not editing right now? You don’t need to press anything.") && t("idle").includes("How Start and Pause work") &&
       desk.HOW_START_WORKS.every((l) => t("idle").includes(l)) && /href="\/people\/capacity"[^>]*>Offline or stuck\? Tell the office →/.test(r.idle ?? ""));
     c.ok("on a job: ONE bar — \"You're on 107 E Old Baltimore Pike since 12:40am your time\" (Manila, labelled), street links to the job",
       t("active").includes("You’re on 107 E Old Baltimore Pike since 12:40am your time") && /href="\/edit\/p107"/.test(r.active ?? "") && !t("active").includes("What are you working on now?"), t("active").slice(0, 100));
@@ -424,7 +428,7 @@ async function main() {
     c.ok("…with exactly [Pause] and [Switch job], and no job list until Switch is pressed",
       JSON.stringify(buttonWords("active")) === JSON.stringify(["Pause", "Switch job"]) && jobButtons("active") === 0, buttonWords("active").join(" | "));
     c.ok("a failed read says so in amber, and the list is still there to press",
-      t("failed").includes("Couldn’t load what you’re on right now — refresh the page. Starting a job below is still safe.") && jobButtons("failed") === 2 && /text-warning/.test(r.failed ?? ""));
+      t("failed").includes("Couldn’t load what you’re on right now — refresh the page. Starting a job below is still safe.") && jobButtons("failedOpen") === 2 && t("failed").includes("Current job unavailable.") && /text-warning/.test(r.failed ?? ""));
     c.ok("nothing to edit and on nothing → the one line \"Nothing to edit right now.\" and no buttons",
       t("empty").includes("Nothing to edit right now.") && buttons("empty").length === 0 && !t("empty").includes("What are you working on now?"));
     const disabledAll = (k: string) =>
@@ -432,17 +436,16 @@ async function main() {
     c.ok("a preview (view as): every job button and Pause / Switch is disabled with the preview title",
       disabledAll("preview") && disabledAll("previewActive") && buttons("previewActive").length === 2, `${buttons("preview").length} + ${buttons("previewActive").length} buttons`);
     c.ok("legacy claims: the sentence says what a tap on a MARKED job does — and only that — + \"I'm not on any of them\"",
-      t("claims").includes("Some jobs say “Marked In editing — not confirmed” (from before the Start button). If you tap one of them, the other marked jobs become paused.") &&
-      t("claims").includes("I'm not on any of them"), t("claims").slice(0, 260));
+      t("claims").includes("A previous In editing mark needs your confirmation.") && t("claimsOpen").includes("Confirming a previous “In editing” mark pauses the other marked jobs.") && t("claimsOpen").includes("I'm not on any of them"), t("claims").slice(0, 260));
     c.ok("REVIEW F5: while ON a job, no claims sentence and no \"not on any of them\" — Switch job never answers for the other marked jobs",
-      !t("activeClaims").includes("the other marked jobs become paused") && !t("activeClaims").includes("not on any of them"));
+      !t("activeClaimsOpen").includes("pauses the other marked jobs") && !t("activeClaimsOpen").includes("not on any of them"));
     c.ok("REVIEW F6: a job not handed over is ONE line — \"Not assigned to you yet — ask the office: 40 Handover Ct\" — never a Start button",
-      jobButtons("notYours") === 1 && t("notYours").includes("Not assigned to you yet — ask the office: 40 Handover Ct") && !buttonWords("notYours").some((w) => w.includes("40 Handover Ct")),
+      jobButtons("notYoursOpen") === 1 && t("notYours").includes("1 job not assigned to you yet") && t("notYours").includes("Ask the office: 40 Handover Ct") && !buttonWords("notYoursOpen").some((w) => w.includes("40 Handover Ct")),
       `${jobButtons("notYours")} buttons · ${buttonWords("notYours").join(" | ")}`);
     c.ok("…and when that is all there is: \"Nothing to edit right now.\" + the line, no buttons",
-      t("onlyNotYours").includes("Nothing to edit right now.") && t("onlyNotYours").includes("Not assigned to you yet — ask the office: 40 Handover Ct") && buttons("onlyNotYours").length === 0);
+      t("onlyNotYours").includes("Nothing to edit right now.") && t("onlyNotYours").includes("1 job not assigned to you yet") && t("onlyNotYours").includes("Ask the office: 40 Handover Ct") && buttons("onlyNotYours").length === 0);
     c.ok("REVIEW F1: his paused multi-video job's button says both — \"Paused 12:45am your time · 1 more video to edit\"",
-      jobButtons("pausedOwed") === 1 && t("pausedOwed").includes("Paused 12:45am your time · 1 more video to edit"), t("pausedOwed").slice(0, 160));
+      jobButtons("pausedOwedOpen") === 1 && t("pausedOwedOpen").includes("Paused 12:45am your time · 1 more video to edit"), t("pausedOwed").slice(0, 160));
 
     c.ok("job bar, idle: \"Working on this job now?\" and one button, \"Start\"",
       t("barIdle").includes("Working on this job now?") && JSON.stringify(buttonWords("barIdle")) === JSON.stringify(["Start"]), buttonWords("barIdle").join(" | "));
@@ -595,7 +598,7 @@ async function main() {
     c.ok("…in HIS timezone (Asia/Manila), pressable (not a preview)", k.desk?.tz === "Asia/Manila" && k.desk?.readOnly === false);
     c.ok("…no \"Your workload\" panel any more; his own review card stays",
       walk(k.tree, WorkloadPanel).length === 0 && walk(k.tree, EditorQualityCard).length === 1);
-    c.ok("…the header says only what he can start: \"3 to edit\"", headerOf(k.tree) === "3 to edit", JSON.stringify(headerOf(k.tree)));
+    c.ok("…the header says only what he can start: \"3 to edit\"", headerOf(k.tree) === "3 projects to edit", JSON.stringify(headerOf(k.tree)));
     const pv = await deskOf(jordan, kim);
     c.ok("Jordan previewing Kim: the same desk, every button off (readOnly)", pv.n === 1 && pv.desk?.readOnly === true && pv.desk?.tz === "Asia/Manila");
     try {
@@ -646,7 +649,7 @@ async function main() {
       rowA?.status === "Ready for review" && rowA.videosToEdit === 1 && JSON.stringify(rowA.startableBy) === JSON.stringify(["kim"]), `${rowA?.status} · ${rowA?.videoBreakdown} · toEdit ${rowA?.videosToEdit}`);
     c.ok("…and it STAYS on his desk — a Start button saying \"1 more video to edit\" — whether he answers Yes or No",
       !!aU && aU.startable && aU.note === "1 more video to edit" && aU.pausedSinceISO === null, JSON.stringify(aU));
-    c.ok("…the header still counts it: \"3 to edit\", never \"Nothing to edit right now\" while a video is owed", headerOf(kU.tree) === "3 to edit", JSON.stringify(headerOf(kU.tree)));
+    c.ok("…the header still counts it: \"3 to edit\", never \"Nothing to edit right now\" while a video is owed", headerOf(kU.tree) === "3 projects to edit", JSON.stringify(headerOf(kU.tree)));
   }
   await as(jordan);
   const jb = await work.workBarFor(A.id, { role: "OWNER", realRole: "OWNER", editorKey: null, impersonating: false });
@@ -726,7 +729,7 @@ async function main() {
     // on the desk, so Switch job can take him straight back to it.
     c.ok("REVIEW F9: 107 E, paused by the switch, is on his desk with its pause time and \"1 more video to edit\" — one tap to go back",
       !!aOnDesk && aOnDesk.startable && aOnDesk.pausedSinceISO === Z("16:45") && aOnDesk.note === "1 more video to edit", JSON.stringify(aOnDesk));
-    c.ok("…and the header counts it too (\"3 to edit\")", headerOf(k2.tree) === "3 to edit", JSON.stringify(headerOf(k2.tree)));
+    c.ok("…and the header counts it too (\"3 to edit\")", headerOf(k2.tree) === "3 projects to edit", JSON.stringify(headerOf(k2.tree)));
   }
 
   // =========================================================================

@@ -1,5 +1,6 @@
 // C15: actual signed Review Room render with no first-cut queue and other work.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
+import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
 
@@ -32,7 +33,19 @@ async function main() {
       c.ok(`${label}: no-cut headline still directs attention to revisions and delivery`, html.includes("No cuts awaiting your verdict") && html.includes("check revisions and delivery below"));
       c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes("In revisions") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
       c.ok(`${label}: video-only QC is a media/delivery check, never a photo set`, html.includes("Delivery checks") && html.includes("Media checks to finish") && !html.includes("Photo sets") && !html.includes("Hidden fixture media job"));
-      c.ok(`${label}: unknown delivery outcome stays actionable with its actual thread`, html.includes("Delivery text outcome unconfirmed") && html.includes(`incident=${notice.id}`) && !html.includes("No delivery action is currently waiting"));
+      c.ok(`${label}: Review Room does not repeat the delivery queue`, !html.includes("Delivery text outcome unconfirmed") && !html.includes("No delivery action is currently waiting"));
+      if (label === "Kyle") {
+        const { default: home } = await import("../../src/app/page");
+        const homeTree = await home({ searchParams: Promise.resolve({}) });
+        const data = (function find(tree: unknown): Record<string, unknown> | null {
+          if (Array.isArray(tree)) return tree.map(find).find(Boolean) ?? null;
+          if (!isValidElement<Record<string, unknown>>(tree)) return null;
+          if ((tree.type as { name?: string }).name === "Block") return tree.props.d as Record<string, unknown>;
+          return Object.values(tree.props).map(find).find(Boolean) ?? null;
+        })(homeTree);
+        const board = data?.readySend as import("../../src/lib/readyToSend").ReadyBoard;
+        c.ok("unknown delivery outcome remains in Kyle's actual Home data with its exact conversation", !!board.noticeIncidents?.some((incident) => incident.outboxId === notice.id && incident.state === "unknown"));
+      }
     }
     await as(kyle);
     const testHtml = renderToStaticMarkup(await page({ searchParams: Promise.resolve({ test: "1" }) }));

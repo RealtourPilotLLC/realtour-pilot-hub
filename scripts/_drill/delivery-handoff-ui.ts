@@ -57,7 +57,9 @@ async function main() {
     { id: "listing-notice", projectId: "listing-job", fileName: "listing-v1.mp4", assetPath: null, sentToClientAt: new Date("2026-10-01T16:00:00Z"), sentToClientBy: "Original office actor", clientNoticeBy: null, project: { title: "Monthly content words in an ordinary listing title", contentMonthId: null } },
   ];
   stub(req.resolve("../../src/lib/prisma.ts"), { prisma: { reviewSubmission: { findMany: async (args: NonNullable<typeof noticeQuery.args>) => { noticeQuery.args = args; if (noticeQuery.fail) throw new Error("fixture reader unavailable"); return readerRows; } } } });
+  const uploadCalls: { id: string; fingerprint: string }[] = []; let uploadResult = deferred<{ ok: boolean; message: string }>();
   stub(req.resolve("../../src/app/ops/actions.ts"), {
+    markVideoUploadedAction: async (id: string, fingerprint: string) => { uploadCalls.push({ id, fingerprint }); return uploadResult.promise; },
     markVideoSentAction: async (id: string, notice?: string | null) => { calls.push({ id, notice }); return result.promise; },
     recordClientNoticeAction: async (id: string, notice: string) => { noticeCalls.push({ id, notice }); return noticeResult.promise; },
   });
@@ -76,6 +78,22 @@ async function main() {
     const button = (label: string) => elements(tree(), "Button").find((p) => words(p.children).trim() === label);
     const click = (label: string) => { const p = button(label); if (!p) throw new Error(`Missing button ${label}`); (p.onClick as () => void)(); };
     const status = () => elements(tree(), "SaveStatus")[0];
+    const { MarkUploaded } = await import("../../src/components/ops/MarkUploaded");
+    const mountUpload = async () => { card?.stop(); card = mountHooks(() => MarkUploaded({ submissionId: props.submissionId, fingerprint: "exact-file-v3" })); tree(); await Promise.resolve(); };
+    await mountUpload(); click("Mark as Uploaded"); click("Mark as Uploaded");
+    c.ok("upload acknowledgement serializes the exact version even on same-tick clicks", uploadCalls.length === 1 && uploadCalls[0].fingerprint === "exact-file-v3" && uploadCalls[0].id === props.submissionId);
+    uploadResult.reject(new Error("response lost")); await until(() => elements(tree(), "Button")[0].busy === false);
+    await mountUpload(); click("Mark as Uploaded");
+    c.ok("lost upload response survives remount and refuses automatic duplicate saves", uploadCalls.length === 1 && JSON.parse(markers.get(`rtp:upload-record:${props.submissionId}`)!).fingerprint === "exact-file-v3" && elements(tree(), "Button")[0].disabled === true);
+    uploadResult = deferred(); click("Reconcile upload record"); click("Reconcile upload record");
+    c.ok("explicit upload reconciliation dispatches once for the unchanged exact source", uploadCalls.length === 2 && uploadCalls[1].fingerprint === "exact-file-v3");
+    uploadResult.resolve({ ok: true, message: "Already uploaded by Kyle at the original time." }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("confirmed upload reconciliation clears its hold and preserves original receipt feedback", markers.size === 0 && status().state === "saved" && words(tree()).includes("original time"));
+    await mountUpload(); uploadResult = deferred(); click("Mark as Uploaded"); uploadResult.resolve({ ok: false, message: "Not saved: this cut changed." }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("known upload refusal leaves the previous state, shows an error and allows a corrected attempt", markers.size === 0 && !elements(tree(), "Button")[0].disabled && status().state === "error" && words(tree()).includes("Not saved"));
+    await mountUpload(); storageFails = true; click("Mark as Uploaded"); storageFails = false;
+    c.ok("upload refuses locally when recovery storage is unavailable", uploadCalls.length === 3 && words(tree()).includes("Nothing was submitted"));
+    markers.clear();
     await mount(false); click("Mark as sent");
     const staleChoice = button("Mark as sent")!.onClick as () => void;
     staleChoice();

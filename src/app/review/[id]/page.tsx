@@ -1,3 +1,4 @@
+import { videoNavigationFor } from "@/lib/videoNavigation";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
@@ -17,7 +18,6 @@ import { BackLink } from "@/components/ui/BackLink";
 // §8.1: the one person each waiting cut is waiting on, and the take / cover /
 // hand-on doors — the same strip /edit/<id> carries, here where review happens.
 import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
-import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
@@ -45,7 +45,7 @@ export default async function CutReviewPage({
   // and requestCutChanges will accept the press. It used to be the OWNER/ADMIN
   // role alone, which sent a seated reviewer on a narrower login home from the
   // very link their "Waiting on you" notice carries. View-as is refused.
-  const { isReviewDesk, reviewerStripFor } = await import("@/lib/reviewerAssignment");
+  const { isReviewDesk } = await import("@/lib/reviewerAssignment");
   const ownerDesk = await isReviewDesk(me, { authEnforced: authEnforced() });
   // A PHOTOGRAPHER reaches this page from a tag on the cut (Jordan, Sep 17:
   // "I want to be able to tag james on the video - he gets a text with my
@@ -91,6 +91,7 @@ export default async function CutReviewPage({
   const cutKeyOf = (s: (typeof w.submissions)[number]) => (s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id));
   const { cutSlots, owedSlotKeyOf } = await import("@/lib/reviewCuts");
   const slots = await cutSlots(w.projectId);
+  const navigation = await videoNavigationFor(w.projectId);
   const latestPerCut = new Map<string, (typeof w.submissions)[number]>();
   // WITHDRAWN rounds don't speak for a cut (Sep 16) — a slot whose only round
   // was taken back reads as "nothing in yet", exactly like the editor's page.
@@ -119,9 +120,6 @@ export default async function CutReviewPage({
   // renders nowhere in the Review Room and only the editor's own page has it,
   // which would leave Jordan unable to pull a cut from the desk he reviews on.
   const cutFlags = active ? await cutTakeBackFlags(w.projectId).catch(() => []) : [];
-  // Who each waiting cut is with (§8.1). The office lens only — a photographer
-  // on their own shoot is not the desk. A failed read shows no strip.
-  const reviewerStrip = shotThis ? null : await reviewerStripFor(w.projectId, me, { authEnforced: authEnforced() }).catch(() => null);
   // The earlier asks this version's check claimed fixed, for the verdict's
   // "not actually fixed" ticks (§8.3). The desk only; a failed read shows none.
   const fixesToCheck =
@@ -214,7 +212,8 @@ export default async function CutReviewPage({
               const key = `${slot.deliverableId}:${slot.slot}`;
               const current = latestPerCut.get(key);
               const selected = current ? active?.id === current.id : output === key;
-              return <Link key={key} aria-current={selected ? "page" : undefined} href={current ? `/review/${w.projectId}?cut=${current.id}#cut-${current.id}` : `/review/${w.projectId}?output=${key}`} title={slot.topicTitle ?? slot.deliverableLabel} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${selected ? "border-brand bg-brand-soft text-brand" : "border-border"}`}>Video {index + 1} of {slots.length} · {current ? `V${current.round}` : "Awaiting edit"}</Link>;
+              const tone = current?.status === "APPROVED" ? "border-success/40 bg-success-soft text-success" : current?.status === "PENDING" ? "border-warning/40 bg-warning-soft text-warning" : "border-border bg-surface text-muted";
+              return <Link key={key} aria-current={selected ? "page" : undefined} href={current ? `/review/${w.projectId}?cut=${current.id}#cut-${current.id}` : `/review/${w.projectId}?output=${key}`} title={slot.topicTitle ?? slot.deliverableLabel} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-2 ring-offset-background" : ""}`}>Video {navigation.get(key)?.number ?? index + 1} of {navigation.get(key)?.total ?? slots.length} · {current ? `V${current.round}` : "Awaiting edit"}</Link>;
             })}
           </nav>}
           {slots.length === 0 && currentCuts.length > 1 && <nav aria-label="Legacy videos" className="flex flex-wrap gap-2">{currentCuts.map((current) => <Link key={current.id} href={`/review/${w.projectId}?cut=${current.id}`} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm">{current.fileName ?? "Unmapped video"} · V{current.round}</Link>)}</nav>}
@@ -273,7 +272,6 @@ export default async function CutReviewPage({
                   </p>
                 </div>
               )}
-              {reviewerStrip && reviewerStrip.rows.length > 0 && <ReviewerStrip data={reviewerStrip} />}
               <CutReviewPanel
                 key={active.id}
                 projectId={w.projectId}

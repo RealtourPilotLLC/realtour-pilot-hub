@@ -129,7 +129,7 @@ export function toDeskJobs(
 export function deskHeader(jobs: Pick<DeskJob, "startable" | "late">[]): string {
   const mine = jobs.filter((j) => j.startable);
   const late = mine.filter((j) => j.late).length;
-  return mine.length ? `${mine.length} to edit${late ? ` · ${late} late` : ""}` : "Nothing to edit right now";
+  return mine.length ? `${mine.length} project${mine.length === 1 ? "" : "s"} to edit${late ? ` · ${late} late` : ""}` : "Nothing to edit right now";
 }
 
 const dayKey = (d: Date, tz: string) =>

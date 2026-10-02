@@ -1,9 +1,10 @@
+import { videoNavigationFor } from "@/lib/videoNavigation";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
   AlertTriangle, Film, FileVideo, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
 } from "lucide-react";
-import { EXPORT_SPEC, VIDEO_TIER, VIDEO_TYPES, videoTypeForDeliverable } from "@/lib/videoStyles";
+import { EXPORT_SPEC, VIDEO_TIER, VIDEO_TYPES, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { BrandUpdatesBanner, BrandKitBlock } from "@/components/editing/BrandUpdatesBanner";
@@ -477,18 +478,7 @@ export default async function EditBriefPage({
   // The cut a revision link must land on: the one in front of them if it is
   // the bounced one, else the first cut waiting on changes.
   const revisionCut = (activeSub?.status === "CHANGES_REQUESTED" ? activeSub : null) ?? bouncedCuts[0] ?? null;
-  const revisionHref = revisionCut ? `#cut-${revisionCut.id}` : null;
-  // Which submissions have an anchor on this page — a panel, or (on a
-  // multi-cut job) their chip in the switcher. Only those become links.
-  const anchored = new Set<string>([
-    ...panelIds,
-    ...(currentCuts.length > 1 ? currentCuts.map((s) => s.id) : []),
-  ]);
-  // A stale flag must not resurrect "changes requested" on an approved cut:
-  // only a video revision RAISED AFTER the approval outranks it.
-  const approvedAt = latestRound?.status === "APPROVED" ? latestRound.decidedAt : null;
-  const revisionAfterApproval =
-    revisionOpen && (!approvedAt || videoRevisionTasks.some((t) => t.createdAt > approvedAt));
+  const revisionHref = revisionCut ? `/edit/${project.id}?cut=${revisionCut.id}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}#cut-${revisionCut.id}` : null;
   // WHO EACH WAITING CUT IS WITH (unified handoff §8.1, Sep 25). Read here so
   // the tracker's "with …" and the strip below say the same name. A failed
   // read shows no strip; nothing on the page waits on it.
@@ -496,8 +486,8 @@ export default async function EditBriefPage({
     .then((m) => m.reviewerStripFor(id, viewer, { authEnforced: authEnforced() }))
     .catch(() => null);
   const latestReviewer =
-    latestRound?.status === "PENDING"
-      ? reviewerStrip?.rows.find((r) => r.submissionId === latestRound.id)?.reviewer?.name ?? null
+    activeSub?.status === "PENDING"
+      ? reviewerStrip?.rows.find((r) => r.submissionId === activeSub.id)?.reviewer?.name ?? null
       : null;
   // WHO IS ON THIS JOB RIGHT NOW (§7.1, Sep 25) — the editor's own Start,
   // not the status. Read-only here: opening this page never starts anything.
@@ -512,14 +502,14 @@ export default async function EditBriefPage({
     .catch(() => null);
   const { stage, label: statusLine } = deriveEditStage({
     projectStatus: project.status,
-    revisionOpen,
-    revisionAfterApproval,
-    latestRoundStatus: latestRound?.status ?? null,
+    revisionOpen: activeSub?.status === "CHANGES_REQUESTED" || quality.issues.some((issue) => !issue.duplicateOfId && ["OPEN", "REOPENED"].includes(issue.state) && (selectedKey ? issue.cutKey === selectedKey : issue.raisedOnSubmissionId === activeSub?.id)),
+    revisionAfterApproval: !!activeSub?.clientRequestedAt && (!activeSub.decidedAt || activeSub.clientRequestedAt > activeSub.decidedAt),
+    latestRoundStatus: activeSub?.status ?? null,
     rawsLanded: rawsLanded || submissions.length > 0,
     reviewerName: latestReviewer,
     work: workBar?.stageWork,
     // §8.2: a newest version still waiting on its check is not "in review".
-    heldForCheck: !!latestRound && quality.held.some((h) => h.submissionId === latestRound.id),
+    heldForCheck: !!activeSub && quality.held.some((h) => h.submissionId === activeSub.id),
   });
   const hadRevision =
     revisionOpen ||
@@ -585,6 +575,7 @@ export default async function EditBriefPage({
   // packet read (deliverableOutputs.outputBriefsFor). Money-scrubbed for an
   // editor, exactly like the notes above.
   const { outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
+  const navigation = await videoNavigationFor(project.id);
   const outputBriefs = await outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []);
   // A receipt belongs to the creative-safe assignment the editor sees. An
   // owner may see raw customer wording elsewhere, but that must not produce a
@@ -669,8 +660,8 @@ export default async function EditBriefPage({
     verdictLine: verdictLine(verdictOf(s)),
     // Name the cut and link to it — sixteen "Round 1" lines are unreadable,
     // and a round the editor can click is one they can act on (Sep 16).
-    cutLabel: slotLabelOf(s),
-    href: anchored.has(s.id) ? `#cut-${s.id}` : null,
+    cutLabel: navigation.get(`${s.deliverableId}:${s.slot ?? 1}`) ? `Video ${navigation.get(`${s.deliverableId}:${s.slot ?? 1}`)!.number} of ${navigation.get(`${s.deliverableId}:${s.slot ?? 1}`)!.total}` : slotLabelOf(s) ?? s.fileName,
+    href: `/edit/${project.id}?cut=${s.id}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}#cut-${s.id}`,
   }));
   // THE REVIEW ROOM'S ASKS, as a work order. A bounce writes no RevisionBrief
   // — it is Jordan's own timestamped notes on a cut — so the revision card
@@ -725,6 +716,13 @@ export default async function EditBriefPage({
     }
   })();
   const trackerDue = reopened ? reopened.at : effectiveDue(project, sla?.due ?? null);
+  const selectedDeliverable = videoDeliverables.find((item) => item.id === selectedSlot?.deliverableId);
+  const selectedVideoStyle = selectedDeliverable ? videoStyleFor(selectedDeliverable, { monthly: !!project.contentMonthId }) : null;
+  // Social exports never use the licensed catalogue chooser. Existing picks
+  // stay saved; this UI rule does not delete a project's music history.
+  const catalogueMusicAllowed = selectedVideoStyle?.key === "standard_cinematic";
+  const selectedPromise = outputBriefs.find((brief) => brief.key === selectedKey)?.promisedAtISO;
+  const selectedDue = selectedPromise ? new Date(selectedPromise) : trackerDue;
 
   // §10 RUSH (Sep 28): the header's Rush button — the override dialog on the
   // due date and priority alone, with the jobs it pushes back shown before
@@ -750,7 +748,7 @@ export default async function EditBriefPage({
   const assetDeps = assetDesk
     ? await import("@/lib/assetDependencies").then((m) => m.openAssetDependencies(project.id)).catch(() => null)
     : null;
-  const assetVideoWords = new Map(outputBriefs.map((o) => [o.outputId, `Video ${o.index}: ${o.label}`]));
+  const assetVideoWords = new Map(outputBriefs.map((o) => [o.outputId, `Video ${navigation.get(o.key)?.number ?? o.index}: ${o.label}`]));
   const assetPeople = assetDesk
     ? await import("@/lib/assetDependencies").then((m) => m.INTERPRETER_KEYS.map((k) => ({ key: k, name: editorMeta(k)?.name ?? k })))
     : [];
@@ -966,9 +964,10 @@ export default async function EditBriefPage({
       {showTracker && workBar && <div className="px-4 pt-4 sm:px-6"><WorkStateBar bar={workBar} tz={deskTz} /></div>}
 
       <div className="px-4 pt-4 sm:px-6">
-        {showTracker && <p className="mb-3 text-sm text-foreground">{activeSub?.status === "CHANGES_REQUESTED" ? "Selected video: changes requested" : activeSub?.status === "APPROVED" ? "Selected video: approved" : activeSub ? "Selected video: in review" : "Selected video: awaiting edit"}{trackerDue && <span className="text-muted"> · Due {trackerDue.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} {deadlineClock}</span>}</p>}
+        {showTracker && <p className="mb-3 text-sm text-foreground">{activeSub?.status === "CHANGES_REQUESTED" ? "Selected video: changes requested" : activeSub?.status === "APPROVED" ? "Selected video: approved" : activeSub ? "Selected video: in review" : "Selected video: awaiting edit"}{selectedDue && <span className="text-muted"> · Due {selectedDue.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} {deadlineClock}</span>}</p>}
         <nav aria-label="Edit brief sections" className="flex flex-wrap gap-2">
           <a href={rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand"><FolderOpen className="size-4 shrink-0" /> Open raw footage <UploadDot n={folderCounts.raw} stale={folderCounts.stale} /></a>
+          <a href="#brand-assets" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-medium hover:bg-surface-2">Client assets<span aria-label={assets?.files.length || brandBrief?.files.length ? "Assets available" : !assets && !brandBrief ? "Assets unavailable" : "No assets"} className={`size-2 shrink-0 rounded-full ${assets?.files.length || brandBrief?.files.length ? "bg-success" : "border border-muted"}`} /></a>
           {outputBriefs.length > 0 && <a href="#video-briefs" className={`${BRIEF_SECTION_LINK} border-border-strong bg-surface hover:bg-surface-2`}>Video briefs</a>}
           <a href="#submit-cut" className={`${BRIEF_SECTION_LINK} ${canUploadCuts ? "border-transparent bg-brand-action text-brand-fg hover:brightness-95" : "border-border-strong bg-surface hover:bg-surface-2"}`}>{canUploadCuts ? "Upload for review" : "Cuts and review"}</a>
           <a href="#messages" className={`${BRIEF_SECTION_LINK} border-transparent hover:bg-surface-2`}>Conversation</a>
@@ -1004,11 +1003,61 @@ export default async function EditBriefPage({
         </div>
       )}
 
+      {/* The tracker — where this edit stands, at a glance (stage timeline,
+          order facts incl. the deadline + live countdown, the client's
+          revision asks, every round sent to review). Video jobs only — a
+          photos-only or cancelled job has no edit lifecycle to narrate. */}
+      {showTracker && (
+        <div className="px-4 pt-4 sm:px-6">
+          <section id="edit-history" className="scroll-mt-24">
+            <h2 className="pb-3 text-base font-semibold">Progress, deadlines and review history · {rounds.length} submitted version{rounds.length === 1 ? "" : "s"}</h2>
+          <EditTracker
+            stage={stage}
+            statusLine={`Selected video · ${statusLine}`}
+            hadRevision={hadRevision}
+            // The ACTUAL product name, or the tier-decorated type for a generic
+            // Aryeo label — never the bare word "Video" (208 N Adams St). The
+            // tier is the same videoTier() verdict the deadline is built on.
+            // The office's override, when set, outranks both (Sep 13) — and
+            // the facts say so with a tag.
+            editType={trackerEditType}
+            dueISO={selectedDue ? selectedDue.toISOString() : null}
+            overridden={{ due: selectedPromise ? false : reopened ? reopened.office : overrides.dueAt != null, editType: overrides.typeDetail != null }}
+            // A52: where a reopened job's date came from, and the office's
+            // control to move it (owner/admin only; the action checks again).
+            dueWords={selectedPromise ? "This video’s promised deadline" : reopened ? (reopened.at ? reopened.words : "Reopened, no due date yet") : null}
+            moveDue={
+              !selectedPromise && reopened && strictOwnerAdmin && !viewer?.impersonating
+                ? { action: moveReopenedDueForm, projectId: id, defaultLocal: etLocalInput(trackerDue ?? new Date()), notice: dueNotice }
+                : null
+            }
+            shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
+            photographerName={project.photographer?.name ?? null}
+            song={project.reelSong}
+            rounds={rounds}
+            // When a work order exists it carries the asks in full, itemised —
+            // repeating the raw paragraph here would be the wall of text twice.
+            revisionAsks={briefs.length > 0 ? [] : revisionAsks}
+            revisionAtISO={revisionAtISO}
+            revisionAskedBy={revisionAskedBy}
+            // "It should go directly to the cut that needs a revision"
+            // (Jordan, Sep 16) — the status line and the ask both land on it.
+            revisionHref={revisionHref}
+            showSubmitAnchor={!isOwnerAdmin}
+            evidence={footage}
+          />
+          </section>
+        </div>
+      )}
+
+      <div className="grid gap-6 p-4 sm:p-6 ">
+
       <section className="mx-4 mt-4 rounded-xl border border-border px-4 py-3 sm:mx-6"><h2 className="font-semibold">Client · {project.client.name}</h2><div className="mt-1 flex flex-wrap gap-2 text-sm">{["vip", "heavy", "one_timer", "never_converted"].includes(project.client.segment ?? "") && <span className="rounded bg-surface-2 px-2 py-1" title={project.client.segment === "one_timer" ? "One non-cancelled order recorded" : project.client.segment === "never_converted" ? "No non-cancelled orders recorded" : "Existing client segment"}>{project.client.segment === "one_timer" ? "First Timer" : project.client.segment === "never_converted" ? "New" : project.client.segment === "vip" ? "VIP" : "Heavy"}</span>}<Link href="#brand-assets" className="inline-flex min-h-11 items-center text-brand">Brand assets</Link></div>{brandBrief?.music && <p className="text-sm">Music: {brandBrief.music}</p>}{brandBrief?.acceptedPreferences.slice(0, 3).map((text, index) => <p key={index} className="text-sm">{text}</p>)}</section>
       {outputBriefs.length > 0 && <section className="px-4 pt-4 sm:px-6" aria-label="Video selector"><div className="flex flex-wrap justify-between gap-2"><h2 className="font-semibold">Videos</h2><p className="text-sm text-muted">{approvedSlots} of {slots.length} approved · {slots.length - approvedSlots} remaining</p></div><nav className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-2">{outputBriefs.map((brief) => {
         const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
         const selected = brief.key === selectedKey;
-        return <Link key={brief.outputId} aria-current={selected ? "page" : undefined} title={brief.topicTitle ?? brief.label} href={`/edit/${project.id}?output=${brief.outputId}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}`} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${selected ? "border-brand bg-brand-soft text-brand" : "border-border"}`}>Video {brief.index} of {slots.length} · {latest ? `V${latest.round} · ${latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? "Changes requested" : "In review"}` : "Awaiting edit"}</Link>;
+        const tone = latest?.status === "APPROVED" ? "border-success/40 bg-success-soft text-success" : latest?.status === "PENDING" ? "border-warning/40 bg-warning-soft text-warning" : "border-border bg-surface text-muted";
+        return <Link key={brief.outputId} aria-current={selected ? "page" : undefined} title={brief.topicTitle ?? brief.label} href={`/edit/${project.id}?output=${brief.outputId}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}`} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-2 ring-offset-background" : ""}`}>Video {navigation.get(brief.key)?.number ?? brief.index} of {navigation.get(brief.key)?.total ?? slots.length} · {latest ? `V${latest.round} · ${latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? "Changes requested" : "In review"}` : "Awaiting edit"}</Link>;
       })}</nav></section>}
 
       {editorMonth && (
@@ -1048,55 +1097,7 @@ export default async function EditBriefPage({
       )}
       {monthRead.failed && project.contentMonthId && <div className="px-4 pt-4 sm:px-6"><p role="alert" className="rounded-xl border border-warning/50 bg-warning/10 p-3 text-sm text-warning">This client&apos;s month could not be loaded. The video brief below is still available; reload to try the month view again.</p></div>}
 
-      {/* The tracker — where this edit stands, at a glance (stage timeline,
-          order facts incl. the deadline + live countdown, the client's
-          revision asks, every round sent to review). Video jobs only — a
-          photos-only or cancelled job has no edit lifecycle to narrate. */}
-      {showTracker && (
-        <div className="px-4 pt-4 sm:px-6">
-          <details id="edit-history" className="rounded-xl border border-border bg-surface">
-            <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Progress, deadlines and review history · {rounds.length} submitted version{rounds.length === 1 ? "" : "s"}</summary>
-          <EditTracker
-            stage={stage}
-            statusLine={statusLine}
-            hadRevision={hadRevision}
-            // The ACTUAL product name, or the tier-decorated type for a generic
-            // Aryeo label — never the bare word "Video" (208 N Adams St). The
-            // tier is the same videoTier() verdict the deadline is built on.
-            // The office's override, when set, outranks both (Sep 13) — and
-            // the facts say so with a tag.
-            editType={trackerEditType}
-            dueISO={trackerDue ? trackerDue.toISOString() : null}
-            overridden={{ due: reopened ? reopened.office : overrides.dueAt != null, editType: overrides.typeDetail != null }}
-            // A52: where a reopened job's date came from, and the office's
-            // control to move it (owner/admin only; the action checks again).
-            dueWords={reopened ? (reopened.at ? reopened.words : "Reopened, no due date yet") : null}
-            moveDue={
-              reopened && strictOwnerAdmin && !viewer?.impersonating
-                ? { action: moveReopenedDueForm, projectId: id, defaultLocal: etLocalInput(trackerDue ?? new Date()), notice: dueNotice }
-                : null
-            }
-            shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
-            photographerName={project.photographer?.name ?? null}
-            song={project.reelSong}
-            rounds={rounds}
-            // When a work order exists it carries the asks in full, itemised —
-            // repeating the raw paragraph here would be the wall of text twice.
-            revisionAsks={briefs.length > 0 ? [] : revisionAsks}
-            revisionAtISO={revisionAtISO}
-            revisionAskedBy={revisionAskedBy}
-            // "It should go directly to the cut that needs a revision"
-            // (Jordan, Sep 16) — the status line and the ask both land on it.
-            revisionHref={revisionHref}
-            showSubmitAnchor={!isOwnerAdmin}
-            evidence={footage}
-          />
-          </details>
-        </div>
-      )}
-
-      <div className="grid gap-6 p-4 sm:p-6 ">
-        {/* LEFT — where the media is, what to make, how to make it, the work, the history */}
+      {/* LEFT — where the media is, what to make, how to make it, the work, the history */}
         {/* min-w-0: a grid item's automatic minimum is its MIN-CONTENT, so one
             line of non-wrapping text anywhere in this column stretches the
             whole track past the screen. The revision card's one-line summary
@@ -1125,8 +1126,8 @@ export default async function EditBriefPage({
                   </a>
                 )}
               </div>
-              <details id="brand-assets" className="scroll-mt-24 border-t border-border pt-2">
-                <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Client brand kit and reference assets</summary>
+              <section id="brand-assets" className="scroll-mt-24 border-t border-border pt-2">
+                <h2 className="px-2 py-3 text-base font-semibold">Client assets</h2>
               {/* The client's asset shelf — "Assets available" vs "No assets"
                   is the Dropbox folder truth; editors, admin and owner can all
                   upload (Jordan's spec). */}
@@ -1166,7 +1167,7 @@ export default async function EditBriefPage({
                   </div>
                 </div>
               )}
-              </details>
+              </section>
             </div>
           </Section>
 
@@ -1254,7 +1255,7 @@ export default async function EditBriefPage({
                   return (
                   <article key={o.outputId} id={`brief-${o.outputId}`} className="scroll-mt-24 border-t border-border pt-4 text-sm leading-relaxed">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                      <h4 className="text-base font-semibold">{o.index}. {o.topicTitle || o.label}</h4>
+                      <h4 className="text-base font-semibold">{navigation.get(o.key)?.number ?? o.index}. {o.topicTitle || o.label}</h4>
                       {o.format !== o.label && <span className="text-sm text-muted">{o.format}</span>}
                     </div>
                     <p className="text-[13px] text-muted">{o.versionLabel} · {latest ? `Cut v${latest.round} · ${latest.status.toLowerCase().replace(/_/g, " ")}` : "No cut submitted"}</p>
@@ -1568,7 +1569,7 @@ export default async function EditBriefPage({
               never reach this page; editors see the card once the key is
               connected, the office sees the "connect it" note until then;
               a "view as" preview can look but not pick or download. */}
-          {videoDeliverables.length > 0 && (musicConnected || isOwnerAdmin) && (
+          {catalogueMusicAllowed && (musicConnected || isOwnerAdmin) && (
             <MusicCard
               projectId={project.id}
               connected={musicConnected}
@@ -1579,6 +1580,8 @@ export default async function EditBriefPage({
               musicType={typeof editSpec.musicType === "string" ? editSpec.musicType : null}
             />
           )}
+
+          {selectedVideoStyle && !catalogueMusicAllowed && <section className="rounded-xl border border-border p-4"><h2 className="font-semibold">Music · trending audio</h2><p className="mt-2 text-sm">Use trending music for this video. The licensed music chooser is for MLS and standard horizontal cinematic videos.</p></section>}
 
           {/* 4 · HOW TO MAKE IT, in words — the spec, the customer's own words
               on this order, and everything that came off the shoot, in one

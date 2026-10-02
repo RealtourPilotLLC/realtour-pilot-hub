@@ -475,7 +475,7 @@ export function CutReviewPanel({
                   {/* WHO LEFT IT, AND WHEN (Jordan, Sep 28: "we know who left
                       the review comments"). The name was stored on every note
                       and shown on none of them here. Then who last moved it. */}
-                  <span className="mt-0.5 block text-[11px] text-muted-2">
+                  <span className="mt-1 block text-sm text-muted">
                     {byLine(n.authorName ?? "Someone", n.createdAt)}
                     {statusLine(n) ? ` · ${statusLine(n)}` : ""}
                   </span>
@@ -515,7 +515,7 @@ export function CutReviewPanel({
                         <span className="text-xs font-medium text-muted">{r.authorName ?? "Someone"}: </span>
                         <span className="text-foreground/85">{r.body}</span>
                         {/* Replies carry their time too (gap 3). */}
-                        <span className="ml-1.5 text-[10px] text-muted-2">{whenET(r.createdAt)}</span>
+                        <span className="ml-1.5 text-sm text-muted">{whenET(r.createdAt)}</span>
                       </div>
                     </div>
                   ))}

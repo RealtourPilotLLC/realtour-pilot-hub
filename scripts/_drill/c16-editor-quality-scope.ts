@@ -33,7 +33,7 @@ async function main() {
     }
     const before = await prisma.reviewSubmission.findMany({ orderBy: { id: "asc" } });
     await setSession({ uid: kim.id, email: kim.email, role: kim.role });
-    const report = reportOf(await page());
+    const report = reportOf(await page({}));
     c.ok("actual signed editor home card excludes synthetic-only quality", report?.editorKey === "kim" && report.firstReview.reviewed === 2 && report.firstReview.passed === 2, JSON.stringify(report?.firstReview));
     const normal = await editorQuality({ editorKey: "kim", excludeClientIds: [fixture.id] });
     c.ok("home and normal quality reader agree, retaining protected identity and TEST address", report?.firstReview.reviewed === normal.firstReview.reviewed && normal.firstReview.reviewed === 2);

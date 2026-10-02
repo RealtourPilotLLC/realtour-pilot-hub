@@ -34,9 +34,8 @@ export type RoundRow = {
       job are unreadable without it; optional so a legacy folder row (no
       deliverable/slot) still lists. */
   cutLabel?: string | null;
-  /** Where this round lives on the page — "#cut-<id>" when its panel is
-      rendered below (Sep 16). Every route to a revision must end ON the cut,
-      not near it; a round with no panel stays plain text. */
+  /** Exact version route and anchor. Selecting a historical round must first
+      mount that version's workspace; a missing destination stays plain text. */
   href?: string | null;
 };
 
@@ -447,14 +446,14 @@ export function EditTracker({
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
             <History className="size-3.5" /> Cuts sent to review
           </div>
-          <ul className="mt-1.5 space-y-1">
+          <ul className={`mt-2 grid gap-2 ${rounds.length > 4 ? "xl:grid-cols-2" : ""}`}>
             {rounds.map((r) => {
               const chip = ROUND_CHIP[r.status] ?? { text: r.status, cls: "bg-surface-2 text-muted" };
               // A withdrawn version is struck through — it was pulled back, so
               // it must not read as a round still in play (Sep 16).
               const gone = r.status === "WITHDRAWN";
               return (
-                <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border px-3 py-2 text-sm">
                   {/* Multi-cut jobs: name the cut first, so four "Round 1"s read
                       as four different videos rather than a repeated line. The
                       line opens that cut when its panel is on the page. */}
@@ -462,9 +461,9 @@ export function EditTracker({
                       line, no dead link. */}
                   <a
                     {...(r.href ? { href: r.href } : {})}
-                    className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 ${r.href ? "hover:underline" : ""} ${gone ? "text-muted line-through" : ""}`}
+                    className={`flex min-h-11 min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 ${r.href ? "hover:underline" : ""} ${gone ? "text-muted line-through" : ""}`}
                   >
-                    {r.cutLabel && <span className="max-w-64 truncate text-muted">{r.cutLabel} ·</span>}
+                    {r.cutLabel && <span className="break-words text-foreground">{r.cutLabel} ·</span>}
                     <span className="font-medium">Round {r.round}</span>
                     <span className="text-xs text-muted-2">
                       {r.submittedByName ? `${r.submittedByName} · ` : ""}

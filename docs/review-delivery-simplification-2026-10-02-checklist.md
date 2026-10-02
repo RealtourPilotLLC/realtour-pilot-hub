@@ -19,46 +19,70 @@ No deployment, real client sends/invitations, provider delivery/upload, automati
 
 ### B — Durable listing handoff
 
-- [ ] R01 exact upload/version/file/listing/actor/time history, correction and idempotent saves.
-- [ ] R02 shared Home/task manual send transition without human checklist or notice questionnaire; stale version and partial-save repair preserved.
-- [ ] Compact Ready to upload / Uploaded, not sent groups; simple saved/error/reconciliation feedback.
-- [ ] R08 finished preview matches download, authorized for listing delivery.
-- [ ] R09 same provider ID replacements can be acknowledged without count growth.
+- [x] R01 exact upload/version/file/listing/actor/time history, correction and idempotent saves.
+- [x] R02 shared Home/task manual send transition without human checklist or notice questionnaire; stale version and partial-save repair preserved.
+- [x] Compact Ready to upload / Uploaded, not sent groups; simple saved/error/reconciliation feedback.
+- [x] R08 finished preview matches download, authorized for listing delivery.
+- [x] R09 same provider ID replacements can be acknowledged without count growth.
 
 ### C — Provider settlement / monthly publication
 
 - [x] R07 portal markers excluded from outside-portal sends; real handoff-shaped deadline/reminder/expiry + entitlement regression: 37 passed, 0 failed (isolated PostgreSQL).
-- [ ] R05 both Aryeo paths + hourly reconcile require upload/version/listing/file/event occurrence evidence; ambiguity held.
-- [ ] R03 automatic technical portal publication, exact backup/library/seat/access, exception retry.
-- [ ] R06 release clock starts at publication; eligibility independent of release, idempotent notices under existing gates.
-- [ ] R10 failed/skipped/unverified Topaz not normal successful monthly publication; existing authorized overrides/history retained.
-- [ ] Read-only legacy backlog/window repair proposal, no live repair.
+- [x] R05 both Aryeo paths + hourly reconcile require upload/version/listing/file/event occurrence evidence; ambiguity held.
+- [x] R03 automatic technical portal publication, exact backup/library/seat/access, exception retry.
+- [x] R06 release clock starts at publication; eligibility independent of release, idempotent notices under existing gates.
+- [x] R10 failed/skipped/unverified Topaz not normal successful monthly publication; existing authorized overrides/history retained.
+- [x] Read-only legacy backlog/window repair proposal, no live repair.
 
 ### D — Review Room
 
-- [ ] R04 stable owed output tabs Video X of Y · V1/Vn, including unsubmitted slots.
-- [ ] Remove duplicate delivery boards on index/detail; compact project output status, next action and unavailable read state.
-- [ ] QC/comments/revisions/reviewer coverage/history retained.
+- [x] R04 stable owed output tabs Video X of Y · V1/Vn, including unsubmitted slots.
+- [x] Remove duplicate delivery boards on index/detail; compact project output status, next action and unavailable read state.
+- [x] QC/comments/revisions/assignment permissions/history retained. User-requested coverage section removed; comments show author and timestamp.
 
 ### E — Editing Room / Brief
 
-- [ ] E03–E05 factual identity, confirmed scoped preferences; no AI/general note commands; exact project/month source scope.
-- [ ] E01 compact office/editor queue, Working now, filters/back navigation and role constraints.
-- [ ] E02/E06 one selected video workspace with all owed outputs reachable, unfinished default, upload target locked while running.
-- [ ] E07 one current linked issue action list per output; verified legacy flags/history, reopen/unmapped cases.
-- [ ] E08 reviewer classification correction including verified issues; conversation retained, nondefects excluded from work/KPI.
-- [ ] Manual Start/Pause, scoped brand choices/alerts, meaningful receipt changes, approved replacement QC/history preserved.
+- [x] E03–E05 factual identity, confirmed scoped preferences; no AI/general note commands; exact project/month source scope.
+- [x] E01 compact office/editor queue, Working now, filters/back navigation and role constraints.
+- [x] E02/E06 one selected video workspace with all owed outputs reachable, unfinished default, upload target locked while running.
+- [x] E07 one current linked issue action list per output; verified legacy flags/history, reopen/unmapped cases.
+- [x] E08 reviewer classification correction including verified issues; conversation retained, nondefects excluded from work/KPI.
+- [x] Manual Start/Pause, scoped brand choices/alerts, meaningful receipt changes, approved replacement QC/history preserved.
 
 ### F — Acceptance
 
 - [ ] Delivery checks 1–22 in updated backlog, isolated behavioral evidence.
 - [ ] Editor checks 1–16, actual office/editor fixtures.
-- [ ] Update obsolete drills without deleting access/state safeguards.
-- [ ] Typecheck/lint/build required gates; focused review per batch.
-- [ ] Native desktop/mobile simple, 16-output mixed-state and reopened revision visual evidence.
+- [x] Update obsolete drills without deleting access/state safeguards; expanded desk chooser tested separately (140 passed).
+- [x] Typecheck/changed-file lint/isolated build; focused follow-up review. See full-lint limitation below.
+- [x] Native desktop/mobile simple, 16-output mixed-state and reopened revision visual evidence as actual office/editor personas. Upload chooser itself remains a real-browser acceptance limitation, below.
 
 ## Checkpoints / handoff
 
 - Baseline already recoverable at `5596d4e` (remote main matches). No production changes made for this request.
 - R07 checkpoint: reviewWindows marker reader fix + integrated monthly portal regression; typecheck passed. Evidence `/private/tmp/rtp-simplification-drills/monthly-portal-approval-gate.ts_postgres.log`.
-- Current batch B: durable upload ledger + guarded Home/task send + compact UI implemented, behavioral verification pending. No live schema/data/provider change.
+- `a60424b`: tested exact upload/Sent history and correction, authenticated provider proof, monthly publication/backup/access/window gates, authorized finished preview, selected-video brief, scoped facts/issues, Review Room summary. Local only.
+- Follow-up checkpoint: exact selected tracker/deadline/history routes, durable video display identities, upload navigation/reconciliation, green/yellow tabs, removed ReviewerStrip, expanded top history and client assets, social trending music, compact queue and canonical counts. Raw/Final folder controls remain visible with green or unfilled dots. Local only.
+
+## Verification evidence / limitations
+
+Isolated tests passed: upload ledger 21; monthly destination 51; portal window 37; delivery UI 43; Aryeo autosent 23; mixed delivery 27; final rendition 34; historical Final UI 19; editor brief 26; receipts 13; quality scope 5; revision quality 17; assignment policy 44; editor month 15; replay 25; echo recovery 36; communications 170; upload attempt recovery 26; self-QC 141. Logs: `/private/tmp/rtp-simplification-drills`.
+
+Build passed in private source copy with no production env, fenced database/network and documented font mock. Typecheck and changed-file lint passed. Last source edit after build only reordered two existing navigation links and updated documentation/comments; final typecheck/lint confirm this candidate. Full lint has legacy failures: baseline 50 errors/62 warnings; root also traverses embedded Claude worktrees (170 errors/192 warnings). Full lint is not clean.
+
+Native acceptance: Kyle Home → Ready to upload → Uploaded, not sent → Mark sent verified in disposable fixture, no external send. Review retains original approval actor/time plus exact Sent actor/time and correction history. Green approved/yellow pending tabs and named/timestamped comments verified. Kim is a real EDITOR session, separate from office cookies; manual Pause, one selected receipt/uploader, 16 reachable outputs including empty, reopened issue shown once. Exact history link switches selected video and tracker. Single/mixed/reopened briefs and queue tested at 390px: scroll width equals client width. Standard desktop rows 72px; 16-output exception row 113px. Raw/Final visible with green occupied / transparent unfilled empty dots. Client assets expanded and adjacent to Raw footage. Screenshot proof: `/private/tmp/rtp-editing-queue-final.jpg`, `/private/tmp/rtp-editor-single-mobile-final.jpg`, `/private/tmp/rtp-editor-mixed-mobile-final.jpg`, `/private/tmp/rtp-editing-mobile-final.jpg`. No real client records used.
+
+Focused latest regressions: editor composition 26; desk 140; upload navigation 6; delivery UI 43; queue 15; Review Room 13. All passed. Prior causal regression counts above remain valid; no full broad audit rerun.
+
+Read-only production proposal: 52 approved records inspected, uncapped; 0 library-linked manual candidates; 0 Aryeo repair candidates; 11 upload/delivery candidates; 3 portal exceptions; 1 ambiguity; 0 window repair proposals in bounded scope. Protected private JSON only, no live repairs. New schema column absent; migration history table absent (existing db-push workflow). Backup coverage for new rollout unverified. Prepared SQL only, never deployed/applied.
+
+## Remaining real-world checks and next actions
+
+- Deployment/schema: verify production backup coverage, review/apply prepared additive `prisma/rollouts/2026-10-02-portal-publication.sql` under rollout authorization, then build/deploy and production read-only smoke. Current request excludes deployment; no migration/push/deployment performed.
+- Native file chooser: supported browser upload selection was previously unavailable; do not repeat alternate access workarounds. Server resumable recovery 26 and self-QC 141 plus navigation 6 pass in isolation. Kyle/Kim must perform one supported browser choose-file/QC/upload/refresh run before claiming fully tested live editor journey.
+- Provider proof: isolated authentic-event/hash guards pass. Validate actual Aryeo payload/file-hash availability in a controlled authorized handoff; ambiguous proof stays manual Uploaded/not sent. No real provider deliveries made.
+- Production repairs: candidate report is a proposal, not proof of upload or authorization. Confirm exact current version/source/client/window individually before any historical repair; no bulk backfill.
+- Music clarification pending: standard cinematic/MLS chooser retained; social branding/premium reels always trending. Premium horizontal cinematic chooser remains excluded until the outstanding clarification is answered. No saved music changed.
+- Full lint: legacy repository failures remain; scoped lint is clean. Resolve baseline debt separately if required as release gate.
+
+Implemented/tested/committed are local statuses. This batch is **not deployed, not enabled, and not client-visible**. Acceptance F remains partial because live provider/file chooser/backup/schema rollout checks are not complete; do not claim the platform is fully finished.

@@ -305,7 +305,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         <details className="group rounded-xl border border-border bg-surface" id="editing-capacity">
           <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-brand">
             <span className="font-semibold">Capacity and activity details</span>
-            <span className="text-muted"> · {workload.totals.editing.videos} videos to edit · {workload.overdue} overdue projects</span>
+            <span className="text-muted"> · {notDone.reduce((total, row) => total + row.videosToEdit, 0)} videos to edit · {workload.overdue} overdue projects</span>
             {capacityNow.length > 0 && <span className="text-warning"> · {capacityNow.length} recorded availability {capacityNow.length === 1 ? "change" : "changes"} in force</span>}
           </summary>
           <div className="space-y-3 border-t border-border p-3">

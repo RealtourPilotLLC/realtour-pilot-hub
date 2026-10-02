@@ -4,7 +4,7 @@ import { editorRouting } from "@/lib/settings";
 import { VIDEO_LANE_KEYS } from "@/lib/editors";
 import { resolveEditorAssignment } from "@/lib/editorAssignment";
 import { appBase } from "@/lib/appUrl";
-import { cutKeyOf } from "@/lib/reviewCuts";
+import { cutKeyOf, videoStatesFor } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -191,6 +191,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // no task yet. Without this, every row showed the current rule's editor and
   // misattributed Kim's and Luma's in-flight work to John Mark.
   const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
+  const owedSlotsByProject = new Map([...(await videoStatesFor(allIds))].map(([id, state]) => [id, state.owed]));
   const [openTasks, msgCounts, cutRows, work, holders] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
@@ -423,7 +424,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     // approved before the job's video work is finished.
     // The office's number (videosOwedOverride) wins over both (Sep 13).
     const computedVideos = computedVideosOwed(p, videos);
-    const videosOwed = effectiveVideosOwed(p, videos);
+    const videosOwed = owedSlotsByProject.get(p.id) ?? effectiveVideosOwed(p, videos);
     // The job's OWN folder (a same-street re-shoot or a month-moved shoot lives
     // off the convention path — audit, Sep 8).
     const folders = actualFolderPaths(p);
@@ -609,6 +610,8 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       held: (heldSet.has(p.id) || !!p.statusPinnedAt) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
       // "1 ready for review · 3 more to edit" — null on a one-video job. On a
       // row reading Revisions it also names who asked and when (Sep 28).
+      progressSummary: [cut?.approved ? `${cut.approved} approved` : null, cut?.waiting ? `${cut.waiting} review` : null, cut?.revising ? `${cut.revising} changes` : null, cut?.checking ? `${cut.checking} self-check` : null, notStarted ? `${notStarted} to edit` : null].filter(Boolean).join(" · ") || null,
+      revisionContext: askLine.get(p.id)?.line ?? null,
       videoBreakdown: (() => {
         const label = upcoming && !pinned ? "Waiting" : reopened ? EXTRA_SHOOT_STATUS : wl.label;
         const ask = label === "Revisions" ? askLine.get(p.id)?.line ?? null : null;

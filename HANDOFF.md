@@ -126,3 +126,8 @@ Audited read-only against live bank feeds, QuickBooks, and Aryeo.
 - **Jordan enters all passwords/secrets himself.** Never type credentials into a field.
 - **QuickBooks access is read-only.**
 - Audit/probe scripts against prod must be strictly read-only unless doing a deliberate, reported repair.
+
+
+## October 2 review/delivery simplification follow-up
+
+Resume from `docs/review-delivery-simplification-2026-10-02-checklist.md`, which supersedes earlier UI state and records latest local checkpoints, verified behavior and release holds. Raw/Final buttons restored visibly with green/empty dots; history and client assets expanded; exact selected-video navigation/status fixed. New backlog excludes deployment, sends, provider deliveries and bulk production repair. Do not repeat the completed audit or causal checks. Production `.env` remains live; new publication column is not applied. Check the checklist's concrete remaining real-world checks before release.

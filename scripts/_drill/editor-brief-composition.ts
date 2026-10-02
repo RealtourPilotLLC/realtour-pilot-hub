@@ -215,11 +215,14 @@ async function main() {
     c.ok("exact assignment receipt exists once inside each canonical output, with unchanged digest and role", outputs.filter((o) => flat.some((e) => e.props.id === `brief-${o.id}`)).every((o) => { const r = by("EditorBriefReceiptCard").filter((e) => e.props.outputId === o.id); return r.length === 1 && r[0].props.canAcknowledge === true && r[0].ancestors.some((a) => a.props.id === `brief-${o.id}`) && (r[0].props.state as { digest?: string })?.digest === receiptStates.get(o.id)?.digest; }));
     c.ok("canonical briefs retain exact filmed script words, source links and intentional no-brand choice", safeBriefs.filter((b) => flat.some((e) => e.props.id === `brief-${b.outputId}`)).every((b) => { const article = flat.find((e) => e.props.id === `brief-${b.outputId}`); const nested = elements(article?.props.children); return !!article && words(article.props.children).includes("intentionally none") && (!b.folder || nested.some((e) => e.props.href === b.folder?.url)) && (!b.script?.text || nested.some((e) => e.name === "ScriptView" && e.props.body === b.script?.text)); }));
     c.ok("selected revision instructions and raw files remain available", flat.some((e) => e.props.target === "_blank" && typeof e.props.href === "string" && e.props.href.includes("grove")) && by("RevisionIssuesPanel").some((e) => e.props.canReview === false));
-    c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && flat.some((e) => e.props.href === `#cut-${cuts[0].id}`) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
+    c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && flat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`cut=${cuts[0].id}`) && e.props.href.endsWith(`#cut-${cuts[0].id}`)) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
     const currentIssues = by("RevisionIssuesPanel").find((e) => e.props.canReview === false && !e.ancestors.some((a) => a.name === "details"));
     c.ok("linked legacy OPEN notes do not duplicate verified or reopened instructions", (currentIssues?.props.issues as { id: string }[]).filter((issue) => issue.id === reopened.id).length === 1 && !(currentIssues?.props.issues as { id: string }[]).some((issue) => issue.id === praiseIssue.id) && by("EditorCutPanel").every((e) => !(e.props.notes as { id: string }[]).some((entry) => entry.id === praise.id || entry.id === note.id)));
     c.ok("manual work bar and exact uploader/QC controls remain independent of receipt", by("WorkStateBar").length === 1 && by("CutUploader")[0].props.canUpload === true && by("CutUploader")[0].props.checks !== undefined && by("RevisionIssuesPanel").length === 2 && by("ProjectMessages")[0].props.readOnly === false);
-    c.ok("folded history and sessions retain mounted children", by("EditTracker").some((e) => e.ancestors.some((a) => a.name === "details" && a.props.id === "edit-history" && a.props.open !== true)) && flat.some((e) => e.name === "details" && e.props.id === "month-sessions" && e.props.open !== true && !!e.props.children));
+    c.ok("visible top tracker and folded sessions retain mounted children", by("EditTracker").some((e) => e.ancestors.some((a) => a.name === "section" && a.props.id === "edit-history")) && flat.some((e) => e.name === "details" && e.props.id === "month-sessions" && e.props.open !== true && !!e.props.children));
+    const tracker = by("EditTracker")[0];
+    c.ok("top tracker follows selected revision rather than another approved output", String(tracker.props.statusLine).includes("Changes requested") && tracker.props.dueISO === safeBriefs.find((b) => b.outputId === outputs[0].id)?.promisedAtISO);
+    c.ok("every history link selects its exact version before anchoring", (tracker.props.rounds as { id: string; href: string }[]).every((r) => r.href.includes(`cut=${r.id}`) && r.href.endsWith(`#cut-${r.id}`)));
     c.ok("editor brief free-text remains creative-safe after recomposition", !words(tree).includes("$500") && !JSON.stringify(by("ScriptView").map((e) => e.props.body)).includes("$500"));
     const empty = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({ queue, output: outputs[15].id }) }));
     c.ok("sixteen mixed-state outputs include an unsubmitted selected workspace", outputs.length === 16 && empty.filter((e) => e.props["aria-current"] === "page").length === 1 && empty.some((e) => e.props.id === `brief-${outputs[15].id}`) && !empty.some((e) => e.name === "EditorCutPanel"));
@@ -251,6 +254,23 @@ async function main() {
     const office = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
     c.ok("office brief forms remain mounted inside native disclosures with exact expected versions", outputs.filter((o) => office.some((e) => e.props.id === `brief-${o.id}`)).every((o) => office.some((e) => e.name === "form" && e.ancestors.some((a) => a.name === "details") && elements(e.props.children).some((x) => x.props.name === "outputId" && x.props.value === o.id) && elements(e.props.children).some((x) => x.props.name === "expectedVersion" && x.props.value === 1))));
     c.ok("all providers remained declared fakes and workers/sends stayed off", fence.blocked.length === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { not: "portal_layout_v2" } } }) === 0 && await prisma.outboxMessage.count() === 0);
+    c.ok("social brief never shows the music chooser and directs trending audio", !office.some((e) => e.name === "MusicCard") && words(office.map((e) => e.props.children)).includes("trending audio"));
+    c.ok("client assets are expanded with their direct top navigation", office.some((e) => e.name === "section" && e.props.id === "brand-assets") && office.some((e) => e.props.href === "#brand-assets" && words(e.props.children).includes("Client assets")));
+    if (!serve) {
+      await prisma.deliverable.updateMany({ where: { projectId: single.id }, data: { videoStyle: "standard_cinematic", type: "VIDEO" } });
+      const cinematic = elements(await page({ params: Promise.resolve({ id: single.id }), searchParams: Promise.resolve({}) }));
+      c.ok("standard horizontal cinematic brief retains the licensed music chooser", cinematic.some((e) => e.name === "MusicCard"));
+      const { videoNavigationFor } = await import("@/lib/videoNavigation");
+      const initialNavigation = await videoNavigationFor(mainJob.id);
+      await prisma.project.update({ where: { id: mainJob.id }, data: { videosOwedOverride: 4 } });
+      await ensureOutputsForProject(mainJob.id);
+      const reducedNavigation = await videoNavigationFor(mainJob.id);
+      c.ok("retiring outputs does not renumber surviving or historical video identities", JSON.stringify([...initialNavigation]) === JSON.stringify([...reducedNavigation]));
+      await prisma.project.update({ where: { id: mainJob.id }, data: { videosOwedOverride: 18 } });
+      await ensureOutputsForProject(mainJob.id);
+      const expandedNavigation = await videoNavigationFor(mainJob.id);
+      c.ok("new override outputs append while prior video numbers remain stable", expandedNavigation.size === 18 && [...initialNavigation].every(([key, value]) => expandedNavigation.get(key)?.number === value.number));
+    }
     c.summary();
     if (process.exitCode) throw new Error("New brief composition check failed; no visual server started.");
     if (!serve) return;
@@ -283,7 +303,7 @@ async function main() {
   } finally {
     try { await stop(server); }
     finally { try { await sample?.stop(); } finally { try { if (logFd !== undefined) fs.closeSync(logFd); } finally { try { await db.stop(); } finally { fence.restore(); } } } }
-    console.log("Stopped only owned3225/5617/5618; preserved main3200/5599/5598 and saved demo files.");
+    console.log(`Cleaned owned fixture PG${DB_PORT}${serve ? `/app${APP_PORT}/sample${SAMPLE_PORT}` : ""}; existing processes and saved demo files preserved.`);
   }
 }
 main().catch((error) => { console.error(error instanceof Error ? error.message : "Isolated visual fixture failed."); process.exitCode = 1; });

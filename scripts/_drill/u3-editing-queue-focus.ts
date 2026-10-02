@@ -69,14 +69,14 @@ async function main() {
     const signIn = (u: typeof owner) => setSession({ uid: u.id, email: u.email, role: u.role, name: u.name ?? undefined });
     await clearSession();
     let anonymous = "";
-    try { await page(); } catch (error) {
+    try { await page({}); } catch (error) {
       if (error instanceof Redirect) anonymous = error.href;
       else if (error instanceof Error && "digest" in error && typeof error.digest === "string" && error.digest.startsWith("NEXT_REDIRECT;")) anonymous = error.digest.split(";")[2];
       else throw error;
     }
     c.ok("anonymous editing page fails closed", anonymous.startsWith("/login"));
     await signIn(owner);
-    const tree = await page();
+    const tree = await page({});
     const html = renderToStaticMarkup(tree);
     c.ok("signed owner sees summary and queue before collapsed diagnostics", html.indexOf('aria-label="Editors today"') < html.indexOf('id="editing-queue-heading"') && html.indexOf('id="editing-queue-heading"') < html.indexOf('id="editing-capacity"') && /<details[^>]*id="editing-capacity"[^>]*>/.test(html) && !/<details[^>]*id="editing-capacity"[^>]*open/.test(html));
     c.ok("manual add remains alongside queue and counts name their units", html.includes("Add a job to the queue") && html.includes("open projects") && html.includes("videos to edit") && html.includes("overdue projects"));
@@ -91,21 +91,21 @@ async function main() {
     c.ok("saved assignment, routing suggestion and explicit unassignment remain distinct", rows.find((r) => r.id === active.id)?.assignmentState === "assigned" && rows.find((r) => r.id === predicted.id)?.assignmentState === "predicted" && rows.find((r) => r.id === unassigned.id)?.assignmentState === "unassigned");
     c.ok("queue retains stacked mobile cards and office More menu", html.includes("sm:table-row") && html.includes("More actions") && html.includes("Open work") && html.includes("Completed"));
     search = "editor=kim&due=overdue";
-    const filtered = renderToStaticMarkup(await page());
+    const filtered = renderToStaticMarkup(await page({}));
     c.ok("Kim overdue URL survives queue-to-brief links", filtered.includes(`href="/edit/${active.id}?queue=editor%3Dkim%26due%3Doverdue"`) && !filtered.includes(`href="/edit/${johnJob.id}?queue=`));
     search = "";
     await signIn(kim);
-    const editorTree = await page();
+    const editorTree = await page({});
     const editorHtml = renderToStaticMarkup(editorTree);
     const own = elements(editorTree, "SimpleQueue")[0];
     c.ok("signed Kim retains scoped queue and explicit desk before it", own.hideEditor === true && (own.notDone as QueueRow[]).every((r) => r.editorKey === "kim") && elements(editorTree, "EditorDesk").length === 1 && !editorHtml.includes('id="editing-capacity"') && !editorHtml.includes("Add a job to the queue"));
     c.ok("editor first paint preserves manual Pause and no rare office controls", editorHtml.includes("Pause") && !editorHtml.includes("More actions"));
     await signIn(unmapped);
-    const unmappedTree = await page();
+    const unmappedTree = await page({});
     const unmappedQueues = elements(unmappedTree, "SimpleQueue");
     c.ok("unmapped editor still receives no company rows", unmappedQueues.every((props) => ([...props.notDone as QueueRow[], ...props.upcoming as QueueRow[], ...props.done as QueueRow[]]).length === 0) && elements(unmappedTree, "EditingWorkSummary").length === 0);
     await signIn(photographer);
-    const photoTree = await page();
+    const photoTree = await page({});
     c.ok("photographer retains own separate board and no office diagnostics", elements(photoTree, "PhotographerJobs").length === 1 && elements(photoTree, "SimpleQueue").length === 0 && elements(photoTree, "EditingWorkSummary").length === 0);
     const failed = renderToStaticMarkup(createElement(EditingWorkSummary, { view: { ok: false, readAt: now.toISOString(), error: "fixture failure" } }));
     const stale = renderToStaticMarkup(createElement(EditingWorkSummary, { view: { ok: true, readAt: before.toISOString(), lines: [] } }));
