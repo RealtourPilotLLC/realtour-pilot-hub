@@ -1,24 +1,30 @@
 # Ops Hub audit — current resume point
 
-## Oct 1 evening — current autonomous work
+## Oct 1 final application checkpoint — deployed; remaining acceptance blocked
 
-Canonical https://hub.realtourpilot.com serves830a559b8e02, Ready
-dpl_JVhUdakNwrD3NmD24Pvcfky7En2a, promoted8:43:51 PM EDT. ErrorScreenab6cfdf,
-durable authenticated delivery proofd22c582 and portal-aware fallback830a559
-are separately built/staged/deployed and HTTP/read-only verified. Settings/
-automation OFF/TEST_ONLY/seats preserved; only recorded operational markers
-moved. d22c582 rollback; retain database/newer writes. Historical toolingb7909ab
-is committed, PG20/0, bounded25006 dry-run7 ready pointers, **NOT APPLIED**.
+Canonical https://hub.realtourpilot.com serves fa346fa1d9a4, Ready
+dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG, promoted 9:22:45 PM EDT. Exact clean/remote
+build/stage/Ready promotion/production HTTP/read-only gates pass. Settings/
+automation OFF/TEST_ONLY/seats unchanged; only mailbox-health markers moved.
+Rollback 830a559 preserves database/newer writes. Held bcfa41d/67f5beb must never
+be promoted. No sends/invitations, real bookings, financial/schema changes,
+activation/rollout expansion or Git push. Five-table schema/backup already done.
 
-Localc298fba commits continuous built normal-role first CALL18/0 (including
-returning-editor/no-brand receipts) and later WRITTEN22/0. Both traverse exact
-source→script decisions→filming/editor/manual clocks→James v1/v2→fake final
-Dropbox→portal handoff→client verdict→exact bytes; providers/media are fake,
-workers OFF, no real invitations. Pro two-session/four-hour/eight-output
-causal fixture reproduced actual first-session output inflation4→8. Confirmed
-session quota repair +single/batched reader parity passes domain20/0, lint/types
-and root review; exact new build and same causal fixture are next. No Pro
-journey pass yet. See `audit-2026-10-01-causal-client-journeys.md`.
+Verified continuous signed HTTP journeys: first CALL 18/0 and later WRITTEN 22/0
+(checkpoint c298fba, exact ab6), final Pro two-session28/0 (checkpoint 009b00b,
+exact fa346fa). Pro quota/canonical writer21/0 + flexible/near-slot timing 7/0,
+nonempty provenance/stored addresses/eight exact final bytes/manual clocks pass.
+CALL/WRITTEN cover v1→v2 revision; Pro covers independent approval/handoff.
+Providers/media/imports/watch ticks are declared fake inputs; workers unused.
+Whole-tree types 0/lint 0/reviews clear; all owned test services stopped. Main
+preview 3200/5599/5598 preserved. No runtime-source difference afterfa346fa.
+Historical tooling b7909ab20/0 +seven pointer read-only preparation remains
+**NOT APPLIED**; exact semantic bindings require Kyle's source confirmation.
+
+No further confirmed autonomous application defect remains documented. Do not
+restart investigation or repeat green checks. See the concise seven-part status
+and next-step owners in `audit-2026-10-01-checkpoint-summary.md` and the existing
+C14/U6 acceptance map. The platform is not fully launch-accepted.
 
 Browser binding was previously policy-rejected, prohibiting workarounds; current
 supported inventory still times out. Mounted C14 and U0–U6/phone/team/provider/
@@ -27,7 +33,7 @@ historical topic/cut/property/owed scope, first roster, generated-date override
 policy and optional manual proofless unknown settlement. No new receipt
 enforcement policy is needed or assumed; current separate receipt/Start behavior
 is preserved. All older “current/no unfinished source” headings below are dated
-history and superseded here. Preserve main preview3200/5599/5598.
+history and superseded here. Preserve main preview 3200/5599/5598.
 
 Use this page first. The full backlog is in
 `audit-2026-09-30-checklist.md`; acceptance and release boundaries are in
@@ -93,7 +99,7 @@ C14 actual Home/Review/Editing/Schedule named read failures and recovery pass
 14/0. Home's silent-empty exceptions fallback is repaired with unavailable
 status, native Retry and only permitted scoped links. Other three primary reads
 propagate the controlled error; retry restores exact records. Tasks/cuts/
-appointments/manual work unchanged; providers fenced. Scoped lint0, types0 and
+appointments/manual work unchanged; providers fenced. Scoped lint 0, types 0 and
 focused review clear. Four source/fixture files await commit/build/release.
 Evidence `/tmp/c14-page-read-recovery-final/`; disposable5601 stopped. Browser/
 error-boundary mounted acceptance remains open; do not claim this is HTTP.
@@ -108,7 +114,7 @@ library sweep advanced only `content-video-sweep-cursor`; that operational
 movement is recorded in `audit-2026-10-01-cache-release.md` and its sanitized
 JSON. Previous e6eac69 is rollback. No new schema/send/invite/booking/activation.
 
-W05 source checkpoint `4354aca` passed its separate clean Node20 build and is
+W05 source checkpoint `4354aca` passed its separate clean Node 20 build and is
 staging; canonical promotion remains pending. C14 named page-read verification
 found Home hides exceptions on read failure; a narrow unavailable-card repair
 and recovery fixture are now in progress. Other green scopes are not rerun.
@@ -136,7 +142,7 @@ Logs: `/tmp/normal-role-http-acceptance/`,
 mounted browser/phone/provider/full-watch acceptance remains open.
 
 W05 automatic exact provider-echo settlement for held delivery texts is verified
-locally in a separate checkpoint:36/0 real PG/actual webhook tests, lint/types0
+locally in a separate checkpoint:36/0 real PG/actual webhook tests, lint/types 0
 and focused review clear. Pre-intent provider time is refused. Ambiguous/unsigned/stale proof stays held; no retry/send,
 new manual authority, schema or activation is included. Optional manual
 settlement and generated-workflow date policy questions remain pending. Exact
@@ -155,7 +161,7 @@ U0–U5 remain partial and U6 open. Real-client onboarding is not accepted.
 ## Previous checkpoint — policy code deployed, launch acceptance open
 
 Production now serves `e6eac69f1d41` at https://hub.realtourpilot.com, Ready
-`dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted Oct1 11:47 AM EDT. Exact local/remote
+`dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted Oct 1 11:47 AM EDT. Exact local/remote
 build, protected stage smoke, canonical version/login/assets/auth gates and
 read-only settings/automation/seat comparison passed. No settings changed;
 rollout TEST_ONLY and stored automation OFF remain. No client send/invite, real
@@ -211,7 +217,7 @@ accepted for real-client onboarding.
 - Build checkout:
   `/Users/jordanspackman/.codex/worktrees/audit-visual-check/Realtour Pilot POT Dashboard`.
   Advanced by inspected fast-forward to clean/detached `e6eac69` for the
-  latest successful remote release; exact clean Node20 build and remote gates pass.
+  latest successful remote release; exact clean Node 20 build and remote gates pass.
   Non-incremental types and changed-file lint (41 files plus type-only fixture
   repair) passed; logs are in the checklist/handoff.
   Advance only
@@ -252,10 +258,10 @@ accepted for real-client onboarding.
 | `6972796` | Exact newer drafts/unknown guards and native calendar disclosure |Actual fake20/0; lint/diff/peer review; all-day count repair |
 | `41c8baf` | ID/save conflict and uncertain-DM recovery |Actual fake UI29/0; wrappers15/0; transport13/0; types/lint/review |
 | `4681377` | Exact-pin reads and keyboard/pointer suggestions |Actual fake36/0; lint/diff/root review with narrow skip/scroll repairs |
-| `2b87cc2` | Map fixture type-only boundary; combined candidate |Non-incremental types0; ESLint41 files+repair0; isolated build0 |
-| `953e680` | Exact mixed photo/video final-delivery separation |Actual signed/domain fixture25/0; lint/root review; final non-incremental types0; no app changes |
+| `2b87cc2` | Map fixture type-only boundary; combined candidate |Non-incremental types 0; ESLint41 files+repair0; isolated build0 |
+| `953e680` | Exact mixed photo/video final-delivery separation |Actual signed/domain fixture25/0; lint/root review; final non-incremental types 0; no app changes |
 
-These commits are included in the Oct1 production candidate3c3c2d7.
+These commits are included in the Oct 1 production candidate3c3c2d7.
 No automation or real-client rollout was activated. Signed action/SSR/fake handler evidence is not mounted
 browser, real provider/model output, real rendition/watch or phone-file proof.
 
@@ -303,7 +309,7 @@ canonical stayed3c3c2d741aaf at15:39:27Z. A concrete entitlement regression was
 found: a new portal handoff reused the historical external-send stamp and could
 unlock downloads/captions before approval. The focused repair is frozen in
 monthlyFinal.ts/cutEntitlement.ts and two fixtures: atomic marker 41/0 and signed
-approval gate 21/0, lint0. Combined types0 and focused peer/root review pass.
+approval gate 21/0, lint 0. Combined types 0 and focused peer/root review pass.
 The repair was then committed, the build checkout advanced, exact builds/stage
 passed and only e6eac69 was promoted. These gates are complete; do not repeat
 them without a new changed risk. No schema change or live backfill.
@@ -329,7 +335,7 @@ Monthly source is now complete locally with final backend40/0, UI19/0, affected 
 pass (`/tmp/ops-hub-monthly-final-types.log`). Preserve all source and continue to
 the exact clean build/release. Mounted browser/phone/provider acceptance remains
 open. Supplemental legacy source/backup equality proof after 148440a passed lint
-and non-incremental types0 (`/tmp/monthly-final-legacy-types.log`). Do not repeat
+and non-incremental types 0 (`/tmp/monthly-final-legacy-types.log`). Do not repeat
 completed drills.
 
 ## Earlier source checkpoint

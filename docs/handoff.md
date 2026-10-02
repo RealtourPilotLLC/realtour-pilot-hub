@@ -2,30 +2,34 @@
 
 ## Sep 30 takeover addendum
 
-### Oct 1 evening — current continuation
+### Oct 1 final application checkpoint — fa346fa deployed
 
-Use `audit-2026-09-30-resume.md` first. Production830a559b8e02 is Ready,
-promoted8:43:51 PM EDT, exact build/stage/HTTP/read-only verified. Prior
-ab6cfdf current-data retry andd22c582 durable delivery proof were separately
-released. Saved business settings, automation OFF/TEST_ONLY and seats unchanged;
-only recorded operational markers moved. d22c582 is rollback. No send/invite/
-real booking/financial change/activation/rollout/push. Five-table schema and
-backup already complete; no new schema.
+Use `audit-2026-09-30-resume.md` first and
+`audit-2026-10-01-checkpoint-summary.md` for current status/owners. Canonical
+fa346fa1d9a4, Ready dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG, promoted 9:22:45 PM EDT.
+Exact clean/remote builds/stage/promotion/HTTP/read-only checks pass. Saved
+business settings, automation OFF/TEST_ONLY and seats unchanged; only two
+mailbox-health timestamps moved. Rollback 830a559 retains all DB/newer writes.
+Held bcfa41d/67f5beb must never be promoted. No schema/send/invite/real booking/
+financial/activation/rollout/push. Earlier five-table schema/backup complete.
 
-Localc298fba records first CALL18/0 and later WRITTEN22/0 continuous HTTP
-journeys (exactab6 build, normal roles, disposable PG, fake providers/media).
-Pro uncovered actual first-session quantity4→8 inflation. Confirmed-session
-repair +single/batched reader parity passes20/0/lint/types/root review;
-new immutable build and same two-session causal fixture are next. No live
-retroactive lowering. Historical toolingb7909ab20/0/seven-pointer read-only
-plan is committed and **NOT APPLIED**. Private source plans remain outsideGit.
+First CALL 18/0 and later WRITTEN 22/0 actual built HTTP fixtures committedc298fba
+(exact ab6); final Pro 28/0 committed009b00b (exact fa346fa). Pro source correction
+includes real canonical reconciliation21/0 and supported flex/near-slot timing 7/0,
+plus independent material/address/request/clocks/receipts/manual work/eight final
+portal+Dropbox bytes. CALL/WRITTEN cover James v1→v2 revision; Pro exact approval.
+Providers/import/raw/media/watch inputs are explicitly synthetic. Current types 0/
+lint 0/focused reviews pass; all owned services stopped. Main3200/5599/5598 and
+unrelated 3100 preserved. Current local app/config/schema matches deployedsource.
 
-C14 mounted checks, U0–U5 partial/U6 open, normal browser/phone/team/provider/
-human rendition acceptance, real roster/strategy/topic/access preparation,
-exact historical/identity/property/owed decisions and two business policies
-remain open. Supported browser access is policy-blocked and inventory times
-out; do not bypass. Preserve main preview3200/5599/5598 and existing work.
-Older "current/no unfinished source" headings below are dated history.
+No confirmed autonomous source defect remains. C14 mounted checks, U0–U5partial/
+U6 open, actual phone/provider/team/full-watch and real roster/strategy/topic/
+access preparation remain blocked. Existing browser policy rejection prohibits
+alternate transports; inventory attempts time out. Kyle owns exact C13/C18/
+Sarina/identity evidence; local guarded historical tooling b7909ab20/0/seven ready
+pointers is **NOT APPLIED**. Existing clocks/unknown text holds and worker/
+backlog/rollout stay unchanged pending business decisions. Older current/no-
+unfinished-source headings below are dated history; don't restart green work.
 
 ### Oct 1 current production — f123eca, no unfinished source batch
 
@@ -39,7 +43,7 @@ activity, sanitized evidence separate. Current release doc/JSON:
 `audit-2026-10-01-c14-release.md`; rollback4354aca, preserve all DB writes.
 
 Final command check: no build/test/deploy process remains. Fenced mainpreview
-3200/5599/5598 and unrelated3100 retained; all owned5601/5602/3211/5972 fixture
+3200/5599/5598 and unrelated 3100 retained; all owned5601/5602/3211/5972 fixture
 processes stopped. Build checkout clean/detachedf123eca. Main branch stays
 codex/audit-2026-09-30; no push/main merge. Final docs-only checkpoint records
 release/remaining work and does not change runtime source.
@@ -68,7 +72,7 @@ c14-page-read-recovery.ts. Actual signed page failures/recovery14/0; Home no
 longer hides unreadable exceptions as empty, retry and permitted destinations
 retain testscope. Other three primary page reads throw honestly and recover
 exact records. No tasks/cuts/appointments/manual work mutation/provider traffic.
-Scoped lint0/types0/focused review clear;5601 stopped. Commit/build/deploy next.
+Scoped lint 0/types 0/focused review clear;5601 stopped. Commit/build/deploy next.
 Browser mounted error/focus/navigation/U6/phone remains separate and blocked.
 
 ### Oct 1 latest production — cache checkpoint a38715d
@@ -94,7 +98,7 @@ contentVideos.ts/cutEntitlement.ts/PortalPage.tsx and its monthly approval
 fixture. It supplies canonical marker facts before writes, validates marked
 cached status/pointers on reads, and suppresses detail reconstruction on failed
 status. Real PG/domain/routes/cache and both-layout page SSR35/0, focused peer/
-root review, non-incremental types0 and six-file lint0 are complete. Source
+root review, non-incremental types 0 and six-file lint 0 are complete. Source
 checkpoint/exact clean build/stage/deploy remain next; no schema/live write.
 
 New normal-role HTTP fixture/preload passed37/0 against the exact e6eac69 build:
@@ -108,7 +112,7 @@ Logs `/tmp/normal-role-http-acceptance/`,
 
 W05 bounded source work in outbox.ts/OpenPhone webhook is verified automatic exact
 authenticated delivery-echo recovery:36/0 real PG/actual webhook/concurrency and
-notice-window tests, lint/types0 and focused review clear. Source is frozen;
+notice-window tests, lint/types 0 and focused review clear. Source is frozen;
 port5972 stopped. Review repaired pre-intent-time acceptance. Evidence
 `/tmp/w05-delivery-echo-recovery-final-source/`. Exact source checkpoint/build/
 release is next. No retry/send/new manual authority.
@@ -126,7 +130,7 @@ unaccepted. Next checkpoint must record exact commit/build/deployment receipts.
 
 Policy code is deployed at https://hub.realtourpilot.com. Exact app commit
 `e6eac69f1d41f4697a9cb64c8011644be458a3ea`, Ready deployment
-`dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted 11:47 AM EDT. Local Node20 clean
+`dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv`, promoted 11:47 AM EDT. Local Node 20 clean
 build, remote compile/types/build, protected exact stage and canonical
 version/login/assets/auth smoke pass. Fresh read-only25006 comparison confirms
 unchanged settings hashes, automation OFF, rollout TEST_ONLY and raw2/3 seat counts.
@@ -152,7 +156,7 @@ suites or restart investigation. Earlier local/staging history below is retained
 
 ### Oct 1 staged policy candidate held — exact approval repair
 
-Candidate 974327f completed clean Node20 build and Vercel remote build/staging
+Candidate 974327f completed clean Node 20 build and Vercel remote build/staging
 at15:33:14Z. Protected version/login smoke passed; canonical remained3c3c2d741aaf
 at15:39:27Z. Stagebr6mfk7cs is **held, not promoted**. Existing entitlement
 classified the new portal handoff's sentToClientAt as outside delivery, bypassing
@@ -164,7 +168,7 @@ in the same Serializable transaction as first stamp. cutEntitlement.ts excludes
 that marker from external-send and paused/ended fallback, and from finishing
 original fallback. Read errors propagate. Old unmarked delivery, listing,
 pre-gate and prior-approved v1 rules remain. Backend 41/0 and actual signed
-playback/download/caption fixture21/0 passed; scoped lint0, non-incremental types0
+playback/download/caption fixture21/0 passed; scoped lint 0, non-incremental types 0
 and focused peer/root review pass. Logs:
 `/tmp/monthly-portal-handoff-marker/`, `/tmp/monthly-portal-approval-gate/`.
 Those next gates were completed for e6eac69 in the latest release above; do not
@@ -177,7 +181,7 @@ Supplemental pre-build repair to 148440a binds the no-blob canonical `assetPath`
 metadata when it differs from the final backup. Hash/size must match; checking
 a good backup cannot certify a separately overwritten client source. New
 equal-copy/mismatch assertions give final backend40/0
-(`/tmp/monthly-final-acceptance/`), lint0 and types0
+(`/tmp/monthly-final-acceptance/`), lint 0 and types 0
 (`/tmp/monthly-final-legacy-types.log`). This follows the38/0 evidence below;
 no broad rerun or production operation was performed.
 
@@ -200,8 +204,8 @@ attestations reset, and newer choices survive late reads.
 
 Backend signed PostgreSQL38/0 `/tmp/monthly-final-complete/`; fake actual UI19/0
 `/tmp/monthly-final-check-ui-identity/`; affected listing34/0 and mixed25/0
-`/tmp/ops-hub-policy-listing-regression/`. Final non-incremental types0 and scoped
-lint0 (`/tmp/ops-hub-monthly-final-types.log`, `/tmp/ops-hub-monthly-final-lint.log`).
+`/tmp/ops-hub-policy-listing-regression/`. Final non-incremental types 0 and scoped
+lint 0 (`/tmp/ops-hub-monthly-final-types.log`, `/tmp/ops-hub-monthly-final-lint.log`).
 One focused peer review and named repair rechecks complete. Fixture setup keys,
 relay200-vs302 expectation and Buffer BodyInit typing were corrected; no product
 defect was concealed or assertion skipped. No new schema/live mutation or
@@ -269,7 +273,7 @@ rollout remains defaultTEST_ONLY. One stored automation row remainsoff (missing
 switches retainoff defaults). RawactiveClientUser2/unrevokedMembership3 counts
 are unchanged and are not proof of real seats. Only two old scheduled sweep
 state keys advanced. No manual cron/webhook/form/send/book/financial/activation
-operation occurred. Intentional isolated preview3200 remains; no build/migration/
+operation occurred. Intentional isolated preview 3200 remains; no build/migration/
 deployment is active or stalled. Vercel login is complete; no release approval
 awaits action. Jordan subsequently supplied the decisions below; their source/
 configuration alignment is the next batch, separate from deployed3c3c2d7.
@@ -361,7 +365,7 @@ Map4681377. The first combined4681377 gate compiled but failed types/build on
 one fake Map portal annotation (`unknown` instead of ReactNode). Type-only repair
 2b87cc2 changes no runtime or fixture semantics. Final non-incremental types
 exit0 at `/tmp/ops-hub-types-2b87cc2.log`; changed-file ESLint41 files exit0 at
-`/tmp/ops-hub-lint-4681377.log`, plus exact repair lint0 at
+`/tmp/ops-hub-lint-4681377.log`, plus exact repair lint 0 at
 `/tmp/ops-hub-lint-2b87cc2-repair.log`; separate clean checkout production build
 exit0 at `/tmp/ops-hub-build-2b87cc2.log`. No green behavioral suites were rerun.
 Build checkout clean/detached2b87cc2, no copied env files, env-i, no provider
@@ -1042,7 +1046,7 @@ to that exact brief; unbound, removed and mismatched outputs stay in task contex
 No latest cut is guessed. Existing filters and task deep links remain intact.
 
 Signed SSR/context checks passed 26/0 and the existing navigation regression
-21/0 (`/tmp/ops-u4-task-rows/`); Node20 TypeScript, focused lint and diff checks
+21/0 (`/tmp/ops-u4-task-rows/`); Node 20 TypeScript, focused lint and diff checks
 passed. One focused review repaired nested cancel propagation and retained draft
 text on returned or thrown failures. Note/send/assignment uncertainty is explicit.
 Money scrubbing and manual Start/Pause are unchanged; opening a row reads or
@@ -1540,7 +1544,7 @@ receipt without another DM. An existing bell with no channel leg is marked
 failures end `delivery_unreached` and no fourth DM is attempted. The
 `c04-brand-provider-recovery` drill passed 12/0, including a failed catch-up
 retry that retains its dispatch-hour notification key; the prior claim/catch-up drill
-8/0, Node20 TypeScript and focused lint passed. The catch-up claim keeps its
+8/0, Node 20 TypeScript and focused lint passed. The catch-up claim keeps its
 original hour in the notification key on retry. No production provider call,
 database write, switch activation, push or deployment. The local brand alert
 switch remains OFF in production. The existing five-table additive schema
@@ -1551,7 +1555,7 @@ Home and Project Tracker now read the same normal delivery board with synthetic
 client jobs excluded before the 400-job cap; an explicitly indexed extra-shoot
 source is filtered before its 200-row cap too. `/pipeline?test=1` restores the
 full board and labels that view. Isolated `c14-delivery-board` passed 4/0,
-including a real TEST Avenue title and protected real client. Node20 TypeScript,
+including a real TEST Avenue title and protected real client. Node 20 TypeScript,
 focused lint and an isolated-worktree production build passed. The loopback browser action is still blocked by
 policy, so this is source/fixture evidence only. No production DB/provider
 write, push or deployment. Off-page task badges, ready-to-send follow-ups and
@@ -1562,7 +1566,7 @@ project/client rows at their database reads. The same client ID list is passed
 into the operating-day reader so this does not add another all-client scan.
 The isolated `c14-home-windows` drill passed 5/0: real TEST Avenue and a
 protected real client remain in both readers, synthetic fire/appointment rows
-do not, and default full readers retain them. Node20 TypeScript and focused
+do not, and default full readers retain them. Node 20 TypeScript and focused
 lint and the isolated-worktree production build passed (one pre-existing
 unused-import warning in `queries.ts`). Off-page task badges, ready-to-send and strategic flags
 remain open for C14 scoping; no production or provider mutation was made.
@@ -1577,7 +1581,7 @@ retain their full view. The Tasks Revisions tab now uses that normal reader for
 its badge and list and offers `?test=1` to show fixtures; the tab link retains
 that view. The isolated `c14-home-day` drill passed 7/0 including review,
 revision, pending cut, loop, protected-real and shared Tasks reader counts;
-provider traffic was fenced. Node20 TypeScript and focused lint passed. The
+provider traffic was fenced. Node 20 TypeScript and focused lint passed. The
 component itself has not had a browser replay because the loopback browser
 action was policy-blocked. The isolated-worktree build passed.
 Ready-to-send follow-up lanes,
@@ -1588,7 +1592,7 @@ workload totals are clean.
 The New clients card now also removes synthetic arrivals before its six-row
 cap. The isolated `c14-new-clients` drill passed 3/0: eight newer fixture
 arrivals did not crowd out a real arrival or a protected real client renamed
-TEST; the explicit full reader retains fixtures. Node20 TypeScript and focused
+TEST; the explicit full reader retains fixtures. Node 20 TypeScript and focused
 lint passed. A browser security policy blocked opening the loopback demo tab
 in this run; no alternate browser path was attempted. A demo process already
 running from this checkout was inspected and left untouched. The remaining
@@ -1602,7 +1606,7 @@ records. The filter uses `isSyntheticClientRow` on client ID and name, so a
 real job titled TEST Avenue and the protected real Jordan client are retained.
 The isolated `c14-home-counts` drill passed 8/0 across four count categories,
 including a synthetic follow-up pile larger than the display cap; the older
-scope-exceptions regression passed 28/0. Node20 TypeScript, focused lint and
+scope-exceptions regression passed 28/0. Node 20 TypeScript, focused lint and
 production build passed. No provider call or production write. Next, verify
 the signed browser identity and remaining C14 normal Home surfaces.
 
@@ -1635,7 +1639,7 @@ a team member. Duplicate real client numbers are ranked among real candidate
 rows using the existing activity/parent rule instead of database row order.
 Read-only replay prints Jordan Spackman/no client context for the TEST/team
 phone and Jordan Spackman/real client context for both real phone rows. This
-passed Node20 typecheck, focused lint (one pre-existing `isProjectRecent`
+passed Node 20 typecheck, focused lint (one pre-existing `isProjectRecent`
 warning in `queries.ts`) and production build. It still needs a normal signed
 browser replay; the two real Jordan client rows
 remain distinct and were not merged. Read-only snapshots also found an empty
@@ -1669,7 +1673,7 @@ The isolated CP-10 drill now passes 135/0. It creates an unlinked filmed
 allowance video over selected topics, sees reconciliation in both readers,
 then links that exact video to a topic and sees script review resume. It also
 keeps a released cut's live client approval or staff send ahead of the older
-link repair. Final Node20 TypeScript and focused lint pass. The production
+link repair. Final Node 20 TypeScript and focused lint pass. The production
 build passed after the output-link code and before the final narrow roster
 review-priority refinement; that final code has TypeScript/lint and the
 isolated drill, but has not had another build run. No schema changed.
@@ -1687,7 +1691,7 @@ It made no database write.
 The isolated CP-10 drill passed 132/0, including a filmed legacy Pro reminder
 that offered the remaining session without a planning chase, a partial Pro
 with five selected topics, a separately counted filmed extra, a next-month
-planning step and draft versus internal-review script wording. Final Node20
+planning step and draft versus internal-review script wording. Final Node 20
 TypeScript and focused lint passed; production build passed after the source
 repair, before the small delivered-done ordering change and final test-only
 assertion. The isolated Avery client file rendered at desktop and 390px with
@@ -1717,7 +1721,7 @@ replay exposed a native-dialog close that left the React form mounted but
 unopenable, so the modal now intercepts Escape while the choice is present.
 In the fenced TEST fixture, repeated Escape kept the choice and the answer,
 Keep checking returned focus to Close with the answer intact, and Discard
-answers closed and returned focus to Open self-check. Node20 TypeScript,
+answers closed and returned focus to Open self-check. Node 20 TypeScript,
 focused lint and the final production build passed. The
 temporary fixture was removed and the demo stopped, clean at `808f6fe`.
 
@@ -1732,7 +1736,7 @@ The mobile staff drawer now has its own Close button, traps Tab/Shift+Tab,
 makes the covered main column inert, and returns focus to Open menu. A staff
 Skip to content link targets the existing main area.
 
-Node20 TypeScript, focused lint and production build passed at `5ac3a52`;
+Node 20 TypeScript, focused lint and production build passed at `5ac3a52`;
 TypeScript and focused lint passed after the final cancellation guard. In a
 temporary, provider-fenced TEST UI fixture, keyboard Enter filled the six
 self-check lines, a simulated refusal left all answers in place, and Escape
@@ -1760,7 +1764,7 @@ started**, because the route only proves a link handoff or stream start, not
 complete device receipt or client delivery. Monthly rows say the Aryeo-copy
 requirement is unresolved; the existing send action and gates were preserved.
 
-Node20 TypeScript, focused lint and production build passed. The isolated B4
+Node 20 TypeScript, focused lint and production build passed. The isolated B4
 delivery drill passed 122/0, including two new checks for the real month and
 the exact output's linked topic, with null left null. In the fenced TEST Home,
 the two Morgan rows showed the month, missing topic, version and route warning;
@@ -1781,7 +1785,7 @@ status/type pills now use the same theme-aware colors as `Badge`. A browser
 check found light amber status ink still short of the normal-text target, so
 `a65a6de` raises the light badge mix from 42% to 50%.
 
-Node20 TypeScript, changed-file lint and production build passed. Rendered
+Node 20 TypeScript, changed-file lint and production build passed. Rendered
 client Approve script measured white on `#b94008` (about 5.53:1, 44px); staff
 dark uses `#c2450c` (about 5.06:1). Secondary text token pairs calculate
 about 5.46:1 on light white and 5.47:1 on dark surface. The light Editing
@@ -1804,7 +1808,7 @@ suggested replacement; Add preserves both, Replace offers Undo, and switching
 questions cannot carry the prior question's source. Editing clears stale save
 errors. No submission, drafting or clock rule changed.
 
-The CP08 isolated drill passed 80/0; Node20 TypeScript, focused lint and build
+The CP08 isolated drill passed 80/0; Node 20 TypeScript, focused lint and build
 passed. In the fenced browser, a synthetic invalid-interview fixture showed
 Add, replacement preview/Undo, refresh recovery of words and source, and
 question separation. The rejected Save retained the edited text and source;
@@ -1826,7 +1830,7 @@ data, so it suppresses the renderer's missing-pillar claim; a category in the
 safe script text still appears. An all-scrubbed script gives a truthful
 placeholder. Copy/Download are off because this brief carries clipped text.
 
-The isolated CP09 handoff drill passed 139/0. Node20 TypeScript, focused lint
+The isolated CP09 handoff drill passed 139/0. Node 20 TypeScript, focused lint
 and production build passed. In the provider-fenced Avery TEST editor brief,
 the approved version-1 script and an unapproved draft expanded into structured
 sections. The 390px page had no horizontal overflow and displayed the script
@@ -1848,7 +1852,7 @@ while scrolling the desktop review column. Primary note, request and approval
 buttons are 44px tall. The version pin, comment writer, review window,
 download gate and confirmation rules are unchanged.
 
-The isolated CP03 revision drill passed 52/0; Node20 TypeScript, focused
+The isolated CP03 revision drill passed 52/0; Node 20 TypeScript, focused
 lint and production build passed. The provider-fenced Avery TEST review
 played the exact current cut from local sample media. At 1280x720, the
 portrait box was 504px tall and the note/decision controls sat beside it;
@@ -1876,7 +1880,7 @@ editing after a failed request hides the old retry closure so it cannot send
 stale wording. The rest of the shared renderer and staff views keep their
 prior sizes. No version, approval, release or permission rule changed.
 
-The isolated UI01 drill passed 92/0; Node20 TypeScript, focused lint and
+The isolated UI01 drill passed 92/0; Node 20 TypeScript, focused lint and
 production build passed. The provider-fenced Avery TEST portal rendered
 September script v1 at 16px with 28px line height; both decision buttons
 measured 44px at desktop, 768px tablet and 390px phone widths, with no phone
@@ -1901,7 +1905,7 @@ the actual Save & next or Save new answer action. These are browser-local
 drafts; only that action sends words to the team. No draft storage action
 enqueues a script, submits an interview or changes the preparation clock.
 
-The isolated CP08 drill passed 80/0; Node20 TypeScript, focused lint and
+The isolated CP08 drill passed 80/0; Node 20 TypeScript, focused lint and
 production build passed. In the provider-fenced Avery TEST interview, an
 unsent draft survived refresh and reopened on the same question. Opening the
 corresponding Parker Pro TEST interview in that tab showed only Parker's
@@ -1929,7 +1933,7 @@ their available views. No route, eligibility, allowance, version, booking,
 notification or release rule changed. The topic bank still opens during
 topic/answer work.
 
-The isolated `b2-planning` drill passed 153/0. Node20 TypeScript, focused
+The isolated `b2-planning` drill passed 153/0. Node 20 TypeScript, focused
 lint and production build passed. The provider-fenced Avery TEST portal was
 checked on desktop and at 390px: current September script review was clear,
 chosen topics started folded and opened on request, the page had no horizontal
@@ -1953,7 +1957,7 @@ opened, including its Retry control. Same-project server refreshes do not
 silently acknowledge a message that arrived later; switching to another
 project begins a new reading visit. Page load alone still writes no receipt.
 
-Node20 TypeScript, focused lint and production build passed. In the signed
+Node 20 TypeScript, focused lint and production build passed. In the signed
 owner, provider-fenced Parker TEST route, opening the brief left ThreadRead
 null. After adding a new TEST message to PGlite, opening the chat saved the
 timestamp of the second previously loaded message, while the new third one
@@ -1973,7 +1977,7 @@ write, so an older tab closing cannot replace a later explicit all-read mark.
 No notification kind, audience, channel preference or source task changed.
 
 The isolated `journey-comms` drill passed 170/0, including a stale-tab request
-against the newer saved mark. Node20 TypeScript, focused lint and production
+against the newer saved mark. Node 20 TypeScript, focused lint and production
 build passed. In the signed, provider-fenced demo at 390px, a temporary forced
 POST 503 preserved six unread and showed the error. The temporary override was
 then removed; the next request returned 200 and the badge cleared only after
@@ -1989,7 +1993,7 @@ Mine includes explicit team-roster assignments, authored messages and direct
 mentions; an unlinked login does not acquire guessed ownership. The rail and
 thread header show month and topic only from saved program/project/video links,
 and opening a thread preserves its filter. No message-send or assignment rule
-changed. Node20 TypeScript, focused lint and production build passed.
+changed. Node 20 TypeScript, focused lint and production build passed.
 
 The provider-fenced demo was signed in as the demo owner after adding three
 clearly marked TEST messages and a TEST roster link to its isolated PGlite
@@ -2014,7 +2018,7 @@ numbers and draft words are not put in the URL. The focused view has no
 send/retry/settle control; an unknown result remains unknown.
 
 The isolated W05 drill passed 10/0, including rejection of an unrelated
-failed text and bad ID. Node20 TypeScript, focused lint and production build
+failed text and bad ID. Node 20 TypeScript, focused lint and production build
 passed. A synthetic Avery TEST unknown outbox row in the provider-fenced demo
 appeared at the Review Room exit and opened the correct Communications card
 on desktop and 390px. OpenPhone is deliberately disconnected there, so live
@@ -2037,7 +2041,7 @@ or say no month is assigned. The phone tab now says “Topics” in full. This
 changes presentation only; script version/approval and month planning rules
 are unchanged.
 
-Node20 TypeScript, focused lint and production build passed. The isolated
+Node 20 TypeScript, focused lint and production build passed. The isolated
 Avery TEST client browser showed the all-month heading, September/version on
 the pending script, and readable phone navigation at 390px. No approval or
 request was submitted. The provider-fenced demo server was stopped, and its
@@ -2051,7 +2055,7 @@ provider call, push or deployment occurred.
 `8eb9754` and `6d0a463` finish the queue's first U3 phone layout batch:
 the same rows become stacked cards below `sm`, with visible stage, due,
 editor, files and chat labels. Phone controls and essential text are larger;
-desktop remains a comparison table. Node20 TypeScript, focused lint and final
+desktop remains a comparison table. Node 20 TypeScript, focused lint and final
 production build passed. The isolated Avery Kim/overdue row was visually
 checked at 390px and desktop without horizontal card scrolling. This is not
 a whole-site touch or accessibility pass, and the assignment/status controls
@@ -2065,7 +2069,7 @@ The queue records scroll position for the return in session storage and clears
 it after restoration. No server reader, permission, assignment or database
 schema changed.
 
-Node20 TypeScript, focused lint, production build and four pure URL checks
+Node 20 TypeScript, focused lint, production build and four pure URL checks
 passed. A provider-fenced isolated demo fixture put one Avery TEST row with
 Kim and an overdue office due date. Browser replay: select Kim + Overdue,
 open job, return, refresh and open the copied queue URL in a new tab; all
@@ -2091,7 +2095,7 @@ the isolated drill proved was otherwise denied the very brief they own.
 
 The signed-session isolated W02 drill passed 15/0: stale version, repeat,
 brief change, reassignment, cross-job id, retired output, owner preview and
-unchanged Start/Pause state. Node20 TypeScript, focused lint and production
+unchanged Start/Pause state. Node 20 TypeScript, focused lint and production
 build passed. The provider-fenced demo was reset to the new isolated schema,
 its Prisma client regenerated, and the unassigned receipt state was checked
 at desktop and 390px on Avery TEST. The demo has auth disabled, so the editor
@@ -2118,7 +2122,7 @@ new check. A checked deliverable remains the photographer's report. The saved
 receipt's older status count is now described as a recorded check, never as a
 fresh read on submit. No schema or provider write was added.
 
-Isolated handoff drill passed 119/0, B4 upload regression 69/0, Node20
+Isolated handoff drill passed 119/0, B4 upload regression 69/0, Node 20
 typecheck, focused lint and final production build passed. The demo browser
 showed the synthetic Avery TEST review at desktop
 and 390px, with 4 filmed, 1 unfilmed, 1 still owed, editor vision and an
@@ -2148,7 +2152,7 @@ for a human to inspect its OpenPhone conversation.
 
 Isolated W05 notice drill passed 8/0, including failed/unknown/accepted retry,
 unrelated text exclusion, per-job scope and simulated outbox query failure.
-Node20 typecheck, focused lint and build passed; a later small copy/link fix
+Node 20 typecheck, focused lint and build passed; a later small copy/link fix
 passed typecheck and lint. A synthetic unknown send was written only to the
 provider-fenced TEST demo database and visibly appeared at the Review Room
 exit with Kyle, age and a reconcile instruction. The demo server was stopped.
@@ -2174,7 +2178,7 @@ page digest. Owner previews and unassigned photographers cannot mark it read.
 
 The isolated W06 brief drill passed 13/0, including actual signed session
 cookies, assignment/preview authorization, stale version refusal, idempotent
-repeat, exact script/shot-list delta and preserved prior snapshot. Node20
+repeat, exact script/shot-list delta and preserved prior snapshot. Node 20
 typecheck, focused lint and build passed; the small viewer-copy follow-up
 passed typecheck/lint. The isolated demo showed the pre-shoot card, current
 released scripts, expanded script readability and mobile layout at 390px.
@@ -2888,7 +2892,7 @@ The checklist rows still marked PARTIAL that needed nobody's decision.
 # Oct 1 continuation — current-data retry and durable delivery proof
 
 Canonical remains f123eca. ErrorScreen current-data retry passes actual
-handler/Next16 runtime/SSR14/0, scoped lint/types and root review; release
+handler/Next 16 runtime/SSR14/0, scoped lint/types and root review; release
 pending. Separate W05 proof-loss repair passes new PostgreSQL21/0 plus prior
 36/0 and lint/types; peer review pending. Continuous causal CALL-month HTTP
 fixture is correcting a stored-vs-canonical planning-mode expectation from its

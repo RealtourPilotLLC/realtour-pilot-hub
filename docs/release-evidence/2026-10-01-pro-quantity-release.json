@@ -1,0 +1,209 @@
+{
+  "candidate": "fa346fa1d9a45b2b0a49e291511af0c066003b3f",
+  "deployment": {
+    "candidate": "fa346fa1d9a45b2b0a49e291511af0c066003b3f",
+    "id": "dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+    "url": "https://realtour-pilot-56wg6j9gu-realtour-pilot-s-projects.vercel.app",
+    "state": "READY",
+    "target": "production",
+    "releaseCommit": null
+  },
+  "build": {
+    "candidate": "fa346fa1d9a45b2b0a49e291511af0c066003b3f",
+    "startedAt": "2026-10-02T01:05:36.970550+00:00",
+    "finishedAt": "2026-10-02T01:06:21.540410+00:00",
+    "exitCode": 0,
+    "node": "20.20.2",
+    "environment": "clean; no provider credentials; dead loopback database",
+    "mainPreviewUntouched": true
+  },
+  "staging": {
+    "at": "2026-10-02T01:21:56.849Z",
+    "candidate": "fa346fa1d9a45b2b0a49e291511af0c066003b3f",
+    "stagedUrl": "https://realtour-pilot-56wg6j9gu-realtour-pilot-s-projects.vercel.app",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "fa346fa1d9a4"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "nosniff": true,
+        "frameOptions": "SAMEORIGIN"
+      }
+    ],
+    "canonicalStill": "830a559b8e02",
+    "protectionRetained": true
+  },
+  "promotion": {
+    "candidate": "fa346fa1d9a45b2b0a49e291511af0c066003b3f",
+    "id": "dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+    "stagedUrl": "https://realtour-pilot-56wg6j9gu-realtour-pilot-s-projects.vercel.app",
+    "startedAt": "2026-10-02T01:22:41.558Z",
+    "finishedAt": "2026-10-02T01:22:45.028Z",
+    "exitCode": 0,
+    "promoted": true
+  },
+  "productionHTTP": {
+    "at": "2026-10-02T01:23:34.260Z",
+    "base": "https://hub.realtourpilot.com",
+    "expected": "fa346fa1d9a4",
+    "checks": [
+      {
+        "path": "/api/cron/version",
+        "status": 200,
+        "deploy": "fa346fa1d9a4"
+      },
+      {
+        "path": "/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/portal/login",
+        "status": 200,
+        "location": null,
+        "nosniff": "nosniff",
+        "frameOptions": "SAMEORIGIN"
+      },
+      {
+        "path": "/",
+        "status": 307,
+        "location": "/login?next=%2F"
+      },
+      {
+        "path": "/editing",
+        "status": 307,
+        "location": "/login?next=%2Fediting"
+      },
+      {
+        "path": "/review",
+        "status": 307,
+        "location": "/login?next=%2Freview"
+      },
+      {
+        "path": "/tasks",
+        "status": 307,
+        "location": "/login?next=%2Ftasks"
+      },
+      {
+        "path": "/portal/me",
+        "status": 200,
+        "location": null,
+        "streamedSignInRedirect": true
+      },
+      {
+        "path": "/api/review/cut/invalidcut12345678/final?f=fixture",
+        "status": 403,
+        "location": null
+      }
+    ],
+    "assets": [
+      {
+        "path": "/_next/static/chunks/3yqeoj8-wv85_.css?dpl=dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/3r8h98x5pdyho.css?dpl=dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2gokyol_h_2zh.js?dpl=dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2pzafz57-h46r.js?dpl=dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2fzkd0kh4cb41.js?dpl=dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+        "status": 200
+      },
+      {
+        "path": "/_next/static/chunks/2g05-lers809t.js?dpl=dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG",
+        "status": 200
+      }
+    ],
+    "failures": [],
+    "oldHost": {
+      "status": 307,
+      "location": "https://hub.realtourpilot.com/login"
+    }
+  },
+  "stateComparison": {
+    "enforcedReadOnly": true,
+    "automationUnchanged": true,
+    "savedBusinessSettingsUnchanged": true,
+    "clientSeatCountsUnchanged": true,
+    "rollout": "TEST_ONLY (default)",
+    "enabledStoredAutomations": [],
+    "changedOperationalGroups": {
+      "gmail-read-ok": 2
+    }
+  },
+  "behavioralEvidence": {
+    "canonicalReconciliationAndQuantity": {
+      "passed": 21,
+      "failed": 0
+    },
+    "flexAndNearSlotConfirmedTiming": {
+      "passed": 7,
+      "failed": 0
+    },
+    "currentCandidateTwoSessionHttp": {
+      "candidate": "fa346fa1d9a45b2b0a49e291511af0c066003b3f",
+      "fixtureCheckpoint": "009b00befd760047eae8796d935db0ee839ee8bc",
+      "buildId": "v7eqA6pIg4XsD5SgdOobV",
+      "actionManifestHash": "f9beeab391bfe80d0054367ed7169a0b18016042b839b693ffba68d12e6f108e",
+      "suite": "pro-second-session-http-journey.ts",
+      "passed": 28,
+      "failed": 0,
+      "log": "/tmp/pro-second-session-http-final/pro-second-session-http-journey.ts_postgres.log",
+      "types": 0,
+      "scopedLint": 0,
+      "focusedReview": "clear after nonempty provenance and stored-address assertions",
+      "providers": "FAKE",
+      "servicesStopped": true,
+      "browserAccepted": false,
+      "humanWatchAccepted": false,
+      "fixtureHashes": {
+        "scripts/_drill/pro-second-session-http-journey.ts": "6165ecf2335abe75a853bb56b99adbfeaee89ec79e973326f099477ef605bb65",
+        "scripts/_drill/_pro-session-http-preload.cjs": "8180bb0ca8ed092ad11da1878ad137b8f8954422e684359f7198b9da5636efc4"
+      }
+    },
+    "types": 0,
+    "changedFileLint": 0,
+    "focusedReview": "clear after canonical writer/timing corrections and strengthened provenance/address assertions",
+    "liveProvidersAccepted": false,
+    "mountedBrowserAccepted": false,
+    "phoneAccepted": false,
+    "humanWatchAccepted": false
+  },
+  "initialStageGate": "protected routes and headers passed; final canonical read initially unconfirmed; fresh read and one bounded full gate retry passed; no promotion replay",
+  "schemaChanges": false,
+  "activation": false,
+  "realClientSends": false,
+  "realInvitations": false,
+  "realProviderBookings": false,
+  "financialChanges": false,
+  "gitPush": false,
+  "heldPredecessors": [
+    "bcfa41d",
+    "67f5beb"
+  ],
+  "rollback": {
+    "candidate": "830a559b8e02c275f7067cec2562a9f75388f9b4",
+    "deployment": "dpl_JVhUdakNwrD3NmD24Pvcfky7En2a",
+    "preserveDatabaseAndNewerWrites": true
+  }
+}

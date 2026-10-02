@@ -7,22 +7,26 @@ normal-client, browser, phone, provider or team acceptance.
 
 ## Current release state — Oct 1 evening
 
-Canonical https://hub.realtourpilot.com serves830a559b8e02, Ready
-`dpl_JVhUdakNwrD3NmD24Pvcfky7En2a`, promoted8:43:51 PM EDT. Exact clean
-Node20/remote builds, protected stage and production version/login/assets/auth
-checks pass. Saved business settings, automation OFF/TEST_ONLY and seats
-unchanged; two mailbox read-health timestamps advanced independently. Rollback
-d22c582; preserve all database records/newer writes. No agent sends, invitation,
-real booking, financial/schema change, activation, rollout expansion or push.
+Canonical https://hub.realtourpilot.com serves fa346fa1d9a4, Ready
+`dpl_6AecMWxtXaNvM6SQUt3vvGbS8CEG`, promoted 9:22:45 PM EDT. Exact clean
+Node 20/remote builds, protected stage, Ready promotion and production version/
+login/assets/auth checks pass. The initial final canonical stage read was
+unconfirmed; fresh read and one bounded gate retry passed before one promotion.
+Saved business settings, automation OFF/TEST_ONLY and seats unchanged; only two
+mailbox-health timestamps advanced independently. Rollback 830a559, retain all
+DB/newer writes. Source fa346fa matches current application/config/schema files;
+009b00b adds final Pro verification only. No agent sends/invitations/bookings/
+financial/schema change, activation/rollout expansion or push.
 
 | Checkpoint | Implemented | Tested | Committed | Deployed | Enabled | Client-visible |
 |---|---|---|---|---|---|---|
 | Current-data error retry | Installed Next refetch, duplicate guard, interrupted-action guidance |14/0 handler/runtime/SSR; exact release gates |ab6cfdf |Yes |Existing users/gates |Fallback live; mounted acceptance open |
 | Durable exact delivery proof | Atomic authenticated receipt; strict stored replay; no resend |25/0 + existing36/0; exact release gates |d22c582 |Yes |Existing authenticated callback; no switch change |Staff settlement path live; real callback unobserved |
 | Portal-safe error destinations | Client portal return and ordinary team guidance |24/0 handler/runtime/SSR; exact release gates |830a559 |Yes |Existing users/gates |Fallback live; mounted acceptance open |
-| First CALL/later WRITTEN causal journeys |Verification fixtures; no distinct app feature |18/0 +22/0 against exact builtab6; signed HTTP/bytes |c298fba |Local evidence |No activation |No audience/invitation change |
-| Pro confirmed-session quota |Quota sweep/single and batch count repair |Domain20/0/lint/types/review; rebuilt causal test pending |Pending |No |No policy/switch change |Not yet shipped |
-| Historical repair preparation |Read-only plan; guarded transactional tool |PG20/0; seven ready pointers in bounded read-only probe |b7909ab |Local tooling |No live apply |No record changed |
+| First CALL/later WRITTEN causal journeys |Verification fixtures; no distinct app feature |18/0 +22/0 against exact built ab6; signed HTTP/bytes |c298fba |Local evidence |No activation |No audience/invitation change |
+| Pro confirmed-session quota |Quota sweep/single/batch repair; canonical confirmed flexible/near-slot bookings |21/0 canonical +7/0 timing +28/0 final HTTP; lint/types/reviews/exact gates |bcfa41d/67f5beb corrections culminatefa346fa |Yes,fa346fa |Existing gates; no switch change |Source live; normal/browser/provider acceptance open |
+| Pro causal two-session fixture |Verification only; two independent four-hour/eight-output journey |28/0 exact fa346fa; source/provenance/addresses/bytes |009b00b |Local evidence |No activation |No new audience/invitation |
+| Historical repair preparation |Read-only plan; guarded transactional tool |PG 20/0; seven ready pointers in bounded read-only probe |b7909ab |Local tooling |No live apply |No record changed |
 
 All following release paragraphs/tables preserve earlier checkpoint history.
 U0–U5 remain partial and U6 open; none is accepted by these source/HTTP gates.
@@ -102,7 +106,7 @@ browser/client acceptance column.
 | Mixed photo/video final handoff | Existing implementation verified; no app change | New actual signed/domain fixture25/0 with fake Aryeo; manual/automatic video and converse photo-task paths | `953e680` | Yes;3c3c2d7 | No delivery or switch changes | No distinct source change; delivery acceptance open |
 | Remaining UI and complete journey acceptance | Partial | Evidence below; no complete U-phase acceptance | Completed slices only | Completed slices at3c3c2d7 | No | Complete journey/UI acceptance open |
 
-Fresh Oct1 production: e6eac69f1d41, Ready deployment
+Fresh Oct 1 production: e6eac69f1d41, Ready deployment
 dpl_7UpNA2AXJsCdiGEAeopg7iUHkbMv, at https://hub.realtourpilot.com. Remote build
 and HTTP deployment smoke passed; automation/rollout remain unchanged. Previous
 production3c3c2d741aaf was freshly verified before promotion and remains the rollback target.
@@ -132,7 +136,7 @@ for normal authorized client/editor access.
 | UA01 — role work discovery | Home role rendering, saved reviewer seat, preserved actions | Kyle, James and Jordan each identify their next owned action without narration; record time and hints, not an invented score |
 | UA02 — authorized navigation | Sidebar identical destination sets for 12 role/override profiles; old Settings anchors | Engineering: keyboard/cold-link/back navigation under normal role sessions |
 | UA03 — written month | Later WRITTEN causal built HTTP22/0 with exact carry/client-added topics/typed answers through final bytes; earlier23/0+19/0 retained | Engineering: complete normal client browser journey with carried and client-added topics |
-| UA04 — call and Pro sessions | First CALL causal built HTTP18/0 from empty strategy/bank through final bytes; prior25/0. Pro first-session inflation reproduced; fix20/0, rebuilt two-session journey pending | Engineering: normal client browser and approved provider sandbox booking; Jordan decides historical worker backlog |
+| UA04 — call and Pro sessions | First CALL causal built HTTP18/0 from empty strategy/bank through final bytes; prior25/0. Pro final current-candidate two-session HTTP28/0; quota writer21/0 + supported timing 7/0 | Engineering: normal client browser and approved provider sandbox booking; Jordan decides historical worker backlog |
 | UA05 — draft recovery | Existing draft/recovery and failed save fixtures | Engineering: normal client refresh/navigation and denied browser storage; ensure saved choices and words survive |
 | UA06 — exact version decisions | Pinned revisions/role guards; connected v1→checked v2 decision/download; multi-session stale verdict/issue and finishing regression 11/0 | Engineering: browser newer-cut and failed revision submission, captions/download gates |
 | UA07 — editor context | Actual HTTP18/0 includes no-brand, return/reassignment stale receipt/fresh acknowledgment and manual clocks; prior queue76/0+19/0 retained | Kim/engineering: normal signed editor, two-session monthly scope and receipt, keyboard/phone checks |
@@ -158,11 +162,11 @@ for normal authorized client/editor access.
 | Provider and real-media acceptance | Jordan + engineering | Agree on isolated/sandbox recipients, booking/media records and destinations before any external write; keep clients and real bookings untouched |
 | Generated-workflow dates | Jordan | Answer pending policy question; ad hoc editing is shipped, automatic editing/revision/SLA clocks remain unchanged |
 | Unknown delivery-text settlement | Jordan | Decide manual evidence-backed Kyle resolution versus automatic provider confirmation; question pending, existing unknown holds never offer a blind resend |
-| Production deployment | Completed under Jordan authorization |e6eac69 promoted and HTTP/unchanged-state verified; existing gates unchanged. No activation/client sends authorized. Future source batches need their own exact release evidence. |
+| Production deployment | Completed under Jordan authorization |Latestfa346fa promoted and exact HTTP/read-only gates verified; existing switches unchanged. Prior checkpoints remain dated history. No client activation/send authorization. |
 
 ## Schema and rollback gate
 
-Five additive tables were applied and verified on Oct1: `ClientBrandReceipt`,
+Five additive tables were applied and verified on Oct 1: `ClientBrandReceipt`,
 `DeliveryFollowUpHealth`, `FinalRenditionCheck`, `ShootBriefRead`,
 `EditorBriefReceipt`. No migration history was present at takeover. Fresh pre-release
 backup covered144/144existing models; postflight149tables,12indexes,2validatedFKs

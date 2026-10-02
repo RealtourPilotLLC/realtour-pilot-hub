@@ -1,15 +1,14 @@
 # C14 / U6 — remaining acceptance map
 
-Updated October 1, 2026. This is a bounded acceptance map from the existing
-checklist, release matrix and fixtures. It is not a new audit or a completed
-browser pass. This update changes only this acceptance map. The policy release
-history starts at `e6eac69`. The subsequent monthly portal cache/failure repair
-is verified at35/0 and deployed as `a38715d` with exact build/HTTP evidence in
-`audit-2026-10-01-cache-release.md`; current productionf123eca includes W05
-and the Home read-recovery repair. C14 actual Home/Review/Editing/Schedule
-page-read failure verification passes14/0 and the source is deployed with exact
-build/stage/HTTP proof in `audit-2026-10-01-c14-release.md`. Mounted/browser
-acceptance remains open.
+Updated October 1 evening. This bounded map uses the existing backlog and fixed
+fixtures; no new audit or completed browser pass. Current production fa346fa
+includes all earlier source corrections and separately verified releases.
+Primary page-read failure14/0 and current-data/portal-aware error handlers/
+framework-runtime/SSR24/0 remain distinct from mounted-browser evidence.
+Continuous normal-role actual built HTTP journeys now pass first CALL 18/0,
+later WRITTEN 22/0 and Pro two-session28/0, with exact fake final bytes and explicit
+provider/import/watch boundaries. See the causal journey record and final
+checkpoint summary. C14's remaining mounted checks and U6 are still open.
 
 ## Supported browser access is blocked
 
@@ -45,6 +44,8 @@ cannot establish layout, focus, native menus, mounted navigation or phone saves.
 | Map reads | `u5-project-map-recovery.ts` 36/0: fake actual handlers/effects, late/read-failure/empty address and exact-pin recovery |
 | Calendar availability | `u5-capacity-recovery.ts` 20/0: unavailable versus empty calendar, all-day count, capacity draft/unknown recovery |
 | Normal-role HTTP identity and journey | `normal-role-http-acceptance.ts` 37/0, no skips, against the built `e6eac69` app on port 3211: actual password/session and one-use client login cookies, role routes, seven client tabs, exact script/cut approvals, download/range bytes, foreign-scope refusals and manual Start/Pause. This is isolated HTTP evidence, not browser acceptance. |
+| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released; mounted transition/navigation remains open. |
+| Continuous causal client journeys | First CALL 18/0 and later WRITTEN 22/0 exact ab6; final Pro 28/0 exact fa346fa. Normal password/client cookies, exact source/script/client decisions, handoff/manual work, approvals and fake final bytes. These add causal HTTP evidence, not browser/phone/provider/watch acceptance. |
 | Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d; mounted acceptance stays open. |
 
 Evidence logs:

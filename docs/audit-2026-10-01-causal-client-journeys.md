@@ -26,7 +26,7 @@ staff attested, portal handoff recorded, download held until client approval,
 then exact revised bytes and library identities verified.
 
 Evidence18/0: `/tmp/full-client-http-journey-ab6-return/` (19.3s). Scoped lint
-and whole-tree nonincremental types0; focused root evidence/isolation review
+and whole-tree nonincremental types 0; focused root evidence/isolation review
 clear. Owned3211/5601/5602 stopped; main preview preserved.
 
 ## Later WRITTEN month — 22/0
@@ -50,7 +50,7 @@ root review clear. Owned3213/5603/5605 stopped. Pro second session has its separ
 ## Pro two-session month — 28/0
 
 `scripts/_drill/pro-second-session-http-journey.ts` and its preload use exact
-corrected candidatefa346fa, BUILD_ID `v7eqA6pIg4XsD5SgdOobV`. Prior approved
+corrected candidate fa346fa, BUILD_ID `v7eqA6pIg4XsD5SgdOobV`. Prior approved
 strategy/first-call eligibility are declared inputs; no current-month scripts,
 projects or cuts exist at the start. Each session separately selects four
 topics, submits sufficient typed answers, generates exact source-bound scripts,
@@ -73,7 +73,7 @@ clocks are verified. CALL/WRITTEN above cover v1→v2 revision branches; this Pr
 fixture verifies exact first-cut approval and independent eight-output handoff.
 
 Final strengthened evidence28/0 (52.4s): `/tmp/pro-second-session-http-final/`.
-Scoped lint0, whole-tree nonincremental types0 and root focused source/evidence
+Scoped lint 0, whole-tree nonincremental types 0 and root focused source/evidence
 review clear. Owned3214/5604/5606 stopped. The fixture found actual monthly-quota
 inflation and canonical-state/asked-time reader gaps; their reviewed corrections
 and21/0 +7/0 targeted evidence are in the Pro quantity record. No real provider
@@ -95,21 +95,21 @@ quality/spend, enhanced Topaz files, human full-watch, browser interaction or
 phone save/share. Ingest/analyze jobs remain QUEUED and writer switches OFF.
 Layout/rollout fixture inputs apply only inside the disposable database.
 
-Run from a normal Node20 shell with the ordinary fenced `npm run drills --`
+Run from a normal Node 20 shell with the ordinary fenced `npm run drills --`
 runner and named fixture. Tests require the exact clean compiledab6 runtime:
 CALL uses `/private/tmp/rtp-full-http-ab6-compiled-base` with its build proof;
 WRITTEN uses its preserved private compiled snapshot. Each includes production
 `.next/server`, static/manifests **and `.next/node_modules` runtime aliases**,
 config/public/package and a stable dependency symlink, with no real `.env`.
-If snapshots disappear, rebuild exactab6 in a clean isolated checkout with no
+If snapshots disappear, rebuild exact ab6 in a clean isolated checkout with no
 credentials/dead loopback DB, copy the immutable runtime and explicitly update
-the fixture prerequisite/proof. Never rebuild main preview3200's `.next`, use
+the fixture prerequisite/proof. Never rebuild main preview 3200's `.next`, use
 live mutation tests, alter current working files or pretend missing fixtures ran.
 
 Pro reproduction uses its immutable private `rtp-pro-http-build-*` snapshot,
 with exact candidate/BUILD_ID/action-manifest hash and Prisma runtime aliases
 validated before any test work. The clean source candidate isfa346fa; never
-substitute heldbcfa41d/67f5beb. Missing runtime refuses without rebuilding main.
+substitute held bcfa41d/67f5beb. Missing runtime refuses without rebuilding main.
 
 Browser/phone/team/provider acceptance and historical/business preparation
 remain separate in the main completion checklist and U6 map.
