@@ -86,3 +86,7 @@ Read-only production proposal: 52 approved records inspected, uncapped; 0 librar
 - Full lint: legacy repository failures remain; scoped lint is clean. Resolve baseline debt separately if required as release gate.
 
 Implemented/tested/committed are local statuses. This batch is **not deployed, not enabled, and not client-visible**. Acceptance F remains partial because live provider/file chooser/backup/schema rollout checks are not complete; do not claim the platform is fully finished.
+
+### Follow-up — compact Editing Room rows
+
+User requested smaller, better organized rows. Reduced desktop address to 14px, supporting labels to 12px, status/file controls to 28–32px; balanced columns, centered cells, removed repeated desktop folder icons, kept Raw/Final dots visible, grouped count phrases without breaking their words, and made editor reassignment a compact named disclosure. Mobile retains 44px controls. Native fixture proof: standard rows 54px (was72), mixed16 row63px (was113); no clipped actions at1280px, mobile scroll/client widths both390. Screenshot `/private/tmp/rtp-editing-compact-desktop.jpg`. Queue behavior drill15 passed; scoped lint and typecheck passed. No data writes, deployment or push. Earlier release holds remain.

@@ -311,7 +311,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
         label={`Change status for ${row.street}: ${status}`}
         title={note ?? pinTitle ?? undefined}
         busy={pending}
-        className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-sm font-semibold"
+        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium sm:px-2 sm:text-xs"
         style={badgeColors(meta.color)}
         items={Object.entries(STATUSES).map(([name, m]) => ({
           id: name.replaceAll(" ", "-"),
@@ -444,7 +444,7 @@ function LinkChip({
 }) {
   const external = href.startsWith("http");
   const classes = cn(
-    "inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+    "inline-flex min-h-11 items-center gap-1.5 rounded-md border px-2 py-2 text-sm font-medium sm:min-h-8 sm:border-transparent sm:px-1.5 sm:py-1 sm:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
     brand
       ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
       : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
@@ -456,7 +456,7 @@ function LinkChip({
           className={cn("size-1.5 shrink-0 rounded-full", dot ? "bg-success" : "border border-muted-2/70 bg-transparent")}
         />
       )}
-      <Icon className="size-3" />
+      <Icon className="size-3 sm:hidden" />
       {label}
     </>
   );
@@ -825,15 +825,15 @@ export function SimpleQueue({
           ) : view === "upcoming" ? "No upcoming video shoots on the schedule." : view === "done" ? "Nothing completed in the last 60 days." : "Nothing open — new jobs add themselves when a video shoot is booked."}
         </p>
       ) : (
-        <div className="sm:overflow-x-auto sm:rounded-2xl sm:border sm:border-border sm:bg-surface">
-          <table className="block w-full min-w-0 text-sm sm:table sm:table-fixed sm:min-w-[760px]">
+        <div className="sm:overflow-x-auto sm:rounded-xl sm:border sm:border-border sm:bg-surface">
+          <table className="block w-full min-w-0 text-sm sm:table sm:table-fixed sm:min-w-[880px]">
             <thead className="sr-only sm:not-sr-only sm:table-header-group">
-              <tr className="border-b border-border text-left text-sm font-medium text-muted">
-                <th className="px-4 py-3 sm:w-[25%]">Project</th>
-                <th className="px-4 py-3 sm:w-[22%]">Progress</th>
-                <th className="px-3 py-3 sm:w-[8%]">Due</th>
-                {!hideEditor && <th className="px-3 py-3 sm:w-[14%]">Editor</th>}
-                <th className="px-3 py-3 sm:w-[31%]">Action</th>
+              <tr className="border-b border-border bg-surface-2/40 text-left text-xs font-medium text-muted">
+                <th className="px-3 py-2.5 sm:w-[29%]">Project</th>
+                <th className="px-3 py-2.5 sm:w-[28%]">Progress</th>
+                <th className="px-3 py-2.5 sm:w-[8%]">Due</th>
+                {!hideEditor && <th className="px-3 py-2.5 sm:w-[11%]">Editor</th>}
+                <th className="px-3 py-2.5 sm:w-[24%]">Action</th>
               </tr>
             </thead>
             <tbody className="block space-y-3 sm:table-row-group sm:space-y-0 sm:divide-y sm:divide-border">
@@ -845,24 +845,24 @@ export function SimpleQueue({
                     onClick={() => { rememberQueueScroll(queueHref); router.push(jobHref(r.id)); }}
                     // No row-wide tooltip: it followed the cursor across every
                     // cell and sat on top of the controls underneath it.
-                    className="block cursor-pointer rounded-2xl border border-border bg-surface p-3 align-top hover:bg-surface-2/50 sm:table-row sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0"
+                    className="block cursor-pointer rounded-2xl border border-border bg-surface p-3 align-middle hover:bg-surface-2/50 sm:table-row sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0"
                   >
                     {/* min-w-52, up from 44: the copy glyph took the width the
                         address used to have, and streets like "2051 Old
                         Sumneytown Pike" started wrapping onto a second line —
                         every row a little taller, which is the opposite of
                         what Jordan asked for. */}
-                    <td className="block min-w-0 px-0 py-1 sm:table-cell sm:min-w-52 sm:px-3 sm:py-3">
+                    <td className="block min-w-0 px-0 py-1 sm:table-cell sm:min-w-52 sm:px-3 sm:py-2">
                       <span className="flex items-start gap-1.5">
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
                         <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
-                          <span className="block text-base font-semibold sm:truncate" title={r.street}>{r.street}</span>
+                          <span className="block text-sm font-semibold sm:truncate" title={r.street}>{r.street}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
                               Video-type cell beside it — the row doesn't grow. */}
-                          <span className="mt-1 flex min-w-0 items-center gap-1.5 text-sm text-muted">
-                            <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
+                          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                            <Avatar name={r.client} src={r.clientAvatarUrl} size={16} />
                             <span className="min-w-0 truncate">{r.client}</span><span className="shrink-0 text-muted-2">· {r.videos} video{r.videos === 1 ? "" : "s"}</span>
                           </span>
                           <span className="sr-only">{t.label} · {r.typeDetail}</span>
@@ -888,7 +888,7 @@ export function SimpleQueue({
                         </Link>
                       </span>
                     </td>
-                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-3 " onClick={swallow}>
+                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:[&_button]:min-h-7 sm:[&_button]:min-w-0 sm:table-cell sm:border-0 sm:px-3 sm:py-2 " onClick={swallow}>
                       <span className="mb-1 block text-xs font-medium text-muted sm:hidden">Stage</span>
                       <span className="inline-flex items-center gap-1">
                         {view === "upcoming" ? (
@@ -926,7 +926,9 @@ export function SimpleQueue({
                           arithmetic under it. Never rendered on a one-video
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
-                        <span className="mt-1 block text-sm text-muted" title={r.videoBreakdown}>{r.progressSummary ?? r.videoBreakdown}</span>
+                        <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0 text-xs leading-4 text-muted" title={r.videoBreakdown}>
+                          {(r.progressSummary ?? r.videoBreakdown).split(" · ").map((part, index) => <span key={index} className="whitespace-nowrap">{part}</span>)}
+                        </span>
                       )}
                       {/* WHAT THE HANDOFF IS WAITING ON (O01) — the engine's
                           stored sentence, the one the edit card and Kyle's
@@ -948,7 +950,7 @@ export function SimpleQueue({
                           screen was the confusion. */}
                     </td>
                     <td
-                      className={cn("block px-0 py-1 text-sm font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-3", r.late ? "text-danger" : "")}
+                      className={cn("block px-0 py-1 text-sm font-medium sm:text-xs sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
@@ -958,7 +960,7 @@ export function SimpleQueue({
                       {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
                     </td>
                     {!hideEditor && (
-                      <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-3" onClick={swallow}>
+                      <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2" onClick={swallow}>
                         <span className="mr-2 text-xs font-medium text-muted sm:hidden">Editor</span>
                         {view === "done" ? (
                           // Delivered = credit, not live work — no reassign here
@@ -967,21 +969,21 @@ export function SimpleQueue({
                           <span className="text-xs font-medium">{r.editor ?? "—"}</span>
                         ) : (
                           // key = server truth, same deal as the status pill.
-                          <details><summary className="min-h-11 cursor-pointer text-sm"><span className="font-medium">{r.editor ?? "Unassigned"}</span> <span className="text-brand">Change</span></summary><EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} /></details>
+                          <details><summary aria-label={`Change editor for ${r.street}: ${r.editor ?? "Unassigned"}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1 text-sm sm:min-h-8 sm:text-xs"><span className="font-medium">{r.editor ?? "Unassigned"}</span> <span className="text-muted text-[11px] sm:sr-only">Change</span><ChevronDown aria-hidden="true" className="hidden size-3 text-muted sm:block" /></summary><EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} /></details>
                         )}
                       </td>
                     )}
-                    <td className="block px-0 py-2 sm:table-cell sm:px-3 sm:py-3" onClick={swallow}><div className="flex flex-wrap items-start gap-1">
+                    <td className="block px-0 py-2 sm:table-cell sm:px-3 sm:py-2" onClick={swallow}><div className="flex flex-wrap items-center gap-0.5 sm:flex-nowrap">
                           {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="Raw" dot={r.rawCount > 0}
                             title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"} />}
                           {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" dot={r.finalCount > 0}
                             title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
                       <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)}
-                        title="Open editing brief" className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                        title="Open editing brief" className="inline-flex min-h-11 items-center justify-center rounded-md border border-border bg-surface px-3 py-2 text-sm font-medium sm:min-h-8 sm:px-2 sm:py-1 sm:text-xs hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                         Open
                       </Link>
                       <details className="relative text-sm text-muted">
-                        <summary className="flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center rounded-lg border border-border focus-visible:outline-2 focus-visible:outline-brand">
+                        <summary className="flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center rounded-md border border-transparent sm:min-h-8 sm:min-w-7 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
                           <span aria-label={`Files and chat${r.comments > 0 ? ` · ${r.comments}` : ""}`}>•••</span>
                         </summary>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
