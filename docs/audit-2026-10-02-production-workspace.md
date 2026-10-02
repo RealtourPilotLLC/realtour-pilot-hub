@@ -1,6 +1,43 @@
-# Production workspace priority — deployed 8754c91
+# Production workspace priority — deployed d21dcb2
 
-## Current release — shared controls and mobile drawer deployed
+## Current release — exact UNKNOWN incident context deployed
+
+`d21dcb2e374919cb0767fae037e950948ced037e` was promoted October 2 at
+04:50:20.292 UTC (12:50 AM EDT), Ready `dpl_67TmGv2BzeGSqiQBL9ZgirHAxTQz`.
+Protected stage:
+`https://realtour-pilot-f1fwswf7r-realtour-pilot-s-projects.vercel.app`.
+Canonical production reports `d21dcb2e3749`; the04:50:51.853Z HTTP receipt has
+failures0 for version, both sign-ins/security, six assets, staff307/client
+redirect, unauthorized final403 and old-host307. Exact clean Node20 build0
+passed first try in44.9s; nonincremental types0, scoped lint0/diff0/focused review
+and native1440/390px context/navigation checks pass. Enforced read-only25006
+comparison found settings unchanged, automation/enabled `[]`, `TEST_ONLY
+(default)`, users2 and memberships3 unchanged. Rollback is8754c91, preserving
+database state and newer writes. Private receipts:
+`/private/tmp/ops-hub-notice-context-release-2026-10-02/`.
+
+The recipient/exact queued-time render fix is implemented, tested, committed
+and deployed for existing authorized staff. It does not send, retry, settle or
+prove provider delivery. No invitation, approval, audience/automation expansion,
+financial or schema change. The separate DownloadButton render-only follow-up
+is local with lint0/diff0/peer review clear and bounded native390/1280 acceptance;
+commit and release are pending.
+
+C14's original scope/count/identity/demo acceptance is covered; remaining UI
+work uses finite N01–N07/N09–N10 checks in the C14/U6 map rather than an exhaustive
+role/route/failure matrix. Home week's new normal Mon1/Tue1→exact near-shoot and
+expanded Mon2/Tue1/scoped Schedule/refresh pass is at
+`/private/tmp/ops-hub-home-week-native-2026-10-02/mounted.private.json`.
+Back returned to the prior Communications page, so Back-to-Home is not claimed.
+N08 is complete: fresh-tab exact brief v1/v2 and brief v1 retain manual Kim
+Start and return explicitly to `/editing?test=1`. Editing More Enter/End/Escape/
+trigger-focus passes without invoking Override or Remove; N06's two dialogs
+remain. Cold brief/menu proof is in
+`/private/tmp/ops-hub-cold-brief-native-2026-10-02/`.
+U0–U5 remain partial and U6 open with named human/provider/device/client-source
+gates; no completed isolated check is silently promoted to live-provider proof.
+
+## Earlier release — shared controls and mobile drawer deployed
 
 `8754c91020406b44568445297c54ff334dab680c` was promoted October 2 at
 04:23:14.814 UTC (12:23 AM EDT), Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`.
@@ -48,7 +85,7 @@ Private evidence: `/private/tmp/ops-hub-portal-recovery-native-2026-10-02/`,
 The linked final restoration receipt is under the private `rtp-editor-visual-aetMjr`
 runtime. Fenced3215 remains available with no fault installed.
 
-### UNKNOWN incident context — locally implemented/tested; release pending
+### UNKNOWN incident context — implemented, tested, committed and deployed
 
 The missing recipient/exact queued-time finding is repaired using the existing
 values, with no new reader/action or policy. Kyle/ADMIN's native1440/390px
@@ -61,8 +98,8 @@ is a declared isolated UNKNOWN record, not a live timeout/delivery reproduction.
 Scoped lint0, diff0 and focused source review pass. Native proof:
 `/private/tmp/ops-hub-notice-context-native-2026-10-02/mounted.private.json`,
 with source hash `bc372151b39f9b1db97245326d9334c02f9f62cb0e6c5e021433a5208d8b9d9d`.
-The render-only correction is not yet committed or deployed. Current8754
-production remains unchanged; a separate exact checkpoint/release must follow.
+The render-only correction is committed and deployed in `d21dcb2`; its exact
+build/types, stage, canonical HTTP and read-only gates are recorded above.
 This closes only the bounded incident display/navigation check, not real
 provider outcome or other role/incident cases.
 U0–U5 remain partial and U6 open for other role/permission, device, provider,
@@ -322,17 +359,22 @@ provider action does not satisfy them. U0–U5 remain partial; U6 remains open.
   and one saved written-route exception have explicit owner/next steps. This
   does not establish that earlier scripts, footage or cut history are absent.
 
-This is a focused priority acceptance pass, not complete C14/U6 acceptance.
-Remaining C14: broader signed Home/Review scope/return, Home week-to-shoot links,
-other deferred/stale reads, permission overrides and unobserved normal/test
-identity combinations. Populated/missing-coordinate Schedule and the four named
-critical-read failures/retries above are complete for their exact scenarios.
-Remaining U2/U4/U5 mounted scenarios stay on their existing map. Physical phones,
-assistive technology, 200% zoom, exact real-media/provider outcomes and team
-task finding remain open. The isolated fence blocked Google Fonts, so both
-baseline and candidate use matching fallback font metrics. No full real-media
-watch, client send, final-check business stamp or real client approval was
-fabricated for screenshots.
+The original C14 count/scope/identity/demo requirements are covered by retained
+source/HTTP/read-only/native evidence. U0–U5 remain partial and U6 open for the
+finite N01–N07/N09–N10 and H01–H04 cases in the acceptance map; an exhaustive
+role×route×failure matrix is not an additional gate. Home week normal Mon1/Tue1
+reaches the exact near shoot; expanded Mon2/Tue1/Scope refresh passes, with
+Back-to-Home unclaimed. N08 cold copied exact brief now retains cut v1/v2,
+brief v1 and manual Kim Start, then explicitly returns to `/editing?test=1`.
+Editing More Enter/initial Override/End Remove/Escape/trigger-focus also passes
+without either action; N06's actual self-QC/Draft Update dialogs remain.
+Proof: `/private/tmp/ops-hub-cold-brief-native-2026-10-02/`.
+
+Physical phones, named visual/200% zoom/contrast comparisons, exact real-media/
+provider outcomes and human team task finding remain separate. No general
+assistive-technology pass is claimed. The isolated fence blocked Google Fonts,
+so baseline/candidate use matching fallback metrics. No real-media watch,
+client send, final-check stamp or real client approval was fabricated.
 
 ## UNKNOWN post-native state — October 2 04:40 UTC
 
@@ -347,3 +389,31 @@ provider outcome is inferred from disconnected OpenPhone or missing call counts.
 The receipt verifies stored state; root
 `/private/tmp/ops-hub-notice-context-native-2026-10-02/mounted.private.json`
 separately records the native display/navigation pass.
+
+## Download target checkpoint — locally verified October 2
+
+`DownloadButton.tsx` is frozen at source hash
+`1977bea184e5903e9602ae6fa5ea44e37fff16c65fbc3d18ef8b6810bb962f2b`.
+Only action classes changed:44px targets, readable cancel, wrapping and2px
+keyboard outline/offset. The full non-presentation AST is unchanged; scoped
+lint/diff/focused review pass. Native ordinary OWNER exact-final-v1 approval,
+one loopback fake proxy download, Saved/Download again and persisted start/
+finish receipts pass. Actual390px and1280px document widths have no overflow;
+Download/Download again measure44px and mobile keyboard focus is2px+2px.
+A1440 override did not apply to this client tab; no1440 pass is claimed here.
+Phone share/save, Photos/filesystem acceptance and real full-media review remain
+separate. Native proof/screenshots:
+`/private/tmp/ops-hub-download-targets-native-2026-10-02/`.
+
+The read-only after receipt in isolated runtime
+`native-final-download-after.private.json` verifies one exact attributed OWNER
+approval, one repair window, exact byte/final/cache pointers, internal bell and
+one started/completed download;43 other model hashes are unchanged. UNKNOWN,
+outbox, manual work, scope, automation and selected office handoff/notification
+fields are preserved. Three other cuts retain their declared critical fields.
+The review-cut aggregate comparison cannot independently prove every other-cut
+field because the baseline omitted the selected cut's old updatedAt; this is
+recorded as an evidence limit. No real provider send, invitation, booking,
+office handoff, activation or production-data mutation was performed by these
+isolated native actions. This control update is not deployed yet; exact candidate
+build/stage/promotion receipts will determine its release status.

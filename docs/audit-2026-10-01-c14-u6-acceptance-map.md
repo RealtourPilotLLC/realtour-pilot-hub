@@ -1,6 +1,77 @@
 # C14 / U6 — remaining acceptance map
 
-## Current release and acceptance — October 2
+## Current disposition — d21dcb2 deployed; C14 original scope covered
+
+Production `d21dcb2e374919cb0767fae037e950948ced037e` was promoted04:50:20.292Z,
+Ready `dpl_67TmGv2BzeGSqiQBL9ZgirHAxTQz`. Exact build/types0 first try,
+scoped lint0/diff0/review, protected stage and canonical HTTP0 pass. Settings,
+automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3 remain unchanged
+under the read-only25006 guard. Rollback8754c91 retains database/newer writes.
+The bounded UNKNOWN recipient/time UI/navigation repair is committed/deployed.
+The next DownloadButton render-only follow-up is local, lint/diff/review clear,
+native pending and not yet committed/deployed.
+
+The original C14 requirement is designated-fixture exclusion from normal client/
+workload/failure counts, explicit test inclusion, correctly named Jordan
+conversations and a believable coherent demonstration month. Retained scoped
+reader/page/HTTP tests, bounded read-only identity evidence and native checks
+cover it. This is not acceptance of every UI or live client/provider journey.
+Existing UA07 Kim/overdue/brief/return/refresh/copied-link evidence is also
+complete. Do not invent an all-role×all-route×all-failure closure gate.
+
+Home week also passes normal Mon1/Tue1→exact near shoot and expanded Mon2/Tue1,
+scoped Schedule link and refresh. Receipt:
+`/private/tmp/ops-hub-home-week-native-2026-10-02/mounted.private.json`.
+Back went to prior Communications; Back-to-Home is unclaimed.
+
+N08 is now complete: a fresh owned tab opened the copied exact brief as Kyle/
+ADMIN, retained cut v1/v2, brief v1 and Kim's manual Start timestamp, then used
+its explicit Editing Room link to `/editing?test=1`. The URL contains route/
+queue context, not a draft or login token. In the queue, Enter opened More with
+Override focused; End focused Remove; Escape closed it, restored trigger focus
+and set aria-expanded=false. Neither action was invoked. The temporary tab was
+closed. Evidence: `/private/tmp/ops-hub-cold-brief-native-2026-10-02/` contains
+`mounted.private.json`, `brief.png` and `editing-more.private.json`. N06's two
+actual dialogs remain; this does not prove Override/Remove operations.
+
+## Finite remaining native acceptance — original audit requirements
+
+This list implements original sections7.2/7.7/9.1, not a new broad audit. Use
+normal sessions and disposable fenced records; no production/provider write.
+Keep green source/HTTP evidence. A fixture needed for an unobserved state is
+preparation, not permission to overwrite the current fixture. One recorded
+pass closes each named case; expand only for a concrete defect.
+
+| ID | Original scope | Exact remaining native check / completion evidence |
+|---|---|---|
+| N01 | UA03 / UX07, U2 | One later-written client walkthrough containing a carried script and client-added topic: allowance, one current stage, retained choices and distinct final-submission receipt. Reuse written22/0 for backend consequences. |
+| N02 | UA04 / C08, U2 | Inspect first required call, later optional call and partial Pro states. Show session two's own address/calendar and choose the last date from a fixture with more than six dates; request versus confirmation stays explicit. No real booking. Retain CALL18/Pro28 HTTP proof. |
+| N03 | UA05 / UX08 | Normal client Add/Replace/Undo suggestion and one failed answer Save/recovery; separately exercise denied local storage/retry. Existing away/Back/refresh/question isolation passes are retained. No model/booking side effect from a draft. |
+| N04 | U2 Brand Profile | One isolated skip/upload/save/failure-feedback case, preserving the current approved asset/version. Do not repeat signed receipt/reassignment races. |
+| N05 | UA06 / UX09 | Old script/cut open while newer version exists: current-version refusal/context. One failed revision submission retains exact text and honest retry/hold. Existing confirmation/cancel, exact pending-v1 download gate and portal unreadable/refresh cases remain credited. |
+| N06 | UA11 / UX14, U3 | Normal editor self-QC and staff Draft Update keyboard completion/cancel: Tab containment, pending duplicate guard, retained draft, return focus. Editing More Enter/initial Override/End Remove/Escape/trigger-focus now passes without action; drawer/status/task-detail checks are also credited. Only the two actual dialogs remain. |
+| N07 | UA10 / U5 | One NotificationsBell read-update failure and one supported Settings section-save failure/retry preserve badge/input and automation switches. Reuse prior evidence if it covers these exact unchanged controls; no generic save/failure sweep. |
+| N08 — complete | UA02 / UX15 | Fresh-tab copied exact brief retains cut v1/v2, brief v1 and manual Kim Start; explicit Editing Room returns to `/editing?test=1`. No draft/login token in the URL and no action invoked. Evidence above; no further cold-link replay required. |
+| N09 | UA12 / U1/U6 | Attach comparison screenshots to N01–N07 and phone upload. One200% zoom/long-name pass on Home, self-QC, client script/video and Settings; measure rendered action/secondary/error/status contrast in both staff themes. Reuse completed375/390/768/1440 comparisons. |
+| N10 | U5 high-use secondary pages | One read-only long-label/table/focus comparison each: Clients, Resources, Team/Logins and appointment controls. No financial/pay recalculation or provider mutation. Explicitly list other interiors as unreviewed; no exhaustive interior rebuild. |
+
+## Separate human, device, provider and source gates
+
+| ID | Owner / original scope | Concrete remaining step |
+|---|---|---|
+| H01 | Engineering + actual devices; UA08/UA13 | iPhone and Android partial/mixed upload with unfilmed topics, interruption/retry and exact receipt; approved-file download/save/share with interruption. No automatic Photos-save claim. Emulation does not close this. |
+| H02 | Kyle/James/Jordan/Kim; UA01/W01 | Observe next-owned-action finding without narration; record hints/time. After source reconciliation, Kim identifies actual applicable session footage/scope without Jordan relaying it. No invented usability score. |
+| H03 | Jordan + engineering; section8 | Explicitly authorized provider booking/create/read-back/reschedule/cancel, real model quality/confidentiality, exact real rendition/audio/full-watch and delivery outcome. No real send/booking/financial action is currently authorized. |
+| H04 | Kyle/Jordan; C13/C18/W01 and launch | Resolve named canonical-record/call-source/history holds, prepare exact roster seats/strategy/topics/month/brand, then review rollout/backlog separately. Roster is settled; no invitation or activation follows from UI passes. |
+
+Generated-workflow date overrides and optional manual evidence-backed UNKNOWN
+settlement remain separate business decisions. Existing clocks/unknown holds
+stay. U0–U5 remain partial and U6 open until their applicable named cases have
+an evidence disposition. Alternate failure permutations, additional zero-match
+URLs, exhaustive permission combinations and unmodified secondary interiors
+are supplemental regression work only when a concrete changed risk warrants it.
+
+## Prior source and mounted evidence — 8754c91
 
 Production is `8754c91020406b44568445297c54ff334dab680c`, promoted
 04:23:14.814 UTC, Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`. Shared controls,
@@ -35,7 +106,7 @@ or action buttons. Review→Back→repeat/refresh and Home#video-review reach th
 same incident. OpenPhone remains explicitly disconnected. This closes only
 that UI/navigation case: no send/retry/settlement/approval or live provider
 outcome was tested. The render-only repair passes lint0/diff0/focused review,
-but is not yet committed or deployed. Exact native proof:
+as recorded before d21dcb2; that checkpoint has since committed/deployed it. Exact native proof:
 `/private/tmp/ops-hub-notice-context-native-2026-10-02/mounted.private.json`.
 
 Kyle/ADMIN additionally passed normal `/review` → `/#video-review` → Back →
@@ -155,9 +226,9 @@ cannot establish layout, focus, native menus, mounted navigation or phone saves.
 | Map reads | `u5-project-map-recovery.ts` 36/0: fake actual handlers/effects, late/read-failure/empty address and exact-pin recovery |
 | Calendar availability | `u5-capacity-recovery.ts` 20/0: unavailable versus empty calendar, all-day count, capacity draft/unknown recovery |
 | Normal-role HTTP identity and journey | `normal-role-http-acceptance.ts` 37/0, no skips, against the built `e6eac69` app on port 3211: actual password/session and one-use client login cookies, role routes, seven client tabs, exact script/cut approvals, download/range bytes, foreign-scope refusals and manual Start/Pause. This is isolated HTTP evidence, not browser acceptance. |
-| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released. The four named staff-page mounted recoveries now have separate October 2 evidence; the named portal library unavailable/refresh recovery now has separate mounted evidence; a full portal error-boundary/reauthentication and other transition combinations remain open. |
+| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released. The four named staff-page mounted recoveries now have separate October 2 evidence; the named portal library unavailable/refresh recovery now has separate mounted evidence; cold brief navigation now passes N08; only the finite named N/H cases remain. Additional error/reauthentication permutations are supplemental for a concrete changed risk. |
 | Continuous causal client journeys | First CALL 18/0 and later WRITTEN 22/0 exact ab6; final Pro 28/0 exact fa346fa. Normal password/client cookies, exact source/script/client decisions, handoff/manual work, approvals and fake final bytes. These add causal HTTP evidence, not browser/phone/provider/watch acceptance. |
-| Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d. October2 normal OWNER v2 exact status-read failure/refresh now passes mounted; legacy v1 Account/default-layout fallback also passes. Other cut-version, prior-approved and role combinations remain open. |
+| Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d. October2 normal OWNER v2 exact status-read failure/refresh now passes mounted; legacy v1 Account/default-layout fallback also passes. N05 retains the exact newer-version/refused or failed revision case; prior-approved and role policy evidence is already retained rather than an expanding combination gate. |
 
 Evidence logs:
 
@@ -174,15 +245,14 @@ Evidence logs:
   Scoped lint and focused peer review are clear. Its 35/0 run used the updated
   source; the earlier built-app HTTP run does not certify this later repair.
 
-The source/cap/count C14 work and the normal-role HTTP identity boundary are
-verified. The four named critical reads now have both 14/0 isolated evidence
-and the bounded October 2 native mounted recovery above. Remaining C14 work is
-the unobserved role/scope, empty-work and return combinations below, plus other
-named deferred/stale reads. Kyle’s populated/missing-coordinate Schedule and
-normal Review return are now verified separately above. Do not
-repeat the four completed guarded failures without a changed risk.
-Do not compare totals that intentionally use different date, status, location
-or financial definitions.
+The original source/cap/count/identity/demo C14 requirement is covered. The four
+named critical reads have both14/0 isolated evidence and October2 native
+recovery. Kyle's populated/missing-coordinate Schedule, normal Review return,
+Home week and copied/cold brief checks are recorded separately above. The table
+below retains completed scoped replay evidence; remaining acceptance is exactly
+N01–N07/N09–N10 and H01–H04, with N08 complete. Do not repeat completed guarded
+failures without a changed risk, or compare totals with intentionally different
+date/status/location/financial definitions.
 
 ## Fixed isolated data and identities
 
@@ -193,7 +263,7 @@ link manifest, not guessed IDs. Client login links are single-use and expire.
 The older3200 demo uses owner/open development access and is preserved despite
 its damaged temporary database; it is not the current native acceptance origin.
 
-The remaining mounted scope scenarios should retain enforced authentication and:
+Any remaining named native scenario must retain enforced authentication and:
 
 - Owner, Kyle/admin, James/admin with the configured creative-review seat,
   mapped editor, photographer, unmapped editor, and signed-out identities.
@@ -223,7 +293,7 @@ waiting or stalled. Reuse the durable fixtures when a changed candidate needs
 verification; do not repeat the existing green domain or HTTP assertions only
 to increase counts.
 
-## Minimum C14 replay
+## Completed scoped replay reference — not an expanding gate
 
 All relative URLs below use the current fenced native origin `http://localhost:3215`
 and its signed sessions. The completed HTTP origin3211 is stopped. Do not use
@@ -232,12 +302,12 @@ the old open-development3200 demo as the signed fixture or target production.
 | Surface and URLs | Verified subset and remaining observation |
 |---|---|
 | `/` and `/?test=1` | Normal signed Kyle/James/owner identity, appropriate owned work and money permissions; test banner; normal client/real TEST-address rows remain while synthetic rows are omitted. Only scalar `test=1` selects the expanded view. |
-| Home → `/review?test=1` → `/?test=1#video-review` | James/ADMIN expanded Review → Home delivery, Back and refresh now retain the observed test scope and exact cut links. Kyle/ADMIN normal Review → Home delivery → Back/refresh also passed with exact v2/v1 links retained. Remaining: other authorized role/context combinations; do not generalize these two passes to them. |
-| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Kyle/ADMIN normal empty personal-verdict state also retained James’s queue, revisions and two handoffs. The bounded unknown incident now shows exact recipient/queued time at1440/390px, no action controls and honest disconnection; Review/Home/Back/repeat/refresh retain the same incident. Render fix is locally tested, not yet committed/deployed; no provider outcome is claimed. Other scope/role combinations remain. Do not equate “no cuts awaiting your verdict” with “all work done.” |
-| `/editing?editor=kim&due=overdue&stage=changes&test=1` | The earlier Kim selected queue→brief→return/refresh pass is recorded above. James/ADMIN `/editing?stage=changes` now recovers its named read failure with the selected stage and unchanged assignment/revision clock. Kyle/ADMIN copied combined URL now retains all filters/zero matches on refresh; keyboard Clear retains test=1, manual Start timestamp/assignment and exact brief return. Remaining: other role/permission combinations; preserve explicit Start/Pause. |
-| `/editing?stage=changes&view=upcoming&editor=kim&due=overdue&test=1` | On the fixed stage fixture this is zero-match: selection remains visible, All/Clear filters remain reachable and the message describes filtered results. The separate Kyle/ADMIN combined copied-filter zero-match/Clear case above is complete; this distinct upcoming combination must use verified fixture membership before assuming it is empty. |
-| `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | James/ADMIN named List read failure → actual Try again recovered zero saved appointments; expanded empty Map linked to normal Map and expanded List. Kyle’s later populated native pass verifies normal List3/expanded List4, List↔Map/refresh scope, normal TEST-address retention, missing-coordinate rows without pins, and cancelled/delivered/date-window distinctions. Remaining: Home week-to-exact-shoot links and other role/permission combinations. No provider/geocoding proof is claimed. |
-| Signed out or wrong role at the same URLs | Cookie/middleware HTTP gate and foreign-scope refusals already passed in the signed fixture. Mounted reauthentication and return context remain open where supported; query flags must not grant office access. |
+| Home → `/review?test=1` → `/?test=1#video-review` | James/ADMIN expanded Review → Home delivery, Back and refresh now retain the observed test scope and exact cut links. Kyle/ADMIN normal Review → Home delivery → Back/refresh also passed with exact v2/v1 links retained. These two cases are complete. They do not assert every role combination; a new authorization risk would need its own named check. |
+| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Kyle/ADMIN normal empty personal-verdict state also retained James’s queue, revisions and two handoffs. The bounded unknown incident now shows exact recipient/queued time at1440/390px, no action controls and honest disconnection; Review/Home/Back/repeat/refresh retain the same incident. Render fix is committed/deployed in d21dcb2; no provider outcome is claimed. Further role combinations are not an automatic completion gate. Do not equate “no cuts awaiting your verdict” with “all work done.” |
+| `/editing?editor=kim&due=overdue&stage=changes&test=1` | The earlier Kim selected queue→brief→return/refresh pass is recorded above. James/ADMIN `/editing?stage=changes` now recovers its named read failure with the selected stage and unchanged assignment/revision clock. Kyle/ADMIN copied combined URL now retains all filters/zero matches on refresh; keyboard Clear retains test=1, manual Start timestamp/assignment and exact brief return. This original filter/return case is complete; preserve explicit Start/Pause. No exhaustive role permutation is required. |
+| `/editing?stage=changes&view=upcoming&editor=kim&due=overdue&test=1` | On the fixed stage fixture this is zero-match: selection remains visible, All/Clear filters remain reachable and the message describes filtered results. The original filtered-empty/Clear requirement is already covered above. This alternate upcoming permutation is optional regression evidence only if a specific risk requires it. |
+| `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | James/ADMIN named List read failure → actual Try again recovered zero saved appointments; expanded empty Map linked to normal Map and expanded List. Kyle’s later populated native pass verifies normal List3/expanded List4, List↔Map/refresh scope, normal TEST-address retention, missing-coordinate rows without pins, and cancelled/delivered/date-window distinctions. Home week normal/expanded links and refresh now pass separately; its Back-to-Home result is not claimed. No provider/geocoding proof or exhaustive role matrix is implied. |
+| Signed out or wrong role at the same URLs | Cookie/middleware HTTP gate and foreign-scope refusals already passed in the signed fixture. N08 cold exact brief/explicit Editing Room navigation is complete; existing signed-out/foreign-scope HTTP gates remain credited. Query flags must not grant office access. |
 
 ## Empty, failed and disabled are separate states
 
@@ -254,11 +324,11 @@ the old open-development3200 demo as the signed fixture or target production.
   “Exceptions could not be checked”; the three boundary pages displayed
   “This page hit a problem.” Do not invent `?fail=1`, stop the shared demo
   database, or substitute an unrelated HTTP 500 for this evidence. Other
-  deferred/stale reads and role/context combinations remain open.
+  deferred/stale permutations are optional unless a concrete changed risk is identified.
 - **Existing focused error seams:** EditingWorkSummary's failed/stale view,
   WeekCalendar `calendarOk=false`, and map weather/drive/address deferred reads
   are already covered by isolated component evidence. Mounted browser recovery
-  remains open; these are not query-string triggers.
+  is supplemental unless needed by a named N01–N10 risk; these are not query-string triggers.
 - **Portal release-status failure:** the 35/0 cache fixture now covers actual
   failed-library SSR and recovered detail in both portal layouts after an
   unreadable marker. October2 normal OWNER canonical status failure nonce1010
@@ -274,37 +344,43 @@ fixed visual fixture. It shows loaded/dirty/saving/saved/error/partial/empty/
 filtered-empty/disabled controls without domain mutations. It proves shared
 presentation only, not an actual operational page's failed read.
 
-## Remaining U6 rendered comparison
+## Remaining U6 comparison is finite
 
-Supported access is restored. The bounded Kim/Kyle queue/brief/monthly-delivery
-comparisons and widths above, plus James's four guarded failure/retry flows,
-are complete for their named records and controls. They do not close all U6
-pages, themes, zoom, keyboard sequences or real-device behavior below.
+Use N01–N07/N09–N10 and H01–H04 above; N08 is complete. Native widths, menus, portal/script
+checks, recovery, queue, Schedule and incident evidence are retained; neither
+new source tests nor every role/route permutation is required merely to raise
+counts. N09 names the remaining zoom/long-label/contrast sample, and N10 names
+four high-use secondary comparisons. Finance/Trends, My Pay/HR, Catalog,
+Training, Assistant, Feedback and Connections interiors stay explicitly
+unreviewed; existing role/source evidence is retained, and no full interior
+rewrite or monetary-policy audit is implied. Actual assistive-technology
+observation, where needed to validate a named control, must not be claimed from
+SSR labels alone. Real devices/provider/media/team/source gates remain H01–H04.
 
-Use the same fixed records/screens at 375, 390, 768 and laptop widths, staff
-light/dark themes and the client light palette, plus 200% browser zoom. Capture
-matching screenshots and inspect rendered contrast, long names, wrapped
-actions, error text, tables, menus, dialogs and portrait media clipping.
+## Download target checkpoint — locally verified October 2
 
-Remaining keyboard replay: Sidebar disclosures, Editing More-menu and pending/
-failure combinations, full dialog containment and Map address listbox. Kyle’s
-mobile drawer wrap/Escape/focus return, James’s status menu and task note
-close/reopen, client confirmation/cancel, and Settings search/anchor draft
-retention have bounded native evidence; do not repeat those unchanged cases.
-Exercise pending and failed states without losing the active draft or allowing
-a duplicate/unknown mutation. Screen-reader announcements require actual
-assistive-technology observation, not SSR labels alone.
+`DownloadButton.tsx` is frozen at source hash
+`1977bea184e5903e9602ae6fa5ea44e37fff16c65fbc3d18ef8b6810bb962f2b`.
+Only action classes changed:44px targets, readable cancel, wrapping and2px
+keyboard outline/offset. The full non-presentation AST is unchanged; scoped
+lint/diff/focused review pass. Native ordinary OWNER exact-final-v1 approval,
+one loopback fake proxy download, Saved/Download again and persisted start/
+finish receipts pass. Actual390px and1280px document widths have no overflow;
+Download/Download again measure44px and mobile keyboard focus is2px+2px.
+A1440 override did not apply to this client tab; no1440 pass is claimed here.
+Phone share/save, Photos/filesystem acceptance and real full-media review remain
+separate. Native proof/screenshots:
+`/private/tmp/ops-hub-download-targets-native-2026-10-02/`.
 
-The broader U6 comparison retains Clients, Resources, Team/Logins, Settings,
-Month/library and appointment forms from `ui-controls.md`. Finance/Trends,
-My Pay/HR, Catalog, Training, Assistant, Feedback and Connections interiors
-remain explicitly unreviewed under their actual role permissions. No broad
-product rewrite follows from this acceptance list.
-
-Actual iPhone and Android interruption/retry and file save/share checks remain
-separate from viewport emulation. Kyle/James/Jordan task-finding observation,
-real client end-to-end acceptance and approved provider/media tests remain the
-UA01–UA14 release-matrix items. The normal-named isolated client HTTP journey
-passed; it does not establish mounted browser behavior, a full human video
-watch or real-client/provider acceptance. No booking, client send, invitation
-or rollout activation is authorized by this map.
+The read-only after receipt in isolated runtime
+`native-final-download-after.private.json` verifies one exact attributed OWNER
+approval, one repair window, exact byte/final/cache pointers, internal bell and
+one started/completed download;43 other model hashes are unchanged. UNKNOWN,
+outbox, manual work, scope, automation and selected office handoff/notification
+fields are preserved. Three other cuts retain their declared critical fields.
+The review-cut aggregate comparison cannot independently prove every other-cut
+field because the baseline omitted the selected cut's old updatedAt; this is
+recorded as an evidence limit. No real provider send, invitation, booking,
+office handoff, activation or production-data mutation was performed by these
+isolated native actions. This control update is not deployed yet; exact candidate
+build/stage/promotion receipts will determine its release status.

@@ -1,37 +1,40 @@
 # Progress record — unified implementation handoff (Sep 25 2026)
 
-## October 2 active release — 8754c91 deployed; broader acceptance open
+## October 2 active release — d21dcb2 deployed; finite acceptance remains
 
-Production serves `8754c9102040` from source commit
-`8754c91020406b44568445297c54ff334dab680c`, promoted October 2 at
-04:23:14.814 UTC (12:23 AM EDT), Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`.
-The five-file shared-control target/focus, full identity row and mobile drawer
-height corrections are implemented, tested, committed and deployed. Exact
-Node20 build/types0 pass first try; four-file lint0, unchanged ThemeToggle
-line13 baseline diagnostic, diff0, focused review, protected stage and canonical
-HTTP0 are recorded. Read-only25006 comparison confirms no changed settings
-keys, unchanged automation/enabled `[]`, `TEST_ONLY (default)`, users2 and
-memberships3. Rollback is verified `1490ef3`; retain database and newer writes.
+Production serves `d21dcb2e3749` from commit
+`d21dcb2e374919cb0767fae037e950948ced037e`, promoted October 2 at
+04:50:20.292 UTC (12:50 AM EDT), Ready `dpl_67TmGv2BzeGSqiQBL9ZgirHAxTQz`.
+The UNKNOWN incident recipient/queued-time rendering fix is implemented,
+tested, committed and deployed. Native Kyle1440/390px exact context/no actions,
+Review/Home/Back/refresh proof, scoped lint0/diff0/review, exact Node20 build0
+(first try44.9s), nonincremental types0, protected stage and canonical HTTP0
+pass. Read-only25006 comparison confirms settings unchanged, automation/enabled
+`[]`, `TEST_ONLY (default)`, users2/memberships3 unchanged. Rollback is8754c91;
+retain database state and newer writes. No send, retry, settlement, client
+approval, live provider outcome or audience activation is claimed.
 
-Native staff390px controls/keyboard and legacy v1 Account44px/focus2px/toggle
-pass. Normal OWNER portal status failure hit once, showed explicit unavailable
-without player/download, and native refresh restored the same finalv1 needing
-review. Controlled legacy fallback and return to v2 also pass without a saved
-switch. The private hook is removed with exact source/current-method restoration;
-32-table history/cache/user checks were preserved except ordinary sync updatedAt
-and13 visits. Retired-context restoration limits remain explicitly documented.
-Kyle’s copied combined queue filters survive refresh; Clear retains test scope,
-manual Start timestamp/assignment and exact brief return. Earlier completed
-Schedule, client-draft, Review-return and four staff-failure evidence is retained.
+C14's original count/scope/Jordan-identity/demo requirements are covered by the
+retained source, HTTP, read-only and native evidence. Completed mounted recovery,
+portal, copied queue, Schedule, normal/expanded Review return and incident checks
+remain credited. Home week normal Mon1/Tue1 reaches the exact near shoot;
+expanded Mon2/Tue1 and Schedule test scope survive refresh. Back-to-Home was
+not observed and is not claimed. No exhaustive role×route×failure matrix is an
+additional C14 completion gate.
 
-The bounded UNKNOWN incident display/navigation correction is implemented and
-tested locally, not yet committed or deployed. Kyle/ADMIN sees the exact stored
-recipient and queued timestamp at1440/390px without overflow or action buttons;
-Review/Back/repeat/refresh and Home delivery reach the same opaque incident.
-OpenPhone stays explicitly disconnected; no send/retry/settlement/approval or
-provider-outcome proof. Scoped lint0, diff0 and focused review are clear. U0–U5 remain partial and U6 open for the broader role/device/provider/
-team matrix and named client preparation. Exact evidence and remaining work:
-`audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
+The fresh-tab copied brief now retains exact cut v1/v2, brief v1 and Kim's
+manual Start timestamp; its explicit Editing Room link returns to
+`/editing?test=1` (N08 complete). Editing More opens with Enter, focuses Override,
+End reaches Remove, and Escape closes/returns focus without either action.
+N06 still requires the two actual self-QC/Draft Update dialogs. Evidence:
+`/private/tmp/ops-hub-cold-brief-native-2026-10-02/`.
+
+Remaining UI work is N01–N07/N09–N10 in the finite checklist in
+`audit-2026-10-01-c14-u6-acceptance-map.md`, followed by the named human/provider/
+device and client-source gates. U0–U5 remain partial and U6 open. The separate
+DownloadButton render-only follow-up is local: lint0/diff0/peer review clear,
+bounded native approval/download verified; commit and release pending. Exact release details:
+`audit-2026-10-02-production-workspace.md`.
 
 Supported browser access is restored; previous denial is historical. The first
 roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
@@ -2942,3 +2945,31 @@ fixture is correcting a stored-vs-canonical planning-mode expectation from its
 first run; no full journey pass yet. See the resume/checklist and
 `audit-2026-10-01-error-screen-recovery.md`. Main preview and client-send/
 activation restrictions preserved. No build/deploy command was interrupted.
+
+## Download target checkpoint — locally verified October 2
+
+`DownloadButton.tsx` is frozen at source hash
+`1977bea184e5903e9602ae6fa5ea44e37fff16c65fbc3d18ef8b6810bb962f2b`.
+Only action classes changed:44px targets, readable cancel, wrapping and2px
+keyboard outline/offset. The full non-presentation AST is unchanged; scoped
+lint/diff/focused review pass. Native ordinary OWNER exact-final-v1 approval,
+one loopback fake proxy download, Saved/Download again and persisted start/
+finish receipts pass. Actual390px and1280px document widths have no overflow;
+Download/Download again measure44px and mobile keyboard focus is2px+2px.
+A1440 override did not apply to this client tab; no1440 pass is claimed here.
+Phone share/save, Photos/filesystem acceptance and real full-media review remain
+separate. Native proof/screenshots:
+`/private/tmp/ops-hub-download-targets-native-2026-10-02/`.
+
+The read-only after receipt in isolated runtime
+`native-final-download-after.private.json` verifies one exact attributed OWNER
+approval, one repair window, exact byte/final/cache pointers, internal bell and
+one started/completed download;43 other model hashes are unchanged. UNKNOWN,
+outbox, manual work, scope, automation and selected office handoff/notification
+fields are preserved. Three other cuts retain their declared critical fields.
+The review-cut aggregate comparison cannot independently prove every other-cut
+field because the baseline omitted the selected cut's old updatedAt; this is
+recorded as an evidence limit. No real provider send, invitation, booking,
+office handoff, activation or production-data mutation was performed by these
+isolated native actions. This control update is not deployed yet; exact candidate
+build/stage/promotion receipts will determine its release status.

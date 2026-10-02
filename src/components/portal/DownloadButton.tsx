@@ -188,11 +188,11 @@ export function DownloadButton({ videoId, href, plan, label, title }: {
     );
   };
 
-  const btn = "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
+  const btn = "inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold leading-snug whitespace-normal [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   const primary = `${btn} bg-brand-action text-white hover:opacity-90`;
   const secondary = `${btn} border border-border text-foreground hover:bg-surface-2`;
   const openInstead = (
-    <a href={href} download={fileName} target="_blank" rel="noopener noreferrer" onClick={() => setState({ kind: "started" })} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
+    <a href={href} download={fileName} target="_blank" rel="noopener noreferrer" onClick={() => setState({ kind: "started" })} className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1 rounded-lg px-2 text-sm font-medium leading-snug whitespace-normal [overflow-wrap:anywhere] text-brand hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
       <ExternalLink className="size-3.5" /> Open the file instead
     </a>
   );
@@ -220,7 +220,7 @@ export function DownloadButton({ videoId, href, plan, label, title }: {
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 text-sm font-semibold"><Loader2 className="size-4 animate-spin text-brand" /> Downloading{pct !== null ? ` ${pct}%` : "…"}</span>
           <span className="text-xs text-muted tabular-nums">{state.total ? `${mb(state.received)} of ${mb(state.total)} MB` : `${mb(state.received)} MB`}</span>
-          <button type="button" onClick={() => abort.current?.abort()} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><X className="size-3" /> Cancel</button>
+          <button type="button" onClick={() => abort.current?.abort()} className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm font-medium leading-snug whitespace-normal [overflow-wrap:anywhere] text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><X className="size-3" /> Cancel</button>
         </div>
         <div role="progressbar" aria-label={`Downloading ${label}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined} className="h-1.5 max-w-xs overflow-hidden rounded-full bg-surface-2">
           <div className="h-full rounded-full bg-brand transition-[width]" style={{ width: `${pct ?? 5}%` }} />
@@ -262,7 +262,7 @@ export function DownloadButton({ videoId, href, plan, label, title }: {
       <div className="space-y-1.5" role="status">
         <p className="inline-flex items-center gap-1.5 text-sm font-semibold text-success"><CheckCircle2 className="size-4" /> {state.how === "share" ? "Shared" : "Saved"}</p>
         {state.how === "file" && <p className="text-[11px] text-muted-2">{hint.file}</p>}
-        <button type="button" onClick={() => void run()} className="text-xs font-medium text-brand hover:underline">Download again</button>
+        <button type="button" onClick={() => void run()} className="inline-flex min-h-11 min-w-11 max-w-full items-center rounded-lg px-2 text-sm font-medium leading-snug whitespace-normal [overflow-wrap:anywhere] text-brand hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Download again</button>
       </div>
     );
   }
