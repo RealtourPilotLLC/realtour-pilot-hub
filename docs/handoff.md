@@ -1,3 +1,12 @@
+## Mobile horizontal scrolling fix — October 2
+
+Shared main scroller now restricts horizontal overflow; long On your radar rows
+use a bounded single column and the heading wraps. Normal OWNER isolated fixture
+passed320/375/390: main scrollWidth equals clientWidth, horizontal gesture keeps
+x=0 and vertical gesture advances844px. Only classes changed in Shell.tsx and
+ProactiveFlags.tsx; no business actions or data changes. Build/release pending.
+Evidence: `/private/tmp/ops-hub-mobile-lock-2026-10-02/`.
+
 ## Current authoritative checkpoint — latest source deployed, N05 accepted
 
 Production: `b2868f247cbe6813aecaddf71263aa7aa2c4db78` · Ready `dpl_2tVo4xi6SD6Ju1Sj26j95xh1SGTp` · promoted

@@ -190,7 +190,7 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         </header>
 
         {user?.impersonating && <ViewAsBanner name={user.name} />}
-        <main id="staff-main" tabIndex={-1} className="flex-1 overflow-y-auto scroll-thin">{children}</main>
+        <main id="staff-main" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-x-none scroll-thin">{children}</main>
       </div>
 
       {/* Always-on feedback launcher (Kyle → review board) */}

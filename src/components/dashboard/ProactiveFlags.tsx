@@ -22,8 +22,8 @@ export function ProactiveFlags({ flags }: { flags: ProactiveFlag[] }) {
   const highCount = flags.filter((f) => f.severity === "high").length;
   return (
     <div className="panel-shadow rounded-2xl border bg-surface">
-      <div className="flex items-center justify-between border-b px-5 py-3.5">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Radar className="size-4 text-brand" />
           <h2 className="text-sm font-semibold">On your radar</h2>
           {highCount > 0 && (
@@ -40,7 +40,7 @@ export function ProactiveFlags({ flags }: { flags: ProactiveFlag[] }) {
           Nothing on the radar — deliveries, receivables, VIPs and revisions all look healthy.
         </div>
       ) : (
-        <div className="grid gap-px bg-border sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">
           {flags.map((f) => {
             const Icon = KIND_ICON[f.kind];
             const sev = SEV[f.severity];
@@ -48,7 +48,7 @@ export function ProactiveFlags({ flags }: { flags: ProactiveFlag[] }) {
               <Link
                 key={f.id}
                 href={f.href}
-                className="group flex items-center gap-3 bg-surface px-5 py-3 hover:bg-surface-2"
+                className="group flex min-w-0 items-center gap-3 bg-surface px-5 py-3 hover:bg-surface-2"
               >
                 <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${sev.dot}1a`, color: ink(sev.dot) }}>
                   <Icon className="size-4" />
