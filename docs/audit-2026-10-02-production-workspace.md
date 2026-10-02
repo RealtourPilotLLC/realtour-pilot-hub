@@ -1,41 +1,89 @@
 # Production workspace priority — deployed d21dcb2
 
-## Current release — exact UNKNOWN incident context deployed
+## Active checkpoint — client download controls deployed October 2
 
-`d21dcb2e374919cb0767fae037e950948ced037e` was promoted October 2 at
-04:50:20.292 UTC (12:50 AM EDT), Ready `dpl_67TmGv2BzeGSqiQBL9ZgirHAxTQz`.
-Protected stage:
-`https://realtour-pilot-f1fwswf7r-realtour-pilot-s-projects.vercel.app`.
-Canonical production reports `d21dcb2e3749`; the04:50:51.853Z HTTP receipt has
-failures0 for version, both sign-ins/security, six assets, staff307/client
-redirect, unauthorized final403 and old-host307. Exact clean Node20 build0
-passed first try in44.9s; nonincremental types0, scoped lint0/diff0/focused review
-and native1440/390px context/navigation checks pass. Enforced read-only25006
-comparison found settings unchanged, automation/enabled `[]`, `TEST_ONLY
-(default)`, users2 and memberships3 unchanged. Rollback is8754c91, preserving
-database state and newer writes. Private receipts:
-`/private/tmp/ops-hub-notice-context-release-2026-10-02/`.
+Production serves `3e9dc7afd222` from commit
+`3e9dc7afd222b6337e444ccdfc8a0cd59611aa97`, promoted at05:31:52.783 UTC,
+Ready `dpl_9jV2nr19DP7vz3NDpnpoKphycamo`. This checkpoint changes only
+DownloadButton presentation:44px actions, visible keyboard focus and readable
+wrapping; handlers, exact-file authorization, transfer, share and completion
+semantics are unchanged. Scoped lint/diff0, full non-presentation AST equality,
+one focused review, normal isolated OWNER approval of exact finalv1 and one
+started/completed fake-media download pass. Native390px and actual1280px
+comparison passes; requested1440px did not apply and is not claimed. Transfer
+finished before Cancel measurement; real phone share/save and full-watch remain
+unaccepted. No fake outcome is a real provider delivery proof.
 
-The recipient/exact queued-time render fix is implemented, tested, committed
-and deployed for existing authorized staff. It does not send, retry, settle or
-prove provider delivery. No invitation, approval, audience/automation expansion,
-financial or schema change. The separate DownloadButton render-only follow-up
-is local with lint0/diff0/peer review clear and bounded native390/1280 acceptance;
-commit and release are pending.
+Exact clean Node20 build and types pass0 first try. Protected stage and canonical
+HTTP/auth/assets/redirect checks pass0. Read-only25006 production comparison
+confirms automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3
+unchanged. Only existing `aryeo:apptReconcile` and `aryeo:fullReconcile` markers
+advanced during live activity; no business setting was changed by this release.
+Rollback is verified `d21dcb2`, preserving database and newer writes.
+Private release evidence: `/private/tmp/ops-hub-download-targets-release-2026-10-02/`;
+native/state evidence: `/private/tmp/ops-hub-download-targets-native-2026-10-02/`
+and the preserved5607 fixture runtime. The state comparison attributes only the
+declared approval, closed repair window, internal bell, download start/completion
+and selected cache update;43 other normalized model hashes match. A baseline
+cut.updatedAt omission prevents an all-field claim for every other cut; the
+separate read-only other-cut critical identity/status/byte/version check passes.
 
-C14's original scope/count/identity/demo acceptance is covered; remaining UI
-work uses finite N01–N07/N09–N10 checks in the C14/U6 map rather than an exhaustive
-role/route/failure matrix. Home week's new normal Mon1/Tue1→exact near-shoot and
-expanded Mon2/Tue1/scoped Schedule/refresh pass is at
-`/private/tmp/ops-hub-home-week-native-2026-10-02/mounted.private.json`.
-Back returned to the prior Communications page, so Back-to-Home is not claimed.
-N08 is complete: fresh-tab exact brief v1/v2 and brief v1 retain manual Kim
-Start and return explicitly to `/editing?test=1`. Editing More Enter/End/Escape/
-trigger-focus passes without invoking Override or Remove; N06's two dialogs
-remain. Cold brief/menu proof is in
-`/private/tmp/ops-hub-cold-brief-native-2026-10-02/`.
-U0–U5 remain partial and U6 open with named human/provider/device/client-source
-gates; no completed isolated check is silently promoted to live-provider proof.
+Original C14 count/scope/identity/demo requirements are covered. N08 cold exact
+brief/explicit Editing return is complete. Credit unchanged historical N06
+Self-QC/Draft keyboard/cancel/retention/focus evidence and N07 notification
+POST503/unread-preserved/confirmed-retry evidence; do not replay them solely
+because44px classes changed. Exact in-flight modal duplicate behavior is
+source-guarded but not claimed mounted. Settings failure/retry remains separate.
+
+Finite native N01–N05/N07(Settings)/N09–N10 acceptance continues. First required
+call and later optional planning presentation were mounted on fresh1280px normal
+OWNER; partial Pro's initial declared fixture remains call-gated and its source
+binding is being checked before any correction. N10 Clients/Resources/People
+read-only390px comparisons have no overflow; Kyle has no Logins permission and
+Resources has zero stored SOPs, so populated SOP/Owner Logins remain unreviewed.
+Appointment390px comparison found26–38px controls; a separate bounded source
+repair is in progress. No business action was invoked in that comparison.
+
+U0–U5 are partial; U6 remains open for the finite cases and H01–H04 physical
+device, staff task-finding, approved provider/media and named client-source gates.
+The settled12-client roster still needs canonical record/call-source reconciliation,
+prepared approved strategy/topics/brand/month and eligible seats. Only Sutow's
+October call is complete per Jordan; Rich filmed, Ashley has not. User-authorized
+checkpoint deployments continue; real sends/invitations/bookings/financial changes,
+worker activation, audience expansion, schema change and Git push remain held.
+The older current headings below are dated history and superseded here.
+
+### Appointment controls candidate — implemented and review clear; release pending
+
+Separate three-file render-only source batch addresses the concrete N10 finding:
+ShootScreen44px inputs/buttons/links, readable wrapped status actions, named
+fields/close controls and footer clearance; ProjectMessages44px Post/named team
+note; FeedbackWidget fully visible44px launcher. Ten added purpose labels and
+class changes leave every other TypeScript AST element identical. Primary
+white-text actions now use the existing darker brand-action token. Initial
+native measured old white/orange contrast3.349/3.919; source token ratios are
+5.060/5.527. Updated rendered color capture remains pending while private
+monthly-fixture identity correction quiesces automatic refresh.
+
+Final source hashes are retained privately; scoped ShootScreen/ProjectMessages
+lint0, FeedbackWidget's exact unchanged line46 error/line112 warning, diff0 and
+one independent focused review clear. Native390/1280 has no document overflow;
+changed controls and message-sheet controls are44px or larger, issue-field
+keyboard outline/offset2px+2px, all four purpose-labelled fields remain empty.
+No issue/preference/note/status/Post/message/Polish/Done/upload/provider operation
+was invoked. Leaflet map markers/devtools and general assistive-technology
+acceptance are outside this measured changed-control proof. Build/typecheck,
+commit and production release are pending; production remains3e9dc7a.
+
+Private evidence: `/private/tmp/ops-hub-appointment-controls-2026-10-02/` and
+`/private/tmp/ops-hub-appointment-controls-native-2026-10-02/`.
+The finite Pro scene's invalid synthetic month IDs caused the existing canonical
+ID guard to refuse. Correction is private fixture-only, with original screens/
+refusals retained. Automatic portal/staff reads moved cache/visits/health while
+capturing baselines; exact prior timestamp-only deltas are not claimed. All five
+owned private tabs are temporarily about:blank with return URLs preserved;
+existing3200/3215/3216/database/media processes remain intact. No production
+business data, schema, permissions, automation or audience change occurred.
 
 ## Earlier release — shared controls and mobile drawer deployed
 

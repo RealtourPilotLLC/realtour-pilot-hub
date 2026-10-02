@@ -216,6 +216,7 @@ function ProjectMessagesForProject({
               onChange={onChange}
               onKeyDown={(e) => { if (e.key === "Escape") setMentionQuery(null); }}
               minRows={2}
+              aria-label="Note for the team"
               placeholder="Leave a note for the team… (@ to tag)"
               className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
             />
@@ -243,7 +244,7 @@ function ProjectMessagesForProject({
             <button
               disabled={pending || !body.trim()}
               onClick={submit}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-white disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
               <Send className="size-4" /> {pending ? "Posting…" : "Post"}
             </button>

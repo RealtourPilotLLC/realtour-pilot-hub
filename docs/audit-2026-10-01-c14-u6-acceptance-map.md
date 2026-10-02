@@ -1,38 +1,89 @@
 # C14 / U6 — remaining acceptance map
 
-## Current disposition — d21dcb2 deployed; C14 original scope covered
+## Active checkpoint — client download controls deployed October 2
 
-Production `d21dcb2e374919cb0767fae037e950948ced037e` was promoted04:50:20.292Z,
-Ready `dpl_67TmGv2BzeGSqiQBL9ZgirHAxTQz`. Exact build/types0 first try,
-scoped lint0/diff0/review, protected stage and canonical HTTP0 pass. Settings,
-automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3 remain unchanged
-under the read-only25006 guard. Rollback8754c91 retains database/newer writes.
-The bounded UNKNOWN recipient/time UI/navigation repair is committed/deployed.
-The next DownloadButton render-only follow-up is local, lint/diff/review clear,
-native pending and not yet committed/deployed.
+Production serves `3e9dc7afd222` from commit
+`3e9dc7afd222b6337e444ccdfc8a0cd59611aa97`, promoted at05:31:52.783 UTC,
+Ready `dpl_9jV2nr19DP7vz3NDpnpoKphycamo`. This checkpoint changes only
+DownloadButton presentation:44px actions, visible keyboard focus and readable
+wrapping; handlers, exact-file authorization, transfer, share and completion
+semantics are unchanged. Scoped lint/diff0, full non-presentation AST equality,
+one focused review, normal isolated OWNER approval of exact finalv1 and one
+started/completed fake-media download pass. Native390px and actual1280px
+comparison passes; requested1440px did not apply and is not claimed. Transfer
+finished before Cancel measurement; real phone share/save and full-watch remain
+unaccepted. No fake outcome is a real provider delivery proof.
 
-The original C14 requirement is designated-fixture exclusion from normal client/
-workload/failure counts, explicit test inclusion, correctly named Jordan
-conversations and a believable coherent demonstration month. Retained scoped
-reader/page/HTTP tests, bounded read-only identity evidence and native checks
-cover it. This is not acceptance of every UI or live client/provider journey.
-Existing UA07 Kim/overdue/brief/return/refresh/copied-link evidence is also
-complete. Do not invent an all-role×all-route×all-failure closure gate.
+Exact clean Node20 build and types pass0 first try. Protected stage and canonical
+HTTP/auth/assets/redirect checks pass0. Read-only25006 production comparison
+confirms automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3
+unchanged. Only existing `aryeo:apptReconcile` and `aryeo:fullReconcile` markers
+advanced during live activity; no business setting was changed by this release.
+Rollback is verified `d21dcb2`, preserving database and newer writes.
+Private release evidence: `/private/tmp/ops-hub-download-targets-release-2026-10-02/`;
+native/state evidence: `/private/tmp/ops-hub-download-targets-native-2026-10-02/`
+and the preserved5607 fixture runtime. The state comparison attributes only the
+declared approval, closed repair window, internal bell, download start/completion
+and selected cache update;43 other normalized model hashes match. A baseline
+cut.updatedAt omission prevents an all-field claim for every other cut; the
+separate read-only other-cut critical identity/status/byte/version check passes.
 
-Home week also passes normal Mon1/Tue1→exact near shoot and expanded Mon2/Tue1,
-scoped Schedule link and refresh. Receipt:
-`/private/tmp/ops-hub-home-week-native-2026-10-02/mounted.private.json`.
-Back went to prior Communications; Back-to-Home is unclaimed.
+Original C14 count/scope/identity/demo requirements are covered. N08 cold exact
+brief/explicit Editing return is complete. Credit unchanged historical N06
+Self-QC/Draft keyboard/cancel/retention/focus evidence and N07 notification
+POST503/unread-preserved/confirmed-retry evidence; do not replay them solely
+because44px classes changed. Exact in-flight modal duplicate behavior is
+source-guarded but not claimed mounted. Settings failure/retry remains separate.
 
-N08 is now complete: a fresh owned tab opened the copied exact brief as Kyle/
-ADMIN, retained cut v1/v2, brief v1 and Kim's manual Start timestamp, then used
-its explicit Editing Room link to `/editing?test=1`. The URL contains route/
-queue context, not a draft or login token. In the queue, Enter opened More with
-Override focused; End focused Remove; Escape closed it, restored trigger focus
-and set aria-expanded=false. Neither action was invoked. The temporary tab was
-closed. Evidence: `/private/tmp/ops-hub-cold-brief-native-2026-10-02/` contains
-`mounted.private.json`, `brief.png` and `editing-more.private.json`. N06's two
-actual dialogs remain; this does not prove Override/Remove operations.
+Finite native N01–N05/N07(Settings)/N09–N10 acceptance continues. First required
+call and later optional planning presentation were mounted on fresh1280px normal
+OWNER; partial Pro's initial declared fixture remains call-gated and its source
+binding is being checked before any correction. N10 Clients/Resources/People
+read-only390px comparisons have no overflow; Kyle has no Logins permission and
+Resources has zero stored SOPs, so populated SOP/Owner Logins remain unreviewed.
+Appointment390px comparison found26–38px controls; a separate bounded source
+repair is in progress. No business action was invoked in that comparison.
+
+U0–U5 are partial; U6 remains open for the finite cases and H01–H04 physical
+device, staff task-finding, approved provider/media and named client-source gates.
+The settled12-client roster still needs canonical record/call-source reconciliation,
+prepared approved strategy/topics/brand/month and eligible seats. Only Sutow's
+October call is complete per Jordan; Rich filmed, Ashley has not. User-authorized
+checkpoint deployments continue; real sends/invitations/bookings/financial changes,
+worker activation, audience expansion, schema change and Git push remain held.
+The older current headings below are dated history and superseded here.
+
+### Appointment controls candidate — implemented and review clear; release pending
+
+Separate three-file render-only source batch addresses the concrete N10 finding:
+ShootScreen44px inputs/buttons/links, readable wrapped status actions, named
+fields/close controls and footer clearance; ProjectMessages44px Post/named team
+note; FeedbackWidget fully visible44px launcher. Ten added purpose labels and
+class changes leave every other TypeScript AST element identical. Primary
+white-text actions now use the existing darker brand-action token. Initial
+native measured old white/orange contrast3.349/3.919; source token ratios are
+5.060/5.527. Updated rendered color capture remains pending while private
+monthly-fixture identity correction quiesces automatic refresh.
+
+Final source hashes are retained privately; scoped ShootScreen/ProjectMessages
+lint0, FeedbackWidget's exact unchanged line46 error/line112 warning, diff0 and
+one independent focused review clear. Native390/1280 has no document overflow;
+changed controls and message-sheet controls are44px or larger, issue-field
+keyboard outline/offset2px+2px, all four purpose-labelled fields remain empty.
+No issue/preference/note/status/Post/message/Polish/Done/upload/provider operation
+was invoked. Leaflet map markers/devtools and general assistive-technology
+acceptance are outside this measured changed-control proof. Build/typecheck,
+commit and production release are pending; production remains3e9dc7a.
+
+Private evidence: `/private/tmp/ops-hub-appointment-controls-2026-10-02/` and
+`/private/tmp/ops-hub-appointment-controls-native-2026-10-02/`.
+The finite Pro scene's invalid synthetic month IDs caused the existing canonical
+ID guard to refuse. Correction is private fixture-only, with original screens/
+refusals retained. Automatic portal/staff reads moved cache/visits/health while
+capturing baselines; exact prior timestamp-only deltas are not claimed. All five
+owned private tabs are temporarily about:blank with return URLs preserved;
+existing3200/3215/3216/database/media processes remain intact. No production
+business data, schema, permissions, automation or audience change occurred.
 
 ## Finite remaining native acceptance — original audit requirements
 

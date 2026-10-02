@@ -131,7 +131,7 @@ export function ShootScreen({
   //   notes, media) → pay last. Status texts + client messaging live in the
   //   floating action bar so quick actions are ALWAYS one thumb away.
   return (
-    <div className="mx-auto max-w-2xl px-4 pb-36 pt-4 sm:px-6">
+    <div className="mx-auto max-w-2xl px-4 pb-48 pt-4 sm:px-6">
       <BackLink href={backHref} label={backHref === "/shoot" ? "My shoots" : "Back"} />
 
       <HeaderCard project={project} appointment={appointment} whenText={whenText} timing={timing} onCopy={() => flash("ok", "Address copied")} />
@@ -184,7 +184,7 @@ export function ShootScreen({
       />
 
       {toast && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-32 z-[1400] flex justify-center px-4">
+        <div className="pointer-events-none fixed inset-x-0 bottom-48 z-[1400] flex justify-center px-4">
           <div className={cn(
             "pointer-events-auto rounded-full px-4 py-2 text-sm font-medium shadow-lg ring-1",
             toast.kind === "ok" ? "bg-success text-white ring-success/30" : "bg-danger text-white ring-danger/30",
@@ -255,25 +255,26 @@ function HeaderCard({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 border-t bg-surface-2/40 px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 border-t bg-surface-2/40 px-4 py-2.5">
         <Navigation className="size-4 text-brand" />
         <span className="text-xs font-medium text-muted">Directions</span>
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex max-w-full flex-wrap items-center gap-1.5">
           {dirs.map((d) => (
             <a
               key={d.label}
               href={d.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border bg-surface px-2.5 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
               {d.label}
             </a>
           ))}
           <button
             onClick={() => { navigator.clipboard?.writeText(project.addressFull); onCopy(); }}
-            className="flex size-7 items-center justify-center rounded-lg border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"
+            className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             title="Copy address"
+            aria-label="Copy address"
           >
             <Copy className="size-3.5" />
           </button>
@@ -325,7 +326,7 @@ function MessageSheet({
       <div className="w-full max-w-md rounded-t-2xl border bg-surface p-5 shadow-xl sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-1 flex items-center justify-between">
           <h3 className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Message the client</h3>
-          <button onClick={onClose} className="text-muted-2 hover:text-foreground"><X className="size-4" /></button>
+          <button onClick={onClose} aria-label="Close message" className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><X className="size-4" /></button>
         </div>
         {noPhone && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2 text-xs text-warning">
@@ -334,11 +335,12 @@ function MessageSheet({
         )}
         <AutoTextarea
           autoFocus
+          aria-label="Message to the client"
           value={msg}
           onChange={(e) => { setMsg(e.target.value); setPolished(false); }}
           minRows={3}
           placeholder="Type a quick note — e.g. running 10 min late, gate code didn’t work…"
-          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         />
         {polished && (
           <div className="mt-1 flex items-center gap-1 text-[11px] text-brand"><Sparkles className="size-3" /> AI polished — edit as needed before sending</div>
@@ -347,14 +349,14 @@ function MessageSheet({
           <button
             onClick={polish}
             disabled={!msg.trim() || drafting}
-            className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-40"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             {drafting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Polish with AI
           </button>
           <button
             onClick={sendMsg}
             disabled={!msg.trim() || pending || noPhone}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-40"
+            className="ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send
           </button>
@@ -377,21 +379,22 @@ function SendSheet({
       >
         <div className="mb-1 flex items-center justify-between">
           <h3 className="text-sm font-semibold">{title} — review &amp; send</h3>
-          <button onClick={onCancel} className="text-muted-2 hover:text-foreground"><X className="size-4" /></button>
+          <button onClick={onCancel} aria-label="Close text preview" className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><X className="size-4" /></button>
         </div>
         <p className="mb-2 text-xs text-muted">This goes to the client as a text. Edit anything before sending.</p>
         <AutoTextarea
+          aria-label="Text to the client"
           value={text}
           onChange={(e) => onChange(e.target.value)}
           minRows={4}
-          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         />
         <div className="mt-3 flex items-center gap-2">
-          <button onClick={onCancel} className="rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2">Cancel</button>
+          <button onClick={onCancel} className="min-h-11 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Cancel</button>
           <button
             onClick={onSend}
             disabled={sending || !text.trim()}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+            className="ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send text
           </button>
@@ -424,17 +427,17 @@ function CustomerCard({
 
   return (
     <section className="panel-shadow rounded-2xl border border-border bg-surface">
-      <div className="flex items-center gap-2 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         <button
           onClick={() => hasMore && setOpen((v) => !v)}
-          className={cn("flex min-w-0 flex-1 items-center gap-2 text-left", hasMore && "cursor-pointer")}
+          className={cn("flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-2 rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", hasMore && "cursor-pointer")}
         >
           {/* The agent's Aryeo headshot (Jordan, Sep 2: "if the agent has a
               profile photo in aryeo that should be shown here") — the initials
               disc when Aryeo has none. */}
           <Avatar name={client.name} src={client.avatarUrl} size={24} />
           {isVip && <Crown className="size-4 shrink-0 text-warning" />}
-          <span className="truncate font-semibold">{client.name}</span>
+          <span className="min-w-0 break-words font-semibold">{client.name}</span>
           {segment && <Badge color={segment.color}>{segment.label}</Badge>}
           {client.socialClient && <Badge color={PALETTE.violet}>Social{client.socialPlan ? ` · ${client.socialPlan}` : ""}</Badge>}
           {profile?.touchLevel && <Chip label={`${profile.touchLevel} touch`} />}
@@ -445,12 +448,12 @@ function CustomerCard({
         <div className="flex shrink-0 items-center gap-1.5">
           {client.phoneE164 && (
             <>
-              <a href={`tel:${client.phoneE164}`} className="flex size-8 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2" title="Call"><Phone className="size-4" /></a>
-              <a href={`sms:${client.phoneE164}`} className="flex size-8 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2" title="Text"><MessageSquare className="size-4" /></a>
+              <a href={`tel:${client.phoneE164}`} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Call"><Phone className="size-4" /></a>
+              <a href={`sms:${client.phoneE164}`} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Text"><MessageSquare className="size-4" /></a>
             </>
           )}
           {client.email && (
-            <a href={`mailto:${client.email}`} className="flex size-8 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2" title="Email"><Mail className="size-4" /></a>
+            <a href={`mailto:${client.email}`} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Email"><Mail className="size-4" /></a>
           )}
         </div>
       </div>
@@ -458,7 +461,7 @@ function CustomerCard({
       {/* Collapsed: one clamped summary line so they know who they're shooting
           for without scrolling. Expanded: the full working profile. */}
       {!open && profile?.summary && (
-        <button onClick={() => setOpen(true)} className="block w-full px-4 pb-3 text-left">
+        <button onClick={() => setOpen(true)} className="block min-h-11 w-full rounded-lg px-4 pb-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
           <p className="line-clamp-2 text-sm text-muted">{profile.summary}</p>
           <span className="mt-1 inline-block text-xs font-medium text-brand">Show full profile</span>
         </button>
@@ -584,7 +587,7 @@ function ZillowCta({ url }: { url: string }) {
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-4 transition-colors hover:bg-brand-soft/60"
+      className="flex min-h-11 items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-4 transition-colors hover:bg-brand-soft/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
     >
       <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand"><Box className="size-5" /></span>
       <div className="min-w-0 flex-1">
@@ -672,10 +675,11 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addFlag()}
+            aria-label="On-site issue"
             placeholder="e.g. Lockbox code didn’t work, dog loose in backyard"
-            className="flex-1 rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+            className="min-h-11 min-w-0 flex-1 rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           />
-          <button onClick={addFlag} disabled={pending} className="rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">Flag</button>
+          <button onClick={addFlag} disabled={pending} className="min-h-11 shrink-0 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Flag</button>
         </div>
         {flags.length > 0 && (
           <ul className="mt-2 space-y-1">
@@ -696,17 +700,18 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
             onChange={(e) => setPref(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addPref()}
             maxLength={1000}
+            aria-label="Client preference or request"
             placeholder="e.g. Wants the logo bottom-right on every reel"
-            className="flex-1 rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+            className="min-h-11 min-w-0 flex-1 rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           />
-          <button onClick={addPref} disabled={pending || !pref.trim()} className="rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">Send</button>
+          <button onClick={addPref} disabled={pending || !pref.trim()} className="min-h-11 shrink-0 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Send</button>
         </div>
         <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs">
           {([["client_said", "They asked for it"], ["observation", "I noticed it"]] as const).map(([k, l]) => (
-            <button key={k} type="button" onClick={() => setPrefBasis(k)} className={cn("rounded-lg border px-2 py-1", prefBasis === k ? "border-brand bg-brand-soft" : "text-muted")}>{l}</button>
+            <button key={k} type="button" onClick={() => setPrefBasis(k)} className={cn("min-h-11 rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", prefBasis === k ? "border-brand bg-brand-soft" : "text-muted")}>{l}</button>
           ))}
           {([["project", "Just this job"], ["client", "Going forward"]] as const).map(([k, l]) => (
-            <button key={k} type="button" onClick={() => setPrefScope(k)} className={cn("rounded-lg border px-2 py-1", prefScope === k ? "border-brand bg-brand-soft" : "text-muted")}>{l}</button>
+            <button key={k} type="button" onClick={() => setPrefScope(k)} className={cn("min-h-11 rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", prefScope === k ? "border-brand bg-brand-soft" : "text-muted")}>{l}</button>
           ))}
         </div>
         <p className="mt-1 text-[11px] text-muted-2">The office confirms it before it reaches the editor.</p>
@@ -772,7 +777,7 @@ function Checklist({
             key={d.id}
             onClick={() => onToggle(d.id)}
             className={cn(
-              "flex w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+              "flex min-h-11 w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
               on ? "border-success/40 bg-success-soft/30" : "bg-surface hover:bg-surface-2",
             )}
           >
@@ -848,14 +853,15 @@ function NotesCard({ projectId, initial, flash }: { projectId: string; initial: 
         value={note}
         onChange={(e) => setNote(e.target.value)}
         minRows={3}
+        aria-label="Notes for the editor"
         placeholder="e.g. House faces west so exteriors are backlit, recover sky. Seller wants the pool emphasized. Skip the cluttered office."
-        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       />
       <div className="mt-2 flex items-center justify-end">
         <button
           onClick={save}
           disabled={!dirty || pending}
-          className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-40"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} {dirty ? "Save notes" : "Saved"}
         </button>
@@ -957,19 +963,20 @@ function ActionBar({
                 disabled={noPhone}
                 title={noPhone ? "No phone number on file for this client" : `Text the client: ${SHOOT_STATUS_META[kind].label}`}
                 className={cn(
-                  "inline-flex flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 py-1.5 text-[11px] font-medium transition-colors disabled:opacity-40",
+                  "inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-sm font-medium transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                   done ? "border-success/40 bg-success-soft/40 text-success" : "bg-surface hover:bg-surface-2",
                 )}
               >
-                {done ? <CheckCircle2 className="size-3.5" /> : kind === "complete" ? <Check className="size-3.5 text-muted" /> : <Navigation className="size-3.5 text-brand" />}
-                <span className="truncate">{SHOOT_STATUS_META[kind].label}</span>
+                {done ? <CheckCircle2 className="size-3.5 shrink-0" /> : kind === "complete" ? <Check className="size-3.5 shrink-0 text-muted" /> : <Navigation className="size-3.5 shrink-0 text-brand" />}
+                <span className="min-w-0 break-words leading-snug">{SHOOT_STATUS_META[kind].label}</span>
               </button>
             );
           })}
           <button
             onClick={() => setMsgOpen(true)}
             title="Message the client"
-            className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-[11px] font-medium hover:bg-surface-2"
+            aria-label="Message the client"
+            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1 rounded-lg border bg-surface px-2.5 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             <MessageSquare className="size-3.5 text-brand" /> <span className="hidden sm:inline">Message</span>
           </button>
@@ -984,7 +991,7 @@ function ActionBar({
               </div>
               <Link
                 href={`/upload/${projectId}`}
-                className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
+                className="ml-auto inline-flex min-h-11 min-w-0 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               >
                 <Upload className="size-4" /> Upload content <ChevronRight className="size-4" />
               </Link>
@@ -999,14 +1006,14 @@ function ActionBar({
                   shooters detoured through the /upload list 30×/month (audit). */}
               <Link
                 href={`/upload/${projectId}`}
-                className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
+                className="ml-auto inline-flex min-h-11 min-w-0 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               >
                 <Upload className="size-4" /> Upload content
               </Link>
               <button
                 onClick={complete}
                 disabled={pending}
-                className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-semibold text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+                className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-semibold text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 title="Mark the shoot complete"
               >
                 {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Done

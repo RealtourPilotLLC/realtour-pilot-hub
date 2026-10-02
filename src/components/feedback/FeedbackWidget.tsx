@@ -140,7 +140,7 @@ export function FeedbackWidget() {
           title="Send feedback or a feature request"
           aria-label="Send feedback"
           className={cn(
-            "fixed right-0 z-[1400] flex translate-x-1 items-center rounded-l-xl border border-r-0 border-border bg-surface/90 py-3 pl-2 pr-2.5 text-brand shadow-lg backdrop-blur transition-all hover:translate-x-0 hover:bg-surface",
+            "fixed right-0 z-[1400] flex min-h-11 min-w-11 items-center justify-center rounded-l-xl border border-r-0 border-border bg-surface/90 px-2.5 py-2 text-brand shadow-lg backdrop-blur transition-all hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
             tabBottom,
           )}
         >

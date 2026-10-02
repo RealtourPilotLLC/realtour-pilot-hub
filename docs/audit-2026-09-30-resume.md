@@ -1,65 +1,89 @@
 # Ops Hub audit — current resume point
 
-## October 2 active release — d21dcb2 deployed; finite acceptance remains
+## Active checkpoint — client download controls deployed October 2
 
-Production serves `d21dcb2e3749` from commit
-`d21dcb2e374919cb0767fae037e950948ced037e`, promoted October 2 at
-04:50:20.292 UTC (12:50 AM EDT), Ready `dpl_67TmGv2BzeGSqiQBL9ZgirHAxTQz`.
-The UNKNOWN incident recipient/queued-time rendering fix is implemented,
-tested, committed and deployed. Native Kyle1440/390px exact context/no actions,
-Review/Home/Back/refresh proof, scoped lint0/diff0/review, exact Node20 build0
-(first try44.9s), nonincremental types0, protected stage and canonical HTTP0
-pass. Read-only25006 comparison confirms settings unchanged, automation/enabled
-`[]`, `TEST_ONLY (default)`, users2/memberships3 unchanged. Rollback is8754c91;
-retain database state and newer writes. No send, retry, settlement, client
-approval, live provider outcome or audience activation is claimed.
+Production serves `3e9dc7afd222` from commit
+`3e9dc7afd222b6337e444ccdfc8a0cd59611aa97`, promoted at05:31:52.783 UTC,
+Ready `dpl_9jV2nr19DP7vz3NDpnpoKphycamo`. This checkpoint changes only
+DownloadButton presentation:44px actions, visible keyboard focus and readable
+wrapping; handlers, exact-file authorization, transfer, share and completion
+semantics are unchanged. Scoped lint/diff0, full non-presentation AST equality,
+one focused review, normal isolated OWNER approval of exact finalv1 and one
+started/completed fake-media download pass. Native390px and actual1280px
+comparison passes; requested1440px did not apply and is not claimed. Transfer
+finished before Cancel measurement; real phone share/save and full-watch remain
+unaccepted. No fake outcome is a real provider delivery proof.
 
-C14's original count/scope/Jordan-identity/demo requirements are covered by the
-retained source, HTTP, read-only and native evidence. Completed mounted recovery,
-portal, copied queue, Schedule, normal/expanded Review return and incident checks
-remain credited. Home week normal Mon1/Tue1 reaches the exact near shoot;
-expanded Mon2/Tue1 and Schedule test scope survive refresh. Back-to-Home was
-not observed and is not claimed. No exhaustive role×route×failure matrix is an
-additional C14 completion gate.
+Exact clean Node20 build and types pass0 first try. Protected stage and canonical
+HTTP/auth/assets/redirect checks pass0. Read-only25006 production comparison
+confirms automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3
+unchanged. Only existing `aryeo:apptReconcile` and `aryeo:fullReconcile` markers
+advanced during live activity; no business setting was changed by this release.
+Rollback is verified `d21dcb2`, preserving database and newer writes.
+Private release evidence: `/private/tmp/ops-hub-download-targets-release-2026-10-02/`;
+native/state evidence: `/private/tmp/ops-hub-download-targets-native-2026-10-02/`
+and the preserved5607 fixture runtime. The state comparison attributes only the
+declared approval, closed repair window, internal bell, download start/completion
+and selected cache update;43 other normalized model hashes match. A baseline
+cut.updatedAt omission prevents an all-field claim for every other cut; the
+separate read-only other-cut critical identity/status/byte/version check passes.
 
-The fresh-tab copied brief now retains exact cut v1/v2, brief v1 and Kim's
-manual Start timestamp; its explicit Editing Room link returns to
-`/editing?test=1` (N08 complete). Editing More opens with Enter, focuses Override,
-End reaches Remove, and Escape closes/returns focus without either action.
-N06 still requires the two actual self-QC/Draft Update dialogs. Evidence:
-`/private/tmp/ops-hub-cold-brief-native-2026-10-02/`.
+Original C14 count/scope/identity/demo requirements are covered. N08 cold exact
+brief/explicit Editing return is complete. Credit unchanged historical N06
+Self-QC/Draft keyboard/cancel/retention/focus evidence and N07 notification
+POST503/unread-preserved/confirmed-retry evidence; do not replay them solely
+because44px classes changed. Exact in-flight modal duplicate behavior is
+source-guarded but not claimed mounted. Settings failure/retry remains separate.
 
-Remaining UI work is N01–N07/N09–N10 in the finite checklist in
-`audit-2026-10-01-c14-u6-acceptance-map.md`, followed by the named human/provider/
-device and client-source gates. U0–U5 remain partial and U6 open. The separate
-DownloadButton render-only follow-up is local: lint0/diff0/peer review clear,
-bounded native approval/download verified; commit and release pending. Exact release details:
-`audit-2026-10-02-production-workspace.md`.
+Finite native N01–N05/N07(Settings)/N09–N10 acceptance continues. First required
+call and later optional planning presentation were mounted on fresh1280px normal
+OWNER; partial Pro's initial declared fixture remains call-gated and its source
+binding is being checked before any correction. N10 Clients/Resources/People
+read-only390px comparisons have no overflow; Kyle has no Logins permission and
+Resources has zero stored SOPs, so populated SOP/Owner Logins remain unreviewed.
+Appointment390px comparison found26–38px controls; a separate bounded source
+repair is in progress. No business action was invoked in that comparison.
 
-Supported browser access is restored; previous denial is historical. The first
-roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
-Canonical record selection/call-source reconciliation and client preparation
-remain open in the private October operator packet. Only Sutow's October call
-is complete per Jordan; Schultz filmed and Ashley has not. U0–U5 remain partial
-and U6 open. No real-client sends, invitations, bookings, financial changes,
-activation, rollout expansion, schema change or Git push. Older current headings
-below retain dated history and are superseded by this active checkpoint.
+U0–U5 are partial; U6 remains open for the finite cases and H01–H04 physical
+device, staff task-finding, approved provider/media and named client-source gates.
+The settled12-client roster still needs canonical record/call-source reconciliation,
+prepared approved strategy/topics/brand/month and eligible seats. Only Sutow's
+October call is complete per Jordan; Rich filmed, Ashley has not. User-authorized
+checkpoint deployments continue; real sends/invitations/bookings/financial changes,
+worker activation, audience expansion, schema change and Git push remain held.
+The older current headings below are dated history and superseded here.
 
-### Continue from here
+### Appointment controls candidate — implemented and review clear; release pending
 
-- The exact `d21dcb2` UNKNOWN-context release and prior8754/1490/46 releases are
-  complete. Preserve their green checks and receipts; do not redeploy them or
-  restart the audit.
-- Continue finite N01–N07/N09–N10 and H01–H04 in the acceptance map. C14's original
-  scope is covered. N08 cold brief/explicit Editing Room return and the More-menu
-  Enter/End/Escape/focus check are done; N06's two actual dialogs remain.
-- The separate DownloadButton render-only follow-up is source-reviewed/lint0,
-  with native acceptance and commit/release pending. It is not part of d21dcb2.
-- Kyle must resolve the named canonical-record and October call-source holds
-  in the private roster operator packet before client preparation/eligibility.
-  The roster and Joe/Joseph same-person decision are already settled.
-- Keep real sends, invitations, bookings, financial changes and activation held.
+Separate three-file render-only source batch addresses the concrete N10 finding:
+ShootScreen44px inputs/buttons/links, readable wrapped status actions, named
+fields/close controls and footer clearance; ProjectMessages44px Post/named team
+note; FeedbackWidget fully visible44px launcher. Ten added purpose labels and
+class changes leave every other TypeScript AST element identical. Primary
+white-text actions now use the existing darker brand-action token. Initial
+native measured old white/orange contrast3.349/3.919; source token ratios are
+5.060/5.527. Updated rendered color capture remains pending while private
+monthly-fixture identity correction quiesces automatic refresh.
 
+Final source hashes are retained privately; scoped ShootScreen/ProjectMessages
+lint0, FeedbackWidget's exact unchanged line46 error/line112 warning, diff0 and
+one independent focused review clear. Native390/1280 has no document overflow;
+changed controls and message-sheet controls are44px or larger, issue-field
+keyboard outline/offset2px+2px, all four purpose-labelled fields remain empty.
+No issue/preference/note/status/Post/message/Polish/Done/upload/provider operation
+was invoked. Leaflet map markers/devtools and general assistive-technology
+acceptance are outside this measured changed-control proof. Build/typecheck,
+commit and production release are pending; production remains3e9dc7a.
+
+Private evidence: `/private/tmp/ops-hub-appointment-controls-2026-10-02/` and
+`/private/tmp/ops-hub-appointment-controls-native-2026-10-02/`.
+The finite Pro scene's invalid synthetic month IDs caused the existing canonical
+ID guard to refuse. Correction is private fixture-only, with original screens/
+refusals retained. Automatic portal/staff reads moved cache/visits/health while
+capturing baselines; exact prior timestamp-only deltas are not claimed. All five
+owned private tabs are temporarily about:blank with return URLs preserved;
+existing3200/3215/3216/database/media processes remain intact. No production
+business data, schema, permissions, automation or audience change occurred.
 
 ## Oct 1 final application checkpoint — deployed; remaining acceptance blocked
 
