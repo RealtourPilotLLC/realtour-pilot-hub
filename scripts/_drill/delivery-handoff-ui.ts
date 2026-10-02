@@ -93,6 +93,16 @@ async function main() {
     c.ok("known upload refusal leaves the previous state, shows an error and allows a corrected attempt", markers.size === 0 && !elements(tree(), "Button")[0].disabled && status().state === "error" && words(tree()).includes("Not saved"));
     await mountUpload(); storageFails = true; click("Mark as Uploaded"); storageFails = false;
     c.ok("upload refuses locally when recovery storage is unavailable", uploadCalls.length === 3 && words(tree()).includes("Nothing was submitted"));
+    markers.clear(); await mountUpload(); uploadResult = deferred();
+    const realTimer = globalThis.setTimeout;
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimer(callback, ms === 15_000 ? 1 : ms, ...args)) as typeof setTimeout;
+    try { click("Mark as Uploaded"); await until(() => elements(tree(), "Button")[0].busy === false); }
+    finally { globalThis.setTimeout = realTimer; }
+    c.ok("hung upload stops its spinner and retains exact-version recovery without automatic retry", markers.size === 1 && status().state === "error" && !!button("Reconcile upload record") && elements(tree(), "Button")[0].disabled === true);
+    uploadResult.resolve({ ok: true, message: "Late original response" }); await Promise.resolve(); await Promise.resolve();
+    c.ok("late response after timeout cannot clear the held record or falsely claim success", markers.size === 1 && status().state === "error");
+    uploadResult = deferred(); click("Reconcile upload record"); uploadResult.resolve({ ok: true, message: "Original upload confirmed" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("explicit reconciliation after timeout confirms the original receipt", markers.size === 0 && status().state === "saved");
     markers.clear();
     await mount(false); click("Mark as sent");
     const staleChoice = button("Mark as sent")!.onClick as () => void;
@@ -147,6 +157,7 @@ async function main() {
     c.ok("actual monthly row passes destination into record control and orders final check before recording", !monthlyHTML.includes("Record portal handoff") && !monthlyHTML.includes("Check client-viewable file") && !monthlyHTML.includes("example.test/listing"));
     const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source" }] } }));
     c.ok("actual listing row retains Aryeo destination, link and original Mark-as-sent action", listingHTML.includes("example.test/listing") && !listingHTML.includes("Mark as sent") && listingHTML.includes("Mark as Uploaded"));
+    c.ok("files and upload is an always-visible section, never a disclosure", listingHTML.includes('aria-label="Files and upload"') && !listingHTML.includes('<summary class="cursor-pointer text-sm font-medium">Files and upload'));
     const partialHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [], needsFinishing: [{ submissionId: ready.submissionId, projectId: ready.projectId, street: ready.street, sentAtISO: ready.approvedAtISO, sentBy: "Kyle", why: "Fixture partial" }] } }));
     c.ok("partial follow-up no longer claims client possession from a handoff stamp", !partialHTML.includes("The client has these") && partialHTML.includes("does not prove client approval, notification or receipt"));
     const exitHTML = renderToStaticMarkup(createElement(DeliveryExitSummary, { board }));

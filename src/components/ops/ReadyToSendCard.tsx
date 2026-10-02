@@ -379,7 +379,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
 
       {v.uploaded && <p className="mt-2 text-sm">Uploaded by {v.uploaded.by} · {etDateTime(new Date(v.uploaded.at))}</p>}
       {v.uploaded && <div className="mt-2"><MarkSent submissionId={v.submissionId} street={v.street} expectedFingerprint={v.uploadFingerprint ?? undefined} /></div>}
-      <details className="mt-3" open={!v.uploaded}><summary className="cursor-pointer text-sm font-medium">{v.uploaded ? "Details and files" : "Files and upload"}</summary>
+      <section className="mt-3" aria-label="Files and upload"><h5 className="mb-2 text-sm font-medium">Files and upload</h5>
       <div className="flex flex-wrap items-center gap-2">
         <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
         {!v.monthlyProgram && v.aryeoUrl && (
@@ -411,7 +411,7 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
       </div>
         {!v.monthlyProgram && !v.uploaded && v.uploadFingerprint && <div className="mt-2"><MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} /></div>}
         {v.uploaded && <CorrectUpload submissionId={v.submissionId} receiptId={v.uploaded.id} />}
-      </details>
+      </section>
     </div>
   );
 }

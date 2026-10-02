@@ -358,7 +358,7 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
   return r;
 }
 
-export async function markVideoUploadedAction(submissionId: string, expectedFingerprint: string): Promise<{ ok: boolean; message: string }> {
+export async function markVideoUploadedAction(submissionId: string, expectedFingerprint: string): Promise<{ ok: boolean; message: string; unconfirmed?: boolean }> {
   try {
     await requireAdmin();
     const me = await getCurrentUser();
@@ -369,7 +369,7 @@ export async function markVideoUploadedAction(submissionId: string, expectedFing
     return result;
   } catch (error) {
     console.error("Upload acknowledgement failed", error);
-    return { ok: false, message: "Upload status could not be confirmed. Refresh this exact video before reconciling; do not upload it again merely because this save failed." };
+    return { ok: false, unconfirmed: true, message: "Upload status could not be confirmed. Refresh this exact video before reconciling; do not upload it again merely because this save failed." };
   }
 }
 

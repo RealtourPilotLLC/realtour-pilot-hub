@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
+import { boundedWait } from "@/lib/boundedWait";
 import { useRouter } from "next/navigation";
 import { markVideoUploadedAction } from "@/app/ops/actions";
 import { Button } from "@/components/ui/Action";
@@ -7,7 +8,7 @@ import { SaveStatus } from "@/components/ui/SaveStatus";
 
 export function MarkUploaded({ submissionId, fingerprint }: { submissionId: string; fingerprint: string }) {
   const router = useRouter();
-  const [busy, start] = useTransition();
+  const [busy, setBusy] = useState(false);
   const [held, setHeld] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const guard = useRef(false);
@@ -27,11 +28,13 @@ export function MarkUploaded({ submissionId, fingerprint }: { submissionId: stri
       sessionStorage.setItem(key, attempt);
     } catch { setHeld(true); setMessage("Browser recovery storage is unavailable. Nothing was submitted."); return; }
     guard.current = true;
+    setBusy(true);
     setMessage(null);
-    start(async () => {
+    void (async () => {
       try {
-        const result = await markVideoUploadedAction(submissionId, fingerprint);
+        const result = await boundedWait(markVideoUploadedAction(submissionId, fingerprint), 15_000);
         if (!result || typeof result.ok !== "boolean" || typeof result.message !== "string") throw new Error("Invalid save response");
+        if (result.unconfirmed) throw new Error("Upload receipt is unconfirmed");
         setStatus(result.ok ? "saved" : "error");
         setMessage(result.message);
         if (reconcile && !result.ok) { setHeld(true); setMessage(`${result.message} The earlier upload record remains unconfirmed.`); return; }
@@ -41,8 +44,8 @@ export function MarkUploaded({ submissionId, fingerprint }: { submissionId: stri
         } catch { setHeld(true); setMessage(`${result.message} Inspect this version before another action; the browser recovery guard could not be cleared.`); }
         if (result.ok) router.refresh();
       } catch { setHeld(true); setStatus("error"); setMessage("Upload status is unconfirmed. Refresh or reconcile this exact version before another action."); }
-      finally { guard.current = false; }
-    });
+      finally { guard.current = false; setBusy(false); }
+    })();
   }
   return <div className="space-y-2">
     <Button variant="secondary" busy={busy} busyLabel="Saving…" disabled={held} onClick={() => save()}>Mark as Uploaded</Button>

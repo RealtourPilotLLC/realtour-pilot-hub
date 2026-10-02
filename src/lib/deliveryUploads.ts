@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { currentApproved, loadCut, sourceFingerprint } from "@/lib/finalRendition";
 import { readDropboxFile } from "@/lib/finalDropbox";
+import { boundedWait } from "@/lib/boundedWait";
 
 /** Append-only upload receipts use the existing indexed audit ledger. No schema
  * migration, historical check backfill or download inference is required. */
@@ -36,7 +37,7 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
   // staff acknowledgement; it only limits automatic provider settlement.
   const before = await loadCut(id);
   const finalFile = before?.topazJob?.state === "done" && before.topazJob.finalPath
-    ? await readDropboxFile(before.topazJob.finalPath).catch(() => null) : null;
+    ? await boundedWait(readDropboxFile(before.topazJob.finalPath), 2_000).catch(() => null) : null;
   return prisma.$transaction(async (tx) => {
     const initial = await loadCut(id, tx);
     if (!initial) return { ok: false, message: "That video no longer exists." };
