@@ -5,6 +5,7 @@ import { getSetting, putSetting } from "@/lib/settings";
 import { getSecret } from "@/lib/integrations/connections";
 import { etMonthDay, etDayKey } from "@/lib/datetime";
 import { appBase } from "@/lib/appUrl";
+import { hasVerifiedOpenPhoneDeliveryProof, type StoredOpenPhoneEvent } from "@/lib/openPhoneDeliveryProof";
 
 // ---------------------------------------------------------------------------
 // RTP-28 (Sep 16 2026). This module is now the ONE place that answers three
@@ -482,6 +483,16 @@ function writeRetryState(message: string, attempts: number, nextAt: Date | null)
   return `${message.slice(0, Math.max(0, 499 - tail.length))} ${tail}`.trim();
 }
 
+async function recordReplayFailure(id: string, state: RetryState, now: number, error: unknown): Promise<void> {
+  const attempts = state.attempts + 1;
+  const message = carryUnsigned(state.message, (error instanceof Error ? error.message : String(error)).slice(0, 380));
+  const nextAt = attempts >= MAX_ATTEMPTS ? null : new Date(now + BACKOFF_MINUTES[Math.min(attempts, BACKOFF_MINUTES.length - 1)] * 60_000);
+  await prisma.webhookEvent.update({
+    where: { id },
+    data: { status: nextAt ? "ERROR" : "FAILED", error: writeRetryState(message, attempts, nextAt) },
+  });
+}
+
 export async function retryFailedWebhooks(
   limit = 25,
 ): Promise<{ retried: number; recovered: number; failed: number; deduped: number; superseded: number; waiting: number }> {
@@ -547,9 +558,21 @@ export async function retryFailedWebhooks(
           status: "PROCESSED",
           id: { not: row.id },
         },
-        select: { id: true },
+        select: { id: true, provider: true, eventType: true, externalId: true, payload: true },
       });
-      if (twin) {
+      let needsDeliveryProof = false, twinProven = false;
+      try {
+        needsDeliveryProof = row.provider === "openphone" && row.eventType === "message.delivered" && await hasVerifiedOpenPhoneDeliveryProof(row);
+        twinProven = Boolean(twin && (!needsDeliveryProof || await hasVerifiedOpenPhoneDeliveryProof(twin)));
+      } catch (error) {
+        // A temporarily unreadable receipt keeps this event retryable without
+        // starving unrelated events behind it in the same bounded sweep.
+        retried++;
+        await recordReplayFailure(row.id, state, now, error);
+        failed++;
+        continue;
+      }
+      if (twinProven) {
         await prisma.webhookEvent.update({
           where: { id: row.id },
           data: {
@@ -581,7 +604,7 @@ export async function retryFailedWebhooks(
         orderBy: { createdAt: "desc" },
         select: { eventType: true, createdAt: true },
       });
-      if (newer) {
+      if (newer && !needsDeliveryProof) {
         const note = `${SUPERSEDED_PREFIX} a newer event (${newer.eventType ?? "unknown"}) for the same record processed on ${newer.createdAt.toISOString()}, so replaying this one could undo it. Not retried — dismiss it, or replay it by hand if you know it is still wanted.`;
         await prisma.webhookEvent.update({
           where: { id: row.id },
@@ -600,23 +623,14 @@ export async function retryFailedWebhooks(
       /* truncated / non-JSON payload — dispatch with what we have */
     }
     try {
-      await dispatch(row.provider, row.eventType, payload);
+      await dispatch(row.provider, row.eventType, payload, row);
       await prisma.webhookEvent.update({
         where: { id: row.id },
         data: { status: "PROCESSED", processedAt: new Date(), error: carryUnsigned(state.message, "") || null },
       });
       recovered++;
     } catch (e) {
-      const attempts = state.attempts + 1;
-      const message = carryUnsigned(state.message, (e instanceof Error ? e.message : String(e)).slice(0, 380));
-      const nextAt =
-        attempts >= MAX_ATTEMPTS ? null : new Date(now + BACKOFF_MINUTES[Math.min(attempts, BACKOFF_MINUTES.length - 1)] * 60_000);
-      await prisma.webhookEvent.update({
-        where: { id: row.id },
-        // ERROR while we're still trying; FAILED once we've given up. Either way
-        // the row keeps counting on /connections until someone acts on it.
-        data: { status: nextAt ? "ERROR" : "FAILED", error: writeRetryState(message, attempts, nextAt) },
-      });
+      await recordReplayFailure(row.id, state, now, e);
       failed++;
     }
   }
@@ -633,7 +647,7 @@ export async function retryFailedWebhooks(
 export async function retryWebhookEventNow(id: string): Promise<{ ok: boolean; message: string }> {
   const row = await prisma.webhookEvent.findUnique({
     where: { id },
-    select: { id: true, provider: true, eventType: true, payload: true, status: true, error: true },
+    select: { id: true, provider: true, eventType: true, externalId: true, payload: true, status: true, error: true },
   });
   if (!row) return { ok: false, message: "That event is no longer stored." };
   if (row.provider === "gmail") return { ok: false, message: "Gmail events are re-read from the mailbox by the mail sync, not replayed from here." };
@@ -642,7 +656,7 @@ export async function retryWebhookEventNow(id: string): Promise<{ ok: boolean; m
     payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
   } catch { /* dispatch with what we have */ }
   try {
-    await dispatch(row.provider, row.eventType, payload);
+    await dispatch(row.provider, row.eventType, payload, row);
     const prior = readRetryState(row.error);
     await prisma.webhookEvent.update({
       where: { id },
@@ -676,10 +690,11 @@ export async function dismissWebhookEvent(id: string, by?: string | null): Promi
 
 // Re-run the same processor the receiver used, reconstructing its args from the
 // stored raw payload (mirrors each route's POST handler exactly).
-async function dispatch(provider: string, eventType: string | null, payload: Record<string, unknown>) {
+async function dispatch(provider: string, eventType: string | null, payload: Record<string, unknown>, stored: StoredOpenPhoneEvent) {
   if (provider === "openphone") {
     const { processOpenPhoneEvent } = await import("@/app/api/webhooks/openphone/route");
-    await processOpenPhoneEvent((payload.type as string) || eventType || "unknown", payload);
+    const verifiedProvider = await hasVerifiedOpenPhoneDeliveryProof(stored);
+    await processOpenPhoneEvent((payload.type as string) || eventType || "unknown", payload, { verifiedProvider });
   } else if (provider === "aryeo") {
     const { processAryeoEvent } = await import("@/app/api/webhooks/aryeo/route");
     await processAryeoEvent(eventType || "unknown", payload);

@@ -6,6 +6,7 @@ import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
 import { HUB_REPLY_SOURCE, HUB_SMS_SOURCES, isHubSms } from "@/lib/hubSms";
 import { isAutomatedOutbound, isOpenPhoneGreeting, OPENPHONE_GREETING_SOURCE } from "@/lib/replyQueue";
+import { hasVerifiedOpenPhoneDeliveryProof, verifiedOpenPhoneDeliveryReceipt } from "@/lib/openPhoneDeliveryProof";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,19 +71,26 @@ export async function POST(req: NextRequest) {
     const seen = await prisma.webhookEvent.findFirst({
       where: { provider: "openphone", externalId, status: "PROCESSED" },
     });
-    if (seen) return NextResponse.json({ ok: true, deduped: true });
+    // An old unsigned copy cannot consume a newly authenticated delivery proof.
+    if (seen && (auth.unsigned || type !== "message.delivered" || await hasVerifiedOpenPhoneDeliveryProof(seen))) return NextResponse.json({ ok: true, deduped: true });
   }
 
-  const log = await prisma.webhookEvent.create({
-    data: {
-      provider: "openphone",
-      eventType: type,
-      externalId,
-      payload: raw || "{}",
-      // Marker only — status stays on its normal RECEIVED→PROCESSED path so
-      // dedupe and the hourly retry sweep behave exactly as before.
-      error: auth.unsigned ? UNSIGNED_MARKER : null,
-    },
+  const log = await prisma.$transaction(async (tx) => {
+    const row = await tx.webhookEvent.create({
+      data: {
+        provider: "openphone",
+        eventType: type,
+        externalId,
+        payload: raw || "{}",
+        // Marker only — status stays on its normal RECEIVED→PROCESSED path so
+        // dedupe and the hourly retry sweep behave exactly as before.
+        error: auth.unsigned ? UNSIGNED_MARKER : null,
+      },
+    });
+    if (!auth.unsigned && type === "message.delivered") {
+      await tx.auditLog.create({ data: verifiedOpenPhoneDeliveryReceipt(row) });
+    }
+    return row;
   });
 
   try {
@@ -276,6 +284,11 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   const direction = (data.direction as string) || "";
   const incoming = direction.toLowerCase().startsWith("in");
   const text = (data.text as string) || (data.body as string) || "";
+  const recipients = [...new Set(collectPhones(data.to).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
+  const deliveredAt = typeof data.createdAt === "string" ? new Date(data.createdAt) : null;
+  const messageId = typeof data.id === "string" ? data.id.trim() : "";
+  const noMedia = [data.media, data.mediaUrls, data.attachments].every((v) => v == null || (Array.isArray(v) && v.length === 0));
+  const deliveryProofCandidate = proof.verifiedProvider && type === "message.delivered" && direction.toLowerCase() === "outgoing" && recipients.length === 1 && messageId && deliveredAt && Number.isFinite(deliveredAt.getTime()) && text.trim() && noMedia;
 
   // --- WHO WROTE THIS, AND DID IT LEAVE THE COMPANY? -----------------------
   // OpenPhone's own `direction` cannot answer this: it describes the LINE, not
@@ -283,6 +296,11 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // photographer's handset — arrives stamped `incoming`. So we decide from the
   // numbers on the thread (see ourNumberKeys above).
   const { line: ourLine, team: ourTeam, owner: ourOwner } = await ourNumberKeys();
+  if (deliveryProofCandidate && ourLine.size === 0) {
+    // Cold-process provider lookup failure is not proof of an outside sender.
+    // Keep this authenticated receipt retryable until our line is known.
+    throw new Error("Cannot confirm the workspace line for verified delivery; retry when the line lookup is available.");
+  }
   // Neither kind is ever the CLIENT a message is about: a group thread must
   // resolve on the real participant, and an all-hands internal thread on nobody.
   const ourNumbers = new Set([...ourLine, ...ourTeam]);
@@ -294,7 +312,6 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // Everyone this went TO, split into our own people and the outside world.
   // (Group texts arrive with `to` as one comma-joined string — collectPhones
   // splits it, so every participant counts, not just the first.)
-  const recipients = [...new Set(collectPhones(data.to).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
   const outsiders = recipients.filter((k) => !ourNumbers.has(k));
 
   // OURS — the message left this company, so its direction is "out":
@@ -330,17 +347,14 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // ever in the accepting direction, best-effort, and never a resend.
   // ---------------------------------------------------------------------
   if (!isCall && fromUs && text.trim()) {
+    // Verified delivery settlement is retryable. A transient read/CAS failure
+    // must reach the receiver, which retains ERROR and the durable receipt.
+    if (deliveryProofCandidate && fromLine && deliveredAt) {
+      const { settleUnknownDeliveryFromEcho } = await import("@/lib/outbox");
+      await settleUnknownDeliveryFromEcho({ toRef: recipients[0], body: text, providerId: messageId, at: deliveredAt }, { throwOnFailure: true });
+    }
     try {
-      // W05: only a verified workspace-line delivery event with its original
-      // provider identity/time may settle a delivery timeout. Legacy unsigned
-      // events and stored replays without verified provenance remain held.
-      const deliveredAt = typeof data.createdAt === "string" ? new Date(data.createdAt) : null;
-      const messageId = typeof data.id === "string" ? data.id.trim() : "";
-      const noMedia = [data.media, data.mediaUrls, data.attachments].every((v) => v == null || (Array.isArray(v) && v.length === 0));
-      if (proof.verifiedProvider && type === "message.delivered" && direction.toLowerCase() === "outgoing" && fromLine && recipients.length === 1 && messageId && deliveredAt && noMedia) {
-        const { settleUnknownDeliveryFromEcho } = await import("@/lib/outbox");
-        await settleUnknownDeliveryFromEcho({ toRef: recipients[0], body: text, providerId: messageId, at: deliveredAt });
-      }
+      // Historical manual-text matching remains best effort and never resends.
       const { settleUnknownFromEcho } = await import("@/lib/outbox");
       for (const to of recipients.length ? recipients : outsiders) {
         if (await settleUnknownFromEcho({ toRef: to, body: text, providerId: typeof data.id === "string" ? data.id : null })) break;

@@ -1187,7 +1187,10 @@ export async function settleUnknownFromEcho(echo: { toRef: string; body: string;
  * offers a send or releases dedupe. Keep this stricter than the historical
  * manual-text matcher: another matching send, missing original time/id, group
  * or attachment context, or a changed row leaves the outcome unknown. */
-export async function settleUnknownDeliveryFromEcho(echo: { toRef: string; body: string; providerId: string; at: Date }): Promise<boolean> {
+export async function settleUnknownDeliveryFromEcho(
+  echo: { toRef: string; body: string; providerId: string; at: Date },
+  options: { throwOnFailure?: boolean } = {},
+): Promise<boolean> {
   const key = echo.toRef.replace(/\D/g, "").slice(-10);
   const providerId = echo.providerId.trim();
   const atMs = echo.at.getTime();
@@ -1215,8 +1218,10 @@ export async function settleUnknownDeliveryFromEcho(echo: { toRef: string; body:
       });
       return n.count === 1;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  } catch {
-    // Read/CAS/serialization failure preserves the held row; no retry or send.
+  } catch (error) {
+    // A verified receiver/replay must keep its event retryable on an operational
+    // failure. Ambiguous business evidence still returns false above; no resend.
+    if (options.throwOnFailure) throw error;
     return false;
   }
 }
