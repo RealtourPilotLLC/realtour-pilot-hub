@@ -59,6 +59,8 @@ its remaining mounted comparison includes existing financial and other interiors
 
 Jordan must name the first roster. Kyle prepares approved/released strategy,
 topic bank, correct month/source records and eligible access under current gates.
+The verified first-CALL flow establishes access before discovery/strategy/topic
+preparation; those later dependencies must be completed to finish that journey.
 Last bounded inventory16:11Z showed13 candidates/13 October workspaces but0
 eligible real seats/released strategies/approved canonical topics; that is dated
 evidence, not a current readiness declaration. The new Pro impact probe's raw
