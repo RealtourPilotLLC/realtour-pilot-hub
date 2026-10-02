@@ -2,14 +2,41 @@
 
 ## Current release and acceptance — October 2
 
-Production is `1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted
-03:55:11.600 UTC, Ready `dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. Exact clean
-Node20 build/types0, scoped lint0, focused review, protected stage and canonical
-HTTP0 pass. Enforced read-only25006 comparison confirms unchanged settings
-hashes, automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3.
-InterviewFlow's target/focus-only correction is deployed. Rollback is verified
-`46dbcaff`, retaining the database and newer writes. The separate shared-control
-sizing repair is in progress and is not deployed in this checkpoint.
+Production is `8754c91020406b44568445297c54ff334dab680c`, promoted
+04:23:14.814 UTC, Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`. Shared controls,
+identity row and mobile drawer height are implemented/tested/committed/deployed.
+Exact Node20 build/types0 pass first try, four-file lint0 plus unchanged
+ThemeToggle baseline diagnostic, diff0/review, protected stage and canonical
+HTTP0 pass. Read-only25006 comparison confirms settings keys unchanged,
+automation/enabled `[]`, `TEST_ONLY (default)`, users2/memberships3 unchanged.
+Rollback is verified `1490ef3`, preserving database and newer writes.
+
+Normal OWNER390px portal status nonce `1010d463` hit once: explicit unavailable,
+zero players/downloads; clearing and native refresh restored the same finalv1
+needing review, with downloads/captions still gated. Layout fallback nonce
+`f11c2b72` hit once: legacy v1 Account44px/focus2px/offset2px keyboard toggle,
+then cleared back to v2, without saving a switch. The hook is absent and exact
+private Prisma hash restored, with current delegate identities original.
+Thirty-two counted tables plus substantive cache/user fields were preserved;
+ordinary sync updatedAt and13 visits changed. Eleven development-context
+installs had two active restore acknowledgments; no all-retired-context restore
+claim. Attempt1 remains inconclusive history, not a pass. Exact proof and final
+restoration references: `/private/tmp/ops-hub-portal-recovery-native-2026-10-02/`
+and `/private/tmp/ops-hub-shared-targets-2026-10-02/`.
+
+Kyle/ADMIN copied queue filters `editor=kim&due=overdue&stage=changes&test=1`
+remain through refresh with zero matches. Keyboard Clear preserves test scope,
+manual Start timestamp/assignment and exact brief return. Evidence:
+`/private/tmp/ops-hub-c14-copied-queue-2026-10-02/mounted.private.json`.
+UNKNOWN native Review row (Kyle/age/unconfirmed job-level notice) reaches its
+actual opaque Communications incident. The bounded display repair now exposes
+the exact stored recipient and queued timestamp at1440/390px, without overflow
+or action buttons. Review→Back→repeat/refresh and Home#video-review reach the
+same incident. OpenPhone remains explicitly disconnected. This closes only
+that UI/navigation case: no send/retry/settlement/approval or live provider
+outcome was tested. The render-only repair passes lint0/diff0/focused review,
+but is not yet committed or deployed. Exact native proof:
+`/private/tmp/ops-hub-notice-context-native-2026-10-02/mounted.private.json`.
 
 Kyle/ADMIN additionally passed normal `/review` → `/#video-review` → Back →
 refresh: exact pending v2, revision v1 and two approved v1 links remain. The
@@ -128,9 +155,9 @@ cannot establish layout, focus, native menus, mounted navigation or phone saves.
 | Map reads | `u5-project-map-recovery.ts` 36/0: fake actual handlers/effects, late/read-failure/empty address and exact-pin recovery |
 | Calendar availability | `u5-capacity-recovery.ts` 20/0: unavailable versus empty calendar, all-day count, capacity draft/unknown recovery |
 | Normal-role HTTP identity and journey | `normal-role-http-acceptance.ts` 37/0, no skips, against the built `e6eac69` app on port 3211: actual password/session and one-use client login cookies, role routes, seven client tabs, exact script/cut approvals, download/range bytes, foreign-scope refusals and manual Start/Pause. This is isolated HTTP evidence, not browser acceptance. |
-| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released. The four named staff-page mounted recoveries now have separate October 2 evidence; portal mounted error recovery and other transition/navigation combinations remain open. |
+| Current-data and portal-safe error recovery | `c14-error-screen-recovery.ts` expanded24/0: actual handler/installed Next refetch/native SSR, duplicate guard, uncertain saves and portal-safe destinations. Sourceab6cfdf/830a559 released. The four named staff-page mounted recoveries now have separate October 2 evidence; the named portal library unavailable/refresh recovery now has separate mounted evidence; a full portal error-boundary/reauthentication and other transition combinations remain open. |
 | Continuous causal client journeys | First CALL 18/0 and later WRITTEN 22/0 exact ab6; final Pro 28/0 exact fa346fa. Normal password/client cookies, exact source/script/client decisions, handoff/manual work, approvals and fake final bytes. These add causal HTTP evidence, not browser/phone/provider/watch acceptance. |
-| Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d; mounted acceptance stays open. |
+| Monthly portal cache and failed detail | `monthly-portal-approval-gate.ts` 35/0 on the repaired source: canonical markers reach cache writes; no-job marker failures and readable stale caches fail closed; successful sync repairs the old false Delivered/final pointers; exact approval and prior-approved v1 remain consistent. Actual `PortalPage` calls and failed-library SSR cover both v1/v2 layouts, then recover to exact review detail. Deployed a38715d. October2 normal OWNER v2 exact status-read failure/refresh now passes mounted; legacy v1 Account/default-layout fallback also passes. Other cut-version, prior-approved and role combinations remain open. |
 
 Evidence logs:
 
@@ -206,9 +233,9 @@ the old open-development3200 demo as the signed fixture or target production.
 |---|---|
 | `/` and `/?test=1` | Normal signed Kyle/James/owner identity, appropriate owned work and money permissions; test banner; normal client/real TEST-address rows remain while synthetic rows are omitted. Only scalar `test=1` selects the expanded view. |
 | Home → `/review?test=1` → `/?test=1#video-review` | James/ADMIN expanded Review → Home delivery, Back and refresh now retain the observed test scope and exact cut links. Kyle/ADMIN normal Review → Home delivery → Back/refresh also passed with exact v2/v1 links retained. Remaining: other authorized role/context combinations; do not generalize these two passes to them. |
-| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Kyle/ADMIN normal empty personal-verdict state also retained James’s queue, revisions and two handoffs. Remaining: unknown notification incident handoff and other scope/role combinations. Do not equate “no cuts awaiting your verdict” with “all work done.” |
-| `/editing?editor=kim&due=overdue&stage=changes&test=1` | The earlier Kim selected queue→brief→return/refresh pass is recorded above. James/ADMIN `/editing?stage=changes` now recovers its named read failure with the selected stage and unchanged assignment/revision clock. Remaining: the full combined editor/due/test filter URL, copied link and role-broadening combinations; preserve explicit Start/Pause. |
-| `/editing?stage=changes&view=upcoming&editor=kim&due=overdue&test=1` | On the fixed stage fixture this is zero-match: selection remains visible, All/Clear filters remain reachable and the message describes filtered results. Confirm current fixture membership before assuming this URL is empty in the saved demo. |
+| `/review` and `/review?test=1` | James/ADMIN named read failure → actual Try again restored exact v2/revision v1/final v1 context. Kyle/ADMIN normal empty personal-verdict state also retained James’s queue, revisions and two handoffs. The bounded unknown incident now shows exact recipient/queued time at1440/390px, no action controls and honest disconnection; Review/Home/Back/repeat/refresh retain the same incident. Render fix is locally tested, not yet committed/deployed; no provider outcome is claimed. Other scope/role combinations remain. Do not equate “no cuts awaiting your verdict” with “all work done.” |
+| `/editing?editor=kim&due=overdue&stage=changes&test=1` | The earlier Kim selected queue→brief→return/refresh pass is recorded above. James/ADMIN `/editing?stage=changes` now recovers its named read failure with the selected stage and unchanged assignment/revision clock. Kyle/ADMIN copied combined URL now retains all filters/zero matches on refresh; keyboard Clear retains test=1, manual Start timestamp/assignment and exact brief return. Remaining: other role/permission combinations; preserve explicit Start/Pause. |
+| `/editing?stage=changes&view=upcoming&editor=kim&due=overdue&test=1` | On the fixed stage fixture this is zero-match: selection remains visible, All/Clear filters remain reachable and the message describes filtered results. The separate Kyle/ADMIN combined copied-filter zero-match/Clear case above is complete; this distinct upcoming combination must use verified fixture membership before assuming it is empty. |
 | `/schedule`, `/schedule?test=1`, `/schedule?view=map`, `/schedule?view=map&test=1` | James/ADMIN named List read failure → actual Try again recovered zero saved appointments; expanded empty Map linked to normal Map and expanded List. Kyle’s later populated native pass verifies normal List3/expanded List4, List↔Map/refresh scope, normal TEST-address retention, missing-coordinate rows without pins, and cancelled/delivered/date-window distinctions. Remaining: Home week-to-exact-shoot links and other role/permission combinations. No provider/geocoding proof is claimed. |
 | Signed out or wrong role at the same URLs | Cookie/middleware HTTP gate and foreign-scope refusals already passed in the signed fixture. Mounted reauthentication and return context remain open where supported; query flags must not grant office access. |
 
@@ -234,8 +261,11 @@ the old open-development3200 demo as the signed fixture or target production.
   remains open; these are not query-string triggers.
 - **Portal release-status failure:** the 35/0 cache fixture now covers actual
   failed-library SSR and recovered detail in both portal layouts after an
-  unreadable marker. Portal mounted recovery remains separate from the four
-  staff-page native recoveries now recorded above.
+  unreadable marker. October2 normal OWNER canonical status failure nonce1010
+  now also passes native unavailable/no player/download → clear/refresh → same
+  finalv1 needing review. The controlled legacy layout/default fallback and
+  Account toggle are separate checks; neither proves every prior-approved cut
+  or full portal error-boundary/reauthentication combination.
 - **Rollout disabled:** retain the stored off/test-only state and show its
   explanation. Do not activate automation to obtain a screenshot.
 

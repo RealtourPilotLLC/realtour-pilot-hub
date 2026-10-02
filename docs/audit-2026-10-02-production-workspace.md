@@ -1,6 +1,74 @@
-# Production workspace priority — deployed 1490ef3
+# Production workspace priority — deployed 8754c91
 
-## Current release — InterviewFlow controls deployed
+## Current release — shared controls and mobile drawer deployed
+
+`8754c91020406b44568445297c54ff334dab680c` was promoted October 2 at
+04:23:14.814 UTC (12:23 AM EDT), Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`.
+The protected stage was
+`https://realtour-pilot-3vh5gny6g-realtour-pilot-s-projects.vercel.app`;
+canonical production reports exact `8754c9102040`. The five shared-control
+files below are implemented, tested, committed and deployed. Exact clean Node20
+build0 and nonincremental types0 passed first try, with four-file lint0,
+unchanged ThemeToggle line13 baseline diagnostic, diff0 and focused review clear.
+Protected stage and canonical HTTP checks have failures0: sign-ins/security,
+six assets, staff307/client redirect, unauthorized final403 and old-host307.
+Read-only25006 before/after checks found no changed settings keys, unchanged
+automation/enabled `[]`, rollout `TEST_ONLY (default)`, users2/memberships3.
+Existing authorized staff/client controls are visible; no new audience,
+activation, send, invitation, booking, finance or schema change. Rollback is
+`1490ef3`, preserving database state/newer writes. Private exact release receipts:
+`/private/tmp/ops-hub-shared-targets-release-2026-10-02/`.
+
+### Completed mounted portal and copied-queue checks
+
+- Normal OWNER canonical release-status fault nonce `1010d463` hit once. The
+  actual390px library showed explicit unavailable, zero players and zero download
+  actions. Clearing the probe and native refresh restored the same finalv1,
+  still needing review; download/captions remained gated. No verdict was made.
+- Controlled read/default-layout fallback nonce `f11c2b72` hit once. Legacy v1
+  Account measured44×44px with2px focus/offset and keyboard toggle; clearing
+  returned to normal v2. No rollout/layout switch was saved.
+- Private Prisma source was restored exactly to
+  `00fca32b8dfc4103f71994828a42c00afd7abd59e97850c2dd0d794eaabc8fb6`;
+  hook absent, control off, current delegate identities restored and healthy
+  routes confirmed. Thirty-two counted history tables, substantive cache and
+  client-user fields were preserved; ordinary sync `updatedAt` and13 portal
+  visits changed. Eleven development contexts logged installations and only
+  two active restore acknowledgments were observed; no separate restoration
+  claim is made for every retired context. Attempt1 was inconclusive and is
+  retained as history, not acceptance.
+- Kyle/ADMIN's copied combined `editor=kim&due=overdue&stage=changes&test=1`
+  queue retained all filters and zero-match state through refresh. Keyboard
+  Clear retained `test=1`, the same manual Start timestamp/assignment and exact
+  brief→queue return. No business action was invoked.
+
+Private evidence: `/private/tmp/ops-hub-portal-recovery-native-2026-10-02/`,
+`/private/tmp/ops-hub-shared-targets-2026-10-02/` and
+`/private/tmp/ops-hub-c14-copied-queue-2026-10-02/mounted.private.json`.
+The linked final restoration receipt is under the private `rtp-editor-visual-aetMjr`
+runtime. Fenced3215 remains available with no fault installed.
+
+### UNKNOWN incident context — locally implemented/tested; release pending
+
+The missing recipient/exact queued-time finding is repaired using the existing
+values, with no new reader/action or policy. Kyle/ADMIN's native1440/390px
+incident shows the exact fixture recipient and queued timestamp, without
+horizontal overflow or action buttons. Review→Back→repeat/refresh and
+Home#video-review reach the same opaque incident. OpenPhone remains honestly
+disconnected. No send, retry, settlement or client approval was invoked; this
+is a declared isolated UNKNOWN record, not a live timeout/delivery reproduction.
+
+Scoped lint0, diff0 and focused source review pass. Native proof:
+`/private/tmp/ops-hub-notice-context-native-2026-10-02/mounted.private.json`,
+with source hash `bc372151b39f9b1db97245326d9334c02f9f62cb0e6c5e021433a5208d8b9d9d`.
+The render-only correction is not yet committed or deployed. Current8754
+production remains unchanged; a separate exact checkpoint/release must follow.
+This closes only the bounded incident display/navigation check, not real
+provider outcome or other role/incident cases.
+U0–U5 remain partial and U6 open for other role/permission, device, provider,
+human-watch and team acceptance plus the named client record/source holds.
+
+## Earlier release — InterviewFlow controls deployed
 
 `1490ef3ebecece8a50b8878af61527f5c67d6eec` was promoted October 2 at
 03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
@@ -39,7 +107,7 @@ and no mutation. This is bounded keyboard evidence, not general assistive-
 technology acceptance. The separate shared-control sizing correction is now
 in progress; it is not deployed in `1490ef3`.
 
-### Shared-control sizing follow-up — implemented, not yet committed or deployed
+### Shared-control sizing follow-up — implemented, tested, committed and deployed
 
 Five UI files (`Shell`, `Sidebar`, `ThemeToggle`, `NotificationsBell` and legacy
 `PortalPage`) have bounded class/layout changes for 44px controls and visible
@@ -56,11 +124,12 @@ Source/image/mounted receipts are private in
 `/private/tmp/ops-hub-shared-targets-2026-10-02/`, with matching source hashes.
 Four-file lint0, diff check0 and focused source review pass. `ThemeToggle` has
 the same pre-existing line13 effect lint diagnostic as HEAD; its initialization
-and handler are unchanged. Legacy v1 Account's44px native check remains pending
-controlled fallback. A separate portal fault-probe attempt was inconclusive
-after development reload/context-guard issues; it adds no C14 acceptance pass.
-This follow-up has no new commit, exact build or deployment yet; current
-production `1490ef3` and its successful release gates remain unchanged.
+and handler are unchanged. Legacy v1 Account's44px native check now passes
+under the controlled read/default fallback, with2px focus/offset and keyboard
+toggle. The first portal fault-probe attempt was inconclusive after development
+reload/context-guard issues and remains excluded from acceptance. The repaired
+checks and final restoration are recorded above. Exact `8754c91` build/types,
+commit and deployment are complete; no handler or policy change was introduced.
 
 ## Follow-up checkpoint — normal client and populated Schedule
 
@@ -264,3 +333,17 @@ task finding remain open. The isolated fence blocked Google Fonts, so both
 baseline and candidate use matching fallback font metrics. No full real-media
 watch, client send, final-check business stamp or real client approval was
 fabricated for screenshots.
+
+## UNKNOWN post-native state — October 2 04:40 UTC
+
+The enforced read-only final receipt at
+`/private/var/folders/bp/n92rzlfn4hvg_d_jqkq4zt_r0000gn/T/rtp-editor-visual-aetMjr/unknown-notice-post-native.private.json`
+confirms the declared UNKNOWN notice still has attempts1 and no acceptance,
+provider ID, resolution or replacement intent. Existing 32-model substantive
+history, normalized cache fields, users/memberships and scope match.
+`ContentVideo.updatedAt` changed only; the raw cache hash refusal and normalized
+comparison are retained, so cache timestamps are not claimed unchanged. No
+provider outcome is inferred from disconnected OpenPhone or missing call counts.
+The receipt verifies stored state; root
+`/private/tmp/ops-hub-notice-context-native-2026-10-02/mounted.private.json`
+separately records the native display/navigation pass.

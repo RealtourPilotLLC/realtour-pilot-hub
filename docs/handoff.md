@@ -1,30 +1,36 @@
 # Progress record — unified implementation handoff (Sep 25 2026)
 
-## October 2 active release — 1490ef3 deployed; broader acceptance open
+## October 2 active release — 8754c91 deployed; broader acceptance open
 
-Production serves `1490ef3ebece` from source commit
-`1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted October 2 at
-03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
-`dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. The only product change since the deployed
-`46dbcaff` priority batch is InterviewFlow touch-target/focus classes. Native
-390px checks verify 44px answer controls, 44×44px edit buttons, visible 2px
-keyboard focus and retained draft. Handlers and saved-state behavior are unchanged.
-Exact Node 20 build/types0, scoped lint0, focused review, protected stage,
-canonical HTTP/security/access checks0 and enforced read-only25006 checks pass.
-Settings hashes, automation (enabled `[]`), rollout `TEST_ONLY (default)`, two
-active client users and three unrevoked memberships are unchanged for this
-release. Rollback is verified `46dbcaff`; retain database state and newer writes.
+Production serves `8754c9102040` from source commit
+`8754c91020406b44568445297c54ff334dab680c`, promoted October 2 at
+04:23:14.814 UTC (12:23 AM EDT), Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`.
+The five-file shared-control target/focus, full identity row and mobile drawer
+height corrections are implemented, tested, committed and deployed. Exact
+Node20 build/types0 pass first try; four-file lint0, unchanged ThemeToggle
+line13 baseline diagnostic, diff0, focused review, protected stage and canonical
+HTTP0 are recorded. Read-only25006 comparison confirms no changed settings
+keys, unchanged automation/enabled `[]`, `TEST_ONLY (default)`, users2 and
+memberships3. Rollback is verified `1490ef3`; retain database and newer writes.
 
-Completed native subsets now include Kim/Kyle brief/queue/delivery; James's
-four critical-read recoveries and task/menu checks; Kyle's populated normal/
-expanded Schedule List/Map, missing coordinates and scope return; Kyle’s normal
-Review → Home delivery/Back/refresh with exact v2/v1 links; normal OWNER
-script/question drafts and exact-cut confirmation/cancel; and Kyle's 390px
-mobile drawer keyboard wrap/Escape/focus return without mutation or overflow.
-These do not prove full C14/U6, assistive technology, real phones or providers.
+Native staff390px controls/keyboard and legacy v1 Account44px/focus2px/toggle
+pass. Normal OWNER portal status failure hit once, showed explicit unavailable
+without player/download, and native refresh restored the same finalv1 needing
+review. Controlled legacy fallback and return to v2 also pass without a saved
+switch. The private hook is removed with exact source/current-method restoration;
+32-table history/cache/user checks were preserved except ordinary sync updatedAt
+and13 visits. Retired-context restoration limits remain explicitly documented.
+Kyle’s copied combined queue filters survive refresh; Clear retains test scope,
+manual Start timestamp/assignment and exact brief return. Earlier completed
+Schedule, client-draft, Review-return and four staff-failure evidence is retained.
 
-The separate shared-control sizing correction is in progress and is not part
-of this deployed checkpoint. Exact release evidence and remaining work are in
+The bounded UNKNOWN incident display/navigation correction is implemented and
+tested locally, not yet committed or deployed. Kyle/ADMIN sees the exact stored
+recipient and queued timestamp at1440/390px without overflow or action buttons;
+Review/Back/repeat/refresh and Home delivery reach the same opaque incident.
+OpenPhone stays explicitly disconnected; no send/retry/settlement/approval or
+provider-outcome proof. Scoped lint0, diff0 and focused review are clear. U0–U5 remain partial and U6 open for the broader role/device/provider/
+team matrix and named client preparation. Exact evidence and remaining work:
 `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first

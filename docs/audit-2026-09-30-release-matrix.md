@@ -1,30 +1,36 @@
 # September 30 release evidence — Oct 1 production checkpoints
 
-## October 2 active release — 1490ef3 deployed; broader acceptance open
+## October 2 active release — 8754c91 deployed; broader acceptance open
 
-Production serves `1490ef3ebece` from source commit
-`1490ef3ebecece8a50b8878af61527f5c67d6eec`, promoted October 2 at
-03:55:11.600 UTC (October 1, 11:55 PM EDT), Ready
-`dpl_3YHVSdj83yrqjoFGkigFPj2T3HMd`. The only product change since the deployed
-`46dbcaff` priority batch is InterviewFlow touch-target/focus classes. Native
-390px checks verify 44px answer controls, 44×44px edit buttons, visible 2px
-keyboard focus and retained draft. Handlers and saved-state behavior are unchanged.
-Exact Node 20 build/types0, scoped lint0, focused review, protected stage,
-canonical HTTP/security/access checks0 and enforced read-only25006 checks pass.
-Settings hashes, automation (enabled `[]`), rollout `TEST_ONLY (default)`, two
-active client users and three unrevoked memberships are unchanged for this
-release. Rollback is verified `46dbcaff`; retain database state and newer writes.
+Production serves `8754c9102040` from source commit
+`8754c91020406b44568445297c54ff334dab680c`, promoted October 2 at
+04:23:14.814 UTC (12:23 AM EDT), Ready `dpl_BfPtTkEYXUp2xMG3119kF9Qbnezb`.
+The five-file shared-control target/focus, full identity row and mobile drawer
+height corrections are implemented, tested, committed and deployed. Exact
+Node20 build/types0 pass first try; four-file lint0, unchanged ThemeToggle
+line13 baseline diagnostic, diff0, focused review, protected stage and canonical
+HTTP0 are recorded. Read-only25006 comparison confirms no changed settings
+keys, unchanged automation/enabled `[]`, `TEST_ONLY (default)`, users2 and
+memberships3. Rollback is verified `1490ef3`; retain database and newer writes.
 
-Completed native subsets now include Kim/Kyle brief/queue/delivery; James's
-four critical-read recoveries and task/menu checks; Kyle's populated normal/
-expanded Schedule List/Map, missing coordinates and scope return; Kyle’s normal
-Review → Home delivery/Back/refresh with exact v2/v1 links; normal OWNER
-script/question drafts and exact-cut confirmation/cancel; and Kyle's 390px
-mobile drawer keyboard wrap/Escape/focus return without mutation or overflow.
-These do not prove full C14/U6, assistive technology, real phones or providers.
+Native staff390px controls/keyboard and legacy v1 Account44px/focus2px/toggle
+pass. Normal OWNER portal status failure hit once, showed explicit unavailable
+without player/download, and native refresh restored the same finalv1 needing
+review. Controlled legacy fallback and return to v2 also pass without a saved
+switch. The private hook is removed with exact source/current-method restoration;
+32-table history/cache/user checks were preserved except ordinary sync updatedAt
+and13 visits. Retired-context restoration limits remain explicitly documented.
+Kyle’s copied combined queue filters survive refresh; Clear retains test scope,
+manual Start timestamp/assignment and exact brief return. Earlier completed
+Schedule, client-draft, Review-return and four staff-failure evidence is retained.
 
-The separate shared-control sizing correction is in progress and is not part
-of this deployed checkpoint. Exact release evidence and remaining work are in
+The bounded UNKNOWN incident display/navigation correction is implemented and
+tested locally, not yet committed or deployed. Kyle/ADMIN sees the exact stored
+recipient and queued timestamp at1440/390px without overflow or action buttons;
+Review/Back/repeat/refresh and Home delivery reach the same opaque incident.
+OpenPhone stays explicitly disconnected; no send/retry/settlement/approval or
+provider-outcome proof. Scoped lint0, diff0 and focused review are clear. U0–U5 remain partial and U6 open for the broader role/device/provider/
+team matrix and named client preparation. Exact evidence and remaining work:
 `audit-2026-10-02-production-workspace.md` and the C14/U6 acceptance map.
 
 Supported browser access is restored; previous denial is historical. The first
@@ -47,15 +53,16 @@ normal-client, browser, phone, provider or team acceptance.
 | Checkpoint | Implemented | Tested | Committed | Deployed | Enabled / visible |
 |---|---|---|---|---|---|
 | InterviewFlow touch targets/focus | Class names only; handlers/drafts unchanged | Native390px44px/2px focus/draft evidence; lint/review/exact build/types/stage/HTTP0 |1490ef3 |Yes |Existing authorized clients; no new seat or automation |
-| Shared-control sizing follow-up | Five class/layout UI files; actions unchanged | Staff390px44px/focus/footer/bell native pass; four-file lint0, unchanged ThemeToggle baseline diagnostic, diff0 and source review clear. Legacy v1 Account native and exact build pending |Not yet |No |Current1490 production unchanged |
+| Shared-control sizing follow-up | Five class/layout UI files; actions unchanged | Staff390px44px/focus/footer/bell and legacy v1 Account native pass; four-file lint0, unchanged ThemeToggle baseline, diff0/review, exact build/types/stage/HTTP0 |8754c91 |Yes |Existing authorized users; no new audience/activation |
+| UNKNOWN incident recipient/time display | Render-only repair using existing values | Native1440/390px exact recipient/time, no actions/overflow, Review/Home/Back/refresh; lint0/diff0/review clear |Not yet |No |Current8754 unchanged; no provider-outcome proof |
 | Editor brief, Editing Room and destination-aware delivery | Yes; original business actions retained | Queue 18/0, delivery 39/0, brief 13/0; lint/types/exact build/review and release gates pass |46dbcaff |Yes |Existing authorized staff; no new client audience or automation |
 | Bounded native priority acceptance | Verification only | Signed Kim/Kyle; selected brief/queue/delivery, keyboard and 375/390/768/1440 widths |Evidence in this documentation checkpoint |No distinct feature |Fenced providers/media; physical phone/team/full-watch acceptance remains open |
 | Four C14 critical-read recoveries | Existing recovery source | James/ADMIN; each named failure hit once, native recovery, exact version/assignment retention, unchanged history |Evidence in this documentation checkpoint |Source live |Schedule healthy empty only; full C14/U6 remain open |
 
 Exact promotion, HTTP and read-only state evidence is recorded in
-`audit-2026-10-02-production-workspace.md`. For the current `1490ef3` release, all settings hashes, automation, rollout and
+`audit-2026-10-02-production-workspace.md`. For the current `8754c91` release, all settings hashes, automation, rollout and
 audience counts are unchanged. The prior `46dbcaff` release separately recorded
-two reader-updated Gmail timestamps. Current rollback `46dbcaff` preserves all
+two reader-updated Gmail timestamps. Current rollback `1490ef3` preserves all
 database state and newer writes; no schema or activation was added.
 
 ## Historical release state — Oct 1 evening
@@ -194,12 +201,12 @@ for normal authorized client/editor access.
 | UA06 — exact version decisions | Pinned revisions/role guards; connected v1→checked v2 decision/download; multi-session stale verdict/issue and finishing regression 11/0 | Engineering: browser newer-cut and failed revision submission, captions/download gates |
 | UA07 — editor context | Actual HTTP18/0 includes no-brand, return/reassignment stale receipt/fresh acknowledgment and manual clocks; prior queue76/0+19/0 retained | Kim/engineering: normal signed editor, two-session monthly scope and receipt, keyboard/phone checks |
 | UA08 — photographer handoff | Signed CP09 142/0 with fake partial Dropbox failure/retry | Photographer/engineering: actual phone partial/mixed raw files, upload interruption, receipt and exact script/output |
-| UA09 — delivery and communication | Ready-file context, final-rendition34/0, mixed photo/video25/0, notice10/0, comms recovery; connected approved v2 fixture download and foreign/revoked denial | Kyle/engineering: approved exact final media, explicit destination policy, provider sandbox handoff and incident recovery |
+| UA09 — delivery and communication | Ready-file context, final-rendition34/0, mixed photo/video25/0, notice10/0, comms recovery; connected approved v2 fixture download and foreign/revoked denial | Bounded UNKNOWN incident display/navigation now passes locally; render fix release pending. Kyle/engineering: real approved rendition/provider handoff and outcome recovery under authorized scope |
 | UA10 — failures and honest state | Delivery read failures, notification failure demo, reminder late-save/failure proof | Engineering: browser saves/data fetches fail and recover; no false zero/success or lost input |
 | UA11 — keyboard | Existing isolated dialog/drawer walkthrough; shared queue menu source proof | James status menu/task draft return, normal client confirmation/cancel and Kyle390px mobile drawer wrap/Escape/focus return passed. Engineering: remaining pending/failure/dialog containment and actual screen reader |
 | UA12 — responsive/contrast | Earlier fenced desktop/390px samples; partial token improvements | Engineering: fixed fixtures at 375/390/768/laptop, light/dark, 200% zoom and long names; capture matching screenshots and measure rendered contrast |
 | UA13 — phone file save | Honest download wording implemented; no real-device proof | Engineering with iPhone and Android: interruption/retry, correct approved file, save/share instructions; no Photos auto-save claim |
-| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; Home test-view links 22/0; Office Editing/Schedule scope 23/0; normal-role HTTP 37/0, portal SSR 35/0 and page-read 14/0. October 2 native James/ADMIN four critical-read failures/retries each hit once with unchanged history; selected Kim/Kyle filtered-empty/return and expanded Review → Home/Back/refresh observed | Kyle populated/missing-coordinate Schedule and normal Review/Home return also passed. Engineering: broader normal/test roles/permissions, Home week-to-shoot links, other deferred/stale/rollout-disabled and remaining return scenarios. Named native checks are complete; UA14 as a whole remains open |
+| UA14 — truthful empty/disabled/test | Scoped C14 readers and signed C15/C16 results; Home test-view links 22/0; Office Editing/Schedule scope 23/0; normal-role HTTP 37/0, portal SSR 35/0 and page-read 14/0. October 2 native James/ADMIN four critical-read failures/retries each hit once with unchanged history; selected Kim/Kyle filtered-empty/return and expanded Review → Home/Back/refresh observed | Kyle populated/missing-coordinate Schedule, normal Review/Home return and combined copied-queue filters/clear/brief return also passed; normal OWNER portal unavailable/refresh and legacy Account fallback passed. Bounded UNKNOWN incident recipient/time/no-action display and Review/Home/Back/refresh navigation now pass; render repair is locally tested, not yet committed/deployed. Live provider outcome stays open. Engineering: broader normal/test roles/permissions, Home week-to-shoot links, other deferred/stale/rollout-disabled and remaining return scenarios. Named native checks are complete; UA14 as a whole remains open |
 
 ## Approval and external evidence needed
 
@@ -215,7 +222,7 @@ for normal authorized client/editor access.
 | Provider and real-media acceptance | Jordan + engineering | Agree on isolated/sandbox recipients, booking/media records and destinations before any external write; keep clients and real bookings untouched |
 | Generated-workflow dates | Jordan | Answer pending policy question; ad hoc editing is shipped, automatic editing/revision/SLA clocks remain unchanged |
 | Unknown delivery-text settlement | Jordan | Decide manual evidence-backed Kyle resolution versus automatic provider confirmation; question pending, existing unknown holds never offer a blind resend |
-| Production deployment | Completed under Jordan authorization |Latest1490ef3 promoted03:55:11.600Z; exact build/types/HTTP/read-only gates verified, settings hashes and switches unchanged. Prior checkpoints remain dated history. No client activation/send authorization. |
+| Production deployment | Completed under Jordan authorization |Latest8754c91 promoted04:23:14.814Z; exact build/types/HTTP/read-only gates verified, settings hashes and switches unchanged. Prior checkpoints remain dated history. No client activation/send authorization. |
 
 ## Schema and rollback gate
 

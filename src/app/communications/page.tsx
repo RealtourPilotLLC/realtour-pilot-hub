@@ -226,8 +226,23 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
       <p className="text-sm font-semibold">Delivery text check · {incidentProject?.title ?? "Job"}</p>
       <p className="mt-1 text-sm text-muted">
         {incident.state === "accepted" ? "The provider later accepted this text." : incident.state === "unknown" ? "The provider outcome is unconfirmed. It may already have sent." : incident.state === "failed" ? "The send failed before provider acceptance." : "The send is still pending or in progress."}
-        {" "}Queued {formatDistanceToNow(incident.createdAt, { addSuffix: true })}. {incident.state === "accepted" ? "The provider accepted it; no retry is needed." : "Compare the exact text and time with the conversation below before any retry."}
+        {" "}{incident.state === "accepted" ? "The provider accepted it; no retry is needed." : "Compare the exact text and time with the conversation below before any retry."}
       </p>
+      <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+        <div className="min-w-0">
+          <dt className="text-xs text-muted">Recipient</dt>
+          <dd className="min-w-0 break-words font-medium">{fmtPhone(incident.toRef)}</dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-xs text-muted">Queued</dt>
+          <dd className="min-w-0 break-words">
+            <time dateTime={incident.createdAt.toISOString()}>
+              {incident.createdAt.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })} ET
+            </time>
+            <span className="mt-0.5 block text-xs text-muted">{formatDistanceToNow(incident.createdAt, { addSuffix: true })}</span>
+          </dd>
+        </div>
+      </dl>
       <blockquote className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-surface p-3 text-sm">{incident.body}</blockquote>
       <div className="mt-2 flex flex-wrap gap-3 text-sm">
         <Link href={`/projects/${incident.projectId}`} className="font-medium text-brand underline">Open job</Link>
