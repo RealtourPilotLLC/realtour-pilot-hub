@@ -1,3 +1,43 @@
+## Current authoritative checkpoint — latest source deployed, N05 accepted
+
+Production: `b2868f247cbe6813aecaddf71263aa7aa2c4db78` · Ready `dpl_2tVo4xi6SD6Ju1Sj26j95xh1SGTp` · promoted
+October 2 at 2026-10-02T15:40:02.271Z. Home/Settings wrapping is committed and
+deployed: scoped lint, class-only AST comparison, normal OWNER390px no-overflow,
+clean Node20 build and fresh types, protected staging and production HTTP/auth/
+assets/redirect checks all passed. Read-only before/after settings hashes and
+automation hashes are equal; users2/memberships3, enabled `[]`, TEST_ONLY retained.
+Rollback9292bee preserves database/newer writes. No client sends or activation.
+BuildID `h6FECXIdFq-zoFqqBsgvy`; action manifest `ebb00df75f333b448050bc285e19173132e1dcb2d81b3fa64dec01b48633ca19`.
+Release receipts: `/private/tmp/ops-hub-wrap-release-2026-10-02/`.
+
+N04 is complete; N05 finite acceptance is now complete:
+- One create-only fictional script on an existing un-scripted November topic;
+  original approved/carried script, topic allowance and all old versions retained.
+  An old native v1 Approve refuses after declared v2 publication, refreshes to
+  exact v2 words, exposes no Try again, creates no decision/approval/release row.
+  Only normal PortalVisit tracking differs; own shared pointer restored to v1,
+  both declared new fixture versions retained. This is not a real publication.
+- Separate pending final2 has an actual helper-derived REPAIR window from its
+  original release/policy; no reset/reopen/deadline/policy change. Initial helper
+  sentinel refusal made no query/write; corrected loopback pin passed. Native
+  first-view tracking preceded the attempt baseline. Exactly one OPEN→CHANGES_REQUESTED
+  predelegate refusal retains the full overall note and open form/error. No retry,
+  successful route or send. All149 baseline table snapshots and exact OPEN window
+  are equal after the attempted send. Original private Prisma source and actual
+  attempted context delegate restored; healthy normal refresh passed. Five other
+  retired HMR contexts are not individually verified; restore remains latched.
+Evidence: `/private/tmp/ops-hub-n05-native-2026-10-02/` and private fixture
+`n05-final-restored.private.json`, window/script before/after receipts.
+
+Remaining C14/U6: actual200% zoom; iPhone/Android mixed upload, interruption/retry,
+share/save and full rendition watch; Kyle/James/Jordan owned-work walkthrough and
+Kim/Sarina source handoff; authorized real provider/media outcome; canonical
+named client/call-source/month/strategy/assets/seats and rollout preparation.
+U0 and bounded U5 complete. U1–U4 implemented/deployed with these acceptance
+holds; U6 remains open. No full real-client-journey or human-usability claim.
+Next: use `docs/audit-2026-10-02-launch-handoff.md` exact owner/check sequence.
+Historical headers below are retained evidence and superseded by this section.
+
 ## Latest release candidate — October 2 wrapping checkpoint
 
 Home and Settings wrapping passed scoped lint, class-only AST review and normal
@@ -274,11 +314,11 @@ business data, schema, permissions, automation or audience change occurred.
 |---|---|---|
 | U0 | Complete within original exit: current display/read contracts, fixed isolated normal-role comparisons, truthful draft wording and named source conflicts explicitly retained as internal repair holds. | Named live repairs continue under H04; no contradictory state is silently treated as ready. |
 | U1 | Shared tokens/actions/fields/save states/dialog/drawer/menu changes implemented and deployed; keyboard/target and measured rendered theme samples pass. | Actual200%/long-label pass and physical-device portions of UA12 remain; no blanket assistive-technology claim. |
-| U2 | Guided written/call/Pro month, draft/suggestions, scripts/player/download and skippable Brand Profile implemented/deployed. N01/02/03, normal session/navigation/exact approval/download evidence pass. | N04/N05 finite recovery cases; actual phone upload/download/full-watch and named source/access preparation. |
+| U2 | Guided written/call/Pro month, draft/suggestions, scripts/player/download and skippable Brand Profile implemented/deployed. N01/02/03, normal session/navigation/exact approval/download evidence pass. | N04/N05 complete; actual phone upload/download/full-watch and named source/access preparation. |
 | U3 | Priority brief/Editing Room/upload/review/delivery source work implemented/deployed and signed normal-role/native/causal checks pass. | Kim's actual Sarina footage/source handoff and staff-owned-action/phone/provider observations, H01–H03. |
 | U4 | Role Home, ownership Tasks, existing-path navigation, conversation filters/context, notifications and UNKNOWN notice context implemented/deployed; bounded normal-role/failure checks pass. | Kyle/James finding assigned work without narration, H02. |
 | U5 | Complete for bounded high-use scope: seven anchored/searchable Settings groups and validated policy/save feedback; actual one-section failure/retry/defaults refresh and named secondary390/1280 checks pass. | Untouched Finance/pay and other interiors are explicitly unreviewed; no calculation/policy change. Actual200% remains tracked in U1/U6, not silently credited. |
-| U6 | Source/test/deployment evidence and named launch handoff are prepared; finite acceptance review continues. | N04/N05 and H01–H04 plus actual200% remain. Release evidence does not claim a finished real-client journey. |
+| U6 | Source/test/deployment evidence and named launch handoff are prepared; finite acceptance review continues. | H01–H04 plus actual200% remain. Release evidence does not claim a finished real-client journey. |
 
 ## Finite remaining native acceptance — original audit requirements
 
@@ -294,7 +334,7 @@ pass closes each named case; expand only for a concrete defect.
 | N02 — complete | UA04 / C08, U2 | Normal required first call, optional later planning, partial Pro session2 own address and last of8dates selected; no provider booking. Native month-planning proof plus retained CALL18/Pro28. |
 | N03 — complete | UA05 / UX08 | Explicit Add/Replace/Undo/Cancel; one-key synthetic storage refusal/retry, one failed Save with zero persistence, one recovery v2 retaining8old answers, healthy restored refresh. Native interview-recovery plus bounded44-table state receipts; no Submit/model/provider. |
 | N04 — complete | U2 Brand Profile | Native skip/putback, failed Replace retaining declared v1, failed Save retaining draft, retry/Clear/healthy refresh;45-model bounded protection and source/current delegates restored. Existing Kim routing/OFF-pending alert preserved; two required unacknowledged receipts retained. Fictional asset is not real uploaded/approved media. |
-| N05 | UA06 / UX09 | Old script/cut open while newer version exists: current-version refusal/context. One failed revision submission retains exact text and honest retry/hold. Existing confirmation/cancel, exact pending-v1 download gate and portal unreadable/refresh cases remain credited. |
+| N05 — complete | UA06 / UX09 | Old script/cut open while newer version exists: current-version refusal/context. One failed revision submission retains exact text and honest retry/hold. Existing confirmation/cancel, exact pending-v1 download gate and portal unreadable/refresh cases remain credited. |
 | N06 — covered | UA11 / UX14, U3 | Credit existing Self-QC and Draft Update keyboard/cancel/retention/focus proofs. In-flight duplicate guard is source-covered, not newly claimed mounted. Editing More Enter/Override/End Remove/Escape/focus, task drawer/status checks are credited. No unchanged-dialog replay. |
 | N07 — complete | UA10 / U5 | Notifications POST503 retained badge/retry evidence; supported Settings failure kept exact input, retry Saved, original blanks reload, source/delegate restored. Original absent storage became a declared defaults row; do not claim raw absence restored. Switches unchanged. |
 | N08 — complete | UA02 / UX15 | Fresh-tab copied exact brief retains cut v1/v2, brief v1 and manual Kim Start; explicit Editing Room returns to `/editing?test=1`. No draft/login token in the URL and no action invoked. Evidence above; no further cold-link replay required. |

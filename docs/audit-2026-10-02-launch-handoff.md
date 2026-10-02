@@ -1,13 +1,53 @@
+## Current authoritative checkpoint — latest source deployed, N05 accepted
+
+Production: `b2868f247cbe6813aecaddf71263aa7aa2c4db78` · Ready `dpl_2tVo4xi6SD6Ju1Sj26j95xh1SGTp` · promoted
+October 2 at 2026-10-02T15:40:02.271Z. Home/Settings wrapping is committed and
+deployed: scoped lint, class-only AST comparison, normal OWNER390px no-overflow,
+clean Node20 build and fresh types, protected staging and production HTTP/auth/
+assets/redirect checks all passed. Read-only before/after settings hashes and
+automation hashes are equal; users2/memberships3, enabled `[]`, TEST_ONLY retained.
+Rollback9292bee preserves database/newer writes. No client sends or activation.
+BuildID `h6FECXIdFq-zoFqqBsgvy`; action manifest `ebb00df75f333b448050bc285e19173132e1dcb2d81b3fa64dec01b48633ca19`.
+Release receipts: `/private/tmp/ops-hub-wrap-release-2026-10-02/`.
+
+N04 is complete; N05 finite acceptance is now complete:
+- One create-only fictional script on an existing un-scripted November topic;
+  original approved/carried script, topic allowance and all old versions retained.
+  An old native v1 Approve refuses after declared v2 publication, refreshes to
+  exact v2 words, exposes no Try again, creates no decision/approval/release row.
+  Only normal PortalVisit tracking differs; own shared pointer restored to v1,
+  both declared new fixture versions retained. This is not a real publication.
+- Separate pending final2 has an actual helper-derived REPAIR window from its
+  original release/policy; no reset/reopen/deadline/policy change. Initial helper
+  sentinel refusal made no query/write; corrected loopback pin passed. Native
+  first-view tracking preceded the attempt baseline. Exactly one OPEN→CHANGES_REQUESTED
+  predelegate refusal retains the full overall note and open form/error. No retry,
+  successful route or send. All149 baseline table snapshots and exact OPEN window
+  are equal after the attempted send. Original private Prisma source and actual
+  attempted context delegate restored; healthy normal refresh passed. Five other
+  retired HMR contexts are not individually verified; restore remains latched.
+Evidence: `/private/tmp/ops-hub-n05-native-2026-10-02/` and private fixture
+`n05-final-restored.private.json`, window/script before/after receipts.
+
+Remaining C14/U6: actual200% zoom; iPhone/Android mixed upload, interruption/retry,
+share/save and full rendition watch; Kyle/James/Jordan owned-work walkthrough and
+Kim/Sarina source handoff; authorized real provider/media outcome; canonical
+named client/call-source/month/strategy/assets/seats and rollout preparation.
+U0 and bounded U5 complete. U1–U4 implemented/deployed with these acceptance
+holds; U6 remains open. No full real-client-journey or human-usability claim.
+Next: use `docs/audit-2026-10-02-launch-handoff.md` exact owner/check sequence.
+Historical headers below are retained evidence and superseded by this section.
+
 # October client launch and production handoff
 
 ## Current release
 
-Application `9292beee1a15cb9ff4cf8caae04f2be41e1ec13d` is deployed to production.
+Application `b2868f247cbe6813aecaddf71263aa7aa2c4db78` is deployed to production.
 Editor brief, Editing Room, exact final-file delivery, notice context, client
 downloads, shared controls, appointment controls and Brand Profile improvements
 are implemented, tested, committed and deployed. Production automation remains
 `[]`, audience `TEST_ONLY (default)`, users2/memberships3. Deployment does not
-activate automation or invite the named clients. Rollback to11b4a67 preserves
+activate automation or invite the named clients. Rollback to9292bee preserves
 current database and newer writes. See the release matrix for source/test receipts.
 
 ## Local Home and Settings label-wrapping changes — October 2
@@ -23,7 +63,7 @@ Applied locally on top of `9292beee1a15cb9ff4cf8caae04f2be41e1ec13d`:
 - Changes are limited to `src/app/page.tsx` and `src/app/settings/page.tsx`.
   Node 20 changed-file ESLint and `git diff --check` passed.
 
-These changes are uncommitted and undeployed. Actual 200% browser zoom has not
+These changes are committed and deployed as b2868f2. Native390px checks passed without page overflow; all four Settings links fit their298px width. Actual 200% browser zoom has not
 been verified; the acceptance gate below remains open. Check Home block headings,
 pipeline/shoot rows and client names, then expanded Settings sections and link
 rows with long labels at actual 200% zoom. Confirm full labels remain readable,

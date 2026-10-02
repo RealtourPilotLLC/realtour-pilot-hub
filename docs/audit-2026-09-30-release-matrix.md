@@ -1,3 +1,43 @@
+## Current authoritative checkpoint — latest source deployed, N05 accepted
+
+Production: `b2868f247cbe6813aecaddf71263aa7aa2c4db78` · Ready `dpl_2tVo4xi6SD6Ju1Sj26j95xh1SGTp` · promoted
+October 2 at 2026-10-02T15:40:02.271Z. Home/Settings wrapping is committed and
+deployed: scoped lint, class-only AST comparison, normal OWNER390px no-overflow,
+clean Node20 build and fresh types, protected staging and production HTTP/auth/
+assets/redirect checks all passed. Read-only before/after settings hashes and
+automation hashes are equal; users2/memberships3, enabled `[]`, TEST_ONLY retained.
+Rollback9292bee preserves database/newer writes. No client sends or activation.
+BuildID `h6FECXIdFq-zoFqqBsgvy`; action manifest `ebb00df75f333b448050bc285e19173132e1dcb2d81b3fa64dec01b48633ca19`.
+Release receipts: `/private/tmp/ops-hub-wrap-release-2026-10-02/`.
+
+N04 is complete; N05 finite acceptance is now complete:
+- One create-only fictional script on an existing un-scripted November topic;
+  original approved/carried script, topic allowance and all old versions retained.
+  An old native v1 Approve refuses after declared v2 publication, refreshes to
+  exact v2 words, exposes no Try again, creates no decision/approval/release row.
+  Only normal PortalVisit tracking differs; own shared pointer restored to v1,
+  both declared new fixture versions retained. This is not a real publication.
+- Separate pending final2 has an actual helper-derived REPAIR window from its
+  original release/policy; no reset/reopen/deadline/policy change. Initial helper
+  sentinel refusal made no query/write; corrected loopback pin passed. Native
+  first-view tracking preceded the attempt baseline. Exactly one OPEN→CHANGES_REQUESTED
+  predelegate refusal retains the full overall note and open form/error. No retry,
+  successful route or send. All149 baseline table snapshots and exact OPEN window
+  are equal after the attempted send. Original private Prisma source and actual
+  attempted context delegate restored; healthy normal refresh passed. Five other
+  retired HMR contexts are not individually verified; restore remains latched.
+Evidence: `/private/tmp/ops-hub-n05-native-2026-10-02/` and private fixture
+`n05-final-restored.private.json`, window/script before/after receipts.
+
+Remaining C14/U6: actual200% zoom; iPhone/Android mixed upload, interruption/retry,
+share/save and full rendition watch; Kyle/James/Jordan owned-work walkthrough and
+Kim/Sarina source handoff; authorized real provider/media outcome; canonical
+named client/call-source/month/strategy/assets/seats and rollout preparation.
+U0 and bounded U5 complete. U1–U4 implemented/deployed with these acceptance
+holds; U6 remains open. No full real-client-journey or human-usability claim.
+Next: use `docs/audit-2026-10-02-launch-handoff.md` exact owner/check sequence.
+Historical headers below are retained evidence and superseded by this section.
+
 ## Latest release candidate — October 2 wrapping checkpoint
 
 Home and Settings wrapping passed scoped lint, class-only AST review and normal
