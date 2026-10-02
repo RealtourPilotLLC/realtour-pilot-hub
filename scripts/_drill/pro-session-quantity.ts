@@ -14,9 +14,10 @@ async function main() {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     const { cutSlots, videoStatesFor } = await import("@/lib/reviewCuts");
     const { ensureOutputsForProject } = await import("@/lib/deliverableOutputs");
+    const { reconcileSessionRequests } = await import("@/lib/sessionRequests");
     const f = await buildContentMonth(prisma, { name: "Pro quantity TEST", package: "Pro", project: false, owner: false, portalToken: false });
     let serial = 0;
-    const job = async (name: string, opts: { index?: number; quantity?: number; label?: string; confirmed?: boolean; monthId?: string; videosFilmed?: number | null; override?: number | null } = {}) => {
+    const job = async (name: string, opts: { index?: number; quantity?: number; label?: string; confirmed?: boolean; reconcile?: boolean; monthId?: string; videosFilmed?: number | null; override?: number | null } = {}) => {
       const n = ++serial, at = new Date("2026-10-06T15:00:00Z");
       const project = await prisma.project.create({ data: {
         clientId: f.clientId, contentMonthId: opts.monthId ?? f.monthId,
@@ -28,21 +29,23 @@ async function main() {
       const appointment = await prisma.appointment.create({ data: { projectId: project.id, aryeoId: `quantity-appointment-${n}`, status: "SCHEDULED", startAt: at, endAt: new Date(at.getTime() + 4 * 3_600_000), durationMin: 240 } });
       const request = await prisma.programSessionRequest.create({ data: {
         clientId: f.clientId, enrollmentId: f.enrollmentId, monthId: opts.monthId ?? f.monthId,
-        projectId: project.id, sessionIndex: opts.index ?? 1, kind: "CONTENT_SESSION",
-        status: opts.confirmed === false ? "REQUESTED" : "CONFIRMED", confirmedAt: opts.confirmed === false ? null : new Date(),
-        matchState: "CONTENT_EVIDENCE", aryeoAppointmentId: appointment.aryeoId,
-        aryeoOrderId: project.aryeoOrderId, slotStart: at, slotEnd: appointment.endAt,
+        projectId: opts.reconcile ? null : project.id, sessionIndex: opts.index ?? 1, kind: "CONTENT_SESSION",
+        status: opts.reconcile || opts.confirmed === false ? "REQUESTED" : "CONFIRMED", confirmedAt: opts.reconcile || opts.confirmed === false ? null : new Date(),
+        matchState: opts.reconcile ? null : "STAFF", aryeoAppointmentId: opts.reconcile ? null : appointment.aryeoId,
+        aryeoOrderId: opts.reconcile ? null : project.aryeoOrderId, slotStart: at, slotEnd: appointment.endAt,
       } });
+      if (opts.reconcile) await reconcileSessionRequests();
       // The real filming handoff materializes outputs before its status pass.
       await ensureOutputsForProject(project.id);
-      return { project, row, appointment, request };
+      return { project, row, appointment, request: await prisma.programSessionRequest.findUniqueOrThrow({ where: { id: request.id } }) };
     };
     const run = async (j: Awaited<ReturnType<typeof job>>) => {
       await syncProjectStatuses({ projectId: j.project.id });
       return prisma.deliverable.findUniqueOrThrow({ where: { id: j.row.id } });
     };
     c.head("Confirmed per-session quota versus whole-month legacy floor");
-    const first = await job("first"), second = await job("second", { index: 2 });
+    const first = await job("first", { reconcile: true }), second = await job("second", { index: 2, reconcile: true });
+    c.ok("real reconciliation binds each imported session with its canonical MONTH_LINK evidence", [first, second].every((j) => j.request.status === "CONFIRMED" && j.request.matchState === "MONTH_LINK" && j.request.projectId === j.project.id && j.request.aryeoAppointmentId === j.appointment.aryeoId));
     c.ok("first confirmed Pro session stays four after the actual status sweep", (await run(first)).quantity === 4);
     c.ok("second confirmed Pro session independently stays four", (await run(second)).quantity === 4);
     const firstOutputs = await prisma.deliverableOutput.findMany({ where: { projectId: first.project.id, removedFromOrderAt: null } });

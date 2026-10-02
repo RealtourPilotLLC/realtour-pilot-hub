@@ -1,6 +1,15 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { planSessions } from "@/lib/programMonths";
+import type { SessionMatchKind } from "@/lib/sessionRequests";
+
+// The reconciliation writer's canonical vocabulary, plus its explicit desk
+// and moved-booking branches. CONTENT_EVIDENCE remains a legacy spelling;
+// every entry still requires the exact current identity checks below.
+const CONFIRMED_MATCH_STATES = {
+  PROVIDER_ID: true, PROVIDER_ORDER: true, MONTH_LINK: true, CONTENT_DELIVERABLE: true,
+  STAFF: true, MOVED: true, CONTENT_EVIDENCE: true,
+} satisfies Record<SessionMatchKind | "STAFF" | "MOVED" | "CONTENT_EVIDENCE", true>;
 
 /** A month label describes the whole allowance. Only an exact, current
  * confirmed request can prove that a particular job owes one session's part.
@@ -50,7 +59,7 @@ export async function confirmedProgramSessionQuantities(projectIds: string[]): P
     if (!month || !enrollment || enrollment.sessionsPerMonth <= 1 ||
       r.kind !== "CONTENT_SESSION" || r.status !== "CONFIRMED" || !r.confirmedAt || r.cancelledAt ||
       r.bookingState === "CONFLICT" || r.pendingChangeJson || superseded.has(r.id) ||
-      !["PROVIDER_ID", "CONTENT_EVIDENCE", "STAFF"].includes(r.matchState ?? "") ||
+      !Object.hasOwn(CONFIRMED_MATCH_STATES, r.matchState ?? "") ||
       r.monthId !== month.id || r.enrollmentId !== enrollment.id ||
       r.clientId !== project.clientId || month.clientId !== project.clientId || enrollment.clientId !== project.clientId ||
       (r.aryeoOrderId && r.aryeoOrderId !== project.aryeoOrderId) ||

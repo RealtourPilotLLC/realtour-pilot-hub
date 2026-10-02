@@ -1,6 +1,22 @@
 # Pro session quantity — causal handoff defect
 
-## Implemented and domain-tested; rebuilt causal journey pending
+## Initial local repair held; canonical reconciliation correction in progress
+
+Local checkpointbcfa41d passed its initial20/0 domain regression and exact
+clean build, but the actual rebuilt causal HTTP journey still failed the first
+handoff. The helper assumed a schema-comment `CONTENT_EVIDENCE` label; the real
+`reconcileSessionRequests` writer records canonical `MONTH_LINK`,
+`CONTENT_DELIVERABLE` or `PROVIDER_ORDER`, as well as existing provider/staff/move
+states. The manually declared regression label missed that writer/read contract.
+Candidatebcfa41d is explicitly held and must never be promoted; production
+remains830a559. The correction uses the writer's exported `SessionMatchKind`
+vocabulary plus its explicit staff/moved branches, retaining every exact scope/
+appointment/cancellation/supersession requirement below. Actual reconciliation
+now confirms both declared imported appointments before exercising quota repair;
+expanded PostgreSQL21/0, scoped lint0, whole-tree nonincremental types0 and
+focused root correction review pass. New exact build/causal retry are next.
+Evidence: `/tmp/pro-session-quantity-canonical/`,
+`/tmp/pro-session-canonical-types.log`.
 
 The actual built signed Pro HTTP journey established a concrete failure:
 photographer `finalizeUpload` reports four filmed topics, but its status sweep
