@@ -3,6 +3,7 @@ import { formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, AlertTriangle, Send } from "lucide-react";
 import type { ReadyBoard } from "@/lib/readyToSend";
 import { homeRecordHref } from "@/lib/homeRecordScope";
+import { ActionLink } from "@/components/ui/Action";
 
 type Row = { id: string; label: string; stage: string; detail: string; owner: string; at: string; action: string; href: string; cutHref: string };
 
@@ -34,7 +35,8 @@ function rowsFor(board: ReadyBoard): Row[] {
     })),
     ...(board.notTold ?? []).map((r) => ({
       id: r.submissionId, label: `${r.street} · ${r.fileName}`,
-      stage: "Delivery recorded; client notification pending", detail: "The video is marked sent, but the client has not been told yet.",
+      stage: r.monthlyProgram ? "Portal handoff recorded; client notification owed" : "Delivery recorded; client notification pending",
+      detail: r.monthlyProgram ? "The portal handoff is recorded. Client notification is still owed; this does not establish client approval or receipt." : "The video is marked sent, but the client has not been told yet.",
       owner: "Kyle", at: r.sentAtISO,
       action: "Record how the client was notified", href: "/#video-review",
       cutHref: `/review/${r.projectId}?cut=${r.submissionId}`,
@@ -84,10 +86,10 @@ export function DeliveryExitSummary({ board, includeTest = false }: { board: Rea
                 </div>
                 <span className="shrink-0 text-xs text-muted">{r.owner} · {formatDistanceToNow(new Date(r.at), { addSuffix: true })}</span>
               </div>
-              <p className="mt-1 break-words text-xs leading-relaxed text-muted">{r.detail}</p>
-              <Link href={r.href} className="mt-2 inline-flex min-h-9 items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold hover:border-brand/50 hover:text-brand">
+              <p className="mt-1 break-words text-sm leading-relaxed text-muted">{r.detail}</p>
+              <ActionLink href={r.href} className="mt-2">
                 {r.action} <ArrowUpRight className="size-3.5 shrink-0" />
-              </Link>
+              </ActionLink>
             </li>
           ))}
         </ul>

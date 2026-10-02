@@ -117,7 +117,7 @@ export function FinalRenditionCheck({ submissionId, label, round, monthly = fals
       </div>}
       <div className="grid gap-2 sm:grid-cols-2">{ITEMS.map(([key, words]) => <label key={key} className="flex min-h-11 items-center gap-2"><input type="checkbox" name={key} value="yes" checked={checks.includes(key)} onChange={(e) => { setChecks((current) => e.target.checked ? [...current.filter((item) => item !== key), key] : current.filter((item) => item !== key)); changed(); }} required className="size-4 accent-brand focus-visible:outline-2 focus-visible:outline-brand" />{words}</label>)}</div>
       <div className="flex flex-wrap gap-2">
-        <button type="submit" disabled={busy || held || !mediaId || saved} className={`${control} bg-brand text-white`}>Record final-file check</button>
+        <button type="submit" disabled={busy || held || !mediaId || saved} className={`${control} bg-brand-action text-brand-fg`}>Record final-file check</button>
         <button type="button" onClick={load} disabled={busy} className={control}>Read current final file</button>
       </div>
     </form>

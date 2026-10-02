@@ -372,7 +372,10 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         </div>
       </details>
 
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-3 space-y-2 rounded-xl border border-border p-3">
+        <p className="text-sm font-semibold">1. Verify the destination file</p>
+        <p className="text-sm text-muted">{v.monthlyProgram ? "Play the portal final and confirm its exact Dropbox backup in the final-file check." : "Download this version, upload it to Aryeo, then check the actual Aryeo video before delivering the listing."}</p>
+      <div className="flex flex-wrap items-center gap-2">
         <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
         {!v.monthlyProgram && v.aryeoUrl && (
           <a
@@ -391,7 +394,6 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
         >
           <Eye className="size-3.5" /> Watch it
         </Link>
-        <MarkSent submissionId={v.submissionId} street={v.street} />
         {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
             way to retry the render without going into connections"). Offered
             only on a row whose 1080p pass did NOT produce the file — there is a
@@ -402,7 +404,13 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>
-      <div className="mt-2"><FinalRenditionCheck submissionId={v.submissionId} label={v.cutLabel} round={v.round} monthly={v.monthlyProgram} /></div>
+        <FinalRenditionCheck submissionId={v.submissionId} label={v.cutLabel} round={v.round} monthly={v.monthlyProgram} />
+      </div>
+      <div className="mt-3 space-y-2 rounded-xl border border-border p-3">
+        <p className="text-sm font-semibold">2. Record the handoff</p>
+        <p className="text-sm text-muted">{v.monthlyProgram ? "Record only after the final-file check. This does not notify the client or approve the cut for them." : "Record only after the final-file check and delivery in Aryeo. This sends no client message."}</p>
+        <MarkSent key={v.submissionId} submissionId={v.submissionId} street={v.street} monthly={v.monthlyProgram} />
+      </div>
     </div>
   );
 }
@@ -496,8 +504,7 @@ function NeedsFinishing({ rows }: { rows: { submissionId: string; street: string
         ))}
       </ul>
       <p className="mt-1 text-ui-status text-muted">
-        The client has these. Nothing needs re-uploading or re-sending — the hourly check finishes our own records, and
-        this note clears itself when it does.
+        The handoff is recorded; this alone does not prove client approval, notification or receipt. Reconcile the named records without uploading or sending again. The hourly check retries this bookkeeping, and the note clears when those records are complete.
       </p>
     </div>
   );

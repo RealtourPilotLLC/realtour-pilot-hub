@@ -62,7 +62,7 @@ function MessagesButton({ unread }: { unread: number }) {
   return (
     <Link
       href="/editing/messages"
-      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
     >
       <MessageSquare className="size-3.5" />
       Messages
@@ -236,7 +236,10 @@ export default async function EditorQueuePage({ searchParams }: { searchParams?:
           {/* No workload panel here any more (Sep 28): its rates and lanes
               were the office's numbers, and its one link ("Offline or stuck?")
               now sits in the desk's footer. */}
-          <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
+          <section aria-labelledby="editing-queue-heading">
+            <h2 id="editing-queue-heading" className="mb-3 text-base font-semibold">Your work queue</h2>
+            <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
+          </section>
           {quality && <EditorQualityCard report={quality} own />}
         </div>
       </div>
@@ -278,7 +281,6 @@ export default async function EditorQueuePage({ searchParams }: { searchParams?:
             visible; the panel says when it read and says so when that read
             has gone stale or failed. */}
         <AutoRefresh seconds={60} />
-        <p className="text-sm text-muted">{includeTest ? "Editors today includes real and test projects." : "Editors today shows real projects; test work is hidden."}</p>
         <EditingWorkSummary view={today} />
         {/* THE BACKLOG. Rows click straight through to /edit/<id> — the notes
             (customer + shoot) live there now, not in the table. A row reads

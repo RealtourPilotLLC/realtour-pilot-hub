@@ -2,147 +2,120 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Send } from "lucide-react";
+import { Check } from "lucide-react";
 import { markVideoSentAction } from "@/app/ops/actions";
+import { Button } from "@/components/ui/Action";
+import { SaveStatus, type SaveState } from "@/components/ui/SaveStatus";
 
-/**
- * "Mark as sent" — Kyle's one tap AFTER he has uploaded the file to Aryeo and
- * delivered the listing. It records what he did; it never contacts a client.
- *
- * A client component, so it takes an id and calls a server action. It must not
- * import @/lib/readyToSend (or prisma, or settings) — that is the single most
- * reliable way to break this build while tsc stays quiet.
- *
- * IT ASKS FIRST. Two taps, not one: the first turns the button into "Yes, it's
- * been sent" and the second writes the stamp. Nothing in the hub can clear that
- * stamp, so a mis-tap on a phone — this button sits a thumb's width from
- * "Watch it" — would take the row off the only surface that tracks it and leave
- * the recovery as a hand-edit of the production database. The question reverts
- * on its own after a few seconds, so an accidental first tap costs nothing.
- *
- * A second press of a row somebody else already marked is not a bug and is not
- * silenced: the action is idempotent in Postgres and answers with who marked it
- * and when, which is exactly the question that started this card ("did anyone
- * actually re-send it?").
- *
- * THE SECOND TAP SAYS HOW THE CLIENT WAS TOLD (9.2, Sep 25 2026). "Sent" and
- * "the client knows" are different facts: Aryeo emails the agent only when
- * "notify" is ticked, and it is unticked by default. So the confirm step is now
- * the choice itself — Aryeo's email, our text, a call or in person, or not yet —
- * and whichever is pressed IS the second tap. "Not yet" keeps the video on the
- * card's "client not told yet" list. The words match readyToSend.NOTICE_CHOICES
- * (a server module this file must not import); the server refuses anything else.
- */
+// Values are the existing server notice choices. This control records a fact;
+// it never notifies a client. Monthly portal handoffs have no Aryeo email step.
 export const NOTICE_OPTIONS: { value: string; label: string }[] = [
   { value: "aryeo-email", label: "Aryeo emailed them" },
   { value: "our-text", label: "We texted them" },
   { value: "phone", label: "Call or in person" },
   { value: "not-yet", label: "Not told yet" },
 ];
+const UNKNOWN = "The delivery record is unconfirmed. It may already have saved. Refresh delivery status, or explicitly reconcile this exact handoff. Nothing retries automatically. Refreshing alone does not prove that it failed.";
 
-export function MarkSent({ submissionId, street }: { submissionId: string; street: string }) {
+/** The server owns destination proof, authorization and idempotent bookkeeping.
+ * Keep the two-step irreversible confirmation. Persist only an opaque retry
+ * guard, never client details, notice choices or a claim of server completion. */
+export function MarkSent({ submissionId, street, monthly = false }: { submissionId: string; street: string; monthly?: boolean }) {
   const router = useRouter();
-  const [msg, setMsg] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-  const [asking, setAsking] = useState(false);
-  /** R5: the video went and a record behind it did not. The button becomes a repair. */
-  const [incomplete, setIncomplete] = useState(false);
-  const [busy, start] = useTransition();
+  const [receipt, setReceipt] = useState<{ state: SaveState; message: string } | null>(null);
+  const [done, setDone] = useState(false), [asking, setAsking] = useState(false), [incomplete, setIncomplete] = useState(false);
+  const [held, setHeld] = useState(false), [busy, start] = useTransition(), [refreshing, refresh] = useTransition();
+  const pending = useRef(false), uncertain = useRef(false), completed = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const storageKey = `rtp:delivery-record:${submissionId}`;
+  const options = monthly ? NOTICE_OPTIONS.filter((o) => o.value !== "aryeo-email") : NOTICE_OPTIONS;
+  const hold = () => { uncertain.current = true; setHeld(true); setAsking(false); setReceipt({ state: "error", message: UNKNOWN }); };
 
-  // A component that unmounts mid-question (the row leaves on a refresh) must
-  // not leave a timer holding a setState behind it.
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  useEffect(() => {
+    let stopped = false;
+    queueMicrotask(() => {
+      if (stopped || pending.current) return;
+      try { if (sessionStorage.getItem(storageKey)) { uncertain.current = true; setHeld(true); setReceipt({ state: "error", message: UNKNOWN }); } }
+      catch { /* Submission checks storage before any server action. */ }
+    });
+    return () => { stopped = true; if (timer.current) clearTimeout(timer.current); };
+  }, [storageKey]);
 
-  const press = (notice?: string) => {
-    // A repair press is not the irreversible act the two-tap confirm exists for
-    // — the video has already gone. Skip straight to it.
-    if (incomplete) {
-      start(async () => {
-        const r = await markVideoSentAction(submissionId).catch(() => ({ ok: false, message: "Couldn’t save — try again.", already: false }));
-        const stuck = r.ok && !!(r as { incomplete?: string[] }).incomplete?.length;
-        setIncomplete(stuck);
-        setDone(r.ok && !stuck);
-        setMsg(r.message);
-        if (r.ok && !stuck) router.refresh();
-      });
-      return;
-    }
-    if (!asking || !notice) {
+  const press = (notice?: string, reconcile = false) => {
+    if (pending.current || (uncertain.current && !reconcile) || completed.current) return;
+    try { if (sessionStorage.getItem(storageKey) && !reconcile) { hold(); return; } }
+    catch { setReceipt({ state: "error", message: "Browser recovery storage is unavailable. Nothing was submitted. Restore storage before recording delivery." }); return; }
+    if (!reconcile && !incomplete && (!asking || !notice)) {
       setAsking(true);
       if (timer.current) clearTimeout(timer.current);
-      // Long enough to read four choices on a phone; a stray first tap still
-      // costs nothing.
       timer.current = setTimeout(() => setAsking(false), 15000);
       return;
     }
+    // Stale handlers must respect the same destination choices as the screen.
+    if (!reconcile && !incomplete && !options.some((o) => o.value === notice)) return;
+    let attempt: string;
+    try { attempt = crypto.randomUUID(); sessionStorage.setItem(storageKey, attempt); }
+    catch { setReceipt({ state: "error", message: "This browser could not prepare a recoverable save. Nothing was submitted; keep this cut open and restore storage before trying again." }); return; }
+    pending.current = true;
     if (timer.current) clearTimeout(timer.current);
-    setAsking(false);
+    setAsking(false); setReceipt(null);
     start(async () => {
-      const r = await markVideoSentAction(submissionId, notice).catch(() => ({ ok: false, message: "Couldn’t save — try again.", already: false }));
-      // R5 — A PARTIAL SETTLE IS NOT A CLEAN SEND.
-      //
-      // markVideoSent has been able to say "the video went, but one of the
-      // records behind it did not — press again" since A04. This component
-      // turned every ok into done: it cleared the message, disabled the button
-      // and refreshed, so the sentence was never read and the second press was
-      // impossible. (The action had to stop revalidating too; see ops/actions.)
-      //
-      // The send itself is never in doubt on this branch, so the button must
-      // not offer to re-send. It offers to finish the paperwork, and says so.
-      const stuck = r.ok && !!(r as { incomplete?: string[] }).incomplete?.length;
-      setIncomplete(stuck);
-      setDone(r.ok && !stuck);
-      // On a clean first press the row simply leaves the card, so the only
-      // message worth keeping on screen is a failure, an "already sent", or
-      // bookkeeping that still needs finishing.
-      setMsg(r.ok && !r.already && !stuck ? null : r.message);
-      if (r.ok && !stuck) router.refresh();
+      try {
+        const r = await markVideoSentAction(submissionId, reconcile || incomplete ? undefined : notice);
+        if (!r || typeof r.ok !== "boolean" || typeof r.message !== "string") { hold(); return; }
+        // A refused recovery did not perform a new write, but cannot establish
+        // whether the earlier request finished. Keep its recoverable guard.
+        if (reconcile && !r.ok) { hold(); setReceipt({ state: "error", message: `${r.message} The earlier delivery record is still unconfirmed. Resolve this blocker before reconciling again.` }); return; }
+        const partial = r.ok && !!r.incomplete?.length;
+        completed.current = r.ok && !partial;
+        setIncomplete(partial); setDone(completed.current);
+        const message = partial
+          ? `Handoff recorded. ${r.already ? `${r.message} ` : ""}Follow-up still needs attention: ${r.incomplete!.join("; ")}. Finish those records without uploading or sending again.`
+          : r.ok && monthly
+            ? `${r.already ? `Portal handoff already recorded. ${r.message}` : "Portal handoff recorded."} Client approval and notification remain separate.`
+            : r.message;
+        setReceipt({ state: partial ? "partial" : r.ok ? "saved" : "error", message });
+        uncertain.current = false; setHeld(false);
+        try {
+          if (sessionStorage.getItem(storageKey) === attempt) sessionStorage.removeItem(storageKey);
+          if (sessionStorage.getItem(storageKey)) {
+            uncertain.current = true; setHeld(true);
+            setReceipt({ state: partial ? "partial" : r.ok ? "saved" : "error", message: `${message} A different unconfirmed change is still held in this tab. Refresh delivery status before any further action.` });
+          }
+        } catch {
+          uncertain.current = true; setHeld(true);
+          setReceipt({ state: partial ? "partial" : r.ok ? "saved" : "error", message: `${message} The local recovery guard could not be cleared. Inspect the exact cut before another change.` });
+        }
+        if (r.ok && !partial) router.refresh();
+      } catch { hold(); }
+      finally { pending.current = false; }
     });
   };
 
-  return (
-    <>
-      <button
-        onClick={() => press()}
-        disabled={busy || done}
-        title={
-          incomplete
-            ? `${street}'s video is recorded as sent — that part is done and cannot be undone. One of our own records behind it did not finish; this retries just that. Nothing is sent to the client.`
-            : `Record that ${street}'s video has been uploaded to Aryeo and delivered. This sends nothing to the client.`
-        }
-        // min-h-9 keeps it a real tap target on a phone; shrink-0 stops it
-        // being squeezed to nothing when the address beside it is long.
-        className={
-          "inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 " +
-          (incomplete
-            ? "border-warning/50 bg-warning/10 text-warning hover:bg-warning/20"
-            : asking
-              ? "border-success bg-success text-white hover:opacity-90"
-              : "border-success/40 bg-success/10 text-success hover:bg-success/20")
-        }
-      >
-        {busy ? <Loader2 className="size-3.5 animate-spin" /> : done ? <Check className="size-3.5" /> : <Send className="size-3.5" />}
-        {done ? "Sent" : incomplete ? "Finish the bookkeeping" : asking ? "It’s been sent — how were they told?" : "Mark as sent"}
-      </button>
-      {asking && !busy && (
-        <span className="basis-full space-y-1.5">
-          <span className="block text-[11px] text-muted">Only after the file is on Aryeo and the listing is delivered. This can&rsquo;t be undone. Pick how the client heard it&rsquo;s there:</span>
-          <span className="flex flex-wrap gap-1.5">
-            {NOTICE_OPTIONS.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                onClick={() => press(o.value)}
-                className="inline-flex min-h-9 items-center rounded-lg border border-success/40 bg-success/10 px-2.5 py-1 text-[11px] font-semibold text-success hover:bg-success/20"
-              >
-                {o.label}
-              </button>
-            ))}
-          </span>
-        </span>
-      )}
-      {msg && <span className="basis-full text-[11px] font-medium text-warning">{msg}</span>}
-    </>
-  );
+  return <div className="min-w-0 space-y-2">
+    <Button variant="secondary" onClick={() => press()} busy={busy} busyLabel="Recording…" disabled={done || held}
+      title={incomplete
+        ? `${street}'s handoff is recorded. Retry only the unfinished records; nothing is sent to the client.`
+        : monthly
+          ? `Record ${street}'s verified portal handoff and final Dropbox backup. This does not notify the client or record their approval.`
+          : `Record that ${street}'s video has been uploaded to Aryeo and delivered. This sends nothing to the client.`}>
+      {done && <Check aria-hidden className="size-4" />}
+      {done ? (monthly ? "Portal handoff recorded" : "Delivery recorded") : incomplete ? "Finish the bookkeeping" : asking ? "Choose how the client was told" : monthly ? "Record portal handoff" : "Mark as sent"}
+    </Button>
+    {asking && !busy && <div className="space-y-2">
+      <p className="text-sm text-muted">{monthly
+        ? "Only after checking this exact portal final file and its final Dropbox backup. This records the handoff; client approval is separate. This cannot be undone. How has the client been told?"
+        : "Only after the file is on Aryeo and the listing is delivered. This can’t be undone. Pick how the client heard it’s there:"}</p>
+      <div className="flex flex-wrap gap-2">{options.map((o) => <Button key={o.value} variant="secondary" onClick={() => press(o.value)}>{o.label}</Button>)}</div>
+      <p className="text-sm text-muted">These choices only record what happened. They send no message. Choose “Not told yet” if notification is still owed.</p>
+    </div>}
+    {receipt && <SaveStatus state={receipt.state} message={receipt.message} className="block" />}
+    {held && <div className="space-y-2">
+      <p className="text-sm text-muted">Reconciliation checks this exact cut and records or repairs the handoff you already confirmed. It preserves any saved delivery and notice. It does not upload a file or send a message; notification remains owed if no notice was saved.</p>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" busy={refreshing} busyLabel="Refreshing…" disabled={busy} onClick={() => refresh(() => router.refresh())}>Refresh delivery status</Button>
+        <Button variant="secondary" busy={busy} busyLabel="Reconciling…" disabled={refreshing || done} onClick={() => press(undefined, true)}>Check and reconcile delivery record</Button>
+      </div>
+    </div>}
+  </div>;
 }

@@ -1,5 +1,25 @@
 # September 30 workflow audit — implementation tracker
 
+## October 2 active priority checkpoint — release pending
+
+Video delivery, editor brief and Editing Room simplification are implemented
+and frozen locally. Delivery39/0, queue18/0, brief13/0 and dry build/types0 pass.
+Signed Kim/Kyle mounted comparisons cover exact video context, selected queue
+return/refresh, filtered empty, keyboard fragments and375/390/768/1440 widths.
+Small issues found in the mounted pass were corrected; the final exact commit
+build and deployment remain pending. Production still servesfa346fa. See
+`audit-2026-10-02-production-workspace.md` for exact current evidence/remainder.
+
+Supported browser access is restored; previous denial is historical. The first
+roster is settled (ten regular/two trials), as is Joe/Joseph's same-person fact.
+Canonical record selection/call-source reconciliation and client preparation
+remain open in the private October operator packet. Only Sutow's October call
+is complete per Jordan; Schultz filmed and Ashley has not. U0–U5 remain partial
+and U6 open. No real-client sends, invitations, bookings, financial changes,
+activation, rollout expansion, schema change or Git push. Older current headings
+below retain dated history and are superseded by this active checkpoint.
+
+
 This tracks the user's full workflow audit at `/Users/jordanspackman/Downloads/Realtour-Pilot-Full-Workflow-Audit-2026-09-30.md` against the local checkout. The audit is evidence and backlog, not an instruction to turn on client-facing features. Update each row with a commit and acceptance evidence before calling it complete. See `docs/handoff.md` for the current resume point.
 
 **Current release boundary (Oct 1 evening):** production serves exact application

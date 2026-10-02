@@ -19,9 +19,9 @@ import { HOW_START_WORKS, yourClock, type DeskJob } from "@/lib/editorDesk";
 // page had no Start button on it. The old desk drew NOTHING until something
 // was already active.
 //
-// So the desk is always here, and it asks one question:
-//   · nothing on → "What are you working on now?" and one big button per job
-//     they could be on (lib/editorDesk.toDeskJobs). Tapping one is their Start.
+// So the desk is always here, with a compact current-work strip:
+//   · nothing on → Start a job opens the chooser from lib/editorDesk.toDeskJobs.
+//     Opening the chooser never starts work; choosing a job is their Start.
 //   · on a job   → "You're on 12 Oak St since 12:40am your time" with Pause
 //     and Switch job. Switching is the same Start: the server pauses the old
 //     job in the same transaction, so there is no second confirm — and it is
@@ -127,36 +127,55 @@ export function EditorDesk({
             type="button"
             {...lock}
             onClick={() => pick(j)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-xl border border-border bg-surface px-3 py-2 text-left transition-colors hover:border-[#8b5cf6]/50 hover:bg-[#8b5cf6]/5 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex min-h-11 w-full items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {spin(what) ? <Loader2 className="size-4 shrink-0 animate-spin text-[#8b5cf6]" /> : <Play className="size-4 shrink-0 text-[#8b5cf6]" />}
+            {spin(what) ? <Loader2 className="size-4 shrink-0 animate-spin text-brand" /> : <Play className="size-4 shrink-0 text-brand" />}
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-baseline justify-between gap-x-3">
-                <span className="min-w-0 truncate text-sm font-semibold text-foreground">{j.street}</span>
-                <span className={cn("shrink-0 text-xs", due.late ? "font-semibold text-danger" : "text-muted")}>{due.text}</span>
+                <span className="min-w-0 break-words text-sm font-semibold text-foreground">{confirms(j) ? "Confirm" : j.pausedSinceISO ? "Resume" : "Start"} · {j.street}</span>
+                <span className={cn("shrink-0 text-sm", due.late ? "font-semibold text-danger" : "text-muted")}>{due.text}</span>
               </span>
-              {second && <span className="mt-0.5 block text-[11px] text-muted">{second}</span>}
+              {second && <span className="mt-0.5 block text-sm text-muted">{second}</span>}
             </span>
           </button>
         );
       })}
       {list.length > FIRST && (
-        <button type="button" onClick={() => setShowAll((v) => !v)} className="text-xs font-medium text-muted hover:text-foreground">
+        <button type="button" onClick={() => setShowAll((v) => !v)} className="min-h-11 rounded-lg px-2 text-sm font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">
           {showAll ? "Show fewer" : `Show all ${list.length}`}
         </button>
       )}
     </div>
   );
 
-  const btn = "inline-flex min-h-9 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60";
+  const btn = "inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60";
+  const chooser = (
+    <div className="mt-3 space-y-2 border-t border-border pt-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold">{active ? "Switch to a job" : "Choose the job you are editing"}</p>
+        <button type="button" onClick={() => setSwitching(false)} className={cn(btn, "text-muted hover:bg-surface-2")}>Cancel</button>
+      </div>
+      {active && <p className="text-sm text-muted">{active.street} will be paused when you start another job.</p>}
+      {jobButtons}
+      {hasClaims && (
+        <div className="space-y-2 text-sm text-muted">
+          <p>Confirming a previous &ldquo;In editing&rdquo; mark pauses the other marked jobs.</p>
+          <button type="button" {...lock} onClick={() => run("confirm:none", (requestId) => confirmCurrentWorkAction({ projectId: null, requestId }))}
+            className={cn(btn, "border border-border text-foreground hover:bg-surface-2")}>
+            {spin("confirm:none") ? "Saving…" : "I'm not on any of them"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <section
       aria-label="What you're working on now"
-      className={cn("rounded-2xl border px-4 py-3", active ? "border-[#8b5cf6]/40 bg-[#8b5cf6]/10" : "border-[#8b5cf6]/30 bg-surface")}
+      className="rounded-xl border border-border bg-surface px-4 py-3"
     >
       {desk === null && (
-        <p className="mb-2 flex items-start gap-1.5 text-xs text-warning" role="status">
+        <p className="mb-2 flex items-start gap-1.5 text-sm text-warning" role="status">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           Couldn&rsquo;t load what you&rsquo;re on right now — refresh the page. Starting a job below is still safe.
         </p>
@@ -164,9 +183,9 @@ export function EditorDesk({
 
       {active ? (
         <>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <span className="size-2.5 shrink-0 rounded-full bg-[#8b5cf6]" />
-            <p className="min-w-0 flex-1 text-sm text-foreground">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 sm:flex sm:flex-wrap">
+            <span className="size-2.5 shrink-0 rounded-full bg-success" />
+            <p className="min-w-0 break-words text-sm text-foreground sm:flex-1">
               You&rsquo;re on{" "}
               <Link href={`/edit/${active.projectId}`} className="font-semibold underline-offset-2 hover:underline">
                 {active.street}
@@ -174,12 +193,12 @@ export function EditorDesk({
               {active.outputTitle ? ` · ${active.outputTitle}` : ""}
               {active.sinceISO ? <span className="text-muted"> since {yourClock(active.sinceISO, tz)}</span> : null}
             </p>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="col-span-2 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 {...lock}
                 onClick={() => run(`pause:${active.projectId}`, (requestId) => pauseEditingAction({ projectId: active.projectId, requestId }))}
-                className={cn(btn, "bg-[#8b5cf6] text-white hover:bg-[#7c3aed]")}
+                className={cn(btn, "border border-border bg-surface text-foreground hover:bg-surface-2")}
               >
                 {spin(`pause:${active.projectId}`) ? <Loader2 className="size-3.5 animate-spin" /> : <Pause className="size-3.5" />}
                 Pause
@@ -199,74 +218,56 @@ export function EditorDesk({
               )}
             </div>
           </div>
-          {switching && (
-            <div className="mt-3 space-y-2 rounded-xl border border-border bg-surface/70 p-3">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="text-sm font-semibold text-foreground">Switch to:</p>
-                <button type="button" onClick={() => setSwitching(false)} className="text-xs font-medium text-muted hover:text-foreground">
-                  Cancel
-                </button>
-              </div>
-              <p className="text-[11px] text-muted">{active.street} will be paused.</p>
-              {jobButtons}
-            </div>
-          )}
+          {switching && chooser}
         </>
       ) : startable.length === 0 ? (
-        <p className="text-sm text-muted">Nothing to edit right now.</p>
+        <p className="text-sm text-muted">{desk === null ? "Your current job is unavailable. The work queue is below." : "Nothing to edit right now."}</p>
       ) : (
         <>
-          <h2 className="text-sm font-semibold text-foreground">What are you working on now?</h2>
-          <p className="mb-2 mt-0.5 text-xs text-muted">Tap the job you&rsquo;re editing. Tap Pause when you stop.</p>
-          {jobButtons}
-          {hasClaims && (
-            <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[11px] text-muted">
-              <span>
-                Some jobs say &ldquo;Marked In editing — not confirmed&rdquo; (from before the Start button). If you tap one of them, the other
-                marked jobs become paused.
-              </span>
-              <button
-                type="button"
-                {...lock}
-                onClick={() => run("confirm:none", (requestId) => confirmCurrentWorkAction({ projectId: null, requestId }))}
-                className="font-medium text-foreground underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {spin("confirm:none") ? "Saving…" : "I'm not on any of them"}
-              </button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold">Current work</h2>
+              <p className="mt-0.5 text-sm text-muted">{desk === null ? "Current job unavailable." : hasClaims ? "A previous In editing mark needs your confirmation." : "No job started in the hub."}</p>
             </div>
-          )}
+            <button type="button" {...lock} aria-expanded={switching} onClick={() => setSwitching((v) => !v)}
+              className={cn(btn, "bg-brand-action text-white hover:opacity-90")}>
+              <Play aria-hidden="true" className="size-4" />{hasClaims ? "Choose current job" : "Start a job"}
+            </button>
+          </div>
+          {switching && chooser}
         </>
       )}
 
       {/* On their list, not handed to them: said once, never a Start button
           the server would refuse (the job page's bar says the same). */}
       {notYours.length > 0 && (
-        <p className="mt-2 text-[11px] text-muted">
-          Not assigned to you yet — ask the office: {notYours.map((j) => j.street).join(", ")}
-        </p>
+        <details className="mt-2 text-sm text-muted">
+          <summary className="min-h-11 cursor-pointer content-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand">{notYours.length} job{notYours.length === 1 ? "" : "s"} not assigned to you yet</summary>
+          <p>Ask the office: {notYours.map((j) => j.street).join(", ")}</p>
+        </details>
       )}
 
       {msg && (
-        <p className={cn("mt-2 text-xs", msg.ok ? "text-success" : "text-warning")} role="status">
+        <p className={cn("mt-2 text-sm", msg.ok ? "text-success" : "text-warning")} role="status">
           {msg.text}
         </p>
       )}
 
-      <div className="mt-3 border-t border-border/60 pt-2 text-[11px] text-muted-2">
+      <div className="mt-3 border-t border-border/60 pt-2 text-[13px] text-muted">
         {/* While ON a job the only true advice is Pause: nothing ends a Start
             by itself, so a closed tab would leave the office reading "On …"
             all night. */}
         <p>{active ? "Stopped for now? Tap Pause." : "Not editing right now? You don’t need to press anything."}</p>
         <div className="mt-1 flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
           <details>
-            <summary className="cursor-pointer select-none hover:text-foreground">How this works</summary>
+            <summary className="min-h-11 cursor-pointer content-center rounded-lg hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">How Start and Pause work</summary>
             <ul className="mt-1 list-disc space-y-0.5 pl-4">
               {HOW_START_WORKS.map((line) => (
                 <li key={line}>{line}</li>
               ))}
             </ul>
           </details>
-          <Link href="/people/capacity" className="font-medium text-brand hover:underline">
+          <Link href="/people/capacity" className="inline-flex min-h-11 items-center font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-brand">
             Offline or stuck? Tell the office →
           </Link>
         </div>

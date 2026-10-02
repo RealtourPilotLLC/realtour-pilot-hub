@@ -27,11 +27,9 @@ import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefau
 import { editingQueueFilters, editingQueueHref, type EditingDueFilter } from "@/lib/editingQueueUrl";
 import { EDITING_STAGES, matchesEditingStage, type EditingStageFilter } from "@/lib/editingQueueStage";
 
-// THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
-// just like our Slack. It's been working, so I don't want to fix what isn't
-// broken." Same columns as the Slack List (task name, video type, due date,
-// status pill, editor, deliverables, priority, RAW/Final/script links,
-// comments), same views (Not Done | Upcoming | Done), same status ladder.
+// One row per project with the existing views and status ladder. Identity,
+// video type and quantity stay together; brief access leads, while file/chat
+// shortcuts are disclosed within the row. The underlying workflow is unchanged.
 //
 // What the hub fixes UNDER the familiar surface — the things that WERE broken
 // in Slack: jobs add themselves (Aryeo booking → row appears), Waiting →
@@ -396,7 +394,7 @@ function EditorSelect({ row }: { row: QueueRow }) {
         disabled={pending}
         onChange={(e) => pick(e.target.value)}
         className={cn(
-          "min-h-11 cursor-pointer rounded-md border border-transparent bg-transparent py-1 pl-2 pr-5 text-sm font-medium sm:min-h-0 sm:py-0.5 sm:pl-1 sm:text-xs",
+          "min-h-11 max-w-full cursor-pointer rounded-lg border border-transparent bg-transparent py-1 pl-2 pr-5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
           "hover:border-border hover:bg-surface-2 disabled:opacity-60",
           err ? "text-danger" : key ? "text-foreground" : "text-muted-2",
         )}
@@ -444,7 +442,7 @@ function LinkChip({
 }) {
   const external = href.startsWith("http");
   const classes = cn(
-    "inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-medium sm:min-h-0 sm:px-1.5 sm:py-0.5 sm:text-[11px]",
+    "inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
     brand
       ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
       : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
@@ -762,7 +760,7 @@ export function SimpleQueue({
               aria-label="Filter by project stage"
               value={stage}
               onChange={(e) => updateFilters({ stage: e.target.value as EditingStageFilter })}
-              className="min-h-11 max-w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
+              className="min-h-11 max-w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
             >
               <option value="all">All stages ({forStage.length})</option>
               {stageOptions.map((option) => <option key={option.key} value={option.key}>{option.label} ({option.n})</option>)}
@@ -775,7 +773,7 @@ export function SimpleQueue({
                 aria-label="Filter by editor"
                 value={who ?? ""}
                 onChange={(e) => updateFilters({ editor: e.target.value || null })}
-                className="min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
+                className="min-h-11 max-w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
               >
                 <option value="">Everyone ({forEditors.length})</option>
                 {people.map((p) => (
@@ -792,7 +790,7 @@ export function SimpleQueue({
                 value={when}
                 title={dueTitle(when)}
                 onChange={(e) => updateFilters({ due: e.target.value as DueFilter })}
-                className="min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground sm:min-h-0"
+                className="min-h-11 max-w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
               >
                 <option value="any">{DUE_LABEL.any[word]} ({forDue.length})</option>
                 {dueOptions.map((o) => (
@@ -828,16 +826,12 @@ export function SimpleQueue({
         <div className="sm:overflow-x-auto sm:rounded-2xl sm:border sm:border-border sm:bg-surface">
           <table className="block w-full min-w-0 text-sm sm:table sm:min-w-[700px]">
             <thead className="sr-only sm:not-sr-only sm:table-header-group">
-              <tr className="border-b border-border text-left text-[11px] font-semibold uppercase tracking-wide text-muted-2">
-                <th className="px-3 py-2">Task</th>
-                <th className="px-3 py-2">Video type</th>
-                <th className="px-3 py-2">Status</th>
+              <tr className="border-b border-border text-left text-sm font-medium text-muted">
+                <th className="px-3 py-2">Project</th>
+                <th className="px-3 py-2">Stage</th>
                 <th className="px-3 py-2">Due</th>
                 {!hideEditor && <th className="px-3 py-2">Editor</th>}
-                <th className="px-3 py-2">Links</th>
-                <th className="px-3 py-2 text-center">
-                  <MessageSquare className="inline size-3.5" />
-                </th>
+                <th className="px-3 py-2">Brief</th>
               </tr>
             </thead>
             <tbody className="block space-y-3 sm:table-row-group sm:space-y-0 sm:divide-y sm:divide-border">
@@ -861,13 +855,16 @@ export function SimpleQueue({
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
                         <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
-                          <span className="text-base font-semibold sm:text-sm">{r.street}</span>
+                          <span className="text-base font-semibold break-words">{r.street}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
                               Video-type cell beside it — the row doesn't grow. */}
-                          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                          <span className="mt-1 flex min-w-0 items-center gap-1.5 text-sm text-muted">
                             <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
-                            <span className="truncate">{r.client}</span>
+                            <span className="break-words">{r.client}</span>
+                          </span>
+                          <span className="mt-1 block text-sm text-muted" title={r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : undefined}>
+                            {r.typeDetail || t.label}{r.typeDetail && r.typeDetail !== t.label ? ` · ${t.label}` : ""} · {r.videos} video{r.videos === 1 ? "" : "s"}
                           </span>
                           {/* One line for all the chips, not stacked blocks —
                               a job that is both URGENT and in revisions used to
@@ -889,45 +886,6 @@ export function SimpleQueue({
                             </span>
                           ) : null}
                         </Link>
-                        {/* COPY LINK (Jordan, Sep 7): "I want to be able to copy
-                            the project link from the editing room table and
-                            send it to an editor, and they can click it, and it
-                            opens if they are already logged in on that
-                            browser." The absolute URL is built on the server
-                            (row.url) from the hub's public origin — copying
-                            window.location here would hand Manila a localhost
-                            link off Jordan's laptop. A bare glyph, muted until
-                            you reach for it: Jordan has to be able to FIND it,
-                            so it is not hidden behind a row hover (and there is
-                            no hover at all on his phone). Outside the <Link>
-                            because a button inside an anchor is invalid HTML —
-                            and it swallows the click so the row doesn't
-                            navigate out from under the copy. */}
-                        <span onClick={swallow} className="shrink-0 pt-0.5">
-                          <CopyButton
-                            value={r.url}
-                            title={`Copy this job's link to send to an editor — ${r.url}`}
-                            className="min-h-11 min-w-11 justify-center text-muted-2 hover:text-brand sm:min-h-0 sm:min-w-0"
-                          />
-                        </span>
-                      </span>
-                    </td>
-                    {/* VIDEO TYPE + HOW MANY, one pill (Sep 28 — the Videos
-                        column folded in here): "Premium" or "Premium · 4
-                        videos". The deliverable labels, and an office-set
-                        count, are on hover. */}
-                    <td className="block px-0 py-1 sm:table-cell sm:px-3 sm:py-2.5">
-                      <span className="mr-2 text-xs font-medium text-muted sm:hidden">Video</span>
-                      <span
-                        className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
-                        style={badgeColors(t.color)}
-                        title={[
-                          r.typeDetail || null,
-                          r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : null,
-                        ].filter(Boolean).join(" · ") || undefined}
-                      >
-                        {t.label}
-                        {r.videos > 1 ? ` · ${r.videos} videos` : ""}
                       </span>
                     </td>
                     <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:table-cell sm:border-0 sm:px-3 sm:py-2.5 " onClick={swallow}>
@@ -971,13 +929,13 @@ export function SimpleQueue({
                           arithmetic under it. Never rendered on a one-video
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
-                        <span className="mt-1 block text-xs text-muted-2 sm:text-[11px]">{r.videoBreakdown}</span>
+                        <span className="mt-1 block text-sm text-muted">{r.videoBreakdown}</span>
                       )}
                       {/* WHAT THE HANDOFF IS WAITING ON (O01) — the engine's
                           stored sentence, the one the edit card and Kyle's
                           board quote too. */}
                       {r.blocker && (
-                        <span className="mt-1 block max-w-64 whitespace-normal text-xs leading-snug text-warning sm:text-[11px]">{r.blocker}</span>
+                        <span className="mt-1 block max-w-80 whitespace-normal text-sm leading-relaxed text-warning">{r.blocker}</span>
                       )}
                       {/* TODAY'S EVIDENCE (Sep 28) — what an editor who is not
                           on this job right now DID to it today, labelled as
@@ -985,13 +943,10 @@ export function SimpleQueue({
                           with "Kim uploaded a version · 12:14pm" under it is
                           the truth — Kim has not pressed Start. Office only. */}
                       {!hideEditor && view === "notdone" && r.lastAction && (
-                        <span
-                          className="mt-1 flex items-center gap-1 text-[11px] text-warning"
-                          title="Today's activity — not a Start. Only Start and Pause say someone is working."
-                        >
-                          <span className="size-1.5 shrink-0 rounded-full border border-warning" />
-                          {r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}
-                        </span>
+                        <details className="mt-1 text-sm text-muted">
+                          <summary className="min-h-11 cursor-pointer content-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand">Latest activity</summary>
+                          <p className="max-w-80 leading-relaxed">{r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}. Activity alone does not mean they pressed Start.</p>
+                        </details>
                       )}
                       {/* WHO IS ON IT (§7.1) — the editor's own Start/Pause,
                           with the time they said so. A declared status, not a
@@ -1003,7 +958,7 @@ export function SimpleQueue({
                       {!hideEditor && r.workChip && (
                         <span
                           className={cn(
-                            "mt-1 flex items-center gap-1 text-[11px]",
+                            "mt-1 flex items-center gap-1 text-sm",
                             r.work.active.length ? "font-medium text-[#8b5cf6]" : "text-muted-2",
                           )}
                           title={r.work.active.concat(r.work.paused).some((x) => x.onBehalfBy)
@@ -1016,7 +971,7 @@ export function SimpleQueue({
                       )}
                     </td>
                     <td
-                      className={cn("block px-0 py-1 text-sm font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5 sm:text-xs", r.late ? "text-danger" : "")}
+                      className={cn("block px-0 py-1 text-sm font-medium sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
@@ -1039,34 +994,29 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td className="block px-0 py-1 sm:table-cell sm:whitespace-nowrap sm:px-3 sm:py-2.5" onClick={swallow}>
-                      <span className="mr-2 text-xs font-medium text-muted sm:hidden">Files</span>
-                      <span className="inline-flex items-center gap-1">
-                        {r.rawUrl && (
-                          <LinkChip
-                            href={r.rawUrl}
-                            icon={FolderOpen}
-                            label="RAW"
-                            dot={r.rawCount > 0}
-                            title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"}
-                          />
-                        )}
-                        {r.finalUrl && (
-                          <LinkChip
-                            href={r.finalUrl}
-                            icon={FolderUp}
-                            label="Final"
-                            dot={r.finalCount > 0}
-                            title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"}
-                          />
-                        )}
-                      </span>
-                    </td>
-                    <td className="block px-0 py-1 text-left sm:table-cell sm:px-3 sm:py-2.5 sm:text-center" onClick={swallow}>
-                      <span className="mr-2 text-xs font-medium text-muted sm:hidden">Messages</span>
-                      <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-semibold sm:min-h-0 sm:text-xs", r.comments > 0 ? "text-brand" : "text-muted-2")}>
-                        {r.comments}<span className="sm:hidden">Open chat</span>
+                    <td className="block px-0 py-2 sm:table-cell sm:px-3 sm:py-2.5" onClick={swallow}>
+                      <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)}
+                        className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                        Open brief
                       </Link>
+                      <details className="mt-1 text-sm text-muted">
+                        <summary className="min-h-11 cursor-pointer content-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand">
+                          Files and chat{r.comments > 0 ? ` · ${r.comments}` : ""}
+                        </summary>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="Raw footage" dot={r.rawCount > 0}
+                            title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"} />}
+                          {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final folder" dot={r.finalCount > 0}
+                            title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
+                          <Link href={`${jobHref(r.id)}#messages`} onClick={() => rememberQueueScroll(queueHref)} title="Project chat — revisions and questions live HERE, not in the Slack channel"
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                            <MessageSquare aria-hidden="true" className="size-4" />Chat · {r.comments}
+                          </Link>
+                          {/* The shared job URL remains the server's canonical public URL. */}
+                          <CopyButton value={r.url} title={`Copy this job's link to send to an editor — ${r.url}`}
+                            label="Copy link" className="min-h-11 min-w-11 justify-center text-sm text-muted hover:text-brand" />
+                        </div>
+                      </details>
                     </td>
                   </tr>
                 );

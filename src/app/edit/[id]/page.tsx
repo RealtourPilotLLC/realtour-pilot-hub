@@ -12,6 +12,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { queueReturnHref } from "@/lib/editingQueueUrl";
 import { Section } from "@/components/ui/Section";
 import { Avatar } from "@/components/ui/Avatar";
+import { ActionLink, Button } from "@/components/ui/Action";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, canViewProject } from "@/lib/auth/guards";
@@ -103,6 +104,8 @@ const TYPE_TO_STYLE_KEY: Record<string, string> = {
   "Personal Branding Reel": "personal_branding",
   "Premium Social Media Reel": "premium_social_reel",
 };
+// Same-page sections use native fragments so repeated jumps keep one hash.
+const BRIEF_SECTION_LINK = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold leading-snug whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 // "Standard Reels don't get scripts" (Jordan, Sep 2): the agent-intro reel has
 // an intro script, and every premium and personal-branding cut is scripted; a
 // plain standard reel or cinematic is B-roll to music, so the Script card —
@@ -879,6 +882,7 @@ export default async function EditBriefPage({
   // timezone (Manila for Kim and John Mark); everyone else reads Eastern.
   const deskTz =
     viewer?.role === "EDITOR" && viewer.editorKey ? (editorMeta(viewer.editorKey)?.tz ?? DEFAULT_EDITOR_TZ) : "America/New_York";
+  const deadlineClock = deskTz === "America/New_York" ? "ET" : "your time";
   // "SENT. ARE YOU STILL WORKING ON THIS JOB?" (Jordan, Sep 28). Handing a
   // version in ends the editor's Start, so the upload row asks — only the
   // editor who could press Start here and is not on it now (workBar's editor
@@ -928,7 +932,7 @@ export default async function EditBriefPage({
   };
 
   return (
-    <div>
+    <div className="[&_[id]]:scroll-mt-56 md:[&_[id]]:scroll-mt-44 lg:[&_[id]]:scroll-mt-32">
       {/* Queue links carry their validated filters, including for cold/new-tab
           visits. Other entrances use in-app history or the Editing Room. */}
       <div className="border-b border-border px-4 py-3 sm:px-6">
@@ -987,7 +991,7 @@ export default async function EditBriefPage({
               />
             )}
             {isOwnerAdmin && (
-              <Link href={`/projects/${project.id}`} className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground">
+              <Link href={`/projects/${project.id}`} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">
                 Full details <ExternalLink className="size-3.5" />
               </Link>
             )}
@@ -996,6 +1000,31 @@ export default async function EditBriefPage({
       />
 
       {showTracker && workBar && <div className="px-4 pt-4 sm:px-6"><WorkStateBar bar={workBar} tz={deskTz} /></div>}
+
+      <div className="px-4 pt-4 sm:px-6">
+        {showTracker && <p className="mb-3 text-sm text-foreground">{statusLine}{trackerDue && <span className="text-muted"> · Due {trackerDue.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} {deadlineClock}</span>}</p>}
+        <nav aria-label="Edit brief sections" className="flex flex-wrap gap-2">
+          <a href={rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand"><FolderOpen className="size-4 shrink-0" /> Open raw footage <UploadDot n={folderCounts.raw} stale={folderCounts.stale} /></a>
+          {outputBriefs.length > 0 && <a href="#video-briefs" className={`${BRIEF_SECTION_LINK} border-border-strong bg-surface hover:bg-surface-2`}>Video briefs</a>}
+          <a href="#submit-cut" className={`${BRIEF_SECTION_LINK} ${canUploadCuts ? "border-transparent bg-brand-action text-brand-fg hover:brightness-95" : "border-border-strong bg-surface hover:bg-surface-2"}`}>{canUploadCuts ? "Upload for review" : "Cuts and review"}</a>
+          <a href="#messages" className={`${BRIEF_SECTION_LINK} border-transparent hover:bg-surface-2`}>Conversation</a>
+        </nav>
+      </div>
+
+      {needsWork && <div className="px-4 pt-4 sm:px-6">
+        <a href={revisionHref ?? (activeSub ? `#cut-${activeSub.id}` : "#submit-cut")} className="flex min-h-11 flex-wrap items-center gap-2 rounded-xl border border-danger/30 bg-danger-soft/50 px-4 py-3 text-sm font-medium text-danger hover:bg-danger-soft focus-visible:outline-2 focus-visible:outline-brand">
+          <AlertTriangle className="size-4 shrink-0" />
+          {openOnActive > 0 ? `${openOnActive} note${openOnActive === 1 ? "" : "s"} to fix on this cut` : "Changes were requested on this cut"}
+          <span className="ml-auto font-semibold">Open exact cut →</span>
+        </a>
+      </div>}
+      {(briefs.length > 0 || bouncedCards.length > 0) && <div className="px-4 pt-4 sm:px-6">
+        <RevisionBriefCard briefs={briefs} bounced={bouncedCards} canTick={canTickBrief} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
+      </div>}
+
+      {brandBrief && brandBrief.pending.length > 0 && <div className="px-4 pt-4 sm:px-6">
+        <BrandUpdatesBanner projectId={project.id} items={brandBrief.pending.map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }))} canAck={canAckBrand} canOverride={canOverrideBrand} />
+      </div>}
 
       {viewer && !viewer.impersonating && (unreadTeamMessages === null || unreadTeamMessages > 0) && (
         <div className="px-4 pt-4 sm:px-6">
@@ -1013,48 +1042,26 @@ export default async function EditBriefPage({
 
       {outputBriefs.length > 0 && (
         <div className="px-4 pt-4 sm:px-6">
-          <Section icon={Film} title="Your edit assignment" count={outputBriefs.length}>
-            <p className="mb-2 text-xs text-muted">Each video keeps its own brief and file version. James owns creative questions; Kyle owns missing assets and scheduling. Start and Pause above record only the editor&apos;s own work.</p>
-            <details open={outputBriefs.length <= 3}>
-              <summary className="cursor-pointer text-xs font-medium text-brand">Show the video assignments, source files and brand choices</summary>
-            <div className="mt-2 grid gap-2 lg:grid-cols-2">
+          <section aria-labelledby="assignment-index-heading" className="rounded-xl border border-border bg-surface">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border px-4 py-3">
+              <h2 id="assignment-index-heading" className="text-base font-semibold">Your videos</h2>
+              <span className="text-sm text-muted">{outputBriefs.length} video{outputBriefs.length === 1 ? "" : "s"} · James: creative questions · Kyle: missing assets</span>
+            </div>
+            <ul className="divide-y divide-border">
               {outputBriefs.map((o) => {
                 const latest = cutRows.find((r) => `${r.deliverableId}:${r.slot}` === o.key)?.latest ?? null;
-                const chosen = o.brandAsset;
-                const chosenFile = chosen?.state === "current" ? brandBrief?.files.find((f) => f.versionId === chosen.versionId) : null;
                 const due = o.promisedAtISO ? new Date(o.promisedAtISO) : trackerDue;
-                const briefLine = (key: string) => {
-                  const line = o.sections.find((s) => s.key === key)?.text;
-                  return line && line.length > 180 ? `${line.slice(0, 179).trimEnd()}…` : line;
-                };
-                const purpose = briefLine("purpose");
-                const direction = briefLine("direction");
-                const limitation = briefLine("limitations");
-                return (
-                  <div key={o.outputId} className="rounded-xl border border-border bg-surface-2/40 p-3 text-xs leading-relaxed">
-                    <p className="text-sm font-semibold">Video {o.index} · {o.topicTitle || o.label}</p>
-                    <p className="text-muted">{o.format} · {latest ? `cut round ${latest.round} (${latest.status.toLowerCase().replace(/_/g, " ")})` : "no cut submitted yet"} · {o.version ? `brief v${o.version}` : "no video brief yet"}</p>
-                    {o.version && <p className="text-muted">Last brief change: {o.updatedBy ?? "the office"}{o.updatedAtISO ? ` · ${new Date(o.updatedAtISO).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}</p>}
-                    <p><span className="text-muted">Editor:</span> {o.ownerName || editorName || "not assigned"} <span className="text-muted">· Due:</span> {due ? due.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Kyle to set"}{o.promisedAtISO ? " (this video)" : trackerDue ? " (job deadline)" : ""}</p>
-                    {purpose && <p><span className="text-muted">Purpose:</span> {purpose}</p>}
-                    {direction && <p><span className="text-muted">Treatment:</span> {direction}</p>}
-                    <p><span className="text-muted">Script:</span> {o.script ? `${o.script.title}${o.script.versionNo ? ` v${o.script.versionNo}` : ""} · ${o.script.standing}` : "none released for this video"}</p>
-                    <p><span className="text-muted">Brand:</span> {chosen ? <>{chosen.name}{chosen.versionNo ? ` v${chosen.versionNo}` : ""}{chosen.fileName ? ` · ${chosen.fileName}` : ""}{chosen.state !== "current" ? " · no longer current; Kyle to confirm" : ""}{chosenFile?.url && <> · <a href={chosenFile.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Open chosen file</a></>}</> : o.brandChoice === "none" ? "intentionally no logo or branding card for this video; acknowledge this choice with the assignment" : "no logo or branding card choice recorded; ask Kyle if this cut needs one"}</p>
-                    <p><span className="text-muted">Footage:</span> {o.folder ? <a href={o.folder.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{o.folder.label}</a> : <><a href={rawUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Job raw folder</a>{monthly ? " · topic-specific source not linked; ask Kyle" : ""}</>}</p>
-                    {limitation && <p className="text-warning"><span className="font-medium">Limitation:</span> {limitation}</p>}
-                    <EditorBriefReceiptCard
-                      projectId={project.id}
-                      outputId={o.outputId}
-                      state={receiptStates?.get(o.outputId) ?? null}
-                      canAcknowledge={!!viewer && !viewer.impersonating && viewer.role === "EDITOR" && viewer.editorKey === receiptStates?.get(o.outputId)?.editorKey}
-                    />
-                    <a href={`#brief-${o.outputId}`} className="mt-1 inline-block font-medium text-brand hover:underline">Open this video&apos;s brief →</a>
-                  </div>
-                );
+                return <li key={o.outputId}>
+                  <a href={`#brief-${o.outputId}`} className="flex min-h-11 flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
+                    <span className="min-w-0 flex-1 text-sm font-medium">{o.index}. {o.topicTitle || o.label}</span>
+                    <span className="text-[13px] text-muted">{latest ? `Cut v${latest.round} · ${latest.status.toLowerCase().replace(/_/g, " ")}` : "No cut yet"}{o.version ? ` · brief v${o.version}` : o.directionSource === "job" ? " · job instructions" : " · brief not set"}</span>
+                    <span className="text-[13px] text-muted">{due ? `Due ${due.toLocaleString("en-US", { timeZone: deskTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ${deadlineClock}` : "Due date not set"}</span>
+                    <span className="text-sm font-medium text-brand">Open brief →</span>
+                  </a>
+                </li>;
               })}
-            </div>
-            </details>
-          </Section>
+            </ul>
+          </section>
         </div>
       )}
 
@@ -1069,7 +1076,9 @@ export default async function EditBriefPage({
                 {editorMonth.counts.filmedConfirmed < editorMonth.counts.delivered && <p className="mt-1 text-xs text-warning">Filming confirmation is incomplete in the Hub. Delivered files do not prove which session or topic was filmed.</p>}
               </>
             ) : <p className="text-sm text-muted">Only sessions you can open are shown. Ask Kyle for the full month scope.</p>}
-            <div className="mt-3 grid gap-2 lg:grid-cols-2">
+            <details className="mt-3" id="month-sessions">
+              <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Session briefs and source folders · {editorMonth.sessions.length} session{editorMonth.sessions.length === 1 ? "" : "s"}</summary>
+              <div className="grid gap-2 lg:grid-cols-2">
               {editorMonth.sessions.map((session) => (
                 <div key={session.key} className={`rounded-xl border p-3 text-xs leading-relaxed ${session.id === project.id ? "border-brand/40 bg-brand/5" : "border-border bg-surface-2/40"}`}>
                   <p className="text-sm font-semibold">{session.id === project.id ? "This brief · " : "Other job · "}{session.title}{session.appointmentsOnJob > 1 ? ` · appointment ${session.appointmentIndex} of ${session.appointmentsOnJob}` : ""}</p>
@@ -1084,7 +1093,9 @@ export default async function EditBriefPage({
                   </div>
                 </div>
               ))}
-            </div>
+              </div>
+            </details>
+            {editorMonth.sessions.some((session) => session.noTopicLinks || session.appointmentsOnJob > 1) && <p className="mt-2 text-sm text-warning">Some footage is not paired to an exact topic or appointment. Open the session details and ask Kyle to confirm its source.</p>}
             {isOwnerAdmin && <p className="mt-2 text-xs text-muted">{editorMonth.unlinkedClientJobs > 0 ? `${editorMonth.unlinkedClientJobs} other client video job${editorMonth.unlinkedClientJobs === 1 ? " has" : "s have"} no month link. ` : ""}Repair a missing or wrong month link in <Link href={`/content/${editorMonth.enrollmentId}?tab=production&view=sessions&month=${editorMonth.monthKey}`} className="font-medium text-brand hover:underline">Content Program → Sessions</Link> after confirming the appointment and package.</p>}
           </Section>
         </div>
@@ -1097,6 +1108,8 @@ export default async function EditBriefPage({
           photos-only or cancelled job has no edit lifecycle to narrate. */}
       {showTracker && (
         <div className="px-4 pt-4 sm:px-6">
+          <details id="edit-history" className="rounded-xl border border-border bg-surface">
+            <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Progress, deadlines and review history · {rounds.length} submitted version{rounds.length === 1 ? "" : "s"}</summary>
           <EditTracker
             stage={stage}
             statusLine={statusLine}
@@ -1132,37 +1145,7 @@ export default async function EditBriefPage({
             showSubmitAnchor={!isOwnerAdmin}
             evidence={footage}
           />
-        </div>
-      )}
-
-      {/* One line, only when something is owed on the current cut. It used to
-          jump to #submit-cut — the whole Send-to-Review block — which on a
-          16-slot job is "down to the cuts", not to the cut (Jordan, Sep 16).
-          Now it lands on that cut's own panel. */}
-      {/* CP-06: the client's brand changed since the editor last looked. */}
-      {brandBrief && brandBrief.pending.length > 0 && (
-        <div className="px-4 pt-4 sm:px-6">
-          <BrandUpdatesBanner
-            projectId={project.id}
-            items={brandBrief.pending.map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }))}
-            canAck={canAckBrand}
-            canOverride={canOverrideBrand}
-          />
-        </div>
-      )}
-
-      {needsWork && (
-        <div className="px-4 pt-4 sm:px-6">
-          <a
-            href={revisionHref ?? (activeSub ? `#cut-${activeSub.id}` : "#submit-cut")}
-            className="flex flex-wrap items-center gap-2 rounded-xl border border-danger/30 bg-danger-soft/50 px-3.5 py-2.5 text-sm font-medium text-danger hover:bg-danger-soft"
-          >
-            <AlertTriangle className="size-4 shrink-0" />
-            {openOnActive > 0
-              ? `${openOnActive} note${openOnActive === 1 ? "" : "s"} to fix on this cut`
-              : "Changes were requested on this cut"}
-            <span className="ml-auto text-xs font-semibold">Go to your cut →</span>
-          </a>
+          </details>
         </div>
       )}
 
@@ -1175,20 +1158,6 @@ export default async function EditBriefPage({
             phone the column measured 1144px and every card in it, Media
             included, ran off the right edge. */}
         <div className="min-w-0 space-y-6 lg:col-span-2">
-          {/* 1 · THE WORK ORDER — every change asked for on this job. Two
-              kinds reach it: the CLIENT's own request, split into items the
-              editor ticks off with their words kept whole underneath, and (as
-              of Sep 16) each cut the Review Room sent back, with Jordan's
-              timestamped notes on it and a link straight to that cut below.
-              It renders nothing when neither exists; when it does render, it
-              is the job, so it goes first. */}
-          <RevisionBriefCard
-            briefs={briefs}
-            bounced={bouncedCards}
-            canTick={canTickBrief}
-            canReanalyze={isOwnerAdmin && !viewer?.impersonating}
-          />
-
           {/* 2 · WHERE THE MEDIA IS — footage in, footage out, and everything
               of the client's that goes on top of it. ABOVE the instructions:
               the RAW download is the slow part of starting an edit, so the
@@ -1210,6 +1179,8 @@ export default async function EditBriefPage({
                   </a>
                 )}
               </div>
+              <details className="border-t border-border pt-2">
+                <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Client brand kit and reference assets</summary>
               {/* The client's asset shelf — "Assets available" vs "No assets"
                   is the Dropbox folder truth; editors, admin and owner can all
                   upload (Jordan's spec). */}
@@ -1249,6 +1220,7 @@ export default async function EditBriefPage({
                   </div>
                 </div>
               )}
+              </details>
             </div>
           </Section>
 
@@ -1266,6 +1238,8 @@ export default async function EditBriefPage({
               should be above edit instructions"). */}
           <Section icon={Film} title="What to make">
             {editDeliverables.length === 0 && <span className="text-sm text-muted">No deliverables listed.</span>}
+            <details open={outputBriefs.length === 0}>
+              <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Ordered formats, style guide and examples</summary>
             <div className="space-y-4">
               {editDeliverables.map((d) => {
                 const vt = videoTypeOf(d);
@@ -1312,6 +1286,131 @@ export default async function EditBriefPage({
                 );
               })}
             </div>
+            </details>
+            {/* §7.5 (Sep 25) — ONE BRIEF PER VIDEO. A reel and an MLS video on
+                one order used to share one set of instructions. Each owed video
+                now carries its own brief with its version (and who saved it),
+                or says plainly that it goes by the job's shared instructions.
+                The office writes it here; the photographer's shoot screen, the
+                printed brief and the agency packet read the same rows. */}
+            {outputBriefs.length > 0 && (
+              <div id="video-briefs" className="mt-4 scroll-mt-24 space-y-4">
+                <h3 className="text-base font-semibold">Video briefs</h3>
+                {pageNotice?.where === "brief" && (
+                  <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
+                )}
+                {outputBriefs.map((o) => {
+                  const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === o.key)?.latest ?? null;
+                  const chosenFile = o.brandAsset?.state === "current" ? brandBrief?.files.find((file) => file.versionId === o.brandAsset?.versionId) : null;
+                  const due = o.promisedAtISO ? new Date(o.promisedAtISO) : trackerDue;
+                  return (
+                  <article key={o.outputId} id={`brief-${o.outputId}`} className="scroll-mt-24 border-t border-border pt-4 text-sm leading-relaxed">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <h4 className="text-base font-semibold">{o.index}. {o.topicTitle || o.label}</h4>
+                      {o.format !== o.label && <span className="text-sm text-muted">{o.format}</span>}
+                    </div>
+                    <p className="text-[13px] text-muted">{o.versionLabel} · {latest ? `Cut v${latest.round} · ${latest.status.toLowerCase().replace(/_/g, " ")}` : "No cut submitted"}</p>
+                    <p className="mt-2"><span className="text-muted">Assigned to:</span> {o.ownerName || editorName || "not assigned"} · <span className="text-muted">Due:</span> {due ? `${due.toLocaleString("en-US", { timeZone: deskTz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ${deadlineClock}` : "Kyle to set"}{o.promisedAtISO ? " (this video)" : trackerDue ? " (job deadline)" : ""}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <a href={o.folder?.url ?? rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand"><FolderOpen className="size-4 shrink-0" /> {o.folder ? `Footage · ${o.folder.label}` : "Job raw footage"}</a>
+                      {chosenFile?.url && <a href={chosenFile.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">Open chosen brand file</a>}
+                      {latest && <ActionLink href={`/edit/${project.id}?cut=${latest.id}#cut-${latest.id}`} variant="quiet">Cut v{latest.round} →</ActionLink>}
+                    </div>
+                    {monthly && !o.folder && <p className="mt-1 text-sm text-warning">Topic-specific source is not linked. Ask Kyle to confirm the footage for this video.</p>}
+                    <p className={`mt-2 ${o.brandAsset && o.brandAsset.state !== "current" ? "text-warning" : "text-muted"}`}>
+                      Chosen logo / branding card: {o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; Kyle to confirm" : ""}` : o.brandChoice === "none" ? "intentionally none for this video — editor acknowledgment required" : "no choice recorded for this video"}
+                    </p>
+                    {o.sections.length > 0 && (
+                      <dl className="mt-3 space-y-3 text-sm leading-relaxed">
+                        {o.sections.map((x) => (
+                          <div key={x.key}>
+                            <dt className="font-medium text-muted">{x.label}</dt>
+                            <dd className="whitespace-pre-wrap text-foreground/90">{x.text}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                    {o.directionSource === "job" && <a href="#job-instructions" className={`${BRIEF_SECTION_LINK} mt-2 border-transparent hover:bg-surface-2`}>Open shared job instructions →</a>}
+                    {o.note && <p className="mt-3 whitespace-pre-wrap"><span className="font-medium text-muted">From the shoot: </span>{scrub(o.note)}</p>}
+                    {o.script ? <details className="mt-3 rounded-lg border border-border">
+                      <summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Script: {o.script.title}{o.script.versionNo ? ` · v${o.script.versionNo}` : ""} · {o.script.standing}</summary>
+                      <div className="border-t border-border px-3 py-3">
+                        {o.script.text && editorScriptWords(o.script.text)}
+                        {o.script.direction && <dl className="mt-3 space-y-2 text-sm">
+                          {o.script.direction.filmingNotes && <div><dt className="font-medium text-muted">Filming</dt><dd className="whitespace-pre-wrap">{scrub(o.script.direction.filmingNotes)}</dd></div>}
+                          {o.script.direction.creativeDirection && <div><dt className="font-medium text-muted">Direction</dt><dd className="whitespace-pre-wrap">{scrub(o.script.direction.creativeDirection)}</dd></div>}
+                          {o.script.direction.productionNotes && <div><dt className="font-medium text-muted">Production</dt><dd className="whitespace-pre-wrap">{scrub(o.script.direction.productionNotes)}</dd></div>}
+                        </dl>}
+                      </div>
+                    </details> : <p className="mt-2 text-sm text-muted">No script linked to this video.</p>}
+                    <EditorBriefReceiptCard projectId={project.id} outputId={o.outputId} state={receiptStates?.get(o.outputId) ?? null} canAcknowledge={!!viewer && !viewer.impersonating && viewer.role === "EDITOR" && viewer.editorKey === receiptStates?.get(o.outputId)?.editorKey} />
+                    {o.reviewer && (
+                      <p className="mt-2 text-[13px] text-muted">
+                        Creative review: {o.reviewer.name}{o.reviewer.from === "chain" ? " (first in line)" : ""}
+                      </p>
+                    )}
+                    {/* §7.6: a limitation is missing work once somebody says so —
+                        one press, signed, and it is on Kyle's board. */}
+                    {briefGaps
+                      .filter((g) => g.outputId === o.outputId)
+                      .map((g) => (
+                        <p key={g.id} className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">
+                          Missing work raised by {g.raisedBy}: {g.what}
+                          {g.state === "PLANNED" && g.ownerKey
+                            ? ` · recovery planned, ${g.ownerKey.charAt(0).toUpperCase()}${g.ownerKey.slice(1)}${g.dueISO ? ` by ${etDate(g.dueISO)}` : ""}`
+                            : " · waiting for the office to plan the recovery"}
+                        </p>
+                      ))}
+                    {canWriteBriefs &&
+                      o.sections.some((x) => x.key === "limitations" && x.text.trim()) &&
+                      !briefGaps.some((g) => g.outputId === o.outputId) && (
+                        <form action={raiseGapFromBriefForm} className="mt-1.5">
+                          <input type="hidden" name="projectId" value={project.id} />
+                          <input type="hidden" name="outputId" value={o.outputId} />
+                          <Button type="submit" variant="secondary" className="border-warning/40 text-warning">
+                            Raise the limitation as missing work
+                          </Button>
+                        </form>
+                      )}
+                    {canWriteBriefs && (
+                      <details className="mt-2">
+                        <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium text-brand focus-visible:outline-2 focus-visible:outline-brand">{o.version ? "Edit this video's brief" : "Write a brief for this video"}</summary>
+                        <form action={saveVideoBriefForm} className="mt-2 space-y-2">
+                          <input type="hidden" name="projectId" value={project.id} />
+                          <input type="hidden" name="outputId" value={o.outputId} />
+                          <input type="hidden" name="expectedVersion" value={o.version ?? ""} />
+                          {brandBrief ? <label className="block text-sm font-medium text-muted">
+                            Logo or branding card for this video
+                            <select name="brandAssetVersionId" defaultValue={o.brandChoice === "none" ? "__none__" : o.brandAsset?.versionId ?? ""} className="mt-0.5 min-h-11 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm font-normal text-foreground focus-visible:outline-2 focus-visible:outline-brand">
+                              <option value="">No logo or branding card choice recorded</option>
+                              <option value="__none__">Intentionally no logo or branding card — editor must acknowledge</option>
+                              {o.brandAsset && !brandBrief.files.some((f) => f.versionId === o.brandAsset?.versionId) && <option value={o.brandAsset.versionId}>{o.brandAsset.name} · previously chosen, check current kit</option>}
+                              {(brandBrief?.files ?? []).filter((f) => f.type === "LOGO" || f.type === "BRANDING_CARD").map((f) => <option key={f.versionId} value={f.versionId}>{f.typeWord} · {f.name} · v{f.versionNo}{f.fileName ? ` · ${f.fileName}` : ""}</option>)}
+                            </select>
+                            <span className="mt-0.5 block text-muted-2">Only a choice saved here selects a file for this video. The client&apos;s asset gallery is reference.</span>
+                          </label> : <p className="text-sm text-warning">The brand kit could not be read. This video&apos;s saved brand choice will stay as it is.</p>}
+                          {OUTPUT_BRIEF_FIELDS.map((f) => (
+                            <label key={f.key} className="block text-sm font-medium text-muted">
+                              {f.label}
+                              <textarea
+                                name={`s_${f.key}`}
+                                defaultValue={o.sections.find((x) => x.key === f.key)?.text ?? ""}
+                                maxLength={OUTPUT_BRIEF_FIELD_CAP}
+                                rows={2}
+                                className="mt-1 w-full rounded-lg border bg-surface px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-brand"
+                              />
+                            </label>
+                          ))}
+                          <Button type="submit">
+                            Save as v{(o.version ?? 0) + 1}
+                          </Button>
+                        </form>
+                      </details>
+                    )}
+                  </article>
+                ); })}
+              </div>
+            )}
             {/* CP-09 — ONE VIDEO PER TOPIC. A content session's videos used to
                 reach the editor as "Video 2 of 4" and nothing else. Each owed
                 video now says which of the client's topics it is (titled as
@@ -1321,8 +1420,9 @@ export default async function EditBriefPage({
                 from the report itself, so the editor is never told less than
                 the person who was there. */}
             {filming && (filming.rows.length > 0 || (filming.pending?.topics.length ?? 0) > 0) && (
-              <div className="mt-4 space-y-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">Filmed — one video per topic</div>
+              <details className="mt-4" open={filming.slotsWithoutTopic > 0 || (filming.pending?.topics.length ?? 0) > 0}>
+                <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Photographer&apos;s shoot report · {filming.rows.length} topic{filming.rows.length === 1 ? "" : "s"}{filming.slotsWithoutTopic > 0 ? ` · ${filming.slotsWithoutTopic} unpaired video${filming.slotsWithoutTopic === 1 ? "" : "s"}` : ""}{(filming.pending?.topics.length ?? 0) > 0 ? " · report waiting to be recorded" : ""}</summary>
+                <div className="space-y-2">
                 {filming.rows.map((r) => (
                   <div key={r.key} className="rounded-xl border border-border bg-surface-2/40 p-3">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -1382,108 +1482,8 @@ export default async function EditBriefPage({
                     </ul>
                   </div>
                 )}
-              </div>
-            )}
-            {/* §7.5 (Sep 25) — ONE BRIEF PER VIDEO. A reel and an MLS video on
-                one order used to share one set of instructions. Each owed video
-                now carries its own brief with its version (and who saved it),
-                or says plainly that it goes by the job's shared instructions.
-                The office writes it here; the photographer's shoot screen, the
-                printed brief and the agency packet read the same rows. */}
-            {outputBriefs.length > 0 && (outputBriefs.length > 1 || canWriteBriefs || outputBriefs.some((o) => o.directionSource === "own")) && (
-              <div className="mt-4 space-y-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">Each video&apos;s brief</div>
-                {pageNotice?.where === "brief" && (
-                  <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
-                )}
-                {outputBriefs.map((o) => (
-                  <div key={o.outputId} id={`brief-${o.outputId}`} className="rounded-xl border border-border bg-surface-2/40 p-3">
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                      <span className="text-sm font-medium">{o.index}. {o.label}</span>
-                      {o.format !== o.label && <span className="text-[11px] text-muted">{o.format}</span>}
-                    </div>
-                    <p className="text-[11px] text-muted-2">{o.versionLabel}</p>
-                    <p className={`mt-1 text-xs ${o.brandAsset && o.brandAsset.state !== "current" ? "text-warning" : "text-muted"}`}>
-                      Chosen logo / branding card: {o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` · ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " · no longer current; Kyle to confirm" : ""}` : o.brandChoice === "none" ? "intentionally none for this video — editor acknowledgment required" : "no choice recorded for this video"}
-                    </p>
-                    {o.sections.length > 0 && (
-                      <dl className="mt-1.5 space-y-1 text-xs leading-relaxed">
-                        {o.sections.map((x) => (
-                          <div key={x.key}>
-                            <dt className="font-medium text-muted">{x.label}</dt>
-                            <dd className="whitespace-pre-wrap text-foreground/90">{x.text}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    )}
-                    {(o.reviewer || o.promisedAtISO) && (
-                      <p className="mt-1 text-[11px] text-muted">
-                        {o.reviewer ? `Reviewed by ${o.reviewer.name}${o.reviewer.from === "chain" ? " (first in line)" : ""}` : ""}
-                        {o.reviewer && o.promisedAtISO ? " · " : ""}
-                        {o.promisedAtISO ? `due ${new Date(o.promisedAtISO).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
-                      </p>
-                    )}
-                    {/* §7.6: a limitation is missing work once somebody says so —
-                        one press, signed, and it is on Kyle's board. */}
-                    {briefGaps
-                      .filter((g) => g.outputId === o.outputId)
-                      .map((g) => (
-                        <p key={g.id} className="mt-1.5 rounded-lg bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
-                          Missing work raised by {g.raisedBy}: {g.what}
-                          {g.state === "PLANNED" && g.ownerKey
-                            ? ` · recovery planned, ${g.ownerKey.charAt(0).toUpperCase()}${g.ownerKey.slice(1)}${g.dueISO ? ` by ${etDate(g.dueISO)}` : ""}`
-                            : " · waiting for the office to plan the recovery"}
-                        </p>
-                      ))}
-                    {canWriteBriefs &&
-                      o.sections.some((x) => x.key === "limitations" && x.text.trim()) &&
-                      !briefGaps.some((g) => g.outputId === o.outputId) && (
-                        <form action={raiseGapFromBriefForm} className="mt-1.5">
-                          <input type="hidden" name="projectId" value={project.id} />
-                          <input type="hidden" name="outputId" value={o.outputId} />
-                          <button type="submit" className="rounded-lg border border-warning/40 px-2.5 py-1 text-[11px] font-semibold text-warning hover:bg-warning/10">
-                            Raise the limitation as missing work
-                          </button>
-                        </form>
-                      )}
-                    {canWriteBriefs && (
-                      <details className="mt-2">
-                        <summary className="cursor-pointer text-xs font-medium text-brand">{o.version ? "Edit this video's brief" : "Write a brief for this video"}</summary>
-                        <form action={saveVideoBriefForm} className="mt-2 space-y-2">
-                          <input type="hidden" name="projectId" value={project.id} />
-                          <input type="hidden" name="outputId" value={o.outputId} />
-                          <input type="hidden" name="expectedVersion" value={o.version ?? ""} />
-                          {brandBrief ? <label className="block text-[11px] font-medium text-muted">
-                            Logo or branding card for this video
-                            <select name="brandAssetVersionId" defaultValue={o.brandChoice === "none" ? "__none__" : o.brandAsset?.versionId ?? ""} className="mt-0.5 min-h-11 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm font-normal text-foreground focus-visible:outline-2 focus-visible:outline-brand">
-                              <option value="">No logo or branding card choice recorded</option>
-                              <option value="__none__">Intentionally no logo or branding card — editor must acknowledge</option>
-                              {o.brandAsset && !brandBrief.files.some((f) => f.versionId === o.brandAsset?.versionId) && <option value={o.brandAsset.versionId}>{o.brandAsset.name} · previously chosen, check current kit</option>}
-                              {(brandBrief?.files ?? []).filter((f) => f.type === "LOGO" || f.type === "BRANDING_CARD").map((f) => <option key={f.versionId} value={f.versionId}>{f.typeWord} · {f.name} · v{f.versionNo}{f.fileName ? ` · ${f.fileName}` : ""}</option>)}
-                            </select>
-                            <span className="mt-0.5 block text-muted-2">Only a choice saved here selects a file for this video. The client&apos;s asset gallery is reference.</span>
-                          </label> : <p className="text-[11px] text-warning">The brand kit could not be read. This video&apos;s saved brand choice will stay as it is.</p>}
-                          {OUTPUT_BRIEF_FIELDS.map((f) => (
-                            <label key={f.key} className="block text-[11px] font-medium text-muted">
-                              {f.label}
-                              <textarea
-                                name={`s_${f.key}`}
-                                defaultValue={o.sections.find((x) => x.key === f.key)?.text ?? ""}
-                                maxLength={OUTPUT_BRIEF_FIELD_CAP}
-                                rows={2}
-                                className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-xs font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-brand/30"
-                              />
-                            </label>
-                          ))}
-                          <button type="submit" className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-                            Save as v{(o.version ?? 0) + 1}
-                          </button>
-                        </form>
-                      </details>
-                    )}
-                  </div>
-                ))}
-              </div>
+                </div>
+              </details>
             )}
             {/* HOW IT LEAVES FINAL CUT — one line for the whole job, not one
                 per video: the export is the same whatever the style. It sits
@@ -1635,12 +1635,12 @@ export default async function EditBriefPage({
           {/* 4 · HOW TO MAKE IT, in words — the spec, the customer's own words
               on this order, and everything that came off the shoot, in one
               card. */}
-          <EditInstructionsCard
+          <div id="job-instructions" className="scroll-mt-24"><EditInstructionsCard
             projectId={project.id}
             spec={{ ...editSpec, music: musicPick }}
             canEdit={isOwnerAdmin}
             brief={briefFields}
-          />
+          /></div>
 
           {/* 5 · THE SCRIPT — READ-ONLY, pulled automatically from the Script
               Writing platform by this project's id (page render + hourly cron
@@ -1649,7 +1649,7 @@ export default async function EditBriefPage({
               typo/revision driver. Only for styles that HAVE a script (see
               SCRIPTED_STYLE_RE): a plain Standard Reel gets no card and no
               "No script on file yet" to wait on. */}
-          {showScript && (
+          {showScript && (project.reelHook || project.reelScript || outputBriefs.length === 0) && (
             (project.reelHook || project.reelScript) ? (
               <ReelScriptCard
                 hook={project.reelHook}

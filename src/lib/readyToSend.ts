@@ -301,7 +301,7 @@ export type NeedsFinishing = { submissionId: string; projectId: string; street: 
 /** 9.2: a cut marked sent with "the client hasn't been told yet". Stays listed
  *  until somebody records how they were told (or the hub's own delivery text
  *  proves it). */
-export type NotTold = { submissionId: string; projectId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null };
+export type NotTold = { submissionId: string; projectId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null; /** Always supplied by the production reader; optional for older callers. */ monthlyProgram?: boolean };
 
 export type ReadyBoard = {
   ready: ReadyVideo[];
@@ -1667,7 +1667,7 @@ export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: n
       clientNoticeVia: "not-yet",
       project: { status: { not: "CANCELLED" }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     },
-    select: { id: true, projectId: true, fileName: true, assetPath: true, sentToClientAt: true, sentToClientBy: true, clientNoticeBy: true, project: { select: { title: true } } },
+    select: { id: true, projectId: true, fileName: true, assetPath: true, sentToClientAt: true, sentToClientBy: true, clientNoticeBy: true, project: { select: { title: true, contentMonthId: true } } },
     orderBy: { sentToClientAt: "asc" },
     take: opts.max ?? 40,
   });
@@ -1679,6 +1679,7 @@ export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: n
     sentAtISO: r.sentToClientAt!.toISOString(),
     sentBy: r.sentToClientBy,
     markedBy: r.clientNoticeBy,
+    monthlyProgram: Boolean(r.project?.contentMonthId),
   }));
 }
 
