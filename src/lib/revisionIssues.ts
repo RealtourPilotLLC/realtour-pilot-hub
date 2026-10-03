@@ -519,8 +519,8 @@ export async function syncIssueAssignee(projectId: string): Promise<void> {
 // ---- the reviewer's side ----------------------------------------------------
 
 export type ApprovalGate =
-  | { ok: false; message: string }
-  | { ok: true; apply: (actor: IssueActor) => Promise<{ verified: number }> };
+  | { ok: false; message: string; canApproveAnyway?: boolean }
+  | { ok: true; uncheckedFixIds: string[]; apply: (actor: IssueActor) => Promise<{ verified: number }> };
 
 /**
  * What an approval may do to the cut's issues, decided BEFORE the verdict is
@@ -530,7 +530,8 @@ export type ApprovalGate =
  *     from an EARLIER version still open (the editor said it isn't done) holds
  *     the approval: mark it not needed or send the cut back. With the issue
  *     list in hand (`verifyIssueIds`), every issue the editor marked fixed must
- *     be in it — a fix nobody looked at is not verified.
+ *     be in it, or explicitly approved with missing ticks. Omitted fixes stay
+ *     unverified and the approval action records the exception.
  *   · a legacy / grandfathered version (no check) is never held here: the
  *     approval verifies what it can and says so on each event.
  * Applying: listed (or, from the legacy button, all) ADDRESSED → VERIFIED in
@@ -540,7 +541,7 @@ export type ApprovalGate =
  */
 export async function approvalGate(
   cut: CutShape,
-  opts: { checked: boolean; verifyIssueIds?: string[] | null },
+  opts: { checked: boolean; verifyIssueIds?: string[] | null; approveUncheckedFixes?: boolean },
 ): Promise<ApprovalGate> {
   const live = await issuesForCut(cut, LIVE, { forGate: true });
   const addressed = live.filter((i) => i.state === "ADDRESSED");
@@ -556,11 +557,12 @@ export async function approvalGate(
     (i) => NEEDS_EDITOR.includes(i.state) && !earlierOpen.includes(i) && i.sourceKind === "REVIEW_NOTE" && i.raisedOnSubmissionId === cut.id,
   );
   const listed = opts.verifyIssueIds ? new Set(opts.verifyIssueIds) : null;
+  const uncheckedFixIds = listed ? addressed.filter(i => !listed.has(i.id)).map(i => i.id) : [];
   if (opts.checked) {
     if (listed) {
       const unlisted = addressed.filter((i) => !listed.has(i.id));
-      if (unlisted.length) {
-        return { ok: false, message: `${unlisted.length} fix${unlisted.length === 1 ? "" : "es"} the editor marked done ${unlisted.length === 1 ? "isn't" : "aren't"} ticked as verified. Tick ${unlisted.length === 1 ? "it" : "them"}, or send the cut back.` };
+      if (unlisted.length && opts.approveUncheckedFixes !== true) {
+        return { ok: false, canApproveAnyway: true, message: `${unlisted.length} fix${unlisted.length === 1 ? "" : "es"} the editor marked done ${unlisted.length === 1 ? "isn't" : "aren't"} ticked as verified. Approve anyway? The missing ticks will remain unverified.` };
       }
     }
     if (earlierOpen.length) {
@@ -572,6 +574,7 @@ export async function approvalGate(
   }
   return {
     ok: true,
+    uncheckedFixIds,
     async apply(actor) {
       const now = new Date();
       let verified = 0;

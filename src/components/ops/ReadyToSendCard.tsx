@@ -8,6 +8,8 @@ import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Fi
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkUploaded } from "@/components/ops/MarkUploaded";
+import { MarkProjectSent } from "@/components/ops/MarkProjectSent";
+import { uploadedDeliveryGroups, type UploadedTarget } from "@/lib/uploadedDeliveryGroups";
 import { CorrectUpload } from "@/components/ops/CorrectUpload";
 import { RetryRender } from "@/components/ops/RetryRender";
 import { HeldRender } from "@/components/ops/HeldRender";
@@ -92,6 +94,12 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
   const { rendering, needsFinishing } = board;
   const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint));
   const uploadedRows = ready.filter((v) => !v.monthlyProgram && (v.uploaded || (recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)));
+  const uploadedGroups = uploadedDeliveryGroups(uploadedRows);
+  const sentGroup = (cuts: UploadedTarget[]) => setSent(previous => {
+    const next = new Map(previous);
+    for (const cut of cuts) next.set(cut.submissionId, cut.fingerprint);
+    return next;
+  });
   const uploaded = (v: ReadyVideo, delivered = false) => {
     setRecorded((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
     if (delivered) setSent((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
@@ -143,19 +151,19 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
         { title: "Ready for upload", rows: ready.filter((v) => !v.monthlyProgram && !v.uploaded && !(recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)) },
         { title: "Portal delivery needs attention", rows: ready.filter((v) => v.monthlyProgram) },
       ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={(delivered) => uploaded(v, delivered)} />)}</section>)}
-      {uploadedRows.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedRows.length})</span></h4>{uploadedRows.map((v) => <UploadedRow key={`${v.submissionId}:${v.uploadFingerprint ?? "none"}`} v={v} onSent={() => setSent((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint))} />)}</section>}
+      {uploadedGroups.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedGroups.length})</span></h4>{uploadedGroups.map(group => <UploadedRow key={group.projectId} group={group} onSent={sentGroup} />)}</section>}
       <Rendering rows={rendering} />
     </div>
   );
 }
 
-function UploadedRow({ v, onSent }: { v: ReadyVideo; onSent: () => void }) {
+function UploadedRow({ group, onSent }: { group: ReturnType<typeof uploadedDeliveryGroups>[number]; onSent: (cuts: UploadedTarget[]) => void }) {
   return <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2">
-    <div className="min-w-0 flex-1 basis-48"><p className="break-words text-sm font-medium">{v.street} · {v.cutLabel} · v{v.round}</p>{v.overdue && <span className="text-xs font-medium text-danger">Past due</span>}</div>
+    <div className="min-w-0 flex-1 basis-48"><p className="break-words text-sm font-medium">{group.title}</p>{group.overdue && <span className="text-xs font-medium text-danger">Past due</span>}</div>
     <div className="flex max-w-full flex-wrap items-center gap-2">
-      <Link href={v.uploadFingerprint ? `/api/review/cut/${v.submissionId}/final?f=${v.uploadFingerprint}` : v.reviewHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Watch</Link>
-      {v.aryeoUrl && <a href={v.aryeoUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Aryeo listing</a>}
-      <MarkSent submissionId={v.submissionId} street={v.street} expectedFingerprint={v.uploadFingerprint ?? undefined} onRecorded={onSent} />
+      <Link href={group.watchHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Watch</Link>
+      {group.aryeoUrl && <a href={group.aryeoUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Aryeo listing</a>}
+      {group.targets.length === group.videos.length && <MarkProjectSent projectId={group.projectId} cuts={group.targets} onRecorded={onSent} />}
     </div>
   </div>;
 }

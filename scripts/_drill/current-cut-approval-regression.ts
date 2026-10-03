@@ -193,6 +193,30 @@ async function main() {
       c.ok("unversioned legacy fixes still verify through metadata changes; prior verified history stays untouched", classified.ok && result.ok && after.state === "VERIFIED" && after.verifiedInSubmissionId === cut.id && after.addressedInSubmissionId === null && after.cause === "CLIENT_CHANGE" && after.assignedEditorKey === "kim" && after.updatedAt.getTime() !== issue.updatedAt.getTime() && old.state === prior.state && old.verifiedInSubmissionId === prior.verifiedInSubmissionId && old.verifiedAt?.getTime() === prior.verifiedAt?.getTime() && old.updatedAt.getTime() === prior.updatedAt.getTime());
     }
     c.head("Final-file hold, failed read, prior receipt and delivered fallback");
+    c.head("Missing revision verification ticks require explicit recorded approval");
+    {
+      const fixture = await world("Approve unchecked fixes");
+      const cut = await mk(fixture, 1, { status: "PENDING" });
+      const check = await prisma.cutSelfCheck.create({ data: { submissionId: cut.id, projectId: fixture.projectId!, deliverableId: fixture.deliverableId, slot: 1, round: 1, actorName: "Kim", checklistKey: "isolated-checked-cut", itemsJson: "[]", state: "VALID" } });
+      await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { selfCheckId: check.id, selfCheckedAt: new Date() } });
+      const fix = await prisma.revisionIssue.create({ data: { projectId: fixture.projectId!, deliverableId: fixture.deliverableId, slot: 1, sourceKind: "MANUAL", sourceId: "unticked-fix", originalText: "Check the revised opening.", state: "ADDRESSED", addressedInSubmissionId: cut.id, addressedAt: new Date() } });
+      const warned = await rr.approveCut(cut.id, { verifyIssueIds: [] });
+      c.ok("ordinary approval warns about missing ticks without changing the verdict", !warned.ok && warned.canApproveAnyway === true && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: cut.id } })).status === "PENDING");
+      const approvedAnyway = await rr.approveCut(cut.id, { verifyIssueIds: [], approveUncheckedFixes: true });
+      const recorded = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: cut.id } });
+      const audit = await prisma.auditLog.findFirst({ where: { target: cut.id, action: "cut_approved_with_unchecked_fixes" } });
+      c.ok("explicit approve-anyway records the authorized creative verdict", approvedAnyway.ok && recorded.status === "APPROVED" && recorded.decidedByUserId === owner.id, approvedAnyway.message);
+      c.ok("missing ticks stay unverified instead of fabricating checkbox evidence", (await prisma.revisionIssue.findUniqueOrThrow({ where: { id: fix.id } })).state === "ADDRESSED" && await prisma.revisionIssueEvent.count({ where: { issueId: fix.id, kind: "VERIFIED" } }) === 0);
+      c.ok("override audit records reviewer, exact version and omitted fix IDs", !!audit && JSON.parse(audit.detail).actorUserId === owner.id && JSON.parse(audit.detail).round === 1 && JSON.parse(audit.detail).uncheckedFixIds.includes(fix.id));
+      await rr.approveCut(cut.id, { verifyIssueIds: [], approveUncheckedFixes: true });
+      c.ok("repeated confirmation preserves original verdict and single override receipt", await prisma.auditLog.count({ where: { target: cut.id, action: "cut_approved_with_unchecked_fixes" } }) === 1 && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: cut.id } })).decidedAt?.getTime() === recorded.decidedAt?.getTime());
+      const denied = await mk(fixture, 2, { status: "PENDING" });
+      const editor = await prisma.appUser.create({ data: { email: "override-editor@example.test", name: "Fixture Editor", role: "EDITOR", status: "ACTIVE" } });
+      await setSession({ uid: editor.id, email: editor.email, role: editor.role });
+      const forbidden = await rr.approveCut(denied.id, { verifyIssueIds: [], approveUncheckedFixes: true });
+      c.ok("approve-anyway never grants an editor creative approval permission", !forbidden.ok && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: denied.id } })).status === "PENDING");
+      await setSession({ uid: owner.id, email: owner.email, role: owner.role });
+    }
     const f = await world("Finishing gate");
     const viewer: import("@/lib/portal").PortalViewer = {
       enrollment: { id: f.enrollmentId, clientId: f.clientId, clientName: f.clientName, status: "ACTIVE", videosPerMonth: f.videosPerMonth, sessionsPerMonth: f.sessionsPerMonth },

@@ -2,8 +2,6 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { currentApproved, loadCut, sourceFingerprint } from "@/lib/finalRendition";
-import { readDropboxFile } from "@/lib/finalDropbox";
-import { boundedWait } from "@/lib/boundedWait";
 
 /** Append-only upload receipts use the existing indexed audit ledger. No schema
  * migration, historical check backfill or download inference is required. */
@@ -33,11 +31,8 @@ export async function uploadsFor(ids: string[], db: Db = prisma): Promise<Map<st
 }
 
 export async function recordUploaded(id: string, actor: { id: string | null; name: string }, expectedFingerprint: string): Promise<{ ok: boolean; message: string }> {
-  // Optional provider evidence is read outside locks. Failure cannot prevent a
-  // staff acknowledgement; it only limits automatic provider settlement.
-  const before = await loadCut(id);
-  const finalFile = before?.topazJob?.state === "done" && before.topazJob.finalPath
-    ? await boundedWait(readDropboxFile(before.topazJob.finalPath), 2_000).catch(() => null) : null;
+  // Recording what staff uploaded is entirely local. Provider reads must never
+  // delay this save; an authenticated subsequent delivery event settles it.
   return prisma.$transaction(async (tx) => {
     const initial = await loadCut(id, tx);
     if (!initial) return { ok: false, message: "That video no longer exists." };
@@ -57,7 +52,7 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
     const receipt: UploadReceipt = { id: `video-upload:${crypto.randomUUID()}`, submissionId: id, projectId: cut.projectId,
       listingId: cut.project.aryeoListingId, round: cut.round, deliverableId: cut.deliverableId, slot: cut.slot,
       sourceFingerprint: fingerprint, source: { assetPath: cut.assetPath, finalPath: cut.finalPath, blobUrl: cut.blobUrl, contentHash: cut.contentHash, sourceRev: cut.sourceRev, topaz: cut.topazJob },
-      finalContentHash: cut.topazJob?.state === "done" ? (before && sourceFingerprint(before) === fingerprint ? finalFile?.hash ?? null : null) : cut.contentHash,
+      finalContentHash: cut.topazJob?.state === "done" ? null : cut.contentHash,
       actorId: actor.id, actor: actor.name.slice(0, 120), uploadedAt: new Date().toISOString() };
     await tx.auditLog.create({ data: { id: receipt.id, target: id, actor: receipt.actor, action: "video_uploaded", detail: JSON.stringify(receipt) } });
     return { ok: true, message: "Uploaded version recorded. Delivery remains outstanding; no provider action or client message was sent." };

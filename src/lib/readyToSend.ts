@@ -1498,7 +1498,12 @@ async function settleDeliveryBookkeeping(
     const via = sub.project.contentMonthId ? "client-portal" : by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
     try {
       const r = await prisma.deliverableOutput.updateMany({
-        where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null },
+        where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null,
+          waivedAt: null, removedFromOrderAt: null,
+          AND: [
+            { OR: [{ currentSubmissionId: null }, { currentSubmissionId: sub.id }] },
+            { OR: [{ approvedSubmissionId: null }, { approvedSubmissionId: sub.id }] },
+          ] },
         data: {
           sentSubmissionId: sub.id,
           deliveredAt: sentAt,

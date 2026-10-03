@@ -6,6 +6,7 @@ import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fenceFetch, makeChecker } from "./_harness";
 import type { NotTold as NotToldRow, ReadyBoard, ReadyVideo, SentResult } from "../../src/lib/readyToSend";
+import type { GroupDeliveryResult, UploadedTarget } from "../../src/lib/uploadedDeliveryGroups";
 
 type Props = Record<string, unknown>;
 function elements(tree: unknown, name: string): Props[] {
@@ -41,7 +42,14 @@ function deferred<T>() { let resolve!: (v: T) => void, reject!: (e: Error) => vo
 async function until(test: () => boolean) { for (let i = 0; i < 100 && !test(); i++) await new Promise((r) => setTimeout(r, 5)); if (!test()) throw new Error("delivery UI fixture did not settle"); }
 
 async function main() {
-  const c = makeChecker(), fence = fenceFetch(), req = createRequire(__filename);
+  const c = makeChecker(), req = createRequire(__filename);
+  let groupResult = deferred<GroupDeliveryResult>();
+  const groupCalls: { projectId: string; cuts: UploadedTarget[] }[] = [];
+  const fence = fenceFetch((url, init) => {
+    if (url !== "/api/ops/project-sent") return null;
+    groupCalls.push(JSON.parse(init?.body as string));
+    return groupResult.promise.then(value => Response.json(value));
+  });
   const originals = new Map<string, NodeModule | undefined>();
   const stub = (file: string, exports: unknown) => { originals.set(file, req.cache[file]); req.cache[file] = { id: file, filename: file, loaded: true, exports } as NodeModule; };
   const storageBefore = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
@@ -168,10 +176,34 @@ async function main() {
     (uploadRow.props.onUploaded as () => void)();
     const uploadedRow = namedComponent(tree(), "UploadedRow")!;
     c.ok("confirmed upload moves exact row between queues immediately", !!uploadedRow && !namedComponent(tree(), "ReadyRow") && words(tree()).includes("Uploaded, not sent"));
-    (uploadedRow.props.onSent as () => void)();
+    (uploadedRow.props.onSent as (v: unknown) => void)([{ submissionId: listing.submissionId, fingerprint: listing.uploadFingerprint }]);
     c.ok("confirmed send removes exact row from uploaded-not-sent immediately", !namedComponent(tree(), "UploadedRow") && words(tree()).includes("No new files ready"));
     listing.uploadFingerprint = "replacement-source";
     c.ok("replacement source is not hidden by earlier upload/send acknowledgement", !!namedComponent(tree(), "ReadyRow") && !namedComponent(tree(), "UploadedRow"));
+    const groupedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [
+      { ...listing, cutLabel: "Personal Branding Reel — Video 1 of 2", uploaded: { id: "one", at: ready.approvedAtISO, by: "Kyle" } },
+      { ...listing, submissionId: "second-cut", cutLabel: "Personal Branding Reel — Video 2 of 2", uploaded: { id: "two", at: ready.approvedAtISO, by: "Kyle" } },
+    ] } }));
+    c.ok("same project has one concise unsent item and one set of actions", groupedHTML.includes("Personal Branding - Not Sent") && (groupedHTML.match(/>Mark as sent</g) ?? []).length === 1 && (groupedHTML.match(/>Watch</g) ?? []).length === 1 && !groupedHTML.includes("Video 2 of 2"));
+    const { MarkProjectSent } = await import("../../src/components/ops/MarkProjectSent");
+    const groupCuts = [{ submissionId: "group-one", fingerprint: "group-fp-one" }, { submissionId: "group-two", fingerprint: "group-fp-two" }];
+    const groupCompleted: UploadedTarget[] = [];
+    card!.stop(); card = mountHooks(() => MarkProjectSent({ projectId: "group-project", cuts: groupCuts, onRecorded: cuts => { groupCompleted.push(...cuts); } }));
+    click("Mark as sent"); click("Cancel");
+    c.ok("cancel group confirmation records nothing", groupCalls.length === 0 && groupCompleted.length === 0);
+    click("Mark as sent"); const confirmGroup = button("Confirm sent")!.onClick as () => void; confirmGroup(); confirmGroup();
+    c.ok("group save serializes one exact visible snapshot", groupCalls.length === 1 && groupCalls[0].projectId === "group-project" && JSON.stringify(groupCalls[0].cuts) === JSON.stringify(groupCuts));
+    groupResult.resolve({ ok: false, completed: [groupCuts[0]], message: "Second video bookkeeping needs repair" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("partial group receipt removes only confirmed members and names remaining work", groupCompleted.length === 1 && groupCompleted[0].submissionId === groupCuts[0].submissionId && words(tree()).includes("Second video bookkeeping"));
+    groupResult = deferred(); click("Mark as sent"); click("Confirm sent");
+    groupResult.resolve({ ok: true, completed: [{ submissionId: "unknown-cut", fingerprint: "other" }], message: "Invalid success" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("mismatched group response cannot remove another cut", groupCompleted.length === 1 && words(tree()).includes("Could not confirm"));
+    groupResult = deferred(); click("Mark as sent"); click("Confirm sent");
+    groupResult.reject(new Error("Response lost after possible commit")); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("lost group response ends saving and permits explicit idempotent retry", groupCompleted.length === 1 && !!button("Mark as sent") && !elements(tree(), "Button")[0].disabled && words(tree()).includes("You do not need to send"));
+    groupResult = deferred(); click("Mark as sent"); click("Confirm sent");
+    groupResult.resolve({ ok: true, completed: groupCuts, message: "Recorded" }); await until(() => elements(tree(), "Button")[0].busy === false);
+    c.ok("full group receipt removes confirmed versions without a root render", groupCompleted.length === 3 && groupCompleted.at(-1)?.submissionId === groupCuts[1].submissionId);
     markers.clear(); result = deferred(); let sentRemoved = 0;
     card!.stop(); card = mountHooks(() => MarkSent({ ...props, monthly: false, expectedFingerprint: "fixture-source", onRecorded: () => sentRemoved++ }));
     tree(); await Promise.resolve(); const refreshBeforeSend = refreshes;
@@ -230,8 +262,10 @@ async function main() {
     c.ok("upload API enforces office permissions before any write", (await POST(apiRequest())).status === 403 && apiWrites === 0);
     apiAllowed = true;
     c.ok("upload API rejects malformed confirmation before any write", (await POST(apiRequest(undefined, {}))).status === 400 && apiWrites === 0);
-    const apiReceipt = await (await POST(apiRequest())).json();
+    const apiResponse = await POST(apiRequest()), apiReceipt = await apiResponse.json();
     c.ok("upload API returns exact authenticated receipt directly without dashboard render", apiReceipt.ok === true && apiWrites === 1);
+    const { confirmedUploadResponse } = await import("../../src/lib/uploadReceiptResponse");
+    c.ok("committed upload API publishes a source-bound immediate receipt", confirmedUploadResponse(apiResponse, props.submissionId, "exact-file-v3")?.ok === true && !confirmedUploadResponse(apiResponse, props.submissionId, "other-version") && apiResponse.headers.get("cache-control") === "private, no-store");
     const statusRequest = new Request("https://hub.example.test/api/ops/video-upload?submissionId=exact-cut&fingerprint=exact-source");
     apiAllowed = false;
     c.ok("upload receipt reader preserves office authorization", (await uploadGET(statusRequest)).status === 403 && apiWrites === 1);
@@ -249,7 +283,23 @@ async function main() {
     result = deferred(); result.resolve({ ok: true, message: "Original exact delivery action" });
     const sentReceipt = await (await sentPOST(apiRequest())).json();
     c.ok("sent API delegates original delivery safeguards and returns direct receipt", sentReceipt.ok === true && calls.length === callsBeforeAPI + 1);
-    c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === 0 && fence.blocked.length === 0);
+    let groupWrites = 0;
+    stub(req.resolve("../../src/lib/projectDelivery.ts"), { markUploadedGroupSent: async () => { groupWrites++; return { ok: true, completed: groupCuts, message: "Recorded" }; } });
+    const { POST: projectPOST } = await import("../../src/app/api/ops/project-sent/route");
+    const groupRequest = (origin = "https://hub.example.test", body: unknown = { projectId: "group-project", cuts: groupCuts }) => new Request("https://hub.example.test/api/ops/project-sent", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    c.ok("group API rejects other origins before writes", (await projectPOST(groupRequest("https://other.example.test"))).status === 403 && groupWrites === 0);
+    apiAllowed = false;
+    c.ok("group API enforces office roles before writes", (await projectPOST(groupRequest())).status === 403 && groupWrites === 0);
+    apiAllowed = true;
+    c.ok("group API rejects empty/invalid membership before writes", (await projectPOST(groupRequest(undefined, { projectId: "group-project", cuts: [] }))).status === 400 && groupWrites === 0);
+    c.ok("group API returns exact membership receipt uncached", (await (await projectPOST(groupRequest())).json()).completed.length === 2 && groupWrites === 1);
+    const attemptId = randomUUID();
+    const completeResponse = await projectPOST(groupRequest(undefined, { projectId: "group-project", cuts: groupCuts, attemptId }));
+    const { confirmedProjectDeliveryResponse } = await import("../../src/lib/uploadedDeliveryGroups");
+    completeResponse.json = () => { throw new Error("Body lost after successful delivery response headers"); };
+    c.ok("committed group response confirms its exact attempt without waiting on the body", confirmedProjectDeliveryResponse(completeResponse, "group-project", groupCuts, attemptId)?.completed.length === 2);
+    c.ok("group receipt cannot confirm another attempt or project", !confirmedProjectDeliveryResponse(completeResponse, "other-project", groupCuts, attemptId) && !confirmedProjectDeliveryResponse(completeResponse, "group-project", groupCuts, randomUUID()));
+    c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === groupCalls.length - 1 && fence.blocked.length === 0);
     c.summary();
   } finally {
     card?.stop();

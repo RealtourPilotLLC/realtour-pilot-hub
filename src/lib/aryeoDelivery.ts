@@ -878,6 +878,21 @@ type CutClaimant = {
  */
 async function stampCutsTheDeliveryCovers(
   projectId: string,
+  listing: { id?: string; delivery_status?: string | null; videos?: unknown[] } | null,
+  opts?: { dryRun?: boolean; occurredAt?: Date | null },
+): Promise<{ stamped: number; held: number; wouldStamp: string[] }> {
+  const { acknowledgedDeliveryTargets, markUploadedGroupSent } = await import("@/lib/projectDelivery");
+  const acknowledged = await acknowledgedDeliveryTargets(projectId, listing);
+  const recorded = !opts?.dryRun && acknowledged.length
+    ? await markUploadedGroupSent(projectId, acknowledged, "Aryeo — authenticated listing delivery after staff upload acknowledgement") : null;
+  const exact = await stampCutsFromProviderBytes(projectId, listing, opts);
+  return { ...exact, stamped: exact.stamped + (recorded?.completed.length ?? 0),
+    wouldStamp: [...new Set([...exact.wouldStamp, ...(opts?.dryRun ? acknowledged.map(v => v.submissionId) : [])])] };
+}
+
+/** Retain the byte-matching path for cuts without staff acknowledgement. */
+async function stampCutsFromProviderBytes(
+  projectId: string,
   listing: { videos?: unknown[] } | null,
   /** See closeKylesUploadCards: same rules, no writes, so what this pass would
    *  do to real client jobs can be read before it is allowed to do it. */
@@ -1374,7 +1389,12 @@ async function onListingDelivered(ev: ActivityRef): Promise<string> {
 
   // The cheapest guard first, so it bounds the Aryeo read as well as the work.
   if (await tooSoon("listing-delivered", ev.listingId)) {
-    return `Listing ${ev.listingId} was already handled in the last few minutes, so this one was skipped. The hourly check covers anything that changed since.`;
+    // An authenticated DISTINCT delivery can include newly acknowledged files
+    // inside the cooldown. Handle it now; identical retries and unsigned reads
+    // retain the existing burst protection. Unsigned events have no occurrence.
+    if (!ev.occurredAt || await prisma.appSetting.findUnique({ where: { key: claimKey("listing-delivered", ev) }, select: { key: true } })) {
+      return `Listing ${ev.listingId} was already handled in the last few minutes, so this one was skipped. The hourly check covers anything that changed since.`;
+    }
   }
 
   // CONFIRM IT WITH ARYEO BEFORE BELIEVING A WORD OF IT. One authenticated GET,

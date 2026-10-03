@@ -1,6 +1,7 @@
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { fenceFetch, makeChecker } from "./_harness";
 import { recordUploadRequest } from "../../src/lib/recordUploadRequest";
+import { uploadReceiptHeaders } from "../../src/lib/uploadReceiptResponse";
 
 async function main() {
   const c = makeChecker();
@@ -16,6 +17,31 @@ async function main() {
   try {
     let result = await recordUploadRequest("exact-cut", "exact-source");
     c.ok("normal successful save makes one POST", result.ok && calls.length === 1 && calls[0].method === "POST");
+    const headerOnly = (id = "exact-cut", fp = "exact-source", sent = false) => {
+      const response = new Response(null, { headers: uploadReceiptHeaders(id, fp, sent) });
+      response.json = () => { throw new Error("Response body failed after headers arrived"); };
+      return response;
+    };
+    post = async () => headerOnly(); calls.length = 0;
+    result = await recordUploadRequest("exact-cut", "exact-source");
+    c.ok("committed exact response header ends save without reading a failed body", result.ok && calls.length === 1);
+    post = async () => headerOnly("other-cut"); get = async () => Response.json({ ok: true, recorded: false, message: "Not found" });
+    result = await recordUploadRequest("exact-cut", "exact-source");
+    c.ok("receipt for another cut never confirms this upload", !result.ok && result.unconfirmed === true);
+    post = async () => headerOnly("exact-cut", "replaced-source");
+    result = await recordUploadRequest("exact-cut", "exact-source");
+    c.ok("receipt for different bytes never confirms this upload", !result.ok && result.unconfirmed === true);
+    post = async () => { throw new Error("Response lost"); }; get = async () => headerOnly("exact-cut", "exact-source", true);
+    result = await recordUploadRequest("exact-cut", "exact-source");
+    c.ok("recovery header confirms exact saved and sent state despite failed body", result.ok && result.sent === true);
+    const timeoutBefore = Object.getOwnPropertyDescriptor(AbortSignal, "timeout");
+    Object.defineProperty(AbortSignal, "timeout", { configurable: true, value: undefined });
+    try {
+      post = async () => headerOnly(); calls.length = 0;
+      result = await recordUploadRequest("exact-cut", "exact-source");
+      c.ok("browser without AbortSignal.timeout still saves immediately", result.ok && calls.length === 1);
+    } finally { if (timeoutBefore) Object.defineProperty(AbortSignal, "timeout", timeoutBefore); }
+    get = async () => Response.json({ ok: true, recorded: true, sent: false, message: "Original receipt" });
     post = async () => { throw new Error("Response lost after committed write"); }; calls.length = 0;
     result = await recordUploadRequest("exact-cut", "exact-source");
     c.ok("lost response recovers from exact saved receipt", result.ok && result.message === "Original receipt" && calls.map(v=>v.method).join() === "POST,GET");

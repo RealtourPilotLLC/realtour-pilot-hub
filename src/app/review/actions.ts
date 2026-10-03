@@ -984,7 +984,7 @@ export async function setCutNoteStatus(
 // `opts.verifyIssueIds` (§8.3): the issue list's "verified" ticks. Absent (the
 // plain Approve button) = every fix the editor marked done on this cut is
 // verified by the approval, which is what the list pre-ticks anyway.
-export async function approveCut(submissionId: string, opts?: { verifyIssueIds?: string[] | null }): Promise<{ ok: boolean; message: string }> {
+export async function approveCut(submissionId: string, opts?: { verifyIssueIds?: string[] | null; approveUncheckedFixes?: boolean }): Promise<{ ok: boolean; message: string; canApproveAnyway?: boolean }> {
   { const refused = await previewRefusal(); if (refused) return refused; }
   try {
     // Owner/admin as always, or a named review seat (§8.1, Sep 25): James's
@@ -1061,8 +1061,8 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   const drift = await folderDriftCheck(submission);
   if (!drift.ok) return { ok: false, message: drift.message };
   const { approvalGate } = await import("@/lib/revisionIssues");
-  const issueGate = await approvalGate(submission, { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, verifyIssueIds: opts?.verifyIssueIds ?? null });
-  if (!issueGate.ok) return { ok: false, message: issueGate.message };
+  const issueGate = await approvalGate(submission, { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, verifyIssueIds: opts?.verifyIssueIds ?? null, approveUncheckedFixes: opts?.approveUncheckedFixes === true });
+  if (!issueGate.ok) return { ok: false, message: issueGate.message, canApproveAnyway: issueGate.canApproveAnyway };
 
   const { authorName, authorUserId } = await sessionAuthor();
   const ruler = await rulerOf();
@@ -1095,6 +1095,10 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
       data: { status: "APPROVED", decidedAt, decidedBy: authorName, decidedByUserId: authorUserId,
         ...(submission.project?.contentMonthId && !submission.clientReleasedAt ? { portalPublicationRequiredAt: decidedAt } : {}) },
     });
+    if (moved.count && opts?.approveUncheckedFixes === true && issueGate.uncheckedFixIds.length) {
+      await tx.auditLog.create({ data: { actor: authorName ?? "Reviewer", action: "cut_approved_with_unchecked_fixes", target: submissionId,
+        detail: JSON.stringify({ projectId: submission.projectId, round: submission.round, actorUserId: authorUserId, uncheckedFixIds: issueGate.uncheckedFixIds }) } });
+    }
     return { ...moved, stale: false };
   });
   if (won.stale) return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };

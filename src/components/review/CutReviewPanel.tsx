@@ -16,6 +16,7 @@ import type { CutTakeBackInfo } from "./types";
 import { fmtClock, parseClock } from "./types";
 import { reviewStage, verifiedFixIds } from "@/lib/reviewStage";
 import { reviewActionReceipt, reviewRetryBlocked, type UnknownReviewRead } from "@/lib/reviewActionReceipt";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 
 // ---------------------------------------------------------------------------
 // The Review Room's cut workspace panel (client): the submitted video with
@@ -105,7 +106,7 @@ export function CutReviewPanel({
   /** §8.3: the earlier asks the editor's check said were FIXED in this version.
    *  The reviewer unticks any that aren't: sending back then records them as
    *  missed in this version (the missed-correction count), and approving is
-   *  refused until they are fixed or marked not needed. */
+   *  warns before explicit approval with missing ticks. */
   fixesToCheck?: { id: string; text: string }[];
   /** A successful server read; refresh retains drafts on this exact cut. */
   readStamp?: string;
@@ -132,6 +133,7 @@ export function CutReviewPanel({
   const [uncertainRead, setUncertainRead] = useState<UnknownReviewRead | null>(null);
   const needsReload = reviewRetryBlocked(uncertainRead, readStamp);
   const [staffRevisionOpen, setStaffRevisionOpen] = useState(false);
+  const [approvalWarning, setApprovalWarning] = useState<string | null>(null);
 
   const src = submission.assetUrl;
   // Uploaded cuts stream from the hub's own store; legacy rows stream through
@@ -196,8 +198,31 @@ export function CutReviewPanel({
       }
     });
 
+  function requestApproval() {
+    if (notFixed.size) {
+      setApprovalWarning(`${notFixed.size} fix${notFixed.size === 1 ? " isn't" : "es aren't"} ticked as verified. Approve anyway? The missing ticks will remain unverified.`);
+      return;
+    }
+    run(async () => {
+      const result = await approveCut(submission.id, submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : undefined);
+      if (!result.ok && result.canApproveAnyway) setApprovalWarning(result.message);
+      return result;
+    });
+  }
+
   return (
     <div className="space-y-3">
+      {approvalWarning && <ModalDialog label="Approve with missing ticks" onCancel={() => setApprovalWarning(null)} className="max-w-md">
+        <h3 className="text-lg font-semibold">Approve anyway?</h3>
+        <p className="mt-2 text-sm">{approvalWarning}</p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <button type="button" data-modal-initial-focus className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium" onClick={() => setApprovalWarning(null)}>Cancel</button>
+          <button type="button" disabled={pending || needsReload} className="min-h-11 rounded-lg bg-success px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => {
+            setApprovalWarning(null);
+            run(() => approveCut(submission.id, { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true }));
+          }}>Approve anyway</button>
+        </div>
+      </ModalDialog>}
       {needsReload && <div role="alert" className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm"><p>{err}</p><button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-border px-3 font-medium" onClick={() => {
         // A background read made before this unknown outcome cannot unlock a
         // retry. Only the explicitly requested subsequent read can do that.
@@ -281,9 +306,9 @@ export function CutReviewPanel({
               <Undo2 className="size-4" /> Request changes{openEditorNotes > 0 ? ` (${openEditorNotes})` : ""}
             </button>
             <button
-              onClick={() => run(() => approveCut(submission.id, submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : undefined))}
-              disabled={pending || needsReload || notFixed.size > 0}
-              title={notFixed.size > 0 ? "A fix is marked not done — send it back, or tick it once it's right" : undefined}
+              onClick={requestApproval}
+              disabled={pending || needsReload}
+              title={notFixed.size > 0 ? "Review the missing ticks before approving anyway" : undefined}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-4 animate-spin" /> : <ThumbsUp className="size-4" />} Approve cut
