@@ -66,6 +66,8 @@ export type MonthlyFinalSnapshot = { ok: true; cut: MonthlyCut; fingerprint: str
 /** Read-only provider proof. Metadata/content/source changes invalidate a pass.
  * The Review Room's original is intentionally not repointed to this final file. */
 export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnapshot> {
+  const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(id));
+  if (deliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut))) return { ok: false, message: "This version uses Aryeo delivery instead of portal publication." };
   const cut = await loadMonthlyCut(id);
   if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current." };
   if (cut.portalPublicationRequiredAt && !(cut.topazJob?.state === "done" && cut.topazJob.finalPath && cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? ""))) return { ok: false, message: "The verified 1080p file is not ready. Retry finishing or resolve its hold before portal publication." };
@@ -109,6 +111,8 @@ export async function claimMonthlyFinalDelivery(id: string, by: string | null): 
     await lockMonthlyFinalAccess(tx, s.cut.project.contentMonthId!);
     const current = await loadMonthlyCut(id, tx);
     if (current?.sentToClientAt) return { ok: true as const, count: 0 };
+    const destinationCut = await import("@/lib/finalRendition").then(m => m.loadCut(id, tx));
+    if (destinationCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(destinationCut, tx))) return { ok: false as const, message: "Aryeo was selected before portal publication. Use its upload and delivery queue." };
     const access = (await monthlyOwnerAccess([s.cut.project.contentMonthId!], tx)).get(s.cut.project.contentMonthId!);
     if (!current || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.ok || access.stamp !== s.access.stamp) return { ok: false as const, message: "The version or client access changed before delivery was recorded. Check the current final file again." };
     await tx.$queryRaw`SELECT id FROM "ContentVideoSource" WHERE kind = 'REVIEW_CUT' AND ref = ${id} FOR SHARE`;
@@ -134,6 +138,8 @@ export async function repairMonthlyPublications(max = 100) {
   let published = 0;
   const exceptions: { id: string; reason: string }[] = [];
   for (const cut of cuts) {
+    const destinationCut = await import("@/lib/finalRendition").then(m => m.loadCut(cut.id));
+    if (destinationCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(destinationCut))) continue;
     const result = await publishApprovedCutToLibrary(cut.id);
     if (result.published) published++; else exceptions.push({ id: cut.id, reason: result.why ?? "Publication unavailable" });
   }

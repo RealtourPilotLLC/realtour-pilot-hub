@@ -2,6 +2,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { currentApproved, loadCut, sourceFingerprint } from "@/lib/finalRendition";
+import { usesAryeoDelivery } from "@/lib/videoDeliveryDestination";
 
 /** Append-only upload receipts use the existing indexed audit ledger. No schema
  * migration, historical check backfill or download inference is required. */
@@ -42,7 +43,7 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
     await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${initial.projectId} FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "ReviewSubmission" WHERE "projectId" = ${initial.projectId} ORDER BY id FOR UPDATE`;
     const cut = await loadCut(id, tx);
-    if (!cut || cut.project.contentMonthId || !cut.project.aryeoListingId || !(await currentApproved(cut, tx))) return { ok: false, message: "Reload: this is no longer a current approved listing video with a destination." };
+    if (!cut || !(await usesAryeoDelivery(cut, tx)) || !cut.project.aryeoListingId || !(await currentApproved(cut, tx))) return { ok: false, message: "Reload: this is no longer a current approved Aryeo video with a destination." };
     if (cut.sentToClientAt) return { ok: false, message: "Delivery is already recorded. Its history cannot be backdated as an upload." };
     const fingerprint = sourceFingerprint(cut);
     if (!fingerprint) return { ok: false, message: "The final file is not ready to upload." };
@@ -66,7 +67,7 @@ export async function uploadReceiptStatus(id: string, expectedFingerprint: strin
   return prisma.$transaction(async (tx) => {
     const cut = await loadCut(id, tx);
     const missing = { ok: true, recorded: false, message: "No matching current upload receipt was found." };
-    if (!cut || cut.project.contentMonthId || !cut.project.aryeoListingId || !(await currentApproved(cut, tx)) || sourceFingerprint(cut) !== expectedFingerprint) return missing;
+    if (!cut || !(await usesAryeoDelivery(cut, tx)) || !cut.project.aryeoListingId || !(await currentApproved(cut, tx)) || sourceFingerprint(cut) !== expectedFingerprint) return missing;
     const receipt = (await uploadsFor([id], tx)).get(id);
     if (!receipt || receipt.sourceFingerprint !== expectedFingerprint || receipt.listingId !== cut.project.aryeoListingId) return missing;
     return { ok: true, recorded: true, sent: !!cut.sentToClientAt, message: `Upload confirmed from the saved receipt by ${receipt.actor}.` };
@@ -113,7 +114,7 @@ export async function uploadedForDelivery(id: string, db: Db = prisma): Promise<
   const cut = await loadCut(id, db);
   if (!cut) return { ok: false, message: "That video no longer exists." };
   if (cut.sentToClientAt) return { ok: true, message: "Existing delivery can be reconciled." };
-  if (cut.project.contentMonthId || !(await currentApproved(cut, db))) return { ok: false, message: "This is no longer a current approved listing video." };
+  if (!(await usesAryeoDelivery(cut, db)) || !(await currentApproved(cut, db))) return { ok: false, message: "This is no longer a current approved Aryeo video." };
   const receipt = (await uploadsFor([id], db)).get(id);
   if (!receipt || receipt.listingId !== cut.project.aryeoListingId || receipt.sourceFingerprint !== sourceFingerprint(cut)) return { ok: false, message: "Mark this exact finished version as uploaded to its Aryeo listing first." };
   return { ok: true, message: "Exact upload recorded." };

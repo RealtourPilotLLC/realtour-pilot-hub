@@ -1,0 +1,106 @@
+// @drill-run: engine=postgres needs=tools/realpg timeout=180
+// Actual domain/API/board against disposable Postgres. Providers remain fenced.
+import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, portFree } from "./_harness";
+import { buildContentMonth } from "./_fixtures/contentMonth";
+installNextStubs();
+const fence = fenceFetch(() => null);
+async function main() {
+  if (!await portFree(5973)) throw new Error("Owned fixture port busy; existing process preserved.");
+  const db = await bootDrillDb({ port: 5973, engine: "postgres", env: { AUTH_ENFORCE: "true" } }), c = makeChecker();
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const { setSession, clearSession } = await import("@/lib/auth/session");
+    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    const destination = await import("@/lib/videoDeliveryDestination");
+    const uploads = await import("@/lib/deliveryUploads");
+    const grouped = await import("@/lib/projectDelivery");
+    const { readyToSend, clientNotToldYet } = await import("@/lib/readyToSend");
+    const route = await import("@/app/api/ops/video-destination/route");
+    const shell = await buildContentMonth(prisma, { name: "Branding destination TEST", package: "Starter" });
+    const projectId = shell.projectId!, listingId = "isolated-branding-listing";
+    const owner = await prisma.appUser.create({ data: { name: "Owner fixture", email: "branding-owner@fixture.test", role: "OWNER", status: "ACTIVE", passwordHash: "unused" } });
+    const editor = await prisma.appUser.create({ data: { name: "Editor fixture", email: "branding-editor@fixture.test", role: "EDITOR", status: "ACTIVE", passwordHash: "unused" } });
+    const actor = { id: owner.id, name: owner.name! };
+    const fp = async (id: string) => sourceFingerprint((await loadCut(id))!)!;
+    const choiceFp = async (id: string) => destination.destinationFingerprint((await loadCut(id))!);
+    const cut = async (slot: number, round = 1) => {
+      const sub = await prisma.reviewSubmission.create({ data: { projectId, deliverableId: shell.deliverableId, slot, round,
+        status: "APPROVED", decidedAt: new Date(), portalPublicationRequiredAt: new Date(), source: "upload", fileName: `Branding-${slot}-v${round}.mp4`, assetPath: `/fixture/branding-${slot}-v${round}.mp4` } });
+      const output = await prisma.deliverableOutput.upsert({ where: { deliverableId_slot: { deliverableId: shell.deliverableId!, slot } },
+        create: { projectId, deliverableId: shell.deliverableId!, slot, category: "VIDEO", currentSubmissionId: sub.id, approvedSubmissionId: sub.id },
+        update: { currentSubmissionId: sub.id, approvedSubmissionId: sub.id, deliveredAt: null, sentSubmissionId: null } });
+      await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { outputId: output.id } });
+      return sub;
+    };
+    const first = await cut(1), sibling = await cut(2);
+    c.ok("branding keeps portal default without an explicit staff choice", !(await destination.usesAryeoDelivery((await loadCut(first.id))!)));
+    c.ok("missing listing produces an actionable refusal without writing a choice", !(await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), actor)).ok && await prisma.auditLog.count({ where: { action: "video_delivery_destination" } }) === 0);
+    await prisma.project.update({ where: { id: projectId }, data: { aryeoListingId: listingId, dropboxFolder: "/fixture/branding" } });
+    const job = await prisma.topazJob.create({ data: { submissionId: first.id, projectId, state: "done", finalPath: "/fixture/branding/05-Final-Video/Branding-1-FINAL (Topaz).mp4", savedAt: new Date(), outputCheck: "verified" } });
+    const fingerprint = await fp(first.id), destinationId = await choiceFp(first.id);
+    c.ok("monthly upload cannot bypass its unswitched portal destination", !(await uploads.recordUploaded(first.id, actor, fingerprint)).ok);
+    c.ok("stale source fingerprint cannot choose a destination", !(await destination.chooseAryeoDelivery(first.id, "stale-source", actor)).ok);
+    await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { videoStyle: "standard_cinematic" } });
+    c.ok("non-branding video does not gain the monthly Aryeo exception", !(await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), actor)).ok);
+    await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { videoStyle: "personal_branding" } });
+    const post = (id = first.id, f = destinationId, origin = "http://fixture.local") => route.POST(new Request("http://fixture.local/api/ops/video-destination", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify({ submissionId: id, fingerprint: f }) }));
+    c.ok("unsigned destination change is denied", (await post()).status === 403);
+    await setSession({ uid: editor.id, email: editor.email, role: editor.role });
+    c.ok("editor cannot change delivery destination", (await post()).status === 403);
+    await setSession({ uid: owner.id, email: owner.email, role: owner.role, actingAs: editor.id });
+    c.ok("view-as mode cannot change delivery destination", (await post()).status === 403);
+    await setSession({ uid: owner.id, email: owner.email, role: owner.role });
+    c.ok("cross-origin choice is denied", (await post(first.id, destinationId, "http://other.local")).status === 403);
+    const saved = await post();
+    c.ok("actual office API confirms exact committed choice in response headers", saved.status === 200 && saved.headers.get("Cache-Control") === "private, no-store" && !!saved.headers.get("X-RTP-Video-Destination"));
+    const get = await route.GET(new Request(`http://fixture.local/api/ops/video-destination?submissionId=${first.id}&fingerprint=${destinationId}`));
+    c.ok("read-only recovery confirms the saved exact choice", (await get.json()).ok && await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id } }) === 1);
+    await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), { ...actor, name: "Later fixture" });
+    c.ok("retry preserves first choice attribution and activity", await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id, actor: actor.name } }) === 1 && await prisma.activity.count({ where: { projectId, body: { contains: "chose Aryeo" } } }) === 1);
+    const selected = await loadCut(first.id);
+    c.ok("choice survives database reload and leaves monthly identity/backup intact", await destination.usesAryeoDelivery(selected!) && selected?.project.contentMonthId === shell.monthId && selected.topazJob?.finalPath === job.finalPath && selected.topazJob.savedAt?.getTime() === job.savedAt?.getTime() && !selected.sentToClientAt);
+    c.ok("sibling video retains portal destination", !(await destination.usesAryeoDelivery((await loadCut(sibling.id))!)));
+    const board = await readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false });
+    c.ok("actual board exposes separate selected Aryeo and default portal rows", board.ready.find(v => v.submissionId === first.id)?.deliveryDestination === "aryeo-listing" && board.ready.find(v => v.submissionId === sibling.id)?.deliveryDestination === "client-portal" && board.ready.find(v => v.submissionId === sibling.id)?.canChooseAryeo === true);
+    const { publishApprovedCutToLibrary } = await import("@/lib/contentVideos");
+    const publication = await publishApprovedCutToLibrary(first.id);
+    c.ok("portal auto-publication skips an explicitly selected Aryeo version", !publication.published && publication.why?.includes("Aryeo") === true && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: first.id } })).clientReleasedAt);
+    c.ok("selected branding version accepts the existing upload receipt", (await uploads.recordUploaded(first.id, actor, fingerprint)).ok && (await uploads.uploadReceiptStatus(first.id, fingerprint)).recorded);
+    const targets = [{ submissionId: first.id, fingerprint }];
+    c.ok("selected branding participates in grouped manual send", (await grouped.markUploadedGroupSent(projectId, targets, actor.name)).ok);
+    const delivered = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: first.id } });
+    const output = await prisma.deliverableOutput.findUniqueOrThrow({ where: { deliverableId_slot: { deliverableId: shell.deliverableId!, slot: 1 } } });
+    c.ok("monthly Aryeo send records truthful channel without portal release", !!delivered.sentToClientAt && !delivered.clientReleasedAt && output.deliveredVia === "aryeo-listing" && output.sentSubmissionId === first.id);
+    await prisma.reviewSubmission.update({ where: { id: first.id }, data: { clientNoticeVia: "not-yet" } });
+    c.ok("notification follow-up distinguishes Aryeo from monthly portal delivery", (await clientNotToldYet({ projectId })).find(v => v.submissionId === first.id)?.deliveryDestination === "aryeo-listing");
+    await grouped.markUploadedGroupSent(projectId, targets, "Later fixture");
+    c.ok("repeat send retains original actor/time and processed Dropbox file", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: first.id } })).sentToClientAt?.getTime() === delivered.sentToClientAt?.getTime() && (await prisma.topazJob.findUniqueOrThrow({ where: { id: job.id } })).finalPath === job.finalPath);
+    const next = await cut(1, 2);
+    c.ok("a replacement version does not inherit an older Aryeo choice", !(await destination.usesAryeoDelivery((await loadCut(next.id))!)) && !(await uploads.recordUploaded(next.id, actor, await fp(next.id))).ok);
+    await destination.chooseAryeoDelivery(sibling.id, await choiceFp(sibling.id), actor);
+    await uploads.recordUploaded(sibling.id, actor, await fp(sibling.id));
+    const eventAt = new Date();
+    await prisma.auditLog.create({ data: { actor: "Authenticated fixture", action: "aryeo_listing_delivery_event", target: listingId, detail: JSON.stringify({ listingId, occurredAt: eventAt.toISOString() }) } });
+    const candidates = await grouped.acknowledgedDeliveryTargets(projectId, { id: listingId, delivery_status: "DELIVERED" });
+    c.ok("later signed delivery evidence finds the switched monthly upload only", candidates.length === 1 && candidates[0].submissionId === sibling.id);
+    c.ok("webhook settlement records selected monthly output as Aryeo", (await grouped.markUploadedGroupSent(projectId, candidates, "Aryeo — authenticated fixture")).ok && (await prisma.deliverableOutput.findUniqueOrThrow({ where: { deliverableId_slot: { deliverableId: shell.deliverableId!, slot: 2 } } })).deliveredVia === "aryeo-listing");
+    await destination.chooseAryeoDelivery(next.id, await choiceFp(next.id), actor);
+    await prisma.project.update({ where: { id: projectId }, data: { aryeoListingId: "different-listing" } });
+    c.ok("changing listing invalidates an unsent choice and its previous receipt", !(await destination.usesAryeoDelivery((await loadCut(next.id))!)) && !(await uploads.uploadReceiptStatus(sibling.id, candidates[0].fingerprint)).recorded);
+    c.ok("already-sent repairs retain their original Aryeo channel after listing changes", await destination.usesAryeoDelivery((await loadCut(first.id))!));
+    await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { quantity: 3 } });
+    const processing = await cut(3);
+    const processingJob = await prisma.topazJob.create({ data: { projectId, submissionId: processing.id, state: "processing" } });
+    const processingChoice = await choiceFp(processing.id);
+    const processingBoard = await readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false });
+    c.ok("processing branding row offers a choice before automatic portal publication", processingBoard.rendering.find(r => r.submissionId === processing.id)?.canChooseAryeo === true);
+    c.ok("choice can be saved while Topaz has no finished file yet", (await destination.chooseAryeoDelivery(processing.id, processingChoice, actor)).ok && await destination.usesAryeoDelivery((await loadCut(processing.id))!));
+    await prisma.topazJob.update({ where: { id: processingJob.id }, data: { state: "done", finalPath: "/fixture/branding/05-Final-Video/Branding-3-FINAL (Topaz).mp4", savedAt: new Date(), outputCheck: "verified" } });
+    c.ok("Topaz completion preserves destination choice while creating a new byte-bound upload identity", await choiceFp(processing.id) === processingChoice && await destination.usesAryeoDelivery((await loadCut(processing.id))!) && !!await fp(processing.id));
+    c.ok("finished preselected version skips auto-publication and accepts Aryeo receipt", !(await publishApprovedCutToLibrary(processing.id)).published && (await uploads.recordUploaded(processing.id, actor, await fp(processing.id))).ok);
+    c.ok("no provider mutation, notice, client decision or schema change was fabricated", fence.blocked.length === 0 && await prisma.outboxMessage.count() === 0 && await prisma.clientDecision.count() === 0 && await prisma.finalRenditionCheck.count() === 0);
+    await clearSession();
+    c.summary();
+  } finally { await db.stop(); fence.restore(); }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

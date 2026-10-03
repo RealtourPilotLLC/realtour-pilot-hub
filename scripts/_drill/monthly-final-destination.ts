@@ -292,6 +292,19 @@ async function main() {
     c.ok("stale listing preview fingerprint fails closed", (await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=stale`), { params: Promise.resolve({ id: listingCut.id }) })).status === 409);
     await setSession({ uid: editor.id, email: editor.email, role: editor.role });
     c.ok("editor cannot open office delivery preview", (await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=${listingFingerprint}`), { params: Promise.resolve({ id: listingCut.id }) })).status === 403);
+    await setSession({ uid: kyle.id, email: kyle.email, role: kyle.role });
+    const routingRace = await makeCut(6, 3); mode = "complete";
+    await startDropboxCopy(routingRace.id, { inline: false });
+    await prisma.project.update({ where: { id: project.id }, data: { aryeoListingId: "isolated-monthly-routing-race" } });
+    await (await import("@/lib/contentVideos")).syncEnrollmentVideos({ id: enrollment.id, clientId: client.id });
+    const routingChoice = await finalFileChoicesAction(routingRace.id);
+    if (!routingChoice.ok || !(await recordFinalFileCheckAction(form(routingRace.id, routingChoice.choices[0].id))).ok) throw new Error("Routing-race portal proof setup failed");
+    const routing = await import("@/lib/videoDeliveryDestination");
+    const racedPortalClaim = await raceClaim(routingRace.id, async () => {
+      const chosen = await routing.chooseAryeoDelivery(routingRace.id, routing.destinationFingerprint((await loadCut(routingRace.id))!), { id: kyle.id, name: "Kyle fixture" });
+      if (!chosen.ok) throw new Error(chosen.message);
+    });
+    c.ok("Aryeo choice committed after portal proof but before its claim prevents a false portal delivery", !racedPortalClaim.ok && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: routingRace.id } })).sentToClientAt && await routing.usesAryeoDelivery((await loadCut(routingRace.id))!));
     c.ok("fixture escapes no provider/network fence and creates no client notice or decision", fence.blocked.length === 0 && await prisma.clientDecision.count() === 0 && await prisma.notificationDelivery.count() === 0);
     c.summary();
   } finally { await db.stop(); fence.restore(); }

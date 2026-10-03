@@ -1,5 +1,7 @@
 "use client";
 
+import { usesPortalDelivery } from "@/lib/videoDestinationReceipt";
+
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { MessageSquareWarning } from "lucide-react";
@@ -29,13 +31,14 @@ export function NotTold({ rows }: { rows: NotToldRow[] }) {
 }
 
 function Row({ r }: { r: NotToldRow }) {
+  const portal = usesPortalDelivery(r);
   const router = useRouter();
   const [receipt, setReceipt] = useState<{ state: SaveState; message: string } | null>(null);
   const [recovery, setRecovery] = useState<Attempt | null>(null), [done, setDone] = useState(false);
   const [busy, start] = useTransition(), [refreshing, refresh] = useTransition();
   const pending = useRef(false), completed = useRef(false), uncertain = useRef<Attempt | null>(null);
   const storageKey = `rtp:client-notice:${r.submissionId}`;
-  const options = NOTICE_OPTIONS.filter((o) => o.value !== "not-yet" && (!r.monthlyProgram || o.value !== "aryeo-email"));
+  const options = NOTICE_OPTIONS.filter((o) => o.value !== "not-yet" && (!portal || o.value !== "aryeo-email"));
   const readAttempt = (): Attempt | null => {
     const raw = sessionStorage.getItem(storageKey);
     if (!raw) return null;
@@ -52,13 +55,13 @@ function Row({ r }: { r: NotToldRow }) {
         const raw = sessionStorage.getItem(storageKey);
         if (!raw) return;
         const attempt = JSON.parse(raw) as Attempt;
-        if (UUID.test(attempt.id) && NOTICE_OPTIONS.some((o) => o.value === attempt.via && o.value !== "not-yet" && (!r.monthlyProgram || o.value !== "aryeo-email"))) {
+        if (UUID.test(attempt.id) && NOTICE_OPTIONS.some((o) => o.value === attempt.via && o.value !== "not-yet" && (!portal || o.value !== "aryeo-email"))) {
           uncertain.current = attempt; setRecovery(attempt); setReceipt({ state: "error", message: UNKNOWN });
         }
       } catch { /* Every mutation checks recovery storage before dispatch. */ }
     });
     return () => { stopped = true; };
-  }, [storageKey, r.monthlyProgram]);
+  }, [storageKey, portal]);
 
   const record = (value: string, reconcile = false) => {
     if (pending.current || completed.current || !options.some((o) => o.value === value)) return;
@@ -93,8 +96,8 @@ function Row({ r }: { r: NotToldRow }) {
   };
   const recoveryLabel = options.find((o) => o.value === recovery?.via)?.label;
   return <li className="space-y-2 text-sm text-muted">
-    <p><span className="font-medium text-foreground">{r.street}</span> · {r.fileName} · {r.monthlyProgram ? "portal handoff recorded" : "delivery recorded"} {etDateTime(new Date(r.sentAtISO))} ET{r.sentBy ? ` by ${r.sentBy}` : ""}</p>
-    {r.monthlyProgram && <p>Client notification is owed. The handoff alone does not establish client approval or file receipt.</p>}
+    <p><span className="font-medium text-foreground">{r.street}</span> · {r.fileName} · {portal ? "portal handoff recorded" : "delivery recorded"} {etDateTime(new Date(r.sentAtISO))} ET{r.sentBy ? ` by ${r.sentBy}` : ""}</p>
+    {portal && <p>Client notification is owed. The handoff alone does not establish client approval or file receipt.</p>}
     <div className="flex flex-wrap items-center gap-2">
       <span>Client was told by:</span>
       {options.map((o) => <Button key={o.value} variant="secondary" busy={busy} disabled={done || !!recovery} onClick={() => record(o.value)}>{o.label}</Button>)}

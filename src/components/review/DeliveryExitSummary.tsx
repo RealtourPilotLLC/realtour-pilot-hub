@@ -1,3 +1,4 @@
+import { usesPortalDelivery } from "@/lib/videoDestinationReceipt";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, AlertTriangle, Send } from "lucide-react";
@@ -18,12 +19,12 @@ function rowsFor(board: ReadyBoard): Row[] {
     })),
     ...board.ready.map((r) => ({
       id: r.submissionId, label: `${r.street} · ${r.cutLabel} · v${r.round}`,
-      stage: r.monthlyProgram ? "Monthly portal delivery handoff" : "Ready for delivery",
-      detail: r.monthlyProgram
+      stage: usesPortalDelivery(r) ? "Monthly portal delivery handoff" : "Ready for delivery",
+      detail: usesPortalDelivery(r)
         ? `${r.monthlyPortalReleased ? "Portal release recorded." : "Portal release pending."} ${r.monthlyPortalAccess ? "Eligible owner access to this exact program confirmed." : "This program’s owner access needs confirmation."} ${r.monthlyFinalCheckRecorded ? "Staff check recorded; current final bytes and backup are rechecked before delivery." : "Check the exact portal final file and its final Dropbox backup."} Notification and client approval remain separate. Exact file: ${r.file.fileName}`
         : `${r.file.fileName} · ${r.aryeoUrl ? "Aryeo listing" : "Aryeo destination missing"}`,
       owner: "Kyle", at: r.approvedAtISO,
-      action: r.monthlyProgram ? "Check portal final file and record handoff" : "Check the final file, upload and record delivery",
+      action: usesPortalDelivery(r) ? "Check portal final file and record handoff" : "Check the final file, upload and record delivery",
       href: "/#video-review", cutHref: r.reviewHref,
     })),
     ...board.needsFinishing.map((r) => ({
@@ -35,8 +36,8 @@ function rowsFor(board: ReadyBoard): Row[] {
     })),
     ...(board.notTold ?? []).map((r) => ({
       id: r.submissionId, label: `${r.street} · ${r.fileName}`,
-      stage: r.monthlyProgram ? "Portal handoff recorded; client notification owed" : "Delivery recorded; client notification pending",
-      detail: r.monthlyProgram ? "The portal handoff is recorded. Client notification is still owed; this does not establish client approval or receipt." : "The video is marked sent, but the client has not been told yet.",
+      stage: usesPortalDelivery(r) ? "Portal handoff recorded; client notification owed" : "Delivery recorded; client notification pending",
+      detail: usesPortalDelivery(r) ? "The portal handoff is recorded. Client notification is still owed; this does not establish client approval or receipt." : "The video is marked sent, but the client has not been told yet.",
       owner: "Kyle", at: r.sentAtISO,
       action: "Record how the client was notified", href: "/#video-review",
       cutHref: `/review/${r.projectId}?cut=${r.submissionId}`,

@@ -6,6 +6,7 @@ import { currentApproved, loadCut, sourceFingerprint } from "@/lib/finalRenditio
 import { readDropboxFile } from "@/lib/finalDropbox";
 import { blobFetchDecision } from "@/lib/reviewCuts";
 import { dbx } from "@/lib/integrations/dropbox";
+import { usesAryeoDelivery } from "@/lib/videoDeliveryDestination";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       if (!(cut.blobUrl && !processed) && !backup) return { ok: false as const, message: "The finished file could not be read." };
       return { ok: true as const, fingerprint, cut, file: processed ? { kind: "processed" as const, path: path! } : { kind: "original" as const }, backup };
     };
-    const s = cut.project.contentMonthId ? await monthlyFinalSnapshot(id) : await listing();
+    const s = await usesAryeoDelivery(cut) ? await listing() : await monthlyFinalSnapshot(id);
     if (!s.ok) return NextResponse.json({ error: s.message }, { status: 409 });
     if (req.nextUrl.searchParams.get("f") !== s.fingerprint) return NextResponse.json({ error: "The final file or access changed. Reopen the current final check." }, { status: 409 });
     let url: string;

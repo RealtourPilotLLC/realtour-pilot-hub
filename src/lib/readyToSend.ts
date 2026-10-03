@@ -147,6 +147,9 @@ export type ReadyFileSource =
   | "editor-dropbox";
 
 export type ReadyVideo = {
+  destinationFingerprint?: string | null;
+  deliveryDestination?: "client-portal" | "aryeo-listing";
+  canChooseAryeo?: boolean;
   uploadFingerprint?: string | null;
   uploaded?: { id: string; at: string; by: string } | null;
   submissionId: string;
@@ -276,6 +279,9 @@ export type ReadyVideo = {
 
 /** An approved cut whose 1080p pass has not finished — shown, never offered. */
 export type RenderingVideo = {
+  destinationFingerprint?: string | null;
+  deliveryDestination?: "client-portal" | "aryeo-listing";
+  canChooseAryeo?: boolean;
   submissionId: string;
   projectId: string;
   street: string;
@@ -303,7 +309,7 @@ export type NeedsFinishing = { submissionId: string; projectId: string; street: 
 /** 9.2: a cut marked sent with "the client hasn't been told yet". Stays listed
  *  until somebody records how they were told (or the hub's own delivery text
  *  proves it). */
-export type NotTold = { submissionId: string; projectId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null; /** Always supplied by the production reader; optional for older callers. */ monthlyProgram?: boolean };
+export type NotTold = { submissionId: string; projectId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null; deliveryDestination?: "client-portal" | "aryeo-listing"; /** Always supplied by the production reader; optional for older callers. */ monthlyProgram?: boolean };
 
 export type ReadyBoard = {
   ready: ReadyVideo[];
@@ -917,14 +923,21 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   const { uploadsFor } = await import("@/lib/deliveryUploads");
   const uploads = await uploadsFor(winners.map((w) => w.id));
   const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+  const { usesAryeoDelivery, canChooseAryeo, destinationFingerprint } = await import("@/lib/videoDeliveryDestination");
   for (const sub of winners) {
     const cut = byId.get(sub.id)!;
     const approvedAt = sub.decidedAt ?? sub.completedAt ?? sub.createdAt;
     const waitingHours = Math.max(0, Math.floor((now - approvedAt.getTime()) / HOUR));
+    const uploadCut = await loadCut(sub.id);
+    const aryeoDestination = uploadCut ? await usesAryeoDelivery(uploadCut) : !sub.project.contentMonthId;
+    const destination = { destinationFingerprint: uploadCut ? destinationFingerprint(uploadCut) : null,
+      deliveryDestination: aryeoDestination ? "aryeo-listing" as const : "client-portal" as const,
+      canChooseAryeo: !!uploadCut && canChooseAryeo(uploadCut) && !aryeoDestination };
 
     // The lane still owes work on this cut: report it, offer nothing.
     if (sub.topazJob && stillRendering(sub.topazJob.state)) {
       rendering.push({
+        ...destination,
         submissionId: sub.id,
         projectId: sub.projectId,
         street: cut.street,
@@ -945,10 +958,10 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
 
     const ev = parseEvidence(sub.project.statusEvidence);
     const receipt = uploads.get(sub.id);
-    const uploadCut = await loadCut(sub.id);
     const uploaded = receipt && uploadCut && receipt.listingId === uploadCut.project.aryeoListingId && receipt.sourceFingerprint === sourceFingerprint(uploadCut)
       ? { id: receipt.id, at: receipt.uploadedAt, by: receipt.actor } : null;
     ready.push({
+      ...destination,
       uploadFingerprint: uploadCut ? sourceFingerprint(uploadCut) : null,
       uploaded,
       submissionId: sub.id,
@@ -1431,7 +1444,10 @@ export async function markVideoSent(submissionId: string, by: string | null, opt
     return { ok: false, message: "The 1080p pass hasn't finished on this one yet — it isn't ready to send." };
   }
 
-  const claimed = sub.project.contentMonthId
+  const { usesAryeoDelivery } = await import("@/lib/videoDeliveryDestination");
+  const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
+  const aryeoDestination = deliveryCut && await usesAryeoDelivery(deliveryCut);
+  const claimed = sub.project.contentMonthId && !aryeoDestination
     ? await claimMonthlyFinalDelivery(submissionId, by)
     : await import("@/lib/deliveryUploads").then((m) => m.claimListingDelivery(submissionId, by, opts.expectedFingerprint));
   if (!claimed.ok) return claimed;
@@ -1481,6 +1497,9 @@ async function settleDeliveryBookkeeping(
   const delivery = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: sub.id }, select: { sentToClientAt: true } });
   const sentAt = delivery.sentToClientAt;
   if (!sentAt) throw new Error("Delivery bookkeeping requires an existing version-specific send stamp.");
+  const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(sub.id));
+  const aryeoDestination = deliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut));
+  const portalDestination = !!sub.project.contentMonthId && !aryeoDestination;
 
   // 1. THE ONE FACT THE VIDEO'S OWN ROW EXISTS TO HOLD (audit WF-02): this
   // particular video reached the client, and how we know. The cut row says it
@@ -1495,7 +1514,7 @@ async function settleDeliveryBookkeeping(
     // the channel is read from that rather than guessed: a person pressing the
     // button records the office handoff. Monthly content uses the portal and
     // final Dropbox backup; listing handoffs keep their existing channel.
-    const via = sub.project.contentMonthId ? "client-portal" : by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
+    const via = portalDestination ? "client-portal" : sub.project.contentMonthId || by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
     try {
       const r = await prisma.deliverableOutput.updateMany({
         where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null,
@@ -1534,7 +1553,7 @@ async function settleDeliveryBookkeeping(
   if (j?.state === "done") {
     try {
       const { markTopazDelivered } = await import("@/lib/topazJobs");
-      const r = await markTopazDelivered(j.id, by, { at: sentAt, destination: sub.project.contentMonthId ? "client-portal" : "aryeo-listing" });
+      const r = await markTopazDelivered(j.id, by, { at: sentAt, destination: portalDestination ? "client-portal" : "aryeo-listing" });
       if (r.incomplete) incomplete.push(r.incomplete);
       else if (r.repaired) repaired.push("the upload task the 1080p job left open");
     } catch (e) {
@@ -1690,6 +1709,7 @@ export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: n
     orderBy: { sentToClientAt: "asc" },
     take: opts.max ?? 40,
   });
+  const choices = rows.length ? await prisma.auditLog.findMany({ where: { target: { in: rows.map(r => r.id) }, action: "video_delivery_destination" }, select: { target: true, createdAt: true, detail: true } }) : [];
   return rows.map((r) => ({
     submissionId: r.id,
     projectId: r.projectId,
@@ -1699,6 +1719,10 @@ export async function clientNotToldYet(opts: { projectId?: string; sinceDays?: n
     sentBy: r.sentToClientBy,
     markedBy: r.clientNoticeBy,
     monthlyProgram: Boolean(r.project?.contentMonthId),
+    deliveryDestination: r.project?.contentMonthId && !choices.some(choice => {
+      const data = JSON.parse(choice.detail);
+      return choice.target === r.id && choice.createdAt <= r.sentToClientAt! && data.submissionId === r.id && data.destination === "aryeo-listing" && data.destinationFingerprint && data.listingId;
+    }) ? "client-portal" : "aryeo-listing",
   }));
 }
 

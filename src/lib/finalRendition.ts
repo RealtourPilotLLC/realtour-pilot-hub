@@ -17,10 +17,11 @@ export async function loadCut(submissionId: string, db: Prisma.TransactionClient
   return db.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: {
-      id: true, projectId: true, status: true, deliverableId: true, slot: true, round: true,
+      id: true, projectId: true, kind: true, status: true, deliverableId: true, slot: true, round: true,
       assetPath: true, finalPath: true, blobUrl: true, contentHash: true, sourceRev: true,
       sentToClientAt: true, sentToClientBy: true, decidedAt: true,
       project: { select: { aryeoListingId: true, status: true, contentMonthId: true } },
+      deliverable: { select: { type: true, videoStyle: true, productTitle: true, label: true } },
       topazJob: { select: { id: true, state: true, finalPath: true, savedAt: true } },
     },
   });
@@ -83,7 +84,7 @@ export type ListingChoice = { id: string; title: string; url: string; duration: 
 export async function listingChoices(submissionId: string): Promise<{ ok: boolean; message: string; choices: ListingChoice[] }> {
   const cut = await loadCut(submissionId);
   if (!cut || !(await currentApproved(cut)) || !sourceFingerprint(cut)) return { ok: false, message: "This is no longer a current approved file ready for delivery.", choices: [] };
-  if (cut.project.contentMonthId) return { ok: false, message: "This monthly video uses the client portal; its delivery check is separate.", choices: [] };
+  if (!(await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(cut)))) return { ok: false, message: "This monthly video uses the client portal; its delivery check is separate.", choices: [] };
   const listingId = cut.project.aryeoListingId;
   if (!listingId) return { ok: false, message: "This job has no Aryeo listing to check.", choices: [] };
   const media = await getListingMedia(listingId);
@@ -100,7 +101,7 @@ export async function recordListingCheck(input: {
   const cut = await loadCut(input.submissionId);
   if (!cut || !(await currentApproved(cut))) return { ok: false, message: "That approved version changed. Reload before checking it." };
   if (cut.sentToClientAt) return { ok: false, message: "This cut is already recorded as sent; its verification history cannot be backdated here." };
-  if (cut.project.contentMonthId) return { ok: false, message: "Use the portal verification path for a monthly video." };
+  if (!(await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(cut)))) return { ok: false, message: "Use the portal verification path for this monthly video." };
   const fingerprint = sourceFingerprint(cut);
   if (!fingerprint) return { ok: false, message: "The final file is still being prepared or is unavailable." };
   if (!FINAL_CHECK_KEYS.every((k) => input.checks.includes(k))) return { ok: false, message: "Check the exact video, playback, audio, first and last frames, title, and client access before recording this pass." };
@@ -157,7 +158,7 @@ export const validFinalCheckAttempt = (id: string) => /^[a-f0-9]{8}-[a-f0-9]{4}-
 
 export async function finalChoices(submissionId: string) {
   const cut = await loadCut(submissionId);
-  if (!cut?.project.contentMonthId) return listingChoices(submissionId);
+  if (!cut || await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(cut))) return listingChoices(submissionId);
   const s = await monthlyFinalSnapshot(submissionId);
   return s.ok ? { ok: true, message: "Play the exact portal file. Its final Dropbox backup and this program’s owner access were read now. These ticks are your staff attestation.", choices: [{ id: s.fingerprint, title: s.fileName, url: s.previewUrl, duration: null }] } : { ok: false, message: s.message, choices: [] };
 }
@@ -179,7 +180,7 @@ export async function recordFinalCheck(input: FinalCheckInput): Promise<{ ok: bo
   const previous = await prisma.finalRenditionCheck.findUnique({ where: { id: `final-check:${input.attemptId}` }, select: { id: true } });
   if (previous) return finalCheckReceipt(input.submissionId, input.attemptId, input.actor.id, finalCheckAttemptFingerprint(input));
   const cut = await loadCut(input.submissionId);
-  if (!cut?.project.contentMonthId) return recordListingCheck(input);
+  if (!cut || await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(cut))) return recordListingCheck(input);
   if (!FINAL_CHECK_KEYS.every((k) => input.checks.includes(k))) return { ok: false, message: "Check identity, playback, audio, frames, title and access before recording this pass." };
   const s = await monthlyFinalSnapshot(input.submissionId);
   if (!s.ok) return s;
@@ -193,6 +194,8 @@ export async function recordFinalCheck(input: FinalCheckInput): Promise<{ ok: bo
     await tx.$queryRaw`SELECT id FROM "ReviewSubmission" WHERE "projectId" = ${s.cut.projectId} ORDER BY id FOR UPDATE`;
     await lockMonthlyFinalAccess(tx, s.cut.project.contentMonthId!);
     const current = await loadMonthlyCut(s.cut.id, tx);
+    const destinationCut = await loadCut(s.cut.id, tx);
+    if (destinationCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(destinationCut, tx))) return { ok: false, message: "Aryeo was selected. Check its exact uploaded file instead of saving a portal check." };
     const access = (await monthlyOwnerAccess([s.cut.project.contentMonthId!], tx)).get(s.cut.project.contentMonthId!);
     if (!current || current.sentToClientAt || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.ok || access.stamp !== s.access.stamp) return { ok: false, message: "The version or client access changed. Check the current final file again." };
     if (s.file.kind === "original") await tx.auditLog.upsert({ where: { id: backupReceiptData(s.cut, s.backup).id }, create: backupReceiptData(s.cut, s.backup), update: {} });
@@ -210,7 +213,7 @@ export async function manualFinalCheckReady(submissionId: string): Promise<{ ok:
   const cut = await loadCut(submissionId);
   if (!cut) return { ok: false, message: "That cut no longer exists." };
   if (cut.sentToClientAt) return { ok: true, message: "Already recorded as sent." };
-  if (!cut.project.contentMonthId) return manualListingCheckReady(submissionId);
+  if (await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(cut))) return manualListingCheckReady(submissionId);
   const s = await monthlyFinalSnapshot(submissionId);
   if (!s.ok) return s;
   const check = await prisma.finalRenditionCheck.findFirst({ where: { submissionId, destination: "client-portal", sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId }, orderBy: { checkedAt: "desc" } });

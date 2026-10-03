@@ -44,8 +44,11 @@ async function until(test: () => boolean) { for (let i = 0; i < 100 && !test(); 
 async function main() {
   const c = makeChecker(), req = createRequire(__filename);
   let groupResult = deferred<GroupDeliveryResult>();
+  let destinationResponse = Response.json({ ok: false, message: "Link an Aryeo listing first." });
+  let destinationCalls = 0;
   const groupCalls: { projectId: string; cuts: UploadedTarget[] }[] = [];
   const fence = fenceFetch((url, init) => {
+    if (url.startsWith("/api/ops/video-destination")) { destinationCalls++; return destinationResponse; }
     if (url !== "/api/ops/project-sent") return null;
     groupCalls.push(JSON.parse(init?.body as string));
     return groupResult.promise.then(value => Response.json(value));
@@ -64,7 +67,7 @@ async function main() {
     { id: "monthly-notice", projectId: "month-job", fileName: "monthly-exact-v2.mp4", assetPath: null, sentToClientAt: new Date("2026-10-01T15:00:00Z"), sentToClientBy: "Kyle", clientNoticeBy: "Actual saved marker", project: { title: "Unrelated neutral title", contentMonthId: "canonical-month-id" } },
     { id: "listing-notice", projectId: "listing-job", fileName: "listing-v1.mp4", assetPath: null, sentToClientAt: new Date("2026-10-01T16:00:00Z"), sentToClientBy: "Original office actor", clientNoticeBy: null, project: { title: "Monthly content words in an ordinary listing title", contentMonthId: null } },
   ];
-  stub(req.resolve("../../src/lib/prisma.ts"), { prisma: { reviewSubmission: { findMany: async (args: NonNullable<typeof noticeQuery.args>) => { noticeQuery.args = args; if (noticeQuery.fail) throw new Error("fixture reader unavailable"); return readerRows; } } } });
+  stub(req.resolve("../../src/lib/prisma.ts"), { prisma: { auditLog: { findMany: async () => [] }, reviewSubmission: { findMany: async (args: NonNullable<typeof noticeQuery.args>) => { noticeQuery.args = args; if (noticeQuery.fail) throw new Error("fixture reader unavailable"); return readerRows; } } } });
   const uploadCalls: { id: string; fingerprint: string }[] = []; let uploadResult = deferred<{ ok: boolean; message: string }>();
   stub(req.resolve("../../src/app/ops/actions.ts"), {
     markVideoUploadedAction: async (id: string, fingerprint: string) => { uploadCalls.push({ id, fingerprint }); return uploadResult.promise; },
@@ -165,6 +168,27 @@ async function main() {
     const board: ReadyBoard = { ready: [ready], rendering: [], needsFinishing: [], notTold: [] };
     const monthlyHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board }));
     c.ok("actual monthly row passes destination into record control and orders final check before recording", !monthlyHTML.includes("Record portal handoff") && !monthlyHTML.includes("Check client-viewable file") && !monthlyHTML.includes("example.test/listing"));
+    const branding = { ...ready, deliveryDestination: "client-portal" as const, canChooseAryeo: true, destinationFingerprint: "branding-choice", uploadFingerprint: "branding-final" };
+    const brandingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [branding] } }));
+    c.ok("branding alternative appears below always-visible file buttons", brandingHTML.includes("Upload to Aryeo instead?") && brandingHTML.indexOf("Upload to Aryeo instead?") > brandingHTML.indexOf("Watch it"));
+    card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [branding] } }));
+    const brandRow = namedComponent(tree(), "ReadyRow")!;
+    (brandRow.props.onAryeoChosen as () => void)();
+    c.ok("confirmed choice moves branding into upload queue immediately while preserving month identity", words(tree()).includes("Ready for upload") && !words(tree()).includes("Portal delivery needs attention") && namedComponent(tree(), "ReadyRow")!.props.v !== branding && (namedComponent(tree(), "ReadyRow")!.props.v as ReadyVideo).monthlyProgram);
+    branding.uploadFingerprint = "branding-replacement"; branding.destinationFingerprint = "branding-choice-replacement";
+    c.ok("local choice cannot leak onto a replaced source", words(tree()).includes("Portal delivery needs attention") && !words(tree()).includes("Ready for upload"));
+    const { ChooseAryeoDelivery } = await import("../../src/components/ops/ChooseAryeoDelivery");
+    let chosen = 0;
+    card!.stop(); card = mountHooks(() => ChooseAryeoDelivery({ submissionId: "branding-cut", fingerprint: "branding-final", onChosen: () => chosen++ }));
+    await (elements(tree(), "button")[0].onClick as () => Promise<void>)();
+    c.ok("destination refusal ends busy state and displays actionable error", chosen === 0 && words(tree()).includes("Link an Aryeo listing first.") && !elements(tree(), "button")[0].disabled);
+    const { destinationReceiptHeaders, confirmedAryeoDestination } = await import("../../src/lib/videoDestinationReceipt");
+    const accepted = new Response(new ReadableStream({ start() {} }), { headers: destinationReceiptHeaders("branding-cut", "branding-final") });
+    c.ok("destination receipt rejects a different source", !confirmedAryeoDestination(accepted, "branding-cut", "wrong-final"));
+    destinationResponse = accepted;
+    const beforeChoices = destinationCalls;
+    await (elements(tree(), "button")[0].onClick as () => Promise<void>)();
+    c.ok("committed headers finish choice even when the response body never completes", chosen === 1 && destinationCalls === beforeChoices + 1 && !elements(tree(), "button")[0].disabled);
     const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source" }] } }));
     c.ok("actual listing row retains Aryeo destination, link and original Mark-as-sent action", listingHTML.includes("example.test/listing") && !listingHTML.includes("Mark as sent") && listingHTML.includes("Mark as Uploaded"));
     c.ok("files and upload is an always-visible section, never a disclosure", listingHTML.includes('aria-label="Files and upload"') && !listingHTML.includes('<summary class="cursor-pointer text-sm font-medium">Files and upload'));
@@ -299,7 +323,7 @@ async function main() {
     completeResponse.json = () => { throw new Error("Body lost after successful delivery response headers"); };
     c.ok("committed group response confirms its exact attempt without waiting on the body", confirmedProjectDeliveryResponse(completeResponse, "group-project", groupCuts, attemptId)?.completed.length === 2);
     c.ok("group receipt cannot confirm another attempt or project", !confirmedProjectDeliveryResponse(completeResponse, "other-project", groupCuts, attemptId) && !confirmedProjectDeliveryResponse(completeResponse, "group-project", groupCuts, randomUUID()));
-    c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === groupCalls.length - 1 && fence.blocked.length === 0);
+    c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === groupCalls.length - 1 + destinationCalls && fence.blocked.length === 0);
     c.summary();
   } finally {
     card?.stop();

@@ -4,6 +4,7 @@ import { loadCut, sourceFingerprint } from "@/lib/finalRendition";
 import { recordedListingDeliveryAt, uploadedForDelivery, uploadsFor } from "@/lib/deliveryUploads";
 import { markVideoSent } from "@/lib/readyToSend";
 import type { GroupDeliveryResult, UploadedTarget } from "@/lib/uploadedDeliveryGroups";
+import { usesAryeoDelivery } from "@/lib/videoDeliveryDestination";
 
 /** Validate the whole visible snapshot before recording any delivery. A stale
  * group cannot silently include new uploads or videos belonging to another job. */
@@ -17,7 +18,7 @@ export async function markUploadedGroupSent(projectId: string, targets: Uploaded
     let listingId: string | null = null;
     for (const target of targets) {
       const cut = await loadCut(target.submissionId, tx), receipt = receipts.get(target.submissionId);
-      if (!cut || cut.projectId !== projectId || cut.project.contentMonthId || !cut.project.aryeoListingId
+      if (!cut || cut.projectId !== projectId || !(await usesAryeoDelivery(cut, tx)) || !cut.project.aryeoListingId
         || (listingId && listingId !== cut.project.aryeoListingId) || !receipt || receipt.sourceFingerprint !== target.fingerprint
         || receipt.listingId !== cut.project.aryeoListingId || (!cut.sentToClientAt && sourceFingerprint(cut) !== target.fingerprint)) {
         return "An uploaded file or destination changed. Reload this project before recording delivery.";
@@ -56,7 +57,7 @@ export async function acknowledgedDeliveryTargets(projectId: string, listing: { 
     const receipt = receipts.get(row.id);
     if (!receipt || receipt.listingId !== listing.id || Date.parse(receipt.uploadedAt) > eventAt.getTime()) continue;
     const cut = await loadCut(row.id);
-    if (!cut || cut.project.contentMonthId || cut.project.aryeoListingId !== listing.id || sourceFingerprint(cut) !== receipt.sourceFingerprint
+    if (!cut || !(await usesAryeoDelivery(cut)) || cut.project.aryeoListingId !== listing.id || sourceFingerprint(cut) !== receipt.sourceFingerprint
       || !(await uploadedForDelivery(row.id)).ok) continue;
     targets.push({ submissionId: row.id, fingerprint: receipt.sourceFingerprint });
   }

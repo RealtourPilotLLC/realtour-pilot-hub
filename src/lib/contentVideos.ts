@@ -957,6 +957,8 @@ async function enrollmentOfCut(submissionId: string): Promise<{ id: string; clie
  */
 export async function publishApprovedCutToLibrary(submissionId: string): Promise<{ published: boolean; why?: string }> {
   try {
+    const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
+    if (deliveryCut?.project.contentMonthId && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut))) return { published: false, why: "Aryeo selected for this version; portal publication is not required." };
     const enrollment = await enrollmentOfCut(submissionId);
     if (!enrollment) return { published: false, why: "not a program client's job" };
     const r = await syncEnrollmentLibrary(enrollment, { clearOnSuccess: false });
@@ -972,6 +974,8 @@ export async function publishApprovedCutToLibrary(submissionId: string): Promise
       await recordLibraryFailure(enrollment.id, claimed.message);
       return { published: false, why: claimed.message };
     }
+    const currentDeliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
+    if (currentDeliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(currentDeliveryCut))) return { published: false, why: "This version was delivered through Aryeo." };
     const { openReviewWindow } = await import("@/lib/reviewWindows");
     await openReviewWindow(submissionId, { by: "Portal publication" });
     // Rebuild after the atomic release/marker commit. A retry preserves the
