@@ -31,6 +31,12 @@ export async function GET(req: NextRequest) {
   const startedAt = Date.now();
   const { step, out, finish, remaining } = cronBudget(250_000, startedAt, "topaz"); // ~50s headroom under maxDuration
 
+  // Run first so a long render/upload cannot starve staff delivery alerts.
+  await step("delivery-alerts", async () => {
+    const { notifyKyleDeliveryReady } = await import("@/lib/deliveryReadyNotify");
+    return notifyKyleDeliveryReady();
+  });
+
   await step("topaz", async () => {
     const { driveTopazJobs } = await import("@/lib/topazJobs");
     // Four jobs a tick, each one step. An upload step can hold the whole budget

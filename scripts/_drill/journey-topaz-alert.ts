@@ -538,7 +538,10 @@ async function main() {
   console.log("5. THE REAL EMITTER STILL HAS THE PIECES THIS STANDS IN FOR");
   console.log("-".repeat(78));
   const src = readFileSync(path.join(process.cwd(), "src/lib/topazJobs.ts"), "utf8");
-  check("pingKyle addresses Kyle with a slackDm sentence", /userKey: `tm:\$\{kyle\.id\}`, href, slackDm/.test(src));
+  const deliveryEmitter = readFileSync(path.join(process.cwd(), "src/lib/deliveryReadyNotify.ts"), "utf8");
+  check("delivery queue addresses Kyle with a Slack sentence", deliveryEmitter.includes('userKey: `tm:${people[0].id}`') && deliveryEmitter.includes('slackDm: message.slackDm'));
+  check("delivery queue uses verified readiness and excludes synthetic clients", deliveryEmitter.includes('await readyToSend(') && deliveryEmitter.includes('clients.filter(isSyntheticClientRow)'));
+  check("old Topaz emitter no longer duplicates the ready notification", !src.slice(src.indexOf('async function pingKyle'), src.indexOf('const PROGRAM_CARD_CLOSED')).includes('await notifyInApp('));
   // `ownerSms:` with the colon — the PROPERTY, not the word. The first cut of
   // this check matched the prose in pingKyle's own comment, which explains why
   // the field is deliberately absent, and failed on a file that was correct.

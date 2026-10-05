@@ -2496,17 +2496,8 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   const street = streetOf(project.title);
   const fileName = path.split("/").pop() ?? "the video";
 
-  // A PROGRAM VIDEO IS NOT AN ARYEO UPLOAD (9.6b, Sep 25 2026). Program cuts go
-  // through this pass like every approved cut, and this step used to hand Kyle
-  // "Upload the 1080p video to Aryeo" for them too — a card nothing ever
-  // closed, because program videos are never on a listing (aryeoDelivery skips
-  // them and the ready card's proof pass never stamps them). Jordan: approve,
-  // run it through Topaz, "and deliver to the client in the client portal,
-  // already ran through topaz." The portal hands the client THIS file
-  // (cutEntitlement.clientCutFiles); where the client cannot sign in yet, the
-  // Ready-to-send card lists it for Kyle to send by hand and mark sent. So: no
-  // task, no Slack DM, a line on the job — and a card an earlier run left open
-  // for this job is closed with the reason, not left for him.
+  // Monthly videos use the destination-aware delivery queue and its Slack
+  // notifier; do not create the legacy listing-only task for them.
   if (project.contentMonthId) {
     await closeProgramUploadCard(job.id).catch(() => {});
     await prisma.activity
@@ -2514,7 +2505,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
         data: {
           projectId: job.projectId,
           type: "SYSTEM",
-          body: `1080p file ready — ${fileName}. A program video: the client's portal gives them this file (no Aryeo upload); until they can sign in, the Ready-to-send card lists it to send by hand.`.slice(0, 500),
+          body: `1080p file ready — ${fileName}. Follow this cut’s selected destination in the Hub delivery queue.`.slice(0, 500),
         },
       })
       .catch(() => {});
@@ -2563,7 +2554,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     ``,
     ARYEO_MANUAL_NOTE,
     ``,
-    `Press Complete on this card once it's delivered — that's what tells the hub this one is finished.`,
+    `Open the Hub delivery queue, confirm Mark as Uploaded, then send in Aryeo and confirm Mark as sent in the Hub.`,
   ];
 
   const data = {
@@ -2597,58 +2588,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     taskId = row.id;
   } catch { /* the bell below still reaches him */ }
 
-  try {
-    const { notifyInApp } = await import("@/lib/notify");
-    const href = taskId ? `/tasks?task=${taskId}` : `/projects/${job.projectId}`;
-    // The sentence Kyle's Slack DM carries (Sep 21 2026). The bridge will fall
-    // back to "title → link" without one, and that is a notification about a
-    // notification: he would have to open the hub to learn the two links he
-    // actually needs. Everything he presses to finish the job is in these four
-    // lines, so the DM is the work, not a pointer at it. No money in it, by
-    // construction — this lane never carries any, and the bridge scrubs a
-    // non-owner's copy regardless.
-    const slackDm = [
-      `The 1080p version of ${street} is ready to upload to Aryeo.`,
-      `Download it: ${downloadUrl}`,
-      `Dropbox folder: ${folderUrl}`,
-      aryeo ? `Aryeo listing: ${aryeo}` : `No Aryeo listing on this job, so it has to be found by address.`,
-      `Full steps, and Complete when it's delivered: ${appBase()}${href}`,
-    ].join("\n");
-    await notifyInApp({
-      kind: "topaz_ready",
-      title: `1080p video ready to upload — ${street}`,
-      body: `${fileName} is in the job's Final Video folder. Aryeo can't be uploaded to automatically — this one's by hand.`,
-      href,
-      // Kyle by roster id rather than by role, so one person gets one row and
-      // his own preferences get the chance to decide the channel.
-      //
-      // WHERE THIS LANDS, as of Sep 21 2026: notifyPrefs' KIND_TO_EVENT now
-      // maps topaz_ready to review_ready, so this row goes through the same
-      // bridge a "cut ready" goes through and reaches Kyle on whichever
-      // channels his own "Video in review" switch names. His saved matrix says
-      // Slack, which is exactly what Jordan asked for ("notified via Slack …
-      // when a video is back from Topaz"). Until today it was bell-only: 13
-      // topaz_ready legs to him in 21 days, every one of them bell and nothing
-      // else.
-      //
-      // THE OWNER ROW BELOW STAYS BELL-ONLY ON PURPOSE. A role broadcast only
-      // reaches a phone or a DM when it carries an `ownerSms` sentence, and
-      // this one deliberately does not: Jordan's review_ready row is
-      // {slack:true, sms:true}, so adding one would start texting him on every
-      // render. He asked for Kyle to be told, not for a second pager.
-      //
-      // AND IT IS ONE PING, NOT TWO. Checked before shipping: nothing else
-      // fires at this moment. The SmartTask above is a direct upsert with no
-      // emitter behind it (zero task_assigned rows in production in 21 days),
-      // topaz_problem is the failure path, and the cut_ready for this same
-      // video fired when the cut went IN for review, an hour and a state
-      // change earlier.
-      targets: kyle
-        ? [{ roles: ["ADMIN"], userKey: `tm:${kyle.id}`, href, slackDm }, { roles: ["OWNER"], href }]
-        : [{ roles: ["ADMIN"], href }, { roles: ["OWNER"], href }],
-      dedupeKey: `topaz-ready-${job.id}`,
-    });
-  } catch { /* bell is best-effort */ }
+  // Slack is emitted from the verified delivery queue after the job is ready.
   return taskId;
 }
 
