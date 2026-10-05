@@ -894,42 +894,37 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   // in for a content topic the team has not linked yet.
   const monthIds = [...new Set(winners.map((s) => s.project.contentMonthId).filter((id): id is string => !!id))];
   const outputIds = [...new Set(winners.map((s) => s.outputId).filter((id): id is string => !!id))];
-  const [months, outputs] = await Promise.all([
+  const { uploadsFor } = await import("@/lib/deliveryUploads");
+  const { loadCuts, sourceFingerprint } = await import("@/lib/finalRendition");
+  const { aryeoDestinationsFor, canChooseAryeo, destinationFingerprint } = await import("@/lib/videoDeliveryDestination");
+  const [months, outputs, monthlyAccess, monthlyChecks, s, asks, uploads, uploadCuts] = await Promise.all([
     monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
     outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
+    monthlyOwnerAccess(monthIds).catch(() => new Map()),
+    monthIds.length ? prisma.finalRenditionCheck.findMany({ where: { submissionId: { in: winners.filter((s) => s.project.contentMonthId).map((s) => s.id) }, destination: "client-portal" }, select: { submissionId: true } }) : Promise.resolve([]),
+    winners.some((s) => !s.topazJob) ? topazSettings().catch(() => null) : Promise.resolve(null),
+    clientChangeRequestsFor(winners.map((w) => w.projectId)),
+    uploadsFor(winners.map((w) => w.id)),
+    loadCuts(winners.map((w) => w.id)),
   ]);
-  const monthlyAccess = await monthlyOwnerAccess(monthIds).catch(() => new Map());
-  const monthlyChecks = monthIds.length ? await prisma.finalRenditionCheck.findMany({ where: { submissionId: { in: winners.filter((s) => s.project.contentMonthId).map((s) => s.id) }, destination: "client-portal" }, select: { submissionId: true } }) : [];
   const monthById = new Map(months.map((m) => [m.id, m.monthKey]));
   const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((id): id is string => !!id))];
-  const topics = topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : [];
+  const [topics, aryeoDestinations] = await Promise.all([
+    topicIds.length ? prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : Promise.resolve([]),
+    aryeoDestinationsFor([...uploadCuts.values()]),
+  ]);
   const topicById = new Map(topics.map((t) => [t.id, t.title]));
   const outputById = new Map(outputs.map((o) => [o.id, o]));
-
-  // Only read the settings when a row actually needs them to explain itself —
-  // case (c) is the only branch that asks WHY no pass ever ran.
-  const needSettings = winners.some((s) => !s.topazJob);
-  const s = needSettings ? await topazSettings().catch(() => null) : null;
-
-  // One query for the whole board: what each of these clients has asked to be
-  // changed, and when. A row whose client complained AFTER its file was ready
-  // is a row where a video on the listing may be the complaint rather than the
-  // fix, and the line says so instead of inviting a press (see listingLine).
-  const asks = await clientChangeRequestsFor(winners.map((w) => w.projectId));
 
   const now = Date.now();
   const ready: ReadyVideo[] = [];
   const rendering: RenderingVideo[] = [];
-  const { uploadsFor } = await import("@/lib/deliveryUploads");
-  const uploads = await uploadsFor(winners.map((w) => w.id));
-  const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
-  const { usesAryeoDelivery, canChooseAryeo, destinationFingerprint } = await import("@/lib/videoDeliveryDestination");
   for (const sub of winners) {
     const cut = byId.get(sub.id)!;
     const approvedAt = sub.decidedAt ?? sub.completedAt ?? sub.createdAt;
     const waitingHours = Math.max(0, Math.floor((now - approvedAt.getTime()) / HOUR));
-    const uploadCut = await loadCut(sub.id);
-    const aryeoDestination = uploadCut ? await usesAryeoDelivery(uploadCut) : !sub.project.contentMonthId;
+    const uploadCut = uploadCuts.get(sub.id);
+    const aryeoDestination = uploadCut ? aryeoDestinations.get(sub.id) === true : !sub.project.contentMonthId;
     const destination = { destinationFingerprint: uploadCut ? destinationFingerprint(uploadCut) : null,
       deliveryDestination: aryeoDestination ? "aryeo-listing" as const : "client-portal" as const,
       canChooseAryeo: !!uploadCut && canChooseAryeo(uploadCut) && !aryeoDestination };

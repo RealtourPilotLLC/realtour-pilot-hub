@@ -15,7 +15,7 @@ async function main() {
   try {
     const { prisma } = await import("@/lib/prisma");
     const { setSession, clearSession } = await import("@/lib/auth/session");
-    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    const { loadCut, loadCuts, sourceFingerprint } = await import("@/lib/finalRendition");
     const { ProjectVideoStatus } = await import("@/components/review/ProjectVideoStatus");
     const statusHtml = () => ProjectVideoStatus({ projectId }).then(tree => renderToStaticMarkup(tree));
     const destination = await import("@/lib/videoDeliveryDestination");
@@ -110,6 +110,11 @@ async function main() {
     await prisma.topazJob.update({ where: { id: processingJob.id }, data: { state: "done", finalPath: "/fixture/branding/05-Final-Video/Branding-3-FINAL (Topaz).mp4", savedAt: new Date(), outputCheck: "verified" } });
     c.ok("Topaz completion preserves destination choice while creating a new byte-bound upload identity", await choiceFp(processing.id) === processingChoice && await destination.usesAryeoDelivery((await loadCut(processing.id))!) && !!await fp(processing.id));
     c.ok("finished preselected version skips auto-publication and accepts Aryeo receipt", !(await publishApprovedCutToLibrary(processing.id)).published && (await uploads.recordUploaded(processing.id, actor, await fp(processing.id))).ok);
+    const batch = await loadCuts([first.id, sibling.id, next.id, processing.id]);
+    const destinations = await destination.aryeoDestinationsFor([...batch.values()]);
+    const individual = await Promise.all([...batch.values()].map(async cut => [cut.id, await destination.usesAryeoDelivery(cut)] as const));
+    c.ok("batched delivery choices match individual readers for sent, stale listing, replacement and processed cuts", individual.every(([id, value]) => destinations.get(id) === value) && destinations.size === 4);
+    c.ok("batched cut source fingerprints retain exact per-video identities", (await Promise.all([...batch.values()].map(async cut => sourceFingerprint(cut) === await fp(cut.id)))).every(Boolean));
     c.ok("no provider mutation, notice, client decision or schema change was fabricated", fence.blocked.length === 0 && await prisma.outboxMessage.count() === 0 && await prisma.clientDecision.count() === 0 && await prisma.finalRenditionCheck.count() === 0);
     await clearSession();
     c.summary();

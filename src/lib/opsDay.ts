@@ -541,8 +541,13 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
     ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
     : []);
   const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
+  // Delivery can run throughout the shoot/communications/conditions reads.
+  // Handle failure immediately so this started promise can safely be awaited
+  // with the second group without an unhandled rejection.
+  const readySendPromise = readyToSend({ recordFollowUpHealth: true, includeNoticeIncidents: true, excludeClientIds: excludedClientIds })
+    .catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard);
 
-  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList] =
+  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList, turnarounds, videoReview] =
     await Promise.all([
       prisma.project.findMany({
         where: { shootDate: { gte: today.start, lt: today.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...clientScope },
@@ -635,6 +640,8 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
         revisionsBoard(now, { excludeClientIds: excludedClientIds }).then((groups) => groups.reduce((s, g) => s + g.jobs.length, 0)),
       ]),
       findUnansweredInbound(now, { excludeClientIds: excludedClientIds }).catch(() => []),
+      turnaroundRules(),
+      videoReviewBoard({ excludeClientIds: excludedClientIds }).catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
     ]);
 
   // One comms pull for every shoot client (last 72h) — the per-SHOOT filter
@@ -657,22 +664,16 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
     }
   }
 
-  const [todayShoots, tomorrowShoots] = await Promise.all([
+  const { workStateFor, workLabel } = await import("@/lib/editorWork");
+  const [todayShoots, tomorrowShoots, videoStates, pipelineWork, readySend] = await Promise.all([
     Promise.all(todayProjects.map((p) => shootRow(p, commRowsByClient, now))),
     Promise.all(tomorrowProjects.map((p) => shootRow(p, commRowsByClient, now))),
+    videoStatesFor(qcTasks.map((t) => t.projectId).filter((x): x is string => !!x)).catch(() => new Map<string, ProjectVideoState>()),
+    workStateFor(pipelineProjects.filter((p) => p.status === "EDITING").map((p) => p.id)).catch(() => new Map()),
+    readySendPromise,
   ]);
 
   const todayKey = today.key;
-  const [turnarounds, videoStates, videoReview, readySend] = await Promise.all([
-    turnaroundRules(),
-    videoStatesFor(qcTasks.map((t) => t.projectId).filter((x): x is string => !!x)).catch(() => new Map<string, ProjectVideoState>()),
-    videoReviewBoard({ excludeClientIds: excludedClientIds }).catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
-    // Finished and not yet sent (Sep 17). It rides here with the rest of the
-    // day so Home still makes ONE pass at the database, and so the badge on the
-    // block, the row in "What needs you today" and the card itself are all the
-    // length of the same array.
-    readyToSend({ recordFollowUpHealth: true, includeNoticeIncidents: true, excludeClientIds: excludedClientIds }).catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard),
-  ]);
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
     let actionable = 0;
@@ -814,8 +815,6 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
   // The row's chip read the STAGE, so Jordan's home could say "0 being edited
   // now" above five rows marked "editing" (batch-2 review, Sep 25 2026). The
   // same reader as the pill, the queue and the Working-now panel.
-  const { workStateFor, workLabel } = await import("@/lib/editorWork");
-  const pipelineWork = await workStateFor(pipelineProjects.filter((p) => p.status === "EDITING").map((p) => p.id)).catch(() => new Map());
   const pipelineRows: PipelineRow[] = pipelineProjects.map((p) => {
     const { ev, qc: e } = parseEvidence(p.statusEvidence);
     const w = p.status === "EDITING" ? workLabel("EDITING", pipelineWork.get(p.id), { now }) : null;

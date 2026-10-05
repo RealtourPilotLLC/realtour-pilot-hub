@@ -14,10 +14,11 @@ import { createTestClientShell, seedRepresentativeMonth } from "../_fixtures/rep
 import { buildSampleMp4, ensureSampleClip, startSampleServer, DEMO_CLIP_URL } from "../demo/sample";
 
 const REPO = path.resolve(__dirname, "../..");
-const DB_PORT = process.env.DRILL_K === "editor-visual-serve" || process.argv.includes("--serve") ? 5617 : 5627, SAMPLE_PORT = 5618, APP_PORT = 3225;
+const deliveryProof = process.env.DRILL_K === "delivery-preview-serve";
+const DB_PORT = deliveryProof || process.env.DRILL_K === "editor-visual-serve" || process.argv.includes("--serve") ? 5617 : 5627, SAMPLE_PORT = 5618, APP_PORT = 3225;
 const BASE = `http://localhost:${APP_PORT}`;
 const BASELINE = "5596d4e";
-const serve = process.argv.includes("--serve") || process.env.DRILL_K === "editor-visual-serve";
+const serve = deliveryProof || process.argv.includes("--serve") || process.env.DRILL_K === "editor-visual-serve";
 const c = makeChecker();
 installNextStubs();
 type Props = Record<string, unknown>;
@@ -275,9 +276,29 @@ async function main() {
     if (process.exitCode) throw new Error("New brief composition check failed; no visual server started.");
     if (!serve) return;
 
+    if (deliveryProof) {
+      await prisma.project.update({ where: { id: ready.id }, data: { aryeoListingId: "isolated-preview-listing" } });
+      const { chooseAryeoDelivery, destinationFingerprint } = await import("@/lib/videoDeliveryDestination");
+      const { loadCut } = await import("@/lib/finalRendition");
+      for (const cut of readyCuts) {
+        await prisma.topazJob.create({ data: { projectId: ready.id, submissionId: cut.id, state: "done", finalPath: `${ready.dropboxFolder}/05-Final-Video/${cut.fileName}`, savedAt: yesterday, outputCheck: "verified" } });
+        const result = await chooseAryeoDelivery(cut.id, destinationFingerprint((await loadCut(cut.id))!), { id: owner.id, name: "Declared fixture owner" });
+        if (!result.ok) throw new Error(result.message);
+      }
+    }
+
     const copy = sourceCopy(runtime);
+    if (deliveryProof) {
+      const route = path.join(copy.checkout, "src/app/delivery-preview-proof"); fs.mkdirSync(route);
+      fs.writeFileSync(path.join(route, "page.tsx"), `import { requireAdmin } from '@/lib/auth/guards';
+import { readyToSend } from '@/lib/readyToSend';
+import { ReadyToSendCard } from '@/components/ops/ReadyToSendCard';
+import { WatchDeliveryVideo } from '@/components/ops/WatchDeliveryVideo';
+export const dynamic = 'force-dynamic';
+export default async function Page() { await requireAdmin(); const board = await readyToSend({projectId:${JSON.stringify(ready.id)}}); return <main className="mx-auto max-w-3xl space-y-4 p-4"><h1>Isolated delivery playback</h1><ReadyToSendCard board={board}/><WatchDeliveryVideo label="Watch unavailable fixture" videos={[{id:${JSON.stringify(readyCuts[0].id)}, src:${JSON.stringify(`/api/review/cut/${readyCuts[0].id}/final?f=stale&play=1`)}, title:'Declared unavailable file'}]}/></main>; }`);
+    }
     const fixtureFile = path.join(runtime, "runtime.private.json"), manifestFile = path.join(runtime, "visual.private.json"), serverLog = path.join(runtime, "next-server.log");
-    fs.writeFileSync(fixtureFile, JSON.stringify({ runtime, dbPort: DB_PORT, samplePort: SAMPLE_PORT, sampleUrl: DEMO_CLIP_URL, files }), { mode: 0o600 });
+    fs.writeFileSync(fixtureFile, JSON.stringify({ runtime, dbPort: DB_PORT, samplePort: SAMPLE_PORT, sampleUrl: deliveryProof ? `http://localhost:${SAMPLE_PORT}/review-cuts/fixture/sample-reel.mp4` : DEMO_CLIP_URL, files }), { mode: 0o600 });
     const manifest = { warning: "Disposable isolated visual fixture only. Every provider fenced; no sends/workers/booking. Credentials and paths private. Baseline batch files only; all other source is current.", base: BASE, runtime, source: copy, password, personas, urls: { login: `${BASE}/login`, editing: `${BASE}/editing`, editingTest: `${BASE}/editing?test=1`, brief: `${BASE}/edit/${mainJob.id}?cut=${cuts[0].id}`, singleBrief: `${BASE}/edit/${single.id}`, readyBrief: `${BASE}/edit/${ready.id}`, review: `${BASE}/review`, reviewCut: `${BASE}/review/${mainJob.id}?cut=${cuts[1].id}`, delivery: `${BASE}/?test=1#ready-to-send` }, projectId: mainJob.id, singleProjectId: single.id, readyProjectId: ready.id, exactCutIds: cuts.map((cut) => cut.id), readyCutIds: readyCuts.map((cut) => cut.id), outputIds: outputs.map((o) => o.id), dbPort: DB_PORT, samplePort: SAMPLE_PORT, appPort: APP_PORT };
     fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2), { mode: 0o600 });
     sample = await startSampleServer(ensureSampleClip(runtime), SAMPLE_PORT);

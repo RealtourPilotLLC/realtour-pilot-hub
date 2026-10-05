@@ -121,7 +121,9 @@ async function main() {
     const needs = elements(assigned, "NeedsToday")[0].needs as { key: string; count: number; href: string }[];
     c.ok("signed creative reviewer sees the same full assigned queue while retaining money gates", needs.find((n) => n.key === "review-mine")?.count === (await getReviewQueue({ includeTest: true })).pending.filter((cut) => cut.reviewer?.id === seat.id).length && needs.find((n) => n.key === "review-mine")?.count === 2 && elements(assigned, "MoneyStat").length === 0 && elements(assigned, "QuickAdd").length === 0);
     const reviewTree = await review({ searchParams: Promise.resolve({ test: "1" }) });
-    c.ok("Review Room carries its existing scope into the delivery-return presentation", elements(reviewTree, "DeliveryExitSummary")[0].includeTest === true);
+    // The simplified Review Room no longer embeds the delivery summary. Check
+    // its actual scoped cut rows; the summary's return-link contract follows.
+    c.ok("Review Room retains both real and fixture cuts in explicit test view", jobs.every(job => elements(reviewTree, "CutRow").some(row => (row.s as { id: string }).id === job.cut.id)));
     const summary = renderToStaticMarkup(createElement(DeliveryExitSummary, { board: allDay.readySend, includeTest: true }));
     c.ok("test delivery return opens Home test view at its original anchor", summary.includes('href="/?test=1#video-review"') && !summary.includes('href="/#video-review"'));
     const incident = { projectId: jobs[1].project.id, street: "Fixture-only property", state: "failed" as const, queuedAtISO: now.toISOString(), outboxId: "isolated-outbox", taskId: "isolated-task" };

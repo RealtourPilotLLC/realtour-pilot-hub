@@ -247,14 +247,17 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
     );
   }
 
-  const unread = await unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id));
   // ONE read time for both halves of "Editors today": what each editor said
   // they're on (Start/Pause) and what they did today (evidence). Neither read
   // throws; each says so when it failed.
   const now = new Date();
-  const [wn, act] = await Promise.all([workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds })]);
+  const [unread, wn, act, workload, removedRows] = await Promise.all([
+    unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id)),
+    workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds }),
+    editingWorkload(workloadRows([...notDone, ...upcomingRows])),
+    recentlyRemovedFromQueue(),
+  ]);
   const today = editorLines(wn, act, now);
-  const workload = await editingWorkload(workloadRows([...notDone, ...upcomingRows]));
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);
 
   return (
@@ -302,7 +305,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         </section>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}
-        <RecentlyRemoved rows={(await recentlyRemovedFromQueue()).filter((row) => !excludedProjects.has(row.projectId))} />
+        <RecentlyRemoved rows={removedRows.filter((row) => !excludedProjects.has(row.projectId))} />
         <details className="group rounded-xl border border-border bg-surface" id="editing-capacity">
           <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-brand">
             <span className="font-semibold">Capacity and activity details</span>

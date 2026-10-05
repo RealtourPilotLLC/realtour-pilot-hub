@@ -108,7 +108,6 @@ export const WAITING_ON_INSTRUCTIONS = "Waiting on instructions";
 export type EditorQueueRow = QueueRow & { dueNote: string | null };
 
 export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {}): Promise<{ notDone: EditorQueueRow[]; upcoming: EditorQueueRow[]; done: EditorQueueRow[] }> {
-  const rules = await editorRouting();
   // The office's normal view hides fixtures; creative job/chat callers keep
   // the existing full assigned queue unless their caller explicitly scopes it.
   const clientScope = opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {};
@@ -119,9 +118,12 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // nobody touched, and a hold is the opposite — the office is watching for
   // that footage. Dateless (BOOKED) holds ride here too; a held job whose
   // shoot is still ahead lands in Upcoming as before.
-  const heldIds = (
-    await prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_HOLD_PREFIX } }, select: { key: true } })
-  ).map((r) => r.key.slice(WAITING_HOLD_PREFIX.length));
+  const [rules, heldRows, removed] = await Promise.all([
+    editorRouting(),
+    prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_HOLD_PREFIX } }, select: { key: true } }),
+    removedProjectIds(),
+  ]);
+  const heldIds = heldRows.map((r) => r.key.slice(WAITING_HOLD_PREFIX.length));
   const heldSet = new Set(heldIds);
   // TAKEN OFF THIS BOARD BY HAND (Jordan, Sep 18). The ONLY reader of that
   // marker is this function — see lib/queueRemoved for why it is a marker and
@@ -129,7 +131,6 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // `notIn` on each: it is one small set, the rails are three different
   // queries, and a filter nobody can forget to add to a fourth rail is worth
   // more than the rows it saves.
-  const removed = await removedProjectIds();
   const [inflight, scheduled, deliveredRaw] = await Promise.all([
     prisma.project.findMany({
       // Past-shoot BOOKED/SCHEDULED jobs belong here too (as "Waiting"): the
@@ -191,8 +192,8 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // no task yet. Without this, every row showed the current rule's editor and
   // misattributed Kim's and Luma's in-flight work to John Mark.
   const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
-  const owedSlotsByProject = new Map([...(await videoStatesFor(allIds))].map(([id, state]) => [id, state.owed]));
-  const [openTasks, msgCounts, cutRows, work, holders] = await Promise.all([
+  const [videoStates, openTasks, msgCounts, cutRows, work, holders] = await Promise.all([
+    videoStatesFor(allIds),
     prisma.smartTask.findMany({
       where: {
         projectId: { in: inflight.map((p) => p.id) },
@@ -384,10 +385,13 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // video's promise, a client round's 48 business hours, the same business day
   // for anything else reopened, or the date a person set. One query, only for
   // rows delivered once.
-  const clocks = await reopenedClocksFor(inflight.filter((p) => !!p.deliveredAt).map((p) => p.id));
+  const [clocks, dueSet] = await Promise.all([
+    reopenedClocksFor(inflight.filter((p) => !!p.deliveredAt).map((p) => p.id)),
+    dueSetTimesFor(inflight.filter((p) => !!p.deliveredAt && !!p.dueOverrideAt).map((p) => p.id)),
+  ]);
+  const owedSlotsByProject = new Map([...videoStates].map(([id, state]) => [id, state.owed]));
   // …and when the office's own due was saved (A52 review): overrideAt moves on
   // any override save, so it cannot say whether the date was set for THIS reopen.
-  const dueSet = await dueSetTimesFor(inflight.filter((p) => !!p.deliveredAt && !!p.dueOverrideAt).map((p) => p.id));
   // ---- HANDED TO LUMA VISUALS (§7.7 / A33, Sep 25) -------------------------
   // A job handed to the outside agency leaves our editors' boards, and its row
   // said nothing about whether the files ever went. It now carries the office's

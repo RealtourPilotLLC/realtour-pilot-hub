@@ -60,6 +60,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         return NextResponse.json({ error: "The final file changed while it was opened. Reopen the current final check." }, { status: 409 });
       }
       url = link.link;
+      // The native delivery player fetches directly from Dropbox after this
+      // exact-file/access check. Seeking no longer repeats the database + two
+      // Dropbox reads through a serverless proxy for each byte range. A normal
+      // final-check request keeps the existing protected proxy response.
+      if (req.nextUrl.searchParams.get("play") === "1") {
+        return new NextResponse(null, { status: 302, headers: { Location: url, "Cache-Control": "private, no-store" } });
+      }
     }
     const response = await fetch(url, { headers, cache: "no-store", signal: AbortSignal.timeout(300_000) });
     if (![200, 206].includes(response.status) || !response.body) return NextResponse.json({ error: "The final file could not be played." }, { status: 503 });

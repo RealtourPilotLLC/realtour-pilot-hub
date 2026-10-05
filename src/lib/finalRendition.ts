@@ -13,18 +13,23 @@ export type FinalCheckKey = (typeof FINAL_CHECK_KEYS)[number];
 
 type Cut = NonNullable<Awaited<ReturnType<typeof loadCut>>>;
 
+const FINAL_CUT_SELECT = {
+  id: true, projectId: true, kind: true, status: true, deliverableId: true, slot: true, round: true,
+  assetPath: true, finalPath: true, blobUrl: true, contentHash: true, sourceRev: true,
+  sentToClientAt: true, sentToClientBy: true, decidedAt: true,
+  project: { select: { aryeoListingId: true, status: true, contentMonthId: true } },
+  deliverable: { select: { type: true, videoStyle: true, productTitle: true, label: true } },
+  topazJob: { select: { id: true, state: true, finalPath: true, savedAt: true } },
+} satisfies Prisma.ReviewSubmissionSelect;
+
 export async function loadCut(submissionId: string, db: Prisma.TransactionClient = prisma) {
-  return db.reviewSubmission.findUnique({
-    where: { id: submissionId },
-    select: {
-      id: true, projectId: true, kind: true, status: true, deliverableId: true, slot: true, round: true,
-      assetPath: true, finalPath: true, blobUrl: true, contentHash: true, sourceRev: true,
-      sentToClientAt: true, sentToClientBy: true, decidedAt: true,
-      project: { select: { aryeoListingId: true, status: true, contentMonthId: true } },
-      deliverable: { select: { type: true, videoStyle: true, productTitle: true, label: true } },
-      topazJob: { select: { id: true, state: true, finalPath: true, savedAt: true } },
-    },
-  });
+  return db.reviewSubmission.findUnique({ where: { id: submissionId }, select: FINAL_CUT_SELECT });
+}
+
+/** Same source identity as the mutation reader, one batch for a display queue. */
+export async function loadCuts(submissionIds: string[], db: Prisma.TransactionClient = prisma) {
+  const rows = submissionIds.length ? await db.reviewSubmission.findMany({ where: { id: { in: submissionIds } }, select: FINAL_CUT_SELECT }) : [];
+  return new Map(rows.map(cut => [cut.id, cut]));
 }
 
 /** The identity of the source file Kyle is taking to Aryeo. A render that

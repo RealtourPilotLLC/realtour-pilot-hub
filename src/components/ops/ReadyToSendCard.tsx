@@ -10,6 +10,7 @@ import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkUploaded } from "@/components/ops/MarkUploaded";
 import { MarkProjectSent } from "@/components/ops/MarkProjectSent";
 import { ChooseAryeoDelivery } from "@/components/ops/ChooseAryeoDelivery";
+import { WatchDeliveryVideo, deliveryPreview } from "@/components/ops/WatchDeliveryVideo";
 import { uploadedDeliveryGroups, type UploadedTarget } from "@/lib/uploadedDeliveryGroups";
 import { CorrectUpload } from "@/components/ops/CorrectUpload";
 import { RetryRender } from "@/components/ops/RetryRender";
@@ -167,7 +168,9 @@ function UploadedRow({ group, onSent }: { group: ReturnType<typeof uploadedDeliv
   return <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2">
     <div className="min-w-0 flex-1 basis-48"><p className="break-words text-sm font-medium">{group.title}</p>{group.overdue && <span className="text-xs font-medium text-danger">Past due</span>}</div>
     <div className="flex max-w-full flex-wrap items-center gap-2">
-      <Link href={group.watchHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Watch</Link>
+      {group.videos.every(v => !!v.uploadFingerprint)
+        ? <WatchDeliveryVideo label="Watch" videos={group.videos.map(v => deliveryPreview(v.submissionId, v.uploadFingerprint!, `${v.street} · ${v.cutLabel} · v${v.round}`))} />
+        : <Link href={group.watchHref} prefetch={false} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Watch</Link>}
       {group.aryeoUrl && <a href={group.aryeoUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium">Aryeo listing</a>}
       {group.targets.length === group.videos.length && <MarkProjectSent projectId={group.projectId} cuts={group.targets} onRecorded={onSent} />}
     </div>
@@ -429,12 +432,12 @@ function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?
             <ExternalLink className="size-3.5" /> Aryeo
           </a>
         )}
-        <Link
-          href={v.uploadFingerprint && !usesPortal(v) ? `/api/review/cut/${v.submissionId}/final?f=${v.uploadFingerprint}` : v.reviewHref}
+        {v.uploadFingerprint && !usesPortal(v) ? <WatchDeliveryVideo videos={[deliveryPreview(v.submissionId, v.uploadFingerprint, `${v.street} · ${v.cutLabel} · v${v.round}`)]} /> : <Link
+          href={v.reviewHref} prefetch={false}
           className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           <Eye className="size-3.5" /> Watch it
-        </Link>
+        </Link>}
         {!usesPortal(v) && !v.uploaded && v.uploadFingerprint && <MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} onUploaded={onUploaded} />}
         {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
             way to retry the render without going into connections"). Offered

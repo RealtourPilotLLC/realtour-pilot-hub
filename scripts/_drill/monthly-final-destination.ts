@@ -286,11 +286,17 @@ async function main() {
     await setSession({ uid: kyle.id, email: kyle.email, role: kyle.role });
     const listingPreview = await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=${listingFingerprint}`), { params: Promise.resolve({ id: listingCut.id }) });
     c.ok("listing Watch it streams finished bytes, not the creative original", listingPreview.status === 200 && await listingPreview.text() === PROCESSED.toString());
+    const mediaBeforeNative = fence.faked.filter(u => u.startsWith("https://media.example.test/")).length;
+    const nativePreview = await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=${listingFingerprint}&play=1`, { headers: { Range: "bytes=0-1" } }), { params: Promise.resolve({ id: listingCut.id }) });
+    c.ok("native delivery player gets verified direct stream without proxy-fetching video bytes", nativePreview.status === 302 && !!nativePreview.headers.get("location") && nativePreview.headers.get("cache-control") === "private, no-store" && fence.faked.filter(u => u.startsWith("https://media.example.test/")).length === mediaBeforeNative);
+    c.ok("direct playback points to exact processed file", await (await fetch(nativePreview.headers.get("location")!)).text() === PROCESSED.toString());
+    c.ok("native playback rejects stale fingerprints before a redirect", (await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=stale&play=1`), { params: Promise.resolve({ id: listingCut.id }) })).status === 409);
     const { GET: topazDownload } = await import("@/app/api/topaz/download/[id]/route");
     const listingDownload = await topazDownload(new NextRequest(`http://fixture.local/api/topaz/download/${listingJob.id}`), { params: Promise.resolve({ id: listingJob.id }) });
     c.ok("listing Download and Watch it use the same final bytes", listingDownload.status === 302 && await (await fetch(listingDownload.headers.get("location")!)).text() === PROCESSED.toString());
     c.ok("stale listing preview fingerprint fails closed", (await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=stale`), { params: Promise.resolve({ id: listingCut.id }) })).status === 409);
     await setSession({ uid: editor.id, email: editor.email, role: editor.role });
+    c.ok("native playback still refuses an editor", (await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=${listingFingerprint}&play=1`), { params: Promise.resolve({ id: listingCut.id }) })).status === 403);
     c.ok("editor cannot open office delivery preview", (await finalPreview(new NextRequest(`http://fixture.local/api/review/cut/${listingCut.id}/final?f=${listingFingerprint}`), { params: Promise.resolve({ id: listingCut.id }) })).status === 403);
     await setSession({ uid: kyle.id, email: kyle.email, role: kyle.role });
     const routingRace = await makeCut(6, 3); mode = "complete";

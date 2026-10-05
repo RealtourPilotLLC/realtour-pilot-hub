@@ -39,6 +39,24 @@ export async function usesAryeoDelivery(cut: Cut, db: Db = prisma): Promise<bool
     && data.destinationFingerprint === destinationFingerprint(cut) && data.listingId === cut.project.aryeoListingId;
 }
 
+/** Queue reads must not issue one database round trip per video. This is only
+ * a presentation read; every write still rechecks its exact live cut/receipt. */
+export async function aryeoDestinationsFor(cuts: Cut[], db: Db = prisma): Promise<Map<string, boolean>> {
+  const monthly = cuts.filter(cut => !!cut.project.contentMonthId);
+  const receipts = monthly.length ? await db.auditLog.findMany({ where: { action: "video_delivery_destination", target: { in: monthly.map(cut => cut.id) } }, orderBy: { createdAt: "desc" } }) : [];
+  return new Map(cuts.map(cut => {
+    if (!cut.project.contentMonthId) return [cut.id, true];
+    if (!cut.sentToClientAt && (!canChooseAryeo(cut) || !cut.project.aryeoListingId)) return [cut.id, false];
+    const receipt = receipts.find(row => row.target === cut.id && (cut.sentToClientAt ? row.createdAt <= cut.sentToClientAt : row.id === receiptId(cut)));
+    if (!receipt) return [cut.id, false];
+    const data = JSON.parse(receipt.detail);
+    const matches = data.submissionId === cut.id && data.destination === "aryeo-listing"
+      && (cut.sentToClientAt ? !!data.destinationFingerprint && !!data.listingId
+        : data.destinationFingerprint === destinationFingerprint(cut) && data.listingId === cut.project.aryeoListingId);
+    return [cut.id, matches];
+  }));
+}
+
 export async function chooseAryeoDelivery(id: string, fingerprint: string, actor: { id: string; name: string }) {
   return prisma.$transaction(async (tx) => {
     const initial = await loadCut(id, tx);
