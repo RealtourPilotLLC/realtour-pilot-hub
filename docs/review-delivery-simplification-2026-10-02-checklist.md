@@ -1,5 +1,9 @@
 # Review, delivery and editor simplification — October 2
 
+## October5 continuation — editor/mobile/upload audit
+
+Current findings,340 passing focused checks, native proof, exact changed paths and remaining physical/provider acceptance: [editor-review-delivery-audit-2026-10-05.md](editor-review-delivery-audit-2026-10-05.md). Fixes: Kim manual-assignment upload parity; contained Matlack mobile player; callback/abandonment and lost finish-response recovery; truthful chosen branding destination in project summary. Preserve all prior completed evidence below. Release/main receipt is recorded in that current audit.
+
 Baseline: `5596d4e4daaf88a50b41bb60bd26c3eec6976165`, clean `codex/audit-2026-09-30`; identical to audited main. Updated source backlog: Downloads/Realtour-Pilot-Review-and-Delivery-Simplification-2026-10-02.md (read all sections).
 
 ## Boundaries

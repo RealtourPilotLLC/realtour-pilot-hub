@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { authEnforced, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { slugForName } from "@/lib/assignees";
+import { editorHoldsAssignedWork } from "@/lib/editorWork";
 import type { SelfCheckInput, SelfCheckItem } from "@/lib/selfCheck";
 
 // ---------------------------------------------------------------------------
@@ -31,16 +31,13 @@ async function checkActorFor(row: { projectId: string; submittedByKey: string | 
     return { ok: true, actor: { name: me.name ?? me.email, userId: me.id, editorKey: null, office: true } };
   }
   if (me.realRole !== "EDITOR") return { ok: false, message: "Only the editor, Kyle or Jordan can finish this check." };
-  const key = me.editorKey ?? (me.name ? slugForName(me.name) : null);
+  const key = me.editorKey;
   if (!key) return { ok: false, message: "Your account is not linked to an editor profile yet — ask Jordan or Kyle." };
   // THEIR cut, or an unclaimed one on a job they hold — the same scope an
   // upload has (review/actions.uploadAuthor).
   if (row.submittedByKey && row.submittedByKey !== key) return { ok: false, message: "That cut was handed in by another editor." };
   if (!row.submittedByKey) {
-    const mine = await prisma.smartTask.findFirst({
-      where: { projectId: row.projectId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] }, assignedKey: key },
-      select: { id: true },
-    });
+    const mine = await editorHoldsAssignedWork(row.projectId, key);
     if (!mine) return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
   }
   return { ok: true, actor: { name: me.name ?? me.email, userId: me.id, editorKey: key, office: false } };

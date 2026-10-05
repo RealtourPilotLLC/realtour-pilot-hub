@@ -1185,7 +1185,8 @@ export async function finalizeCutUpload(
     // row as it is now, never a blind "already in review" (review fix, Sep 25).
     const again = await loadEnteringCut(submissionId);
     if (again?.blobUrl) return bindLandedUpload(again, blob);
-    return { ok: true, message: "Already in review." };
+    if (again?.status === "UPLOAD_FAILED") await deleteCutObject(blob.url);
+    return { ok: false, message: "That upload was cancelled — start it again from the editor portal." };
   }
   // THE EDITOR'S CHECK, BOUND TO WHAT LANDED (§8.2). The bytes are ours now;
   // whether they are in front of the reviewer depends on them being the file

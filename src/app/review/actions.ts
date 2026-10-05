@@ -5,13 +5,14 @@ import { revalidatePath } from "next/cache";
 // measurement in here that nobody is waiting on (finishCutUpload, below).
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { authEnforced, requireAdmin, requireCutReviewer, requireTaskAccess } from "@/lib/auth/guards";
+import { authEnforced, requireAdmin, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 import { advisoryKeyPair } from "@/lib/dbLocks";
+import { editorHoldsAssignedWork } from "@/lib/editorWork";
 // Who wrote / ruled, in one vocabulary (Review Room attribution, Sep 28).
 import { attributeLines, LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
 import { displayNameFor } from "@/lib/actorName";
@@ -259,36 +260,12 @@ export async function submitCutForReview(
   opts?: { submissionId?: string | null },
 ): Promise<{ ok: boolean; message: string; needsSelfCheck?: boolean; candidate?: SelfCheckCandidate }> {
   { const refused = await previewRefusal(); if (refused) return refused; }
-  // Scope to the SUBMITTING editor's own task: authorizing off the oldest open
-  // task regardless of assignee let one editor's submit close ANOTHER editor's
-  // work item (audit). Owner/admin submit-on-behalf keeps the wide net.
-  const { getCurrentUser } = await import("@/lib/auth/user");
+  const who = await uploadAuthor(projectId);
+  if (!who.ok) return who;
   const me = await getCurrentUser().catch(() => null);
-  // An EDITOR with no editorKey mapped still needs scoping — their tasks are
-  // assigned under their name slug (same fallback requireTaskAccess uses). A
-  // bare null here would UNSCOPE the close below and let their submit complete
-  // a co-editor's work item.
-  const myEditorKey =
-    me?.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
-  const task = await prisma.smartTask.findFirst({
-    where: {
-      projectId,
-      taskType: { in: ["edit_video", "revision"] },
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-      ...(myEditorKey ? { assignedKey: myEditorKey } : {}),
-    },
-    orderBy: { createdAt: "asc" },
-    select: { id: true },
-  });
-  try {
-    // Access keys off the editor's open task (assignedKey = them); owner/admin
-    // always pass. No open task → admin only.
-    if (task) await requireTaskAccess(task.id);
-    else await requireAdmin();
-  } catch (e) {
-    return { ok: false, message: (e as Error).message };
-  }
-
+  // Manual project/output assignments are real work too. Closing remains
+  // scoped to this editor's own task; no task or Start event is manufactured.
+  const myEditorKey = who.role === "EDITOR" ? who.key : null;
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -1643,8 +1620,8 @@ async function standingApprovedCutIsTheirs(
 }
 
 // Who may upload on THIS project. Owner/admin: any job (vendor cuts). An
-// EDITOR: only a job with an open edit_video/revision task assigned to them —
-// the same scope submitCutForReview enforces, because an earlier audit found
+// EDITOR: only currently assigned work, using Start's same task/manual-project/
+// output ownership rule. This is also the folder-submit scope; an audit found
 // one editor's action closing ANOTHER editor's work item (review).
 //
 // `replacing` IS THE APPROVED-CUT DOOR, and it exists because the door was
@@ -1666,31 +1643,27 @@ async function standingApprovedCutIsTheirs(
 // admit another editor's slot, another slot on the same job, a slot whose
 // approved version came in through the Dropbox folder sweep or from the office
 // (no key on the row — those stay the office's to replace), or any ordinary
-// upload, which still needs the open task.
+// upload, which still needs saved work ownership.
 //
 // `role` rides along because the export spec below has an override only
 // OWNER/ADMIN may use, and the browser's word for who it is is worth nothing.
 async function uploadAuthor(
   projectId: string,
   replacing?: { deliverableId: string; slot: number } | null,
+  reservedByKey?: string | null,
 ): Promise<{ ok: true; key: string | null; name: string | null; role: string } | { ok: false; message: string }> {
   const me = await getCurrentUser().catch(() => null);
   if (!me && !authEnforced()) return { ok: true, key: null, name: LOCAL_DEV_AUTHOR, role: "OWNER" }; // same rule as requireRole
   if (!me) return { ok: false, message: "Sign in to upload a cut." };
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to upload." };
   if (!["OWNER", "ADMIN", "EDITOR"].includes(me.role)) return { ok: false, message: "Only editors, admins and the owner can upload cuts." };
-  const key = me.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
+  const key = me.role === "EDITOR" ? me.editorKey : null;
   if (me.role === "EDITOR") {
-    const mine = await prisma.smartTask.findFirst({
-      where: {
-        projectId,
-        taskType: { in: ["edit_video", "revision"] },
-        status: { notIn: ["COMPLETED", "CANCELLED"] },
-        assignedKey: key ?? "__none__",
-      },
-      select: { id: true },
-    });
-    if (!mine && !(replacing && (await standingApprovedCutIsTheirs(projectId, replacing, key)))) {
+    if (!key) return { ok: false, message: "Your account is not linked to an editor profile yet — ask Jordan or Kyle." };
+    const mine = await editorHoldsAssignedWork(projectId, key);
+    // Finishing an exact reservation follows the same identity as its upload
+    // token. The store callback can close the task before the browser returns.
+    if (!mine && reservedByKey !== key && !(replacing && (await standingApprovedCutIsTheirs(projectId, replacing, key)))) {
       return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
     }
   }
@@ -1991,7 +1964,7 @@ export async function startCutUpload(input: {
 export async function finishCutUpload(input: { submissionId: string; url: string; pathname: string }): Promise<{ ok: boolean; message: string; held?: boolean }> {
   const row = await prisma.reviewSubmission.findUnique({
     where: { id: input.submissionId },
-    select: { projectId: true, status: true, sourceWidth: true, deliverableId: true, slot: true, blobUrl: true, selfCheckId: true, selfCheckedAt: true },
+    select: { projectId: true, status: true, sourceWidth: true, deliverableId: true, slot: true, blobUrl: true, selfCheckId: true, selfCheckedAt: true, submittedByKey: true },
   });
   if (!row) return { ok: false, message: "That upload no longer exists." };
   // THE SAME SLOT THE RESERVATION IS ON, so an author who was allowed to start
@@ -2001,8 +1974,10 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   // closed — leaving the row stuck at UPLOADING and the cut nowhere. The
   // reservation is UPLOADING, so it is not itself the standing version the test
   // looks at; the approved one it would supersede still is.
-  const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null);
+  const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null, row.submittedByKey);
   if (!who.ok) return who;
+  if (who.role === "EDITOR" && who.key !== row.submittedByKey) return { ok: false, message: "That upload was started by someone else." };
+  if (row.status === "UPLOAD_FAILED" || row.status === "WITHDRAWN") return { ok: false, message: "That upload was cancelled — start it again from the editor brief." };
   // The store's completion callback may have flipped the row first and then
   // been unable to say what landed (it carries no size; its own read failed),
   // leaving the editor's check waiting on the bytes. This call has a browser
@@ -2085,7 +2060,7 @@ export async function finishCutUpload(input: { submissionId: string; url: string
 }
 
 export async function abandonCutUpload(submissionId: string, blobUrl?: string | null): Promise<void> {
-  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, deliverableId: true, slot: true, status: true, blobUrl: true } });
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, deliverableId: true, slot: true, status: true, blobUrl: true, submittedByKey: true } });
   if (!row) return;
   // Bytes a row has already FILED as a cut are never "abandoned" (review fix,
   // Sep 25): the store's callback can file the row while the browser's finish
@@ -2095,12 +2070,16 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
   // Same slot as finishCutUpload's, for the same reason: whoever could open the
   // replacement has to be able to clean up after a failed one, or a widened
   // door leaves UPLOADING rows and orphan bytes behind it.
-  const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null);
+  const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null, row.submittedByKey);
   if (!who.ok) return;
-  await prisma.reviewSubmission.updateMany({
+  if (who.role === "EDITOR" && who.key !== row.submittedByKey) return;
+  const claimed = await prisma.reviewSubmission.updateMany({
     where: { id: submissionId, status: "UPLOADING" },
     data: { status: "UPLOAD_FAILED" },
-  }).catch(() => {});
+  });
+  // The callback may have filed the cut after our read. Only the atomic winner
+  // may discard bytes; a failed database write never authorizes deletion.
+  if (claimed.count !== 1) return;
   // Bytes that landed but never became a cut have no reason to stay anywhere.
   // deleteCutObject makes the same two checks the hard-coded `.public.` regex
   // used to make — a Vercel blob host, a review-cuts/ path — and then one the
@@ -2110,7 +2089,9 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
   // the new store it would have quietly stopped deleting anything at all —
   // handover §2.)
   if (blobUrl) {
-    const { deleteCutObject } = await import("@/lib/reviewCuts");
+    const { deleteCutObject, ownCutObject } = await import("@/lib/reviewCuts");
+    const owner = ownCutObject(blobUrl);
+    if (!owner.ok || !owner.pathname.startsWith(`review-cuts/${row.projectId}/${submissionId}/`)) return;
     const gone = await deleteCutObject(blobUrl);
     if (!gone.ok) console.error("[review] abandoned upload left bytes behind", submissionId, gone.reason);
   }
@@ -2795,15 +2776,9 @@ async function reassignCutInner(
   // scope startCutUpload enforces, because an editor must never be able to
   // drop a video onto a co-editor's job.
   if (!who.actor.office) {
-    const mine = await prisma.smartTask.findFirst({
-      where: {
-        projectId: target.id,
-        taskType: { in: ["edit_video", "revision"] },
-        status: { notIn: ["COMPLETED", "CANCELLED"] },
-        assignedKey: { in: [...who.actor.keys] },
-      },
-      select: { id: true },
-    });
+    const { holdersFor } = await import("@/lib/editorWork");
+    const held = (await holdersFor([target.id])).get(target.id);
+    const mine = [...who.actor.keys].some((key) => held?.has(key));
     if (!mine) return { ok: false, message: `${targetStreet} isn't on your queue — ask Kyle or Jordan to move it there for you.` };
   }
 

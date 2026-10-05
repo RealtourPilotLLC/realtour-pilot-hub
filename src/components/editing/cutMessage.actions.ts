@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { slugForName } from "@/lib/assignees";
+import { editorHoldsAssignedWork } from "@/lib/editorWork";
 
 // ---------------------------------------------------------------------------
 // The editor's message that travels WITH a cut — Jordan, Sep 2: "no border
@@ -43,18 +43,11 @@ export async function saveCutMessage(
     return { ok: false, message: "Only editors, admins and the owner can message a cut." };
   }
   if (me?.role === "EDITOR") {
-    const key = me.editorKey ?? (me.name ? slugForName(me.name) : null);
+    const key = me.editorKey;
+    if (!key) return { ok: false, message: "Your account is not linked to an editor profile yet — ask Jordan or Kyle." };
     const ownsCut = !!key && row.submittedByKey === key;
     if (!ownsCut) {
-      const mine = await prisma.smartTask.findFirst({
-        where: {
-          projectId: row.projectId,
-          taskType: { in: ["edit_video", "revision"] },
-          status: { notIn: ["COMPLETED", "CANCELLED"] },
-          assignedKey: key ?? "__none__",
-        },
-        select: { id: true },
-      });
+      const mine = await editorHoldsAssignedWork(row.projectId, key);
       if (!mine) {
         return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
       }

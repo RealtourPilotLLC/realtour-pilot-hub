@@ -6,12 +6,13 @@ import { cutSlots, owedSlotKeyOf } from "@/lib/reviewCuts";
 import { uploadedForDelivery } from "@/lib/deliveryUploads";
 import { monthlyPortalHandoffsFor } from "@/lib/cutEntitlement";
 import { etDateTime } from "@/lib/datetime";
+import { usesAryeoDelivery } from "@/lib/videoDeliveryDestination";
 
 async function readStatus(projectId: string) {
   try {
     const [slots, cuts, navigation] = await Promise.all([
       cutSlots(projectId),
-      prisma.reviewSubmission.findMany({ where: { projectId, withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } }, orderBy: [{ round: "desc" }, { createdAt: "desc" }], include: { topazJob: true, project: { select: { contentMonthId: true } } } }),
+      prisma.reviewSubmission.findMany({ where: { projectId, withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } }, orderBy: [{ round: "desc" }, { createdAt: "desc" }], include: { topazJob: true, project: { select: { contentMonthId: true, aryeoListingId: true, status: true } }, deliverable: { select: { type: true, label: true, productTitle: true, videoStyle: true } } } }),
       videoNavigationFor(projectId),
     ]);
     const [portal, windows, reviewers] = await Promise.all([
@@ -21,11 +22,12 @@ async function readStatus(projectId: string) {
     ]);
     return await Promise.all(slots.map(async (slot, index) => {
       const cut = cuts.find((cut) => owedSlotKeyOf(cut, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) === `${slot.deliverableId}:${slot.slot}`);
-      const uploaded = cut && !cut.sentToClientAt && !cut.project.contentMonthId ? (await uploadedForDelivery(cut.id)).ok : false;
+      const aryeo = cut ? await usesAryeoDelivery(cut) : false;
+      const uploaded = cut && !cut.sentToClientAt && aryeo ? (await uploadedForDelivery(cut.id)).ok : false;
       const reviewer = reviewers.find((member) => member.id === cut?.reviewerTeamMemberId)?.name ?? "Reviewer";
       const clientState = windows.find((window) => window.submissionId === cut?.id)?.state;
-      const state = !cut ? "Awaiting edit · Editor" : cut.status === "CHANGES_REQUESTED" ? "Changes requested · Editor" : cut.status !== "APPROVED" ? `Needs review · ${reviewer}` : portal.has(cut.id) ? `In client portal · ${cut.clientReleasedAt ? etDateTime(cut.clientReleasedAt) : "Publication recorded"} · ${clientState === "APPROVED" || clientState === "AUTO_APPROVED" ? "Client approved" : clientState === "CHANGES_REQUESTED" ? "Client changes requested" : "Awaiting client review"}` : cut.sentToClientAt ? `Sent · ${cut.sentToClientBy ?? "Office"} · ${etDateTime(cut.sentToClientAt)}` : cut.project.contentMonthId ? "Approved · Portal publication pending" : uploaded ? "Uploaded, not sent · Kyle: send listing" : "Approved · Kyle: upload to Aryeo";
-      return { key: `${slot.deliverableId}:${slot.slot}`, label: `Video ${navigation.get(`${slot.deliverableId}:${slot.slot}`)?.number ?? index + 1} of ${navigation.get(`${slot.deliverableId}:${slot.slot}`)?.total ?? slots.length} · ${cut ? `V${cut.round}` : "Awaiting edit"}`, state, approval: cut?.status === "APPROVED" && cut.decidedAt ? `Approved by ${cut.decidedBy ?? "Reviewer"} · ${etDateTime(cut.decidedAt)}` : null, correction: cut?.sentToClientAt && !cut.project.contentMonthId ? { id: cut.id, at: cut.sentToClientAt.toISOString() } : null, href: cut ? `/review/${projectId}?cut=${cut.id}` : `/review/${projectId}?output=${slot.deliverableId}:${slot.slot}` };
+      const state = !cut ? "Awaiting edit · Editor" : cut.status === "CHANGES_REQUESTED" ? "Changes requested · Editor" : cut.status !== "APPROVED" ? `Needs review · ${reviewer}` : aryeo && cut.sentToClientAt ? `Sent · ${cut.sentToClientBy ?? "Office"} · ${etDateTime(cut.sentToClientAt)}` : aryeo ? uploaded ? "Uploaded, not sent · Kyle: send listing" : "Approved · Kyle: upload to Aryeo" : portal.has(cut.id) ? `In client portal · ${cut.clientReleasedAt ? etDateTime(cut.clientReleasedAt) : "Publication recorded"} · ${clientState === "APPROVED" || clientState === "AUTO_APPROVED" ? "Client approved" : clientState === "CHANGES_REQUESTED" ? "Client changes requested" : "Awaiting client review"}` : "Approved · Portal publication pending";
+      return { key: `${slot.deliverableId}:${slot.slot}`, label: `Video ${navigation.get(`${slot.deliverableId}:${slot.slot}`)?.number ?? index + 1} of ${navigation.get(`${slot.deliverableId}:${slot.slot}`)?.total ?? slots.length} · ${cut ? `V${cut.round}` : "Awaiting edit"}`, state, approval: cut?.status === "APPROVED" && cut.decidedAt ? `Approved by ${cut.decidedBy ?? "Reviewer"} · ${etDateTime(cut.decidedAt)}` : null, correction: cut?.sentToClientAt && aryeo ? { id: cut.id, at: cut.sentToClientAt.toISOString() } : null, href: cut ? `/review/${projectId}?cut=${cut.id}` : `/review/${projectId}?output=${slot.deliverableId}:${slot.slot}` };
     }));
   } catch { return null; }
 }

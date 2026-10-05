@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { protectUploadWorkspace } from "@/lib/uploadNavigation";
 import { EXPORT_SPEC, exportRefusal, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
 import { startCutUpload, finishCutUpload, abandonCutUpload, cutTakeBackFlags } from "@/app/review/actions";
+import { cutUploadFinishReceipt } from "@/lib/cutUploadFinishReceipt";
 import { saveCutMessage } from "@/components/editing/cutMessage.actions";
 import { CutTakeBack, CutTakeBackFlags } from "@/components/review/CutTakeBack";
 import type { CutTakeBackInfo } from "@/components/review/types";
@@ -518,7 +519,7 @@ export function CutUploader({
       });
       landed = blob.url;
       setBusy((b) => ({ ...b, [key]: { pct: 100, label: "Checking the file…" } }));
-      const done = await finishCutUpload({ submissionId: started.submissionId, url: blob.url, pathname: blob.pathname });
+      const done = await cutUploadFinishReceipt(() => finishCutUpload({ submissionId: started.submissionId, url: blob.url, pathname: blob.pathname }));
       // HELD, NOT FAILED (§8.2): the bytes are safe in the store, they just are
       // not the file that was checked. Throwing here would abandon — and
       // delete — an upload the editor can still finish with a fresh check.
@@ -549,9 +550,12 @@ export function CutUploader({
       setSent(key);
       router.refresh();
     } catch (e) {
-      await abandonCutUpload(started.submissionId, landed).catch(() => {});
+      // Keep landed bytes available to the callback and fresh recorded read.
+      // A lost finish response must never turn into a destructive cleanup.
+      if (!landed) await abandonCutUpload(started.submissionId, null).catch(() => {});
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
       setErr((er) => ({ ...er, [key]: e instanceof Error ? e.message : "The upload failed — try again." }));
+      if (landed) router.refresh();
     }
   }
 

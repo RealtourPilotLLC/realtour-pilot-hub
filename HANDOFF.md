@@ -1,5 +1,7 @@
 # Handoff — RealTour Pilot Operations Hub
 
+**Current resume pointer (October5):** `docs/editor-review-delivery-audit-2026-10-05.md` has the newest upload/mobile findings, verification, release receipt and remaining acceptance. Continue from it and `docs/review-delivery-simplification-2026-10-02-checklist.md`. August notes below are preserved history, not current deployment state.
+
 **Session date:** 2026-08-19 · **Branch:** `books-cleanup` · **Deployed:** all work below is live in production
 **Latest deploy:** `5586a70` → https://realtour-pilot-hub.vercel.app (● Ready)
 

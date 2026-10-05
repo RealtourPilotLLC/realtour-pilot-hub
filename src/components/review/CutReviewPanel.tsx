@@ -114,6 +114,7 @@ export function CutReviewPanel({
   const router = useRouter();
   const [notFixed, setNotFixed] = useState<Set<string>>(() => new Set());
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [playbackError, setPlaybackError] = useState<{ src: string; message: string } | null>(null);
   const [now, setNow] = useState(0);
   const [composing, setComposing] = useState(false);
   const [capturedAt, setCapturedAt] = useState<number | null>(null);
@@ -238,8 +239,11 @@ export function CutReviewPanel({
             src={src}
             controls
             playsInline
+            preload="metadata"
+            onLoadedData={() => setPlaybackError(null)}
+            onError={(e) => setPlaybackError({ src: src!, message: e.currentTarget.error?.code === 3 || e.currentTarget.error?.code === 4 ? "This browser couldn't play this video format." : "The video couldn't load. Check your connection and retry." })}
             onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
-            className="mx-auto max-h-[70vh] w-full"
+            className="mx-auto block max-h-[70svh] w-full max-w-full object-contain"
           />
         ) : (
           <div className="flex flex-col items-center gap-1 px-6 py-14 text-center text-sm text-white/70">
@@ -250,6 +254,10 @@ export function CutReviewPanel({
           </div>
         )}
       </div>
+      {playbackError?.src === src && <div role="alert" className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
+        <p>{playbackError.message}</p>
+        <button type="button" className="mt-2 min-h-11 rounded-lg border border-border px-3 font-medium" onClick={() => { setPlaybackError(null); videoRef.current?.load(); }}>Retry video</button>
+      </div>}
 
       {legacy && (
         <p className="text-[11px] text-muted-2">

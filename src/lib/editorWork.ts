@@ -187,6 +187,13 @@ export async function holdersFor(projectIds: string[], db: Db = prisma): Promise
   return out;
 }
 
+/** Upload/check/message gates share Start's saved-work ownership. A routing
+ * suggestion or a historical closed task is not a current assignment. */
+export async function editorHoldsAssignedWork(projectId: string, key: string | null | undefined, db: Db = prisma): Promise<boolean> {
+  if (!key || !WORK_EDITOR_KEYS.includes(key)) return false;
+  return (await holdersFor([projectId], db)).get(projectId)?.has(key) === true;
+}
+
 /** The live edit card on a job, and whose it is. */
 async function editCardOf(projectId: string, db: Db = prisma) {
   return db.smartTask.findFirst({

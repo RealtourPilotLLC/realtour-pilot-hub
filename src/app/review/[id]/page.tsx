@@ -204,9 +204,9 @@ export default async function CutReviewPage({
         }
       />
 
-      <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
+      <div className="grid min-w-0 grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the cut */}
-        <div className="space-y-4 lg:col-span-2">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
           {slots.length > 0 && <nav aria-label="Project videos" className="flex max-w-full gap-2 overflow-x-auto pb-2">
             {slots.map((slot, index) => {
               const key = `${slot.deliverableId}:${slot.slot}`;
@@ -231,7 +231,7 @@ export default async function CutReviewPage({
                 {active.fileName && (
                   <>
                     <span className="text-muted-2">·</span>
-                    <span className="truncate text-xs text-muted-2">{active.fileName}</span>
+                    <span className="min-w-0 break-all text-xs text-muted-2">{active.fileName}</span>
                   </>
                 )}
               </div>
@@ -320,7 +320,7 @@ export default async function CutReviewPage({
         </div>
 
         {/* RIGHT — what to judge it against */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <Section icon={Film} title="What was ordered">
             {w.deliverables.length ? (
               <div className="flex flex-wrap gap-1.5">

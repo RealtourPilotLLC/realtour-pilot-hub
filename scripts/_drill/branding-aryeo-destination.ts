@@ -1,16 +1,23 @@
-// @drill-run: engine=postgres needs=tools/realpg timeout=180
+// @drill-run: engine=postgres conditions=none require=./scripts/_drill/_client-drill-preload.cjs needs=tools/realpg timeout=180
 // Actual domain/API/board against disposable Postgres. Providers remain fenced.
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, portFree } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createRequire } from "node:module";
 installNextStubs();
 const fence = fenceFetch(() => null);
 async function main() {
   if (!await portFree(5973)) throw new Error("Owned fixture port busy; existing process preserved.");
   const db = await bootDrillDb({ port: 5973, engine: "postgres", env: { AUTH_ENFORCE: "true" } }), c = makeChecker();
+  const nav = createRequire(__filename)("next/navigation") as { useRouter: () => unknown };
+  const oldRouter = nav.useRouter;
+  nav.useRouter = () => ({ refresh() {} });
   try {
     const { prisma } = await import("@/lib/prisma");
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    const { ProjectVideoStatus } = await import("@/components/review/ProjectVideoStatus");
+    const statusHtml = () => ProjectVideoStatus({ projectId }).then(tree => renderToStaticMarkup(tree));
     const destination = await import("@/lib/videoDeliveryDestination");
     const uploads = await import("@/lib/deliveryUploads");
     const grouped = await import("@/lib/projectDelivery");
@@ -59,6 +66,8 @@ async function main() {
     c.ok("retry preserves first choice attribution and activity", await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id, actor: actor.name } }) === 1 && await prisma.activity.count({ where: { projectId, body: { contains: "chose Aryeo" } } }) === 1);
     const selected = await loadCut(first.id);
     c.ok("choice survives database reload and leaves monthly identity/backup intact", await destination.usesAryeoDelivery(selected!) && selected?.project.contentMonthId === shell.monthId && selected.topazJob?.finalPath === job.finalPath && selected.topazJob.savedAt?.getTime() === job.savedAt?.getTime() && !selected.sentToClientAt);
+    const chosenHtml = await statusHtml();
+    c.ok("project summary shows the chosen Aryeo action alongside the sibling's portal action", chosenHtml.includes("Kyle: upload to Aryeo") && chosenHtml.includes("Portal publication pending"));
     c.ok("sibling video retains portal destination", !(await destination.usesAryeoDelivery((await loadCut(sibling.id))!)));
     const board = await readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false });
     c.ok("actual board exposes separate selected Aryeo and default portal rows", board.ready.find(v => v.submissionId === first.id)?.deliveryDestination === "aryeo-listing" && board.ready.find(v => v.submissionId === sibling.id)?.deliveryDestination === "client-portal" && board.ready.find(v => v.submissionId === sibling.id)?.canChooseAryeo === true);
@@ -66,11 +75,14 @@ async function main() {
     const publication = await publishApprovedCutToLibrary(first.id);
     c.ok("portal auto-publication skips an explicitly selected Aryeo version", !publication.published && publication.why?.includes("Aryeo") === true && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: first.id } })).clientReleasedAt);
     c.ok("selected branding version accepts the existing upload receipt", (await uploads.recordUploaded(first.id, actor, fingerprint)).ok && (await uploads.uploadReceiptStatus(first.id, fingerprint)).recorded);
+    c.ok("project summary advances chosen monthly branding to uploaded not sent", (await statusHtml()).includes("Uploaded, not sent"));
     const targets = [{ submissionId: first.id, fingerprint }];
     c.ok("selected branding participates in grouped manual send", (await grouped.markUploadedGroupSent(projectId, targets, actor.name)).ok);
     const delivered = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: first.id } });
     const output = await prisma.deliverableOutput.findUniqueOrThrow({ where: { deliverableId_slot: { deliverableId: shell.deliverableId!, slot: 1 } } });
     c.ok("monthly Aryeo send records truthful channel without portal release", !!delivered.sentToClientAt && !delivered.clientReleasedAt && output.deliveredVia === "aryeo-listing" && output.sentSubmissionId === first.id);
+    const sentHtml = await statusHtml();
+    c.ok("project summary shows sent Aryeo attribution and its correction action", sentHtml.includes("Sent · Owner fixture") && sentHtml.includes("Correct a mistaken delivery status"));
     await prisma.reviewSubmission.update({ where: { id: first.id }, data: { clientNoticeVia: "not-yet" } });
     c.ok("notification follow-up distinguishes Aryeo from monthly portal delivery", (await clientNotToldYet({ projectId })).find(v => v.submissionId === first.id)?.deliveryDestination === "aryeo-listing");
     await grouped.markUploadedGroupSent(projectId, targets, "Later fixture");
@@ -101,6 +113,6 @@ async function main() {
     c.ok("no provider mutation, notice, client decision or schema change was fabricated", fence.blocked.length === 0 && await prisma.outboxMessage.count() === 0 && await prisma.clientDecision.count() === 0 && await prisma.finalRenditionCheck.count() === 0);
     await clearSession();
     c.summary();
-  } finally { await db.stop(); fence.restore(); }
+  } finally { nav.useRouter = oldRouter; await db.stop(); fence.restore(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

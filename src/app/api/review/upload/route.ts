@@ -113,8 +113,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // An editor may only fund the row THEY reserved (the reservation is
         // where assignment is checked); owner/admin may fund any.
         if (me && me.role === "EDITOR") {
-          const { slugForName } = await import("@/lib/assignees");
-          const myKey = me.editorKey ?? (me.name ? slugForName(me.name) : null);
+          const myKey = me.editorKey;
           if (!myKey || sub.submittedByKey !== myKey) throw new Error("That upload was started by someone else.");
         }
         if (!pathname.startsWith(`review-cuts/${sub.projectId}/${sub.id}/`)) throw new Error("That path doesn't belong to this cut.");

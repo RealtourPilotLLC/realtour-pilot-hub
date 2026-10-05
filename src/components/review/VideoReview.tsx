@@ -64,12 +64,13 @@ export function VideoReview({
     <div className="relative flex h-full w-full flex-col items-center justify-center gap-3">
       <div className="flex min-h-0 w-full flex-1 items-center justify-center">
         {src ? (
-          // eslint-disable-next-line jsx-a11y/media-has-caption
           <video
             ref={videoRef}
             src={src}
             poster={video.thumb ?? undefined}
             controls
+            playsInline
+            preload="metadata"
             autoPlay
             onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
             className="max-h-full max-w-full rounded-lg"
