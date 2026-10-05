@@ -28,3 +28,8 @@ Previously documented physical iPhone playback and client portal rollout holds r
 - Explicitly authorized current-backlog staff sweep at 2026-10-05T15:28:19Z: 6 ready videos, 6 Slack/sent delivery receipts to Kyle, 6 bell records. No client or provider deliveries performed.
 - Found notifyInApp's returned bridged array omits some successful initial sends. Corrected cron summary to count distinct Slack/sent receipts rather than the incomplete return value.
 - Repeated sweep at 15:29:27Z: 6 ready, 6 confirmed Slack receipts, zero new delivery legs (no duplicate Slack messages). Receipt-count correction TypeScript and lint pass; release follows.
+
+## Final release receipt
+- Application commit 6395fcc4d2fbea4510aebb16d007ba8476d2bd56 pushed to main. Final production READY dpl_6hm81G3LCsUnkuGtUM6oq5q8HB19, aliased hub.realtourpilot.com. Remote build, TypeScript and page generation passed; exact committed source archive /private/tmp/rtp-kyle-deploy-q8nyz7nq/source.
+- Implemented, tested, committed, deployed and enabled on the existing five-minute cron. Six actual Kyle Slack delivery receipts verified, repeated sweep produced no new delivery legs. Staff-visible only; no client rollout switch changed.
+- Old development servers 3215/3216 preserved. Both deployment commands completed. No stalled test/build or pending approval.
