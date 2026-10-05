@@ -18,3 +18,12 @@ User reports slow/nonworking delivery Watch and generally slow screens. Starting
 
 ## Release / remaining
 Commit, main push, production READY and authenticated read-only playback receipt to follow. No messages, invitations, real provider sends/uploads, financial changes or automation/portal rollout activation. Portal remains TEST_ONLY with previously documented launch holds. Preserve manual Start/Pause, exact versions and settings.
+
+## Release receipt
+- Application committed and fast-forward pushed/read back on GitHub main: `29def363a9ad30d3185d59ace706d977b3893505`. Branch `codex/audit-2026-09-30`.
+- Production READY `dpl_2iz43ZYumng8CSMheXLeJUqzPAfD`, exact committed-source archive `/private/tmp/rtp-playback-release-x033wfdz/source`. Remote optimized build/types passed; CLI inspect confirms https://hub.realtourpilot.com and existing Hub aliases. Build2m21s. No environment/private files included.
+- Public HTTP smoke: unauthenticated Home307/0.36s and login200/0.81s. These are not authenticated page-load benchmarks.
+- Live authenticated playback remains UNVERIFIED: reproduction of the old media Next Link hung owned production tab42; navigation/screenshot to production then timed out on owned43/44. Supported browser recovery attempted; local fixture playback completed in43 before navigating production. No unsupported alternate browser control used. Next: fresh supported browser session, sign in if needed, open delivery Watch and verify real processed-video play/seek; capture screenshot and compare authenticated Home/Editing load times. Physical iPhone Safari remains separate acceptance.
+- All implemented changes enabled in existing authorized staff UI. No client audience/automation switch changed. Portal remains TEST_ONLY.
+- Owned fixture PID90088 terminated through its cleanup handler:23 assertions passed/0failed, intentional serve exit143; ports3225/5617/5618 no listeners. Old3215/3216 processes preserved. Build/deploy complete; no pending approval.
+- Rollback: previous application `be29cea3997475fb855ae14b98642481fb741e97`, deployment `dpl_HgEkoTTUidUVEf22g5oALbyLbrmF`; application-only, no database rollback needed.
