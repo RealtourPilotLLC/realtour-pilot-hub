@@ -19,18 +19,28 @@ export async function notifyKyleDeliveryReady() {
     recordFollowUpHealth: false,
     includeNoticeIncidents: false,
   });
-  let slackSent = 0;
+  const notificationKeys: string[] = [];
   for (const video of board.ready) {
     const message = deliveryReadyMessage(video, appBase());
     // Existing bridge dedupes successful delivery, retries failed sends, and honors
     // the recipient's saved channel/quiet-hours preferences. No new retry loop.
-    const result = await notifyInApp({
+    notificationKeys.push(`${message.dedupeKey}-0`);
+    await notifyInApp({
       kind: "topaz_ready", title: message.title, body: message.body,
       href: message.href, dedupeKey: message.dedupeKey,
       targets: [{ roles: ["ADMIN"], userKey: `tm:${people[0].id}`,
         href: message.href, slackDm: message.slackDm }],
     });
-    slackSent += result.bridged.filter(x => x.channel === "slack").length;
+
   }
-  return { ready: board.ready.length, slackSent };
+  const notifications = await prisma.notification.findMany({
+    where: { dedupeKey: { in: notificationKeys }, userKey: `tm:${people[0].id}` },
+    select: { id: true },
+  });
+  const receipts = await prisma.notificationDelivery.findMany({
+    where: { notificationId: { in: notifications.map(n => n.id) }, channel: "slack", status: "sent" },
+    select: { notificationId: true }, distinct: ["notificationId"],
+  });
+  // Includes previous successful sweeps; never infer success from a bell row.
+  return { ready: board.ready.length, slackConfirmed: receipts.length };
 }

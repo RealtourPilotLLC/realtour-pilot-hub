@@ -22,3 +22,9 @@ Notify Kyle in Slack as soon as videos are ready; upload promptly, confirm uploa
 
 ## Remaining broader acceptance
 Previously documented physical iPhone playback and client portal rollout holds remain. This notification release does not certify or enable the client portal.
+
+## Production verification
+- Initial feature commit 6f84e517eed166dca40b47ace9a35716c0791d5a fast-forward pushed/read back on GitHub main. Remote optimized build and TypeScript passed. Production READY dpl_6XRFyRdvp82pRoWx2T8KQMxdiUbU; hub.realtourpilot.com alias verified; public Home307 expected.
+- Explicitly authorized current-backlog staff sweep at 2026-10-05T15:28:19Z: 6 ready videos, 6 Slack/sent delivery receipts to Kyle, 6 bell records. No client or provider deliveries performed.
+- Found notifyInApp's returned bridged array omits some successful initial sends. Corrected cron summary to count distinct Slack/sent receipts rather than the incomplete return value.
+- Repeated sweep at 15:29:27Z: 6 ready, 6 confirmed Slack receipts, zero new delivery legs (no duplicate Slack messages). Receipt-count correction TypeScript and lint pass; release follows.
