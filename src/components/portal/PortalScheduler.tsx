@@ -616,7 +616,7 @@ export function PortalScheduler({
                             ? "Kyle confirms this time by hand, so it shows as requested until he does."
                             : selfBooking
                             ? "This books straight into our calendar. It shows as booked once the calendar confirms it."
-                            : "Desk-assisted booking: Kyle books your pick in our calendar by hand, so it shows as requested until he confirms it."}
+                            : "Kyle books your pick in our calendar by hand, so it shows as requested until he confirms it."}
                         </p>
                       </>
                     )}

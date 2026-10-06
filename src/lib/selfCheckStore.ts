@@ -9,6 +9,7 @@ import {
   resolveSelfCheckProfile,
   validateSelfCheck,
   isHeldForSelfCheck,
+  type SelfCheckFacts,
   type SelfCheckInput,
   type SelfCheckItem,
   type SelfCheckProfile,
@@ -44,8 +45,16 @@ export async function selfCheckOverrides(): Promise<Overrides> {
   return getSetting<Overrides>(SELF_CHECK_SETTING, {});
 }
 
-export async function profileForStyle(styleKey: string | null | undefined): Promise<SelfCheckProfile> {
-  return resolveSelfCheckProfile(styleKey, await selfCheckOverrides().catch(() => ({})));
+export async function profileForStyle(styleKey: string | null | undefined, facts?: SelfCheckFacts | null): Promise<SelfCheckProfile> {
+  return resolveSelfCheckProfile(styleKey, await selfCheckOverrides().catch(() => ({})), facts);
+}
+
+/** Oct 5: the office's recorded brand decision per video, keyed by slot — the
+ *  one fact that lets a branding cut honestly answer "no brand assets". */
+async function brandChoicesFor(projectId: string): Promise<Map<string, SelfCheckFacts["brandChoice"]>> {
+  const { readOutputBrief } = await import("@/lib/deliverableOutputs");
+  const rows = await prisma.deliverableOutput.findMany({ where: { projectId }, select: { deliverableId: true, slot: true, briefJson: true } }).catch(() => []);
+  return new Map(rows.map((r) => [`${r.deliverableId}:${r.slot}`, readOutputBrief(r.briefJson)?.brandChoice ?? "unspecified"]));
 }
 
 /** Which product a cut is — the Style Guide key behind cutSlots' label. A
@@ -75,7 +84,7 @@ export async function checkContextForSlot(
 ): Promise<SlotCheckContext> {
   const { slotKeyOf } = await import("@/lib/reviewCuts");
   const { openIssuesForSlot } = await import("@/lib/revisionIssues");
-  const [styleKey, issues, earlier] = await Promise.all([
+  const [styleKey, issues, earlier, brands] = await Promise.all([
     styleOfSlot(projectId, slot.deliverableId),
     openIssuesForSlot(projectId, slot).catch(() => []),
     prisma.reviewSubmission.count({
@@ -85,10 +94,11 @@ export async function checkContextForSlot(
         ...(slot.deliverableId ? { deliverableId: slot.deliverableId, slot: slot.slot ?? 1 } : slot.assetPath ? { assetPath: slot.assetPath } : { id: "__none__" }),
       },
     }).catch(() => 0),
+    slot.deliverableId ? brandChoicesFor(projectId) : Promise.resolve(new Map<string, SelfCheckFacts["brandChoice"]>()),
   ]);
   return {
     key: slot.deliverableId ? slotKeyOf(slot.deliverableId, slot.slot) : "folder",
-    profile: await profileForStyle(styleKey),
+    profile: await profileForStyle(styleKey, { brandChoice: slot.deliverableId ? brands.get(`${slot.deliverableId}:${slot.slot ?? 1}`) : null }),
     isRevision: (opts.round ?? 1) > 1 || earlier > 0 || issues.length > 0,
     issues,
   };
@@ -99,13 +109,14 @@ export async function checkContextForSlot(
 export async function checkContextsForProject(projectId: string): Promise<Record<string, SlotCheckContext>> {
   const { cutSlots, slotKeyOf } = await import("@/lib/reviewCuts");
   const { openIssuesByCut } = await import("@/lib/revisionIssues");
-  const [slots, overrides, issues, decided] = await Promise.all([
+  const [slots, overrides, issues, decided, brands] = await Promise.all([
     cutSlots(projectId).catch(() => []),
     selfCheckOverrides().catch(() => ({})),
     openIssuesByCut(projectId).catch(() => ({ forCut: () => [] })),
     prisma.reviewSubmission
       .findMany({ where: { projectId, deliverableId: { not: null }, status: { in: ["CHANGES_REQUESTED", "APPROVED", "SUPERSEDED"] } }, select: { deliverableId: true, slot: true } })
       .catch(() => []),
+    brandChoicesFor(projectId),
   ]);
   const hadVersion = new Set(decided.map((r) => slotKeyOf(r.deliverableId!, r.slot)));
   const out: Record<string, SlotCheckContext> = {};
@@ -113,7 +124,7 @@ export async function checkContextsForProject(projectId: string): Promise<Record
     const key = slotKeyOf(s.deliverableId, s.slot);
     const slotIssues = issues.forCut({ deliverableId: s.deliverableId, slot: s.slot, assetPath: null });
     const styleKey = VIDEO_TYPES.find((t) => t.name === s.deliverableLabel)?.key ?? "default";
-    out[key] = { key, profile: resolveSelfCheckProfile(styleKey, overrides), isRevision: hadVersion.has(key) || slotIssues.length > 0, issues: slotIssues };
+    out[key] = { key, profile: resolveSelfCheckProfile(styleKey, overrides, { brandChoice: brands.get(key) }), isRevision: hadVersion.has(key) || slotIssues.length > 0, issues: slotIssues };
   }
   return out;
 }
@@ -140,15 +151,19 @@ export async function prepareUploadCheck(input: {
   intendedEditorKey: string | null;
 }): Promise<
   | { ok: true; row: { checklistKey: string; itemsJson: string; addressedIssueIdsJson: string; editorKey: string | null; actorUserId: string | null; actorName: string; onBehalfOf: string | null; attestedFileName: string; attestedSize: number } }
-  | { ok: false; message: string; needsSelfCheck: true }
+  | { ok: false; message: string; needsSelfCheck: true; checkContext: SlotCheckContext }
 > {
-  if (!input.selfCheck) return { ok: false, needsSelfCheck: true, message: "Complete the send-for-review check first — watch the export, then tick the list." };
+  // Every refusal carries the list IN FORCE (review, Oct 5 night): the upload
+  // panel reopened its own copy from page load, so a note that arrived on the
+  // video meanwhile was never on the list the editor answered — and the same
+  // answers were refused again, round and round. The browser reopens with this.
   const ctx = await checkContextForSlot(input.projectId, { deliverableId: input.deliverableId, slot: input.slot });
+  if (!input.selfCheck) return { ok: false, needsSelfCheck: true, checkContext: ctx, message: "Complete the send-for-review check first — watch the export, then answer each line." };
   const v = validateSelfCheck(ctx.profile, input.selfCheck, { isRevision: ctx.isRevision, openIssueIds: ctx.issues.map((i) => i.id) });
-  if (!v.ok) return { ok: false, needsSelfCheck: true, message: v.message };
+  if (!v.ok) return { ok: false, needsSelfCheck: true, checkContext: ctx, message: v.message };
   const wf = input.selfCheck.watchedFile;
   if (!wf || wf.name !== input.fileName || (wf.size != null && Number(wf.size) !== Math.floor(input.sizeBytes))) {
-    return { ok: false, needsSelfCheck: true, message: "The check has to be for the file you are uploading — pick it again and re-tick the list." };
+    return { ok: false, needsSelfCheck: true, checkContext: ctx, message: "The check has to be for the file you are uploading — pick it again and answer the list." };
   }
   const forKey = input.actor.office ? input.intendedEditorKey : (input.actor.editorKey ?? null);
   return {

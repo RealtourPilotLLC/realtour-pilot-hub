@@ -27,6 +27,13 @@ import { cn } from "@/lib/utils";
 // member who confirms a row moves it under its month.
 // ---------------------------------------------------------------------------
 
+// "v2 (approved)" → "Version 2": the file label's number is the client's own
+// version count (cutEntitlement.clientVersionNumber), said in plain words.
+const versionWords = (label: string | null | undefined) => {
+  const n = label?.match(/^v(\d+)\b/)?.[1];
+  return n ? `Version ${n}` : "This version";
+};
+
 const STATE: Record<ClientVideoState, { label: string; cls: string; action: string }> = {
   FOR_REVIEW: { label: "For your review", cls: "bg-brand-soft text-brand", action: "Review" },
   CHANGES_IN_PROGRESS: { label: "Changes in progress", cls: "bg-warning-soft text-warning", action: "Open" },
@@ -209,7 +216,7 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
               captions={d.kit.captions} assistant={d.kit.assistant} postedAtISO={d.kit.postedAtISO} downloadStartedAtISO={d.kit.downloadStartedAtISO} downloadCompletedAtISO={d.kit.downloadCompletedAtISO}
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />
-            {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">Version {d.kit.final.label} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}
+            {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">{versionWords(d.kit.final.label)} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}
             {d.kit.cover && (
               <div className="mt-3">
                 <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Cover</div>
@@ -469,7 +476,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
               captions={d.kit.captions} assistant={d.kit.assistant} postedAtISO={d.kit.postedAtISO} downloadStartedAtISO={d.kit.downloadStartedAtISO} downloadCompletedAtISO={d.kit.downloadCompletedAtISO}
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />
-            {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">Version {d.kit.final.label} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}
+            {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">{versionWords(d.kit.final.label)} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}
             {d.kit.cover && (
               <div className="mt-3">
                 <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Cover</div>

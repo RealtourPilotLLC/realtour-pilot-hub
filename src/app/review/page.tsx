@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import {
   Camera, CheckCircle2, Clapperboard, ClipboardCheck, Flag, Hourglass, MessageSquare, Pencil, PlayCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -15,9 +16,16 @@ import { followUpHref, getReviewQueue, type QueueSubmission } from "@/lib/review
 import { getFixPatterns, getQcStats } from "@/lib/qc";
 import { revisionQuality } from "@/lib/revisionQuality";
 import { RevisionQualitySummary } from "@/components/review/RevisionQualitySummary";
+import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { verdictLine } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
+// A verdict pressed here answers at once and finishes its follow-ons (the
+// Dropbox copy waits on Dropbox for up to 15 s, the client-library rebuild) in
+// after(), inside this route's function budget (Oct 5) — the same 60 s ceiling
+// /edit/<id> uses. Anything a cut-short run leaves undone, the hourly sweeps
+// named in review/actions.ts finish.
+export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
 // The REVIEW ROOM — the owner's quality desk, its own page. Everything that
@@ -31,6 +39,23 @@ export const dynamic = "force-dynamic";
 // ---------------------------------------------------------------------------
 
 const ago = (iso: string) => formatDistanceToNow(new Date(iso), { addSuffix: true });
+
+// Secondary panels, folded to their title line (Oct 5): the desk opens on the
+// cuts to rule on; history and scoreboards are one tap away.
+function Fold({ icon: Icon, title, count, children }: { icon: LucideIcon; title: string; count?: number | null; children: React.ReactNode }) {
+  return (
+    <details className="panel-shadow rounded-2xl border bg-surface px-5 py-1">
+      <summary className="flex min-h-12 cursor-pointer items-center gap-2.5">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
+          <Icon aria-hidden className="size-4" />
+        </span>
+        <span className="text-base font-semibold">{title}</span>
+        {count != null && <span className="rounded-full bg-surface-2 px-2 text-ui-status font-medium text-muted">{count}</span>}
+      </summary>
+      <div className="border-t border-border py-4">{children}</div>
+    </details>
+  );
+}
 
 // §8.1: who the cut waits on, from the row itself — never from a notice.
 function ReviewerChip({ s, viewerTeamMemberId }: { s: QueueSubmission; viewerTeamMemberId: string | null }) {
@@ -187,13 +212,13 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
             <PlayCircle className="size-3.5" />
           </span>
           <h2 className="text-sm font-semibold">Video</h2>
-          <span className="text-[11px] text-muted-2">· cuts land here on their own when the editor drops a Final file</span>
+          <span className="text-[11px] text-muted-2">· a cut arrives once the editor uploads a version and finishes their send-for-review check</span>
         </div>
         <Section icon={PlayCircle} title="Cuts to review" count={q.pending.length || null}>
           {q.pending.length === 0 ? (
             <p className="text-sm text-muted">
-              No cuts waiting. When an editor hits “Done — send to review,” their cut lands here with a player and
-              timestamped notes.
+              No cuts waiting. When an editor uploads a version on the edit page and finishes the send-for-review
+              check, it shows up here with a player and timestamped notes.
             </p>
           ) : (
             <ul className="space-y-2.5">{q.pending.map((s) => <CutRow key={s.id} s={s} viewerTeamMemberId={viewerTeamMemberId} />)}</ul>
@@ -300,18 +325,24 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         )}
 
         {q.recentlyApproved.length > 0 && (
-          <Section icon={CheckCircle2} title="Approved — last 14 days" count={q.recentlyApproved.length}>
+          <Fold icon={CheckCircle2} title="Approved — last 14 days" count={q.recentlyApproved.length}>
             <ul className="space-y-2.5">{q.recentlyApproved.map((s) => <CutRow key={s.id} s={s} decided />)}</ul>
+          </Fold>
+        )}
+
+        {causes ? (
+          <Fold icon={Flag} title="Revision causes">
+            <RevisionQualitySummary report={causes} />
+          </Fold>
+        ) : (
+          <Section icon={Flag} title="Revision causes">
+            <p role="status" className="text-sm text-warning">Revision causes could not be loaded. Refresh to retry; no quality result is available from this read.</p>
           </Section>
         )}
 
-        <Section icon={Flag} title="Revision causes">
-          {causes ? <RevisionQualitySummary report={causes} /> : <p role="status" className="text-sm text-warning">Revision causes could not be loaded. Refresh to retry; no quality result is available from this read.</p>}
-        </Section>
-
         {/* Recording gaps and reported observations are separate from confirmed causes. */}
         {(patterns.flagsTotal > 0 || qcStats.byMiss.length > 0 || patterns.captureByPhotographer.length > 0) && (
-          <Section icon={Flag} title="Review observations and optional check records">
+          <Fold icon={Flag} title="Review observations and optional check records">
             <div className="grid gap-5 sm:grid-cols-2">
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-2">
@@ -381,9 +412,11 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
                 </div>
               </div>
             )}
-          </Section>
+          </Fold>
         )}
       </div>
+      {/* A verdict given in a cut follows the reviewer back here (Oct 5). */}
+      <VerdictReceipts />
     </div>
   );
 }

@@ -763,7 +763,9 @@ export const AryeoBooking = {
   getAddress: (id: string) =>
     aryeoRequest<{ data: AryeoAddressRead }>(`/addresses/${id}`).then((r) => r.data),
   getOrder: (id: string) =>
-    aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`, { query: { include: "items,appointments,customer,address" } }).then((r) => r.data),
+    // `address` is returned by default and is NOT an allowed include on /orders/{id} (found by the first
+    // real supervised run, Oct 5 2026: 400 "Requested include(s) `address` are not allowed").
+    aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`, { query: { include: "items,appointments,customer" } }).then((r) => r.data),
   /** Newest-first, customer included — the marker scan's input. */
   recentOrders: async (pages = 2): Promise<AryeoOrder[]> => {
     const out: AryeoOrder[] = [];
@@ -802,7 +804,11 @@ export const AryeoBooking = {
   productVariantPrice: async (productId: string, variantId: string): Promise<number | null> => {
     const key = `${productId}:${variantId}`;
     if (!variantPriceCache || Date.now() - variantPriceCache.at > PROVIDER_TTL_MS) {
-      const products = await fetchAll<AryeoProduct>("/products", { include: "variants", "filter[include_inactive]": true });
+      // Aryeo returns each product's variants (with price_amount) by default and
+      // REFUSES `include=variants` ("Allowed include(s) are categories,
+      // order_form_categories, order_form_categories.order_form, providers") —
+      // found by the supervised test's first real dry run, Oct 5 2026.
+      const products = await fetchAll<AryeoProduct>("/products", { "filter[include_inactive]": true });
       const prices = new Map<string, number | null>();
       for (const p of products) {
         for (const v of p.variants ?? []) {

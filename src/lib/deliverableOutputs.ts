@@ -1221,6 +1221,9 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
 // ===========================================================================
 
 export const OUTPUT_BRIEF_FIELDS = [
+  // Oct 5: the specs line. Empty = the style's default (videoStyles
+  // defaultMakeThis), which the editor's brief prints at the top either way.
+  { key: "specs", label: "Make this" },
   { key: "purpose", label: "What this video is for" },
   { key: "direction", label: "How to cut it" },
   { key: "onSite", label: "Changed on site" },
@@ -1475,8 +1478,13 @@ export type OutputBrief = {
 
 /**
  * Every owed video's brief, in the order the job prints them. Read-only; no
- * provider call. `scrub` money-scrubs every free-text value — true for any
- * creative's copy (the editor, the photographer, the outside agency).
+ * provider call. `scrub` drops sentences in OUR billing language
+ * (text.stripMoneySentences) from the office's sections and the shoot note —
+ * true for any creative's copy (the editor, the photographer, the outside
+ * agency). The script's words and the topic title are NEVER scrubbed: they
+ * are what the client approved, and a real-estate script talks about prices
+ * (Oct 5: "The first weekend decides your price." reached the editor as an
+ * empty Hook).
  */
 export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean } = {}): Promise<OutputBrief[]> {
   const rows = (await outputsForProject(projectId)).filter((o) => o.state !== "waived" && o.state !== "removed");
@@ -1581,7 +1589,8 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       versionLabel,
       topicTitle: o.topicTitle,
       note: film?.note ? scrub(film.note) : o.filmingNote ? scrub(o.filmingNote) : null,
-      script: film?.script ? { ...film.script, text: film.script.text ? scrub(film.script.text) : null } : null,
+      // The approved words as they are — see the note above this function.
+      script: film?.script ?? null,
       folder: film?.folder ?? null,
       reviewer,
       ownerName: o.ownerName,
@@ -1658,8 +1667,11 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
       .catch(() => null),
   ]);
   const versionOf = new Map(versions.map((v) => [v.id, v]));
+  // The words the client was SHOWN, unscrubbed (Oct 5): the photographer reads
+  // them out on camera, and a real-estate script talks about prices. The
+  // direction beside them is still scrubbed (directionOf).
   const clip = (s: string | null | undefined) => {
-    const t = stripMoneySentences((s ?? "").trim()).trim();
+    const t = (s ?? "").trim();
     return t ? (t.length > SCRIPT_TEXT_CAP ? `${t.slice(0, SCRIPT_TEXT_CAP - 1).trimEnd()}…` : t) : null;
   };
   const topics = session.topics.map((t): SessionBriefTopic => {

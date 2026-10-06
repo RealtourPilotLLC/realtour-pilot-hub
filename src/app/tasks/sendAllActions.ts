@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 import { clientTextWhere } from "@/lib/clientTexts";
 import { isSyntheticClientRow } from "@/lib/testClients";
 
@@ -298,8 +298,24 @@ export async function retryUnknownSend(id: string): Promise<{ ok: boolean; messa
   await requireAdmin();
   const { getCurrentUser } = await import("@/lib/auth/user");
   const who = (await getCurrentUser().catch(() => null))?.email ?? "an admin";
-  const { retryUnknownSend: retry } = await import("@/lib/outbox");
+  const { retryUnknownSend: retry, outboxKind } = await import("@/lib/outbox");
+  // AN ONBOARDING MESSAGE IS THE OWNER'S TO RE-SEND (Oct 5 2026 review fix).
+  // Jordan: "Don't even send anything. I will send it." Settings → Client
+  // onboarding lets only him press Send; an admin's Retry here must not send
+  // one of his messages again. requireOwner also refuses a "view as" preview.
+  const held = await prisma.outboxMessage.findUnique({ where: { id }, select: { dedupeKey: true, clientId: true, channel: true, toRef: true } });
+  const onboarding = !!held && outboxKind(held.dedupeKey) === "onboarding";
+  if (onboarding) {
+    try { await requireOwner(); } catch { return { ok: false, message: "Only Jordan can re-send an onboarding message (Settings → Client onboarding). Nothing was sent." }; }
+  }
   const r = await retry(id, who);
+  // Written in the client's onboarding log, so the page shows it as sent.
+  if (onboarding && held && r.result?.outcome === "accepted") {
+    const sentId = r.result.id;
+    await import("@/lib/clientOnboarding")
+      .then(({ recordOnboardingOutboxSend }) => recordOnboardingOutboxSend({ id: sentId, dedupeKey: held.dedupeKey, clientId: held.clientId, channel: held.channel, toRef: held.toRef }, "retried", who))
+      .catch((e) => console.error(`[outbox] onboarding retry ${id} sent but its log write failed`, e));
+  }
   revalidatePath("/connections");
   revalidatePath("/tasks");
   return { ok: r.ok, message: r.message };

@@ -689,7 +689,7 @@ async function closeKylesUploadCards(
     // Best-effort per card: one job failing must not cost the others, or the
     // status pass that follows.
     const submissionId = submissionOf.get(id);
-    const r = submissionId ? await import("@/lib/readyToSend").then((m) => m.markVideoSent(submissionId, aryeoSentBy(byVideoId.get(videoId)))).catch(() => null) : null;
+    const r = submissionId ? await import("@/lib/readyToSend").then((m) => m.markVideoSent(submissionId, aryeoSentBy(byVideoId.get(videoId)), { providerConfirmed: true })).catch(() => null) : null;
     if (!r?.ok || r.incomplete?.length) {
       // A card we tried and failed to close is still a card nobody proved.
       heldJobIds.add(id);
@@ -821,7 +821,7 @@ async function closeKylesUploadCards(
 /** Who the card says sent it. A person's name here would be a small lie on a
  *  record Jordan reads — nobody in the hub pressed anything. It reads back as
  *  "Already marked sent by Aryeo — the video is live on the listing". */
-const ARYEO_SENT_BY = "Aryeo — the video is live on the listing";
+const ARYEO_SENT_BY = "Aryeo (delivery confirmed) — the video is live on the listing";
 
 /** …and WHICH video proved it. A machine stamp that only says "Aryeo" cannot be
  *  audited: the one thing a person would want to know a week later, when a
@@ -833,7 +833,7 @@ function aryeoSentBy(v: ListingVideo | undefined): string {
   if (!v) return ARYEO_SENT_BY;
   const named = v.title ? `“${v.title}”` : "a video";
   const len = v.durationSec != null ? `, ${Math.round(v.durationSec)}s` : "";
-  return `Aryeo — ${named}${len} on the listing since ${etDateTime(v.at)} ET`;
+  return `Aryeo (delivery confirmed) — ${named}${len} on the listing since ${etDateTime(v.at)} ET`;
 }
 
 type CutClaimant = {
@@ -884,7 +884,7 @@ async function stampCutsTheDeliveryCovers(
   const { acknowledgedDeliveryTargets, markUploadedGroupSent } = await import("@/lib/projectDelivery");
   const acknowledged = await acknowledgedDeliveryTargets(projectId, listing);
   const recorded = !opts?.dryRun && acknowledged.length
-    ? await markUploadedGroupSent(projectId, acknowledged, "Aryeo — authenticated listing delivery after staff upload acknowledgement") : null;
+    ? await markUploadedGroupSent(projectId, acknowledged, "Aryeo (delivery confirmed) — after the upload was recorded") : null;
   const exact = await stampCutsFromProviderBytes(projectId, listing, opts);
   return { ...exact, stamped: exact.stamped + (recorded?.completed.length ?? 0),
     wouldStamp: [...new Set([...exact.wouldStamp, ...(opts?.dryRun ? acknowledged.map(v => v.submissionId) : [])])] };
@@ -1099,7 +1099,7 @@ async function stampCutsFromProviderBytes(
     // Best-effort per cut: one failing must not cost the others. markVideoSent
     // is idempotent in Postgres, so a retry of this event re-runs it harmlessly
     // and is told the truth about who stamped it first.
-    const r = await ready.markVideoSent(id, aryeoSentBy(byVideoId.get(videoId))).catch(() => null);
+    const r = await ready.markVideoSent(id, aryeoSentBy(byVideoId.get(videoId)), { providerConfirmed: true }).catch(() => null);
     if (r?.ok && !r.already) stamped++;
   }
   return { stamped, held: Math.max(0, onCardHere - stamped), wouldStamp: [] };

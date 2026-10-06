@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 // TYPES ONLY (R03, Sep 28 2026): the gate module is imported lazily, below, and
 // only for the six rollout kinds — a confirmation or a staff text never loads it.
 import type { GateCode, GateVerdict } from "@/lib/programRolloutGate";
+import { onboardingSubject } from "@/lib/clientOnboardingCore";
 
 // ---------------------------------------------------------------------------
 // THE OUTBOX (RTP-08, Sep 16 2026). One durable record per message the hub
@@ -89,7 +90,13 @@ export type OutboxKind =
   /** CP-13: "the office replied" — lib/programMessages.ts, behind `program_message_notice`. */
   | "program_message"
   /** R4: a text a PERSON typed and pressed send on, from the comms surface. */
-  | "manual";
+  | "manual"
+  /** Oct 5 2026: a message the OWNER composed and pressed "Send now" on, from
+   *  Settings → Client onboarding (lib/clientOnboarding.ts). A ROLLOUT kind:
+   *  the dispatch gate re-checks the client's matching toggle and the TEST
+   *  floor at the moment of sending (never a global switch — Jordan pressing
+   *  send is the decision). Not a CLIENT_KIND: no quiet-hours hold. */
+  | "onboarding";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
 /** CONTENT-PROGRAM kinds (W2-F, Sep 17 2026). Client-facing EMAILS from the
  *  program: a §24 reminder, a §22 "your scripts are ready" notice, a §21
@@ -104,14 +111,14 @@ const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcom
  *  enqueued unless its ProgramAutomation switch (`reminders`,
  *  `script_share_email`) is on — a missing row is off. */
 const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message"];
-const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS];
+const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding"];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
 export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
 /** R03 (Sep 28 2026): the kinds the rollout scope governs — the four program
  *  emails and the two portal-account emails. Only these ever reach the
  *  dispatch gate; confirmation, delivery, welcome, afterhours, staff and
  *  manual never import it and never read the database for it. */
-export const ROLLOUT_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message", "portal_invite", "portal_login"];
+export const ROLLOUT_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message", "portal_invite", "portal_login", "onboarding"];
 export const isRolloutKind = (k: OutboxKind | null): boolean => !!k && ROLLOUT_KINDS.includes(k);
 
 export type OutboxRow = {
@@ -428,6 +435,8 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     // Jordan's wording for the strategy notice (6.2, Sep 25 2026).
     case "strategy_ready": return "Your Content Strategy is Ready + Next Steps";
     case "program_message": return "New reply in your RealTour Pilot portal";
+    // Oct 5 2026: the onboarding message names its own subject (its key carries it).
+    case "onboarding": return onboardingSubject(dedupeKey);
     default: return "RealTour Pilot";
   }
 }
@@ -945,6 +954,8 @@ export const programReminderKey = (action: string, reminderId: string, monthKey:
  *  batches every script released to that client inside the batch window. */
 export const scriptShareKey = (reminderId: string) => `script_share:${reminderId}`;
 export const strategyReadyKey = (reminderId: string) => `strategy_ready:${reminderId}`;
+/** Oct 5 2026: the owner's manual onboarding send (clientOnboardingCore.onboardingKey). */
+export { onboardingKey } from "@/lib/clientOnboardingCore";
 
 export function outboxKind(dedupeKey: string | null | undefined): OutboxKind | null {
   const head = (dedupeKey ?? "").split(":")[0];

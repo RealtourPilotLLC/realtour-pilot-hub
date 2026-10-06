@@ -10,7 +10,7 @@
 // the cancel), so what it proves is the code clients will use.
 //
 //   NODE_OPTIONS=--conditions=react-server npx tsx scripts/_ops/aryeo-supervised-test.ts \
-//       --fixture <clientId> --address "117 Kyle Lane|West Chester|PA|19382" \
+//       --fixture <clientId> --address "1 N High St|West Chester|PA|19380" \   (a real, mappable address — a made-up one is refused as unbookable)
 //       --new-address "42 Oak Street|West Chester|PA|19380"
 //       DRY RUN (the default). Reads only: the fixture, its identity (its own
 //       email AND its Aryeo customer's must be Jordan's verified test inboxes
@@ -84,7 +84,10 @@ export type SupervisedResult = {
 
 const SCRIPT = "NODE_OPTIONS=--conditions=react-server npx tsx scripts/_ops/aryeo-supervised-test.ts";
 const FIXTURE_SCRIPT = "NODE_OPTIONS=--conditions=react-server npx tsx scripts/_ops/hub-write-fixture.ts";
-const ACCELERATOR_MINUTES = 240;
+// The booked length follows the fixture's package (Oct 5 2026: the review asked
+// for Starter 120, Accelerator 240 and Pro's two 240-minute sessions to be
+// proven separately, never inferred from one Accelerator booking).
+let MINUTES = 240;
 
 function arg(argv: string[], name: string): string | null {
   const i = argv.indexOf(name);
@@ -170,12 +173,18 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   // ---- 3. the enrollment, the product and its price (R03) ------------------
   const enrollment = await prisma.contentEnrollment.findFirst({ where: { clientId: client.id, status: "ACTIVE" }, select: { id: true, package: true } });
   if (!enrollment) return refuse(`"${client.name}" has no ACTIVE content enrollment to book for.`);
-  if (enrollment.package !== "Accelerator") return refuse(`the fixture's enrollment is on "${enrollment.package}"; this test books Video Accelerator (240 minutes). Set the fixture's package to Accelerator first.`);
-  const product = ARYEO_CONTENT_PRODUCTS.Accelerator;
+  const pkg = enrollment.package as keyof typeof ARYEO_CONTENT_PRODUCTS;
+  if (!(pkg in ARYEO_CONTENT_PRODUCTS)) return refuse(`the fixture's enrollment is on "${enrollment.package}", which has no Aryeo content product (Starter, Accelerator or Pro).`);
+  const product = ARYEO_CONTENT_PRODUCTS[pkg];
+  MINUTES = product.durationMinutes;
+  // Pro is two separate sessions of the four-hour product: run once with
+  // --session 1 and once with --session 2 (each its own appointment).
+  const sessionNo = Number(arg(argv, "--session") ?? "1");
+  if (!Number.isInteger(sessionNo) || sessionNo < 1 || sessionNo > product.sessionsPerMonth) return refuse(`--session ${arg(argv, "--session")} is not a session of ${product.title} (it has ${product.sessionsPerMonth})`);
   let price: number | null;
-  try { price = await aryeo.AryeoBooking.productVariantPrice(product.productId, product.variantId); } catch (e) { return refuse(`could not read the Accelerator's price from Aryeo (${e instanceof Error ? e.message : e})`); }
-  if (price !== 0) return refuse(price == null ? "Aryeo's catalogue does not list the Accelerator variant" : `Aryeo prices the Accelerator at $${(price / 100).toFixed(2)}; a hub order would bill a Stripe-prepaid client`);
-  log(`Product: ${product.title}, variant ${product.variantId}, ${ACCELERATOR_MINUTES} minutes, price $0 ✓`);
+  try { price = await aryeo.AryeoBooking.productVariantPrice(product.productId, product.variantId); } catch (e) { return refuse(`could not read ${product.title}'s price from Aryeo (${e instanceof Error ? e.message : e})`); }
+  if (price !== 0) return refuse(price == null ? `Aryeo's catalogue does not list the ${product.title} variant` : `Aryeo prices ${product.title} at $${(price / 100).toFixed(2)}; a hub order would bill a Stripe-prepaid client`);
+  log(`Product: ${product.title}, variant ${product.variantId}, ${MINUTES} minutes, session ${sessionNo} of ${product.sessionsPerMonth}, price $0 ✓`);
 
   // ---- 4. James, and a weekday slot at least 24 hours out ------------------
   const providers = await aryeo.productProvidersFor(product.productId).catch(() => []);
@@ -184,15 +193,17 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   const floor = new Date(now.getTime() + 24 * 3_600_000);
   let start: Date | null = arg(argv, "--start") ? new Date(arg(argv, "--start")!) : null;
   const offered: string[] = [];
-  for (const day of weekdayKeys(now, 6, etDayKey)) {
-    const slots = await aryeo.AryeoBooking.timeslotsFor({ date: day, durationMin: ACCELERATOR_MINUTES, teamMemberIds: [james.teamMemberId] }).catch(() => []);
+  for (const day of weekdayKeys(now, 10, etDayKey)) { // ten weekdays (Oct 5 2026: James had no free 4-hour start in the next six)
+    const slots = await aryeo.AryeoBooking.timeslotsFor({ date: day, durationMin: MINUTES, teamMemberIds: [james.teamMemberId] }).catch(() => []);
     for (const s of slots) if (new Date(s.startAt) >= floor) offered.push(s.startAt);
-    // Two days' worth: the booking on one, the reschedule onto another.
-    if (new Set(offered.map((s) => etDayKey(new Date(s)))).size >= 2) break;
+    // Two days' worth is enough unless --start names a later slot (Oct 5 2026:
+    // the travel check rightly refused James's early starts before his
+    // far-away morning shoots, so a run may need to pick one further out).
+    if (!arg(argv, "--start") && new Set(offered.map((s) => etDayKey(new Date(s)))).size >= 2) break;
   }
   if (start && !offered.some((s) => new Date(s).getTime() === start!.getTime())) return refuse(`--start ${start.toISOString()} is not one of James's free weekday starts at least 24 hours out (${offered.slice(0, 4).join(", ") || "none found"})`);
   start = start ?? (offered[0] ? new Date(offered[0]) : null);
-  if (!start) return refuse("James has no free weekday start at least 24 hours out in the next six weekdays");
+  if (!start) return refuse("James has no free weekday start at least 24 hours out in the next ten weekdays");
   const moveTo = arg(argv, "--move-to") ? new Date(arg(argv, "--move-to")!) : (offered.map((s) => new Date(s)).find((d) => etDayKey(d) !== etDayKey(start!)) ?? null);
   const month = await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey: etMonthKey(start), historical: false }, select: { id: true, monthKey: true } });
   if (!month) return refuse(`the fixture has no open ${etMonthKey(start)} program month for a ${start.toISOString()} session`);
@@ -238,12 +249,26 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   const st = await import("@/lib/sessionTravel");
   const report: Record<string, unknown> = { fixture: client.id, slot: start.toISOString() };
 
-  // 1. plan + request
-  const idx = 1;
+  // 1. plan + request — or RESUME a request an earlier run left part-way
+  // (Oct 5 2026: the first real run made the order, then its read-back hit a
+  // real-API include refusal; the adapter resumes ORDER_CREATED by design, so
+  // --resume <requestId> finishes that same booking instead of a second order).
+  const resumeId = arg(argv, "--resume");
+  let requestId: string;
+  if (resumeId) {
+    const prior = await prisma.programSessionRequest.findUnique({ where: { id: resumeId }, select: { id: true, enrollmentId: true, status: true, bookingState: true } });
+    if (!prior || prior.enrollmentId !== enrollment.id) return refuse(`--resume ${resumeId} is not a request of this fixture's enrollment`);
+    if (prior.status !== "REQUESTED" || !["QUEUED", "RUNNING", "ORDER_CREATED", "APPT_PENDING", "UNKNOWN"].includes(prior.bookingState ?? "")) return refuse(`--resume ${resumeId} is ${prior.status}/${prior.bookingState}, not a booking the adapter can resume`);
+    requestId = prior.id;
+    report.requestId = requestId;
+    report.resumed = true;
+    log(`1. resuming request ${requestId} (${prior.bookingState})`);
+  } else {
+  const idx = sessionNo;
   const plan = await sa.saveSessionPlanAddress({ enrollmentId: enrollment.id, monthId: month.id, sessionIndex: idx, input: { ...address!, unit: null }, by: "supervised-test" });
   if (!plan.ok || !plan.planId || !plan.bookable) return refuse(`plan address not saved as bookable: ${plan.message}`);
   const planRow = await prisma.programSessionPlan.findUniqueOrThrow({ where: { id: plan.planId } });
-  const end = new Date(start.getTime() + ACCELERATOR_MINUTES * 60_000);
+  const end = new Date(start.getTime() + MINUTES * 60_000);
   const fit = await st.travelFit({ creativeTeamMemberId: james.teamMemberId, start, end, dest: { lat: planRow.latitude!, lng: planRow.longitude! } });
   if (fit.fits !== true) return refuse(`travel for that slot is ${fit.fits === false ? "refused" : "unchecked"} (${fit.reason}); pick another --start`);
   const made = await sr.createSessionRequest({
@@ -254,11 +279,12 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
     travel: { check: "HUB_DRIVE", evidenceJson: st.travelEvidence(fit, { at: "supervised-test" }) },
   });
   if (!made.ok) return refuse(`request refused: ${made.reason}`);
-  const requestId = made.id;
+  requestId = made.id;
   report.requestId = requestId;
   const queued = await prisma.programSessionRequest.findUniqueOrThrow({ where: { id: requestId } });
   if (queued.bookingState !== "QUEUED") return refuse(`the request was not queued for the hub (${queued.bookingState}: ${queued.lastError})`);
   log(`1. request ${requestId} QUEUED`);
+  }
 
   // 2. book + readback
   const booked = await sb.bookSessionRequest(requestId, { worker: "supervised", budgetMs: 180_000 });
@@ -294,8 +320,8 @@ export async function aryeoSupervisedTest(argv: string[], log: Log = (l) => cons
   }
 
   // 6 (read-only, while the appointment is live): does Aryeo see the destination?
-  const scoped = await aryeo.AryeoBooking.timeslotsForAppointment({ appointmentId: row.aryeoAppointmentId, date: etDayKey(start), expectDurationMin: ACCELERATOR_MINUTES, expectTeamMemberIds: [james.teamMemberId] }).catch((e: unknown) => ({ honoured: false, why: e instanceof Error ? e.message : String(e), slots: [] }));
-  const conflicts = await aryeo.AryeoBooking.appointmentHasConflicts(row.aryeoAppointmentId, james.teamMemberId, ACCELERATOR_MINUTES).catch(() => null);
+  const scoped = await aryeo.AryeoBooking.timeslotsForAppointment({ appointmentId: row.aryeoAppointmentId, date: etDayKey(start), expectDurationMin: MINUTES, expectTeamMemberIds: [james.teamMemberId] }).catch((e: unknown) => ({ honoured: false, why: e instanceof Error ? e.message : String(e), slots: [] }));
+  const conflicts = await aryeo.AryeoBooking.appointmentHasConflicts(row.aryeoAppointmentId, james.teamMemberId, MINUTES).catch(() => null);
   report.aryeoTravelProbe = { appointmentScopedHonoured: scoped.honoured, why: scoped.why, slotsThatDay: scoped.slots.length, hasConflicts: conflicts };
   log(`6. Aryeo appointment-scoped availability: honoured=${scoped.honoured} (${scoped.why}); has_conflicts=${conflicts}`);
 
@@ -382,7 +408,7 @@ export function printCleanup(log: Log, f: CleanupFacts): void {
   else if (f.appointmentId) step(`Confirm appointment ${f.appointmentId} reads CANCELED.`);
   else step("If the order carries an appointment, cancel it by hand (none was recorded here).");
   step("Close or cancel the test order itself (a $0 order with a cancelled appointment stays on the TEST customer otherwise). If it shows ANY balance, void that balance by hand: the hub never voids, refunds or edits an order. The Address the hub made for it books nothing and can stay.");
-  step("Tell James the 117 Kyle Lane booking was a supervised TEST: the hub's bookings notify our team (notifyCompany), so Aryeo sent him the new-appointment notice. It is unproven whether Aryeo tells him about the move or the cancel.");
+  step("Tell James the supervised-test booking (Bobby TEST) was a TEST: the hub's bookings notify our team (notifyCompany), so Aryeo sent him the new-appointment notice. It is unproven whether Aryeo tells him about the move or the cancel.");
   if (f.completed) {
     step(`Disarm both switches (audited; only the fixture list and the on/off):
        ${FIXTURE_SCRIPT} --switch session_booking --remove ${f.clientId} --off --apply

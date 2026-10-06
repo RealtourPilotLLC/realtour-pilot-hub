@@ -6,7 +6,7 @@ import { parseStoredSections, releaseStrategyVersion } from "@/lib/contentStrate
 import { draftStrategyFromTranscript } from "@/lib/contentGeneration";
 import { queueStrategyReadyNotice } from "@/lib/scriptShare";
 import { isTestClientName } from "@/lib/testClients";
-import { openProgramDeskTask } from "@/lib/programDeskTasks";
+import { dueTodayET, openProgramDeskTask } from "@/lib/programDeskTasks";
 import { contentHref } from "@/lib/contentNav";
 
 // ---------------------------------------------------------------------------
@@ -270,6 +270,7 @@ export async function onProgramActivated(
       assignedKey: "kyle",
       reasonCreated: "A paid Content Program signup may already have a discovery booking under another address",
       reopenIfClosed: true,
+      dueAt: dueTodayET(), // Oct 5 2026: a paying client's first call is today's job
     });
     return { outcome: "task_open", detail: `a discovery booking from ${maybe.map((m) => m.inviteeEmail ?? "an unknown address").join(", ")} may be theirs — Kyle confirms it` };
   }
@@ -293,6 +294,10 @@ export async function onProgramActivated(
     // The one legitimate reopen in this file: a booking that was cancelled
     // after the task was closed puts the same job back on Kyle's list.
     reopenIfClosed: true,
+    // Oct 5 2026: due TODAY, not in two days — nothing in the program can
+    // start until this call is held, and the task now pings Kyle on Slack
+    // (programDeskTasks.openProgramDeskTask) instead of waiting in a list.
+    dueAt: dueTodayET(),
   });
   return { outcome: "task_open", detail: "no discovery booking on file — the scheduling task is open for Kyle" };
 }

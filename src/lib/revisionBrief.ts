@@ -755,6 +755,10 @@ export type BriefView = {
   /** Who asked, and how (Sep 28) — null on rows from before anyone was recorded. */
   requestedBy: string | null;
   requestedByKind: string | null;
+  /** The video this ask is about (null = the whole job) and its revision task —
+   *  so a brief page can show only the selected video's asks (Oct 5). */
+  outputId?: string | null;
+  taskId?: string | null;
 };
 
 /**
@@ -811,6 +815,8 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
       cutNames,
       requestedBy: r.requestedBy ?? null,
       requestedByKind: r.requestedByKind ?? null,
+      outputId: r.outputId ?? null,
+      taskId: r.taskId ?? null,
     };
   });
 }

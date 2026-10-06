@@ -2,10 +2,11 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { actualFolderPaths } from "@/lib/dropboxFolders";
-import { videoCutKey } from "@/lib/contentVideos";
+import { publicationRequiredAt, stampImpliedPublicationGates, videoCutKey } from "@/lib/contentVideos";
 import { clientCutFiles } from "@/lib/cutEntitlement";
 import { PROGRAM_ROLLOUT_SETTING_KEY, parseProgramRollout, rolloutDecision } from "@/lib/programRolloutCore";
 import { digest, proveOriginalBackup, readDropboxFile } from "@/lib/finalDropbox";
+import type { TopazState } from "@/lib/topazJobs";
 
 type Db = Pick<Prisma.TransactionClient, "contentMonth" | "contentEnrollment" | "clientMembership" | "clientUser" | "client" | "appSetting">;
 export type MonthlyAccess = { ok: boolean; enrollmentId: string | null; clientId: string | null; stamp: string; message: string };
@@ -70,7 +71,8 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
   if (deliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut))) return { ok: false, message: "This version uses Aryeo delivery instead of portal publication." };
   const cut = await loadMonthlyCut(id);
   if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current." };
-  if (cut.portalPublicationRequiredAt && !(cut.topazJob?.state === "done" && cut.topazJob.finalPath && cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? ""))) return { ok: false, message: "The verified 1080p file is not ready. Retry finishing or resolve its hold before portal publication." };
+  // The gate as stamped, or implied for a job linked to its month after approval.
+  if (publicationRequiredAt(cut, true) && !verified1080p(cut)) return { ok: false, message: "The checked 1080p file isn't ready. Run the 1080p pass again, or listen to a held file and use it." };
   const files = await clientCutFiles([id]); // A read failure throws, never falls back to the original.
   const file = files.get(id) ?? { kind: "original" as const };
   if (file.kind === "finishing") return { ok: false, message: "The client file is still being finished or held for review." };
@@ -95,6 +97,39 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
   const mediaId = digest([file.kind, backup.id, backup.rev, backup.hash, backup.size, digest(backup.path)]);
   const fingerprint = digest([monthlyCutStamp(cut), mediaId, access.stamp, canonicalSource]);
   return { ok: true, cut, fingerprint, mediaId, previewUrl: `/api/review/cut/${id}/final?f=${fingerprint}`, fileName: file.kind === "processed" ? file.fileName : cut.fileName ?? path.split("/").pop()!, file: file.kind === "processed" ? { kind: "processed", path: file.path } : { kind: "original" }, backup, access };
+}
+
+const verified1080p = (cut: MonthlyCut) => cut.topazJob?.state === "done" && !!cut.topazJob.finalPath && !!cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? "");
+
+/**
+ * KYLE SENT THE FINAL DROPBOX LINK HIMSELF (Oct 5 2026). For a client whose
+ * portal is not live yet (not in the rollout, or no owner seat), the portal
+ * handoff can never be recorded, and the row sat on his card with nothing to
+ * press. This records his send: the same exact current version, the same
+ * checked 1080p file whenever the version waits for publication, and only
+ * while the client really cannot sign in — a client who can is published to
+ * their portal instead. No portal handoff marker is written: this is a send
+ * outside the portal, which is what the release rule (cutEntitlement) reads.
+ */
+export async function claimMonthlyOutsidePortal(id: string, by: string | null): Promise<{ ok: true; count: number } | { ok: false; message: string }> {
+  const cut = await loadMonthlyCut(id);
+  if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current." };
+  const deliveryCut = await import("@/lib/finalRendition").then((m) => m.loadCut(id));
+  if (deliveryCut && await import("@/lib/videoDeliveryDestination").then((m) => m.usesAryeoDelivery(deliveryCut))) return { ok: false, message: "Aryeo was selected for this version. Use its upload and delivery steps." };
+  if (publicationRequiredAt(cut, true) && !verified1080p(cut)) return { ok: false, message: "The checked 1080p file isn't ready, so there is nothing to send yet. Run the 1080p pass first." };
+  const access = (await monthlyOwnerAccess([cut.project.contentMonthId!])).get(cut.project.contentMonthId!);
+  if (access?.ok && access.clientId === cut.project.clientId) return { ok: false, message: "This client can sign in to the portal now. Publish it to their portal instead." };
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "ReviewSubmission" WHERE "projectId" = ${cut.projectId} ORDER BY id FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${cut.projectId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "ReviewSubmission" WHERE "projectId" = ${cut.projectId} ORDER BY id FOR UPDATE`;
+    const current = await loadMonthlyCut(id, tx);
+    if (current?.sentToClientAt) return { ok: true as const, count: 0 };
+    if (!current || monthlyCutStamp(current) !== monthlyCutStamp(cut) || !(await currentMonthlyCut(current, tx))) return { ok: false as const, message: "The version or its final file changed. Check the current version again." };
+    const sentAt = new Date();
+    const changed = await tx.reviewSubmission.updateMany({ where: { id, status: "APPROVED", sentToClientAt: null }, data: { sentToClientAt: sentAt, sentToClientBy: by, clientReleasedAt: current.clientReleasedAt ?? sentAt, clientReleasedBy: current.clientReleasedBy ?? "Sent as a Final Dropbox link" } });
+    return { ok: true as const, count: changed.count };
+  }, { isolationLevel: "Serializable" });
 }
 
 /** Provider proof is collected before the transaction; the first delivery
@@ -133,15 +168,32 @@ export async function claimMonthlyFinalDelivery(id: string, by: string | null): 
 /** Only new publication-gated approvals. No historical deadline repair or
  * broad backfill is performed by this automatic retry. */
 export async function repairMonthlyPublications(max = 100) {
-  const cuts = await prisma.reviewSubmission.findMany({ where: { status: "APPROVED", portalPublicationRequiredAt: { not: null }, clientReleasedAt: null, project: { contentMonthId: { not: null }, status: { notIn: ["CANCELLED", "ON_HOLD"] } } }, orderBy: { decidedAt: "asc" }, take: max, select: { id: true } });
+  // A job linked to its month after approval gets the stamp approveCut would
+  // have written — BEFORE the review-window repair runs later in the same
+  // cron, so that repair can never release it without its checked file.
+  await stampImpliedPublicationGates().catch(() => 0);
+  const cuts = await prisma.reviewSubmission.findMany({ where: { status: "APPROVED", portalPublicationRequiredAt: { not: null }, clientReleasedAt: null, sentToClientAt: null, project: { contentMonthId: { not: null }, status: { notIn: ["CANCELLED", "ON_HOLD"] } } }, orderBy: { decidedAt: "asc" }, take: max, select: { id: true, topazJob: { select: { state: true } } } });
   const { publishApprovedCutToLibrary } = await import("@/lib/contentVideos");
   let published = 0;
+  let waiting = 0;
   const exceptions: { id: string; reason: string }[] = [];
   for (const cut of cuts) {
+    // THE 1080p PASS IS STILL AT WORK (Oct 5 2026): its portal only takes the
+    // checked 1080p file, so a publication now can only fail — and each failure
+    // used to be written on the client's library and the delivery card every
+    // hour while a render was simply running (or a finished file sat waiting
+    // for a listen). Wait silently: the finished pass publishes it itself. A
+    // pass that has ENDED (done, failed, cancelled, skipped) is still tried
+    // here, so a real failure is still written down where Kyle sees it.
+    if (cut.topazJob && PASS_PENDING.has(cut.topazJob.state as TopazState)) { waiting++; continue; }
     const destinationCut = await import("@/lib/finalRendition").then(m => m.loadCut(cut.id));
     if (destinationCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(destinationCut))) continue;
     const result = await publishApprovedCutToLibrary(cut.id);
     if (result.published) published++; else exceptions.push({ id: cut.id, reason: result.why ?? "Publication unavailable" });
   }
-  return { checked: cuts.length, published, exceptions };
+  return { checked: cuts.length, published, waiting, exceptions };
 }
+
+/** A 1080p pass that still owes work, or holds a finished file for a listen.
+ *  Every other state (done, failed, cancelled, skipped) has finished with it. */
+const PASS_PENDING = new Set<TopazState>(["queued", "estimated", "uploading", "processing", "saving", "held"]);

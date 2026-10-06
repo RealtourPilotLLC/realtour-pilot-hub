@@ -50,6 +50,98 @@ export function cutReleasedAt(s: { status: string; decidedBy: string | null; dec
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// THE PORTAL PUBLICATION GATE, WHENEVER THE JOB WAS LINKED (Oct 5 2026).
+//
+// Since the gate shipped (its column was added 2026-10-02T20:49Z) approveCut
+// stamps portalPublicationRequiredAt on a monthly cut, so the client sees it
+// only once its checked 1080p file is published. It stamps only when the job
+// is ON a month at approval. A job linked to its month AFTER approval carried
+// no stamp, cutReleasedAt released it at its QC time, and the portal could
+// hand over the editor's original. A monthly cut approved after the gate that
+// the client was not given in any other way is now gated exactly as if it had
+// been stamped: read-side here, and written down by stampImpliedPublicationGates
+// so every other reader agrees.
+// ---------------------------------------------------------------------------
+export const PORTAL_PUBLICATION_GATE_SINCE = new Date("2026-10-02T20:49:00Z");
+
+type PublicationFacts = {
+  status: string; decidedBy: string | null; decidedAt: Date | null; clientReleasedAt: Date | null;
+  portalPublicationRequiredAt?: Date | null; sentToClientAt?: Date | null; clientRequestedAt?: Date | null; clientApprovedDecisionId?: string | null;
+};
+
+/** When this cut started waiting for portal publication, or null when it does not wait. */
+export function publicationRequiredAt(s: PublicationFacts, monthly: boolean): Date | null {
+  if (s.portalPublicationRequiredAt) return s.portalPublicationRequiredAt;
+  if (!monthly || s.status !== "APPROVED" || !s.decidedAt || s.decidedBy === DELIVERED_STAMP) return null;
+  // Already the client's by another road: released, sent, or decided by them.
+  if (s.clientReleasedAt || s.sentToClientAt || s.clientRequestedAt || s.clientApprovedDecisionId) return null;
+  return s.decidedAt.getTime() >= PORTAL_PUBLICATION_GATE_SINCE.getTime() ? s.decidedAt : null;
+}
+
+/** The row with its implied gate filled in, for the pure readers (cutReleasedAt). */
+export function withPublicationGate<T extends PublicationFacts>(s: T, monthly: boolean): T {
+  if (s.portalPublicationRequiredAt) return s;
+  const at = publicationRequiredAt(s, monthly);
+  return at ? { ...s, portalPublicationRequiredAt: at } : s;
+}
+
+/** publicationRequiredAt's implied half as a query (rows not yet stamped). */
+export function impliedPublicationGateWhere(): Prisma.ReviewSubmissionWhereInput {
+  return {
+    status: "APPROVED", portalPublicationRequiredAt: null, clientReleasedAt: null, sentToClientAt: null,
+    clientRequestedAt: null, clientApprovedDecisionId: null, decidedAt: { gte: PORTAL_PUBLICATION_GATE_SINCE },
+    OR: [{ decidedBy: null }, { decidedBy: { not: DELIVERED_STAMP } }],
+    project: { contentMonthId: { not: null } },
+  };
+}
+
+/**
+ * Write the implied gate down (the stamp approveCut would have written had the
+ * job been on its month): EXACTLY the rows publicationRequiredAt gates — the
+ * one predicate the portal, the file reader (cutEntitlement.clientCutFiles,
+ * through impliedPublicationGateWhere) and Kyle's card all read. Each write is
+ * conditional on the row still matching it, and names itself on the job's
+ * timeline. Runs from the library sync and the hourly publication repair,
+ * which runs before the review-window repair.
+ *
+ * ONE PREDICATE (review fix, Oct 5 2026). The first cut also skipped any cut
+ * with a ClientDecision or ContentReviewWindow row, while every reader gated
+ * it anyway — so such a cut was hidden from the client AND never stamped, and
+ * the hourly repair (which publishes stamped cuts) never published it. "The
+ * client already has it" is the predicate's own four facts (released, sent,
+ * their change request, their live approval); a window always stamps the
+ * release (reviewWindows.openReviewWindow), and a decision row without any of
+ * them is one that was set aside.
+ */
+export async function stampImpliedPublicationGates(opts: { projectIds?: string[]; max?: number } = {}): Promise<number> {
+  if (opts.projectIds && opts.projectIds.length === 0) return 0;
+  const rows = await prisma.reviewSubmission.findMany({
+    where: { ...impliedPublicationGateWhere(), ...(opts.projectIds ? { projectId: { in: opts.projectIds } } : {}) },
+    select: {
+      id: true, projectId: true, round: true, status: true, decidedBy: true, decidedAt: true, clientReleasedAt: true,
+      portalPublicationRequiredAt: true, sentToClientAt: true, clientRequestedAt: true, clientApprovedDecisionId: true,
+    },
+    orderBy: { decidedAt: "asc" },
+    take: opts.max ?? 200,
+  });
+  let stamped = 0;
+  for (const r of rows) {
+    // Every row here is on a content month (the where says so).
+    const at = publicationRequiredAt(r, true);
+    if (!at) continue;
+    const w = await prisma.reviewSubmission.updateMany({
+      where: { id: r.id, status: "APPROVED", portalPublicationRequiredAt: null, clientReleasedAt: null, sentToClientAt: null, clientRequestedAt: null, clientApprovedDecisionId: null },
+      data: { portalPublicationRequiredAt: at },
+    });
+    if (w.count === 1) {
+      stamped++;
+      await prisma.activity.create({ data: { projectId: r.projectId, type: "SYSTEM", body: `Version ${r.round} was approved before this job was linked to its content month. Its portal release now waits for the checked 1080p file, like every monthly video.` } }).catch(() => {});
+    }
+  }
+  return stamped;
+}
+
 /** A readable title from an editor's file name: "cara-reel-v1.mp4" → "Cara reel". */
 export function titleFromFileName(fileName: string | null | undefined, fallback: string): string {
   if (!fileName) return fallback;
@@ -164,11 +256,16 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   });
   if (projects.length === 0) return { videos: 0, created: 0, archived: 0 };
   const projectIds = projects.map((p) => p.id);
-  const [subs, libraryRows, existingVideos] = await Promise.all([
+  // A job linked to its month after approval: its cut waits for publication
+  // like any monthly cut (written down here, and read the same way below).
+  await stampImpliedPublicationGates({ projectIds });
+  const [rawSubs, libraryRows, existingVideos] = await Promise.all([
     prisma.reviewSubmission.findMany({ where: { projectId: { in: projectIds }, status: { notIn: [...NOT_A_CUT] } }, orderBy: [{ round: "asc" }, { createdAt: "asc" }], select: SUB_SELECT }),
     prisma.portalVideo.findMany({ where: { enrollmentId: enrollment.id }, orderBy: { deliveredAt: "asc" } }),
     prisma.contentVideo.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, projectId: true, status: true, deliverableId: true, slot: true, currentSubmissionId: true, approvedSubmissionId: true, finalSubmissionId: true, topicId: true, filmedConfirmedAt: true, finalFileRef: true, finalVersionLabel: true, deliveredAt: true } }),
   ]);
+  // Every project here is on one of this client's months.
+  const subs = rawSubs.map((s) => withPublicationGate(s, true));
   // The client's own decisions on these cuts — the only thing that turns an
   // internally approved cut into THEIR video (cutEntitlement). One query per
   // enrollment; superseded rows never count.
@@ -956,11 +1053,46 @@ async function enrollmentOfCut(submissionId: string): Promise<{ id: string; clie
  * miss is recorded for the hourly repair and the exceptions board.
  */
 export async function publishApprovedCutToLibrary(submissionId: string): Promise<{ published: boolean; why?: string }> {
+  const r = await publishOnce(submissionId);
+  // Kyle's delivery card names the last reason a portal publication did not
+  // land, so "needs attention" always comes with the why (Oct 5 2026).
+  if (!r.skipped) await recordPublicationOutcome(submissionId, r.published ? null : r.why ?? "Publication did not finish.").catch(() => {});
+  return { published: r.published, ...(r.why ? { why: r.why } : {}) };
+}
+
+/** The AppSetting key holding one cut's last failed portal publication. */
+export const publicationFailureKey = (submissionId: string) => `portal-publication-failure:${submissionId}`;
+
+async function recordPublicationOutcome(submissionId: string, why: string | null): Promise<void> {
+  const key = publicationFailureKey(submissionId);
+  if (!why) {
+    await prisma.appSetting.deleteMany({ where: { key } });
+    return;
+  }
+  const value = JSON.stringify({ at: new Date().toISOString(), why: why.slice(0, 300) });
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+}
+
+/** The last failed publication per cut, for the delivery card. */
+export async function publicationFailuresFor(submissionIds: string[]): Promise<Map<string, { at: string; why: string }>> {
+  const out = new Map<string, { at: string; why: string }>();
+  if (!submissionIds.length) return out;
+  const rows = await prisma.appSetting.findMany({ where: { key: { in: submissionIds.map(publicationFailureKey) } }, select: { key: true, value: true } });
+  for (const row of rows) {
+    try {
+      const v = JSON.parse(row.value) as { at?: string; why?: string };
+      if (v.why) out.set(row.key.slice("portal-publication-failure:".length), { at: v.at ?? "", why: v.why });
+    } catch { /* an unreadable record says nothing */ }
+  }
+  return out;
+}
+
+async function publishOnce(submissionId: string): Promise<{ published: boolean; why?: string; skipped?: boolean }> {
   try {
     const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
-    if (deliveryCut?.project.contentMonthId && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut))) return { published: false, why: "Aryeo selected for this version; portal publication is not required." };
+    if (deliveryCut?.project.contentMonthId && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut))) return { published: false, skipped: true, why: "Aryeo selected for this version; portal publication is not required." };
     const enrollment = await enrollmentOfCut(submissionId);
-    if (!enrollment) return { published: false, why: "not a program client's job" };
+    if (!enrollment) return { published: false, skipped: true, why: "not a program client's job" };
     const r = await syncEnrollmentLibrary(enrollment, { clearOnSuccess: false });
     if (!r.ok) return { published: false, why: r.error };
     const missing = await cutsMissingFromLibrary(enrollment.id, [submissionId]);
@@ -975,7 +1107,7 @@ export async function publishApprovedCutToLibrary(submissionId: string): Promise
       return { published: false, why: claimed.message };
     }
     const currentDeliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
-    if (currentDeliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(currentDeliveryCut))) return { published: false, why: "This version was delivered through Aryeo." };
+    if (currentDeliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(currentDeliveryCut))) return { published: false, skipped: true, why: "This version was delivered through Aryeo." };
     const { openReviewWindow } = await import("@/lib/reviewWindows");
     await openReviewWindow(submissionId, { by: "Portal publication" });
     // Rebuild after the atomic release/marker commit. A retry preserves the

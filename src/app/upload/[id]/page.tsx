@@ -3,12 +3,9 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import {
-  FolderOpen,
   Image as ImageIcon,
   Video,
   ExternalLink,
-  CheckCircle2,
-  Circle,
 } from "lucide-react";
 import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
@@ -92,20 +89,80 @@ export default async function UploadProjectPage({
   });
   if (!project) notFound();
 
-  // Who submitted / last edited the page (Sep 15): read off the timeline
-  // lines finalizeUpload writes — see submissionTrail for the rules.
-  const trailRows = await prisma.activity.findMany({
-    where: {
-      projectId: project.id,
-      OR: [
-        { type: ActivityType.FILE, body: UPLOAD_COMPLETED_BODY },
-        { body: { startsWith: UPLOAD_SUBMITTED_BY_PREFIX } },
-        { body: { startsWith: UPLOAD_EDITED_BY_PREFIX } },
-      ],
-    },
-    select: { type: true, body: true, createdAt: true },
-    orderBy: { createdAt: "asc" },
-  });
+  // ONE ROUND OF INDEPENDENT READS (Oct 5: "speed up the page"). Every read
+  // below needs only the project row, so they run side by side instead of one
+  // after another; each keeps its own failure rule from before, and the reads
+  // that depend on one of these (topic folders, the pending report, the
+  // creative scrub of the gaps) follow straight after.
+  const videoOrderedRow = project.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const canSaveDraft = !!viewer?.email && !viewer.impersonating;
+  const { readSessionTopics } = await import("@/lib/filmedTopics");
+  const { gapsForProject, gapsForCreatives } = await import("@/lib/productionGaps");
+  const { fieldReportsForProject } = await import("@/lib/clientFacts");
+  const { outputBriefsFor, ON_SITE_NOTE_CAP } = await import("@/lib/deliverableOutputs");
+  const [trailRows, folderState, addOnTasks, extraShootRows, topicsRead, draftRow, ladder, gapsRaw, fieldReportRows, allBriefs] = await Promise.all([
+    // Who submitted / last edited the page (Sep 15): read off the timeline
+    // lines finalizeUpload writes — see submissionTrail for the rules.
+    prisma.activity.findMany({
+      where: {
+        projectId: project.id,
+        OR: [
+          { type: ActivityType.FILE, body: UPLOAD_COMPLETED_BODY },
+          { body: { startsWith: UPLOAD_SUBMITTED_BY_PREFIX } },
+          { body: { startsWith: UPLOAD_EDITED_BY_PREFIX } },
+        ],
+      },
+      select: { type: true, body: true, createdAt: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    getProjectFolderState(project),
+    // Items the agent added on site, already logged from this portal. Read back
+    // off the tasks themselves (their dedupeKey is prefixed per project) so the
+    // photographer sees what they've already reported instead of re-adding it,
+    // and CANCELLED rows stay hidden — those were withdrawn here.
+    prisma.smartTask.findMany({
+      where: { projectId: project.id, dedupeKey: { startsWith: shootAddonKeyPrefix(project.id) }, status: { not: "CANCELLED" } },
+      select: { id: true, title: true, description: true, contactName: true, createdAt: true, status: true, dedupeKey: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    // Extra shoots this job has been reopened for (Jordan, Sep 18 — 204 Spring
+    // Ln). Read with their OWN counts rather than off `project.deliverables`
+    // above: whether a cut or a file already hangs off the row is what decides
+    // if the photographer may still take it back, and the shared include does
+    // not carry it. See app/upload/additionalShoots.ts for the shape.
+    prisma.deliverable.findMany({
+      where: {
+        projectId: project.id,
+        manual: true,
+        removedFromOrderAt: null,
+        capturedAt: { not: null },
+        type: { in: ["VIDEO", "SOCIAL_REEL"] },
+      },
+      orderBy: { capturedAt: "asc" },
+      select: {
+        id: true, type: true, label: true, capturedAt: true, uploadedAt: true, createdAt: true,
+        _count: { select: { uploads: true, reviewSubmissions: true } },
+      },
+    }),
+    // F12 / R02: the content-program topics (see the note on topicsRead below).
+    readSessionTopics(project.id),
+    // O04: this viewer's unsent answers, if any. One draft per person per job —
+    // the office's "Edit this upload" never sees the photographer's.
+    canSaveDraft
+      ? prisma.uploadDraft
+          .findUnique({
+            where: { projectId_authorKey: { projectId: project.id, authorKey: viewer!.email.trim().toLowerCase() } },
+            select: { revision: true, payloadJson: true, savedAt: true, consumedAt: true, baseHash: true },
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
+    // §7.3: the files ladder (see `evidence` below for its fallback).
+    import("@/lib/handoffLadder").then((m) => m.handoffLadderFor(project.id)).catch(() => null),
+    gapsForProject(project.id).catch(() => []),
+    fieldReportsForProject(project.id).catch(() => []),
+    // §7.5 / §6.8: each video's own brief (which ones show is decided below).
+    videoOrderedRow ? outputBriefsFor(project.id, { scrub: true }).catch(() => [] as OutputBrief[]) : Promise.resolve([] as OutputBrief[]),
+  ]);
   const trail = submissionTrail(
     trailRows.map((a) => ({ type: a.type, body: a.body, createdAtISO: a.createdAt.toISOString() })),
     { photographerName: project.photographer?.name ?? null, submittedAtISO: project.debriefSubmittedAt?.toISOString() ?? null },
@@ -115,17 +172,6 @@ export default async function UploadProjectPage({
   // as the office, the same way the list page does.
   const viewerIsOffice = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
 
-  const folderState = await getProjectFolderState(project);
-
-  // Items the agent added on site, already logged from this portal. Read back
-  // off the tasks themselves (their dedupeKey is prefixed per project) so the
-  // photographer sees what they've already reported instead of re-adding it,
-  // and CANCELLED rows stay hidden — those were withdrawn here.
-  const addOnTasks = await prisma.smartTask.findMany({
-    where: { projectId: project.id, dedupeKey: { startsWith: shootAddonKeyPrefix(project.id) }, status: { not: "CANCELLED" } },
-    select: { id: true, title: true, description: true, contactName: true, createdAt: true, status: true, dedupeKey: true },
-    orderBy: { createdAt: "asc" },
-  });
   const street = streetOf(project.title);
   const addOns: ShootAddOn[] = addOnTasks.map((t) => ({
     id: t.id,
@@ -136,25 +182,6 @@ export default async function UploadProjectPage({
     handled: t.status === "COMPLETED",
   }));
 
-  // Extra shoots this job has been reopened for (Jordan, Sep 18 — 204 Spring
-  // Ln). Read with their OWN counts rather than off `project.deliverables`
-  // above: whether a cut or a file already hangs off the row is what decides
-  // if the photographer may still take it back, and the shared include does
-  // not carry it. See app/upload/additionalShoots.ts for the shape.
-  const extraShootRows = await prisma.deliverable.findMany({
-    where: {
-      projectId: project.id,
-      manual: true,
-      removedFromOrderAt: null,
-      capturedAt: { not: null },
-      type: { in: ["VIDEO", "SOCIAL_REEL"] },
-    },
-    orderBy: { capturedAt: "asc" },
-    select: {
-      id: true, type: true, label: true, capturedAt: true, uploadedAt: true, createdAt: true,
-      _count: { select: { uploads: true, reviewSubmissions: true } },
-    },
-  });
   // Who logged it: the office card the same action minted carries the name
   // (SmartTask.contactName), and the two are joined by the dedupe key the item
   // name slugifies to — nothing is stored twice.
@@ -195,8 +222,7 @@ export default async function UploadProjectPage({
   // the page is told the list is UNKNOWN (topicsUnavailable, content jobs only
   // — a listing shoot has no list to lose): it keeps the stored ticks exactly
   // as saved, says so, and holds the video half until a reload brings the list.
-  const { readSessionTopics } = await import("@/lib/filmedTopics");
-  const topicsRead = await readSessionTopics(project.id);
+  // (Read in the parallel round above.)
   const session = topicsRead.ok ? topicsRead.session : null;
   if (!topicsRead.ok) console.warn(`[upload-page] topic list unreadable for ${project.id}: ${topicsRead.error}`);
   // CP-09 (batch C): each topic's raw folder, where it is TODAY (the folder
@@ -205,9 +231,11 @@ export default async function UploadProjectPage({
   // the reopened page shows their answer instead of a blank one. Re-sending it
   // unchanged is the same report (payloadHash), not a second one.
   const { topicFolderLinksFor } = await import("@/lib/dropboxFolders");
-  const topicFolders = session
-    ? await topicFolderLinksFor(project.id).catch(() => new Map<string, { label: string; path: string; url: string }>())
-    : new Map<string, { label: string; path: string; url: string }>();
+  // The two reads that need the session run together (Oct 5).
+  const [topicFolders, pendingRead] = await Promise.all([
+    session
+      ? topicFolderLinksFor(project.id).catch(() => new Map<string, { label: string; path: string; url: string }>())
+      : Promise.resolve(new Map<string, { label: string; path: string; url: string }>()),
   // R02 follow-up (Sep 28 2026): this read was `.catch(() => null)` too — the
   // same catch-to-empty the repair took out of the list read above.
   // A report the session SAYS is pending, whose own row could not be read,
@@ -217,14 +245,15 @@ export default async function UploadProjectPage({
   // unknown, so the page is treated exactly like a list that did not load:
   // topicsUnavailable, the reload banner, the video half held, and no topic
   // answer in the draft.
-  const pendingRead = session?.pendingReport
-    ? await prisma.contentFilmingReport
-        .findUnique({ where: { id: session.pendingReport.id }, select: { topicIdsJson: true, extrasJson: true } })
-        .then(
-          (row) => ({ ok: true as const, row }),
-          (e: unknown) => ({ ok: false as const, error: (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim().slice(0, 300) }),
-        )
-    : null;
+    session?.pendingReport
+      ? prisma.contentFilmingReport
+          .findUnique({ where: { id: session.pendingReport.id }, select: { topicIdsJson: true, extrasJson: true } })
+          .then(
+            (row) => ({ ok: true as const, row }),
+            (e: unknown) => ({ ok: false as const, error: (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim().slice(0, 300) }),
+          )
+      : Promise.resolve(null),
+  ]);
   // A row that vanished between the two reads is no more known than one that
   // failed: nothing may be said about what the photographer ticked.
   const pendingUnknown = !!session?.pendingReport && (!pendingRead?.ok || !pendingRead.row);
@@ -295,17 +324,7 @@ export default async function UploadProjectPage({
   const videoStyle: VideoStyleKey = resolved.style;
   const videoSpec: VideoStepSpec = resolved.spec;
 
-  // O04: this viewer's unsent answers, if any. One draft per person per job —
-  // the office's "Edit this upload" never sees the photographer's.
-  const canSaveDraft = !!viewer?.email && !viewer.impersonating;
-  const draftRow = canSaveDraft
-    ? await prisma.uploadDraft
-        .findUnique({
-          where: { projectId_authorKey: { projectId: project.id, authorKey: viewer!.email.trim().toLowerCase() } },
-          select: { revision: true, payloadJson: true, savedAt: true, consumedAt: true, baseHash: true },
-        })
-        .catch(() => null)
-    : null;
+  // O04: this viewer's unsent answers (read in the parallel round above).
   // baseHash: the fingerprint the draft was typed against (review, Sep 25). A
   // restored draft submits with IT, not this page's, so a job that moved
   // underneath it — Kyle's Editing Room edit, an office submit — is refused
@@ -324,7 +343,6 @@ export default async function UploadProjectPage({
   // their words, rung for rung (Sep 28). Should that read fail, the pure
   // reader on this page's own rows still answers — the same words, without
   // the "editing started" and "cuts handed in" rungs only that read knows.
-  const ladder = await import("@/lib/handoffLadder").then((m) => m.handoffLadderFor(project.id)).catch(() => null);
   const evidence = (
     ladder ??
     handoffEvidence({
@@ -343,23 +361,22 @@ export default async function UploadProjectPage({
   // the briefs below (review, Sep 28). The office keeps the raw words: its
   // Plan form is filled from them and saves them back, so the gate is the one
   // that shows that form (viewerIsOffice).
-  const { gapsForProject, gapsForCreatives } = await import("@/lib/productionGaps");
-  const gapsRaw = await gapsForProject(project.id).catch(() => []);
   const gaps = viewerIsOffice ? gapsRaw : await gapsForCreatives(gapsRaw).catch(() => []);
-  const { fieldReportsForProject } = await import("@/lib/clientFacts");
-  const fieldReports = (await fieldReportsForProject(project.id).catch(() => [])).map((f) => ({
+  const fieldReports = fieldReportRows.map((f) => ({
     id: f.id, body: f.body, status: f.status, scope: f.scope, basis: f.basis, createdAtISO: f.createdAt.toISOString(),
   }));
 
   // Video jobs: pull the shoot script from Script Studio (freshness-gated,
   // never blocks the page on a dead Studio) so the photographer confirms the
-  // words the agent actually read.
+  // words the agent actually read. NOT on a content session (Oct 5): its
+  // scripts come from the program (the topic list), never from Studio, and
+  // the pull was a network round trip on every open of the page for nothing.
   let scriptBody = project.reelScript;
   let scriptHook = project.reelHook;
   let scriptUrl = project.reelScriptUrl;
   // The script the fingerprint below is taken over — the stored one after any pull.
   let hashScript = project.reelScript;
-  if (videoOrdered) {
+  if (videoOrdered && !project.contentMonthId) {
     try {
       const { autoSyncScript } = await import("@/lib/scriptSync");
       const pulled = await autoSyncScript(project.id);
@@ -397,8 +414,6 @@ export default async function UploadProjectPage({
   //     instructions box below IS that video's brief (the batch-4 law);
   //   · a content session: only the videos the office briefed one by one. The
   //     rest are directed through the topic list and its notes further down.
-  const { outputBriefsFor, ON_SITE_NOTE_CAP } = await import("@/lib/deliverableOutputs");
-  const allBriefs = videoOrdered ? await outputBriefsFor(project.id, { scrub: true }).catch(() => [] as OutputBrief[]) : [];
   // A content session whose topic list did not load is still a content
   // session: its videos are directed through that list, not one by one.
   const shownBriefs = session || topicsUnavailable
@@ -419,7 +434,7 @@ export default async function UploadProjectPage({
       <UploadPortal
         sessionTopics={sessionTopics}
         topicsUnavailable={topicsUnavailable}
-        foldersSlot={<DropboxFolders state={folderState} photoTarget={photoTarget} />}
+        foldersSlot={<DropboxFolders state={folderState} photoTarget={photoTarget} photosOrdered={photosOrdered} />}
         handoffFolders={folderState?.folders.filter((f) => f.key === "rawPhotos" || f.key === "rawVideo").map((f) => ({ key: f.key, label: f.label, url: f.url })) ?? []}
         project={{
           id: project.id,
@@ -604,29 +619,23 @@ async function addOnSiteBriefNote(projectId: string, outputId: string, note: str
   };
 }
 
-// Tiny progress chip (declared at module scope, not inside render).
-function Step({ done, label }: { done: boolean; label: string }) {
-  return (
-    <span className={`inline-flex items-center gap-1 ${done ? "text-success" : "text-muted-2"}`}>
-      {done ? <CheckCircle2 className="size-3.5" /> : <Circle className="size-3.5" />}
-      {label}
-    </span>
-  );
-}
-
 function DropboxFolders({
   state,
   photoTarget,
+  photosOrdered = true,
 }: {
   state: Awaited<ReturnType<typeof getProjectFolderState>>;
   photoTarget: number;
+  /** false on a video-only job (a monthly content session): no Backup Photos */
+  photosOrdered?: boolean;
 }) {
   if (!state) return null;
   const iconFor = (label: string) => (/video/i.test(label) ? Video : ImageIcon);
 
   // Photographers see the folders THEY use: Raw Photos, Raw Video, Backup
   // Photos. The Final folders are the editors' side — removed per Jordan.
-  const shown = state.folders.filter((f) => f.key !== "finalPhotos" && f.key !== "finalVideo");
+  // A video-only job has no culled photo extras, so no Backup Photos (Oct 5).
+  const shown = state.folders.filter((f) => f.key !== "finalPhotos" && f.key !== "finalVideo" && (photosOrdered || f.key !== "backupPhotos"));
 
   // Live raw-photo count vs this home's budget.
   const rawPhotoCount = state.folders.find((f) => f.key === "rawPhotos")?.count ?? 0;

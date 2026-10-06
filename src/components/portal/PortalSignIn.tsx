@@ -18,7 +18,7 @@ const REASONS: Record<string, string> = {
   // A token no enrollment carries: it may have been replaced, or it may never
   // have existed. We cannot tell, so we claim neither.
   unknown: "That link isn't working any more. Sign in with your email to continue.",
-  invalid: "That sign-in link is no longer valid — they work once and expire after 15 minutes. Request a fresh one below.",
+  invalid: "That sign-in link is no longer valid — each link works once, for a limited time. Request a fresh one below.",
   signedout: "You're signed out.",
   noaccess: "This email doesn't have access to a program right now. Reply to any text or email from us and we'll sort it.",
   revoked: "This portal is no longer available. Reply to any text or email from us if that's unexpected.",

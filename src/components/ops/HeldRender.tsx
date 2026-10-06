@@ -24,6 +24,10 @@ import { HELD_ATTESTATION } from "@/lib/topazHold";
  * import @/lib/topazJobs (server-only) — the attestation comes from the pure
  * @/lib/topazHold so both sides compare the same words. Every answer is shown,
  * refusals included ("someone else is deciding this one").
+ *
+ * A MONTHLY VIDEO HAS NO "KEEP THE ORIGINAL" (Oct 5 2026): its portal only
+ * takes the checked 1080p file, so that button was a dead end that said the
+ * opposite. `monthly` hides it (the server refuses it too).
  */
 export function HeldRender({
   jobId,
@@ -31,12 +35,14 @@ export function HeldRender({
   fileName,
   dropboxUrl,
   lastCheck,
+  monthly = false,
 }: {
   jobId: string;
   street: string;
   fileName: string;
   dropboxUrl: string | null;
   lastCheck: string | null;
+  monthly?: boolean;
 }) {
   const router = useRouter();
   const [msg, setMsg] = useState<string | null>(null);
@@ -81,7 +87,7 @@ export function HeldRender({
         ) : (
           <span className="font-medium text-foreground">{fileName}</span>
         )}
-        <span> — play it in Dropbox. The approved original is untouched until you choose.</span>
+        <span>{monthly ? " — play it in Dropbox. The client's portal only gets this file once someone has listened and used it." : " — play it in Dropbox. The approved original is untouched until you choose."}</span>
         {lastCheck && <span className="block text-muted-2">{lastCheck}</span>}
       </p>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -94,15 +100,17 @@ export function HeldRender({
         >
           {busy ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} Check again
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={keepOriginal}
-          aria-label={askingOriginal ? `Yes, keep the approved original for ${street}` : `Keep the approved original for ${street}`}
-          className={btn}
-        >
-          <Undo2 className="size-3" /> {askingOriginal ? "Yes, keep the original" : "Keep the approved original"}
-        </button>
+        {!monthly && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={keepOriginal}
+            aria-label={askingOriginal ? `Yes, keep the approved original for ${street}` : `Keep the approved original for ${street}`}
+            className={btn}
+          >
+            <Undo2 className="size-3" /> {askingOriginal ? "Yes, keep the original" : "Keep the approved original"}
+          </button>
+        )}
         {!accepting && (
           <button type="button" disabled={busy} onClick={() => setAccepting(true)} className={btn}>
             <Check className="size-3" /> I listened — use this file

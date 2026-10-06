@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Camera, Check, CornerDownRight, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, ThumbsUp, Undo2,
@@ -17,6 +17,7 @@ import { fmtClock, parseClock } from "./types";
 import { reviewStage, verifiedFixIds } from "@/lib/reviewStage";
 import { reviewActionReceipt, reviewRetryBlocked, type UnknownReviewRead } from "@/lib/reviewActionReceipt";
 import { ModalDialog } from "@/components/ui/ModalDialog";
+import { addReceipt, dropDraft, keepDraft, readDraft, updateReceipt } from "./verdictReceiptStore";
 
 // ---------------------------------------------------------------------------
 // The Review Room's cut workspace panel (client): the submitted video with
@@ -34,6 +35,14 @@ import { ModalDialog } from "@/components/ui/ModalDialog";
 // Approve stays the loud green button; the escape hatch is grey text.
 // The page (src/app/review/[id]/page.tsx) is what feeds `takeBack` here: with
 // the prop missing the link renders nowhere on this desk at all.
+//
+// Oct 5 (Jordan: "it should close and give a confirmation instantly … so our
+// team can keep moving and reviewing videos"): a verdict closes the cut on the
+// click. The panel shows the verdict at once, the reviewer is taken straight to
+// the next cut waiting (`nextCut`, named by the page) or back to the Room, and
+// the confirmation follows them as a receipt (VerdictReceipts) that turns into
+// the server's own words — or, if the server refuses, into the exact reason
+// with the way back to this cut and their unsent words restored.
 // ---------------------------------------------------------------------------
 
 type LaneChoice = {
@@ -45,9 +54,14 @@ type LaneChoice = {
    *  the editor. Only they get this chip, and it decides nothing. */
   ask?: true;
 };
+// Oct 5: "Request a change" is FIRST, so it is the default (`choice` starts
+// at 0). Only a fix note becomes a tracked revision issue — the editor's
+// self-check and the quality numbers read those — and an Oct 2 reorder made
+// "Comment" the default, so a reviewer who never touched the chip silently
+// filed coaching notes nobody tracked. Comment stays one tap away.
 const CHOICES: LaneChoice[] = [
-  { lane: "EDITOR", kind: "coaching", label: "Comment", icon: "pencil" },
   { lane: "EDITOR", kind: "fix", label: "Request a change", icon: "pencil" },
+  { lane: "EDITOR", kind: "coaching", label: "Comment", icon: "pencil" },
   { lane: "PHOTOGRAPHER", kind: "fix", label: "Photographer — capture", icon: "camera" },
 ];
 
@@ -86,6 +100,8 @@ export function CutReviewPanel({
   heldForCheck = false,
   fixesToCheck = [],
   readStamp,
+  nextCut = null,
+  street,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -110,24 +126,33 @@ export function CutReviewPanel({
   fixesToCheck?: { id: string; text: string }[];
   /** A successful server read; refresh retains drafts on this exact cut. */
   readStamp?: string;
+  /** Where a verdict takes the reviewer: the next cut waiting in the Room
+   *  (reviewRoom.nextCutToReview). Null = nothing else is waiting on them. */
+  nextCut?: { href: string; label: string } | null;
+  /** The job's street, for the receipt that follows the reviewer. */
+  street?: string;
 }) {
   const router = useRouter();
-  const [notFixed, setNotFixed] = useState<Set<string>>(() => new Set());
+  // Words this reviewer left on this cut when a verdict they pressed did not go
+  // through (verdictReceiptStore) — restored once, as the cut opens again.
+  const [restored] = useState(() => readDraft(submission.id));
+  useEffect(() => dropDraft(submission.id), [submission.id]);
+  const [notFixed, setNotFixed] = useState<Set<string>>(() => new Set(restored?.notFixed ?? []));
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playbackError, setPlaybackError] = useState<{ src: string; message: string } | null>(null);
   const [now, setNow] = useState(0);
-  const [composing, setComposing] = useState(false);
+  const [composing, setComposing] = useState(() => !!restored?.composing || !!restored?.body.trim());
   const [capturedAt, setCapturedAt] = useState<number | null>(null);
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(restored?.body ?? "");
   // The lanes this viewer may write into. A photographer gets the capture lane
   // only — the lane the tag put them in, and the one the server accepts from
   // them — so `choice` cannot index a lane that would be refused.
   const lanes = canDecide ? CHOICES : PHOTOGRAPHER_CHOICES;
   const [choice, setChoice] = useState(0);
-  const [clock, setClock] = useState("");
-  const currentDraft = useRef({ body: "", clock: "", reply: "" });
+  const [clock, setClock] = useState(restored?.clock ?? "");
+  const currentDraft = useRef({ body: restored?.body ?? "", clock: restored?.clock ?? "", reply: restored?.reply ?? "" });
   const [openId, setOpenId] = useState<string | null>(null);
-  const [reply, setReply] = useState("");
+  const [reply, setReply] = useState(restored?.reply ?? "");
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -135,6 +160,9 @@ export function CutReviewPanel({
   const needsReload = reviewRetryBlocked(uncertainRead, readStamp);
   const [staffRevisionOpen, setStaffRevisionOpen] = useState(false);
   const [approvalWarning, setApprovalWarning] = useState<string | null>(null);
+  // The verdict this reviewer just gave, shown the instant they press it — the
+  // cut is closed from here on, while the move to the next one happens.
+  const [closing, setClosing] = useState<null | "approve" | "send-back">(null);
 
   const src = submission.assetUrl;
   // Uploaded cuts stream from the hub's own store; legacy rows stream through
@@ -199,16 +227,111 @@ export function CutReviewPanel({
       }
     });
 
+  // ONE VERDICT, ON THE CLICK (Oct 5). The server action is dispatched FIRST
+  // and the move second — a navigation takes priority over a pending action in
+  // the router, so the next cut starts loading at once while the verdict is
+  // still being written, and the action's answer still comes back here. Neither
+  // runs inside an async transition: React would hold the navigation until the
+  // action finished, which is the wait this exists to remove.
+  type Verdict = { ok: boolean; message?: string; canApproveAnyway?: boolean };
+  const cutWords = [street, cutLabel && cutLabel !== "this cut" ? cutLabel : null, `version ${submission.round}`].filter(Boolean).join(" · ");
+  const cutHref = `/review/${projectId}?cut=${submission.id}`;
+
+  async function confirmVerdict(call: () => Promise<Verdict>): Promise<Verdict & { needsReload: boolean }> {
+    let anyway = false;
+    const r = await reviewActionReceipt(async () => {
+      const v = await call();
+      anyway = v.canApproveAnyway === true;
+      return v;
+    });
+    return { ...r, canApproveAnyway: anyway };
+  }
+
+  function settle(receiptId: string, kind: "approve" | "send-back", r: Verdict & { needsReload: boolean }) {
+    if (r.ok) {
+      dropDraft(submission.id);
+      updateReceipt(receiptId, { state: "done", message: r.message ?? (kind === "approve" ? "Approved." : "Sent back."), approveAnyway: undefined });
+      return;
+    }
+    // Refused or unknown: the reviewer's words stay kept for this cut, and the
+    // panel — if the move has not happened yet — opens back up with the reason.
+    setClosing(null);
+    if (r.needsReload) {
+      updateReceipt(receiptId, { state: "unknown", message: "The answer didn't come back, so it may or may not have been recorded. Open the cut to check before trying again — your unsent words are kept." });
+      setErr(r.message ?? null);
+      setUncertainRead({ stamp: readStamp, requested: false });
+      return;
+    }
+    const reason = r.message ?? "That didn't go through — nothing was changed.";
+    updateReceipt(receiptId, {
+      state: "refused",
+      message: reason,
+      approveAnyway: kind === "approve" && r.canApproveAnyway ? () => approveAnywayFromReceipt(receiptId) : undefined,
+    });
+    setErr(reason);
+    if (kind === "approve" && r.canApproveAnyway) setApprovalWarning(reason);
+  }
+
+  /** The receipt's own "Approve anyway" — the reviewer may be on another cut by
+   *  now, so it acts on this one by id and reports back on the same card. */
+  function approveAnywayFromReceipt(receiptId: string) {
+    const verify = verifiedFixIds(fixesToCheck, notFixed);
+    updateReceipt(receiptId, { state: "pending", message: "Approving with the missing ticks left unverified…", approveAnyway: undefined });
+    void confirmVerdict(() => approveCut(submission.id, { verifyIssueIds: verify, approveUncheckedFixes: true })).then((r) => settle(receiptId, "approve", r));
+  }
+
+  // A NOTE TYPED BUT NOT YET ADDED GOES WITH THE VERDICT (review, Oct 5
+  // night): pressing Approve or Request changes with words still in the
+  // composer used to drop them — the verdict landed, the draft was cleared,
+  // and the note was never written. Now the note is added first, exactly as
+  // its own button would add it, and only then is the verdict sent; if the
+  // note is refused nothing is decided and the receipt says why.
+  const typedNote = canDecide && composing && body.trim()
+    ? { body: body.trim(), lane: lanes[choice].lane, kind: lanes[choice].kind, timeSec: capturedAt ?? parseClock(clock) }
+    : null;
+  const typedEditorFix = !!typedNote && typedNote.lane === "EDITOR" && typedNote.kind === "fix";
+  function withTypedNote(call: () => Promise<Verdict>): () => Promise<Verdict> {
+    const note = typedNote;
+    if (!note) return call;
+    return async () => {
+      const n = await addCutNote({ projectId, submissionId: submission.id, body: note.body, lane: note.lane, kind: note.kind, timeSec: note.timeSec });
+      if (!n.ok) return { ok: false, message: `Your typed note didn't save, so nothing was decided — ${n.message ?? "try again"}` };
+      // Saved: the restored draft must not carry it a second time.
+      keepDraft(submission.id, { body: "", clock: "", reply: currentDraft.current.reply, notFixed: [...notFixed], composing: false });
+      const v = await call();
+      return v.ok ? { ...v, message: `${v.message ?? ""} Your typed note was added first.`.trim() } : v;
+    };
+  }
+
+  function decide(kind: "approve" | "send-back", verdictCall: () => Promise<Verdict>) {
+    if (needsReload || closing || pending) return;
+    setErr(null);
+    setMsg(null);
+    keepDraft(submission.id, { ...currentDraft.current, notFixed: [...notFixed], composing });
+    const call = withTypedNote(verdictCall);
+    const receiptId = addReceipt({
+      submissionId: submission.id,
+      cutHref,
+      title: kind === "approve" ? "Approved" : `Sent back to ${editorLabel}`,
+      cut: cutWords,
+      state: "pending",
+      message: kind === "approve"
+        ? "Topaz 1080p and delivery are running in the background."
+        : `The notes go to ${editorLabel} as the next round on their edit card.`,
+      next: nextCut ? `Next: ${nextCut.label}` : "All caught up — nothing else is waiting on you.",
+    });
+    setClosing(kind);
+    const answer = confirmVerdict(call);
+    router.push(nextCut?.href ?? "/review");
+    void answer.then((r) => settle(receiptId, kind, r));
+  }
+
   function requestApproval() {
     if (notFixed.size) {
       setApprovalWarning(`${notFixed.size} fix${notFixed.size === 1 ? " isn't" : "es aren't"} ticked as verified. Approve anyway? The missing ticks will remain unverified.`);
       return;
     }
-    run(async () => {
-      const result = await approveCut(submission.id, submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : undefined);
-      if (!result.ok && result.canApproveAnyway) setApprovalWarning(result.message);
-      return result;
-    });
+    decide("approve", () => approveCut(submission.id, submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : undefined));
   }
 
   return (
@@ -218,9 +341,9 @@ export function CutReviewPanel({
         <p className="mt-2 text-sm">{approvalWarning}</p>
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button type="button" data-modal-initial-focus className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium" onClick={() => setApprovalWarning(null)}>Cancel</button>
-          <button type="button" disabled={pending || needsReload} className="min-h-11 rounded-lg bg-success px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => {
+          <button type="button" disabled={pending || needsReload || !!closing} className="min-h-11 rounded-lg bg-success px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => {
             setApprovalWarning(null);
-            run(() => approveCut(submission.id, { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true }));
+            decide("approve", () => approveCut(submission.id, { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true }));
           }}>Approve anyway</button>
         </div>
       </ModalDialog>}
@@ -280,7 +403,19 @@ export function CutReviewPanel({
         {/* The escape hatch, deliberately quiet beside the verdict buttons. */}
         {canDecide && takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
         <span className="flex-1" />
-        {decided ? (
+        {closing ? (
+          // The cut is closed on the click; the move to the next one is under way.
+          <span
+            role="status"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium",
+              closing === "approve" ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
+            )}
+          >
+            {closing === "approve" ? <ThumbsUp className="size-4" /> : <Undo2 className="size-4" />}
+            {closing === "approve" ? "Approved" : `Sent back to ${editorLabel}`} — {nextCut ? "opening the next cut…" : "all caught up"}
+          </span>
+        ) : decided ? (
           <span className="flex flex-col items-end gap-0.5">
             <span
               className={cn(
@@ -306,12 +441,12 @@ export function CutReviewPanel({
           <>
             <span className="text-sm text-muted">{stage.label} · version {submission.round}</span>
             <button
-              onClick={() => run(() => requestCutChanges(submission.id, notFixed.size ? { notFixedIssueIds: [...notFixed] } : undefined))}
-              disabled={pending || needsReload || openEditorNotes === 0}
-              title={openEditorNotes === 0 ? "Add at least one editor note first" : `Send ${openEditorNotes} open note${openEditorNotes === 1 ? "" : "s"} back to ${editorLabel}`}
+              onClick={() => decide("send-back", () => requestCutChanges(submission.id, notFixed.size ? { notFixedIssueIds: [...notFixed] } : undefined))}
+              disabled={pending || needsReload || (openEditorNotes === 0 && !typedEditorFix)}
+              title={openEditorNotes === 0 && !typedEditorFix ? "Add at least one editor note first" : `Send ${openEditorNotes + (typedEditorFix ? 1 : 0)} open note${openEditorNotes + (typedEditorFix ? 1 : 0) === 1 ? "" : "s"} back to ${editorLabel}`}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50"
             >
-              <Undo2 className="size-4" /> Request changes{openEditorNotes > 0 ? ` (${openEditorNotes})` : ""}
+              <Undo2 className="size-4" /> Request changes{openEditorNotes + (typedEditorFix ? 1 : 0) > 0 ? ` (${openEditorNotes + (typedEditorFix ? 1 : 0)})` : ""}
             </button>
             <button
               onClick={requestApproval}
@@ -319,7 +454,7 @@ export function CutReviewPanel({
               title={notFixed.size > 0 ? "Review the missing ticks before approving anyway" : undefined}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
-              {pending ? <Loader2 className="size-4 animate-spin" /> : <ThumbsUp className="size-4" />} Approve cut
+              <ThumbsUp className="size-4" /> Approve cut
             </button>
           </>
         )}
@@ -343,7 +478,7 @@ export function CutReviewPanel({
       )}
       {/* The fixes this version's check claimed — the reviewer's one chance to
           say "not actually fixed" (§8.3). Only while there is a verdict to give. */}
-      {canDecide && !decided && !heldForCheck && fixesToCheck.length > 0 && (
+      {canDecide && !decided && !closing && !heldForCheck && fixesToCheck.length > 0 && (
         <div className="rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-sm">
           <p className="font-medium text-foreground">The editor says these earlier asks are fixed in this version — untick any that aren&rsquo;t:</p>
           <ul className="mt-1.5 space-y-1">

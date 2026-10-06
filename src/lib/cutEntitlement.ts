@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { cutIdentityHash } from "@/lib/cutTranscripts";
 import { DELIVERED_STAMP, NOT_A_CUT, streamUrlFor } from "@/lib/reviewCuts";
-import { cutReleasedAt, sameVideoTitle, videoCutKey } from "@/lib/contentVideos";
+import { cutReleasedAt, impliedPublicationGateWhere, sameVideoTitle, videoCutKey, withPublicationGate } from "@/lib/contentVideos";
 import type { PortalViewer } from "@/lib/portal";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
 
@@ -59,7 +59,10 @@ import { TEXT_KYLE_START } from "@/lib/portalWords";
 // card owns it, and the editor's approved original stays where batch 1 put it.
 // A pass that was skipped, failed, cancelled, or resolved by a reviewer as
 // "keep the original" leaves the editor's export as the file — the same file
-// the ready card offers Kyle in those cases.
+// the ready card offers Kyle in those cases — EXCEPT on a cut waiting for
+// portal publication (every monthly cut approved since Oct 2, however late its
+// job was linked to the month): that cut is "finishing" until a checked 1080p
+// file exists, and Kyle's card says why and offers the retry (Oct 5 2026).
 // ---------------------------------------------------------------------------
 
 /**
@@ -77,7 +80,7 @@ const ID_RE = /^[a-z0-9]{10,40}$/i;
 export const CHAIN_SELECT = {
   id: true, projectId: true, round: true, status: true, decidedAt: true, decidedBy: true, clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true,
   completedAt: true, sentToClientAt: true, assetUrl: true, assetPath: true, finalPath: true, blobUrl: true, blobPathname: true,
-  sizeBytes: true, fileName: true, contentHash: true, deliverableId: true, slot: true, createdAt: true,
+  sizeBytes: true, fileName: true, contentHash: true, deliverableId: true, slot: true, createdAt: true, clientApprovedDecisionId: true,
 } as const;
 
 export type ChainRound = {
@@ -85,6 +88,9 @@ export type ChainRound = {
   clientReleasedAt: Date | null; clientRequestedAt: Date | null; completedAt: Date | null; sentToClientAt: Date | null;
   assetUrl: string | null; assetPath: string | null; finalPath: string | null; blobUrl: string | null; blobPathname: string | null;
   sizeBytes: number | null; fileName: string | null; contentHash: string | null; deliverableId: string | null; slot: number; createdAt: Date;
+  /** The publication gate (stamped, or implied for a job linked to its month after approval — contentVideos.withPublicationGate). */
+  portalPublicationRequiredAt?: Date | null;
+  clientApprovedDecisionId?: string | null;
 };
 
 // ---- identity --------------------------------------------------------------
@@ -249,6 +255,17 @@ export const WHY = {
   FINISHING: "This video is being finished. It will be ready here shortly.",
 } as const;
 
+/**
+ * The version number the CLIENT knows a round by (Oct 5 2026): its place among
+ * the rounds they were shown. A round James sent back before release is never
+ * counted, so the first version a client sees is "Version 1", not "Version 3".
+ */
+const shownToClient = (c: ChainRound) => !!cutReleasedAt(c) || c.decidedBy === DELIVERED_STAMP || !!c.sentToClientAt;
+export function clientVersionNumber(chain: ChainRound[], id: string): number {
+  const idx = chain.findIndex((c) => c.id === id);
+  return Math.max(1, (idx >= 0 ? chain.slice(0, idx + 1) : chain).filter(shownToClient).length);
+}
+
 /** What the stream route can actually serve (stream/route.ts: blob first, then the Dropbox path). */
 const hasBytes = (c: ChainRound) => !!c.assetUrl && !!(c.blobUrl || c.assetPath || c.finalPath);
 
@@ -300,7 +317,7 @@ function priorApprovedVersion(f: EntitlementFacts, decisiveId: string, opts: { g
     if (approval && decisionMatchesCut(approval.contentHash, r)) {
       return withClientFile({
         basis: "CLIENT_APPROVED", current: null, captionRef: r.id, blockedBy: null, why: null, deliveredAt: approval.decidedAt,
-        file: { kind: "cut", url: r.assetUrl ?? streamUrlFor(r.id), submissionId: r.id, fileName: r.fileName, label: `v${r.round} (approved)`, approvedByLabel: approval.actorLabel, approvedAtISO: approval.decidedAt.toISOString(), hashOk: true },
+        file: { kind: "cut", url: r.assetUrl ?? streamUrlFor(r.id), submissionId: r.id, fileName: r.fileName, label: `v${clientVersionNumber(f.chain, r.id)} (approved)`, approvedByLabel: approval.actorLabel, approvedAtISO: approval.decidedAt.toISOString(), hashOk: true },
       }, f);
     }
     // A version delivered to them outside the portal (or before the gate) is
@@ -351,14 +368,14 @@ function decideForDecisiveRound(f: EntitlementFacts, opts: { gateSince?: Date } 
         ?? (decisive.decidedBy === DELIVERED_STAMP ? decisive.decidedAt : null)
         ?? (f.projectDelivered ? f.projectDeliveredAt : null)
         ?? decisive.completedAt ?? decisive.decidedAt ?? decisive.createdAt;
-      return { basis, current, file: cutFile(decisive, `v${decisive.round} (final)`), captionRef: decisive.id, blockedBy: null, why: null, deliveredAt };
+      return { basis, current, file: cutFile(decisive, `v${clientVersionNumber(f.chain, decisive.id)} (final)`), captionRef: decisive.id, blockedBy: null, why: null, deliveredAt };
     }
     lostFile = true; // delivered, but the file behind it is gone — an Aryeo copy may still stand in
   } else if (decisive) {
     if (!approval) return none("AWAITING_DECISION", WHY.AWAITING);
     if (!approvalOk) return none("HASH_DRIFT", WHY.DRIFT);
     if (!hasBytes(decisive)) return none("NO_FILE", WHY.REISSUE);
-    return { basis: "CLIENT_APPROVED", current, file: cutFile(decisive, `v${decisive.round} (approved)`), captionRef: decisive.id, blockedBy: null, why: null, deliveredAt: approval.decidedAt };
+    return { basis: "CLIENT_APPROVED", current, file: cutFile(decisive, `v${clientVersionNumber(f.chain, decisive.id)} (approved)`), captionRef: decisive.id, blockedBy: null, why: null, deliveredAt: approval.decidedAt };
   }
 
   const a = f.aryeoFinal;
@@ -478,7 +495,9 @@ export async function clientCutFiles(submissionIds: string[]): Promise<Map<strin
   const out = new Map<string, ClientCutFile>();
   const ids = [...new Set(submissionIds.filter((x) => ID_RE.test(x)))];
   if (ids.length === 0) return out;
-  const pending = await prisma.reviewSubmission.findMany({ where: { id: { in: ids }, portalPublicationRequiredAt: { not: null }, clientReleasedAt: null }, select: { id: true, topazJob: { select: { state: true, finalPath: true, savedAt: true, outputCheck: true } } } });
+  // Waiting for publication: stamped at approval, or a job linked to its
+  // month after approval (implied; contentVideos.publicationRequiredAt).
+  const pending = await prisma.reviewSubmission.findMany({ where: { id: { in: ids }, clientReleasedAt: null, OR: [{ portalPublicationRequiredAt: { not: null } }, impliedPublicationGateWhere()] }, select: { id: true, topazJob: { select: { state: true, finalPath: true, savedAt: true, outputCheck: true } } } });
   for (const cut of pending) {
     const job = cut.topazJob;
     if (!(job?.state === "done" && job.finalPath && job.savedAt && VERIFIED_OUTPUT.has(job.outputCheck ?? ""))) out.set(cut.id, { kind: "finishing", state: job?.state ?? "awaiting-render" });
@@ -523,12 +542,16 @@ export async function cutChainOf(anchorId: string): Promise<ChainRound[]> {
   const anchor = await prisma.reviewSubmission.findUnique({ where: { id: anchorId }, select: CHAIN_SELECT });
   if (!anchor) return [];
   const key = videoCutKey(anchor);
-  const rounds = await prisma.reviewSubmission.findMany({
-    where: { projectId: anchor.projectId, status: { notIn: [...NOT_A_CUT] } },
-    orderBy: [{ round: "asc" }, { createdAt: "asc" }],
-    select: CHAIN_SELECT,
-  });
-  return rounds.filter((r) => videoCutKey(r) === key);
+  const [rounds, project] = await Promise.all([
+    prisma.reviewSubmission.findMany({
+      where: { projectId: anchor.projectId, status: { notIn: [...NOT_A_CUT] } },
+      orderBy: [{ round: "asc" }, { createdAt: "asc" }],
+      select: CHAIN_SELECT,
+    }),
+    prisma.project.findUnique({ where: { id: anchor.projectId }, select: { contentMonthId: true } }),
+  ]);
+  const monthly = !!project?.contentMonthId;
+  return rounds.filter((r) => videoCutKey(r) === key).map((r) => withPublicationGate(r, monthly));
 }
 
 /** The ContentVideo columns the loaders read (a full row satisfies it). */
@@ -572,6 +595,8 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
     projectIds.length ? prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, clientId: true, status: true, deliveredAt: true, contentMonthId: true } }) : Promise.resolve([]),
   ]);
   const projectById = new Map(projects.map((p) => [p.id, p]));
+  // A job linked to its month after approval waits for publication too.
+  const gatedRounds = rounds.map((r) => withPublicationGate(r, !!projectById.get(r.projectId)?.contentMonthId));
   const monthIds = [...new Set([...projects.map((p) => p.contentMonthId), ...videos.map((v) => v.monthId)].filter((x): x is string => !!x))];
   const [months, enrollments] = await Promise.all([
     monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, enrollmentId: true, historical: true, status: true } }) : Promise.resolve([]),
@@ -590,7 +615,7 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
     // this video's — whatever a stale pointer says.
     if (!a || !p || p.clientId !== v.clientId || m?.enrollmentId !== v.enrollmentId) { chainOf.set(v.id, []); continue; }
     const key = videoCutKey(a);
-    chainOf.set(v.id, rounds.filter((r) => r.projectId === a.projectId && videoCutKey(r) === key));
+    chainOf.set(v.id, gatedRounds.filter((r) => r.projectId === a.projectId && videoCutKey(r) === key));
     projectOf.set(v.id, p);
   }
   const chainIds = [...new Set([...chainOf.values()].flat().map((r) => r.id))];

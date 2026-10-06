@@ -52,7 +52,9 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 //                     1080p file coming back from Topaz (notifyPrefs.ts
 //                     KIND_TO_EVENT), which is why the label below names both;
 //                     nothing addresses a photographer or the owner's phone
-//                     for that one, so the groups on the row are unchanged;
+//                     for that one, so the groups on the row are unchanged.
+//                     Oct 5: and review_cover_offer — the backup seat told a
+//                     cut has waited past the covered-hours line;
 //   shoot_change    — the assigned photographer, the owner because he
 //                     shoots, and the OFFICE: tasks.ts creativeAlertTargets
 //                     addresses whoever carries TeamMember.creativeManager
@@ -61,8 +63,8 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 //                     must still be switchable (Sep 16 review).
 export const NOTIFY_EVENTS = [
   { key: "mention", label: "Tagged in a message, or replied to", short: "Tags", appliesTo: ["Owner", "Editor", "Photographer", "Office"] },
-  { key: "project_message", label: "A message posted on one of their jobs", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
-  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, reassigned", short: "Job pings", appliesTo: ["Editor", "Photographer"] },
+  { key: "project_message", label: "A message posted on one of their jobs (photographers: jobs they shot)", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
+  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, a check before review, reassigned", short: "Job pings", appliesTo: ["Editor", "Photographer"] },
   // Sep 21 2026: the label said "A video waiting on review" while the switch
   // had just been given a second job — the 1080p file landing back from Topaz
   // — so a person turning it off had no way to know what else went quiet.
@@ -133,6 +135,15 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   upload_digest: "tonight's uploads",
   upload_nag: "upload reminder",
   comms_coaching: "comms note",
+  // Oct 5 2026 (team notifications pass): the kinds that now reach a phone or
+  // a DM and so write delivery rows of their own.
+  review_cover_offer: "cover a waiting cut",
+  self_check_needed: "check before review",
+  ops_alert: "ops alert",
+  luma_dispatch: "hand to Luma Visuals",
+  edit_unrouted: "ready, no editor",
+  program_signup: "new program signup",
+  desk_task: "new task",
 };
 export function notifyKindLabel(kind: string): string {
   return NOTIFY_KIND_LABELS[kind] ?? kind.replace(/_/g, " ");
@@ -159,6 +170,10 @@ export type TeamNotifyRow = {
   /** Sep 16: what the delivery log last recorded for them (Settings shows
    *  "Last reached: Slack · Tue 4:12 PM (tagged)" and a red last failure). */
   lastReached?: LastReached;
+  /** Oct 5 2026: they hold the Review Room's first or backup seat
+   *  (review_room settings), so their default for "Video in review" is a
+   *  Slack DM whatever their roster role — see defaultPrefsFor. */
+  reviewSeat?: boolean;
 };
 
 const off: NotifyChannels = { slack: false, sms: false };
@@ -181,11 +196,33 @@ const allOff = (): NotifyPrefs => ({
  * the role: Jordan is PHOTOGRAPHER on the roster and the owner by login.
  *   · owner        — tags: text + Slack; a video waiting on review: text.
  *   · editor       — tags, messages on their jobs, job pings: Slack.
- *   · photographer — tags and shoot changes: text (James and Harrison have no
- *                    Slack habit; a text with the link is what Jordan asked for).
+ *   · photographer — tags, shoot changes and messages on the jobs they shot:
+ *                    text (James and Harrison have no Slack habit; a text with
+ *                    the link is what Jordan asked for).
  *   · office       — tags: Slack (Kyle lives in Slack; the rest is his queue).
+ *   · a REVIEW SEAT (Oct 5 2026) — whoever holds the Review Room's first or
+ *                    backup seat, whatever the roster calls them, also gets
+ *                    "Video in review" on Slack when a Slack ID is on file.
+ *                    Jordan: "James, Kyle, and myself should get a
+ *                    notification" — and James, the first reviewer, is
+ *                    PHOTOGRAPHER on the roster, so the role table alone left
+ *                    the person every cut waits on with a bell and nothing
+ *                    else. The seat, not the role, says whose cuts these are.
+ *                    A saved matrix still wins (notifyPrefs.notifyPrefsFor
+ *                    merges it over this table); no Slack ID → no switch the
+ *                    bridge could only log as "skipped".
  */
-export function defaultPrefsFor(role: string, isOwner: boolean): NotifyPrefs {
+export function defaultPrefsFor(
+  role: string,
+  isOwner: boolean,
+  opts: { reviewSeat?: boolean; hasSlack?: boolean } = {},
+): NotifyPrefs {
+  const p = roleDefaults(role, isOwner);
+  if (opts.reviewSeat && opts.hasSlack) p.review_ready = { ...p.review_ready, slack: true };
+  return p;
+}
+
+function roleDefaults(role: string, isOwner: boolean): NotifyPrefs {
   const p = allOff();
   if (isOwner) {
     p.mention = { ...both };
@@ -206,6 +243,15 @@ export function defaultPrefsFor(role: string, isOwner: boolean): NotifyPrefs {
   if (r === "PHOTOGRAPHER") {
     p.mention = { ...sms };
     p.shoot_change = { ...sms };
+    // JOB MESSAGES ON THE JOBS THEY SHOT (Oct 5 2026). A post on the job's
+    // team chat — "the client wants the pool shot redone", an editor asking
+    // where the twilight set is — reached the photographer only if somebody
+    // remembered to @tag them, so Jordan was the one relaying it. The emitter
+    // (mentions.ts notifyProjectMessage) addresses exactly one photographer:
+    // the one assigned to that job, and only until it is delivered — so ON
+    // here means "messages about my own shoot", never the whole board. Text,
+    // like their tags, through the same 30-minute digest queue.
+    p.project_message = { ...sms };
     // Sep 18, Jordan on sharing the Review Room with the shooter: "they should
     // be notified just like I am". That is about what they get to SEE, and the
     // switch exists for both rows below from this change on. It is left OFF.
@@ -220,7 +266,9 @@ export function defaultPrefsFor(role: string, isOwner: boolean): NotifyPrefs {
     // wrong in the recoverable direction is the one to ship.
     //
     // The bell reaches them either way, which is what "with access to the
-    // review room" actually needed.
+    // review room" actually needed. (Oct 5 2026: a photographer who holds a
+    // Review Room SEAT is the exception — defaultPrefsFor adds a Slack DM for
+    // them, never a text, because every cut waits on that person.)
     return p;
   }
   // MANAGER / ADMIN / VA / SALES without an editor key: the office.
@@ -228,9 +276,13 @@ export function defaultPrefsFor(role: string, isOwner: boolean): NotifyPrefs {
   return p;
 }
 
-/** The default table for a row as the card and the store both see it. */
-export function defaultPrefsForRow(row: Pick<TeamNotifyRow, "role" | "isEditor" | "isOwner">): NotifyPrefs {
-  return defaultPrefsFor(row.isEditor ? "EDITOR" : row.role, row.isOwner);
+/** The default table for a row as the card and the store both see it — the
+ *  card's "Role defaults" button included, so a review seat's reset keeps its
+ *  Slack switch for "Video in review" (Oct 5 2026). */
+export function defaultPrefsForRow(
+  row: Pick<TeamNotifyRow, "role" | "isEditor" | "isOwner"> & Partial<Pick<TeamNotifyRow, "reviewSeat" | "slackId">>,
+): NotifyPrefs {
+  return defaultPrefsFor(row.isEditor ? "EDITOR" : row.role, row.isOwner, { reviewSeat: !!row.reviewSeat, hasSlack: !!row.slackId });
 }
 
 /** The group a person's defaults come from — the chip on the Settings card,

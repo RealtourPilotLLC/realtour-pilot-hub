@@ -1,10 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, topicForEnrollment, openMonthForEnrollment, type PortalViewer } from "@/lib/portal";
 import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/portalAccess";
-import { approveCut, requestChangesOnCut, replyToComment, setCommentResolved, isMine, recordLinkComment, type OpenNotesChoice } from "@/lib/clientDecisions";
+import { approveCut, noticeApprovalNotes, requestChangesOnCut, replyToComment, setCommentResolved, isMine, recordLinkComment, type OpenNotesChoice } from "@/lib/clientDecisions";
 import { setPostedByClient, saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
 import { contentHref } from "@/lib/contentNav"; // UI-02: the one builder of staff client-file links
@@ -224,6 +225,12 @@ export async function portalApproveCut(auth: PortalAuth, submissionId: string, c
   const c: OpenNotesChoice = choice === "INCLUDE" || choice === "DISCARD" ? choice : "NONE";
   const r = await approveCut(v, submissionId, c);
   if (!r.ok) return fail(r.message);
+  // Notes sent along with the approval are Kyle's task (written by approveCut);
+  // his bell and Slack go after the reply so the client's press stays instant.
+  if (c === "INCLUDE" && !r.duplicate) {
+    const notice = () => noticeApprovalNotes(r.decisionId).catch((e) => console.error("[portal] approval notes notice", r.decisionId, e));
+    try { after(notice); } catch { await notice(); }
+  }
   await ownerBell(
     "portal_approval",
     `Video approved — ${v.enrollment.clientName || "a client"}`,

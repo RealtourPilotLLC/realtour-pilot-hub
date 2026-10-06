@@ -38,7 +38,10 @@ export function JobNoteEditor({
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
-  const caption = hint === undefined ? FIELD_HINT[field] : hint;
+  // The audience caption is a note to whoever WRITES the field. An editor
+  // reading the brief only saw it as jargon ("Editor brief only — use a
+  // Request…", Oct 5 audit), so it shows only where the note can be edited.
+  const caption = hint === undefined ? (canEdit ? FIELD_HINT[field] : null) : hint;
 
   function save() {
     const next = text.trim();

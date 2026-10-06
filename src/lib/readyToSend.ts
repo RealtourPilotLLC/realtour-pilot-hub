@@ -6,12 +6,13 @@ import { prisma } from "@/lib/prisma";
 import { videoStatesFor, cutKeyOf } from "@/lib/reviewCuts";
 import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
 import { parseEvidence, EVIDENCE_STALE_HOURS, type ParsedEvidence } from "@/lib/statusEvidence";
-import { etDateTime } from "@/lib/datetime";
+import { etDateTime, etDayKey } from "@/lib/datetime";
 import { topazSettings } from "@/lib/settings";
-import { cutReleasedAt } from "@/lib/contentVideos";
+import { cutReleasedAt, publicationRequiredAt, publicationFailuresFor } from "@/lib/contentVideos";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import type { TopazState } from "@/lib/topazJobs";
-import { monthlyOwnerAccess, claimMonthlyFinalDelivery } from "@/lib/monthlyFinal";
+import { monthlyOwnerAccess, claimMonthlyFinalDelivery, claimMonthlyOutsidePortal } from "@/lib/monthlyFinal";
+import { portalReason } from "@/lib/deliveryReadyMessage";
 
 // ===========================================================================
 // READY TO SEND — the videos that are finished and have not gone to the client.
@@ -146,12 +147,43 @@ export type ReadyFileSource =
   /** the editor's own export, read from Dropbox */
   | "editor-dropbox";
 
+/**
+ * A PORTAL VIDEO'S NEXT STEP, in one sentence and one button (Oct 5 2026).
+ * The card used to say "Portal publication needs attention" with nothing to
+ * press, and "the editor's export is the deliverable" on a video whose portal
+ * only takes the checked 1080p file. Every portal row now says exactly what
+ * stands between it and the client, and offers the one action that moves it:
+ *   run-1080p            no 1080p pass ever ran for this version — start it
+ *   retry-1080p          the pass did not finish (or a reviewer kept the
+ *                        original) — run it again / bring the file back
+ *   retry-publication    the checked file exists and the client can sign in —
+ *                        publish (again) to their portal
+ *   send-outside-portal  the client's portal is not live yet — Kyle sends the
+ *                        Final Dropbox link himself, then Mark as sent
+ *   null                 nothing on this card can fix it (says what can)
+ */
+export type PortalStep = {
+  action: "run-1080p" | "retry-1080p" | "retry-publication" | "send-outside-portal" | null;
+  says: string;
+  /** The 1080p file is missing or unchecked: nothing to download for the portal. */
+  blocked: boolean;
+  /** retry-publication only: a publication attempt failed and said why. */
+  failed?: boolean;
+};
+
 export type ReadyVideo = {
+  /** Portal rows only (deliveryDestination client-portal on a monthly job). */
+  portalStep?: PortalStep | null;
   destinationFingerprint?: string | null;
   deliveryDestination?: "client-portal" | "aryeo-listing";
   canChooseAryeo?: boolean;
   uploadFingerprint?: string | null;
-  uploaded?: { id: string; at: string; by: string } | null;
+  /** Kyle's upload receipt for this exact version. `undoable`: pressed today
+   *  (ET), so an owner/admin can still undo it as a mistake (Oct 5 2026). */
+  uploaded?: { id: string; at: string; by: string; undoable?: boolean } | null;
+  /** An Aryeo-destination video whose job has no linked Aryeo listing: the
+   *  upload cannot be recorded until the listing is linked (Oct 5 2026). */
+  listingMissing?: boolean;
   submissionId: string;
   projectId: string;
   monthlyProgram: boolean;
@@ -279,6 +311,9 @@ export type ReadyVideo = {
 
 /** An approved cut whose 1080p pass has not finished — shown, never offered. */
 export type RenderingVideo = {
+  /** A monthly job: its portal only takes the checked 1080p file, so a held
+   *  file offers no "keep the original" (Oct 5 2026). */
+  monthlyProgram?: boolean;
   destinationFingerprint?: string | null;
   deliveryDestination?: "client-portal" | "aryeo-listing";
   canChooseAryeo?: boolean;
@@ -798,7 +833,7 @@ const CANDIDATE_SELECT = {
   assetPath: true, blobUrl: true, finalPath: true,
   decidedAt: true, decidedBy: true, completedAt: true, createdAt: true,
   downloadedAt: true, downloadedBy: true,
-  clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true,
+  clientReleasedAt: true, portalPublicationRequiredAt: true, clientRequestedAt: true, clientApprovedDecisionId: true, status: true,
   deliverable: { select: { type: true } },
   topazJob: {
     // sourceDurationSec: how long the file runs, probed off its own header when
@@ -807,7 +842,7 @@ const CANDIDATE_SELECT = {
     // listing (308 W Upsal St).
     // heldPath/heldAt/outputCheckJson: only a HELD row reads them (O02), to name
     // the unchecked file and say what the last look at it found.
-    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true },
+    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true, outputCheck: true },
   },
   project: {
     select: {
@@ -897,15 +932,16 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   const { uploadsFor } = await import("@/lib/deliveryUploads");
   const { loadCuts, sourceFingerprint } = await import("@/lib/finalRendition");
   const { aryeoDestinationsFor, canChooseAryeo, destinationFingerprint } = await import("@/lib/videoDeliveryDestination");
-  const [months, outputs, monthlyAccess, monthlyChecks, s, asks, uploads, uploadCuts] = await Promise.all([
+  const [months, outputs, monthlyAccess, monthlyChecks, s, asks, uploads, uploadCuts, publicationFailures] = await Promise.all([
     monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
     outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
     monthlyOwnerAccess(monthIds).catch(() => new Map()),
     monthIds.length ? prisma.finalRenditionCheck.findMany({ where: { submissionId: { in: winners.filter((s) => s.project.contentMonthId).map((s) => s.id) }, destination: "client-portal" }, select: { submissionId: true } }) : Promise.resolve([]),
-    winners.some((s) => !s.topazJob) ? topazSettings().catch(() => null) : Promise.resolve(null),
+    winners.some((s) => !s.topazJob) || winners.some((s) => s.project.contentMonthId) ? topazSettings().catch(() => null) : Promise.resolve(null),
     clientChangeRequestsFor(winners.map((w) => w.projectId)),
     uploadsFor(winners.map((w) => w.id)),
     loadCuts(winners.map((w) => w.id)),
+    publicationFailuresFor(winners.filter((w) => w.project.contentMonthId).map((w) => w.id)).catch(() => new Map<string, { at: string; why: string }>()),
   ]);
   const monthById = new Map(months.map((m) => [m.id, m.monthKey]));
   const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((id): id is string => !!id))];
@@ -942,21 +978,33 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
         state: sub.topazJob.state,
         approvedAtISO: approvedAt.toISOString(),
         waitingHours,
-        says: renderingSays(sub.topazJob.state),
+        says: renderingSays(sub.topazJob.state, Boolean(sub.project.contentMonthId)),
         held: sub.topazJob.state === "held" ? heldLine(sub.topazJob) : null,
+        monthlyProgram: Boolean(sub.project.contentMonthId),
       });
       continue;
     }
 
-    const file = fileFor(sub, s);
-    if (!file) continue; // no bytes the hub can hand over
+    const baseFile = fileFor(sub, s);
+    if (!baseFile) continue; // no bytes the hub can hand over
+    const monthlyAccessOk = Boolean(sub.project.contentMonthId && monthlyAccess.get(sub.project.contentMonthId)?.ok && monthlyAccess.get(sub.project.contentMonthId)?.clientId === sub.project.clientId);
+    const portalStep = sub.project.contentMonthId && destination.deliveryDestination === "client-portal"
+      ? portalStepFor(sub, s, { clientName: cut.clientName, accessOk: monthlyAccessOk, lastFailure: publicationFailures.get(sub.id) ?? null })
+      : null;
+    // A portal video waiting on its 1080p file is not "the editor's export is
+    // the deliverable" — its portal only takes the checked file.
+    const file = portalStep?.blocked
+      ? { ...baseFile, says: "This is the editor's export. The client's portal only gets the checked 1080p file.", why: baseFile.why ? portalReason(baseFile.why) : null }
+      : baseFile;
 
     const ev = parseEvidence(sub.project.statusEvidence);
     const receipt = uploads.get(sub.id);
     const uploaded = receipt && uploadCut && receipt.listingId === uploadCut.project.aryeoListingId && receipt.sourceFingerprint === sourceFingerprint(uploadCut)
-      ? { id: receipt.id, at: receipt.uploadedAt, by: receipt.actor } : null;
+      ? { id: receipt.id, at: receipt.uploadedAt, by: receipt.actor, undoable: etDayKey(new Date(receipt.uploadedAt)) === etDayKey(new Date(now)) } : null;
     ready.push({
       ...destination,
+      portalStep,
+      listingMissing: destination.deliveryDestination === "aryeo-listing" && !sub.project.aryeoListingId,
       uploadFingerprint: uploadCut ? sourceFingerprint(uploadCut) : null,
       uploaded,
       submissionId: sub.id,
@@ -964,8 +1012,8 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
       monthlyProgram: Boolean(sub.project.contentMonthId),
       monthKey: sub.project.contentMonthId ? monthById.get(sub.project.contentMonthId) ?? null : null,
       topicTitle: sub.outputId ? topicById.get(outputById.get(sub.outputId)?.topicId ?? "")?.trim() || null : null,
-      monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })),
-      monthlyPortalAccess: Boolean(sub.project.contentMonthId && monthlyAccess.get(sub.project.contentMonthId)?.ok && monthlyAccess.get(sub.project.contentMonthId)?.clientId === sub.project.clientId),
+      monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED", portalPublicationRequiredAt: publicationRequiredAt({ ...sub, status: "APPROVED" }, true) })),
+      monthlyPortalAccess: monthlyAccessOk,
       monthlyFinalCheckRecorded: monthlyChecks.some((c) => c.submissionId === sub.id),
       topazJobId: sub.topazJob?.id ?? null,
       street: cut.street,
@@ -1166,10 +1214,12 @@ function listingLine(
 }
 
 /** Where the 1080p pass has got to, in Kyle's words rather than the lane's. */
-function renderingSays(state: string): string {
+function renderingSays(state: string, monthly = false): string {
   // O02: finished, filed aside, and not trusted — the one rendering row that is
   // waiting on a PERSON rather than on the lane.
-  if (state === "held") return "The 1080p file's sound couldn't be verified — waiting for a reviewer to listen to it or keep the original.";
+  if (state === "held") return monthly
+    ? "The 1080p file's sound couldn't be checked automatically. Listen to it, then use it — the client's portal only gets this checked file."
+    : "The 1080p file's sound couldn't be verified — waiting for a reviewer to listen to it or keep the original.";
   if (state === "queued" || state === "estimated") return "The 1080p pass is queued — nothing to send yet.";
   if (state === "saving") return "The 1080p file is being filed into Dropbox — nearly there.";
   if (state === "uploading" || state === "processing") return "The 1080p pass is running — nothing to send yet.";
@@ -1407,7 +1457,7 @@ export async function markCutDownloaded(
  * and exactly one wins. The loser is told the truth — who marked it and when —
  * instead of quietly overwriting the first person's name.
  */
-export async function markVideoSent(submissionId: string, by: string | null, opts: { notice?: NoticeChoice | null; expectedFingerprint?: string } = {}): Promise<SentResult> {
+export async function markVideoSent(submissionId: string, by: string | null, opts: { notice?: NoticeChoice | null; expectedFingerprint?: string; outsidePortal?: boolean; providerConfirmed?: boolean } = {}): Promise<SentResult> {
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: { ...CANDIDATE_SELECT, status: true, sentToClientAt: true, sentToClientBy: true },
@@ -1442,9 +1492,14 @@ export async function markVideoSent(submissionId: string, by: string | null, opt
   const { usesAryeoDelivery } = await import("@/lib/videoDeliveryDestination");
   const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
   const aryeoDestination = deliveryCut && await usesAryeoDelivery(deliveryCut);
+  // A portal video whose client cannot sign in yet: Kyle sent the Final
+  // Dropbox link himself (Oct 5 2026). Only ever from his button — automatic
+  // publication never takes this road.
   const claimed = sub.project.contentMonthId && !aryeoDestination
-    ? await claimMonthlyFinalDelivery(submissionId, by)
-    : await import("@/lib/deliveryUploads").then((m) => m.claimListingDelivery(submissionId, by, opts.expectedFingerprint));
+    ? opts.outsidePortal ? await claimMonthlyOutsidePortal(submissionId, by) : await claimMonthlyFinalDelivery(submissionId, by)
+    // providerConfirmed: the Aryeo proof pass, settling on Aryeo's own signed
+    // or verified word with no upload receipt. The claim re-checks that word.
+    : await import("@/lib/deliveryUploads").then((m) => m.claimListingDelivery(submissionId, by, opts.expectedFingerprint, { providerConfirmed: opts.providerConfirmed }));
   if (!claimed.ok) return claimed;
   if (claimed.count === 0) {
     // Somebody else won the race in the milliseconds since the read above.
@@ -1494,7 +1549,11 @@ async function settleDeliveryBookkeeping(
   if (!sentAt) throw new Error("Delivery bookkeeping requires an existing version-specific send stamp.");
   const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(sub.id));
   const aryeoDestination = deliveryCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(deliveryCut));
-  const portalDestination = !!sub.project.contentMonthId && !aryeoDestination;
+  // A portal video Kyle sent as a Dropbox link carries no portal handoff marker.
+  const { monthlyPortalHandoffsFor } = await import("@/lib/cutEntitlement");
+  const monthlyNotAryeo = !!sub.project.contentMonthId && !aryeoDestination;
+  const dropboxLink = monthlyNotAryeo && !(await monthlyPortalHandoffsFor([sub.id])).has(sub.id);
+  const portalDestination = monthlyNotAryeo && !dropboxLink;
 
   // 1. THE ONE FACT THE VIDEO'S OWN ROW EXISTS TO HOLD (audit WF-02): this
   // particular video reached the client, and how we know. The cut row says it
@@ -1509,7 +1568,7 @@ async function settleDeliveryBookkeeping(
     // the channel is read from that rather than guessed: a person pressing the
     // button records the office handoff. Monthly content uses the portal and
     // final Dropbox backup; listing handoffs keep their existing channel.
-    const via = portalDestination ? "client-portal" : sub.project.contentMonthId || by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
+    const via = portalDestination ? "client-portal" : dropboxLink ? "office-hand" : sub.project.contentMonthId || by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
     try {
       const r = await prisma.deliverableOutput.updateMany({
         where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null,
@@ -1548,7 +1607,7 @@ async function settleDeliveryBookkeeping(
   if (j?.state === "done") {
     try {
       const { markTopazDelivered } = await import("@/lib/topazJobs");
-      const r = await markTopazDelivered(j.id, by, { at: sentAt, destination: portalDestination ? "client-portal" : "aryeo-listing" });
+      const r = await markTopazDelivered(j.id, by, { at: sentAt, destination: portalDestination ? "client-portal" : dropboxLink ? "dropbox-link" : "aryeo-listing" });
       if (r.incomplete) incomplete.push(r.incomplete);
       else if (r.repaired) repaired.push("the upload task the 1080p job left open");
     } catch (e) {
@@ -1587,7 +1646,11 @@ async function settleDeliveryBookkeeping(
         data: {
           projectId: sub.projectId,
           type: "SYSTEM",
-          body: `Video sent to the client${by ? ` by ${by}` : ""} — ${file?.fileName ?? sub.fileName ?? "video"}${file ? ` (${file.says.replace(/\.$/, "")})` : ""}.`,
+          // Aryeo's own confirmation reads as exactly that — never as a
+          // person's upload or send (Oct 5 2026).
+          body: (by && ARYEO_CONFIRMED.test(by)
+            ? `Video delivered (Aryeo confirmed)${by.replace(ARYEO_CONFIRMED, "")} — ${file?.fileName ?? sub.fileName ?? "video"}${file ? ` (${file.says.replace(/\.$/, "")})` : ""}.`
+            : `Video sent to the client${by ? ` by ${by}` : ""} — ${file?.fileName ?? sub.fileName ?? "video"}${file ? ` (${file.says.replace(/\.$/, "")})` : ""}.`).slice(0, 1000),
         },
       })
       .catch(() => {});
@@ -1595,6 +1658,9 @@ async function settleDeliveryBookkeeping(
 
   return { repaired, incomplete };
 }
+
+/** The proof pass's stamp ("Aryeo (delivery confirmed) — …", aryeoDelivery). */
+const ARYEO_CONFIRMED = /^Aryeo \(delivery confirmed\)/;
 
 function alreadySent(at: Date, by: string | null, repair?: { repaired: string[]; incomplete: string[] }): SentResult {
   const when = at.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -1866,6 +1932,38 @@ function dropboxFileUrl(path: string): string {
   const cut = path.lastIndexOf("/");
   if (cut <= 0) return dropboxWebUrl(path);
   return `${dropboxWebUrl(path.slice(0, cut))}?preview=${encodeURIComponent(path.slice(cut + 1))}`;
+}
+
+/** The checked-1080p outcomes a portal publication accepts (monthlyFinal). */
+const VERIFIED_1080P = new Set(["verified", "resolved-processed"]);
+
+/** One portal row's next step. Pure over the row the board already read. */
+export function portalStepFor(
+  sub: Pick<CandidateSub, "status" | "decidedBy" | "decidedAt" | "clientReleasedAt" | "portalPublicationRequiredAt" | "clientRequestedAt" | "clientApprovedDecisionId" | "blobUrl" | "deliverable"> & { topazJob: Pick<NonNullable<CandidateSub["topazJob"]>, "state" | "finalPath" | "savedAt" | "outputCheck" | "skipReason" | "error"> | null; sentToClientAt?: Date | null },
+  s: { enabled: boolean; deliverableTypes: string[] } | null,
+  ctx: { clientName: string; accessOk: boolean; lastFailure: { why: string } | null },
+): PortalStep {
+  const j = sub.topazJob;
+  const gated = !!publicationRequiredAt({ ...sub, status: "APPROVED" }, true);
+  const verified = !!j && j.state === "done" && !!j.finalPath && !!j.savedAt && VERIFIED_1080P.has(j.outputCheck ?? "");
+  if (gated && !verified) {
+    if (!j) {
+      if (!sub.blobUrl) return { action: null, blocked: true, says: "This version was sent from the Dropbox Final folder, so the hub has no copy to put through the 1080p pass. Ask the editor to upload it in the hub, then approve that version." };
+      const type = sub.deliverable?.type ?? "VIDEO";
+      if (s && !s.enabled) return { action: "run-1080p", blocked: true, says: "The 1080p pass is switched off in Settings, and the client's portal only gets the checked 1080p file. Turn it on, then run it." };
+      if (s && !s.deliverableTypes.includes(type)) return { action: "run-1080p", blocked: true, says: `${type} isn't set to go through the 1080p pass, and the client's portal only gets the checked 1080p file. Add it in Settings, then run it.` };
+      return { action: "run-1080p", blocked: true, says: "No 1080p pass has run for this version yet. The client's portal only gets the checked 1080p file." };
+    }
+    if (j.outputCheck === "resolved-original") return { action: "retry-1080p", blocked: true, says: "A reviewer kept the original, but the client's portal only gets the checked 1080p file. Bring the 1080p file back and listen to it." };
+    if (j.state === "done") return { action: null, blocked: true, says: "This 1080p file was never checked, so it can't go to the portal. Ask Jordan to check it." };
+    const why = trimReason(j.skipReason ?? j.error ?? null);
+    return { action: "retry-1080p", blocked: true, says: `The 1080p pass didn't finish${why ? `: ${portalReason(why)}` : "."}`.replace(/\.\.$/, ".") };
+  }
+  if (!ctx.accessOk) return { action: "send-outside-portal", blocked: false, says: `${ctx.clientName}'s portal isn't live yet. Send the Final Dropbox link to ${ctx.clientName}, then Mark as sent.` };
+  return {
+    action: "retry-publication", blocked: false, failed: !!ctx.lastFailure,
+    says: ctx.lastFailure ? `Portal publication didn't finish: ${ctx.lastFailure.why}` : "Ready for the client's portal. If it isn't there yet, publish it now.",
+  };
 }
 
 /**

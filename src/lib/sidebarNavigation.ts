@@ -2,7 +2,9 @@
 const SIDEBAR_GROUPS = [
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/tasks", "/schedule", "/communications"] },
   { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
-  { id: "clients", title: "Clients", frequent: false, paths: ["/content", "/clients"] },
+  // Open by default (Oct 5 2026): the office is onboarding clients into the
+  // Content Program this week, and a folded group hid both doors.
+  { id: "clients", title: "Clients", frequent: true, paths: ["/content", "/clients"] },
   { id: "team", title: "Team & learning", frequent: false, paths: ["/users", "/quality", "/coaching", "/training"] },
   { id: "reference", title: "Reference", frequent: false, paths: ["/resources/video-styles", "/resources", "/assistant"] },
   { id: "administration", title: "Administration", frequent: false, paths: ["/settings", "/connections", "/feedback", "/sales", "/trends", "/my-pay"] },

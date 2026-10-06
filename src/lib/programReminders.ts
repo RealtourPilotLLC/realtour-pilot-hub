@@ -8,7 +8,7 @@ import { isSyntheticClientRow, isVerifiedTestDestinationEmail } from "@/lib/test
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef, TestClientSendRefusedError, type OutboxSendResult } from "@/lib/outbox";
 import { loadProgramRollout, readFeatureTestOnly } from "@/lib/programRollout";
 import { rolloutDecision, reachSuppressionReason, type ProgramReachOp, type ProgramRollout, type ReachDecision, type ReachRefusalCode, type ReachTier } from "@/lib/programRolloutCore";
-import { mintLoginLink } from "@/lib/portalAccess";
+import { holdsTypedLoginLink, mintLoginLink } from "@/lib/portalAccess";
 import { appBase } from "@/lib/appUrl";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
@@ -1011,10 +1011,10 @@ export async function resolvePortalLink(e: Pick<EnrollmentRow, "id" | "portalTok
   const tokenLink = e.portalToken && !e.accessRevokedAt && (!e.portalTokenExpiresAt || e.portalTokenExpiresAt > now) ? `${appBase()}/portal/${e.portalToken}${path ?? ""}` : null;
   if (seat?.membershipId && seat.clientUserId) {
     const u = await prisma.clientUser.findUnique({ where: { id: seat.clientUserId }, select: { loginTokenExpiresAt: true } });
-    const holdsLiveLink = !!u?.loginTokenExpiresAt && u.loginTokenExpiresAt > now;
+    const holdsLiveLink = holdsTypedLoginLink(u?.loginTokenExpiresAt, now); // a 15-minute link they asked for; a 24h emailed one may be replaced (Oct 5)
     if (!holdsLiveLink) {
       try {
-        const { url } = await mintLoginLink(seat.membershipId, byAppUserId);
+        const { url } = await mintLoginLink(seat.membershipId, byAppUserId, { emailed: true });
         return { url: path ? `${url}?next=${encodeURIComponent(`/portal/me${path}`)}` : url, kind: "login" };
       } catch {
         // Real client while portal_login_email is off, or a revoked seat: fall through to the token page.
@@ -2844,7 +2844,7 @@ export async function copyReminderLink(rowId: string, by: { email: string; appUs
     },
     select: { id: true },
   });
-  return { ok: true, message: `Copied — a ${link.kind === "login" ? "one-time sign-in link (15 minutes)" : "portal link"} for ${e.client.name}. Recorded in the reminder history.`, candidate: c, link: link.url, body, reminderId: row.id };
+  return { ok: true, message: `Copied — a ${link.kind === "login" ? "one-time sign-in link (24 hours)" : "portal link"} for ${e.client.name}. Recorded in the reminder history.`, candidate: c, link: link.url, body, reminderId: row.id };
 }
 
 /**

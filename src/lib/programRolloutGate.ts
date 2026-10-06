@@ -35,6 +35,11 @@ import type { OutboxRow } from "@/lib/outbox";
 // A refusal is a verdict, never a throw: deliver() writes the row failed
 // ("refused before send: …") and releases its identity, so nothing is sent.
 //
+// AND THE OWNER'S MANUAL ONBOARDING SEND (Oct 5 2026), kind `onboarding`:
+// routed to onboardingGate (bottom of this file) — no switch is asked (Jordan
+// pressing Send is the decision), but the client's matching per-client toggle,
+// the TEST floor and the address on file are, at the moment it leaves.
+//
 // THE CODES, and what a caller should do with each:
 //   switched_off / not_in_rollout_scope / launch_not_authorised /
 //   test_client_real_address / seat_mismatch → a decision: write SUPPRESSED
@@ -88,6 +93,7 @@ function fromReach(d: Exclude<ReachDecision, { ok: true }>): GateVerdict {
 /** May this outbox row be sent now? Never throws. */
 export async function programDispatchGate(row: OutboxRow): Promise<GateVerdict> {
   try {
+    if (segments(row.dedupeKey)[0] === "onboarding") return await onboardingGate(row);
     const kind = kindOf(row.dedupeKey);
     if (!kind) return { ok: true }; // not a rollout kind: outbox.ts never asks, and the gate has nothing to say
     return kind === "portal_login" ? await loginGate(row) : await clientGate(row, kind);
@@ -176,4 +182,59 @@ async function loginGate(row: OutboxRow): Promise<GateVerdict> {
   }
   if (testOnRealAddress) return refuse("test_client_real_address", "the only seat the rollout admits is on a TEST client, and this is not one of Jordan's verified test inboxes");
   return firstRefusal ? fromReach(firstRefusal) : refuse("not_in_rollout_scope", "no seat of this person is in the rollout scope");
+}
+
+// ---------------------------------------------------------------------------
+// THE OWNER'S MANUAL ONBOARDING SEND (Oct 5 2026).
+//
+// Settings → Client onboarding lets Jordan, and only Jordan, press "Send now"
+// on one composed message for one client (lib/clientOnboarding.ts). It is a
+// person's deliberate send, so NO global switch is asked — the switches gate
+// what the hub does on its own, and Jordan said he will send everything
+// himself. What still holds, re-read here at the moment of sending (the first
+// send, a recovery drain, a person's Retry):
+//   · the identity names a known message and the row's own client;
+//   · a TEST client's message lands only on one of Jordan's verified test
+//     destinations (the same floor as every other kind);
+//   · a real client must have the message's toggles on in their onboarding
+//     — "Messages I send myself" (manual_messages), and for the welcome also
+//     "Portal account and sign-in" — read as the rollout scope for each op,
+//     WITHOUT any feature's own testClientsOnly lock (that lock narrows
+//     automatic sends, and this is not one): taking a toggle off stops a send
+//     that has not left yet;
+//   · a person's Retry of an unconfirmed onboarding send is the OWNER's only
+//     (tasks/sendAllActions.retryUnknownSend checks it before this runs);
+//   · the address is still one we have on file for this client.
+// ---------------------------------------------------------------------------
+
+/** The onboarding gate (exported for the drill; programDispatchGate routes here). */
+export async function onboardingGate(row: OutboxRow): Promise<GateVerdict> {
+  const { parseOnboardingKey, messageOf, toggleOf } = await import("@/lib/clientOnboardingCore");
+  const k = parseOnboardingKey(row.dedupeKey);
+  if (!k) return refuse("not_in_rollout_scope", "the onboarding message's identity could not be read, so it was not sent");
+  if (!row.clientId || row.clientId !== k.clientId) return refuse("seat_mismatch", "the onboarding message names a different client than its row");
+  const client = await prisma.client.findUnique({ where: { id: row.clientId }, select: { id: true, name: true } });
+  if (!client) return refuse("not_in_rollout_scope", "the client no longer exists");
+  if (isSyntheticClientRow(client)) {
+    return verifiedDestination(row) ? { ok: true } : refuse("test_client_real_address", "a TEST client may only be messaged at one of Jordan's verified test destinations");
+  }
+  // EVERY op the message needs (Oct 5 2026 review fix): "Messages I send
+  // myself" (manual_messages), and for the welcome the portal account too —
+  // never the automatic emails' ops, which their own switches govern.
+  const m = messageOf(k.message);
+  for (const [i, op] of m.ops.entries()) {
+    const d = await programReachMany(op, [client.id]).then((x) => x.get(client.id));
+    if (!d) return refuse("gate_error", "the rollout scope could not be read just now, so it was not sent");
+    if (!d.ok) {
+      if (d.code === "scope_unreadable") return refuse("gate_error", d.reason);
+      return refuse("not_in_rollout_scope", `"${toggleOf(m.toggles[i]).label}" is not turned on for ${client.name} (${d.reason})`);
+    }
+  }
+  const { onboardingRecipientsFor } = await import("@/lib/clientOnboarding");
+  const on = await onboardingRecipientsFor(client.id);
+  const want = row.channel === "email" ? row.toRef.trim().toLowerCase() : row.toRef.trim();
+  if (!on.some((r) => r.channel === (row.channel === "email" ? "email" : "sms") && r.toRef === want)) {
+    return refuse("seat_mismatch", "that address is no longer on file for this client");
+  }
+  return { ok: true };
 }

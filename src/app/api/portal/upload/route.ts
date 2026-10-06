@@ -6,6 +6,7 @@ import { dropboxUpload } from "@/lib/integrations/dropbox";
 import { ensureClientBrandFolder } from "@/lib/clientFolders";
 import { isPortalUploadKind, recordPortalAssetUpload, replaceableAsset } from "@/lib/brandProfile";
 import { TEXT_KYLE } from "@/lib/portalWords";
+import { PORTAL_UPLOAD_MAX_BYTES, portalUploadTooBig } from "@/lib/portalUploadLimit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -16,7 +17,7 @@ export const maxDuration = 60;
 // three ways as every portal action (the link's token in the form body, the
 // signed-in person's cookie, or staff through the owner iframe) and gated by
 // the brand-profile permission — so the guards are tight — type allowlist,
-// 25MB cap, sanitized names, and a per-client daily counter so a leaked link
+// a size cap, sanitized names, and a per-client daily counter so a leaked link
 // can't fill the Dropbox.
 //
 // CP-06 (Sep 24 2026): the file is now also RECORDED. Dropbox stays the file
@@ -28,7 +29,11 @@ export const maxDuration = 60;
 // the path recorded is the one Dropbox actually wrote (autorename can turn
 // "logo.png" into "logo (1).png"). recordPortalAssetUpload does the rest —
 // the history row, the editor's banner, Kyle's confirmation task.
-const MAX_BYTES = 25 * 1024 * 1024;
+//
+// THE SIZE LIMIT IS THE PLATFORM'S (Oct 5 2026): a request body over about
+// 4.5 MB never reaches this route, so the page checks first and both sides use
+// one number (lib/portalUploadLimit). It used to say 25 MB here.
+const MAX_BYTES = PORTAL_UPLOAD_MAX_BYTES;
 const DAILY_CAP = 25;
 const NAME_OK = /^[^\\/:?*"<>|]{1,180}$/;
 const EXT_OK = /\.(png|jpe?g|webp|heic|gif|svg|pdf|zip|otf|ttf|woff2?|mp4|mov)$/i;
@@ -62,7 +67,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, message: "That file type isn't supported — images, PDFs, fonts, zips and videos work." }, { status: 400 });
   }
   if (file.size > MAX_BYTES) {
-    return NextResponse.json({ ok: false, message: `Max 25MB per file — ${TEXT_KYLE} for anything bigger.` }, { status: 400 });
+    return NextResponse.json({ ok: false, tooBig: true, message: portalUploadTooBig(file.size) }, { status: 413 });
   }
 
   // Daily flood counter — ATOMIC increment-then-check (review: the read-check-

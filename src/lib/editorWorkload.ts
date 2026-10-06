@@ -189,11 +189,16 @@ export function foldWorkload(
     load.activeVideos += videos;
     const due = r.dueISO ? new Date(r.dueISO) : null;
     if (due && Number.isFinite(due.getTime())) {
-      if (r.late || due < now) {
+      // ONE DEFINITION OF LATE (review, Oct 5 night): the queue row's own
+      // `late` flag — the same one the Editing Room's header counts and the
+      // Due column prints in red. A raw "due < now" here also counted rows the
+      // queue does not call late (an upcoming job whose footage hasn't landed),
+      // so the page said two different numbers.
+      if (r.late) {
         load.overdue++;
         const days = Math.floor((now.getTime() - due.getTime()) / DAY);
         load.worstOverdueDays = Math.max(load.worstOverdueDays ?? 0, days);
-      } else if (due.getTime() - now.getTime() <= SOON_MS) {
+      } else if (due >= now && due.getTime() - now.getTime() <= SOON_MS) {
         load.dueSoon++;
       }
       if (!load.nextDueISO || due < new Date(load.nextDueISO)) load.nextDueISO = due.toISOString();

@@ -22,7 +22,8 @@ import type { PilotState } from "@/lib/hubWritePermit";
 //   · a TEST-named row is refused — a real row renamed TEST with "fix the
 //     name" (programRolloutCore.pilotCandidateProblem, the writer's own
 //     backstop says the same) — and so is a client with no ACTIVE program;
-//   · at most PROGRAM_PILOT_MAX (3) real clients (business default 2);
+//   · at most PROGRAM_PILOT_MAX real clients (3 until Oct 5 2026; raised to 30
+//     so Settings → Client onboarding can name every program client);
 //   · the end date is optional (30 days is suggested, never required) and is
 //     ONE date for the whole pilot, kept unless changed on purpose, exactly
 //     the hub pilot's keep-or-clear rule; a date in the past is refused;
@@ -50,6 +51,18 @@ import type { PilotState } from "@/lib/hubWritePermit";
 //     each switch runs: the next hourly run, their next visit, when you invite
 //     or press Release, when they ask for a sign-in link;
 //   · the per-client list is per group (clientReachSummary), not one op.
+//
+// ONCE CLIENTS HAVE THEIR OWN CHOICES, THIS CARD STOPS EDITING THEM (review
+// fix, Oct 5 2026). "Add a pilot client" rebuilt the pilot with one shared
+// list and no per-client choices, so every client fell back to the form's
+// ticked groups: a client given only the portal got emails and bookings too,
+// and a client set to nothing came back on. Now, as soon as any named client
+// has their own choices (Settings → Client onboarding), Add and the group
+// ticks here are refused and the card sends Jordan to Client onboarding,
+// which changes one client and never anybody else. What stays here is what
+// belongs to the whole list: the mode, the end date and note, taking a client
+// out (a stop: everyone else's choices are kept exactly), and ending it. A
+// pilot with no per-client choices (made here before Oct 5) works as before.
 // ---------------------------------------------------------------------------
 
 type Result = { ok: boolean; message: string };
@@ -60,6 +73,8 @@ const squash = (s: string | null | undefined) => (s ?? "").trim().replace(/\s+/g
 // owner types live beside the other switch words (programAutomationCopy).
 const NOT_IN_PILOT = "__not_in_pilot__";
 const UNCHANGED = "__unchanged__";
+/** Refused here once anybody has their own choices: those are made one client at a time. */
+const PER_CLIENT_HOME = "Each client on the list now has their own choices, so clients are added, and what each one gets is changed, one client at a time in Settings → Client onboarding (it never changes anybody else). Nothing was changed.";
 
 export type ProgramRolloutPanelData = {
   mode: RolloutMode;
@@ -70,7 +85,9 @@ export type ProgramRolloutPanelData = {
   cap: number;
   pilot: null | {
     state: PilotState;
-    clients: { id: string; name: string; joinedAtISO: string | null }[];
+    /** `own`: the client's own choices from Client onboarding (Oct 5 2026), in
+     *  plain words; null = they get the pilot's shared list below. */
+    clients: { id: string; name: string; joinedAtISO: string | null; own?: string[] | null }[];
     groups: ProgramPilotGroupKey[];
     approvedBy: string | null;
     approvedAtISO: string | null;
@@ -118,7 +135,12 @@ export async function loadProgramRolloutPanel(): Promise<ProgramRolloutPanelData
       pilot: p && p.clientIds.length
         ? {
             state: pilotStateOf(rollout, now),
-            clients: p.clientIds.map((id) => ({ id, name: names.get(id) ?? `${id} (not found)`, joinedAtISO: p.joinedAt[id] ?? null })),
+            clients: p.clientIds.map((id) => ({
+              id, name: names.get(id) ?? `${id} (not found)`, joinedAtISO: p.joinedAt[id] ?? null,
+              own: p.clientOps && Object.prototype.hasOwnProperty.call(p.clientOps, id)
+                ? PROGRAM_PILOT_GROUPS.filter((g) => g.ops.some((op) => p.clientOps![id].includes(op))).map((g) => PROGRAM_PILOT_GROUP_SHORT[g.key])
+                : null,
+            })),
             groups: PROGRAM_PILOT_GROUPS.filter((g) => g.ops.every((op) => p.operations.includes(op))).map((g) => g.key),
             approvedBy: p.approvedBy, approvedAtISO: p.approvedAt, expiresAtISO: p.expiresAt, note: p.note,
           }
@@ -204,6 +226,39 @@ async function whatStarts(names: string[], opsNow: string[]): Promise<string> {
   return whatStartsFor(names.join(", "), (_key, op) => opsNow.includes(op));
 }
 
+/**
+ * The same sentence, CLIENT BY CLIENT (Oct 5 2026): with per-client choices a
+ * shared list says nothing true about anybody. For each switch that is on, the
+ * named clients whose own list (or the shared one) carries it; a client set to
+ * nothing is never named as reached. `ids` narrows it to some clients.
+ */
+async function whatStartsPerClient(pilot: import("@/lib/programRolloutCore").ProgramPilot, ids?: string[]): Promise<string> {
+  const { isProgramReachOp, pilotOpsFor } = await import("@/lib/programRolloutCore");
+  const { featureTestOnlyFor } = await import("@/lib/programRollout");
+  const { prisma } = await import("@/lib/prisma");
+  const who = (ids ?? pilot.clientIds).filter((id) => pilot.clientIds.includes(id) && pilotOpsFor(pilot, id).length > 0);
+  if (!who.length) return " Nobody named has anything turned on, so nothing changes for anybody.";
+  const names = new Map((await prisma.client.findMany({ where: { id: { in: who } }, select: { id: true, name: true } })).map((c) => [c.id, c.name]));
+  const nameOf = (id: string) => names.get(id) ?? id;
+  const reaching: string[] = [];
+  const locked: string[] = [];
+  for (const s of await switchesOnNow()) {
+    const op = HUB_WRITE_KEYS.has(s.key) ? "hub_writes" : s.key;
+    if (!isProgramReachOp(op)) continue;
+    const reached = who.filter((id) => pilotOpsFor(pilot, id).includes(op));
+    if (!reached.length) continue;
+    if (await featureTestOnlyFor(op)) locked.push(s.title);
+    else reaching.push(`${s.title} → ${reached.map(nameOf).join(", ")} (${whenItStarts(s)})`);
+  }
+  const parts = [
+    reaching.length
+      ? `Switched on now, and reaching: ${reaching.join("; ")}.`
+      : `No switch that reaches ${who.map(nameOf).join(", ")} is on yet${locked.length ? " without its own lock" : ""}, so nothing changes for them until one is.`,
+  ];
+  if (locked.length) parts.push(`Still TEST clients only because the feature's own testClientsOnly lock is on: ${locked.join(", ")}.`);
+  return ` ${parts.join(" ")}`;
+}
+
 async function ownerEmail(): Promise<string> {
   await requireOwner();
   const { getCurrentUser } = await import("@/lib/auth/user");
@@ -269,6 +324,9 @@ export async function addProgramPilotClientAction(input: {
     }
     let endLine = "";
     const r = await updateProgramRollout((cur, now) => {
+      // Read under the writer's lock, so a client given their own choices a
+      // moment ago is never overwritten by this form (Oct 5 2026 review fix).
+      if (cur.pilot?.clientOps) return { error: PER_CLIENT_HOME };
       const was = cur.pilot?.clientIds.length ? cur.pilot.expiresAt : null;
       if (cur.pilot?.clientIds.includes(client.id)) return { error: `${client.name} is already in the pilot. To change what it covers or when it ends, use "Change the pilot". Nothing was changed.` };
       const ids = [...(cur.pilot?.clientIds ?? []), client.id];
@@ -306,16 +364,20 @@ export async function addProgramPilotClientAction(input: {
   } catch (e) { return fail(e); }
 }
 
-/** Change what the whole pilot covers, its end date or its note (a new approval). */
-export async function editProgramPilotAction(input: { groups: string[]; expiresOnET?: string | null; clearExpiry?: boolean; note?: string | null }): Promise<Result> {
+/**
+ * Change what the whole pilot covers, its end date or its note (a new approval).
+ * Once any client has their own choices (Oct 5 2026), `groups` is left out —
+ * the card offers only the end date and note — and a groups change is refused:
+ * what each client gets is changed on Settings → Client onboarding.
+ */
+export async function editProgramPilotAction(input: { groups?: string[]; expiresOnET?: string | null; clearExpiry?: boolean; note?: string | null }): Promise<Result> {
   let by: string;
   try { by = await ownerEmail(); } catch (e) { return fail(e); }
   try {
     const { PROGRAM_PILOT_GROUPS, opsForGroups } = await import("@/lib/programRolloutCore");
     const { updateProgramRollout } = await import("@/lib/programRollout");
     const { prisma } = await import("@/lib/prisma");
-    const keys = PROGRAM_PILOT_GROUPS.map((g) => g.key).filter((k) => input.groups.includes(k));
-    if (!keys.length) return { ok: false, message: "Tick at least one thing the pilot covers (or end the pilot). Nothing was changed." };
+    const keys = input.groups ? PROGRAM_PILOT_GROUPS.map((g) => g.key).filter((k) => input.groups!.includes(k)) : null;
     let newEnd: { iso: string } | null = null;
     if (input.expiresOnET) {
       const r = await endOfEtDay(input.expiresOnET);
@@ -324,14 +386,26 @@ export async function editProgramPilotAction(input: { groups: string[]; expiresO
     }
     const r = await updateProgramRollout((cur, now) => {
       if (!cur.pilot?.clientIds.length) return { error: "There is no pilot to change. Add a client first." };
+      let operations = cur.pilot.operations;
+      if (cur.pilot.clientOps) {
+        // Per-client choices: the shared ticks are not this card's to change.
+        const carried = PROGRAM_PILOT_GROUPS.filter((g) => g.ops.every((op) => cur.pilot!.operations.includes(op))).map((g) => g.key);
+        if (keys && opsForGroups(keys).join() !== opsForGroups(carried).join()) return { error: PER_CLIENT_HOME };
+      } else {
+        if (!keys?.length) return { error: "Tick at least one thing the pilot covers (or end the pilot). Nothing was changed." };
+        operations = opsForGroups(keys);
+      }
       const expiresAt = newEnd ? newEnd.iso : input.clearExpiry ? null : cur.pilot.expiresAt;
-      return { ...cur, pilot: { ...cur.pilot, operations: opsForGroups(keys), approvedBy: by, approvedAt: now.toISOString(), expiresAt, note: input.note === undefined ? cur.pilot.note : input.note?.trim().slice(0, 500) || null } };
+      return { ...cur, pilot: { ...cur.pilot, operations, approvedBy: by, approvedAt: now.toISOString(), expiresAt, note: input.note === undefined ? cur.pilot.note : input.note?.trim().slice(0, 500) || null } };
     }, by, "program_pilot_edit");
     if (!r.ok) return { ok: false, message: r.message };
+    const end = r.to.pilot?.expiresAt ? ` It ends ${pilotEndDay(r.to.pilot.expiresAt)}.` : " It has no end date.";
+    if (r.to.pilot?.clientOps) {
+      return done(`The pilot is saved; each client keeps exactly their own choices.${end}${r.to.mode === "PILOT" ? await whatStartsPerClient(r.to.pilot) : ""}`);
+    }
     const ids = r.to.pilot?.clientIds ?? [];
     const names = (await prisma.client.findMany({ where: { id: { in: ids } }, select: { name: true } })).map((c) => c.name);
-    const covers = PROGRAM_PILOT_GROUPS.filter((g) => keys.includes(g.key)).map((g) => g.label.toLowerCase()).join("; ");
-    const end = r.to.pilot?.expiresAt ? ` It ends ${pilotEndDay(r.to.pilot.expiresAt)}.` : " It has no end date.";
+    const covers = PROGRAM_PILOT_GROUPS.filter((g) => (keys ?? []).includes(g.key)).map((g) => g.label.toLowerCase()).join("; ");
     return done(`The pilot now covers: ${covers}.${end}${r.to.mode === "PILOT" ? await whatStarts(names, r.to.pilot?.operations ?? []) : ""}`);
   } catch (e) { return fail(e); }
 }
@@ -404,14 +478,23 @@ export async function setProgramRolloutModeAction(input: { mode: string; typedCo
     if (mode === "TEST_ONLY") return done("The program now reaches only your TEST clients. Nothing further goes out to a real client, anything already queued for one is stopped at sending, and the hub books for no real client. The pilot list is kept on file.");
     if (mode === "ALL") return done(`The program may now reach EVERY client with a program, for every switch that is on and not held by its own lock. The hub still books in Aryeo and Calendly only for the pilot clients.${await whatStartsFor("every client with a program", (key) => !HUB_WRITE_KEYS.has(key))}`);
     const ids = r.to.pilot?.clientIds ?? [];
-    const names = ids.length ? (await prisma.client.findMany({ where: { id: { in: ids } }, select: { name: true } })).map((c) => c.name) : [];
-    const { pilotStateOf } = await import("@/lib/programRolloutCore");
+    const { pilotStateOf, pilotOpsFor } = await import("@/lib/programRolloutCore");
+    // Only the clients with something turned on are reached (Oct 5 2026: a
+    // client set to nothing on Client onboarding is never named as reached).
+    const reachedIds = r.to.pilot ? ids.filter((id) => pilotOpsFor(r.to.pilot!, id).length > 0) : [];
+    const names = ids.length ? (await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })) : [];
+    const nameOf = (id: string) => names.find((c) => c.id === id)?.name ?? id;
     const state = pilotStateOf(r.to, new Date());
     if (names.length && state !== "ACTIVE") {
-      return done(`The program is set to a pilot, but the pilot on file (${names.join(", ")}) ${state === "EXPIRED" ? "has ended" : "has no recorded approval"}, so only your TEST clients are reached until you change it below.`);
+      return done(`The program is set to a pilot, but the pilot on file (${ids.map(nameOf).join(", ")}) ${state === "EXPIRED" ? "has ended" : "has no recorded approval"}, so only your TEST clients are reached until you change it below.`);
     }
-    return done(names.length
-      ? `The program now reaches your TEST clients and the pilot: ${names.join(", ")}.${await whatStarts(names, r.to.pilot?.operations ?? [])}`
+    if (r.to.pilot?.clientOps) {
+      return done(reachedIds.length
+        ? `The program now reaches your TEST clients and, for what each has turned on: ${reachedIds.map(nameOf).join(", ")}.${await whatStartsPerClient(r.to.pilot)}`
+        : "The program is set to named clients, but nobody named has anything turned on, so only your TEST clients are reached.");
+    }
+    return done(ids.length
+      ? `The program now reaches your TEST clients and the pilot: ${ids.map(nameOf).join(", ")}.${await whatStarts(ids.map(nameOf), r.to.pilot?.operations ?? [])}`
       : "The program is set to a pilot, but no pilot client is named yet, so only your TEST clients are reached.");
   } catch (e) { return fail(e); }
 }

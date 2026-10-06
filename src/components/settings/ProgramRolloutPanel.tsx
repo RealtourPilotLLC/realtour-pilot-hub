@@ -21,8 +21,9 @@ import { SaveStatus } from "@/components/ui/SaveStatus";
 // office-replied emails, portal invitations and sign-in, the new layout,
 // automatic sharing, review deadlines, automatic approval, carry-over) AND the
 // hub's Aryeo/Calendly bookings for real clients read this: only your TEST
-// clients (the default), your TEST clients plus up to three named pilot
-// clients, or every client with a program. A switch stays the on/off; this
+// clients (the default), your TEST clients plus the named pilot clients (up
+// to PROGRAM_PILOT_MAX — 30 since Oct 5 2026, when each client got their own
+// choices on Settings → Client onboarding), or every client with a program. A switch stays the on/off; this
 // decides who. Plain words, owner edits, admins read (business default 4).
 //
 // Shown here, before anything is saved, exactly which clients and which
@@ -46,7 +47,7 @@ const in30Days = () => new Date(Date.now() + 30 * 86_400_000).toLocaleDateString
 
 const MODES: { key: ProgramRolloutPanelData["mode"]; label: string; words: string }[] = [
   { key: "TEST_ONLY", label: "Only my TEST clients", words: "Nothing reaches a real client. This is where everything starts." },
-  { key: "PILOT", label: "My TEST clients and the clients I name below", words: "At most three real clients, for the things you tick." },
+  { key: "PILOT", label: "My TEST clients and the clients I name below", words: "Only the clients you name, for the things you turn on. Each client's own choices are made on Client onboarding." },
   // "unless a feature's own lock holds it" (review fix, Sep 28 2026): the
   // reminders, auto-share and automatic-approval locks still narrow to TEST.
   { key: "ALL", label: "Every client with a program", words: `Every switch that is on reaches every client with a program, unless a feature's own lock holds it to TEST clients. The hub still books in Aryeo and Calendly only for the clients named below. You type ${EVERY_CLIENT_CONFIRM} to choose it.` },
@@ -67,7 +68,7 @@ export function PilotForm({ data, busy, onSave }: { data: ProgramRolloutPanelDat
   const [clientId, setClientId] = useState("");
   const [clientName, setClientName] = useState("");
   const [typed, setTyped] = useState("");
-  // Business default 1: all five groups ticked when Jordan approves a pilot.
+  // Business default 1: every group ticked when Jordan approves a pilot.
   const [groups, setGroups] = useState<string[]>(data.pilot?.groups ?? data.groups.map((g) => g.key));
   const savedUntil = endDayInput(data.pilot?.expiresAtISO);
   const [until, setUntil] = useState(savedUntil);
@@ -125,27 +126,37 @@ export function PilotForm({ data, busy, onSave }: { data: ProgramRolloutPanelDat
   );
 }
 
+/** Does any named client have their own choices (Settings → Client onboarding)? Then this card edits only the whole list. */
+export const hasPerClientChoices = (data: ProgramRolloutPanelData): boolean => !!data.pilot?.clients.some((c) => c.own != null);
+
 export function EditPilotForm({ data, busy, onSave }: { data: ProgramRolloutPanelData; busy: boolean; onSave: (input: Parameters<typeof editProgramPilotAction>[0]) => void }) {
   const [groups, setGroups] = useState<string[]>(data.pilot?.groups ?? []);
   const savedUntil = endDayInput(data.pilot?.expiresAtISO);
   const [until, setUntil] = useState(savedUntil);
+  // Oct 5 2026: with per-client choices, what each client gets is changed on
+  // Client onboarding only; here, just when the whole list ends.
+  const perClient = hasPerClientChoices(data);
   return (
     <fieldset disabled={busy} className="mt-2 space-y-2 rounded-xl border border-border bg-surface-2/40 p-3 text-[13px]">
-      <legend className="font-medium">Change what the pilot covers, or when it ends</legend>
-      <fieldset className="space-y-1">
-        {data.groups.map((g) => (
-          <label key={g.key} className="flex min-h-11 items-center gap-2">
-            <input type="checkbox" className="mt-0.5" checked={groups.includes(g.key)} onChange={(e) => setGroups((cur) => (e.target.checked ? [...cur, g.key] : cur.filter((x) => x !== g.key)))} />
-            <span>{g.label}</span>
-          </label>
-        ))}
-      </fieldset>
+      <legend className="font-medium">{perClient ? "Change when the pilot ends" : "Change what the pilot covers, or when it ends"}</legend>
+      {perClient
+        ? <p className="text-muted">What each client gets is changed on <a href="/settings/onboarding" className="font-medium text-brand hover:underline">Client onboarding</a>, one client at a time.</p>
+        : (
+          <fieldset className="space-y-1">
+            {data.groups.map((g) => (
+              <label key={g.key} className="flex min-h-11 items-center gap-2">
+                <input type="checkbox" className="mt-0.5" checked={groups.includes(g.key)} onChange={(e) => setGroups((cur) => (e.target.checked ? [...cur, g.key] : cur.filter((x) => x !== g.key)))} />
+                <span>{g.label}</span>
+              </label>
+            ))}
+          </fieldset>
+        )}
       <label className="block">
         <span className="text-[14px] text-muted">Ends (empty = no end date)</span>
         <input type="date" className="mt-0.5 block min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5" value={until} onChange={(e) => setUntil(e.target.value)} />
       </label>
-      <button className={cn(btn, "bg-brand-action text-white")} disabled={busy || groups.length === 0}
-        onClick={() => onSave({ groups, expiresOnET: until || null, clearExpiry: !until && !!savedUntil })}>
+      <button className={cn(btn, "bg-brand-action text-white")} disabled={busy || (!perClient && groups.length === 0)}
+        onClick={() => onSave(perClient ? { expiresOnET: until || null, clearExpiry: !until && !!savedUntil } : { groups, expiresOnET: until || null, clearExpiry: !until && !!savedUntil })}>
         Save the pilot
       </button>
     </fieldset>
@@ -314,6 +325,7 @@ export function ProgramRolloutPanel({ isOwner, initial = null }: { isOwner: bool
 
   const p = data.pilot;
   const atCap = (p?.clients.length ?? 0) >= data.cap;
+  const perClient = hasPerClientChoices(data);
   const chosen = mode.value ?? data.mode;
   const controlsBusy = busy || reading || !!error || requiresRefresh;
   const scopeVersion = JSON.stringify([data.mode, data.pilot, data.updatedAtISO, data.switchesOn]);
@@ -369,11 +381,11 @@ export function ProgramRolloutPanel({ isOwner, initial = null }: { isOwner: bool
       {/* THE PILOT: who, what, until when, who approved it. */}
       <div className="text-[14px]">
         <p>
-          <span className="font-medium">Pilot</span> <span className="text-muted">(at most {data.cap} real clients)</span>:{" "}
+          <span className="font-medium">Pilot</span> <span className="text-muted">(at most {data.cap} real clients; choose each client&rsquo;s features on <a href="/settings/onboarding" className="font-medium text-brand hover:underline">Client onboarding</a>)</span>:{" "}
           {p ? (
             <>
               <span className={cn("rounded-full px-2 py-0.5 text-[13px] font-semibold", p.state === "ACTIVE" ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted")}>{p.state.toLowerCase()}</span>
-              {" "}covers {data.groups.filter((g) => p.groups.includes(g.key)).map((g) => g.label.toLowerCase()).join("; ") || "nothing"}
+              {" "}{p.clients.every((c) => c.own) ? "each client has their own choices" : <>covers {p.clients.some((c) => c.own) ? "(for clients without their own choices) " : ""}{data.groups.filter((g) => p.groups.includes(g.key)).map((g) => g.label.toLowerCase()).join("; ") || "nothing"}</>}
               {p.approvedBy && <> · approved by {p.approvedBy}{p.approvedAtISO ? ` on ${day(p.approvedAtISO)}` : ""}</>}
               {p.expiresAtISO ? <> · ends {endDay(p.expiresAtISO)}</> : <> · no end date</>}
               {p.note && <> · {p.note}</>}
@@ -386,6 +398,7 @@ export function ProgramRolloutPanel({ isOwner, initial = null }: { isOwner: bool
             {p.clients.map((c) => (
               <li key={c.id} data-pilot-client={c.id} className="flex flex-wrap items-center gap-2">
                 <span>{c.name}</span>
+                {c.own && <span className="text-muted">own choices: {c.own.length ? c.own.join(", ") : "nothing"}</span>}
                 {c.joinedAtISO && <span className="text-muted">joined {day(c.joinedAtISO)}</span>}
                 {isOwner && (
                   <button className="inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50" disabled={controlsBusy}
@@ -399,12 +412,20 @@ export function ProgramRolloutPanel({ isOwner, initial = null }: { isOwner: bool
           </ul>
         )}
       </div>
+      {isOwner && perClient && (
+        <p className="text-[14px] text-muted" data-per-client-home>
+          Each client here has their own choices. Add a client, or change what one gets, on{" "}
+          <a href="/settings/onboarding" className="font-medium text-brand hover:underline">Client onboarding</a> — it changes only that client.
+        </p>
+      )}
       {isOwner && (
         <div className="flex flex-wrap gap-2">
-          <button className={quiet} disabled={controlsBusy || (atCap && !adding)} title={atCap ? `The pilot has ${data.cap} clients, the most it may have` : undefined} onClick={() => { setAdding(!adding); setEditing(false); }}>
-            {adding ? "Cancel" : atCap ? `Pilot is full (${data.cap})` : "Add a pilot client"}
-          </button>
-          {p && <button className={quiet} disabled={controlsBusy} onClick={() => { setEditing(!editing); setAdding(false); }}>{editing ? "Cancel" : "Change the pilot"}</button>}
+          {!perClient && (
+            <button className={quiet} disabled={controlsBusy || (atCap && !adding)} title={atCap ? `The pilot has ${data.cap} clients, the most it may have` : undefined} onClick={() => { setAdding(!adding); setEditing(false); }}>
+              {adding ? "Cancel" : atCap ? `Pilot is full (${data.cap})` : "Add a pilot client"}
+            </button>
+          )}
+          {p && <button className={quiet} disabled={controlsBusy} onClick={() => { setEditing(!editing); setAdding(false); }}>{editing ? "Cancel" : perClient ? "Change when it ends" : "Change the pilot"}</button>}
           {p && (
             <button className={quiet} disabled={controlsBusy} onClick={() => change(endProgramPilotAction)}>
               End the pilot
@@ -412,7 +433,7 @@ export function ProgramRolloutPanel({ isOwner, initial = null }: { isOwner: bool
           )}
         </div>
       )}
-      {isOwner && adding && <PilotForm data={data} busy={controlsBusy} onSave={(input) => change(() => addProgramPilotClientAction(input), "add")} />}
+      {isOwner && adding && !perClient && <PilotForm data={data} busy={controlsBusy} onSave={(input) => change(() => addProgramPilotClientAction(input), "add")} />}
       {isOwner && editing && p && <EditPilotForm data={data} busy={controlsBusy} onSave={(input) => change(() => editProgramPilotAction(input), "edit")} />}
 
       {/* EVERY PROGRAM CLIENT, and whether the rollout reaches them. */}

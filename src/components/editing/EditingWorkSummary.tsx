@@ -24,8 +24,22 @@ export function EditingWorkSummary({ view }: { view: EditorsTodayView }) {
         <ul className="mt-1.5 grid gap-x-5 gap-y-2 text-sm lg:grid-cols-2">
           {view.lines.map((line) => (
             <li key={line.key} className="min-w-0 leading-relaxed">
+              {/* The same dot the full panel uses (Oct 5): green = pressed
+                  Start, amber ring = did something today without a Start,
+                  grey = nothing in the hub today. Scannable at a glance. */}
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "mr-1.5 inline-block size-2 -translate-y-px rounded-full align-middle",
+                  line.tone === "on" && "bg-success",
+                  line.tone === "paused" && "border-[1.5px] border-[#8b5cf6]",
+                  line.tone === "evidence" && "border-[1.5px] border-warning",
+                  line.tone === "idle" && "bg-muted-2/40",
+                  line.tone === "unknown" && "bg-warning",
+                )}
+              />
               <span className="font-semibold">{line.name}</span>{" · "}
-              <span className={cn(line.tone === "on" ? "text-success" : line.tone === "unknown" ? "text-warning" : "text-muted")}>
+              <span className={cn(line.tone === "on" ? "text-success" : line.tone === "unknown" ? "text-warning" : line.tone === "evidence" ? "text-foreground/85" : "text-muted")}>
                 {line.tone === "on" ? "Pressed Start · " : ""}{line.lead}{" "}
               </span>
               {line.job && <Link href={line.job.href} className="font-medium underline decoration-border underline-offset-2 hover:decoration-brand focus-visible:outline-2 focus-visible:outline-brand">{line.job.street}</Link>}

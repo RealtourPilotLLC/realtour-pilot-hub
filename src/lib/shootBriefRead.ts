@@ -5,17 +5,38 @@ import { stripMoneySentences } from "@/lib/text";
 
 export type BriefLine = { key: string; label: string; value: string };
 
-// Use the same released scripts and per-video briefs the shoot screen renders.
-// No access codes, contact details, prices or unreleased script drafts enter a
-// receipt. Stable keys make a rename/change visible beside the prior value.
+// WHAT IS NOT A BRIEF CHANGE (Oct 5 2026, photographer audit). The receipt
+// asks the shooter to re-read when the OFFICE or the CLIENT changed what they
+// are filming against. Three things on the old receipt were the shooter's own
+// words or bookkeeping, so typing a note on site flagged "1 brief item has
+// changed since you read it" on their own screen:
+//   · job:shared — Project.editorBrief, the "Notes for the editor" box the
+//     photographer fills on this screen and the upload page;
+//   · a video brief's "Changed on site" section — the on-site note the
+//     photographer adds from the upload page;
+//   · a video brief's version line — it moves with every save, including
+//     that note; the brief's own sections say what changed.
+// They are left out of new receipts AND ignored in receipts saved before this
+// change, so nobody is told about a line that merely stopped being tracked.
+export function countsAsBriefChange(key: string): boolean {
+  if (key === "job:shared") return false;
+  if (/^output:[^:]+:version$/.test(key)) return false;
+  if (/^output:[^:]+:section:Changed on site$/.test(key)) return false;
+  return true;
+}
+
+// Use the same scripts and per-video briefs the shoot screen renders (the
+// released script, or the office's newer approval — lib/shoot). No access
+// codes, contact details, prices or unapproved script drafts enter a receipt.
+// Stable keys make a rename/change visible beside the prior value.
 export function shootBriefLines(view: ShootView, assets: AssetRow[]): BriefLine[] {
   const lines: BriefLine[] = [];
   const add = (key: string, label: string, value: string | null | undefined) => {
+    if (!countsAsBriefChange(key)) return;
     const text = value ? stripMoneySentences(value).trim() : "";
     if (text) lines.push({ key, label, value: text });
   };
 
-  add("job:shared", "Job-wide editing instructions", view.project.editorBrief);
   add("job:special", "Must-get / property instructions", view.appointment?.parsed?.special);
   view.specialRequests.filter((s) => !view.editRequests.includes(s)).forEach((s, i) => add(`job:must:${i}`, `Must-get ${i + 1}`, s));
   add("client:style", "Client's on-camera style", view.client.theirStyle);
@@ -28,7 +49,7 @@ export function shootBriefLines(view: ShootView, assets: AssetRow[]): BriefLine[
   for (const topic of view.session?.topics ?? []) {
     const stem = `topic:${topic.topicId}`;
     add(`${stem}:name`, "Session topic", `${topic.title}${topic.overflow ? " · extra if time" : ""}${topic.filmedElsewhere ? " · filmed at another session" : ""}`);
-    add(`${stem}:script`, `${topic.title} · latest released script`, topic.script
+    add(`${stem}:script`, `${topic.title} · script to film`, topic.script
       ? `v${topic.script.versionNo} · ${topic.script.standing}\n${topic.script.title}\n${topic.script.text ?? ""}`
       : topic.noScript);
     const direction = topic.script?.direction;
@@ -66,8 +87,8 @@ export const briefSnapshot = (lines: BriefLine[]) => JSON.stringify(lines);
 export const briefDigest = (snapshot: string) => createHash("sha256").update(snapshot).digest("hex");
 
 export function briefChanges(previous: BriefLine[], current: BriefLine[]): { label: string; before: string | null; after: string | null }[] {
-  const old = new Map(previous.map((line) => [line.key, line]));
-  const now = new Map(current.map((line) => [line.key, line]));
+  const old = new Map(previous.filter((line) => countsAsBriefChange(line.key)).map((line) => [line.key, line]));
+  const now = new Map(current.filter((line) => countsAsBriefChange(line.key)).map((line) => [line.key, line]));
   return [...new Set([...old.keys(), ...now.keys()])].flatMap((key) => {
     const before = old.get(key);
     const after = now.get(key);

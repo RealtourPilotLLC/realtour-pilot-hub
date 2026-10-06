@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { getSetting, putSetting } from "@/lib/settings";
+import { getSetting, putSetting, reviewRoomRules } from "@/lib/settings";
 import { staffTextNumber } from "@/lib/hubSms";
 import {
   defaultPrefsFor,
@@ -124,6 +124,20 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   // (Slack by default for editors). The emitter only runs while the
   // brand_change_alerts automation is on.
   brand_updated: "job_ping",
+  // Oct 5 2026 (team notifications pass). Two kinds that were bell-only and
+  // should not have been:
+  //   · review_cover_offer — the BACKUP seat told the first reviewer has held
+  //     a cut past the covered-hours line (reviewerAssignment.reviewCoverSweep).
+  //     It asks exactly what cut_ready asks — rule on this cut — so it rides
+  //     the same "Video in review" switch Kyle already has on for Slack. Bell
+  //     only, the nudge reached nobody who was not already looking at the bell.
+  //   · self_check_needed — a cut dropped in the Final folder is held until
+  //     its editor ticks the check (selfCheckStore.notifySelfCheckNeeded). The
+  //     editor is the only person who can release it, so it is an edit-lane
+  //     ping on their "Job pings" switch (Slack by default for editors); the
+  //     OWNER/ADMIN copy is a role broadcast and stays bell-only.
+  review_cover_offer: "review_ready",
+  self_check_needed: "job_ping",
 };
 export function eventForKind(kind: string): NotifyEvent | null {
   return KIND_TO_EVENT[kind] ?? null;
@@ -151,15 +165,40 @@ export async function editorKeysByTeamMemberId(): Promise<Map<string, string>> {
   }
 }
 
-type PersonFacts = { role: string; isEditor: boolean; isOwner: boolean; active: boolean };
+/**
+ * The Review Room's first and backup seats (review_room settings), as roster
+ * ids. Oct 5 2026: the seat — not the roster role — decides the "Video in
+ * review" default, because James holds the first seat and is PHOTOGRAPHER on
+ * the roster. The fallback seat (the owner today) keeps the owner's own row.
+ * Best-effort: a settings read that fails answers "no seats", which is the
+ * role table exactly as before.
+ */
+export async function reviewSeatTeamMemberIds(): Promise<Set<string>> {
+  try {
+    const r = await reviewRoomRules();
+    return new Set([r.creativeApproverTeamMemberId, r.backupReviewerTeamMemberId].filter((x): x is string => !!x));
+  } catch {
+    return new Set();
+  }
+}
+
+type PersonFacts = { role: string; isEditor: boolean; isOwner: boolean; active: boolean; reviewSeat: boolean; hasSlack: boolean };
 async function personFacts(teamMemberId: string): Promise<PersonFacts | null> {
-  const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { role: true, active: true } });
+  const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { role: true, active: true, slackId: true } });
   if (!member) return null;
-  const [editors, owners] = await Promise.all([
+  const [editors, owners, seats] = await Promise.all([
     editorKeysByTeamMemberId(),
     (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]),
+    reviewSeatTeamMemberIds(),
   ]);
-  return { role: String(member.role), isEditor: editors.has(teamMemberId), isOwner: owners.includes(teamMemberId), active: member.active };
+  return {
+    role: String(member.role),
+    isEditor: editors.has(teamMemberId),
+    isOwner: owners.includes(teamMemberId),
+    active: member.active,
+    reviewSeat: seats.has(teamMemberId),
+    hasSlack: !!member.slackId,
+  };
 }
 
 /**
@@ -171,7 +210,7 @@ async function personFacts(teamMemberId: string): Promise<PersonFacts | null> {
 export async function notifyPrefsFor(teamMemberId: string): Promise<NotifyPrefs> {
   const facts = await personFacts(teamMemberId).catch(() => null);
   if (!facts) return allOffPrefs();
-  const defaults = defaultPrefsFor(facts.isEditor ? "EDITOR" : facts.role, facts.isOwner);
+  const defaults = defaultPrefsFor(facts.isEditor ? "EDITOR" : facts.role, facts.isOwner, { reviewSeat: facts.reviewSeat, hasSlack: facts.hasSlack });
   const stored = await getSetting<Record<string, unknown>>(notifyPrefsKey(teamMemberId), {});
   if (stored && Object.keys(stored).length > 0) return mergeNotifyPrefs(defaults, stored);
   if (facts.isOwner) {
@@ -268,7 +307,7 @@ async function lastReachedByMember(teamMemberIds: string[]): Promise<Map<string,
  * Sep 15) — so his row reads "company line", never "text ✓".
  */
 export async function teamNotifyRows(): Promise<TeamNotifyRow[]> {
-  const [members, editors, owners, ours] = await Promise.all([
+  const [members, editors, owners, ours, seats] = await Promise.all([
     prisma.teamMember.findMany({
       where: { active: true },
       orderBy: { name: "asc" },
@@ -277,6 +316,7 @@ export async function teamNotifyRows(): Promise<TeamNotifyRow[]> {
     editorKeysByTeamMemberId(),
     (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]),
     (await import("@/lib/integrations/openphone")).ourOpenPhoneNumberKeys().catch(() => new Set<string>()),
+    reviewSeatTeamMemberIds(),
   ]);
   const reached = await lastReachedByMember(members.map((m) => m.id));
   const rows: TeamNotifyRow[] = [];
@@ -300,6 +340,9 @@ export async function teamNotifyRows(): Promise<TeamNotifyRow[]> {
       prefs,
       explicit,
       ...(reached.has(m.id) ? { lastReached: reached.get(m.id) } : {}),
+      // The card's "Role defaults" reads this (defaultPrefsForRow), so a
+      // review seat's reset lands on the same defaults the bridge uses.
+      ...(seats.has(m.id) ? { reviewSeat: true } : {}),
     });
   }
   const group = (r: TeamNotifyRow) => (r.isOwner ? 0 : r.isEditor ? 2 : r.role.toUpperCase() === "PHOTOGRAPHER" ? 3 : 1);

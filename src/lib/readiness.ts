@@ -629,7 +629,8 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
         realClients = aud?.realClients === true;
         // ALL reaches everyone only where the feature's own lock is lifted
         // (realClients is false under the lock), so "every client" is honest.
-        if (aud && realClients) whoOf.set(key, aud.mode === "ALL" ? "every client with a program" : `pilot: ${pilotNamesAll.join(", ")}`);
+        // Per client since Oct 5 2026 (Client onboarding): name the pilot clients THIS switch reaches.
+        if (aud && realClients) whoOf.set(key, aud.mode === "ALL" ? "every client with a program" : `pilot: ${(aud.clients.some((x) => x.tier === "PILOT") ? aud.clients.filter((x) => x.tier === "PILOT").map((x) => x.name) : pilotNamesAll).join(", ")}`);
       } else {
         // A client-reaching switch with no declared gate would be a copy
         // mistake; say so rather than guess an audience.

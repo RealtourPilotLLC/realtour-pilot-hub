@@ -15,7 +15,10 @@ import { uploadedDeliveryGroups, type UploadedTarget } from "@/lib/uploadedDeliv
 import { CorrectUpload } from "@/components/ops/CorrectUpload";
 import { RetryRender } from "@/components/ops/RetryRender";
 import { HeldRender } from "@/components/ops/HeldRender";
+import { PortalNextStep } from "@/components/ops/PortalNextStep";
 import { NotTold } from "@/components/ops/NotTold";
+import { SaveStatus } from "@/components/ui/SaveStatus";
+import { undoVideoUploadAction } from "@/app/ops/actions";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
 import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
@@ -99,8 +102,29 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
   const chosenDestination = <T extends ReadyVideo | RenderingVideo>(v: T): T => aryeoChoices.has(v.submissionId) && aryeoChoices.get(v.submissionId) === v.destinationFingerprint ? { ...v, deliveryDestination: "aryeo-listing", canChooseAryeo: false } : v;
   const rendering = board.rendering.map(chosenDestination);
   const chooseAryeo = (v: ReadyVideo | RenderingVideo) => setAryeoChoices(previous => new Map(previous).set(v.submissionId, v.destinationFingerprint!));
-  const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint)).map(chosenDestination);
-  const uploadedRows = ready.filter((v) => !usesPortal(v) && (v.uploaded || (recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)));
+  // UNDO, AT ONCE (Oct 5 2026): an undone upload is back in "Ready for upload"
+  // the moment it is pressed; the server's answer only has to agree with it.
+  const [undone, setUndone] = useState<Map<string, string>>(() => new Map());
+  const isUndone = (v: ReadyVideo) => !!v.uploadFingerprint && undone.get(v.submissionId) === v.uploadFingerprint;
+  const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint)).map(chosenDestination)
+    .map((v) => isUndone(v) ? { ...v, uploaded: null } : v);
+  const isRecorded = (v: ReadyVideo) => !isUndone(v) && recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint;
+  const uploadedRows = ready.filter((v) => !usesPortal(v) && (v.uploaded || isRecorded(v)));
+  const [undoErrors, setUndoErrors] = useState<Map<string, string>>(() => new Map());
+  const undoUpload = (v: ReadyVideo) => {
+    const fingerprint = v.uploadFingerprint;
+    if (!fingerprint || isUndone(v)) return;
+    const putBack = (message: string) => {
+      setUndone((previous) => { const next = new Map(previous); next.delete(v.submissionId); return next; });
+      setUndoErrors((previous) => new Map(previous).set(v.submissionId, message));
+    };
+    setUndoErrors((previous) => { const next = new Map(previous); next.delete(v.submissionId); return next; });
+    setUndone((previous) => new Map(previous).set(v.submissionId, fingerprint));
+    setRecorded((previous) => { const next = new Map(previous); next.delete(v.submissionId); return next; });
+    void undoVideoUploadAction(v.submissionId, fingerprint)
+      .then((r) => { if (!r.ok) putBack(r.message); })
+      .catch(() => putBack("Couldn't confirm the undo. Refresh to see where this video stands."));
+  };
   const uploadedGroups = uploadedDeliveryGroups(uploadedRows);
   const sentGroup = (cuts: UploadedTarget[]) => setSent(previous => {
     const next = new Map(previous);
@@ -108,6 +132,7 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
     return next;
   });
   const uploaded = (v: ReadyVideo, delivered = false) => {
+    setUndone((previous) => { const next = new Map(previous); next.delete(v.submissionId); return next; });
     setRecorded((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
     if (delivered) setSent((previous) => new Map(previous).set(v.submissionId, v.uploadFingerprint));
   };
@@ -155,18 +180,26 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       <NotTold rows={notTold} />
       <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
       {[
-        { title: "Ready for upload", rows: ready.filter((v) => !usesPortal(v) && !v.uploaded && !(recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint)) },
+        { title: "Ready for upload", rows: ready.filter((v) => !usesPortal(v) && !v.uploaded && !isRecorded(v)) },
         { title: "Portal delivery needs attention", rows: ready.filter(usesPortal) },
       ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={(delivered) => uploaded(v, delivered)} onAryeoChosen={() => chooseAryeo(v)} />)}</section>)}
-      {uploadedGroups.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedGroups.length})</span></h4>{uploadedGroups.map(group => <UploadedRow key={group.projectId} group={group} onSent={sentGroup} />)}</section>}
+      {uploadedGroups.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedGroups.length})</span></h4>{uploadedGroups.map(group => <UploadedRow key={group.projectId} group={group} onSent={sentGroup} onUndo={undoUpload} undoErrors={undoErrors} />)}</section>}
       <Rendering rows={rendering} onAryeoChosen={chooseAryeo} />
     </div>
   );
 }
 
-function UploadedRow({ group, onSent }: { group: ReturnType<typeof uploadedDeliveryGroups>[number]; onSent: (cuts: UploadedTarget[]) => void }) {
+function UploadedRow({ group, onSent, onUndo, undoErrors }: { group: ReturnType<typeof uploadedDeliveryGroups>[number]; onSent: (cuts: UploadedTarget[]) => void; onUndo: (v: ReadyVideo) => void; undoErrors: Map<string, string> }) {
+  // Only today's own presses can be undone (ET); older receipts are history.
+  const undoable = group.videos.filter((v) => v.uploaded?.undoable && v.uploadFingerprint);
+  const errors = group.videos.flatMap((v) => undoErrors.has(v.submissionId) ? [undoErrors.get(v.submissionId)!] : []);
   return <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2">
-    <div className="min-w-0 flex-1 basis-48"><p className="break-words text-sm font-medium">{group.title}</p>{group.overdue && <span className="text-xs font-medium text-danger">Past due</span>}</div>
+    <div className="min-w-0 flex-1 basis-48"><p className="break-words text-sm font-medium">{group.title}</p>{group.overdue && <span className="text-xs font-medium text-danger">Past due</span>}
+      {undoable.map((v) => <button key={v.submissionId} type="button" onClick={() => onUndo(v)}
+        className="mr-3 inline-flex min-h-11 items-center text-sm text-muted underline underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+        Undo upload{undoable.length > 1 ? ` · ${v.cutLabel} v${v.round}` : ""}
+      </button>)}
+      {errors.map((message, i) => <SaveStatus key={i} state="error" message={message} className="block" />)}</div>
     <div className="flex max-w-full flex-wrap items-center gap-2">
       {group.videos.every(v => !!v.uploadFingerprint)
         ? <WatchDeliveryVideo label="Watch" videos={group.videos.map(v => deliveryPreview(v.submissionId, v.uploadFingerprint!, `${v.street} · ${v.cutLabel} · v${v.round}`))} />
@@ -229,7 +262,7 @@ function Held({ rows }: { rows: RenderingVideo[] }) {
             <span className={cn(r.waitingHours >= 24 && "font-semibold text-danger")}> · approved {waited(r.waitingHours)} ago</span>
             <span className="block">{r.says}</span>
             {r.held && (
-              <HeldRender jobId={r.held.jobId} street={r.street} fileName={r.held.fileName} dropboxUrl={r.held.dropboxUrl} lastCheck={r.held.lastCheck} />
+              <HeldRender jobId={r.held.jobId} street={r.street} fileName={r.held.fileName} dropboxUrl={r.held.dropboxUrl} lastCheck={r.held.lastCheck} monthly={!!r.monthlyProgram} />
             )}
           </li>
         ))}
@@ -291,7 +324,7 @@ function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?
           "rounded px-1.5 py-0.5 text-ui-status font-semibold",
           v.file.source === "topaz-1080p" ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning",
         )}>
-          {SOURCE_CHIP[v.file.source]}
+          {v.portalStep?.blocked ? "Needs 1080p" : SOURCE_CHIP[v.file.source]}
         </span>
         {v.overdue && (
           <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-ui-status font-bold text-danger">
@@ -306,11 +339,22 @@ function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?
         <span>· Kyle · <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span></span>
       </p>
       <p className="mt-1 text-sm text-muted">Approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}.</p>
-      <p className="mt-1 text-sm text-foreground/85">
-        {usesPortal(v)
-          ? `Destination: client portal, with backup in the final Dropbox folder. ${v.monthlyPortalReleased ? "Portal release recorded." : "Portal release pending."} ${v.monthlyPortalAccess ? "This program has eligible owner access." : "Owner access to this exact program needs confirmation."} Portal publication needs attention.`
-          : `Upload this version to Aryeo, then record the upload.${v.monthlyProgram ? " Its final Dropbox backup is retained." : ""}`}
-      </p>
+      {/* A portal video: exactly what stands between it and the client, and
+          the one button that moves it (Oct 5 2026). */}
+      {usesPortal(v) && v.portalStep
+        ? <PortalNextStep submissionId={v.submissionId} street={v.street} clientName={v.clientName} step={v.portalStep} dropboxUrl={v.file.dropboxUrl} />
+        : !usesPortal(v) && v.listingMissing
+          // The upload can't be recorded against a listing the job doesn't
+          // have, so the button would only ever be refused (Oct 5 2026).
+          ? <p className="mt-1 text-sm font-medium text-warning">
+            <Link href={`/projects/${v.projectId}`} className="underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Link the Aryeo listing first</Link>
+            <span className="font-normal text-muted"> — open the job and press Refresh from Aryeo. Then upload this version.</span>
+          </p>
+          : <p className="mt-1 text-sm text-foreground/85">
+          {usesPortal(v)
+            ? "Destination: the client's portal, with a backup in the Final Dropbox folder."
+            : `Upload this version to Aryeo, then record the upload.${v.monthlyProgram ? " Its final Dropbox backup is retained." : ""}`}
+        </p>}
 
       {/* The route records a successful handoff of a link or start of a stream.
           That cannot prove the device saved the complete file or the client
@@ -420,7 +464,8 @@ function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?
       {v.uploaded && <div className="mt-2"><MarkSent submissionId={v.submissionId} street={v.street} expectedFingerprint={v.uploadFingerprint ?? undefined} /></div>}
       <section className="mt-3" aria-label="Files and upload"><h5 className="mb-2 text-sm font-medium">Files and upload</h5>
       <div className="flex flex-wrap items-center gap-2">
-        <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />
+        {/* No checked 1080p file yet: nothing for a portal video to hand over. */}
+        {!v.portalStep?.blocked && <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />}
         {!usesPortal(v) && v.aryeoUrl && (
           <a
             href={v.aryeoUrl}
@@ -438,14 +483,14 @@ function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?
         >
           <Eye className="size-3.5" /> Watch it
         </Link>}
-        {!usesPortal(v) && !v.uploaded && v.uploadFingerprint && <MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} onUploaded={onUploaded} />}
+        {!usesPortal(v) && !v.uploaded && !v.listingMissing && v.uploadFingerprint && <MarkUploaded submissionId={v.submissionId} fingerprint={v.uploadFingerprint} onUploaded={onUploaded} />}
         {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
             way to retry the render without going into connections"). Offered
             only on a row whose 1080p pass did NOT produce the file — there is a
             job to re-run and a reason printed two lines above it. A row already
             carrying the enhanced file has nothing to retry, and showing the
             button there would invite spending money to replace a good file. */}
-        {v.topazJobId && v.file.source !== "topaz-1080p" && (
+        {v.topazJobId && v.file.source !== "topaz-1080p" && !usesPortal(v) && (
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>

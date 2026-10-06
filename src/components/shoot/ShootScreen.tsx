@@ -44,6 +44,13 @@ const CAPTURE_GUIDE: Record<string, string> = {
   HEADSHOT: "Agent headshots — a few clean, well-lit options framed for their brand.",
   OTHER: "Capture per the order notes and the brief above.",
 };
+// A MONTHLY CONTENT SESSION is not a listing (Oct 5, photographer audit): no
+// walkthrough, no reel of rooms — the client on camera, topic by topic, from
+// the scripts on the session card. Only the video rows change words.
+const CONTENT_CAPTURE_GUIDE: Partial<Record<string, string>> = {
+  VIDEO: "Every topic on the session card above — clean takes of each script, then B-roll for each topic.",
+  SOCIAL_REEL: "Every topic on the session card above — clean takes of each script, then B-roll for each topic.",
+};
 
 // Deliverables produced in EDITING, not captured on-site — they don't belong on
 // the capture checklist (ticking "captured virtual staging" makes no sense). We
@@ -51,11 +58,13 @@ const CAPTURE_GUIDE: Record<string, string> = {
 const POST_PRODUCTION_TYPES = new Set<string>(["VIRTUAL_STAGING"]);
 
 export function ShootScreen({
-  view, pay, map, whenText, timing, media, chat = null, backHref = "/shoot",
+  view, pay, map, briefRead = null, whenText, timing, media, chat = null, backHref = "/shoot",
 }: {
   view: ShootView;
   pay: React.ReactNode;
   map: React.ReactNode;
+  /** "I read this brief" — rendered UNDER the brief it is about (Oct 5). */
+  briefRead?: React.ReactNode;
   whenText: string;
   timing: "today" | "upcoming" | "past" | null;
   media: React.ReactNode;
@@ -139,7 +148,7 @@ export function ShootScreen({
       <div className="mt-4 space-y-4">
         {map}
         <BriefCard view={view} flash={flash} />
-        <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} photoTarget={photoTarget} />
+        <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} photoTarget={photoTarget} contentSession={project.contentSession} />
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
         {/* The locked script from Script Studio — READ-ONLY. Scripts are written
             in the Studio (the API/webhook sync keeps this fresh); the
@@ -165,12 +174,17 @@ export function ShootScreen({
           ))}
         {isVideo && <AocPlaybookCard context="shoot" />}
         <CustomerCard client={client} segment={segment} profile={profile} />
-        <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
+        {/* Under everything it refers to: access, checklist, scripts and the
+            client's own words are all above it (Oct 5). */}
+        {briefRead}
+        <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} contentSession={project.contentSession} />
         {/* The job's own thread (Sep 16, Kyle call) — being tagged on a job
             used to send a photographer here with nothing to read and no way to
             answer. Under the editor notes: same part of the day, wrap-up. */}
         {chat}
-        <MediaCard media={media} uploaded={project.uploadedAt != null} />
+        {/* A content session has no listing gallery to show (Oct 5): its
+            footage goes to the editor through the upload page. */}
+        {(media || !project.contentSession) && <MediaCard media={media} uploaded={project.uploadedAt != null} />}
         {pay}
       </div>
 
@@ -302,22 +316,33 @@ function MessageSheet({
   const [polished, setPolished] = useState(false);
   const [pending, start] = useTransition();
 
+  // WEAK SIGNAL (Oct 5): a dropped request keeps the typed words in the box
+  // and says so in the sheet; nothing reads "sent" unless the server said so.
+  const [failure, setFailure] = useState<string | null>(null);
   async function polish() {
     if (!msg.trim()) return;
     setDrafting(true);
+    setFailure(null);
     try {
       const r = await draftClientMessage(projectId, msg);
       if (r.ok && r.text) { setMsg(r.text); setPolished(true); }
-      else flash("err", r.error || "Couldn’t draft");
+      else setFailure(r.error || "Couldn’t polish it. Your words are still here.");
+    } catch {
+      setFailure("Couldn’t reach the hub to polish it. Your words are still here — send them as they are or try again.");
     } finally { setDrafting(false); }
   }
 
   function sendMsg() {
     if (!msg.trim()) return;
+    setFailure(null);
     start(async () => {
-      const r = await sendClientMessage(projectId, msg);
-      if (r.ok) { flash("ok", "Message sent to client"); onClose(); }
-      else flash("err", r.message);
+      try {
+        const r = await sendClientMessage(projectId, msg);
+        if (r.ok) { flash("ok", "Message sent to client"); onClose(); }
+        else setFailure(r.message || "Not sent. Your message is still here — try again.");
+      } catch {
+        setFailure("Not sent — the connection dropped. Your message is still here; tap Send to try again.");
+      }
     });
   }
 
@@ -345,6 +370,7 @@ function MessageSheet({
         {polished && (
           <div className="mt-1 flex items-center gap-1 text-[11px] text-brand"><Sparkles className="size-3" /> AI polished — edit as needed before sending</div>
         )}
+        {failure && <p role="alert" className="mt-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">{failure}</p>}
         <div className="mt-3 flex items-center gap-2">
           <button
             onClick={polish}
@@ -367,9 +393,11 @@ function MessageSheet({
 }
 
 function SendSheet({
-  title, text, onChange, onCancel, onSend, sending,
+  title, text, onChange, onCancel, onSend, sending, failure = null,
 }: {
   title: string; text: string; onChange: (t: string) => void; onCancel: () => void; onSend: () => void; sending: boolean;
+  /** why the last send did not go (weak signal) — the text stays in the box */
+  failure?: string | null;
 }) {
   return (
     <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/50 sm:items-center" onClick={onCancel}>
@@ -389,6 +417,7 @@ function SendSheet({
           minRows={4}
           className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         />
+        {failure && <p role="alert" className="mt-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">{failure}</p>}
         <div className="mt-3 flex items-center gap-2">
           <button onClick={onCancel} className="min-h-11 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Cancel</button>
           <button
@@ -619,12 +648,29 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
     });
   }
 
+  // WEAK SIGNAL (Oct 5): the flag shows at once, and comes back off the list
+  // — with its words back in the box and a line saying so — if it didn't save.
+  const [flagFailed, setFlagFailed] = useState<string | null>(null);
   function addFlag() {
     const body = input.trim();
     if (!body) return;
     setFlags((f) => [body, ...f]);
     setInput("");
-    start(async () => { await flagShootIssue(project.id, body); flash("ok", "Issue flagged"); });
+    setFlagFailed(null);
+    const undo = (why: string) => {
+      setFlags((f) => { const i = f.indexOf(body); return i < 0 ? f : [...f.slice(0, i), ...f.slice(i + 1)]; });
+      setInput((cur) => (cur.trim() ? cur : body));
+      setFlagFailed(why);
+    };
+    start(async () => {
+      try {
+        const r = await flagShootIssue(project.id, body);
+        if (r?.ok) flash("ok", "Issue flagged");
+        else undo("Not flagged — it didn't save. Your words are back in the box; tap Flag to try again.");
+      } catch {
+        undo("Not flagged — the connection dropped. Your words are back in the box; tap Flag to try again.");
+      }
+    });
   }
 
   const hasBrief = !!appointment?.brief;
@@ -681,6 +727,7 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
           />
           <button onClick={addFlag} disabled={pending} className="min-h-11 shrink-0 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Flag</button>
         </div>
+        {flagFailed && <p role="alert" className="mt-1.5 text-xs text-danger">{flagFailed}</p>}
         {flags.length > 0 && (
           <ul className="mt-2 space-y-1">
             {flags.map((f, i) => (
@@ -723,7 +770,7 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
 // ---------------------------------------------------------------------------
 
 function Checklist({
-  deliverables, captured, onToggle, mustGets, agentNotes, staging, photoTarget,
+  deliverables, captured, onToggle, mustGets, agentNotes, staging, photoTarget, contentSession = false,
 }: {
   deliverables: ShootView["deliverables"];
   captured: Record<string, boolean>;
@@ -732,6 +779,7 @@ function Checklist({
   agentNotes: string[];
   staging: boolean;
   photoTarget: number | null;
+  contentSession?: boolean;
 }) {
   const total = deliverables.length;
   const done = Object.values(captured).filter(Boolean).length;
@@ -771,7 +819,7 @@ function Checklist({
       {deliverables.map((d) => {
         const on = captured[d.id];
         const meta = DELIVERABLE_META[d.type];
-        const guide = CAPTURE_GUIDE[d.type] ?? CAPTURE_GUIDE.OTHER;
+        const guide = (contentSession ? CONTENT_CAPTURE_GUIDE[d.type] : undefined) ?? CAPTURE_GUIDE[d.type] ?? CAPTURE_GUIDE.OTHER;
         return (
           <button
             key={d.id}
@@ -832,17 +880,27 @@ function Checklist({
 
 // ---------------------------------------------------------------------------
 
-function NotesCard({ projectId, initial, flash }: { projectId: string; initial: string; flash: (k: "ok" | "err", t: string) => void }) {
+function NotesCard({ projectId, initial, flash, contentSession = false }: { projectId: string; initial: string; flash: (k: "ok" | "err", t: string) => void; contentSession?: boolean }) {
   const [note, setNote] = useState(initial);
   const [saved, setSaved] = useState(initial);
   const [pending, start] = useTransition();
+  // WEAK SIGNAL (Oct 5): a failed save keeps every word in the box, the button
+  // stays "Save notes", and the card says it did not save — never "Saved".
+  const [failure, setFailure] = useState<string | null>(null);
   const dirty = note.trim() !== saved.trim();
 
   function save() {
+    const text = note;
+    setFailure(null);
     start(async () => {
-      await saveShootNote(projectId, note);
-      setSaved(note);
-      flash("ok", "Notes saved for editors");
+      try {
+        const r = await saveShootNote(projectId, text);
+        if (!r?.ok) { setFailure("Not saved. Your notes are still here — tap Save notes to try again."); return; }
+        setSaved(text);
+        flash("ok", "Notes saved for editors");
+      } catch {
+        setFailure("Not saved — the connection dropped. Your notes are still here; tap Save notes to try again.");
+      }
     });
   }
 
@@ -851,19 +909,22 @@ function NotesCard({ projectId, initial, flash }: { projectId: string; initial: 
       <p className="mb-2 text-xs text-muted">Anything the editor should know — these flow straight into your upload, so you won’t retype them.</p>
       <AutoTextarea
         value={note}
-        onChange={(e) => setNote(e.target.value)}
+        onChange={(e) => { setNote(e.target.value); setFailure(null); }}
         minRows={3}
         aria-label="Notes for the editor"
-        placeholder="e.g. House faces west so exteriors are backlit, recover sky. Seller wants the pool emphasized. Skip the cluttered office."
+        placeholder={contentSession
+          ? "e.g. Topic 2: use the last take — the first two stumble on the call to action. B-roll of the office is at the end of the card."
+          : "e.g. House faces west so exteriors are backlit, recover sky. Seller wants the pool emphasized. Skip the cluttered office."}
         className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:ring-2 focus:ring-brand/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       />
+      {failure && <p role="alert" className="mt-2 text-xs text-danger">{failure}</p>}
       <div className="mt-2 flex items-center justify-end">
         <button
           onClick={save}
           disabled={!dirty || pending}
           className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
-          {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} {dirty ? "Save notes" : "Saved"}
+          {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} {pending ? "Saving…" : dirty ? "Save notes" : "Saved"}
         </button>
       </div>
     </Section>
@@ -913,8 +974,16 @@ function ActionBar({
   const [sent, setSent] = useState<Set<ShootStatusKind>>(new Set());
   const [pending, start] = useTransition();
   const noPhone = !client.phoneE164;
+  // WEAK SIGNAL (Oct 5): why the last status text did not go — shown in the
+  // sheet, which stays open with the text — and why "Done" did not record.
+  const [sendFailure, setSendFailure] = useState<string | null>(null);
+  const [completeFailure, setCompleteFailure] = useState<string | null>(null);
+  // "Done" with unticked items asks ON THE PAGE (Oct 5) — window.confirm() is
+  // swallowed or auto-cancelled in the in-app browsers a text link opens.
+  const [confirmDone, setConfirmDone] = useState(false);
 
   function openStatus(kind: ShootStatusKind) {
+    setSendFailure(null);
     setSheet({
       kind,
       text: shootStatusText(kind, {
@@ -928,30 +997,56 @@ function ActionBar({
   function sendStatus() {
     if (!sheet) return;
     const { kind, text } = sheet;
+    setSendFailure(null);
     start(async () => {
-      const r = await sendShootStatusText(project.id, kind, text);
-      if (r.ok) { setSent((s) => new Set(s).add(kind)); setSheet(null); flash("ok", "Text sent to client"); }
-      else flash("err", r.message);
+      try {
+        const r = await sendShootStatusText(project.id, kind, text);
+        if (r.ok) { setSent((s) => new Set(s).add(kind)); setSheet(null); flash("ok", "Text sent to client"); }
+        else setSendFailure(r.message ? `Not sent: ${r.message}` : "Not sent. Your text is still here — try again.");
+      } catch {
+        setSendFailure("Not sent — the connection dropped. Your text is still here; tap Send text to try again.");
+      }
     });
   }
 
+  const unticked = Math.max(total - captured, 0);
   function complete() {
-    if (!completed && total > 0 && captured < total) {
-      const ok = window.confirm(
-        `${total - captured} item${total - captured === 1 ? "" : "s"} on the checklist ${total - captured === 1 ? "isn’t" : "aren’t"} ticked off yet.\n\nMark the shoot complete anyway?`,
-      );
-      if (!ok) return;
-    }
+    if (!completed && unticked > 0 && !confirmDone) { setConfirmDone(true); return; }
+    markComplete();
+  }
+  function markComplete() {
+    setConfirmDone(false);
+    setCompleteFailure(null);
     start(async () => {
-      const r = await completeShoot(projectId);
-      if (r.ok) { setCompleted(true); flash("ok", "Shoot marked complete"); }
-      else flash("err", r.message);
+      try {
+        const r = await completeShoot(projectId);
+        if (r.ok) { setCompleted(true); flash("ok", "Shoot marked complete"); }
+        else setCompleteFailure(`Not marked complete: ${r.message} Tap Done to try again.`);
+      } catch {
+        setCompleteFailure("Not marked complete — the connection dropped. Tap Done to try again.");
+      }
     });
   }
 
   return (
     <div className="fixed inset-x-0 bottom-0 z-[1100] border-t border-border bg-surface/95 backdrop-blur-xl">
       <div className="mx-auto max-w-2xl px-4 py-2.5 sm:px-6">
+        {confirmDone && !completed && (
+          <div role="alertdialog" aria-label="Mark the shoot complete?" className="mb-2.5 rounded-xl border border-warning/40 bg-warning-soft p-3">
+            <p className="text-sm text-foreground/90">
+              {unticked} item{unticked === 1 ? "" : "s"} on the checklist {unticked === 1 ? "isn’t" : "aren’t"} ticked off yet. Mark the shoot complete anyway?
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" onClick={markComplete} disabled={pending} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                <CheckCircle2 className="size-4" /> Mark complete
+              </button>
+              <button type="button" onClick={() => setConfirmDone(false)} className="min-h-11 rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                Go back
+              </button>
+            </div>
+          </div>
+        )}
+        {completeFailure && !completed && <p role="alert" className="mb-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">{completeFailure}</p>}
         {/* Row 1 — client comms: the three drafted status texts + free-form message */}
         <div className="flex items-center gap-1.5">
           {STATUS_ORDER.map((kind) => {
@@ -1028,9 +1123,10 @@ function ActionBar({
           title={SHOOT_STATUS_META[sheet.kind].label}
           text={sheet.text}
           onChange={(t) => setSheet({ ...sheet, text: t })}
-          onCancel={() => setSheet(null)}
+          onCancel={() => { setSheet(null); setSendFailure(null); }}
           onSend={sendStatus}
           sending={pending}
+          failure={sendFailure}
         />
       )}
       {msgOpen && <MessageSheet projectId={projectId} noPhone={noPhone} onClose={() => setMsgOpen(false)} flash={flash} />}

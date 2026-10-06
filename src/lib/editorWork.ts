@@ -170,14 +170,38 @@ export async function holdersFor(projectIds: string[], db: Db = prisma): Promise
   // Kim, not displayed as Kim then refused as "Nobody is assigned". Routing
   // predictions and automatic project routing never enter this fallback, and an explicit task unassignment
   // or agency handoff takes precedence over an old project editor.
+  //
+  // ONLY WHILE THE JOB IS STILL IN PRODUCTION (Oct 5 2026). A delivered or
+  // cancelled job, or one the office took off the Editing Room, is held only
+  // through a live card — the pin alone is a record of who edited it, not
+  // live work. Without this, a hand-picked Kim on a DELIVERED job with no
+  // card could press Start on it (startBlock lets DELIVERED through for
+  // taken-back work, which always comes with a card) and upload to it.
+  // ON_HOLD keeps the pin's holder on purpose: Start is refused there for
+  // everyone (startBlock), and a hold PAUSES work rather than closing it —
+  // dropping her here would let the hourly ghost check close the stretch
+  // she is meant to resume.
   const projects = await db.project.findMany({
-    where: { id: { in: projectIds }, editorManual: true, editorId: { not: null } },
+    where: { id: { in: projectIds }, editorManual: true, editorId: { not: null }, status: { notIn: ["DELIVERED", "CANCELLED"] } },
     select: { id: true, editor: { select: { name: true } } },
   });
-  for (const p of projects) {
+  const pinned = projects.filter((p) => {
     const lane = tasks.filter((t) => t.projectId === p.id && (t.taskType === "edit_video" || t.assignedKey == null || VIDEO_LANE_KEYS.some((key) => key === t.assignedKey)));
-    if (lane.some((t) => t.assignedKey || t.assignedManually)) continue;
-    add(p.id, editorKeyForTeamName(p.editor?.name));
+    return !lane.some((t) => t.assignedKey || t.assignedManually);
+  });
+  if (pinned.length > 0) {
+    // Taken off the Editing Room and not brought back (queueRemoved). One
+    // read for the markers; a marker is kept after a restore, so only the
+    // few that exist are parsed. Inside the switch the read is the
+    // transaction's and a failure is not swallowed (removalFor's rule).
+    const { queueRemovedKey, removalFor, isRemoved } = await import("@/lib/queueRemoved");
+    const tx = db === prisma ? undefined : (db as Prisma.TransactionClient);
+    const marked = await db.appSetting.findMany({ where: { key: { in: pinned.map((p) => queueRemovedKey(p.id)) } }, select: { key: true } });
+    const markedKeys = new Set(marked.map((m) => m.key));
+    for (const p of pinned) {
+      if (markedKeys.has(queueRemovedKey(p.id)) && isRemoved(await removalFor(p.id, tx))) continue;
+      add(p.id, editorKeyForTeamName(p.editor?.name));
+    }
   }
   const outs = await db.deliverableOutput.findMany({
     where: { projectId: { in: projectIds }, ownerKey: { in: [...WORK_EDITOR_KEYS] }, removedFromOrderAt: null, waivedAt: null, approvedSubmissionId: null },
@@ -303,7 +327,9 @@ async function startFacts(db: Db, snap: StartSnap | null, outputId?: string | nu
  *     A board drag back to Scheduled/Booked sets no hold and stays startable,
  *     as it always was — only now race-safe.
  *   · DELIVERED and REVIEW are NOT refused: extra-shoot and taken-back work
- *     lives on them; holding the job (the card) is the test there. */
+ *     lives on them; holding the job (the card) is the test there. On a
+ *     DELIVERED job a hand-picked project editor with no card is NOT a holder
+ *     (holdersFor, Oct 5) — that pin is history there, not live work. */
 export type StartBlock = "GONE" | "CANCELLED" | "ON_HOLD" | "REMOVED" | "NOT_HOLDER" | "OUTPUT_GONE" | "WAITING";
 
 export function startBlock(f: StartFacts, who: { editorKey: string; office: boolean } | null): StartBlock | null {

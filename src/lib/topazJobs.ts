@@ -9,6 +9,9 @@ import { appBase } from "@/lib/appUrl";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { topazSettings, type TopazSettings } from "@/lib/settings";
 import { HELD_ATTESTATION, type HeldChoice } from "@/lib/topazHold";
+import { kyleTeamMemberId, noticeForKyle } from "@/lib/kyleNotice";
+import { portalReason } from "@/lib/deliveryReadyMessage";
+import { createHash } from "crypto";
 // The cut store's own rules about who may read these bytes (RTP-01). Every
 // read below goes through them: the header probes get a URL that carries its
 // own permission, and the one direct fetch carries the store's token.
@@ -124,6 +127,7 @@ const OUTPUT_TOLERANCE = { durationSec: 1, durationRatio: 0.02, shortSidePx: 8, 
 const UNVERIFIED_DIR = "unverified";
 
 const streetOf = (title?: string | null) => (title || "this job").split(",")[0].trim();
+const shortHash = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 10);
 
 /** An mp4 audio format in words an editor can act on. The four-character codes
  *  are what the file's own header calls them. */
@@ -697,6 +701,25 @@ async function skip(job: NonNullable<JobRow>, reason: string) {
 }
 
 async function tellSomebody(job: NonNullable<JobRow>, title: string, body: string, dedupeKey: string) {
+  // A PORTAL VIDEO HAS NO OTHER FILE (Oct 5 2026). On a listing job the
+  // editor's export becomes the file to send and the delivery DM reaches Kyle
+  // with it. A monthly video's portal only takes the checked 1080p file, so a
+  // pass that did not finish is work for Kyle now: his name, his Slack.
+  if (job.project.contentMonthId) {
+    await noticeForKyle({
+      kind: "topaz_problem",
+      title,
+      body,
+      href: "/#video-review",
+      dedupeKey: `${dedupeKey}-kyle-${etDayKey(new Date())}-${shortHash(body)}`,
+      slack: [
+        `${title}`,
+        `${job.project.client?.name ?? "Client"} · portal video. The client's portal only gets the checked 1080p file, so this one is waiting.`,
+        `Why: ${portalReason(body)}`,
+        `Open the delivery queue for the next step: ${appBase()}/#video-review`,
+      ].join("\n"),
+    }).catch(() => null);
+  }
   try {
     const { notifyInApp } = await import("@/lib/notify");
     await notifyInApp({
@@ -704,7 +727,8 @@ async function tellSomebody(job: NonNullable<JobRow>, title: string, body: strin
       title,
       body,
       href: `/review/${job.projectId}?cut=${job.submissionId}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      // Kyle has his own row for a portal video (above): one bell, not two.
+      targets: [{ roles: job.project.contentMonthId ? ["OWNER"] : ["OWNER", "ADMIN"] }],
       dedupeKey,
     });
   } catch { /* the bell is best-effort; the row still carries the reason */ }
@@ -1048,6 +1072,20 @@ async function applyGate(job: NonNullable<JobRow>, gate: Exclude<SpendGate, { ok
         dedupeKey: `topaz-low-balance-${etDayKey(new Date())}`,
       });
     } catch { /* best-effort */ }
+    // Kyle is the one watching delivery stall: tell him by name, once a day.
+    await noticeForKyle({
+      kind: "topaz_problem",
+      title: "Topaz credits are running low",
+      body: gate.reason,
+      href: "/#video-review",
+      dedupeKey: `topaz-low-balance-kyle-${etDayKey(new Date())}`,
+      slack: [
+        "Topaz credits are running low, so videos are waiting for their 1080p pass.",
+        gate.reason,
+        "Portal videos can't be published until the pass runs. Ask Jordan to top up Topaz.",
+        `Delivery queue: ${appBase()}/#video-review`,
+      ].join("\n"),
+    }).catch(() => null);
   }
   if (gate.hold) {
     await hold(job, gate.reason, gate.retryAt);
@@ -2122,6 +2160,16 @@ async function setAside(path: string): Promise<{ path: string | null; missing: b
   }
 }
 
+/** Who gets the held-file BELL beside Kyle's own named notice (Oct 5 night):
+ *  Jordan by role, the creative reviewer by name — never an ADMIN broadcast,
+ *  which Kyle's login would read as a second bell for the same file. */
+export function heldFileBellTargets(approverId: string | null, kyleId: string | null): { roles: ("OWNER" | "ADMIN")[]; userKey?: string }[] {
+  return [
+    { roles: ["OWNER"] },
+    ...(approverId && approverId !== kyleId ? [{ roles: ["ADMIN" as const], userKey: `tm:${approverId}` }] : []),
+  ];
+}
+
 /** Park the job as HELD and tell the person whose call it is. The bytes are
  *  in Dropbox, so Topaz's copy goes; the editor's original is not touched and
  *  Kyle is not asked to deliver anything. */
@@ -2155,23 +2203,40 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
   try {
     const { notifyInApp } = await import("@/lib/notify");
     const { creativeApprover } = await import("@/lib/opsExceptions");
-    // WHOSE CALL IT IS: the creative reviewer (James) — addressed by name only
-    // when his login would not already see the office broadcast, so he gets one
-    // row, not two. Jordan and Kyle see the broadcast. topaz_problem is bell-only
-    // by design (notifyPrefs has no switch for it), so nobody is paged at night.
+    // WHOSE CALL IT IS (review, Oct 5 night — this used to be an OWNER+ADMIN
+    // broadcast, so Kyle got it as well as his own named row below: two bells
+    // and a DM for one held file). Now: Jordan by role (the OWNER row), the
+    // creative reviewer (James) by name, and Kyle ONLY through noticeForKyle
+    // below — one bell and one DM, held overnight. topaz_problem is bell-only
+    // by design (notifyPrefs has no switch for it), so these rows page nobody.
     const approver = await creativeApprover().catch(() => null);
+    const kyle = await kyleTeamMemberId().catch(() => null);
     await notifyInApp({
       kind: "topaz_problem",
       title: `1080p file held, not sent — ${street}`,
-      body: "Its sound couldn't be verified. Listen to it, then use it or keep the approved original.",
+      body: job.project.contentMonthId ? "Its sound couldn't be verified. Listen to it, then use it." : "Its sound couldn't be verified. Listen to it, then use it or keep the approved original.",
       href: "/#video-review",
-      targets: [
-        { roles: ["OWNER", "ADMIN"] },
-        ...(approver && !approver.canApprove ? [{ roles: ["ADMIN" as const], userKey: `tm:${approver.id}` }] : []),
-      ],
+      targets: heldFileBellTargets(approver?.id ?? null, kyle),
       dedupeKey: `topaz-held-${job.id}`,
     });
   } catch { /* the bell is best-effort; the row, the card and the exceptions board carry it */ }
+  // A held file never reaches the ready-to-send DM (it is not ready), so Kyle
+  // is told by name that it is waiting on a listen (Oct 5 2026).
+  const monthly = !!job.project.contentMonthId;
+  await noticeForKyle({
+    kind: "topaz_problem",
+    title: `1080p file held — ${street}`,
+    body: "Its sound couldn't be checked automatically. Listen to it on the delivery queue.",
+    href: "/#video-review",
+    dedupeKey: `topaz-held-kyle-${job.id}-${etDayKey(now)}`,
+    slack: [
+      `1080p file held, not sent — ${street} · ${job.project.client?.name ?? "Client"}`,
+      monthly
+        ? "Its sound couldn't be checked automatically. Listen to it on the delivery queue, then press \"I listened — use this file\". The client's portal only gets this checked file."
+        : "Its sound couldn't be checked automatically. Listen to it on the delivery queue, then use it or keep the approved original.",
+      `Delivery queue: ${appBase()}/#video-review`,
+    ].join("\n"),
+  }).catch(() => null);
   await prisma.activity
     .create({
       data: {
@@ -2257,7 +2322,7 @@ async function finishHeldAsProcessed(
   return {
     ok: true,
     message: job.project.contentMonthId
-      ? "Released. It's the file the client's portal gives them now. If they can't sign in yet, it's on the Ready-to-send card to send by hand."
+      ? "Released. The checked 1080p file goes to the client's portal, or stays on the Ready-to-send card if their portal isn't live yet."
       : "Released — it's the file to send now, and Kyle has the upload card.",
   };
 }
@@ -2307,6 +2372,12 @@ export async function resolveHeldTopazJob(
     return await finishHeldAsProcessed({ ...job, resolvedBy: by }, s, { outputCheck: "resolved-processed" });
   }
 
+  // A PORTAL VIDEO HAS NO "ORIGINAL" TO KEEP (Oct 5 2026). The client's
+  // portal only takes the checked 1080p file, so keeping the editor's export
+  // was a dead end that told the reviewer the opposite.
+  if (job.project.contentMonthId) {
+    return { ok: false, message: "This is a portal video, so the client only gets the checked 1080p file. Listen to it and use it, or ask the editor for a new export if it's wrong." };
+  }
   if (!(await claimHeld(jobId, by, "use-original", why))) {
     return { ok: false, message: "Someone else is deciding this one right now — refresh in a moment." };
   }
@@ -2339,12 +2410,7 @@ export async function resolveHeldTopazJob(
       },
     })
     .catch(() => {});
-  return {
-    ok: true,
-    message: job.project.contentMonthId
-      ? "Kept the approved original. It's the file the client's portal gives them now. If they can't sign in yet, it's on the Ready-to-send card."
-      : "Kept the approved original — it's on the ready card as the file to send.",
-  };
+  return { ok: true, message: "Kept the approved original — it's on the ready card as the file to send." };
 }
 
 /**
@@ -2697,6 +2763,34 @@ export async function cancelTopazJob(jobId: string, by?: string | null): Promise
 }
 
 /**
+ * Whether retryTopazJob would accept this job — its refusals, read without
+ * touching anything, so a button can answer at once and run the retry itself
+ * in the background (Oct 5 2026: every action instant).
+ */
+export async function retryTopazJobRefusal(jobId: string): Promise<string | null> {
+  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, outputCheck: true, project: { select: { contentMonthId: true } } } });
+  if (!job) return "That 1080p job no longer exists.";
+  if (LIVE_STATES.includes(job.state as TopazState)) return "That one is already on its way.";
+  if (job.state === "done") return "That video already went through.";
+  // A HELD FILE IS FINISHED AND PAID FOR (O02). Sending it back through the
+  // lane would re-read Topaz for a file already in Dropbox and, once Topaz has
+  // dropped its copy, fail a render that exists. The decision is a person's.
+  if (job.state === "held") {
+    return job.project?.contentMonthId
+      ? "That 1080p file is finished and waiting for someone to listen to it — listen, then use it. Nothing needs to run again."
+      : "That 1080p file is finished and waiting for someone to listen to it — use it, or keep the approved original. Nothing needs to run again.";
+  }
+  // A reviewer already chose the original over this render. The button must
+  // not quietly undo a recorded decision — on a listing job, where the
+  // original is a deliverable. A portal video's portal only takes the checked
+  // 1080p file, so "keep the original" there was a dead end: it may run again.
+  if (job.outputCheck === "resolved-original" && !job.project?.contentMonthId) {
+    return "A reviewer chose the approved original for this cut, so the 1080p pass won't run on it again.";
+  }
+  return null;
+}
+
+/**
  * Put a failed or skipped job back in the queue.
  *
  * DELIBERATELY NOT AUTOMATIC, and deliberately not a fresh job: it reuses the
@@ -2720,21 +2814,15 @@ export async function cancelTopazJob(jobId: string, by?: string | null): Promise
  *     Trying again is free by construction, not by promise.
  */
 export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; message: string }> {
-  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true, outputCheck: true } });
+  const refusal = await retryTopazJobRefusal(jobId);
+  if (refusal) return { ok: false, message: refusal };
+  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true, outputCheck: true, heldPath: true } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
-  if (LIVE_STATES.includes(job.state as TopazState)) return { ok: false, message: "That one is already on its way." };
-  if (job.state === "done") return { ok: false, message: "That video already went through." };
-  // A HELD FILE IS FINISHED AND PAID FOR (O02). Sending it back through the
-  // lane would re-read Topaz for a file already in Dropbox and, once Topaz has
-  // dropped its copy, fail a render that exists. The decision is a person's.
-  if (job.state === "held") {
-    return { ok: false, message: "That 1080p file is finished and waiting for someone to listen to it — use it, or keep the approved original. Nothing needs to run again." };
-  }
-  // A reviewer already chose the original over this render. The button must
-  // not quietly undo a recorded decision.
-  if (job.outputCheck === "resolved-original") {
-    return { ok: false, message: "A reviewer chose the approved original for this cut, so the 1080p pass won't run on it again." };
-  }
+  // A portal video whose finished render was set aside by "keep the original"
+  // (reachable only for a portal video — see the refusal): the render is
+  // already paid for and in superseded/, so it comes back for a listen rather
+  // than being bought again.
+  if (job.outputCheck === "resolved-original") return await reopenSetAsideRender(job.id, job.heldPath);
 
   if (job.completeUploadAt) {
     await prisma.topazJob.update({
@@ -2786,6 +2874,31 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
   return { ok: true, message: "Back in the queue. It starts again from the free price check, so every limit you've set still applies to it." };
 }
 
+/** Move a set-aside render back to unverified/ and hold it for a listen. Free:
+ *  Dropbox only, nothing re-rendered or re-charged. */
+async function reopenSetAsideRender(jobId: string, asidePath: string | null): Promise<{ ok: boolean; message: string }> {
+  const gone = { ok: false, message: "The set-aside 1080p file is no longer in Dropbox, so there is nothing to bring back. Ask the editor for a new export and approve it." };
+  if (!asidePath) return gone;
+  const marker = "/superseded/";
+  const at = asidePath.lastIndexOf(marker);
+  const folder = at > 0 ? asidePath.slice(0, at) : asidePath.slice(0, asidePath.lastIndexOf("/"));
+  await dbx("files/create_folder_v2", { path: `${folder}/${UNVERIFIED_DIR}`, autorename: false }).catch(() => {});
+  let back: string;
+  try {
+    const r = await dbx<{ metadata?: { path_display?: string } }>("files/move_v2", { from_path: asidePath, to_path: `${folder}/${UNVERIFIED_DIR}/${asidePath.split("/").pop()}`, autorename: true });
+    back = r?.metadata?.path_display ?? `${folder}/${UNVERIFIED_DIR}/${asidePath.split("/").pop()}`;
+  } catch (e) {
+    if (e instanceof DropboxError && /not_found/i.test(e.message)) return gone;
+    return { ok: false, message: "Dropbox wouldn't move the 1080p file back just now — nothing changed. Try again in a minute." };
+  }
+  const moved = await prisma.topazJob.updateMany({
+    where: { id: jobId, state: "failed", outputCheck: "resolved-original" },
+    data: { state: "held", heldPath: back, heldAt: new Date(), outputCheck: "unverified", error: null, errorAt: null, finishedAt: null, resolvedAt: null, resolvedBy: null, resolution: null, resolutionNote: null },
+  });
+  if (moved.count !== 1) return { ok: false, message: "That one changed while we were moving it — refresh and look again." };
+  return { ok: true, message: "The 1080p file is back for a listen. Play it, then use it — the client's portal only gets this checked file." };
+}
+
 /** Kyle's one tap after he has uploaded it to Aryeo: closes the card and closes
  *  the loop in the hub. */
 /**
@@ -2805,7 +2918,7 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
  * reconciled on every call, and a failure to close the task is now reported
  * rather than swallowed, so the caller can say "press again".
  */
-export async function markTopazDelivered(jobId: string, by?: string | null, opts?: { at: Date; destination: "client-portal" | "aryeo-listing" }): Promise<{ ok: boolean; message: string; repaired?: boolean; incomplete?: string }> {
+export async function markTopazDelivered(jobId: string, by?: string | null, opts?: { at: Date; destination: "client-portal" | "aryeo-listing" | "dropbox-link" }): Promise<{ ok: boolean; message: string; repaired?: boolean; incomplete?: string }> {
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, taskId: true, projectId: true, deliveredAt: true, finalPath: true } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
   const first = !job.deliveredAt;
@@ -2834,7 +2947,7 @@ export async function markTopazDelivered(jobId: string, by?: string | null, opts
 
   if (first) {
     await prisma.activity
-      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video ${opts?.destination === "client-portal" ? "published in the client portal" : "uploaded to Aryeo and delivered"}${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
+      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video ${opts?.destination === "client-portal" ? "published in the client portal" : opts?.destination === "dropbox-link" ? "sent to the client as a Final Dropbox link" : "uploaded to Aryeo and delivered"}${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
       .catch(() => {});
   }
 

@@ -841,7 +841,8 @@ async function activateSignup(sig: {
   if (discovery.outcome === "conflict" && "detail" in discovery && discovery.detail) note = `${note ? note + " " : ""}${discovery.detail}`;
 
   try {
-    const { notifyInApp } = await import("@/lib/notify");
+    const { notifyInApp, opsAlert } = await import("@/lib/notify");
+    const rung = await prisma.notification.count({ where: { dedupeKey: `signup-${sig.checkoutId}-0` } }).catch(() => 1);
     await notifyInApp({
       kind: "program_signup",
       title: `New Content Program signup — ${client.name}`,
@@ -853,6 +854,19 @@ async function activateSignup(sig: {
       targets: [{ roles: ["OWNER", "ADMIN"] }],
       dedupeKey: `signup-${sig.checkoutId}`,
     });
+    // Oct 5 2026: a paying client was a bell and a two-day task — the same
+    // ops line a new Aryeo client gets (newClients.ts), once per checkout, never
+    // for a TEST record. Package only, no money, no billing term (as above).
+    const { isTestClientName } = await import("@/lib/testClients");
+    if (rung === 0 && !isTestClientName(client.name)) {
+      const { appBase } = await import("@/lib/appUrl");
+      const call =
+        discovery.outcome === "task_open" ? " The discovery-call task is on Kyle's list, due today."
+        : discovery.outcome === "booked" ? " Discovery call already booked."
+        : discovery.outcome === "conflict" ? " The discovery booking came from a different address — Kyle confirms which is theirs."
+        : "";
+      await opsAlert(`🆕 New Content Program signup — ${client.name} (Video ${sig.terms.package})${note ? " · needs a look" : ""}.${call} ${appBase()}/content/${enrollmentId}`);
+    }
   } catch { /* bell is best-effort */ }
 
   await prisma.auditLog

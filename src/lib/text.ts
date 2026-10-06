@@ -105,18 +105,132 @@ export function stripQuotedReply(body: string): string {
   return head.length > 0 ? head : body.trim();
 }
 
+// ---------------------------------------------------------------------------
+// OUR MONEY, NOT THE MARKET'S (Oct 5 2026).
+//
+// The rule is "creatives never see OUR pricing" — what a client paid us, our
+// fees, invoices, refunds and discounts. The old test dropped every sentence
+// with "price", "pricing", "payment" or any "$<digit>" in it, and our clients
+// are real estate agents: their approved scripts, topics and strategies talk
+// about list prices, pricing strategy, down payments and "$1M price points"
+// all day (87 times in the imported strategies alone). A client-approved hook
+// — "The first weekend decides your price." — reached the editor as an empty
+// Hook. So this drops only a sentence in OUR billing language.
+//
+// ALWAYS ours, whatever else the sentence says:
+//   · invoice / refund / discount / billing / "bill her", owe / owes / owed,
+//     "quoted her…", a deposit (not an earnest-money, security or escrow one),
+//     "pay for / pay us", "paid us / paid in full", a balance due, a price
+//     list, a payment app or card, what a client has spent with us;
+//   · our own price words: "our pricing", "VIP pricing", "friends and family
+//     rates", and "N% off" / "N percent off".
+// Ours UNLESS the sentence is about the market (HOA, closing costs, a list or
+// asking price, a down payment, a mortgage, rent, property tax, earnest money,
+// a price point, "$2M homes"):
+//   · a fee or a charge (not an HOA or closing fee, "in charge of", "charge
+//     up"), paid / unpaid (not "paid off"), a payment (not a down, mortgage or
+//     monthly payment);
+//   · a money figure BELOW real-estate scale ($750, $1.5k, 175 dollars) — a
+//     listing's $450,000 or $1.2M is the market's number — or any figure tied
+//     to a package, plan, subscription, retainer or bundle, or billed per
+//     month / per year ("the $12,000/yr deal");
+//   · a bare number right after price / pricing / total / deposit / balance /
+//     cost / rate below that scale ("Price: 325", "total 450") — never a count
+//     ("total of 45 photos"), a percentage or a timestamp ("balance at 0:12").
+// Callers decide WHAT to scrub: client-approved script text and topic titles
+// are never passed through here at all (edit page, portal, outputBriefs).
+// ---------------------------------------------------------------------------
+const OUR_BILLING_ALWAYS: RegExp[] = [
+  /\binvoic(?:e|es|ed|ing)\b/i,
+  /\brefund(?:s|ed|ing|able)?\b/i,
+  /\bdiscount(?:s|ed)?\b/i,
+  /\bbill(?:ing|ed)\b|\bbill\s+(?:her|him|them|the\s+client|it|for)\b/i,
+  /\bow(?:e|es|ed|ing)\b(?!\s+it\s+to\b)(?!\s+(?:on|against)\s+(?:the|their|your|his|her)\s+(?:mortgage|loan|house|home)\b)/i,
+  /\bquot(?:ed|ing)\b(?=\s+(?:her|him|them|you|us|the\s+client|a\s+price|at\b|for\b|[$€£\d]))|\b(?:price|our)\s+quote\b/i,
+  /(?<!\b(?:earnest|money|security|escrow|faith|rental|rent)\s)\bdeposits?\b/i,
+  /\bpay(?:s|ing)?\s+(?:for|you|us|extra|more|the\s+(?:fee|invoice|bill|balance|difference))\b/i,
+  /\bpaid\s+(?:us|you|in\s+full|the\s+(?:invoice|bill|balance|deposit))\b/i,
+  /\bbalance\s+(?:due|owed|owing|left|remaining)\b|\b(?:outstanding|remaining|open|account|unpaid)\s+balance\b/i,
+  /\b(?:price|pricing)\s+(?:list|sheet|menu)\b/i,
+  /\b(?:our|my|vip|special|discounted|package|bundle|member|loyalty|returning[- ]client|new[- ]client|family|founding)\s+(?:pricing|prices?|rates?)\b/i,
+  /\b\d{1,3}(?:\.\d+)?\s?(?:%|percent|per\s?cent)\s+off\b/i,
+  /\b(?:venmo|zelle|paypal|stripe|quickbooks|cash\s?app|credit\s+card|debit\s+card|card\s+on\s+file|receipts?)\b/i,
+  /\bspen[dt]\w*\b.{0,40}\bwith (?:us|you)\b|\blifetime\s+(?:spend|value)\b|\brevenue\b/i,
+];
+const OUR_BILLING_SOFT: RegExp[] = [
+  /(?<!\b(?:hoa|closing|condo|association|transfer|lender|origination|attorney|title|escrow|mortgage|application)\s)\bfees?\b/i,
+  /(?<!\b(?:in|take|took|takes|taking)\s)\b(?:sur)?charge[ds]?\b(?!\s+(?:of|up)\b)/i,
+  /\b(?:un|pre)?paid\b(?!\s+off\b)/i,
+  /(?<!\b(?:down|mortgage|monthly|house|home|rent|rental|loan|car|lower|higher|interest|principal|escrow|hoa)\s)\bpayments?\b/i,
+];
+/** The sentence is about the MARKET's money — a home, a loan, the HOA. */
+const MARKET_MONEY = /\b(?:hoa|closing\s+costs?|list(?:ing)?\s+prices?|asking\s+prices?|sales?\s+prices?|sold\s+(?:for|at)|down\s+payments?|mortgages?|earnest\s+money|property\s+tax(?:es)?|interest\s+rates?|rent|rents|rental|price\s+points?|appraise[ds]?|appraisal)\b/i;
+/** Below this a money figure is ours (a reel, a rush fee, a package); at or above it, the market's. */
+const OUR_MONEY_CEILING = 10_000;
+const MONEY_FIGURES: RegExp[] = [
+  // $750 · $1,250.50 · $1.5k · $1.2M · £300 · $450 thousand
+  /[$€£]\s?(\d[\d,]*(?:\.\d+)?)(?:\s?(k|m|mm|mil|million|thousand|b|bn|billion)\b)?/gi,
+  // 175 dollars · 2k USD · 50 bucks
+  /\b(\d[\d,]*(?:\.\d+)?)\s?(k|m|million|thousand)?\s?(?:dollars?|usd|bucks)\b/gi,
+  // USD 750 · US$ 750
+  /\b(?:usd|us\$)\s?(\d[\d,]*(?:\.\d+)?)(?:\s?(k|m|million|thousand)\b)?/gi,
+  // 750$
+  /\b(\d[\d,]*(?:\.\d+)?)()\s?\$(?!\d)/g,
+];
+const SCALE: Record<string, number> = { k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, mil: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9 };
+/** Our products. "marketing plan", "floor plan", "business plan" and "game plan" are not. */
+const OUR_PRODUCT_WORDS = /\b(?:packages?|(?<!\b(?:marketing|floor|business|game|staging)\s)plans?|subscriptions?|retainers?|bundles?)\b/i;
+/** Right after a figure: the market's ("$2M homes", "the $750K range"). */
+const MARKET_AFTER_FIGURE = /^\s*(?:\+\s*)?(?:homes?|houses?|listings?|properties|condos?|townhomes?|townhouses?|price\s+points?|range|market|sales?)\b/i;
+/** Right after a figure: billed again and again ("/yr", "a month", "monthly"). */
+const RECURRING_AFTER_FIGURE = /^\s*(?:\/\s?(?:yr|year|mo|mth|month|wk|week)\b|(?:per|a|an|each|every)\s+(?:year|month|week)\b|monthly\b|annually\b|yearly\b|weekly\b)/i;
+// "Price: 325", "total 450", "cost is 95", "balance of 300" — a bare figure
+// right after one of OUR words. Not a count ("total of 45 photos"), not a
+// percentage ("rate of 6.5%"), not a timestamp ("balance at 0:12").
+const WORD_THEN_FIGURE = new RegExp(
+  `\\b(?:price[ds]?|pricing|total|deposit|balance|costs?|rate)\\b(?:\\s+(?:of|is|was|will\\s+be|would\\s+be|for|at|to|about|around|comes\\s+to|came\\s+to))?(?:\\s*[:=]\\s*|\\s+)(?:[$€£]\\s?)?` +
+    `(\\d[\\d,]*(?:\\.\\d+)?)(\\s?[kK](?![a-z]))?\\b` +
+    `(?![:.]\\d)(?!\\s*(?:%|percent|per\\s?cent|photos?|pics?|pictures?|images?|videos?|clips?|reels?|shoots?|listings?|files?|jobs?|photographers?|editors?|clients?|bed(?:room)?s?|bath(?:room)?s?|sq|square|acres?|batter(?:y|ies)|cards?|drives?|min(?:ute)?s?|hours?|hrs?|days?|weeks?|months?|years?|am|pm|st|nd|rd|th)\\b)`,
+  "gi",
+);
+
+/** Does this sentence talk OUR money (see the block above)? Exported so the rule can be tested as one. */
+export function mentionsOurBilling(sentence: string): boolean {
+  if (OUR_BILLING_ALWAYS.some((re) => re.test(sentence))) return true;
+  // Everything below is ours only when the sentence is not about the market.
+  if (MARKET_MONEY.test(sentence)) return false;
+  if (OUR_BILLING_SOFT.some((re) => re.test(sentence))) return true;
+  for (const re of MONEY_FIGURES) {
+    re.lastIndex = 0;
+    for (let m = re.exec(sentence); m; m = re.exec(sentence)) {
+      const value = Number((m[1] ?? "").replace(/,/g, "")) * (SCALE[(m[2] ?? "").toLowerCase()] ?? 1);
+      if (!Number.isFinite(value)) continue;
+      const after = sentence.slice(m.index + m[0].length);
+      if (MARKET_AFTER_FIGURE.test(after)) continue;
+      if (value < OUR_MONEY_CEILING || OUR_PRODUCT_WORDS.test(sentence) || RECURRING_AFTER_FIGURE.test(after)) return true;
+    }
+  }
+  WORD_THEN_FIGURE.lastIndex = 0;
+  for (let m = WORD_THEN_FIGURE.exec(sentence); m; m = WORD_THEN_FIGURE.exec(sentence)) {
+    const value = Number((m[1] ?? "").replace(/,/g, "")) * (m[2] ? 1e3 : 1);
+    if (Number.isFinite(value) && value < OUR_MONEY_CEILING) return true;
+  }
+  return false;
+}
+
 /**
- * Drop sentences that talk money (amounts, invoices, refunds) — used when
- * client text lands on an EDITOR-visible task: creatives never see pricing.
+ * Drop the sentences that talk OUR money — used when client-originated free
+ * text (an order note, a revision message, the Aryeo customer note) or an
+ * office instruction lands on a creative's screen. Real-estate talk stays;
+ * see mentionsOurBilling. Never call this on a client-approved script.
  */
 export function stripMoneySentences(s: string): string {
-  const MONEY = /[$€£]\s?\d|\b(invoice|price|pricing|charge[ds]?|refund|discount|billing|payment|paid|owe[ds]?)\b/i;
   // Line by line, so a multi-line note keeps its headings, bullets and blank
   // lines — joining every sentence with a space turned the editor's copy of
   // a 3,000-character brief into one blob (Jordan, Sep 10: 632 Greenridge).
   return s
     .split("\n")
-    .map((line) => line.split(/(?<=[.!?])\s+/).filter((p) => !MONEY.test(p)).join(" ").replace(/[ \t]{2,}/g, " ").trimEnd())
+    .map((line) => line.split(/(?<=[.!?])\s+/).filter((p) => !mentionsOurBilling(p)).join(" ").replace(/[ \t]{2,}/g, " ").trimEnd())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

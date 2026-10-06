@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
-  Activity, BookOpen, CalendarDays, ChevronDown, Clapperboard, Compass, Eye, FileUp, Info, MessageSquare, Palette, Settings2, User, Wrench,
+  Activity, BookOpen, CalendarDays, ChevronDown, Clapperboard, Compass, Eye, FileUp, Info, ListChecks, MessageSquare, Palette, Settings2, User, Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -141,6 +141,10 @@ export default async function ContentClientPage({
               </Link>
             )}
             <Link href={`/clients/${client.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><User className="mr-1 inline size-3.5" />Client page</Link>
+            {/* Oct 5 2026: this client's step-by-step onboarding (Settings; owner edits, admins read). */}
+            {staffEyes && (
+              <Link href={`/settings/onboarding?client=${encodeURIComponent(client.id)}`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><ListChecks className="mr-1 inline size-3.5" />Onboarding</Link>
+            )}
             {/* TOOLS — the things you reach for occasionally, off the tab bar. */}
             <details className="group relative">
               <summary className="flex cursor-pointer list-none items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">

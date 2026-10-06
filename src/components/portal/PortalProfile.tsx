@@ -6,6 +6,7 @@ import {
   CheckCircle2, ChevronRight, FileImage, Globe, ListChecks, Loader2, Music, Palette, Plus, RotateCcw, Sparkles, Type, Upload, UserRound, X,
 } from "lucide-react";
 import { portalSaveProfile, portalSkipSetupItem, portalUseFolderFile } from "@/app/portal/actions";
+import { PORTAL_UPLOAD_MAX_LABEL, portalUploadTooBig } from "@/lib/portalUploadLimit";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { BrandPatch, PortalBrandView, PortalBrandFile } from "@/lib/brandProfile";
 import type { SetupChecklist, SetupItem } from "@/lib/portalSetup";
@@ -281,7 +282,8 @@ function FontsSection({ initial, files, setFiles, readOnly }: { initial: string 
   );
 }
 
-type Upload = { id: string; file: File; kind: string; replaceAssetId: string | null; progress: number; state: "uploading" | "done" | "failed"; message: string };
+// tooBig: refused before sending (the size limit) — no Retry, it can't work.
+type Upload = { id: string; file: File; kind: string; replaceAssetId: string | null; progress: number; state: "uploading" | "done" | "failed"; message: string; tooBig?: boolean };
 
 function FilesSection({
   id, title, hint, kind, accept, files, setFiles, readOnly, extra,
@@ -309,8 +311,10 @@ function FilesSection({
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) patch(u.id, { progress: Math.round((e.loaded / e.total) * 100) }); };
     xhr.onerror = () => patch(u.id, { state: "failed", message: "That upload didn't stick — check your connection and retry." });
     xhr.onload = () => {
-      let j: { ok?: boolean; message?: string; assetId?: string; versionId?: string; fileName?: string } = {};
+      let j: { ok?: boolean; message?: string; assetId?: string; versionId?: string; fileName?: string; tooBig?: boolean } = {};
       try { j = JSON.parse(xhr.responseText); } catch { /* handled below */ }
+      // 413 from the platform itself carries no JSON: say the limit, offer no Retry.
+      if (xhr.status === 413 || j.tooBig) { patch(u.id, { state: "failed", tooBig: true, message: j.message || portalUploadTooBig(u.file.size) || `Files up to ${PORTAL_UPLOAD_MAX_LABEL} upload here.` }); return; }
       if (!j.ok) { patch(u.id, { state: "failed", message: j.message || "That upload didn't stick — retry." }); return; }
       patch(u.id, { state: "done", progress: 100, message: j.message ?? "Uploaded." });
       if (j.assetId) {
@@ -323,11 +327,14 @@ function FilesSection({
   const start = (list: FileList | null) => {
     if (!list || list.length === 0) return;
     const replaceAssetId = replacing;
-    const next = Array.from(list).slice(0, replaceAssetId ? 1 : 5).map((file, i) => ({
-      id: `${Date.now()}-${i}`, file, kind, replaceAssetId, progress: 0, state: "uploading" as const, message: "",
-    }));
+    // Checked here, before a byte is sent: a file over the limit is refused by
+    // the platform with no explanation the page could show.
+    const next: Upload[] = Array.from(list).slice(0, replaceAssetId ? 1 : 5).map((file, i) => {
+      const tooBig = portalUploadTooBig(file.size);
+      return { id: `${Date.now()}-${i}`, file, kind, replaceAssetId, progress: 0, state: tooBig ? "failed" as const : "uploading" as const, message: tooBig ?? "", tooBig: !!tooBig };
+    });
     setUploads((cur) => [...next, ...cur].slice(0, 12));
-    next.forEach(send);
+    next.filter((u) => !u.tooBig).forEach(send);
     setReplacing(null);
     if (pickRef.current) pickRef.current.value = "";
   };
@@ -353,6 +360,7 @@ function FilesSection({
           <Upload className="size-4" /> {files.length ? `Add another` : `Upload ${title.toLowerCase()}`}
         </button>
       )}
+      {!readOnly && <p className="mt-1 text-xs text-muted-2">Up to {PORTAL_UPLOAD_MAX_LABEL} per file.</p>}
       <input ref={pickRef} type="file" multiple={!replacing} hidden accept={accept} onChange={(e) => start(e.target.files)} />
       {uploads.length > 0 && (
         <ul className="mt-2 space-y-1.5">
@@ -362,7 +370,7 @@ function FilesSection({
                 <span className="min-w-0 flex-1 break-all text-sm">{u.replaceAssetId ? "Replacing with " : ""}{u.file.name}</span>
                 {u.state === "uploading" && <span className="tabular-nums text-muted">{u.progress}%</span>}
                 {u.state === "done" && <CheckCircle2 className="size-3.5 text-success" />}
-                {u.state === "failed" && (
+                {u.state === "failed" && !u.tooBig && (
                   <button onClick={() => { patch(u.id, { state: "uploading", progress: 0, message: "" }); send({ ...u, state: "uploading", progress: 0 }); }} className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-2 text-sm font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                     <RotateCcw className="size-3" /> Retry
                   </button>

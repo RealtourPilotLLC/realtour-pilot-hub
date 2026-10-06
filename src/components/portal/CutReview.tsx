@@ -160,7 +160,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted">Version {current.round}</span>
+        <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted">Version {current.clientVersion}</span>
         <StateChip state={current.clientState} mine={yours(current)} />
         {current.revisionOpen && !approved && <span className="inline-flex items-center gap-1 rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand"><Undo2 className="size-3" /> Editor working on changes</span>}
         {current.releasedAtISO && <span className="text-[11px] text-muted-2">shared {fmtWhen(current.releasedAtISO)}</span>}
@@ -303,7 +303,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           )}
           {approving && (
             <div className="space-y-2 rounded-xl border border-success/30 bg-success-soft/30 p-3">
-              <p className="text-sm font-medium">Approve version {current.round} as final?</p>
+              <p className="text-sm font-medium">Approve version {current.clientVersion} as final?</p>
               <p className="text-xs text-muted">This records your approval on exactly this cut. If a newer cut ever replaces it, that one will need its own approval.</p>
               {open.length > 0 && (
                 <fieldset className="space-y-1.5 text-sm">
@@ -334,7 +334,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               {[...versions].reverse().map((v) => (
                 <li key={v.submissionId} className="rounded-lg border border-border bg-surface px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">Version {v.round}</span>
+                    <span className="font-semibold">Version {v.clientVersion}</span>
                     <StateChip state={v.clientState} mine={yours(v)} />
                     {v.releasedAtISO && <span className="text-muted-2">shared {fmtWhen(v.releasedAtISO)}</span>}
                     <span className="text-muted-2">{v.comments.length} note{v.comments.length === 1 ? "" : "s"}</span>

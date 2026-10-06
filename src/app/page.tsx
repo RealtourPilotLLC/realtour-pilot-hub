@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
@@ -14,6 +15,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess, contentTier, homeFor } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { cn, formatMoney } from "@/lib/utils";
+import { foldNeeds } from "@/lib/homeNeeds";
 import { etDate, etDayKey, etDayStartUtc, etFullDate, etTime , etDateTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { DayBlock, DayBlockJumps } from "@/components/ops/DayBlock";
@@ -359,9 +361,18 @@ function countFor(key: string, d: OpsDay, board: { today: unknown[] }): number |
 }
 
 // ---------------------------------------------------------------------------
-// What needs you today — the top of the page, and the only thing on it that
+// WHAT NEEDS YOU NOW — the top of the page, and the only thing on it that
 // claims to be a to-do list. Rows are built from the SAME arrays the sections
 // below render, so a row can never point at an empty list.
+//
+// ONE CLEAR FIRST ACTION (Jordan, Oct 5: "simple and clear, without creating
+// information overload in a small space"). The queue that matters most for
+// this viewer's role leads, large, with its own Open button; the next three
+// sit under it; everything else folds into "N more". A red or amber queue is
+// never folded (lib/homeNeeds.foldNeeds — review, Oct 5 night: an amber
+// "videos ready to send" row could sit unseen in the fold). Finished videos
+// still to go out are a row here now — the separate three-paragraph delivery
+// card that sat above this one said the same count in more words.
 // ---------------------------------------------------------------------------
 
 type NeedGroup = "decide" | "waiting" | "risk";
@@ -375,43 +386,197 @@ type Need = {
   tone: "brand" | "danger" | "warning" | "muted";
 };
 
+/** Rows under the lead before the rest fold. */
+const NEXT_SHOWN = 3;
+const TONE_RANK: Record<Need["tone"], number> = { danger: 0, warning: 1, brand: 2, muted: 3 };
+
+/** The list itself — the lead, the next three, the fold. The card around it
+ *  (title, this role's one-line orientation, any warning) is the page's. */
 function NeedsToday({ needs }: { needs: Need[] }) {
-  // All urgent queues remain visible. Only quieter queues fold away; counts
-  // describe queues, never a sum of overlapping jobs.
-  const urgent = needs.filter((n) => n.tone === "danger" || n.tone === "warning");
-  const lead = needs.slice(0, 4);
-  const main = needs.filter((n) => lead.includes(n) || urgent.includes(n));
-  const later = needs.filter((n) => !main.includes(n));
+  const { lead, next, later } = foldNeeds(needs, NEXT_SHOWN);
   return (
-    <section id="needs-you" aria-labelledby="needs-you-title" className="scroll-mt-32 rounded-2xl border border-border bg-surface p-4 sm:p-5">
-      <h2 id="needs-you-title" className="text-base font-semibold">Next actions</h2>
-      <p className="mt-1 text-sm text-muted">Open a queue to work on its records. A job can need more than one kind of follow-up.</p>
-      <div className="mt-3 divide-y divide-border">
-        {main.map((n) => <NeedRow key={n.key} n={n} />)}
-      </div>
-      {later.length > 0 && <details className="mt-3 border-t border-border pt-2">
-        <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium">{later.length} more work queue{later.length === 1 ? "" : "s"}</summary>
-        <div className="divide-y divide-border">{later.map((n) => <NeedRow key={n.key} n={n} />)}</div>
-      </details>}
-    </section>
+    <>
+      {lead && <NeedRow n={lead} lead />}
+      {next.length > 0 && (
+        <div className="mt-2 divide-y divide-border">
+          {next.map((n) => <NeedRow key={n.key} n={n} />)}
+        </div>
+      )}
+      {later.length > 0 && (
+        <details className="group/more mt-1 border-t border-border">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-sm font-medium text-muted hover:text-foreground">
+            <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 transition-transform group-open/more:rotate-0" />
+            <span data-fold-count>{later.length} more queue{later.length === 1 ? "" : "s"}</span>
+          </summary>
+          <div className="divide-y divide-border">{later.map((n) => <NeedRow key={n.key} n={n} />)}</div>
+        </details>
+      )}
+    </>
   );
 }
 
-function NeedRow({ n }: { n: Need }) {
+function NeedRow({ n, lead = false }: { n: Need; lead?: boolean }) {
   const tone =
     n.tone === "danger" ? "text-danger" : n.tone === "warning" ? "text-warning" : n.tone === "brand" ? "text-brand" : "text-foreground";
+  if (lead) {
+    return (
+      <Link
+        href={n.href}
+        className="mt-3 flex min-h-16 items-center gap-3 rounded-xl border border-brand/40 bg-brand-soft/40 px-3 py-3 hover:bg-brand-soft/70 focus-visible:outline-2 focus-visible:outline-brand"
+      >
+        <span className={cn("w-10 shrink-0 text-right text-2xl font-semibold tabular-nums", tone)}>{n.count}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[15px] font-semibold leading-snug">{n.label}</span>
+          {n.detail && <span className="block text-sm text-muted">{n.detail}</span>}
+        </span>
+        <span className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-brand-action px-3 text-sm font-semibold text-white">
+          Open <ArrowRight aria-hidden="true" className="size-4" />
+        </span>
+      </Link>
+    );
+  }
   return (
     <Link
       href={n.href}
       className="-mx-2 flex min-h-14 items-center gap-3 rounded-lg px-2 py-2 hover:bg-surface-2/70 focus-visible:outline-2 focus-visible:outline-brand"
     >
-      <span className={cn("w-8 shrink-0 text-right text-lg font-semibold tabular-nums", tone)}>{n.count}</span>
+      <span className={cn("w-10 shrink-0 text-right text-lg font-semibold tabular-nums", tone)}>{n.count}</span>
       <span className="min-w-0 flex-1">
         <span className="text-sm font-medium leading-snug">{n.label}</span>
         {n.detail && <span className="block text-sm text-muted">{n.detail}</span>}
       </span>
-      <ArrowRight className="size-3.5 shrink-0 text-muted-2" />
+      <ArrowRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-2" />
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// THE SECONDARY SECTIONS STREAM (Oct 5: "nothing slow blocks first paint").
+// Each read starts with the page's own reads (so nothing waits for the main
+// list to finish before it begins), and each section renders behind its own
+// Suspense boundary: the quiet-failures board (~2 s on the live pool), the
+// new-client and risk radar, and the owner's money. A failure inside one says
+// so in its own place and never blanks the rest of Home.
+// ---------------------------------------------------------------------------
+
+type RadarRead = Awaited<ReturnType<typeof getProactiveFlags>> | null;
+
+function SectionLoading({ label }: { label: string }) {
+  return (
+    <div role="status" className="flex min-h-12 items-center rounded-2xl border border-dashed border-border bg-surface px-4 text-sm text-muted">
+      {label}
+    </div>
+  );
+}
+
+async function HomeExceptions({ exceptionsP, includeTest, canReview, canEdit }: {
+  exceptionsP: Promise<OpsExceptionBoard>; includeTest: boolean; canReview: boolean; canEdit: boolean;
+}) {
+  const exceptions = await exceptionsP;
+  return (
+    <ExceptionsCard
+      rows={exceptions.rows.map((r) => ({ ...r, href: homeRecordHref(r.href, includeTest) }))}
+      totals={exceptions.totals}
+      unavailable={exceptions.unavailable}
+      includeTest={includeTest}
+      canReview={canReview}
+      canEdit={canEdit}
+    />
+  );
+}
+
+async function HomeRadar({ radarP, newClientsP, isOwner, includeTest }: {
+  radarP: Promise<RadarRead>; newClientsP: Promise<Awaited<ReturnType<typeof newClientsForDashboard>>>; isOwner: boolean; includeTest: boolean;
+}) {
+  const [radar, newClients] = await Promise.all([radarP, newClientsP]);
+  // Radar minus money. getProactiveFlags' AR branch composes "X owes $Y" with
+  // a /billing link an ADMIN can't open. Jordan's rule (access.ts): "Kyle
+  // should not have access to any money related info" — so the AR kind never
+  // reaches a non-owner (audit5 F9).
+  const flags = (radar?.flags ?? []).filter((f) => isOwner || f.kind !== "ar").map((f) => ({ ...f, href: homeRecordHref(f.href, includeTest) }));
+  return (
+    <>
+      {/* New clients — say hello. Renders nothing when there are none. */}
+      <NewClientCard clients={newClients} />
+      {flags.length > 0 && <ProactiveFlags flags={flags} />}
+    </>
+  );
+}
+
+type OwnerReads = {
+  stats: Awaited<ReturnType<typeof getOwnerStats>> | null;
+  pulse: Awaited<ReturnType<typeof getOwnerPulse>> | null;
+  dials: Awaited<ReturnType<typeof getOwnerDials>> | null;
+  money: Awaited<ReturnType<typeof ownerPulse>> | null;
+};
+
+// MONEY — owner only, and last on purpose. Jordan: money after action. The
+// strip merges the old dashboard line (delivered, pipeline, top AR) with My
+// Day's glance (bank, profit, owed), so there is one money answer on this page
+// instead of two. Trends and quality dials fold under it (Oct 5).
+async function OwnerBusiness({ ownerP, radarP, includeTest }: { ownerP: Promise<OwnerReads>; radarP: Promise<RadarRead>; includeTest: boolean }) {
+  const [{ stats, pulse, dials, money }, radar] = await Promise.all([ownerP, radarP]);
+  if (!stats && !money && !pulse && !dials) {
+    return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">The business numbers couldn&rsquo;t load. Refresh to try again, or open Finance.</p>;
+  }
+  // EACH HALF SAYS WHEN IT FAILED (review, Oct 5 night): the books strip sat
+  // inside the delivery line's block, so a failed delivery read took the
+  // bank / profit / owed numbers with it, and a failed books read just left
+  // them out — either way the money vanished without a word.
+  const couldNotLoad = (what: string) => (
+    <p role="status" data-money-unavailable className="px-5 py-3 text-sm text-muted">
+      {what} couldn&rsquo;t load. Refresh to try again, or <Link href="/sales" className="text-brand hover:underline">open Finance</Link>.
+    </p>
+  );
+  return (
+    <>
+      <section className="panel-shadow rounded-2xl border border-border bg-surface" data-owner-money>
+          {stats ? (
+          <Link href="/sales" className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-border px-5 py-3.5 text-sm hover:bg-surface-2/60">
+            <span><span className="text-muted">Delivered this month</span> <b>{formatMoney(stats.revenueThisMonth)}</b> <span className="text-muted-2">({stats.deliveredThisMonth})</span></span>
+            <span><span className="text-muted">Pipeline</span> <b>{formatMoney(stats.pipelineRevenue)}</b> <span className="text-muted-2">({stats.activeCount} active)</span></span>
+            {radar?.topAr && <span><span className="text-muted">Top AR</span> <b>{radar.topAr.name} {formatMoney(radar.topAr.total)}</b></span>}
+            <ArrowRight className="ml-auto size-4 text-muted-2" />
+          </Link>
+          ) : couldNotLoad("Delivered this month and the pipeline")}
+          {!money && couldNotLoad("The books (profit, bank, owed to you)")}
+          {money && (
+            <div className="px-5 py-4">
+              {/* TWO CLOCKS, SAID OUT LOUD. The line above is the delivery
+                  ledger — jobs delivered this month × what they were sold
+                  for. These four are the BOOKS — money that actually landed
+                  through a processor, minus categorised spend. They are
+                  different numbers for the same month on purpose, and a
+                  reader who isn't told that reads one of them as wrong. */}
+              <p className="text-[11px] text-muted-2">
+                From the books — money that landed, not jobs delivered.{" "}
+                <Link href="/sales" className="hover:text-foreground">Finance →</Link>
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <MoneyStat label="Profit this month" value={usd0(money.profitMonth)} sub={money.marginPct != null ? `${Math.round(money.marginPct)}% margin · provisional` : "provisional"} tone={money.profitMonth >= 0 ? "good" : "bad"} />
+                <MoneyStat label="In the bank" value={money.bankBalance == null ? "—" : usd0(money.bankBalance)} sub={money.bankLabel ?? "not connected"} tone={money.bankBalance != null && money.bankBalance < 0 ? "bad" : undefined} />
+                <MoneyStat label="Owed to you" value={usd0(money.owedToYou)} sub={`${money.owedCount} unpaid`} tone={money.owedToYou > 0 ? "bad" : undefined} />
+                <MoneyStat label="Money in this year" value={usd0(money.revenueYtd)} sub={`through ${money.monthLabel}`} />
+              </div>
+            </div>
+          )}
+      </section>
+      {(pulse || dials) && (
+        <details className="group/trends rounded-2xl border border-border bg-surface">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm font-semibold">
+            <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/trends:rotate-0" />
+            Trends and quality
+            <span className="font-normal text-muted">· last 30 days against the 30 before</span>
+          </summary>
+          <div className="space-y-3 border-t border-border p-3 sm:p-4">
+            {/* Owner pulse — health trends (30d vs prior 30d). */}
+            {pulse && <PulseStrip pulse={pulse} />}
+            {/* Quality dials — a compact video-SLA roll-up + the QC dial. */}
+            {dials && <QualityDials dials={dials} includeTest={includeTest} />}
+          </div>
+        </details>
+      )}
+    </>
   );
 }
 
@@ -419,7 +584,8 @@ function NeedRow({ n }: { n: Need }) {
 
 export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[] }> }) {
   const { searchParams } = props ?? {};
-  const me = await getCurrentUser().catch(() => null);
+  // The viewer and the query string are independent — read together.
+  const [me, sp] = await Promise.all([getCurrentUser().catch(() => null), searchParams ?? Promise.resolve(undefined)]);
   // Creatives never see the ops overview (middleware already bounces the roles;
   // this covers per-user "dashboard" permission overrides). Sessionless local
   // dev renders the full owner view.
@@ -430,36 +596,56 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
   const canReview = !me || canAccess(me, "review");
-  const includeTest = (await searchParams)?.test === "1";
+  const includeTest = sp?.test === "1";
   const scopeHref = (href: string) => homeRecordHref(href, includeTest);
   const excludedClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  const scope = { excludeClientIds: excludedClientIds };
 
-  const [dRaw, counts, stuck, shoots, radar, handledToday, boardRaw, flaggedRaw, ownerStats, pulse, dials, money, todos, newClients, exceptions, reviewQueue, reviewChain] =
+  // The streamed sections' reads START here, beside the page's own — each one
+  // carries its own failure answer, so none can reject unobserved.
+  const exceptionsP: Promise<OpsExceptionBoard> = opsExceptionsBoard({ includeTest }).catch((e: unknown): OpsExceptionBoard => {
+    // The quiet failures (R08). Reporting only: the card must say it could
+    // not check the pool. The board's totals still report capped rows.
+    console.warn("opsExceptions failed", (e as Error).message);
+    return { ...emptyExceptionBoard(), unavailable: true };
+  });
+  const radarP: Promise<RadarRead> = getProactiveFlags(scope).catch(() => null);
+  // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
+  const newClientsP = newClientsForDashboard({ includeTest }).catch(() => []);
+  const ownerP: Promise<OwnerReads> | null = isOwner
+    ? Promise.all([
+        getOwnerStats(scope).catch(() => null),
+        getOwnerPulse(scope).catch(() => null),
+        // Owner-only quality dials (video-SLA roll-up + QC health).
+        getOwnerDials(scope).catch(() => null),
+        // My Day's money glance (bank / profit / owed) — cheap indexed reads.
+        ownerPulse(scope).catch(() => null),
+      ]).then(([stats, pulse, dials, money]) => ({ stats, pulse, dials, money }))
+    : null;
+
+  const [dRaw, counts, stuck, shoots, handledToday, boardRaw, flaggedRaw, todos, reviewQueue, reviewChain] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
       // no longer calls openLoopsList() a second time.
-      buildOpsDay({ excludeClientIds: excludedClientIds }),
+      buildOpsDay(scope),
       offPageNumbers(excludedClientIds),
-      getStuckJobs({ excludeClientIds: excludedClientIds }),
-      getShootWindow({ excludeClientIds: excludedClientIds }), // only for the week-ahead strip; today's shoots come from buildOpsDay
-      getProactiveFlags({ excludeClientIds: excludedClientIds }),
+      getStuckJobs(scope),
+      getShootWindow(scope), // only for the week-ahead strip; today's shoots come from buildOpsDay
       // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
-      handledByPeopleToday({ excludeClientIds: excludedClientIds }),
+      handledByPeopleToday(scope),
       // The Project Tracker's delivery board, merged into the Pipeline block.
       // A failed read is NOT a clean board: it is marked unavailable so the
       // Pipeline block says it could not load and the "0 past due" reassurance
       // is withheld (audit, Sep 17).
-      deliveryBoard({ excludeClientIds: excludedClientIds }).catch((e: unknown): DeliveryBoard => {
+      deliveryBoard(scope).catch((e: unknown): DeliveryBoard => {
         console.warn("deliveryBoard failed", (e as Error).message);
         return { today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, unavailable: true };
       }),
       // WHO the flags are for: the viewer's own assignee key, resolved the way
       // openLoopsList resolves it (roster match by TeamMember → email → first
-      // name, else the first-name slug). It used to be the literal "kyle" for
-      // every ADMIN, so a flag Jordan raised for Kyle would have opened on
-      // James's home as "for immediate review" (audit5 F11). An editor's
-      // explicit editorKey still wins when there is one.
+      // name, else the first-name slug). An editor's explicit editorKey still
+      // wins when there is one (audit5 F11).
       listAssignees().catch(() => []).then((roster) =>
         getFlaggedForMe({
           assignedKey: me ? me.editorKey ?? viewerAssigneeKey(me, roster) ?? (me.name ? slugForName(me.name) : null) : null,
@@ -468,25 +654,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
           excludeClientIds: excludedClientIds,
         }),
       ),
-      isOwner ? getOwnerStats({ excludeClientIds: excludedClientIds }) : Promise.resolve(null),
-      isOwner ? getOwnerPulse({ excludeClientIds: excludedClientIds }) : Promise.resolve(null),
-      // Owner-only quality dials (video-SLA roll-up + QC health) — same gate.
-      isOwner ? getOwnerDials({ excludeClientIds: excludedClientIds }) : Promise.resolve(null),
-      // My Day's money glance (bank / profit / owed). Every figure in it is a
-      // cheap indexed read by contract — see the header of ownerPulse.ts.
-      isOwner ? ownerPulse({ excludeClientIds: excludedClientIds }).catch(() => null) : Promise.resolve(null),
       // My Day's personal list. Owner-only: it is one person's private list,
       // exactly as /day was ownerOnly in PAGES.
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
-      // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
-      newClientsForDashboard({ includeTest }).catch(() => []),
-      // The quiet failures (R08). Reporting only: the rest of Home can render
-      // when this read fails, but the card must say it could not check the pool.
-      // The board's totals still report how many healthy capped rows it omits.
-      opsExceptionsBoard({ includeTest }).catch((e: unknown): OpsExceptionBoard => {
-        console.warn("opsExceptions failed", (e as Error).message);
-        return { ...emptyExceptionBoard(), unavailable: true };
-      }),
       canReview ? getReviewQueue({ includeTest }).catch(() => null) : Promise.resolve(null),
       canReview ? reviewerChain().catch(() => null) : Promise.resolve(null),
     ]);
@@ -512,11 +682,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const revisionChecks = reviewQueue?.followUps.filter((row) => row.awaitingReReview > 0) ?? [];
   const now = new Date(d.nowISO);
   const nowMin = etMinutes(now);
-  // Radar minus money. getProactiveFlags' AR branch composes "X owes $Y" with
-  // a /billing link an ADMIN can't open, and the panel sat outside the isOwner
-  // gate. Jordan's rule (access.ts): "Kyle should not have access to any money
-  // related info" — so the AR kind never reaches a non-owner (audit5 F9).
-  const radarFlags = radar.flags.filter((f) => isOwner || f.kind !== "ar").map((f) => ({ ...f, href: scopeHref(f.href) }));
   const currentKey = blockKeyForNow(nowMin);
 
   const qcOverdue = listingQc(d).filter((q) => q.bucket === "overdue").length;
@@ -525,7 +690,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
   const todayKey = etDayKey(now);
 
-  // ---- What needs you today -------------------------------------------------
+  // ---- What needs you now ---------------------------------------------------
   // Every row's count is the length of the list it opens. Rows only exist while
   // their pile does, so an empty day produces an empty array and the calm card.
   const needs: Need[] = [];
@@ -537,20 +702,42 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     detail: d.videoReview.waiting[0] ? `oldest: ${d.videoReview.waiting[0].street} · ${ageText(d.videoReview.waiting[0].sinceISO, now)}` : undefined,
     href: "#video-review", tone: "brand",
   });
-  // Approved, finished, and still sitting here. It is in "People waiting on
-  // us" because that is literally what it is: the client's video exists and
-  // they haven't got it. (Sep 17, 322 N 62nd St — the silent cut went out at
-  // 9:17am, the fix was ready by lunch, and no screen in the hub said so.)
+  // Approved, finished, and still sitting here: the client's video exists and
+  // they haven't got it (Sep 17, 322 N 62nd St). The BLOCK id, not a card's:
+  // only a block id makes the jump open the <details> the delivery controls
+  // live in, and an anchor inside a shut one scrolls nowhere.
+  const ready = d.readySend.ready;
+  // A HELD 1080p file is not "processing" (review, Oct 5 night): the pass is
+  // finished and the file waits for a person to listen to it, so it is said
+  // as what it is — on hold, Kyle's next step — never as a pass running.
+  const heldRenders = d.readySend.rendering.filter((r) => r.state === "held").length;
+  const processing = d.readySend.rendering.length - heldRenders;
+  const toSendExtras = [
+    processing > 0 ? `${processing} more still processing` : null,
+    heldRenders > 0 ? `${heldRenders} 1080p on hold — Kyle has the next step` : null,
+  ].filter(Boolean).join(" · ");
   add({
-    key: "tosend", group: "waiting", count: d.readySend.ready.length,
-    label: `video${d.readySend.ready.length === 1 ? "" : "s"} ready to send to the client`,
-    detail: d.readySend.ready[0]
-      ? `oldest: ${d.readySend.ready[0].street} · ready ${ageText(d.readySend.ready[0].approvedAtISO, now)}`
+    key: "tosend", group: "waiting", count: ready.length,
+    label: `video${ready.length === 1 ? "" : "s"} ready to send to the client`,
+    detail: ready[0]
+      ? `oldest: ${ready[0].street} · ready ${ageText(ready[0].approvedAtISO, now)}${toSendExtras ? ` · ${toSendExtras}` : ""}`
       : undefined,
-    // The BLOCK id, not the card's: only a block id makes DayBlockJumps open
-    // the <details> this card lives in, and an anchor inside a shut one
-    // scrolls nowhere. The card is the first thing in that block.
-    href: "#ready-to-send", tone: "warning",
+    href: "#video-review", tone: "warning",
+  });
+  // What is left of a delivery once the file went: a send to finish, a client
+  // not told, a notice that failed. Its parts are named only when non-zero.
+  const needsFinishing = d.readySend.needsFinishing?.length ?? 0;
+  const notTold = d.readySend.notTold?.length ?? 0;
+  const incidents = d.readySend.noticeIncidents?.length ?? 0;
+  add({
+    key: "delivery-steps", group: "waiting", count: needsFinishing + notTold + incidents,
+    label: `delivery step${needsFinishing + notTold + incidents === 1 ? "" : "s"} to finish`,
+    detail: [
+      needsFinishing ? `${needsFinishing} to finish sending` : null,
+      notTold ? `${notTold} client${notTold === 1 ? "" : "s"} not told yet` : null,
+      incidents ? `${incidents} notice${incidents === 1 ? "" : "s"} failed` : null,
+    ].filter(Boolean).join(" · "),
+    href: "#video-review", tone: incidents > 0 ? "danger" : "warning",
   });
   if (isOwner && todos) {
     add({
@@ -646,221 +833,197 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
       label: `job${revisionChecks.length === 1 ? "" : "s"} with fixes to verify · open the first`, detail: "Team review queue · confirm the requested changes on the exact cut.",
       href: followUpHref(revisionChecks[0]), tone: "brand" });
   }
+  // WHOSE DAY IT IS decides the lead (Oct 5): Jordan — his own late to-dos,
+  // then the cuts and the clients waiting on videos; James — the cuts assigned
+  // to him; Kyle — finished videos to send, then waiting clients and missing
+  // uploads. Anything not named follows by how urgent it is, then as built.
   const priority = homeRole === "review" ? ["review-mine", "verify", "cuts", "stuck", "loops"]
-    : homeRole === "owner" ? ["mytodos", "cuts", "stuck", "past-due", "assign"]
-      : ["clients", "debriefs", "assign", "stuck", "tomorrow", "past-due"];
-  const orderedNeeds = needs.filter((n) => n.key !== "tosend" && !(reviewLead && reviewQueue && n.key === "cuts"))
-    .sort((a, b) => {
-      const rank = (key: string) => priority.includes(key) ? priority.indexOf(key) : priority.length;
-      return rank(a.key) - rank(b.key);
-    }).map((n) => ({ ...n, href: scopeHref(n.href) }));
-  const appointmentSummary = d.todayShoots.slice(0, 3);
+    : homeRole === "owner" ? ["mytodos", "cuts", "tosend", "stuck", "past-due", "assign"]
+      : ["tosend", "delivery-steps", "clients", "debriefs", "assign", "stuck", "tomorrow", "past-due"];
+  const rank = (key: string) => priority.includes(key) ? priority.indexOf(key) : priority.length;
+  const orderedNeeds = needs
+    .filter((n) => !(reviewLead && reviewQueue && n.key === "cuts"))
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => rank(a.n.key) - rank(b.n.key) || TONE_RANK[a.n.tone] - TONE_RANK[b.n.tone] || a.i - b.i)
+    .map(({ n }) => ({ ...n, href: scopeHref(n.href) }));
   const currentBlock = BLOCKS.find((b) => b.key === currentKey)!;
   const criticalQueues = orderedNeeds.filter((n) => n.tone === "danger" || n.tone === "warning").length;
   const oldestWaitHours = Math.max(d.unanswered.oldestHours ?? 0, ...d.videoReview.waiting.map((cut) => Math.max(0, (now.getTime() - Date.parse(cut.sinceISO)) / 3_600_000)));
-  const routineAttention = `${criticalQueues} urgent work queue${criticalQueues === 1 ? "" : "s"} shown above${oldestWaitHours > 0 ? ` · oldest recorded reply/review wait ${Math.floor(oldestWaitHours)}h` : ""}.`;
+  const routineAttention = `${criticalQueues} urgent work queue${criticalQueues === 1 ? "" : "s"} in What needs you now${oldestWaitHours > 0 ? ` · oldest recorded reply/review wait ${Math.floor(oldestWaitHours)}h` : ""} · ${handledToday} task${handledToday === 1 ? "" : "s"} closed by people today.`;
 
   const nextShoot = shoots.week[0] ?? null;
+  // TODAY, IN ONE LINE (Oct 5): the day's fixed appointments used to be a
+  // three-row box at the top AND the full cards further down. One line here
+  // names the count and the next one; the cards are one tap away (#shoots).
+  const upcomingToday = d.todayShoots.find((s) => s.timeISO && Date.parse(s.endISO ?? s.timeISO) >= now.getTime()) ?? null;
+  // A shoot with no time on file has not "started" (review, Oct 5 night: the
+  // line said "all started" while one still had no time) — say it plainly.
+  const untimedToday = d.todayShoots.filter((s) => !s.timeISO);
+  const rushToday = rushShoots(d.todayShoots).length;
 
-  // One compact delivery summary. The existing Video Review block keeps
-  // the exact file, destination, rendition, notification and receipt controls.
-  const readyCount = d.readySend.ready.length;
-  const oldestReady = d.readySend.ready[0];
-  const deliveryFollowUps = (d.readySend.needsFinishing?.length ?? 0) + (d.readySend.notTold?.length ?? 0) + (d.readySend.noticeIncidents?.length ?? 0);
-  const deliveryAges = [
-    ...d.readySend.ready.map((row) => row.approvedAtISO), ...d.readySend.rendering.map((row) => row.approvedAtISO),
-    ...(d.readySend.needsFinishing ?? []).map((row) => row.sentAtISO), ...(d.readySend.notTold ?? []).map((row) => row.sentAtISO),
-    ...(d.readySend.noticeIncidents ?? []).map((row) => row.queuedAtISO),
-  ].filter((at) => Number.isFinite(Date.parse(at))).sort();
-  const readySection = readyCount > 0 || d.readySend.rendering.length > 0 || deliveryFollowUps > 0 || deliveryUnavailable(d) ? (
-    <section id="ready-to-send" className="scroll-mt-32 rounded-2xl border bg-brand-soft/30 p-4 sm:p-5" style={{ borderColor: "var(--brand)" }}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-base font-semibold"><Send aria-hidden="true" className="size-4 text-brand" />{readyCount} video{readyCount === 1 ? "" : "s"} ready for delivery</h2>
-          {oldestReady && <p className="mt-1 text-sm text-muted">Oldest: {oldestReady.street} · waiting {ageText(oldestReady.approvedAtISO, now)}</p>}
-          <p className="mt-1 text-sm text-muted">Operations owns the handoff. Approval, file delivery, and client notification are separate checks.</p>
-        </div>
-        <Link href="#video-review" className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white">Open delivery work <ArrowRight aria-hidden="true" className="size-4" /></Link>
-      </div>
-      <p className="mt-3 text-sm text-muted">{d.readySend.rendering.length} processing · {d.readySend.needsFinishing?.length ?? 0} need finishing · {d.readySend.notTold?.length ?? 0} awaiting client notification · {d.readySend.noticeIncidents?.length ?? 0} notification incidents{deliveryAges[0] ? ` · oldest unresolved delivery step ${ageText(deliveryAges[0], now)}` : ""}</p>
-      {deliveryUnavailable(d) && <p role="status" className="mt-2 text-sm font-medium text-warning">Delivery follow-up could not be fully checked. Open delivery work to inspect the available evidence.</p>}
-    </section>
-  ) : null;
-
-  // Flags a PERSON raised for this viewer — above everything, in both orders.
-  const flaggedSection = flagged.length > 0 ? (
-    <section className="panel-shadow overflow-hidden rounded-2xl border-2 border-danger/45 bg-danger-soft/40">
-      <div className="flex items-center gap-2 border-b border-danger/25 px-5 py-2.5">
-        <Flag className="size-4 text-danger" />
-        <h2 className="text-[15px] font-semibold text-danger">
-          Flagged by {[...new Set(flagged.map((f) => f.flaggedBy.split(" ")[0]))].join(" & ")} — for immediate review
-        </h2>
-        <span className="ml-auto rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-danger">{flagged.length}</span>
-      </div>
-      <ul className="divide-y divide-danger/15">
-        {flagged.map((f) => (
-          <li key={f.taskId}>
-            <Link href={f.href} className="block px-5 py-3 hover:bg-danger/[0.06]">
-              <p className="text-sm font-semibold leading-snug">{f.title}</p>
-              {f.note && <p className="mt-0.5 whitespace-pre-line text-[13px] leading-relaxed text-foreground/80">{f.note}</p>}
-              <p className="mt-1 text-[11px] text-muted">
-                {f.flaggedBy} · {etDateTime(f.flaggedAtISO)}
-                {f.projectTitle ? ` · ${f.projectTitle}` : ""} — open it
-              </p>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  ) : null;
-
-  // ---- THE SECTIONS, declared once and ORDERED BY WHOSE DAY IT IS ----------
-  // Urgent work comes before the optional operating routine for every office
-  // role; each section still renders its existing source rows exactly once.
-  const needsSection = (
-    <>
-          {/* 2 · WHAT NEEDS YOU TODAY — decisions and blockers, above everything */}
-          {orderedNeeds.length === 0 ? (
-            <div id="needs-you" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface p-6 text-center">
-              <CheckCircle2 className="mx-auto size-8 text-success" />
-              <p className="mt-2 text-sm font-semibold">No additional action queues are waiting on this view.</p>
-              <p className="mt-1 text-xs text-muted">
-                Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
-              </p>
-            </div>
-          ) : (
-            <NeedsToday needs={orderedNeeds} />
-          )}
-    </>
-  );
-  const stuckSection = (
-    <>
-          {/* Stuck jobs — PROJECT-level fires (late vs promise, stale revision,
-              shot-but-undelivered), not overdue admin tasks. Anchored so the
-              "stuck in production" row above lands on it. */}
-          {stuck.length > 0 && (
-            <div id="stuck" className="scroll-mt-32 md:scroll-mt-28">
-              <StuckJobs jobs={stuck} />
-            </div>
-          )}
-    </>
-  );
-  const daySection = (
-    <>
-          {/* 3 · YOUR DAY — the time blocks. The block you're in right now
-              renders open; the rest are one tap (BLOCK_OPEN_POLICY, Sep 8).
-              Nothing is hidden: every block header carries its own count, and a
-              zero says "clear" rather than disappearing. */}
-          <HomeRoutine dayKey={todayKey} current={`${currentBlock.time} · ${currentBlock.title}`} attention={routineAttention}>
-            <DayBlockJumps />
-            {/* Jump bar — the day at a glance, with what's waiting in each block.
-                (Not sticky: the page header already is, and two sticky bars fought
-                for the same 60px.) */}
-            <nav className="-mx-4 mt-1.5 flex gap-1.5 overflow-x-auto px-4 py-1 sm:-mx-6 sm:flex-wrap sm:px-6 [&::-webkit-scrollbar]:hidden" aria-label="Blocks">
-              {BLOCKS.map((b) => {
-                const n = countFor(b.key, d, board);
-                const cur = b.key === currentKey;
-                return (
-                  <a
-                    key={b.key}
-                    href={`#${b.key}`}
-                    className={cn(
-                      "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                      cur ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
-                    )}
-                  >
-                    <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
-                    {b.short}
-                    {n != null && n > 0 && (
-                      <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
-                    )}
-                    <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
-                    <ReadyChip n={readyFor(b.key, d)} small onBrand={cur} />
-                  </a>
-                );
-              })}
-            </nav>
-            <div className="mt-2 space-y-2.5">
-              {BLOCKS.map((b) => (
-                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={false} dayKey={todayKey} includeTest={includeTest} />
-              ))}
-            </div>
-          </HomeRoutine>
-    </>
-  );
-  const shootsSection = (
-    <>
-          {/* 4 · TODAY'S SHOOTS — the day's hard commitments, in full: access,
-              door code, weather, airspace, the last thing the client said. This
-              is the Morning Control Tower's list, hoisted out of the block so the
-              page renders it exactly once. */}
-          <section id="shoots" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28">
-            <div className="flex items-center gap-2 border-b border-border px-5 py-3 text-xs font-semibold uppercase tracking-wide text-muted">
-              <Camera className="size-3.5" /> Today&apos;s shoots
-              <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium tabular-nums">{d.todayShoots.length}</span>
-              <RushChip n={rushShoots(d.todayShoots).length} small />
-            </div>
-            <div className="px-4 py-3.5">
-              <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
-            </div>
-            <WeekStrip week={shoots.week} includeTest={includeTest} />
-          </section>
-    </>
-  );
+  // Things the "What needs you now" card must say even when no row can.
+  const notices = [
+    canReview && !reviewQueue ? "The review queue could not be loaded. Open Review Room to retry." : null,
+    deliveryUnavailable(d) ? "Delivery follow-up could not be fully checked. Open delivery work in the daily checklist (Video Review) to see what is known." : null,
+  ].filter((x): x is string => !!x);
+  // One line saying whose desk this is — the orientation the old headline and
+  // paragraph gave, in the card it is about.
+  const roleLine = homeRole === "owner" ? "Decisions and delivery exceptions" : homeRole === "review" ? "Your creative review desk" : "Deliveries and client follow-through";
 
   return (
     <div>
       {/* Kyle keeps this open all day; 90s rather than Ops Day's 45s because the
           merged page does the work of four screens on every refresh. */}
       <AutoRefresh seconds={90} />
+      {/* One listener for every in-page jump: a "What needs you" row, the
+          today line, a "N overdue →" link opens the folded section it lands on. */}
+      <DayBlockJumps />
       <PageHeader
-        eyebrow="Eastern time"
-        title="Home"
-        subtitle={`${etFullDate(now)} · nothing surprises the client · nothing gets missed`}
+        eyebrow="Home"
+        title={`${nowMin < 12 * 60 ? "Good morning" : nowMin < 18 * 60 ? "Good afternoon" : "Good evening"}, ${firstName}`}
+        subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
         actions={<Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>}
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
         {includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months, Editing Room, Schedule and delivery lists keep this view when opened. Figures from the books keep Finance’s existing definitions.</p></div>}
-        <section aria-labelledby="home-focus-title" className="space-y-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-sm text-muted">{nowMin < 12 * 60 ? "Good morning" : nowMin < 18 * 60 ? "Good afternoon" : "Good evening"}, {firstName}</p>
-              <h2 id="home-focus-title" className="mt-1 text-xl font-semibold">{homeRole === "owner" ? "Decisions and delivery exceptions" : homeRole === "review" ? "Your creative review desk" : "Deliveries and client follow-through"}</h2>
-              <p className="mt-1 text-sm text-muted">{homeRole === "review" ? "Your assigned cuts come first. Review Room shows the active owner and coverage on every cut." : homeRole === "owner" ? "Review decisions, resolve escalations, and check client-program progress." : "Send ready work, answer waiting clients, and resolve missing shoot details."}</p>
+
+        {/* Flags a PERSON raised for this viewer — above everything. */}
+        {flagged.length > 0 && (
+          <section className="panel-shadow overflow-hidden rounded-2xl border-2 border-danger/45 bg-danger-soft/40">
+            <div className="flex items-center gap-2 border-b border-danger/25 px-5 py-2.5">
+              <Flag className="size-4 text-danger" />
+              <h2 className="text-[15px] font-semibold text-danger">
+                Flagged by {[...new Set(flagged.map((f) => f.flaggedBy.split(" ")[0]))].join(" & ")} — for immediate review
+              </h2>
+              <span className="ml-auto rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-danger">{flagged.length}</span>
             </div>
-            <nav aria-label="Your work destinations" className="flex flex-wrap gap-2">
-              {canReview && <Link href={scopeHref("/review")} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Review Room</Link>}
-              {(!me || canAccess(me, "tasks")) && <Link href={scopeHref("/tasks?tab=work&who=me")} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">My work</Link>}
-              {(!me || canAccess(me, "content")) && <Link href={scopeHref("/content")} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Client months</Link>}
-              <a href="#operating-routine" className="inline-flex min-h-11 items-center px-2 py-2 text-sm text-brand underline underline-offset-4">Daily checklist</a>
-            </nav>
+            <ul className="divide-y divide-danger/15">
+              {flagged.map((f) => (
+                <li key={f.taskId}>
+                  <Link href={f.href} className="block px-5 py-3 hover:bg-danger/[0.06]">
+                    <p className="text-sm font-semibold leading-snug">{f.title}</p>
+                    {f.note && <p className="mt-0.5 whitespace-pre-line text-[13px] leading-relaxed text-foreground/80">{f.note}</p>}
+                    <p className="mt-1 text-[11px] text-muted">
+                      {f.flaggedBy} · {etDateTime(f.flaggedAtISO)}
+                      {f.projectTitle ? ` · ${f.projectTitle}` : ""} — open it
+                    </p>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {/* TODAY — one line, one link. */}
+        <a href="#shoots" className="flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-3.5 py-2 text-sm hover:bg-surface-2/60">
+          <Camera aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
+          <span className="min-w-0 flex-1">
+            {d.todayShoots.length === 0 ? (
+              <span className="text-muted">No shoots on today&rsquo;s calendar.</span>
+            ) : (
+              <>
+                <span className="font-semibold">{d.todayShoots.length} shoot{d.todayShoots.length === 1 ? "" : "s"} today</span>
+                {upcomingToday ? (
+                  <span className="text-muted"> · next {upcomingToday.timeISO ? fmtTime(upcomingToday.timeISO) : "time to confirm"} ET, {upcomingToday.title.split(",")[0]} · {upcomingToday.photographer ?? "unassigned"}</span>
+                ) : untimedToday.length > 0 ? (
+                  <span className="text-warning" data-untimed-shoots> · {untimedToday.length === 1 ? `${untimedToday[0].title.split(",")[0]} has no time set` : `${untimedToday.length} have no time set`}</span>
+                ) : (
+                  <span className="text-muted"> · all started</span>
+                )}
+              </>
+            )}
+          </span>
+          <RushChip n={rushToday} small />
+          <ArrowRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-2" />
+        </a>
+
+        {/* WHAT NEEDS YOU NOW — the one list, ordered by whose day it is. */}
+        <section id="needs-you" aria-labelledby="needs-you-title" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface p-4 sm:p-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+            <h2 id="needs-you-title" className="text-base font-semibold">What needs you now</h2>
+            <p className="text-sm text-muted">{roleLine}</p>
           </div>
-          <p className="text-sm text-muted">{handledToday} task{handledToday === 1 ? "" : "s"} closed by people today · updated {etTime(now)}</p>
-          {canReview && !reviewQueue && <p role="status" className="text-sm text-warning">The review queue could not be loaded. Open Review Room to retry.</p>}
-          <div className="rounded-xl border border-border px-4 py-3">
-            <h3 className="text-sm font-semibold">Today’s fixed appointments · {d.todayShoots.length}</h3>
-            {appointmentSummary.length ? <ul className="mt-2 space-y-1 text-sm">{appointmentSummary.map((shoot) => <li key={shoot.id}><a href="#shoots" className="inline-flex min-h-8 items-center gap-2 text-brand hover:underline"><span className="font-medium">{shoot.timeISO ? fmtTime(shoot.timeISO) : "Time to confirm"}</span><span>{shoot.title} · {shoot.photographer ?? "Unassigned"}</span></a></li>)}</ul> : <p className="mt-1 text-sm text-muted">No shoots on today’s calendar.</p>}
-            {d.todayShoots.length > appointmentSummary.length && <a href="#shoots" className="mt-1 inline-flex min-h-8 items-center text-sm text-brand underline">View all {d.todayShoots.length} appointments</a>}
-          </div>
+          {notices.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {notices.map((t) => <p key={t} role="status" className="text-sm font-medium text-warning">{t}</p>)}
+            </div>
+          )}
+          {orderedNeeds.length === 0 ? (
+            <div className="py-4 text-center">
+              <CheckCircle2 className="mx-auto size-8 text-success" />
+              <p className="mt-2 text-sm font-semibold">Nothing is waiting on you right now.</p>
+              <p className="mt-1 text-xs text-muted">
+                Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} ET — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
+              </p>
+            </div>
+          ) : (
+            <NeedsToday needs={orderedNeeds} />
+          )}
         </section>
-        {flaggedSection}
-        {readySection}
-        {needsSection}
-        <ExceptionsCard rows={exceptions.rows.map((r) => ({ ...r, href: scopeHref(r.href) }))} totals={exceptions.totals} unavailable={exceptions.unavailable} includeTest={includeTest} canReview={canReview} canEdit={!me || canAccess(me, "editing")} />
-        {stuckSection}
-        {shootsSection}
-        {daySection}
-        {/* 5 · YOUR LIST — My Day's personal to-dos, merged in. Owner-only: it
-            is one person's private list (the /day page was ownerOnly), and an
-            admin's home ends before it. Capture, plan, close and undo all still
-            ride the /day server actions — nothing about the data moved. */}
+
+        {/* The quiet failures — streamed (the slowest read on this page). */}
+        <Suspense fallback={<SectionLoading label="Checking review, assignment and delivery exceptions…" />}>
+          <HomeExceptions exceptionsP={exceptionsP} includeTest={includeTest} canReview={canReview} canEdit={!me || canAccess(me, "editing")} />
+        </Suspense>
+
+        {/* TODAY'S SHOOTS — the day's hard commitments in full (access, door
+            code, weather, airspace, the last thing the client said), folded
+            to one line; the jump from the today line or a row opens it. */}
+        <DayBlock
+          id="shoots"
+          defaultOpen={false}
+          dayKey={todayKey}
+          className="panel-shadow group scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28"
+          summaryClassName="flex min-h-12 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm"
+          summary={
+            <>
+              <Camera aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
+              <span className="font-semibold">Today&rsquo;s shoots</span>
+              <span className="hidden text-muted sm:inline">· access, weather and the week ahead</span>
+              <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{d.todayShoots.length}</span>
+              <RushChip n={rushToday} small />
+              <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+            </>
+          }
+        >
+          <div className="border-t border-border px-4 py-3.5">
+            <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
+          </div>
+          <WeekStrip week={shoots.week} includeTest={includeTest} />
+        </DayBlock>
+
+        {/* Stuck jobs — PROJECT-level fires (late vs promise, stale revision,
+            shot-but-undelivered), not overdue admin tasks. Anchored so the
+            "stuck in production" row above lands on it. Three rows, the rest
+            folded in place. */}
+        {stuck.length > 0 && (
+          <div id="stuck" className="scroll-mt-32 md:scroll-mt-28">
+            <StuckJobs jobs={stuck} />
+          </div>
+        )}
+
+        {/* YOUR LIST — My Day's personal to-dos. Owner-only: it is one
+            person's private list (the /day page was ownerOnly). Capture, plan,
+            close and undo all still ride the /day server actions. The
+            not-yet-scheduled pile folds (Oct 5) — it held up to 20 rows. */}
         {isOwner && todos && (
-          <section id="my-list" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28">
-            <div className="flex items-center gap-2 border-b border-border px-5 py-3 text-xs font-semibold uppercase tracking-wide text-muted">
-              <Inbox className="size-3.5" /> Your list
-              <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium tabular-nums">{todos.open.length}</span>
-            </div>
-            <div className="space-y-3 px-4 py-3.5">
+          <DayBlock
+            id="my-list"
+            defaultOpen
+            dayKey={todayKey}
+            className="panel-shadow group scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28"
+            summaryClassName="flex min-h-12 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm"
+            summary={
+              <>
+                <Inbox aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
+                <span className="font-semibold">Your list</span>
+                {todos.overdue.length > 0 && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-semibold text-danger">{todos.overdue.length} past date</span>}
+                <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{todos.open.length}</span>
+                <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+              </>
+            }
+          >
+            <div className="space-y-3 border-t border-border px-4 py-3.5">
               <QuickAdd />
               {todos.overdue.length > 0 && (
                 <div className="rounded-xl border border-danger/40 bg-danger/[0.04]">
@@ -883,11 +1046,12 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
                 </div>
               )}
               {todos.unscheduled.length > 0 && (
-                <div className="rounded-xl border border-border">
-                  <p className="border-b border-border px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-2">
+                <details className="group/unsched rounded-xl border border-border">
+                  <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-[11px] font-bold uppercase tracking-widest text-muted-2">
+                    <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 -rotate-90 transition-transform group-open/unsched:rotate-0" />
                     Not scheduled yet · {todos.unscheduled.length}
-                  </p>
-                  <div className="divide-y divide-border/60">
+                  </summary>
+                  <div className="divide-y divide-border/60 border-t border-border">
                     {/* Twenty, exactly as /day rendered them, with the rest
                         stated below rather than silently dropped. */}
                     {todos.unscheduled.slice(0, 20).map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} />)}
@@ -897,87 +1061,99 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
                       {todos.unscheduled.length - 20} more captured — plan a few onto a day to bring them up.
                     </p>
                   )}
-                </div>
+                </details>
               )}
               {todos.open.length === 0 && (
                 <p className="py-2 text-center text-sm text-muted">Nothing on your list. Capture something above.</p>
               )}
               <FinishedList rows={todos.finished} />
             </div>
-          </section>
+          </DayBlock>
         )}
 
-        {/* Radar — fresh risk only (≤3; creatives never reach this page) */}
-        {/* New clients — say hello. Renders nothing when there are none. */}
-        <NewClientCard clients={newClients} />
-        {radarFlags.length > 0 && <ProactiveFlags flags={radarFlags} />}
+        {/* YOUR DAY — the time blocks, folded. The block you're in right now
+            renders open inside it; every block header carries its own count,
+            and a zero says "clear" rather than disappearing. */}
+        {/* Open by default on Kyle's operations Home (Oct 5 2026 — Jordan's Sep
+            21 choice, folded by the Sep 30 home focus); folded for the owner
+            and the creative review desk, where it is secondary. */}
+        <HomeRoutine dayKey={todayKey} current={`${currentBlock.time} · ${currentBlock.title}`} attention={routineAttention} defaultOpen={homeRole === "operations"}>
+          {/* Jump bar — the day at a glance, with what's waiting in each block. */}
+          <nav className="-mx-4 mt-1.5 flex gap-1.5 overflow-x-auto px-4 py-1 sm:-mx-6 sm:flex-wrap sm:px-6 [&::-webkit-scrollbar]:hidden" aria-label="Blocks">
+            {BLOCKS.map((b) => {
+              const n = countFor(b.key, d, board);
+              const cur = b.key === currentKey;
+              return (
+                <a
+                  key={b.key}
+                  href={`#${b.key}`}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                    cur ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
+                  )}
+                >
+                  <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
+                  {b.short}
+                  {n != null && n > 0 && (
+                    <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
+                  )}
+                  <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
+                  <ReadyChip n={readyFor(b.key, d)} small onBrand={cur} />
+                </a>
+              );
+            })}
+          </nav>
+          <div className="mt-2 space-y-2.5">
+            {BLOCKS.map((b) => (
+              <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={false} dayKey={todayKey} includeTest={includeTest} />
+            ))}
+          </div>
+        </HomeRoutine>
 
-        {/* 7 · MONEY — owner only, and last on purpose. Jordan: money after
-            action. The strip merges the old dashboard line (delivered, pipeline,
-            top AR) with My Day's glance (bank, profit, owed), so there is one
-            money answer on this page instead of two. */}
-        {isOwner && ownerStats && (
-          <section className="panel-shadow rounded-2xl border border-border bg-surface">
-            <Link href="/sales" className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-border px-5 py-3.5 text-sm hover:bg-surface-2/60">
-              <span><span className="text-muted">Delivered this month</span> <b>{formatMoney(ownerStats.revenueThisMonth)}</b> <span className="text-muted-2">({ownerStats.deliveredThisMonth})</span></span>
-              <span><span className="text-muted">Pipeline</span> <b>{formatMoney(ownerStats.pipelineRevenue)}</b> <span className="text-muted-2">({ownerStats.activeCount} active)</span></span>
-              {radar.topAr && <span><span className="text-muted">Top AR</span> <b>{radar.topAr.name} {formatMoney(radar.topAr.total)}</b></span>}
-              <ArrowRight className="ml-auto size-4 text-muted-2" />
-            </Link>
-            {money && (
-              <div className="px-5 py-4">
-                {/* TWO CLOCKS, SAID OUT LOUD. The line above is the delivery
-                    ledger — jobs delivered this month × what they were sold
-                    for. These four are the BOOKS — money that actually landed
-                    through a processor, minus categorised spend. They are
-                    different numbers for the same month on purpose, and a
-                    reader who isn't told that reads one of them as wrong. */}
-                <p className="text-[11px] text-muted-2">
-                  From the books — money that landed, not jobs delivered.{" "}
-                  <Link href="/sales" className="hover:text-foreground">Finance →</Link>
-                </p>
-                <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <MoneyStat label="Profit this month" value={usd0(money.profitMonth)} sub={money.marginPct != null ? `${Math.round(money.marginPct)}% margin · provisional` : "provisional"} tone={money.profitMonth >= 0 ? "good" : "bad"} />
-                  <MoneyStat label="In the bank" value={money.bankBalance == null ? "—" : usd0(money.bankBalance)} sub={money.bankLabel ?? "not connected"} tone={money.bankBalance != null && money.bankBalance < 0 ? "bad" : undefined} />
-                  <MoneyStat label="Owed to you" value={usd0(money.owedToYou)} sub={`${money.owedCount} unpaid`} tone={money.owedToYou > 0 ? "bad" : undefined} />
-                  <MoneyStat label="Money in this year" value={usd0(money.revenueYtd)} sub={`through ${money.monthLabel}`} />
-                </div>
-              </div>
-            )}
-          </section>
+        {/* New clients + fresh risk (≤3) — streamed. */}
+        <Suspense fallback={null}>
+          <HomeRadar radarP={radarP} newClientsP={newClientsP} isOwner={isOwner} includeTest={includeTest} />
+        </Suspense>
+
+        {/* MONEY — owner only, last, streamed. */}
+        {ownerP && (
+          <Suspense fallback={<SectionLoading label="Loading the business numbers…" />}>
+            <OwnerBusiness ownerP={ownerP} radarP={radarP} includeTest={includeTest} />
+          </Suspense>
         )}
-
-        {/* 8 · Owner pulse — health trends (30d vs prior 30d). */}
-        {isOwner && pulse && <PulseStrip pulse={pulse} />}
-
-        {/* 9 · Quality dials — a compact video-SLA roll-up (links to the Editor
-            Queue; NOT a re-list of the stuck jobs above) + the QC quality dial.
-            Self-hides when there's no video in flight AND no QC history yet. */}
-        {isOwner && dials && <QualityDials dials={dials} includeTest={includeTest} />}
 
         {/* How the day is meant to run — the standing rules, not a queue. */}
-        <section className="rounded-2xl border border-border bg-surface p-5">
-          <h2 className="text-sm font-semibold">Priority order — the inbox is not the task list</h2>
-          <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
-            1. Active client issue happening right now · 2. Today&rsquo;s shoot · 3. Today&rsquo;s delivery ·
-            4. Tomorrow&rsquo;s shoot · 5. Overdue project or revision · 6. Client communication ·
-            7. Production follow-up · 8. Routine admin · 9. Long-term internal projects
-          </p>
-          <h2 className="mt-4 text-sm font-semibold">Escalate exceptions, not routine</h2>
-          <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
-            Jordan doesn&rsquo;t need &ldquo;a project was delivered.&rdquo; Bring him in when: a client is seriously unhappy,
-            wants something outside scope or against policy, an important relationship is at risk, a major
-            production mistake happened, tomorrow can&rsquo;t be staffed, or the decision is above your authority.
-            Everything else — handle it.
-          </p>
-        </section>
+        <details className="group/rules rounded-2xl border border-border bg-surface">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm font-semibold">
+            <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/rules:rotate-0" />
+            How the day runs
+            <span className="font-normal text-muted">· priority order and when to escalate</span>
+          </summary>
+          <div className="border-t border-border px-5 py-4">
+            <h3 className="text-sm font-semibold">Priority order — the inbox is not the task list</h3>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
+              1. Active client issue happening right now · 2. Today&rsquo;s shoot · 3. Today&rsquo;s delivery ·
+              4. Tomorrow&rsquo;s shoot · 5. Overdue project or revision · 6. Client communication ·
+              7. Production follow-up · 8. Routine admin · 9. Long-term internal projects
+            </p>
+            <h3 className="mt-4 text-sm font-semibold">Escalate exceptions, not routine</h3>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
+              Jordan doesn&rsquo;t need &ldquo;a project was delivered.&rdquo; Bring him in when: a client is seriously unhappy,
+              wants something outside scope or against policy, an important relationship is at risk, a major
+              production mistake happened, tomorrow can&rsquo;t be staffed, or the decision is above your authority.
+              Everything else — handle it.
+            </p>
+          </div>
+        </details>
 
-        {/* Quiet secondary links — everything else lives in the sidebar. */}
-        <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
-          <Link href={scopeHref("/tasks")} className="hover:text-foreground">All tasks</Link>
-          <Link href={scopeHref("/review")} className="hover:text-foreground">Review Room</Link>
-          <Link href={scopeHref("/schedule")} className="hover:text-foreground">Schedule</Link>
-        </div>
+        {/* Where the work lives — each destination once (the sidebar has them too). */}
+        <nav aria-label="Your work destinations" className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm text-muted">
+          {(!me || canAccess(me, "tasks")) && <Link href={scopeHref("/tasks?tab=work&who=me")} className="inline-flex min-h-11 items-center hover:text-foreground">My work</Link>}
+          {canReview && <Link href={scopeHref("/review")} className="inline-flex min-h-11 items-center hover:text-foreground">Review Room</Link>}
+          {(!me || canAccess(me, "content")) && <Link href={scopeHref("/content")} className="inline-flex min-h-11 items-center hover:text-foreground">Client months</Link>}
+          <Link href={scopeHref("/schedule")} className="inline-flex min-h-11 items-center hover:text-foreground">Schedule</Link>
+          <Link href={scopeHref("/tasks")} className="inline-flex min-h-11 items-center hover:text-foreground">All tasks</Link>
+        </nav>
       </div>
     </div>
   );

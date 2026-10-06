@@ -373,6 +373,33 @@ export async function markVideoUploadedAction(submissionId: string, expectedFing
   }
 }
 
+/**
+ * Undo a "Mark as Uploaded" pressed by mistake — owner/admin, the same ET day,
+ * audited (deliveryUploads.undoUpload). The card moves the row back at once;
+ * this only has to agree. Records only; Aryeo is not touched.
+ */
+export async function undoVideoUploadAction(submissionId: string, expectedFingerprint: string): Promise<{ ok: boolean; message: string; already?: boolean }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const me = await getCurrentUser().catch(() => null);
+  if (me?.impersonating) return { ok: false, message: "Leave preview mode before undoing an upload." };
+  if (typeof submissionId !== "string" || !submissionId || submissionId.length > 200 || typeof expectedFingerprint !== "string" || !expectedFingerprint || expectedFingerprint.length > 5000) {
+    return { ok: false, message: "That video isn't on the delivery queue." };
+  }
+  try {
+    const { undoUpload } = await import("@/lib/deliveryUploads");
+    const result = await undoUpload(submissionId, expectedFingerprint, { id: me?.id ?? null, name: me?.name ?? me?.email ?? "Office" });
+    if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); }
+    return result;
+  } catch (error) {
+    console.error("Upload undo failed", error);
+    return { ok: false, message: "Couldn't confirm the undo. Refresh to see where this video stands." };
+  }
+}
+
 export async function correctVideoUploadAction(submissionId: string, receiptId: string, reason: string) {
   await requireAdmin();
   const me = await getCurrentUser();

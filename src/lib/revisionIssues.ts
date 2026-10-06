@@ -361,7 +361,13 @@ async function issuesForCut(cut: CutShape, states: string[], opts: { forGate?: b
   });
 }
 
-export type SlotIssue = { id: string; text: string; category: string; timeSec: number | null; state: string; raisedByName: string | null; fromRound: number | null };
+export type SlotIssue = {
+  id: string; text: string; category: string; timeSec: number | null; state: string; raisedByName: string | null; fromRound: number | null;
+  /** A job-wide ask on a job with more than one video (not tied to one yet):
+   *  one video's upload can say it was fixed THERE, but that never marks the
+   *  ask addressed for the whole job (applySelfCheckDeclarations). */
+  jobWide?: boolean;
+};
 
 /** What the self-check asks the editor to account for on a slot: every issue
  *  still waiting on them, plus any they flagged fixed by hand that no version
@@ -399,7 +405,11 @@ export async function openIssuesByCut(projectId: string): Promise<{ forCut: (c: 
     raisedByName: i.raisedByName,
     fromRound: i.raisedOnSubmissionId ? k.byId.get(i.raisedOnSubmissionId)?.round ?? null : null,
   });
-  const keyed = rows.map((i) => ({ key: k.keyOfIssue(i), v: view(i) }));
+  const multi = k.owedKeys.length > 1;
+  const keyed = rows.map((i) => {
+    const key = k.keyOfIssue(i);
+    return { key, v: !key && multi ? { ...view(i), jobWide: true } : view(i) };
+  });
   return {
     forCut(c) {
       const mine = k.keyOfSub({ id: "__new__", deliverableId: c.deliverableId, slot: c.slot, assetPath: c.assetPath });
@@ -421,9 +431,24 @@ export async function applySelfCheckDeclarations(
   actor: IssueActor,
 ): Promise<void> {
   const now = new Date();
+  // A JOB-WIDE ASK IS NOT ONE VIDEO'S TO CLOSE (review, Oct 5). On a job with
+  // more than one video, an ask tied to no video ("make the logo bigger") is
+  // listed on every video's check; the editor's "fixed" on video 2's upload is
+  // true of video 2 only. Marking the ask ADDRESSED there took it off video
+  // 1's list and every reader's count. So it is recorded as fixed in THAT
+  // version (an event) and the ask stays open until the office ties it to a
+  // video or a reviewer verifies it.
+  const sub = decl.addressed.length
+    ? await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } }).catch(() => null)
+    : null;
+  const k = sub ? await cutKeying(sub.projectId).catch(() => null) : null;
   for (const id of decl.addressed) {
-    const cur = await prisma.revisionIssue.findUnique({ where: { id }, select: { state: true, addressedInSubmissionId: true } });
+    const cur = await prisma.revisionIssue.findUnique({ where: { id }, select: { state: true, addressedInSubmissionId: true, deliverableId: true, slot: true, raisedOnSubmissionId: true } });
     if (!cur || !LIVE.includes(cur.state)) continue;
+    if (k && k.owedKeys.length > 1 && !k.keyOfIssue(cur)) {
+      await event(prisma, id, "FIXED_IN_ONE_VIDEO", actor, { submissionId, note: "a job-wide ask — fixed in this video; still open for the others" });
+      continue;
+    }
     if (cur.state === "ADDRESSED" && cur.addressedInSubmissionId === submissionId) continue;
     const won = await prisma.revisionIssue.updateMany({
       where: { id, state: cur.state },

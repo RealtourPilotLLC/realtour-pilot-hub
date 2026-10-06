@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { isTestClientName } from "@/lib/testClients";
-import { addBusinessDaysET } from "@/lib/datetime";
+import { addBusinessDaysET, etAt, etDateTime, etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // PROGRAM DESK TASKS — the one way the Content Program puts a job on Kyle's
@@ -47,13 +47,19 @@ export async function openProgramDeskTask(input: ProgramDeskTaskInput): Promise<
   if (isTestClientName(input.clientName) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
   const description = input.lines.join("\n");
   const title = input.title.slice(0, 140);
+  const priority = input.priority ?? "HIGH";
   const existing = await prisma.smartTask
     .findUnique({ where: { dedupeKey: input.dedupeKey }, select: { id: true, status: true, title: true, description: true } })
     .catch(() => null);
   if (existing) {
     if (TASK_DONE_INCLUDING_LEGACY.includes(existing.status)) {
       if (!input.reopenIfClosed) return;
-      await prisma.smartTask.update({ where: { id: existing.id }, data: { status: "OPEN", completedAt: null, title, description } }).catch(() => {});
+      // Back on the list is new work again: a fresh due date when the caller
+      // gave one (the old one is in the past), and the same ping as a new row.
+      const reopened = await prisma.smartTask
+        .update({ where: { id: existing.id }, data: { status: "OPEN", completedAt: null, title, description, ...(input.dueAt ? { dueAt: input.dueAt } : {}) }, select: { id: true, dueAt: true } })
+        .catch(() => null);
+      if (reopened) await pingDeskTask({ ...input, title, priority }, reopened, "Back on");
       return;
     }
     // STILL OPEN, AND THE FACTS HAVE MOVED. The first cut returned here without
@@ -67,17 +73,70 @@ export async function openProgramDeskTask(input: ProgramDeskTaskInput): Promise<
     }
     return;
   }
-  await prisma.smartTask
+  const created = await prisma.smartTask
     .create({
       data: {
         title, description, summary: input.title.slice(0, 200),
-        taskType: "todo", status: "OPEN", source: "content_program", priority: input.priority ?? "HIGH",
+        taskType: "todo", status: "OPEN", source: "content_program", priority,
         clientId: input.clientId, dedupeKey: input.dedupeKey, assignedKey: input.assignedKey,
         dueAt: input.dueAt ?? new Date(Date.now() + 2 * 864e5),
         reasonCreated: input.reasonCreated,
       },
+      select: { id: true, dueAt: true },
     })
-    .catch(() => {});
+    .catch(() => null);
+  if (created) await pingDeskTask({ ...input, title, priority }, created, "New on");
+}
+
+/**
+ * A due time that means "today" on the office's clock (Oct 5 2026): 5 PM ET
+ * while at least an hour of the working day is left, otherwise 11:59 PM ET —
+ * still today, never a due date that is already behind the person reading it.
+ */
+export function dueTodayET(now: Date = new Date()): Date {
+  const day = etDayKey(now);
+  const five = etAt(day, 17);
+  return five.getTime() - now.getTime() >= 3_600_000 ? five : etAt(day, 23, 59);
+}
+
+/**
+ * THE DESK TASK SAYS IT EXISTS (Oct 5 2026, team notifications pass). A
+ * HIGH or URGENT program task — book a paying client's discovery call, the
+ * scripts not approved 24 hours before filming (URGENT), a draft that keeps
+ * failing — was a row on a list and nothing else, so the 24-hour warning
+ * before a shoot could sit unread until the shoot. Like the URGENT comms task
+ * (tasks.ts createCommTask → notifyUrgent), a new or reopened one now pings
+ * — the PERSON whose list it is on, by name, on Slack first (notifyStaffSms:
+ * their quiet time and the 10 PM–7 AM ET overnight rule respected — held,
+ * then delivered once). An assignee the roster cannot name exactly goes to the
+ * ops channel instead of to a guess. Never for a TEST client (a probe forcing
+ * TEST tasks must not page anyone), never a MEDIUM task, never on a rewrite of
+ * an open row. Off the request path when there is one (inBackground), so the
+ * click or the webhook that raised the task does not wait on Slack.
+ */
+async function pingDeskTask(
+  input: ProgramDeskTaskInput & { priority: "URGENT" | "HIGH" | "MEDIUM" },
+  row: { id: string; dueAt: Date | null },
+  how: "New on" | "Back on",
+): Promise<void> {
+  if (input.priority === "MEDIUM" || isTestClientName(input.clientName)) return;
+  try {
+    const { inBackground, notifyStaffSms, opsAlert } = await import("@/lib/notify");
+    const { appBase } = await import("@/lib/appUrl");
+    await inBackground(async () => {
+      const due = row.dueAt ? ` · due ${etDateTime(row.dueAt)} ET` : "";
+      const line = `📋 ${how} your list${input.priority === "URGENT" ? " (URGENT)" : ""}: ${input.title}${due}. ${appBase()}/tasks?tab=other&task=${row.id}`;
+      const first = input.assignedKey.trim().toLowerCase();
+      const people = first
+        ? (await prisma.teamMember.findMany({ where: { active: true, name: { startsWith: first, mode: "insensitive" } }, select: { id: true, name: true }, take: 5 }))
+            .filter((m) => m.name.trim().split(/\s+/)[0]?.toLowerCase() === first)
+        : [];
+      if (people.length === 1) await notifyStaffSms([people[0].id], line, "desk_task", { holdOvernight: true });
+      else await opsAlert(`${line} (for ${input.assignedKey || "nobody yet"})`);
+    });
+  } catch (e) {
+    console.warn("desk task ping failed (the task stands)", input.dedupeKey, e);
+  }
 }
 
 /** Close a machine-raised desk task that is no longer true. A task a person already closed is left as they closed it. */

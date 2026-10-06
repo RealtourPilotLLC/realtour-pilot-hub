@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { upload } from "@vercel/blob/client";
-import { AlertTriangle, CheckCircle2, CloudUpload, Loader2, MessageSquarePlus, RotateCcw, Undo2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, CloudUpload, Loader2, MessageSquarePlus, RotateCcw, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 // The 1080p export spec and its words, from the file that owns both
 // (lib/videoStyles — plain data and pure functions, safe in a client bundle).
@@ -19,6 +20,7 @@ import type { SelfCheckInput } from "@/lib/selfCheck";
 import { firstName, verdictLine, type Verdict } from "@/lib/reviewAttribution";
 import { StillWorkingPrompt } from "@/components/editing/StillWorkingPrompt";
 import { stillWorkingRemaining } from "@/lib/editorDesk";
+import { uploadPanelSummary, type UploadPanelSummary, type UploadPanelVideo } from "@/app/review/selfCheckActions";
 
 // ---------------------------------------------------------------------------
 // "Upload version N" — the editor's way into the Review Room (Jordan, Sep 1:
@@ -313,6 +315,123 @@ function CutMessage({
   );
 }
 
+// ---------------------------------------------------------------------------
+// THE HAND-IN, SAID AT ONCE (Jordan, Oct 5: "smooth and seamless and every
+// action instant"). The moment the bytes finish, the top of this panel says
+// what happened — "Video 1 v1 sent to James for review" — with the
+// still-working question under it and a one-tap way to the next owed video.
+// The finalize runs behind it; if it fails, the same card says so plainly and
+// offers "Try again" (the bytes are kept — a retry is the same finish call,
+// which answers "Already in review." when the store's callback beat it).
+//
+// It used to be lost: the finalize refreshed the page, the page (with no video
+// in its URL) opened on the NEXT un-uploaded video, this panel was handed only
+// that video's row, and the "still working?" card for the one just sent never
+// drew. So before the finalize is even sent, the URL is pinned to the video
+// just handed in (?output=<id>, the parameter the page already reads), and the
+// refresh the finalize triggers re-renders THAT video.
+// ---------------------------------------------------------------------------
+
+/** "Video 1 v1 sent to James for review" — the reviewer is who a new version
+ *  goes to first (the review seats), or the one actually holding it once the
+ *  hub has assigned it; nobody set up reads "the review team". */
+export function handInLine(what: string, round: number, reviewer: string | null | undefined): string {
+  return `${what} v${round} sent to ${reviewer?.trim() || "the review team"} for review`;
+}
+
+/** The next video on the job that still owes a cut, after this one in the
+ *  page's own numbering (wrapping round to an earlier one). */
+export function nextOwedVideo(videos: readonly UploadPanelVideo[], currentKey: string, alsoOpen: readonly string[] = []): UploadPanelVideo | null {
+  const ordered = [...videos].sort((a, b) => a.number - b.number);
+  const here = ordered.find((v) => v.key === currentKey)?.number ?? 0;
+  const owed = ordered.filter((v) => v.key !== currentKey && !!v.outputId && (v.open || alsoOpen.includes(v.key)));
+  return owed.find((v) => v.number > here) ?? owed[0] ?? null;
+}
+
+export type HandInPhase = "confirming" | "done" | "problem";
+
+/** The card at the top of the panel after a version is handed in. Pure
+ *  presentation — CutUploader owns the state and the calls. */
+export function UploadSentCard({
+  what, round, reviewer, phase, problem = null, retrying = false, onRetry, prompt = null, receipt = null, next = null,
+}: {
+  /** "Video 1" — the page's own number for it */
+  what: string;
+  round: number;
+  reviewer: string | null;
+  phase: HandInPhase;
+  /** why it isn't confirmed (phase "problem") */
+  problem?: string | null;
+  retrying?: boolean;
+  onRetry?: () => void;
+  /** the still-working question, when this viewer may be asked */
+  prompt?: ReactNode;
+  receipt?: string | null;
+  next?: { href: string; label: string; onNavigate?: () => void } | null;
+}) {
+  return (
+    <div className={cn("border-b px-4 py-3 sm:px-5", phase === "problem" ? "border-warning/40 bg-warning-soft/40" : "border-border bg-success/5")} role="status">
+      {phase === "problem" ? (
+        <>
+          <p className="flex items-start gap-2 text-sm font-semibold text-foreground">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+            <span>{what} v{round} is uploaded, but the hub hasn&rsquo;t confirmed it&rsquo;s in review yet.</span>
+          </p>
+          {problem && <p className="mt-1 pl-6 text-xs leading-relaxed text-foreground/85">{problem}</p>}
+          {onRetry && (
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={onRetry}
+              className="ml-6 mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+            >
+              {retrying ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />} Try again
+            </button>
+          )}
+        </>
+      ) : (
+        <p className="flex items-start gap-2 text-sm font-semibold text-foreground">
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
+          <span>
+            {handInLine(what, round, reviewer)}
+            {phase === "confirming" && <span className="ml-1.5 text-xs font-normal text-muted">· confirming…</span>}
+          </span>
+        </p>
+      )}
+      {prompt}
+      {receipt && <p className="mt-1.5 text-xs text-success">{receipt}</p>}
+      {next && (
+        <Link
+          href={next.href}
+          onClick={next.onNavigate}
+          className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2"
+        >
+          Next: {next.label} <ArrowRight className="size-4" />
+        </Link>
+      )}
+    </div>
+  );
+}
+
+type HandIn = {
+  key: string;
+  round: number;
+  submissionId: string;
+  url: string;
+  pathname: string;
+  phase: HandInPhase;
+  problem: string | null;
+  /** the reviewer the hub actually assigned, once it says */
+  sentTo: string | null;
+  /** the still-working question was answered (or declined) */
+  answered: boolean;
+  /** the editor's message typed before the file existed, to save on the version */
+  message: string;
+  /** the page's URL once pinned to this video — a later re-pin never pulls an
+   *  editor back who has moved on to another video meanwhile */
+  pinnedHref: string | null;
+};
+
 // reopenedSlotKeys: approved videos whose own slot has a newer named ask.
 // A job-level revision does not say every approved video needs replacing.
 // canOverrideExport: OWNER/ADMIN. Jordan or Kyle will occasionally have a
@@ -332,8 +451,11 @@ function CutMessage({
 // lands, the row asks "Are you still working on this job?" (StillWorkingPrompt)
 // while other videos are still owed here. Asked, never assumed: this panel
 // calls no work action itself, and "No" writes nothing.
+// jobSummary (Oct 5): the job-level facts (approved count, first reviewer,
+// every owed video's number and topic). Optional — the panel reads them itself
+// (selfCheckActions.uploadPanelSummary) and re-reads whenever a version moves.
 export function CutUploader({
-  projectId, cuts, canUpload, reopenedSlotKeys = [], officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null,
+  projectId, cuts, canUpload, reopenedSlotKeys = [], officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null, jobSummary = null,
 }: {
   projectId: string; cuts: CutRow[]; canUpload: boolean; reopenedSlotKeys?: string[];
   /** Every open video-lane ask is the office's reopen (officeReopenOf). */
@@ -341,18 +463,29 @@ export function CutUploader({
   canOverrideExport?: boolean;
   checks?: Record<string, SelfCheckContextView>; onBehalfOf?: string | null;
   stillWorking?: { openSlotKeys: string[]; elsewhereStreet: string | null; paused: boolean } | null;
+  jobSummary?: UploadPanelSummary | null;
 }) {
   const router = useRouter();
-  // The row whose version just landed (set once, on a confirmed success only),
-  // and the Start's own sentence once the editor has answered Yes.
-  const [sent, setSent] = useState<string | null>(null);
+  const params = useSearchParams();
+  // The version just handed in (from the moment its bytes finished), and the
+  // Start's own sentence once the editor has answered Yes.
+  const [sent, setSent] = useState<HandIn | null>(null);
   const [receipt, setReceipt] = useState<{ key: string; text: string } | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  // The job's own facts — the count, the first reviewer, the videos in order.
+  const [summary, setSummary] = useState<UploadPanelSummary | null>(jobSummary);
+  const summaryNow = useRef<UploadPanelSummary | null>(jobSummary);
+  summaryNow.current = summary;
   // THE CHECK COMES BEFORE THE BYTES (§8.2). A file picked for a slot opens
   // the checklist first; the answers ride up with startCutUpload and the
   // server binds them to what lands. They are kept per slot for the SAME file
   // only, so the approved-cut reason box or an owner's "send it anyway" does
   // not ask twice — and a different export always asks again.
-  type Pending = { cut: CutRow; file: File; dim: { width: number; height: number } | null; override: boolean; reopenReason?: string; notice?: string | null };
+  // `context` is the list the SERVER says is in force, when it refused the
+  // last answers (review, Oct 5 night): reopening the page-load copy asked the
+  // same lines again, missed the note that had just arrived, and was refused
+  // again — a loop the editor could not get out of.
+  type Pending = { cut: CutRow; file: File; dim: { width: number; height: number } | null; override: boolean; reopenReason?: string; notice?: string | null; context?: SelfCheckContextView | null };
   const [checking, setChecking] = useState<Pending | null>(null);
   const [checked, setChecked] = useState<Record<string, { input: SelfCheckInput; name: string; size: number }>>({});
   const inputs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -405,6 +538,13 @@ export function CutUploader({
       .catch(() => { /* the panel works without the flags */ });
     return () => { live = false; };
   }, [projectId, sig, tick]);
+  useEffect(() => {
+    let live = true;
+    void uploadPanelSummary(projectId)
+      .then((r) => { if (live && r) setSummary(r); })
+      .catch(() => { /* the panel works without the job's totals */ });
+    return () => { live = false; };
+  }, [projectId, sig]);
 
   // Picking a file runs the export check first, then hands off to send(). The
   // check is local and quick; an over-spec file never reaches the network.
@@ -418,6 +558,7 @@ export function CutUploader({
   async function begin(cut: CutRow, file: File, replacing = false) {
     setSent(null);
     setReceipt(null);
+    setRetrying(false);
     const key = `${cut.deliverableId}:${cut.slot}`;
     setErr((e) => ({ ...e, [key]: "" }));
     clearBlocked(key);
@@ -475,7 +616,7 @@ export function CutUploader({
       // meanwhile, or the list changed): back to the list, with its reason.
       if ("needsSelfCheck" in started && started.needsSelfCheck) {
         setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
-        setChecking({ cut, file, dim, override, reopenReason, notice: started.message });
+        setChecking({ cut, file, dim, override, reopenReason, notice: started.message, context: "checkContext" in started ? started.checkContext ?? null : null });
         return;
       }
       // The video is approved and nobody has asked for changes: hold the file
@@ -507,9 +648,9 @@ export function CutUploader({
     // away the File reference too, and Jordan or Kyle would be picking the same
     // file off disk again to read the reason why.
     clearBlocked(key);
-    let landed: string | null = null;
+    let blob: { url: string; pathname: string };
     try {
-      const blob = await upload(started.pathname, file, {
+      const b = await upload(started.pathname, file, {
         access: started.access ?? CUT_STORE_ACCESS,
         handleUploadUrl: "/api/review/upload",
         clientPayload: JSON.stringify({ submissionId: started.submissionId }),
@@ -517,49 +658,114 @@ export function CutUploader({
         contentType: file.type || "application/octet-stream",
         onUploadProgress: ({ percentage }) => setBusy((b) => ({ ...b, [key]: { pct: percentage, label: `Uploading ${fmtBytes(file.size)}…` } })),
       });
-      landed = blob.url;
-      setBusy((b) => ({ ...b, [key]: { pct: 100, label: "Checking the file…" } }));
-      const done = await cutUploadFinishReceipt(() => finishCutUpload({ submissionId: started.submissionId, url: blob.url, pathname: blob.pathname }));
-      // HELD, NOT FAILED (§8.2): the bytes are safe in the store, they just are
-      // not the file that was checked. Throwing here would abandon — and
-      // delete — an upload the editor can still finish with a fresh check.
-      if (!done.ok && done.held) {
-        setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
-        setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
-        setErr((e) => ({ ...e, [key]: done.message }));
-        router.refresh();
-        return;
-      }
-      if (!done.ok) throw new Error(done.message);
-      setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
-      // The message the editor typed BEFORE the file existed now has a version
-      // to belong to. Best-effort: the cut is already safely in review, so a
-      // failure here keeps the draft and says so rather than losing the words.
-      const pendingMsg = (draft[key] ?? "").trim();
-      if (pendingMsg) {
-        const m = await saveCutMessage(started.submissionId, pendingMsg).catch(() => ({ ok: false as const, message: "" }));
-        if (m.ok) setDraft((d) => ({ ...d, [key]: "" }));
-        else setErr((e) => ({ ...e, [key]: "The cut went to review, but your message didn't save — add it again below." }));
-      }
-      setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
-      // The row's saved-note memory belongs to the version that just went; the
-      // fresh render carries the truth.
-      setSaved((s) => { const n = { ...s }; delete n[key]; return n; });
-      // The version is in: ask if they're still on the job (the prompt below
-      // draws only when the page says this viewer may be asked).
-      setSent(key);
-      router.refresh();
+      blob = { url: b.url, pathname: b.pathname };
     } catch (e) {
-      // Keep landed bytes available to the callback and fresh recorded read.
-      // A lost finish response must never turn into a destructive cleanup.
-      if (!landed) await abandonCutUpload(started.submissionId, null).catch(() => {});
+      // Nothing landed, so the reservation is released. (Once bytes HAVE
+      // landed nothing here ever abandons them — see confirm below.)
+      await abandonCutUpload(started.submissionId, null).catch(() => {});
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
-      setErr((er) => ({ ...er, [key]: e instanceof Error ? e.message : "The upload failed — try again." }));
-      if (landed) router.refresh();
+      setErr((er) => ({ ...er, [key]: e instanceof Error && e.message ? e.message : "The upload failed — try again." }));
+      return;
     }
+    // THE BYTES ARE IN: say so now (Oct 5). The check was for this file and has
+    // done its job; the row stops being busy; the version's saved-note memory
+    // belongs to the version that just went (the fresh render carries the truth).
+    setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
+    setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+    setSaved((s) => { const n = { ...s }; delete n[key]; return n; });
+    const handIn: HandIn = {
+      key, round: started.round, submissionId: started.submissionId, url: blob.url, pathname: blob.pathname,
+      phase: "confirming", problem: null, sentTo: null, answered: false, message: (draft[key] ?? "").trim(), pinnedHref: null,
+    };
+    // Pinned BEFORE the finish is sent, so the refresh it triggers re-renders
+    // this video and not the next un-uploaded one. The native replaceState is
+    // Next's own documented way to change the URL without a fetch (it updates
+    // the router's URL in place); server actions queue behind it.
+    pinToVideo(key, null);
+    handIn.pinnedHref = typeof window === "undefined" ? null : window.location.href;
+    setSent(handIn);
+    void confirmHandIn(handIn);
+  }
+
+  // Keep the video just handed in selected: ?output=<its id> is what the page
+  // reads. Before the finish, only the id from the job summary will do (the
+  // version isn't readable by ?cut= until it is in); after it, ?cut= works too.
+  function pinToVideo(key: string, submissionId: string | null): boolean {
+    if (typeof window === "undefined") return false;
+    const outputId = summaryNow.current?.videos.find((v) => v.key === key)?.outputId ?? null;
+    if (!outputId && !submissionId) return false;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("cut");
+    url.searchParams.delete("output");
+    if (outputId) url.searchParams.set("output", outputId);
+    else url.searchParams.set("cut", submissionId!);
+    if (url.href === window.location.href) return false;
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    return true;
+  }
+
+  // The finish, in the background behind the card. Never abandons: the bytes
+  // are in the store, and the store's own callback may already have entered
+  // the cut — a failure here is shown, with a retry, never thrown away.
+  async function confirmHandIn(h: HandIn) {
+    const done = await cutUploadFinishReceipt(() => finishCutUpload({ submissionId: h.submissionId, url: h.url, pathname: h.pathname }));
+    setRetrying(false);
+    if (!done.ok) {
+      // HELD is not failed (§8.2): the bytes are safe, they just aren't the
+      // file that was checked (or the answer was lost) — the page's held card
+      // or a retry finishes it. Either way the editor reads why.
+      setSent((s) => (s && s.submissionId === h.submissionId ? { ...s, phase: "problem", problem: done.message } : s));
+      router.refresh();
+      return;
+    }
+    // The message the editor typed BEFORE the file existed now has a version
+    // to belong to. Best-effort: the cut is already in review, so a failure
+    // keeps the draft and says so rather than losing the words.
+    if (h.message) {
+      const m = await saveCutMessage(h.submissionId, h.message).catch(() => ({ ok: false as const, message: "" }));
+      if (m.ok) setDraft((d) => ({ ...d, [h.key]: "" }));
+      else setErr((e) => ({ ...e, [h.key]: "The cut went to review, but your message didn't save — add it again below." }));
+    }
+    setSent((s) => (s && s.submissionId === h.submissionId ? { ...s, phase: "done", problem: null } : s));
+    // Who actually has it now (the hub assigned the reviewer as it entered).
+    void uploadPanelSummary(projectId, { submissionId: h.submissionId })
+      .then((r) => {
+        if (!r) return;
+        setSummary(r);
+        if (r.sentTo) setSent((s) => (s && s.submissionId === h.submissionId ? { ...s, sentTo: r.sentTo } : s));
+      })
+      .catch(() => {});
+    if (typeof window !== "undefined" && window.location.href === h.pinnedHref) pinToVideo(h.key, h.submissionId);
+    router.refresh();
   }
 
   if (cuts.length === 0) return null;
+  // THE JOB'S COUNT, not the rows in hand (Oct 5): the page hands this panel
+  // the selected video only, and "0 of 1 approved" on a four-video job read as
+  // the job's tally. Until the job's own read lands, a multi-row panel can
+  // still count what it holds; a one-row panel says nothing rather than "of 1".
+  const tally = summary
+    ? `${summary.approved} of ${summary.total} video${summary.total === 1 ? "" : "s"} approved`
+    : cuts.length > 1 ? `${cuts.filter((c) => c.latest?.status === "APPROVED").length} of ${cuts.length} approved` : null;
+  // The hand-in card belongs to the video it was for — drawn while that video
+  // is the one on screen, and, until its finish is confirmed, on whichever
+  // video is (review, Oct 5 night): pressing "Next" while it said
+  // "confirming…" used to take the card away, so a finish that then failed
+  // was never seen and never retried.
+  const handIn = sent && (sent.phase !== "done" || cuts.some((c) => `${c.deliverableId}:${c.slot}` === sent.key)) ? sent : null;
+  const handInVideo = handIn ? summary?.videos.find((v) => v.key === handIn.key) ?? null : null;
+  const handInRow = handIn ? cuts.find((c) => `${c.deliverableId}:${c.slot}` === handIn.key) ?? null : null;
+  const nextVideo = handIn && summary ? nextOwedVideo(summary.videos, handIn.key, [...reopenedSlotKeys, ...(stillWorking?.openSlotKeys ?? [])]) : null;
+  const nextHref = (outputId: string) => {
+    const q = new URLSearchParams({ output: outputId });
+    const queue = params?.get("queue");
+    if (queue) q.set("queue", queue);
+    return `/edit/${projectId}?${q.toString()}`;
+  };
+  // Asked only once the finish says the version is in, and only of the
+  // editor the page says may be asked (never the office, a preview, a blocked
+  // editor or the outside shop), while another video is still owed here.
+  const askRemaining = handIn && handIn.phase === "done" && !handIn.answered && stillWorking ? stillWorkingRemaining(stillWorking.openSlotKeys, handIn.key) : 0;
   return (
     <section className="panel-shadow overflow-hidden rounded-2xl border border-brand/25 bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
@@ -568,10 +774,46 @@ export function CutUploader({
             the reviewer (Jordan, Sep 2: "instead of Cuts to deliver, it
             should say Send to Review"). */}
         <h2 className="text-sm font-semibold">Send to Review</h2>
-        <span className="text-xs text-muted">
-          {cuts.filter((c) => c.latest?.status === "APPROVED").length} of {cuts.length} approved
-        </span>
+        {tally && <span className="text-xs text-muted">{tally}</span>}
       </div>
+      {handIn && (
+        <UploadSentCard
+          what={handInVideo ? `Video ${handInVideo.number}` : handInRow?.label ?? "This video"}
+          round={handIn.round}
+          reviewer={handIn.sentTo ?? summary?.firstReviewer ?? null}
+          phase={handIn.phase}
+          problem={handIn.problem}
+          retrying={retrying}
+          onRetry={() => {
+            setRetrying(true);
+            setSent((s) => (s && s.submissionId === handIn.submissionId ? { ...s, phase: "confirming", problem: null } : s));
+            void confirmHandIn({ ...handIn, message: (draft[handIn.key] ?? "").trim() });
+          }}
+          prompt={
+            askRemaining > 0 && stillWorking ? (
+              <StillWorkingPrompt
+                projectId={projectId}
+                remaining={askRemaining}
+                elsewhereStreet={stillWorking.elsewhereStreet}
+                resumes={stillWorking.paused}
+                onClose={(text) => {
+                  setSent((s) => (s ? { ...s, answered: true } : s));
+                  if (text) setReceipt({ key: handIn.key, text });
+                }}
+              />
+            ) : null
+          }
+          receipt={receipt?.key === handIn.key ? receipt.text : null}
+          next={nextVideo?.outputId ? {
+            href: nextHref(nextVideo.outputId),
+            label: `Video ${nextVideo.number}${nextVideo.topic ? ` — ${nextVideo.topic}` : ""}`,
+            // A hand-in still being confirmed (or one that failed) stays on
+            // screen through the move (review, Oct 5 night): clearing it here
+            // hid a finish that then failed, with nobody told to retry.
+            onNavigate: () => { if (handIn.phase === "done") { setSent(null); setReceipt(null); } },
+          } : null}
+        />
+      )}
       {/* THE EXPORT SPEC, right above the Upload buttons. It is also in "What
           to make" further up the brief — that is where it is read before the
           edit starts, and this is where it is read at the moment of export,
@@ -599,6 +841,10 @@ export function CutUploader({
             ? null
             : c.latest ? (withdrawn ? c.latest.round : c.latest.round + 1) : 1;
           const isRedo = c.latest?.status === "CHANGES_REQUESTED" || reopened || withdrawn;
+          // The version just handed in, while this row's data is older than it
+          // (the refresh is on its way): the row agrees with the card above
+          // rather than offering "Upload version 1" beside "sent".
+          const handed = sent && sent.key === key && sent.phase !== "problem" && (!c.latest || c.latest.round < sent.round) ? sent : null;
           // THE APPROVED CUT'S OWN DOOR (Jordan, Sep 18: "they need a way to re
           // upload content after it was already approved submitted and
           // delivered"). The round a replacement would supersede — null on
@@ -661,7 +907,13 @@ export function CutUploader({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{c.label}</span>
-                  <StatusPill latest={c.latest} reopened={reopened} officeReopen={officeReopen} />
+                  {handed ? (
+                    <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">
+                      v{handed.round} {handed.phase === "confirming" ? "going to review…" : "in review"}
+                    </span>
+                  ) : (
+                    <StatusPill latest={c.latest} reopened={reopened} officeReopen={officeReopen} />
+                  )}
                   {c.openNotes > 0 && (
                     <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">{c.openNotes} note{c.openNotes === 1 ? "" : "s"} to fix</span>
                   )}
@@ -705,19 +957,6 @@ export function CutUploader({
                   </div>
                 )}
                 {err[key] && <p className="mt-1 text-xs text-danger">{err[key]}</p>}
-                {sent === key && stillWorking && stillWorkingRemaining(stillWorking.openSlotKeys, key) > 0 && (
-                  <StillWorkingPrompt
-                    projectId={projectId}
-                    remaining={stillWorkingRemaining(stillWorking.openSlotKeys, key)}
-                    elsewhereStreet={stillWorking.elsewhereStreet}
-                    resumes={stillWorking.paused}
-                    onClose={(text) => {
-                      setSent(null);
-                      if (text) setReceipt({ key, text });
-                    }}
-                  />
-                )}
-                {receipt?.key === key && <p className="mt-1 text-xs text-success" role="status">{receipt.text}</p>}
                 {/* THE REFUSAL. Whoever is reading this has just finished an
                     edit and been told "no" by a dialog, so the first line is
                     the only one that has to land: the work is fine. Then what
@@ -881,7 +1120,7 @@ export function CutUploader({
                   onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void begin(c, f, approvedRound !== null); }}
                 />
               )}
-              {canUpload && next && (
+              {canUpload && next && !handed && (
                 <button
                   type="button"
                   disabled={!!b}
@@ -900,13 +1139,12 @@ export function CutUploader({
         })}
       </ul>
       <p className="border-t border-border px-4 py-2 text-[11px] text-muted-2 sm:px-5">
-        Before a version goes, you watch the export and complete a short check — it is recorded against that exact file.
-        The file then goes straight to the hub in resumable parts and lands in the Review Room as the next version, with your
-        message beside it. Once a cut is approved it is copied to the job&apos;s Final folder in Dropbox automatically.
+        Pick your 1080p export, tick the short check, and it goes straight to the Review Room with your message. Approved cuts
+        are copied to the job&apos;s Final folder in Dropbox for you.
       </p>
       {checking && (() => {
         const key = `${checking.cut.deliverableId}:${checking.cut.slot}`;
-        const ctx = checks[key];
+        const ctx = checking.context ?? checks[key];
         if (!ctx) {
           return (
             <p className="border-t border-border px-4 py-2 text-xs text-danger sm:px-5">
@@ -918,7 +1156,7 @@ export function CutUploader({
           <SelfCheckDialog
             context={ctx}
             file={{ name: checking.file.name, size: checking.file.size, lastModified: checking.file.lastModified }}
-            title={`Before ${checking.cut.label} goes to review`}
+            title={`Before ${(() => { const v = summary?.videos.find((x) => x.key === key); return v ? `Video ${v.number}` : checking.cut.label; })()} goes to review`}
             onBehalfOf={onBehalfOf}
             notice={checking.notice ?? null}
             onCancel={() => setChecking(null)}

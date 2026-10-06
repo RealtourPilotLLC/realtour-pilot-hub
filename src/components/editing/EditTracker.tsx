@@ -218,6 +218,8 @@ export function EditTracker({
   dueWords,
   moveDue,
   evidence,
+  hideDue = false,
+  hideMusic = false,
 }: {
   stage: EditStage;
   statusLine: string;
@@ -277,6 +279,12 @@ export function EditTracker({
    *  filtered to the half this tracker is about). Absent or empty = the row is
    *  not drawn, and the tracker reads exactly as it did. */
   evidence?: LadderRow[] | null;
+  /** Oct 5: the brief prints the ONE deadline (editor's time and ET) at the
+   *  top of the selected video, so the tracker leaves its Deadline fact out
+   *  rather than print the same date a second way. */
+  hideDue?: boolean;
+  /** Oct 5: the brief's Music section is the one music rule. */
+  hideMusic?: boolean;
 }) {
   const dotColor =
     stage === "done" ? "text-success" : stage === "revision" ? "text-danger" : stage === "review" ? "text-warning" : "text-brand";
@@ -330,10 +338,12 @@ export function EditTracker({
             </span>
           )}
         </Fact>
-        <Fact label="Deadline">
+        {!hideDue && <Fact label="Deadline">
           {dueISO ? (
             <span className="inline-flex flex-wrap items-center gap-1.5">
-              {etDate(dueISO)}
+              {/* The zone said out loud (Oct 5): an unlabelled Eastern date
+                  beside "your time" on the same page read as two deadlines. */}
+              {etDateTime(dueISO)} ET
               {overridden?.due && officeTag}
               {/* The clock stops once the cut is approved — a delivered job
                   reading "OVERDUE" forever is noise, not urgency. */}
@@ -349,10 +359,10 @@ export function EditTracker({
               {dueWords}
             </span>
           )}
-        </Fact>
+        </Fact>}
         <Fact label="Shoot date">{shootDateISO ? etDate(shootDateISO) : "—"}</Fact>
         <Fact label="Shot by">{photographerName ?? "—"}</Fact>
-        <Fact label="Music">
+        {!hideMusic && <Fact label="Music">
           {song ? (
             songIsUrl ? (
               <a href={song} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">
@@ -364,7 +374,7 @@ export function EditTracker({
           ) : (
             "—"
           )}
-        </Fact>
+        </Fact>}
       </div>
 
       {/* §7.3: what is actually true about the footage, rung by rung. */}

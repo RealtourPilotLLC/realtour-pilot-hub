@@ -336,6 +336,21 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // Links, not controls: where access and coverage are actually managed.
   const linkRow = "flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-2 text-sm hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand";
   const extras: Partial<Record<SettingsGroupId, React.ReactNode>> = {
+    // CLIENT ONBOARDING (Oct 5 2026): one client at a time — what they get,
+    // their portal account, and the messages Jordan sends them himself.
+    program: (
+      <Section key="client-onboarding" icon={Users} title="Client onboarding">
+        <div className="-mx-2 space-y-0.5">
+          <Link href="/settings/onboarding" className={linkRow}>
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">Onboard clients one by one</span>
+              <span className="block text-[12px] text-muted">{isOwner ? "Choose what each client gets, create their portal account, and send their welcome yourself. Nothing is sent unless you press Send now." : "Each client's onboarding steps, read-only. Only Jordan changes or sends anything there."}</span>
+            </span>
+            <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
+          </Link>
+        </div>
+      </Section>
+    ),
     team: (
       <Section key="people-access" icon={KeyRound} title="People & access">
         <div className="-mx-2 space-y-0.5">

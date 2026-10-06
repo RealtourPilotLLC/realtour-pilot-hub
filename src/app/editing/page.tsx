@@ -259,6 +259,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   ]);
   const today = editorLines(wn, act, now);
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);
+  const lateCount = notDone.filter((r) => r.late).length;
 
   return (
     <div>
@@ -266,7 +267,9 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         sticky="desktop"
         eyebrow="Video projects only"
         title="Editing Room"
-        subtitle={`${notDone.length} open projects · ${upcomingRows.length} upcoming projects · ${includeTest ? "real and test records" : "test records hidden"}`}
+        // What a person acts on, in one line (Oct 5): how much is open, how much
+        // of it is late, what is coming. The test-record toggle names itself.
+        subtitle={`${notDone.length} open projects · ${lateCount} late · ${upcomingRows.length} upcoming${includeTest ? " · including test records" : ""}`}
         // Pop-up Style Guide — a draggable floating window (remembers where
         // you put it), so the guide can sit beside the queue while working.
         actions={
@@ -296,7 +299,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 id="editing-queue-heading" className="text-base font-semibold">Work queue</h2>
-              <p className="mt-0.5 text-sm text-muted">Open a project for its brief, files and latest cut.</p>
+              <p className="mt-0.5 text-sm text-muted">Soonest due first. Open a project for its brief, files and latest cut.</p>
             </div>
             {/* The manual handoff stays available beside its queue. */}
             <div className="contents [&>div]:basis-full"><AddToQueue /></div>
@@ -308,12 +311,13 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         <RecentlyRemoved rows={removedRows.filter((row) => !excludedProjects.has(row.projectId))} />
         <details className="group rounded-xl border border-border bg-surface" id="editing-capacity">
           <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-brand">
-            <span className="font-semibold">Capacity and activity details</span>
-            <span className="text-muted"> · {notDone.reduce((total, row) => total + row.videosToEdit, 0)} videos to edit · {workload.overdue} overdue projects</span>
+            <span className="font-semibold">Workload by editor</span>
+            {/* The header's own count, said in the header's own word — one
+                definition of late on this page (review, Oct 5 night). */}
+            <span className="text-muted"> · {notDone.reduce((total, row) => total + row.videosToEdit, 0)} videos to edit · {lateCount} late</span>
             {capacityNow.length > 0 && <span className="text-warning"> · {capacityNow.length} recorded availability {capacityNow.length === 1 ? "change" : "changes"} in force</span>}
           </summary>
           <div className="space-y-3 border-t border-border p-3">
-            <p className="text-sm text-muted">Project workload follows the record view above. Team availability is shared across both views.</p>
             <WorkloadPanel view={workload} />
             <WorkingNowPanel view={today} />
           </div>

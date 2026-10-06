@@ -98,9 +98,14 @@ export async function GET(req: NextRequest) {
         // Each kind's bookkeeping lives with the code that owns it: client texts
         // in clientTextSweeps, staff digests in notify (where the PendingSms
         // lines behind the digest are).
-        const note = isClientKind(outboxKind(row.dedupeKey))
+        // Jordan's own onboarding sends (Oct 5 2026) go in the client's
+        // onboarding log, so the page shows them sent and he never presses twice.
+        const kind = outboxKind(row.dedupeKey);
+        const note = isClientKind(kind)
           ? await recordDrainedSend(row, providerId)
-          : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
+          : kind === "onboarding"
+            ? await import("@/lib/clientOnboarding").then(({ recordOnboardingOutboxSend }) => recordOnboardingOutboxSend(row, "recovered"))
+            : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
         if (note) recovered.push(note);
       },
     });

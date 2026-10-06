@@ -13,10 +13,18 @@ export async function acknowledgeShootBrief(projectId: string, expectedDigest: s
   await requireShootAccess(projectId);
   const { getCurrentUser } = await import("@/lib/auth/user");
   const user = await getCurrentUser();
-  if (!user || user.impersonating || user.realRole !== "PHOTOGRAPHER") return { ok: false, message: "Only the assigned photographer can mark this brief read." };
+  // WHOEVER IS SHOOTING IT (Oct 5 2026). James shoots on an ADMIN login, and
+  // the old PHOTOGRAPHER-role gate meant the person holding the camera could
+  // never say he had read the brief. The rule is now the shoot's own
+  // assignment — the project's photographer or a live appointment's assignee —
+  // whatever the login's role. A preview ("view as") is never the shooter.
+  const { getShoot, photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
+  const shooterId = user && !user.impersonating ? await photographerMemberId(user).catch(() => null) : null;
+  if (!user || !shooterId || !(await photographerOwnsShoot(projectId, shooterId).catch(() => false))) {
+    return { ok: false, message: "Only the assigned photographer can mark this brief read." };
+  }
   if (!/^[a-f0-9]{64}$/.test(expectedDigest)) return { ok: false, message: "Reload the brief before marking it read." };
 
-  const { getShoot } = await import("@/lib/shoot");
   const { assetRegistry } = await import("@/lib/clientAssets");
   const { shootBriefLines, briefSnapshot, briefDigest } = await import("@/lib/shootBriefRead");
   const view = await getShoot(projectId);

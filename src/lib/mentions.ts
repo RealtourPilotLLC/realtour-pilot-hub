@@ -992,6 +992,40 @@ export async function currentEditorForProject(projectId: string): Promise<{ tmId
   }
 }
 
+/**
+ * Has footage reached the edit lane on this job (Oct 5 2026)? Any one of: the
+ * job is in or past editing (EDITING / REVIEW / REVISION / DELIVERED), the
+ * photographer finished the upload page (uploadedAt / debriefSubmittedAt),
+ * the hourly folder sweep found raw video in the job's Raw Video folder (a
+ * SHOT job whose clips are already there — review, Oct 5 night: those were
+ * read as "not in yet", so the editor heard nothing about a job they could
+ * start), or the raws receipt was posted ("Raws in for …", tasks.ts
+ * notifyRawsLanded). A read that fails answers yes — the editor hears it, as
+ * before this rule.
+ */
+export async function rawsAreIn(projectId: string): Promise<boolean> {
+  try {
+    const p = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { status: true, uploadedAt: true, debriefSubmittedAt: true, statusEvidence: true },
+    });
+    if (!p) return true;
+    if (["EDITING", "REVIEW", "REVISION", "DELIVERED"].includes(String(p.status))) return true;
+    if (p.uploadedAt || p.debriefSubmittedAt) return true;
+    try {
+      const ev = p.statusEvidence ? (JSON.parse(p.statusEvidence) as { dropbox?: { rawVideo?: number } | null }) : null;
+      if ((ev?.dropbox?.rawVideo ?? 0) > 0) return true;
+    } catch { /* evidence is best-effort; the receipt below still counts */ }
+    const receipt = await prisma.activity.findFirst({
+      where: { projectId, type: "SYSTEM", body: { startsWith: "Raws in for " } },
+      select: { id: true },
+    });
+    return !!receipt;
+  } catch {
+    return true;
+  }
+}
+
 export async function notifyProjectMessage(opts: {
   projectId: string;
   /** The message or reply just saved — the dedupe key, and the surface: a
@@ -1035,9 +1069,15 @@ export async function notifyProjectMessage(opts: {
     const dm = (href: string) => slackMentionDm({ author, street, client, context: opts.context, text: opts.text, href, posted: true });
     const active = async (id: string) => !!(await prisma.teamMember.findUnique({ where: { id }, select: { active: true } }))?.active;
 
-    // 1. The job's editor (Sep 15).
+    // 1. The job's editor (Sep 15) — once there is something to edit (Oct 5
+    //    2026). The editor of record is named at booking, so a photographer's
+    //    "running 10 min late" or a gate-code thread on a job still being
+    //    shot used to DM Kim or John Mark in Manila at 3 AM their time about a
+    //    job they could not start for days. Before the raws are in, the post
+    //    stays on the job's chat (which their brief shows when it lands) and
+    //    nobody in the edit lane is pinged; a tag still reaches them by name.
     const editor = await currentEditorForProject(opts.projectId);
-    if (editor && !skip.has(editor.tmId) && opts.authorKey !== `editor:${editor.editorKey}` && (await active(editor.tmId))) {
+    if (editor && !skip.has(editor.tmId) && opts.authorKey !== `editor:${editor.editorKey}` && (await active(editor.tmId)) && (await rawsAreIn(opts.projectId))) {
       skip.add(editor.tmId);
       const href = `/edit/${opts.projectId}${anchor}`;
       const slackDm = dm(href);

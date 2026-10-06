@@ -208,6 +208,27 @@ const EXTERNAL = "external_agency";
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "—";
 
+/** THE EDITOR'S ONE NEXT ACTION on a row (Oct 5): the button says what
+ *  opening the job is FOR, from the row's own word (never a count that a
+ *  missing per-video row could zero). Same link either way. */
+const EDITOR_MOVES: Record<string, string> = {
+  Revisions: "Fix revisions",
+  "Check needed": "Finish the check",
+  "In editing": "Continue",
+  Paused: "Continue",
+  "Ready for editing": "Open brief",
+  "In editing — not confirmed": "Open brief",
+  Waiting: "View brief",
+  "Waiting on instructions": "View brief",
+};
+function editorNextAction(r: QueueRow, view: "notdone" | "upcoming" | "done"): string {
+  if (view !== "notdone") return "Open";
+  if (r.work.active.length) return "Continue";
+  return EDITOR_MOVES[r.status] ?? "Open";
+}
+/** Work the editor can move now — the button fills in the brand colour. */
+const editorCanMove = (r: QueueRow) => !!r.work.active.length || ["Revisions", "Check needed", "In editing", "Paused", "Ready for editing", "In editing — not confirmed"].includes(r.status);
+
 // One id per status click (§7.1) — the server's idempotency key.
 const newRequestId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -346,10 +367,7 @@ function QueueActions({ row, office, chatHref, queueHref, onReceipt }: {
     label={`${office ? "More actions" : "Files and chat"} for ${row.street}`}
     className="inline-flex items-center justify-center rounded-md border border-transparent text-muted hover:bg-surface-2 hover:text-foreground lg:min-h-8 lg:min-w-7"
     items={[...common, ...extra]}
-    footer={row.revisionContext || row.lastAction ? <div className="space-y-2 break-words">
-      {row.revisionContext && <p>{row.revisionContext}</p>}
-      {row.lastAction && <p>{row.lastAction.name} {row.lastAction.words} · {row.lastAction.at}. Activity alone does not mean they pressed Start.</p>}
-    </div> : undefined}
+    footer={row.revisionContext ? <div className="space-y-2 break-words"><p>{row.revisionContext}</p></div> : undefined}
   ><MoreHorizontal aria-hidden="true" className="size-4" /></ActionMenu>;
   if (!office) return menu();
   return <EditOverridesButton
@@ -592,6 +610,9 @@ export function SimpleQueue({
   // The last thing a status click did beyond writing the label (see StatusPill).
   const [receipt, setReceipt] = useState<string | null>(null);
   const [receiptOk, setReceiptOk] = useState(true);
+  // On a phone the three filters fold behind one button (Oct 5): the tabs
+  // and the rows come first; the selects are one tap away.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const receive = (message: string, ok = true) => { setReceipt(message); setReceiptOk(ok); };
   const all = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
   const upcomingTab = view === "upcoming";
@@ -747,7 +768,16 @@ export function SimpleQueue({
             editor's own queue, where every row is already theirs, but the due
             one stays — "what's due today" is exactly the question an editor
             opens this page with. */}
-        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <button
+          type="button"
+          aria-expanded={filtersOpen}
+          aria-controls="editing-queue-filters"
+          onClick={() => setFiltersOpen((o) => !o)}
+          className={cn("ml-auto min-h-11 rounded-lg border px-3 py-1.5 text-sm font-medium sm:hidden", filtering ? "border-brand text-brand" : "border-border text-muted")}
+        >
+          {filtering ? `Filters · ${[who !== null, when !== "any", stage !== "all"].filter(Boolean).length} on` : "Filters"}
+        </button>
+        <div id="editing-queue-filters" className={cn("w-full flex-wrap items-center gap-x-3 gap-y-1.5 sm:ml-auto sm:flex sm:w-auto", filtersOpen ? "flex" : "hidden")}>
           <label className="flex items-center gap-1.5 text-xs text-muted">
             Stage
             <select
@@ -855,9 +885,9 @@ export function SimpleQueue({
                               Video-type cell beside it — the row doesn't grow. */}
                           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted">
                             <Avatar name={r.client} src={r.clientAvatarUrl} size={16} />
-                            <span className="min-w-0 truncate">{r.client}</span><span className="shrink-0 text-muted-2">· {r.videos} video{r.videos === 1 ? "" : "s"}</span>
+                            <span className="min-w-0 truncate">{r.client}</span><span className="shrink-0 text-muted-2">· {t.label} · {r.videos} video{r.videos === 1 ? "" : "s"}</span>
                           </span>
-                          <span className="sr-only">{t.label} · {r.typeDetail}</span>
+                          <span className="sr-only">{r.typeDetail}</span>
                           {/* One line for all the chips, not stacked blocks —
                               a job that is both URGENT and in revisions used to
                               grow the row by an extra line. The Override chip
@@ -906,7 +936,17 @@ export function SimpleQueue({
                           // is on a job without always changing its word.
                           <StatusPill key={`${r.status}|${r.workChip ?? ""}`} row={r} office={!hideEditor} onReceipt={receive} />
                         )}
-                        {!hideEditor && r.workChip && <span className={`ml-1 text-xs ${r.work.active.length ? "text-success" : "text-muted"}`} title={r.workChip}>{r.work.active.length ? "Working" : "Paused"}</span>}
+                        {/* WHO IS ON IT, by name (Oct 5): the office reads
+                            "Kim · working" on the row, not a bare word. */}
+                        {!hideEditor && r.workChip && (
+                          <span
+                            className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium", r.work.active.length ? "bg-success/15 text-success" : "bg-surface-2 text-muted")}
+                            title={r.workChip}
+                          >
+                            <span aria-hidden="true" className={cn("size-1.5 rounded-full", r.work.active.length ? "bg-success" : "border border-muted-2")} />
+                            {(r.work.active.length ? r.work.active : r.work.paused).map((w) => w.name.split(" ")[0]).join(", ")} · {r.work.active.length ? "working" : "paused"}
+                          </span>
+                        )}
                         {/* Rare office actions keep their confirmation and undo flows. */}
 
                       </span>
@@ -932,7 +972,17 @@ export function SimpleQueue({
                           on this job right now DID to it today, labelled as
                           that. It never changes the pill: "Ready for editing"
                           with "Kim uploaded a version · 12:14pm" under it is
-                          the truth — Kim has not pressed Start. Office only. */}
+                          the truth — Kim has not pressed Start. Office only.
+                          Back ON the row (Oct 5) — it had moved into the
+                          "…" menu, where the office never saw it. */}
+                      {!hideEditor && r.lastAction && (
+                        <span
+                          className="mt-1 block max-w-full break-words whitespace-normal text-xs leading-4 text-muted"
+                          title="Today's activity — not a Start. Only Start and Pause say someone is working."
+                        >
+                          {r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}
+                        </span>
+                      )}
                       {/* WHO IS ON IT (§7.1) — the editor's own Start/Pause,
                           with the time they said so. A declared status, not a
                           timer: nothing here counts hours. Office only (Sep
@@ -971,8 +1021,11 @@ export function SimpleQueue({
                           {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" dot={r.finalCount > 0}
                             title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
                       <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)}
-                        title="Open editing brief" className="inline-flex min-h-11 items-center justify-center rounded-md border border-border bg-surface px-3 py-2 text-sm font-medium lg:min-h-8 lg:px-2 lg:py-1 lg:text-xs hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                        Open
+                        title="Open editing brief" className={cn(
+                          "inline-flex min-h-11 items-center justify-center rounded-md border px-3 py-2 text-sm font-medium lg:min-h-8 lg:px-2 lg:py-1 lg:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                          hideEditor && view === "notdone" && editorCanMove(r) ? "border-brand-action bg-brand-action text-white hover:opacity-90" : "border-border bg-surface hover:bg-surface-2",
+                        )}>
+                        {hideEditor ? editorNextAction(r, view) : "Open"}
                       </Link>
                       <QueueActions
                         key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}

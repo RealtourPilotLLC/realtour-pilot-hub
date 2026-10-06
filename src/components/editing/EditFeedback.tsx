@@ -39,12 +39,15 @@ function rank(n: CutNote): number {
 export function EditFeedback({
   notes,
   canFix,
-  viewerName,
   embedded = false,
   onSeek,
 }: {
   notes: CutNote[];
   canFix: boolean;
+  /** Kept for callers; no longer printed. The "Previewing <name>'s feedback"
+   *  line it fed showed the VIEWER'S OWN name to the editor reading their own
+   *  history (Oct 5 audit: "Previewing Kim's feedback" to Kim). A "view as"
+   *  preview already wears the app-wide preview banner. */
   viewerName?: string | null;
   // embedded: rendered INSIDE the cut panel (no card chrome of its own) with
   // onSeek wiring timestamp chips to the panel's player.
@@ -84,7 +87,6 @@ export function EditFeedback({
             </span>
           )}
         </h2>
-        {!canFix && viewerName && <span className="text-[11px] text-muted-2">Previewing {viewerName}&rsquo;s feedback</span>}
       </div>
       <ul className="divide-y divide-border">
         {sorted.map((n) => (

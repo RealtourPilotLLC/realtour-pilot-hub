@@ -1101,7 +1101,8 @@ export type PortalTopic = {
 
 export type PortalTopicScript = {
   title: string;
-  /** Already money-scrubbed and client-facing; render it, do not re-process it. */
+  /** The script exactly as approved — the same words the crew films and the
+   *  editor cuts to (never money-scrubbed: Oct 5). Render it as is. */
   body: string;
   versionLabel: string | null;
   strategyLabel: string | null;
@@ -1167,11 +1168,16 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
   const out = new Map<string, PortalTopicScript>();
   const ids = topicIds.filter((id) => /^[a-z0-9]{10,40}$/i.test(id));
   if (!ids.length) return out;
-  const [{ scriptVisibility }, { canonicalFromParts, pointsFromJson }, { renderScript }, { stripMoneySentences }] = await Promise.all([
+  // ONE SCRIPT TEXT EVERYWHERE (Oct 5 2026). The client approves exactly the
+  // words the creatives film and cut to — the editor brief and the shoot
+  // screen stopped money-scrubbing script text, so a scrub here would have the
+  // client approve one script while the crew films another ("a $1M price
+  // point" is the market's number, and these are the client's own words, not
+  // our billing). Script text is never passed through the money filter.
+  const [{ scriptVisibility }, { canonicalFromParts, pointsFromJson }, { renderScript }] = await Promise.all([
     import("@/lib/postingKit"),
     import("@/lib/contentScripts"),
     import("@/lib/contentPolicy"),
-    import("@/lib/text"),
   ]);
   const candidates = await prisma.contentScript.findMany({
     where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, topicId: { in: ids } },
@@ -1217,8 +1223,8 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
       const points = pointsFromJson(v.pointsJson);
       const canonical = canonicalFromParts({ title: v.title, categoryLabel: pillarName, pillarId: v.pillarId, hook: v.hook, points, close: v.close, captionCta: v.captionCta }, v.clientId);
       out.set(topicId, {
-        title: v.title, body: stripMoneySentences(renderScript(canonical, { audience: "client" })), versionLabel: `v${v.versionNo}`, strategyLabel, historical,
-        parts: { hook: stripMoneySentences(v.hook), points: points.map((p) => ({ role: p.role, text: stripMoneySentences(p.text) })), close: stripMoneySentences(v.close), captionCta: v.captionCta ? stripMoneySentences(v.captionCta) : null },
+        title: v.title, body: renderScript(canonical, { audience: "client" }), versionLabel: `v${v.versionNo}`, strategyLabel, historical,
+        parts: { hook: v.hook, points: points.map((p) => ({ role: p.role, text: p.text })), close: v.close, captionCta: v.captionCta || null },
         pillarName,
       });
       continue;
@@ -1230,7 +1236,7 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
     // the words on 45 of them, worst case 168 words down to 17 (measured Sep
     // 18). A client's own script is not worth normalising into a house format
     // at the price of losing two thirds of it.
-    out.set(topicId, { title: s.title, body: stripMoneySentences(s.body), versionLabel: null, strategyLabel, historical });
+    out.set(topicId, { title: s.title, body: s.body, versionLabel: null, strategyLabel, historical });
   }
   return out;
 }

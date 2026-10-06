@@ -11,7 +11,7 @@ import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { clip } from "@/lib/text";
-import { pinnedEditorFor } from "@/lib/editors";
+import { TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorTeamMemberId, pinnedEditorFor } from "@/lib/editors";
 import { effectiveTier } from "@/lib/editOverrides";
 import type { Prisma } from "@prisma/client";
 
@@ -3013,6 +3013,20 @@ async function announceReady(
     dedupeKey: since ? `ready-${projectId}-h${since.getTime()}` : `ready-${projectId}`,
   });
   const slack = posted ? "ops Slack" : "ops Slack not reached";
+  // Oct 5 2026: nobody in-house to DM — Luma Visuals' job, or no editor picked
+  // yet — makes it Kyle's move, so he hears it by name on Slack (pingKyle).
+  if (!routedKey && (key === "external_agency" || key === null)) {
+    const { pingKyle } = await import("@/lib/notify");
+    // RawsProject carries no editorVendorKey, so a job pinned to the agency reads key null here.
+    const luma = key === "external_agency" || (pin.pinned && (await prisma.project.findUnique({ where: { id: projectId }, select: { editorVendorKey: true } }).catch(() => null))?.editorVendorKey === "external_agency");
+    const r = await pingKyle(
+      luma ? `📦 Ready for editing — ${street}: this one goes to ${editorMeta("external_agency")?.name ?? "the agency"} — send them the packet from the job page and record the send. ${appBase()}/edit/${projectId}`
+        : `🎬 Ready for editing — ${street}: no editor is assigned — pick one in the Editing Room. ${appBase()}/editing`,
+      luma ? "luma_dispatch" : "edit_unrouted",
+    );
+    const how = Array.isArray(r) ? r[0]?.outcome : r;
+    return `— posted to the editor bench (bell); ${slack}; ${how === "slack" || how === "sent" ? "Kyle pinged by Slack DM" : how === "held" ? "Kyle's ping held until his morning" : how === "ops" ? "Kyle's ping went to ops Slack" : "Kyle not reached directly"}.`;
+  }
   if (!routedKey) return `— posted to the editor bench (bell); ${slack}.`;
   const name = editorMeta(routedKey)?.name ?? routedKey;
   const channel = bridged.find((b) => b.userKey === `editor:${routedKey}`)?.channel ?? "none";
@@ -3362,6 +3376,92 @@ export async function moveLiveVideoWork(projectId: string, key: string | null): 
     data: { assignedKey: key, assignedManually: true },
   }), "the office's editor pick");
   return r.count;
+}
+
+/** Is this card video-editing work — the job's edit card, or a revision in
+ *  the video lane (either side of the move)? A photo-retouch revision (Kyle's)
+ *  is not, and keeps the plain reassign. */
+export function isVideoLaneCard(taskType: string, ...keys: (string | null | undefined)[]): boolean {
+  if (taskType === "edit_video") return true;
+  return taskType === "revision" && keys.some((k) => !!k && (VIDEO_LANE_KEYS as string[]).includes(k));
+}
+
+/**
+ * A HAND REASSIGN OF ONE VIDEO CARD — the task card's assignee picker
+ * (setTaskAssignee) and Ask the Hub's assign_task (Oct 5 2026, R01 edge).
+ *
+ * The card moves AND the job's saved editor follows it, in ONE transaction in
+ * the Start's lock order (withEditorAssignmentChange → underJobLock: the
+ * Project row first, then the card). These two doors used to move only the
+ * card. On a job the office had hand-picked for Kim (Project.editorManual),
+ * the project kept saying Kim, so the moment John's card closed the
+ * hand-picked-editor rule (editorWork.holdersFor) handed the job straight
+ * back to her — startable, her uploads allowed — and the hourly refresh
+ * (mintEditTask) routed an unpinned card back to the pin within the hour.
+ *
+ * THE RULE — the Editing Room's reassign (setEditVideoEditor) for the job's
+ * own card, narrowed for a single revision:
+ *   · the EDIT card to an in-house editor with a Team row is the office's
+ *     pick for the job: pinned to them (editorId, editorManual, no agency);
+ *   · any video card leaving the editor the job is pinned to, when no other
+ *     open video card on the job is still theirs: the pin follows it — to
+ *     the new in-house editor, else to nobody (editorManual with no
+ *     editorId, the "pinned to nobody" pair every engine honours), so the
+ *     job waits in "Needs assigning" instead of drifting back to her;
+ *   · otherwise the pin is left alone — a co-editor's revision changing
+ *     hands does not rewrite whose job it is.
+ * The card is pinned too (assignedManually): a person chose it, as on every
+ * other office door. The same key again only pins the card. A closed card
+ * only changes its name (history), never the job's pin.
+ *
+ * The caller closes whoever lost the job (closeGhostWork) AFTER this
+ * returns: a Start that committed first is undone right behind the write,
+ * and one that comes after reads the new card and pin under its own locks.
+ * Null = the card is gone.
+ */
+export async function reassignVideoCard(
+  taskId: string,
+  key: string | null,
+): Promise<{ projectId: string; title: string; fromKey: string | null; changed: boolean; pin: "editor" | "nobody" | null } | null> {
+  const card = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
+  if (!card?.projectId) return null;
+  const projectId = card.projectId;
+  // Resolved before the lock: a read on the global client inside it is the
+  // thing underJobLock warns about.
+  const tmId = key && (TEAM_MEMBER_EDITOR_KEYS as string[]).includes(key) ? await editorTeamMemberId(key) : null;
+  const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
+  return withEditorAssignmentChange(projectId, async (tx) => {
+    const cur = await tx.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true, title: true, taskType: true, assignedKey: true, assignedManually: true, status: true } });
+    if (!cur || cur.projectId !== projectId) return null;
+    const fromKey = cur.assignedKey;
+    if (fromKey === key) {
+      // Confirming the card's own editor: a person chose it, nothing moves.
+      if (!cur.assignedManually) await tx.smartTask.update({ where: { id: taskId }, data: { assignedManually: true } });
+      return { projectId, title: cur.title, fromKey, changed: false, pin: null };
+    }
+    await tx.smartTask.update({ where: { id: taskId }, data: { assignedKey: key, assignedManually: true } });
+    if (cur.status === "COMPLETED" || cur.status === "CANCELLED") return { projectId, title: cur.title, fromKey, changed: true, pin: null };
+    const p = await tx.project.findUnique({ where: { id: projectId }, select: { editorManual: true, editor: { select: { name: true } } } });
+    const pinnedKey = p?.editorManual ? editorKeyForTeamName(p.editor?.name) : null;
+    const stillTheirs = fromKey && pinnedKey === fromKey
+      ? await tx.smartTask.count({
+          where: {
+            projectId, id: { not: taskId }, assignedKey: fromKey, status: { notIn: ["COMPLETED", "CANCELLED"] },
+            OR: [{ taskType: "edit_video" }, { taskType: "revision", assignedKey: { in: VIDEO_LANE_KEYS } }],
+          },
+        })
+      : 0;
+    const follows = !!fromKey && pinnedKey === fromKey && stillTheirs === 0;
+    let pin: "editor" | "nobody" | null = null;
+    if (tmId && (cur.taskType === "edit_video" || follows)) {
+      await tx.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true, editorVendorKey: null } });
+      pin = "editor";
+    } else if (follows) {
+      await tx.project.update({ where: { id: projectId }, data: { editorId: null, editorManual: true, editorVendorKey: key === "external_agency" ? key : null } });
+      pin = "nobody";
+    }
+    return { projectId, title: cur.title, fromKey, changed: true, pin };
+  }, "a task card's editor reassign");
 }
 
 // ---------------------------------------------------------------------------

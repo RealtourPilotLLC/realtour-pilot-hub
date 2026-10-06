@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { videoTier } from "@/lib/projectStatus";
-import { isHeldForSelfCheck } from "@/lib/selfCheck";
+import { awaitingReviewWhere, isHeldForSelfCheck } from "@/lib/selfCheck";
 import { verdictOf, type Verdict } from "@/lib/reviewAttribution";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { photoQcWhere } from "@/lib/taskBoard";
@@ -426,6 +426,55 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
       assignedKey: t.assignedKey,
     })),
     followUps: [...followMap.values()].sort((a, b) => b.open - a.open),
+  };
+}
+
+// ------------------- After a verdict: the next cut -------------------------
+//
+// Jordan, Oct 5: "our team can keep moving and reviewing videos". A verdict in
+// the workspace closes the cut and takes the reviewer straight to the next one
+// waiting, so the page names it up front (the move happens on the click, not
+// after the server answers). One small read, no collapse: a PENDING round is
+// its cut's latest by construction — the next upload supersedes it — and the
+// same three rules as the queue keep it honest: not held for the editor's
+// check, not on a delivered / cancelled / on-hold job, not a test client
+// unless the desk is showing test records.
+//
+// Order: the other videos of THIS job first (the reviewer is in its context),
+// then the cuts waiting on THEM — the queue's "Waiting on you": their name on
+// the row, or nobody's for an office login — oldest first. Nothing else: a cut
+// on James's name is not Kyle's next click.
+export type NextCut = { id: string; projectId: string; href: string; label: string };
+
+export async function nextCutToReview(opts: {
+  afterSubmissionId: string;
+  projectId: string;
+  viewer: { teamMemberId: string | null; office: boolean };
+  includeTest?: boolean;
+}): Promise<NextCut | null> {
+  const rows = await prisma.reviewSubmission.findMany({
+    where: {
+      ...awaitingReviewWhere(),
+      id: { not: opts.afterSubmissionId },
+      project: { status: { notIn: ["CANCELLED", "ON_HOLD", "DELIVERED"] } },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: 200,
+    select: {
+      id: true, projectId: true, round: true, fileName: true, reviewerTeamMemberId: true,
+      project: { select: { title: true, client: { select: { id: true, name: true } } } },
+    },
+  });
+  const live = rows.filter((r) => opts.includeTest || !r.project?.client || !isSyntheticClientRow(r.project.client));
+  const mine = (r: (typeof live)[number]) =>
+    r.reviewerTeamMemberId ? r.reviewerTeamMemberId === opts.viewer.teamMemberId : opts.viewer.office;
+  const next = live.find((r) => r.projectId === opts.projectId) ?? live.find(mine) ?? null;
+  if (!next) return null;
+  return {
+    id: next.id,
+    projectId: next.projectId,
+    href: `/review/${next.projectId}?cut=${next.id}`,
+    label: `${streetOf(next.project?.title)}${next.fileName ? ` · ${next.fileName}` : ""} · version ${next.round}`,
   };
 }
 

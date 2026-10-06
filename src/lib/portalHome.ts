@@ -199,7 +199,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
     }
     if (i.addressNeeded > 0 && i.perms.session) {
-      add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So your photographer arrives at the right door.", cta: "Add the address", dest: "schedule" });
+      add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So our team arrives at the right door for your filming.", cta: "Add the address", dest: "schedule" });
     }
     if (i.setup && !i.setup.complete && i.setup.remaining > 0 && i.perms.profile) {
       add({ kind: "FINISH_SETUP", count: i.setup.remaining, title: `Finish setting up your account (${plural(i.setup.remaining, "step")} left)`, detail: "Your editor uses these on every video.", cta: "Continue setup", dest: "brand" });

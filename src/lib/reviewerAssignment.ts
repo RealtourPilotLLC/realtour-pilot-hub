@@ -844,20 +844,29 @@ export async function reviewCoverSweep(opts: { now?: Date } = {}): Promise<{
       take: 200,
     });
     const { notifyInApp } = await import("@/lib/notify");
+    const { appBase } = await import("@/lib/appUrl");
     for (const s of held) {
       const hours = coveredHoursBetween(s.reviewerAssignedAt ?? s.createdAt, at, cov);
       if (hours < rules.coverOfferHours) continue;
       const street = (s.project?.title || "a job").split(",")[0].trim();
       const before = await prisma.notification.count({ where: { dedupeKey: `review-cover-offer-${s.id}-0` } });
       if (before > 0) continue;
+      const href = `/review/${s.projectId}?cut=${s.id}`;
       await notifyInApp({
         kind: "review_cover_offer",
         // The instruction is in the TITLE: an any-role row loses its body to
         // the money clamp (notify.ts), so a body would never reach Kyle.
         title: `${firstName(chain.primary.name)} hasn't got to ${street} (v${s.round}) — approve it or send it back yourself`,
         body: `Waiting ${Math.floor(hours)} covered hours. You don't need to take it first.`,
-        href: `/review/${s.projectId}?cut=${s.id}`,
-        targets: [{ roles: ANY_ROLE, userKey: `tm:${backup.teamMemberId}` }],
+        href,
+        // Oct 5 2026: the offer reaches the backup on their "Video in review"
+        // switch (notifyPrefs.KIND_TO_EVENT) — Kyle's is Slack — in one line
+        // that says whose it was, how long it has waited and what to do.
+        targets: [{
+          roles: ANY_ROLE,
+          userKey: `tm:${backup.teamMemberId}`,
+          slackDm: `⏳ ${firstName(chain.primary.name)} hasn't got to ${street} (v${s.round}) — waiting ${Math.floor(hours)} covered hours. Approve it or send it back yourself; you don't need to take it first. ${appBase()}${href}`,
+        }],
         dedupeKey: `review-cover-offer-${s.id}`,
       });
       out.offered++;

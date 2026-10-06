@@ -910,3 +910,169 @@ function askText(raw: string, project: string | null): string {
   }
   return stripMoneySentences(t.replace(/\s+/g, " ")).trim();
 }
+
+// ---------------------------------------------------------------------------
+// THE AGENT PROFILE (Oct 5 2026) — the editor's one card about the client.
+//
+// Jordan, onboarding his first content client: the "Working profile" card in
+// the editor brief becomes "Agent Profile", COLLAPSED by default, showing the
+// agent's name and photo, brokerage, team, their segment badge and one or two
+// sentences on who they are to work with. Expanding it shows "Style & brand":
+// colours (swatches with hex), fonts, logo and style preferences.
+//
+// Two sources for the style, merged with the PORTAL'S EXPLICIT VALUES WINNING:
+//   · the content-program portal's brand setup — the client's own colours
+//     (Client.brandColors), their fonts slot, their logo / branding-card files
+//     and the two "how I like it" boxes (brandProfile.brandBriefFor);
+//   · the Aryeo customer note (Client.generalNotes, the one customer note —
+//     lib/clientNotes), read for hex colours, a "font(s):" line and the lines
+//     that describe the look.
+// A colour list or a font set on the portal replaces the note's; preferences
+// from both are kept, each once. Every free-text value goes through the money
+// scrub — this card never shows pricing — and the segment is the badge only
+// (its tooltip spells out lifetime spend, which is ours).
+// ---------------------------------------------------------------------------
+
+export type AgentStyleSource = "portal" | "aryeo" | "profile";
+export type AgentProfileData = {
+  clientId: string;
+  name: string;
+  avatarUrl: string | null;
+  brokerage: string | null;
+  team: string | null;
+  segment: string | null;
+  /** One or two sentences: who they are and what it is like to work with them. */
+  summary: string;
+  style: {
+    colors: { hex: string; from: AgentStyleSource }[];
+    colorWords: string | null;
+    fonts: { text: string; from: AgentStyleSource } | null;
+    logo: { name: string; url: string | null; from: AgentStyleSource } | null;
+    preferences: { text: string; from: AgentStyleSource }[];
+  };
+  /** Their latest change requests, newest first (at most three). */
+  pastAsks: RevisionAsk[];
+};
+
+/** The brand fields agentProfileFor reads off the portal — BrandBrief's shape, kept structural so callers can pass the one they already loaded. */
+export type AgentPortalBrand = {
+  colors: string[];
+  colorWords: string | null;
+  fontNames: string | null;
+  files: { type: string; name: string; fileName: string | null; url: string | null }[];
+  videoStyle: string | null;
+  preferences: string | null;
+};
+
+const HEX = /#[0-9a-f]{6}\b|#[0-9a-f]{3}\b/gi;
+// A note line that describes the LOOK of the finished video (and is not a
+// logistics line — those are the photographer's and the office's).
+const STYLE_LINE =
+  /\b(logos?|colou?rs?|fonts?|typefaces?|brand\w*|style|look|feel|tone|vibe|music|songs?|captions?|subtitles?|transitions?|intros?|outros?|end ?cards?|graphics|titles?|pac(?:e|ing)|bright|airy|moody|clean|minimal|modern|luxur\w*|elegant|vertical|horizontal|watermark|phone number|website|animated)\b/i;
+const NOT_STYLE =
+  /\b(lockbox|gate code|park\w*|access|keys?|schedul\w*|calendar|availab\w*|call (?:me|her|him)|text (?:me|her|him)|e-?mail (?:me|her|him)|invoice|pay\w*)\b/i;
+const sentences = (s: string, n: number) =>
+  s.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean).slice(0, n).join(" ");
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9#]+/g, " ").trim();
+
+/** What the Aryeo customer note says about the client's brand and look. Pure, so it can be tested on its own. */
+export function brandFromCustomerNote(note: string | null | undefined): { colors: string[]; fonts: string | null; preferences: string[] } {
+  const text = (note ?? "").trim();
+  if (!text) return { colors: [], fonts: null, preferences: [] };
+  const colors = [...new Set((text.match(HEX) ?? []).map((c) => c.toLowerCase()))];
+  let fonts: string | null = null;
+  const preferences: string[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/^[•\-*\s]+/, "").trim();
+    if (!line) continue;
+    const font = /\b(?:fonts?|typefaces?)\b\s*(?:is|are|:|-|–|—)\s*(.+)$/i.exec(line);
+    if (font && !fonts) {
+      fonts = clip(font[1].replace(/[.;]\s*$/, "").trim(), 160);
+      continue;
+    }
+    // A line that is only colours ("Brand colors: #0B3D2E, #C9A227") is said by the swatches.
+    if (line.replace(HEX, "").replace(/\b(brand|colou?rs?|palette|are|is|and|our|her|his|their)\b|[:,;.&\s-]/gi, "").length === 0) continue;
+    if (STYLE_LINE.test(line) && !NOT_STYLE.test(line)) preferences.push(clip(line, 220));
+    if (preferences.length >= 4) break;
+  }
+  return { colors, fonts, preferences };
+}
+
+export async function agentProfileFor(
+  clientId: string,
+  opts: { brand?: AgentPortalBrand | null; links?: boolean } = {},
+): Promise<AgentProfileData | null> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { id: true, name: true, avatarUrl: true, company: true, aryeoTeamName: true, segment: true, profileJson: true, generalNotes: true, editingPreferences: true, parent: { select: { name: true, aryeoTeamName: true } } },
+  });
+  if (!client) return null;
+  const { creativeCustomerNote } = await import("@/lib/clientNotes");
+  const [brand, facts, asks] = await Promise.all([
+    opts.brand !== undefined
+      ? Promise.resolve(opts.brand)
+      : import("@/lib/brandProfile").then((m) => m.brandBriefFor(clientId, { scrub: true, links: opts.links ?? false })).catch(() => null),
+    liveProfileFacts(clientId).catch(() => null),
+    recentRevisionAsks(clientId, 3).catch(() => [] as RevisionAsk[]),
+  ]);
+  const safe = (s: string | null | undefined) => {
+    const t = stripMoneySentences((s ?? "").trim()).trim();
+    return t || null;
+  };
+  const profile = parseClientProfile(client.profileJson);
+  const ev = editorView(profile);
+  const note = brandFromCustomerNote(creativeCustomerNote(client));
+
+  // WHO THEY ARE TO WORK WITH, in at most two sentences — the editor-safe
+  // summary the profile builder writes, else a plain line from the live counts.
+  const firstName = client.name.split(/\s+/)[0] || client.name;
+  const fromProfile = safe(ev?.editing.summary) ?? safe(ev?.brandStyle ? sentences(ev.brandStyle, 1) : null);
+  const summary = fromProfile
+    ? sentences(fromProfile, 2)
+    : profile?.newClient || !facts || facts.totalOrders <= 1
+      ? `New client, first job with us — nothing on file yet about how ${firstName} likes their videos, so cut to the house standard and flag anything they ask for.`
+      : `${facts.totalOrders} jobs with us${facts.revisions ? `; ${firstName} has asked for changes ${facts.revisions} time${facts.revisions === 1 ? "" : "s"}` : `, and ${firstName} has never asked for changes`}.`;
+
+  // STYLE & BRAND — the portal's explicit value wins; preferences from both.
+  const portalColors = (brand?.colors ?? []).map((hex) => ({ hex: hex.toLowerCase(), from: "portal" as const }));
+  const colors = portalColors.length ? portalColors : note.colors.map((hex) => ({ hex, from: "aryeo" as const }));
+  const portalFonts = safe(brand?.fontNames);
+  // The Aryeo note's font line is the client's free text like every other
+  // line of it, so it goes through the same money filter (review, Oct 5).
+  const noteFonts = safe(note.fonts);
+  const fonts = portalFonts ? { text: portalFonts, from: "portal" as const } : noteFonts ? { text: noteFonts, from: "aryeo" as const } : null;
+  const logoFile = brand?.files.find((f) => f.type === "LOGO") ?? brand?.files.find((f) => f.type === "BRANDING_CARD") ?? null;
+  const logo = logoFile ? { name: logoFile.fileName ?? logoFile.name, url: opts.links === false ? null : logoFile.url, from: "portal" as const } : null;
+  const seen = new Set<string>();
+  const preferences: { text: string; from: AgentStyleSource }[] = [];
+  const add = (text: string | null | undefined, from: AgentStyleSource) => {
+    const t = safe(text);
+    if (!t) return;
+    const k = norm(t).slice(0, 80);
+    if (!k || seen.has(k)) return;
+    seen.add(k);
+    preferences.push({ text: clip(t, 400), from });
+  };
+  add(brand?.videoStyle, "portal");
+  add(brand?.preferences, "portal");
+  for (const p of note.preferences) add(p, "aryeo");
+  // Their "never" rules ALWAYS make it (review, Oct 5 night): a client with
+  // three or more preferences used to lose every don't to the slice, and a
+  // don't is the line an editor most needs. Then up to three preferences.
+  for (const d of ev?.editing.donts ?? []) add(/^(never|don'?t|do not|avoid)\b/i.test(d) ? d : `Avoid: ${d}`, "profile");
+  for (const p of (ev?.editing.prefs ?? []).slice(0, 3)) add(p, "profile");
+
+  const team = client.aryeoTeamName?.trim() || client.parent?.aryeoTeamName?.trim() || null;
+  const brokerage = client.company?.trim() || null;
+  return {
+    clientId: client.id,
+    name: client.name,
+    avatarUrl: client.avatarUrl,
+    brokerage,
+    team: team && norm(team) !== norm(brokerage ?? "") ? team : null,
+    segment: facts?.segment ?? client.segment ?? null,
+    summary,
+    style: { colors, colorWords: safe(brand?.colorWords), fonts, logo, preferences },
+    pastAsks: asks.slice(0, 3),
+  };
+}

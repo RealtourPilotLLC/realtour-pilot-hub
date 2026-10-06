@@ -1022,11 +1022,19 @@ export async function setTaskAssignee(taskId: string, key: string) {
   const assignedKey = key && validKeys.has(key) ? key : null;
   const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true, taskType: true, projectId: true } });
   if (!prev) return;
-  const t = await writeTaskWithReceiptGeneration(prev, (db) => db.smartTask.update({
-    where: { id: taskId },
-    data: { assignedKey },
-    select: { projectId: true, title: true },
-  }));
+  // A VIDEO card (the edit card, or a video-lane revision) takes the job's
+  // saved editor with it (tasks.reassignVideoCard, Oct 5 2026): otherwise a
+  // job hand-picked for Kim went straight back to her the moment John's card
+  // closed. Every other card is a plain reassign, as before.
+  const { isVideoLaneCard, reassignVideoCard } = await import("@/lib/tasks");
+  const t = prev.projectId && isVideoLaneCard(prev.taskType, prev.assignedKey, assignedKey)
+    ? await reassignVideoCard(taskId, assignedKey)
+    : await writeTaskWithReceiptGeneration(prev, (db) => db.smartTask.update({
+        where: { id: taskId },
+        data: { assignedKey },
+        select: { projectId: true, title: true },
+      }));
+  if (!t) return;
   // THE WORK FOLLOWS THE CARD (§7.1, O09/A58). Moving a job's edit card — or
   // its video-lane revision — off an editor ends their stretch on it now, as
   // the Editing Room's own reassign does, recorded as whoever moved it. The
@@ -1333,21 +1341,33 @@ export async function assignMember(
         select: { id: true },
       });
       const { editorKeyForTeamName } = await import("@/lib/editors");
-      const { DESK_EDITOR_KEYS, closeGhostWork } = await import("@/lib/editorWork");
+      const { DESK_EDITOR_KEYS } = await import("@/lib/editorWork");
       const key = member ? editorKeyForTeamName(member.name) : null;
       if (key && DESK_EDITOR_KEYS.includes(key)) {
         const { moveLiveVideoWork } = await import("@/lib/tasks");
-        const moved = await moveLiveVideoWork(projectId, key);
-        if (moved > 0) {
-          const actor = await workActorNow();
-          await closeGhostWork(projectId, { reason: "REASSIGNED", actor, detail: `${actor.name} picked ${member!.name} on the project page` });
-        }
+        await moveLiveVideoWork(projectId, key);
       } else if (live) {
         const { mintEditTask } = await import("@/lib/tasks");
         await mintEditTask(projectId);
       }
     } catch (e) {
       console.error("[assignMember] the live card did not follow the pick — the hourly refresh is the backstop", projectId, e);
+    }
+    // WHOEVER LOST THE JOB STOPS NOW — card or no card (Oct 5 2026). This
+    // close used to run only when a card moved, but a job with no card is
+    // held through the pin itself (editorWork.holdersFor's hand-picked
+    // rule): picking John, or clearing the pick, on such a job left Kim
+    // ACTIVE on work that was no longer hers until the hourly check. After
+    // the pin is written, so a Start that committed first is closed right
+    // behind it; one that comes after reads the new pin under its lock and
+    // is refused. Recomputed under the desk lock, so an editor who still
+    // holds the job another way (a card, a video) keeps it. Never throws.
+    {
+      const { closeGhostWork } = await import("@/lib/editorWork");
+      const actor = await workActorNow().catch(() => ({ userId: null, name: "The office", role: "OWNER" as const }));
+      await closeGhostWork(projectId, member
+        ? { reason: "REASSIGNED", actor, detail: `${actor.name} picked ${member.name} on the project page` }
+        : { reason: "UNASSIGNED", actor, detail: `${actor.name} cleared the editor on the project page` });
     }
   }
   revalidatePath(`/projects/${projectId}`);
@@ -1754,6 +1774,12 @@ export async function assignTeamMember(
   if (field === "editorId") {
     const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
     await withEditorAssignmentChange(projectId, write, "team editor assignment");
+    // A hand-picked job with no card is held through this very column
+    // (editorWork.holdersFor): whoever it no longer names stops now, after
+    // the write, as on the project page's pick (Oct 5 2026). Never throws.
+    const { closeGhostWork } = await import("@/lib/editorWork");
+    const actor = await workActorNow().catch(() => ({ userId: null, name: "The office", role: "OWNER" as const }));
+    await closeGhostWork(projectId, { reason: memberId ? "REASSIGNED" : "UNASSIGNED", actor, detail: `the job's editor was changed by ${actor.name}` });
   } else await write(prisma);
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");

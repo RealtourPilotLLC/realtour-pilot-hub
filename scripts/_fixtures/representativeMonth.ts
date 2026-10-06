@@ -832,6 +832,90 @@ export async function seedRepresentativeMonth(prisma: PrismaClient, opts: Repres
 // ---------------------------------------------------------------------------
 type MonthRow = { id: string; monthKey: string };
 
+/** The bytes a fixture cut says it is when it carries no size of its own. */
+const FIXTURE_FINAL_BYTES = 4_194_304;
+
+/**
+ * THE FINAL DROPBOX BACKUP, AS EVIDENCE (Oct 5 2026).
+ *
+ * Since the Sep 30–Oct 4 audit fixes a monthly video is recorded as sent only
+ * when Dropbox itself confirms the exact client file sits in the job's Final
+ * folder (monthlyFinal.monthlyFinalSnapshot: files/get_metadata on that path,
+ * and the cut_dropbox_backup receipt saying those are this version's bytes).
+ * The fixture used to press "sent" with no such file anywhere, so every full
+ * tier stopped at "The exact client file needs a verified backup in this job's
+ * final Dropbox folder." — cp15, demo-smoke, the isolated demo seed and every
+ * drill that seeds a representative month.
+ *
+ * The rule is not loosened: the fixture files the evidence the approval's
+ * Dropbox copy leaves behind — the cut's finalPath in the job's own Final
+ * folder (the same actualFolderPaths the check reads) and its backup receipt
+ * (finalDropbox.backupReceiptData, the row completeDropboxBackup writes) — and
+ * then, for the length of `run` only, answers Dropbox's metadata read for
+ * EXACTLY that file from this process, so the product's real check runs end to
+ * end (current version, owner access, library link, the handoff marker). It
+ * uploads nothing and calls no provider: the token, account and metadata calls
+ * are answered here, every other request falls through to the caller's own
+ * fence, and a Dropbox connection row borrowed for the call is put back as it
+ * was. Full tier only, so never on a hosted database (assertIsolatedDatabase).
+ */
+async function withFinalBackup<T>(prisma: PrismaClient, submissionId: string, run: () => Promise<T>): Promise<T> {
+  const { createHash } = await import("node:crypto");
+  const { actualFolderPaths } = await import("@/lib/dropboxFolders");
+  const { backupReceiptData } = await import("@/lib/finalDropbox");
+  const { saveSecret } = await import("@/lib/integrations/connections");
+
+  // 1. The file, filed where the approval's copy files it.
+  const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: submissionId }, include: { project: { include: { client: { select: { id: true, name: true } } } } } });
+  const finalPath = `${actualFolderPaths(cut.project).finalVideo}/${cut.fileName ?? `${submissionId}.mp4`}`;
+  // finalPath and completedAt only: sizeBytes is part of the identity the
+  // client's approval was recorded against (cutIdentityHash), so a cut with no
+  // size keeps none and the file below simply reports its own.
+  if (cut.finalPath !== finalPath || !cut.completedAt) {
+    await prisma.reviewSubmission.update({ where: { id: submissionId }, data: { finalPath, completedAt: cut.completedAt ?? new Date() } });
+  }
+  // 2. The receipt that says these are this version's bytes.
+  const filed = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: submissionId } });
+  const file = {
+    id: `id:cp15-fixture-${submissionId}`,
+    rev: "0cp15f1x7ure",
+    hash: createHash("sha256").update(`cp15-fixture-final:${submissionId}`).digest("hex"),
+    size: filed.sizeBytes ?? FIXTURE_FINAL_BYTES,
+    path: finalPath,
+  };
+  const receipt = backupReceiptData(filed, file);
+  await prisma.auditLog.upsert({ where: { id: receipt.id }, create: receipt, update: {} });
+
+  // 3. Dropbox's own answer for that one file, for this call only.
+  const before = await prisma.connection.findUnique({ where: { provider: "dropbox" } });
+  const borrowed = !before?.secretEncrypted;
+  if (borrowed) await saveSecret("dropbox", "cp15-fixture-stand-in-not-a-token", { accountLabel: "CP-15 fixture stand-in" });
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  const prev = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://api.dropbox.com/oauth2/token") return json({ access_token: "cp15-fixture-stand-in", token_type: "bearer", expires_in: 14_400 });
+    if (url === "https://api.dropboxapi.com/2/users/get_current_account") return json({ account_id: "dbid:cp15-fixture", root_info: {} });
+    if (url === "https://api.dropboxapi.com/2/files/get_metadata") {
+      let asked = "";
+      try { asked = String((JSON.parse(String(init?.body ?? "{}")) as { path?: string }).path ?? ""); } catch { /* not ours */ }
+      if (asked.toLowerCase() === file.path.toLowerCase()) {
+        return json({ ".tag": "file", id: file.id, rev: file.rev, content_hash: file.hash, size: file.size, name: file.path.split("/").pop(), path_display: file.path, path_lower: file.path.toLowerCase() });
+      }
+    }
+    return prev(input, init);
+  }) as typeof fetch;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = prev;
+    if (borrowed) {
+      if (before) await prisma.connection.update({ where: { provider: "dropbox" }, data: { status: before.status, secretEncrypted: before.secretEncrypted, accountLabel: before.accountLabel, metadata: before.metadata, lastError: before.lastError } });
+      else await prisma.connection.delete({ where: { provider: "dropbox" } });
+    }
+  }
+}
+
 async function seedFullTier(
   prisma: PrismaClient,
   a: {
@@ -850,6 +934,7 @@ async function seedFullTier(
   const { addApprovedCutToLibrary } = await import("@/lib/portalLibrary");
   const cd = await import("@/lib/clientDecisions");
   const { markVideoSent } = await import("@/lib/readyToSend");
+  const { syncEnrollmentVideos } = await import("@/lib/contentVideos");
   const slug = a.client.name.toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "") || "test";
 
   const ensureProject = async (m: MonthRow, o: { status: "EDITING" | "DELIVERED"; shootDate: Date; quantity: number; deliveredAt?: Date | null }) => {
@@ -902,7 +987,13 @@ async function seedFullTier(
   const sendToClient = async (id: string, label: string) => {
     const s = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id }, select: { sentToClientAt: true } });
     if (s.sentToClientAt) return;
-    const r = await markVideoSent(id, "Kyle (CP-15 fixture)");
+    // Oct 5 2026: the delivery claim now also requires THIS version to be the
+    // one the client's library row points at (ContentVideoSource → videoId),
+    // so the library is rebuilt first — exactly as the product's own portal
+    // publication does (contentVideos.publishOnce → syncEnrollmentLibrary)
+    // before it records the send.
+    await syncEnrollmentVideos({ id: a.enrollmentId, clientId: a.client.id });
+    const r = await withFinalBackup(prisma, id, () => markVideoSent(id, "Kyle (CP-15 fixture)"));
     if (!r.ok) throw new Error(`${label}: could not be marked sent — ${r.message}`);
     did(`${label}: sent to the client (delivered)`);
   };

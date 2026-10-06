@@ -10,7 +10,7 @@ import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
-import type { SessionBrief, OutputBrief } from "@/lib/deliverableOutputs";
+import type { SessionBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
 // clean, serializable view model per shoot — appointment access brief, customer
@@ -152,6 +152,9 @@ export type ShootView = {
      * neither is guessed at. Null when nothing is pending.
      */
     addressChangePending: string | null;
+    /** A monthly content session (the job belongs to a content month): the
+     *  screen speaks about topics and scripts, not a listing's rooms. */
+    contentSession: boolean;
   };
   appointment: {
     id: string;
@@ -291,10 +294,15 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
   // use, so the person holding the camera and the person cutting read one
   // brief. A failed read is a missing card, never a broken shoot screen.
   const briefs = await import("@/lib/deliverableOutputs");
-  const [session, outputBriefs] = await Promise.all([
+  const [sharedSession, outputBriefs] = await Promise.all([
     p.contentMonthId ? briefs.sessionBriefFor(p.id).catch(() => null) : Promise.resolve(null),
     briefs.outputBriefsFor(p.id, { scrub: true }).catch(() => []),
   ]);
+  // The office's newest approval is what gets filmed (Oct 5): a failed read
+  // keeps the released scripts exactly as they were, never an empty card.
+  const session = sharedSession && p.contentMonthId
+    ? await withOfficeApprovedScripts(p.contentMonthId, sharedSession, briefs.directionOf).catch(() => sharedSession)
+    : sharedSession;
 
   return {
     project: {
@@ -318,6 +326,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       reelScriptUrl: p.reelScriptUrl,
       reelRecipeUpdatedAt: p.reelRecipeUpdatedAt?.toISOString() ?? null,
       addressChangePending,
+      contentSession: !!p.contentMonthId,
     },
     appointment: primary
       ? (() => {
@@ -394,6 +403,70 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
     outputBriefs: outputBriefs
       .filter((o) => o.directionSource === "own" || !!o.brandAsset || o.brandChoice === "none")
       .map((o) => ({ outputId: o.outputId, label: o.label, format: o.format, versionLabel: o.versionLabel, sections: o.sections.map((x) => ({ label: x.label, text: x.text })), brandAsset: o.brandAsset, brandChoice: o.brandChoice })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// THE SCRIPT TO FILM (Oct 5 2026, photographer audit). sessionBriefFor shows a
+// topic's script only once the office has pressed Approve AND Share — so a
+// script Jordan approved this morning, not yet released to the client's
+// portal, read "still with the office" on the photographer's phone while the
+// client sat in front of the camera. The office's approval is what gets
+// filmed: when a topic's script carries an approved version that is not the
+// shared one (approved, not shared yet — or a newer approval over the shared
+// one, which approval marks SUPERSEDED), the shoot screen shows the approved
+// words, says the client has not approved this version, and the receipt
+// lines follow it. Same choice of script per topic as topicsForSession
+// (newest first), same scrub and cap as the shared reader. A draft the office
+// has not approved never shows.
+// ---------------------------------------------------------------------------
+const OFFICE_SCRIPT_CAP = 4000;
+export async function withOfficeApprovedScripts(
+  monthId: string,
+  session: SessionBrief,
+  directionOf: (v: { filmingNotes?: string | null; creativeDirection?: string | null; productionNotes?: string | null }) => ScriptDirection | null,
+): Promise<SessionBrief> {
+  const topicIds = session.topics.map((t) => t.topicId);
+  if (!topicIds.length) return session;
+  const scripts = await prisma.contentScript.findMany({
+    where: { monthId, topicId: { in: topicIds }, historical: false },
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    select: { id: true, topicId: true, approvedVersionId: true, sharedVersionId: true },
+  });
+  const chosen = new Map<string, (typeof scripts)[number]>();
+  for (const s of scripts) if (s.topicId && !chosen.has(s.topicId)) chosen.set(s.topicId, s);
+  const wanted = [...chosen.values()].filter((s) => s.approvedVersionId && s.approvedVersionId !== s.sharedVersionId);
+  if (!wanted.length) return session;
+  const versions = await prisma.contentScriptVersion.findMany({
+    // Current authorisation only: a version handed back to review is not approved.
+    where: { id: { in: wanted.map((s) => s.approvedVersionId!) }, scriptId: { in: wanted.map((s) => s.id) }, status: { in: ["APPROVED", "SHARED"] } },
+    select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true },
+  });
+  const byId = new Map(versions.map((v) => [v.id, v]));
+  const clipText = (s: string | null | undefined) => {
+    const t = stripMoneySentences((s ?? "").trim()).trim();
+    return t ? (t.length > OFFICE_SCRIPT_CAP ? `${t.slice(0, OFFICE_SCRIPT_CAP - 1).trimEnd()}…` : t) : null;
+  };
+  return {
+    ...session,
+    topics: session.topics.map((t) => {
+      const s = chosen.get(t.topicId);
+      const v = s?.approvedVersionId ? byId.get(s.approvedVersionId) : undefined;
+      // Never older than what the client was shown.
+      if (!s || !v || (t.script && t.script.versionNo > v.versionNo)) return t;
+      return {
+        ...t,
+        script: {
+          title: v.title || t.script?.title || t.title,
+          versionNo: v.versionNo,
+          text: clipText(v.body),
+          clientApproved: false,
+          standing: s.sharedVersionId ? "approved by the office · newer than the version the client saw" : "approved by the office · not shared with the client yet",
+          direction: directionOf(v),
+        },
+        noScript: null,
+      };
+    }),
   };
 }
 

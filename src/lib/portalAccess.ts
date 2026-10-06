@@ -151,18 +151,34 @@ export function refusalMessage(viewer: PortalViewer, permission: PortalPermissio
 }
 
 // ---------------------------------------------------------------------------
-// One-time sign-in tokens: 32 random bytes, sha256 stored, 15 minutes, single
-// use. The raw value lives in exactly two places — the URL the person opens
-// and, when the switch is on, the outbox row that emails it.
+// One-time sign-in tokens: 32 random bytes, sha256 stored, single use. The raw
+// value lives in exactly two places — the URL the person opens and, when the
+// switch is on, the outbox row that emails it.
+//
+// HOW LONG (Oct 5 2026). The link a person asks for by typing their email
+// lasts 15 minutes: they are at the sign-in page waiting for it. A link that
+// arrives inside an email we sent on our own clock — a review reminder, a
+// script ready to approve — lasts 24 hours: it is read whenever the inbox is.
+// And OPENING a link no longer spends it (src/app/portal/auth/[token]): mail
+// scanners and iMessage previews fetch every link they see, so the page asks
+// for one press and only that press signs the person in.
 // ---------------------------------------------------------------------------
 
 export const LOGIN_TOKEN_TTL_MS = 15 * 60_000;
+export const EMAILED_LINK_TTL_MS = 24 * 3600_000;
 const hashToken = (raw: string) => createHash("sha256").update(raw).digest("hex");
 const loginUrl = (raw: string) => `${appBase()}/portal/auth/${raw}`;
 
-async function mintToken(clientUserId: string): Promise<{ raw: string; expiresAt: Date }> {
+/** A person holds a live link they asked for by email address (a 15-minute
+ *  one) — the one minting must not cut off. A longer-lived emailed link may be
+ *  replaced: the newest email carries the working one. */
+export function holdsTypedLoginLink(expiresAt: Date | null | undefined, now: Date = new Date()): boolean {
+  return !!expiresAt && expiresAt.getTime() > now.getTime() && expiresAt.getTime() - now.getTime() <= LOGIN_TOKEN_TTL_MS;
+}
+
+async function mintToken(clientUserId: string, ttlMs: number = LOGIN_TOKEN_TTL_MS): Promise<{ raw: string; expiresAt: Date }> {
   const raw = randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + LOGIN_TOKEN_TTL_MS);
+  const expiresAt = new Date(Date.now() + ttlMs);
   // One live token per person: minting again voids the previous link.
   await prisma.clientUser.update({ where: { id: clientUserId }, data: { loginTokenHash: hashToken(raw), loginTokenExpiresAt: expiresAt } });
   return { raw, expiresAt };
@@ -184,6 +200,18 @@ export type LoginConsumption =
  * that no page could honour was how the sign-in loop started (review, Sep
  * 17). The link is still burnt so it cannot be retried.
  */
+/**
+ * Is this link still good, WITHOUT spending it? The GET of the sign-in page
+ * asks this so a dead link goes straight to the sign-in screen with its
+ * reason; only the press (consumeLoginToken) uses it up. No write.
+ */
+export async function peekLoginToken(raw: string): Promise<{ ok: true } | { ok: false; reason: "invalid" }> {
+  if (!/^[A-Za-z0-9_-]{40,60}$/.test(raw)) return { ok: false, reason: "invalid" };
+  const holder = await prisma.clientUser.findUnique({ where: { loginTokenHash: hashToken(raw) }, select: { status: true, loginTokenExpiresAt: true } });
+  if (!holder || holder.status === "DISABLED" || !holder.loginTokenExpiresAt || holder.loginTokenExpiresAt.getTime() <= Date.now()) return { ok: false, reason: "invalid" };
+  return { ok: true };
+}
+
 export async function consumeLoginToken(raw: string): Promise<LoginConsumption> {
   if (!/^[A-Za-z0-9_-]{40,60}$/.test(raw)) return { ok: false, reason: "invalid" };
   const hash = hashToken(raw);
@@ -839,11 +867,12 @@ export async function expirePortalToken(enrollmentId: string, days: number | nul
 
 /**
  * Staff mint a sign-in link and open it THEMSELVES — how sign-in is tested
- * with no email. Limited to TEST clients while `portal_login_email` is off:
+ * with no email — and the reminder and script emails mint one to send
+ * (`emailed`: 24 hours, Oct 5 2026). Limited to TEST clients while `portal_login_email` is off:
  * signing in as a real client's person would write lastLoginAt/acceptedAt on
  * a real record that no real person touched.
  */
-export async function mintLoginLink(membershipId: string, byAppUserId: string | null): Promise<{ url: string; expiresAt: Date }> {
+export async function mintLoginLink(membershipId: string, byAppUserId: string | null, opts: { emailed?: boolean } = {}): Promise<{ url: string; expiresAt: Date }> {
   const m = await prisma.clientMembership.findUnique({ where: { id: membershipId }, select: { clientUserId: true, enrollmentId: true, revokedAt: true } });
   if (!m || m.revokedAt) throw new Error("That seat is revoked or doesn't exist.");
   const target = await testClientOf(m.enrollmentId);
@@ -859,7 +888,9 @@ export async function mintLoginLink(membershipId: string, byAppUserId: string | 
     const d = await programReach("portal_sign_in", target.clientId);
     if (!d.ok) throw new Error(`${target.name || "This client"} is not in the program rollout for signing in (${d.reason}). Use their portal link, or add them in ${SCOPE_HOME}.`);
   }
-  const { raw, expiresAt } = await mintToken(m.clientUserId);
+  // A link that goes into one of our emails (a reminder, a script to approve)
+  // lasts 24 hours; staff opening one themselves keep the 15 minutes.
+  const { raw, expiresAt } = await mintToken(m.clientUserId, opts.emailed ? EMAILED_LINK_TTL_MS : LOGIN_TOKEN_TTL_MS);
   console.info(`[portal] login link minted for membership ${membershipId} by ${byAppUserId ?? "unknown"} (expires ${expiresAt.toISOString()})`);
   return { url: loginUrl(raw), expiresAt };
 }
@@ -956,8 +987,10 @@ export async function requestLoginLink(emailRaw: string): Promise<void> {
     return;
   }
 
-  if (person.loginTokenExpiresAt && person.loginTokenExpiresAt.getTime() > Date.now()) {
-    console.info(`[portal] sign-in link requested for ${person.id} while one is still live (until ${person.loginTokenExpiresAt.toISOString()}) — not re-sent`);
+  // Throttle on a link THEY asked for (15 minutes). A 24-hour link from one of
+  // our emails does not stop them getting a fresh one by typing their address.
+  if (holdsTypedLoginLink(person.loginTokenExpiresAt)) {
+    console.info(`[portal] sign-in link requested for ${person.id} while one is still live (until ${person.loginTokenExpiresAt!.toISOString()}) — not re-sent`);
     return;
   }
 

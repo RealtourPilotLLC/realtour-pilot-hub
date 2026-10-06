@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { cutIdentityHash } from "@/lib/cutTranscripts";
-import { clientCutFiles, cutChainOf, stableCutIdentity } from "@/lib/cutEntitlement";
+import { clientCutFiles, clientVersionNumber, cutChainOf, stableCutIdentity } from "@/lib/cutEntitlement";
 import { submissionForEnrollment, type PortalViewer } from "@/lib/portal";
 import { actorLabel, actorLabelResolved } from "@/lib/portalAccess";
 import { cutReleasedAt } from "@/lib/contentVideos";
@@ -81,6 +81,10 @@ export type CommentView = {
 export type CutVersion = {
   submissionId: string;
   round: number;
+  /** The number the CLIENT knows this version by: 1, 2, 3 over the versions
+   *  they were shown. `round` is the editor's count, which includes rounds
+   *  James sent back before release (Oct 5 2026). */
+  clientVersion: number;
   fileName: string | null;
   releasedAtISO: string | null;
   /** Streamable URL (raw — the page mints the media token). Only the CURRENT
@@ -422,7 +426,9 @@ export async function cutHistory(viewer: PortalViewer, submissionId: string): Pr
       await prisma.contentReviewWindow.updateMany({ where: { submissionId: current.id, firstViewedAt: null }, data: { firstViewedAt: new Date() } }).catch(() => {});
     }
   }
-  return rounds.map((r): CutVersion => {
+  // Only the versions the client was shown, numbered as they saw them. A round
+  // sent back internally ("Not shared with you") is office history, not theirs.
+  return rounds.filter((r) => !!cutReleasedAt(r)).map((r): CutVersion => {
     const releasedAt = cutReleasedAt(r);
     const mine = decisions.filter((d) => d.submissionId === r.id);
     const approval = mine.find((d) => d.decision === "APPROVE" && d.receiptState !== "SUPERSEDED") ?? null;
@@ -437,7 +443,7 @@ export async function cutHistory(viewer: PortalViewer, submissionId: string): Pr
           : request ? "YOU_REQUESTED_CHANGES" : "AWAITING_YOUR_DECISION";
     const decisive = approval ?? request;
     return {
-      submissionId: r.id, round: r.round, fileName: r.fileName, releasedAtISO: releasedAt?.toISOString() ?? null,
+      submissionId: r.id, round: r.round, clientVersion: clientVersionNumber(rounds, r.id), fileName: r.fileName, releasedAtISO: releasedAt?.toISOString() ?? null,
       assetUrl: releasedAt && isCurrent ? r.assetUrl : null, clientState, isCurrent, decidedByMe: !!decisive && isMine(viewer, decisive), revisionOpen,
       decisions: mine.map((d) => ({ id: d.id, decision: d.decision as DecisionView["decision"], actorLabel: d.actorLabel, decidedAtISO: d.decidedAt.toISOString(), receiptState: d.receiptState, openNotesChoice: d.openNotesChoice, note: d.note, contentHash: d.contentHash, basis: d.basis })),
       comments: comments.get(r.id) ?? [],
@@ -612,6 +618,9 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     await prisma.reviewSubmission.updateMany({ where: { id: submissionId, status: "CHANGES_REQUESTED", clientRequestedAt: { not: null } }, data: { status: "APPROVED" } }).catch(() => {});
   }
   if (r.duplicate) return { ok: true, decisionId: r.decisionId, duplicate: true, message: "Already approved — this version is marked as yours." };
+  // Notes sent along with the approval: Kyle's task, written now so it can't
+  // be lost; his bell and Slack follow in the background (the portal action).
+  if (choice === "INCLUDE" && open.length) await fileApprovalNotesTask(r.decisionId).catch((e) => console.error("[clientDecisions] approval notes task", r.decisionId, e));
   return {
     ok: true, decisionId: r.decisionId, duplicate: false,
     message: overridden !== null
@@ -965,10 +974,95 @@ export async function requestChangesOnCut(
   if (full.videoId) await prisma.contentVideo.update({ where: { id: full.videoId }, data: { status: "EDITING" } }).catch(() => {});
   await supersedeEarlierRounds(viewer.enrollment.id, { id: submissionId, round: full.round }, decision.id);
   const feeLine = round?.feeDecision === "PENDING" ? " Our team will confirm the extra-round fee before anything is charged." : "";
+  // Only promise what will happen (Oct 5 2026): nothing texts a client when a
+  // new version lands. The review reminder email does — when it is switched
+  // on and reaches this client — and otherwise Kyle tells them himself.
+  const whenReady = (await clientHearsWhenReady(viewer.enrollment.clientId)) ? "We'll let you know when the new version is ready." : "Kyle will reach out when the new version is ready.";
   return {
     ok: true, decisionId: decision.id, duplicate: false,
-    message: (routed ? "Sent to the editor — we'll text you when the new cut is ready. Your request is on record below." : "Received — it's on its way to your editor. Your request is on record below.") + feeLine,
+    message: `${routed ? "Sent to the editor." : "Received — it's on its way to your editor."} ${whenReady} Your request is on record below.${feeLine}`,
   };
+}
+
+/**
+ * Will the hub itself tell this client that a new version is ready? Only the
+ * review reminder email does that — while the reminders switch is on and the
+ * program rollout reaches this client. Anything else (a read that fails
+ * included) is "no", so the page never promises a message nobody sends.
+ */
+export async function clientHearsWhenReady(clientId: string): Promise<boolean> {
+  try {
+    const { reminderPolicy } = await import("@/lib/programReminders");
+    const r = await reminderPolicy();
+    if (!r.enabled || !r.policy) return false;
+    const { programReach } = await import("@/lib/programRollout");
+    return (await programReach("reminders", clientId, { featureTestOnly: r.policy.testClientsOnly })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * "SEND THEM ALONG AS NOTES FOR THE TEAM" REACHES A PERSON (Oct 5 2026).
+ * Approving with notes used to ring an owner bell that said "with notes
+ * attached" and nothing else — the words themselves sat on comment rows no
+ * staff surface read. Now they become ONE task owned by Kyle, carrying the
+ * notes word for word, idempotent on the approval. The notice (his bell and
+ * his Slack) goes separately (noticeApprovalNotes) so the client's press
+ * never waits on Slack.
+ */
+export async function fileApprovalNotesTask(decisionId: string): Promise<{ taskId: string; title: string; lines: string[]; clientName: string; label: string; actor: string } | null> {
+  const d = await prisma.clientDecision.findUnique({ where: { id: decisionId }, select: { id: true, decision: true, openNotesChoice: true, commentIdsJson: true, submissionId: true, projectId: true, clientId: true, enrollmentId: true, actorLabel: true } });
+  if (!d || d.decision !== "APPROVE" || d.openNotesChoice !== "INCLUDE") return null;
+  let ids: string[] = [];
+  try { ids = d.commentIdsJson ? (JSON.parse(d.commentIdsJson) as string[]) : []; } catch { /* no notes recorded */ }
+  const [client, cut] = await Promise.all([
+    prisma.client.findUnique({ where: { id: d.clientId }, select: { name: true } }),
+    prisma.reviewSubmission.findUnique({ where: { id: d.submissionId }, select: { projectId: true, deliverableId: true, slot: true, fileName: true, round: true, project: { select: { title: true } } } }),
+  ]);
+  const clientName = client?.name ?? "Client";
+  const lines = await attributedNoteLines(ids, d.actorLabel, clientName);
+  if (!lines.length || !cut) return null;
+  const label = await videoLabelOf(cut);
+  const { kyleTeamMemberId } = await import("@/lib/kyleNotice");
+  const kyle = await kyleTeamMemberId();
+  const key = `portal-approval-notes:${d.id}`;
+  const title = `Client notes on an approved video — ${clientName} · ${label}`.slice(0, 140);
+  await prisma.smartTask.createMany({
+    data: [{
+      taskType: "internal_instruction", status: "OPEN", source: "content_program", priority: "MEDIUM",
+      title,
+      summary: `${d.actorLabel} approved ${label} and sent these notes for the team (no new version asked for): ${lines.join(" · ")}`.slice(0, 500),
+      description: `${d.actorLabel} approved ${label} in the portal and chose to send their notes along for the team. They did not ask for a new version.\n\nTheir notes, word for word:\n${lines.map((l) => `• ${l}`).join("\n")}\n\nRead them, pass anything useful to the editor for the next video, and close this task.`.slice(0, 4000),
+      reasonCreated: "A client approved a video with notes for the team",
+      clientId: d.clientId, projectId: d.projectId, assignedKey: "kyle", ownerId: kyle, dedupeKey: key,
+    }],
+    skipDuplicates: true,
+  });
+  const task = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true } });
+  return task ? { taskId: task.id, title, lines, clientName, label, actor: d.actorLabel } : null;
+}
+
+/** Kyle's bell and Slack for an approval-notes task. Deduped on the approval. */
+export async function noticeApprovalNotes(decisionId: string): Promise<void> {
+  const t = await fileApprovalNotesTask(decisionId);
+  if (!t) return;
+  const { noticeForKyle } = await import("@/lib/kyleNotice");
+  const { appBase } = await import("@/lib/appUrl");
+  const href = `/tasks?tab=other&task=${t.taskId}`;
+  await noticeForKyle({
+    kind: "portal_notes",
+    title: `Client notes with an approval — ${t.clientName}`,
+    body: `${t.label}: ${t.lines.join(" · ")}`,
+    href,
+    dedupeKey: `portal-approval-notes-${decisionId}`,
+    slack: [
+      `Client notes with an approval — ${t.clientName} · ${t.label}`,
+      `${t.actor} approved it and sent these notes for the team (no new version asked for):`,
+      ...t.lines.map((l) => `• ${l}`),
+      `Task: ${appBase()}${href}`,
+    ].join("\n"),
+  });
 }
 
 /** The deadline has passed on this version: the client's notes stay saved and

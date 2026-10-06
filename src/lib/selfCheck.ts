@@ -47,7 +47,26 @@ export type SelfCheckItem = {
   naHint?: string;
   /** "revision" = asked only when the cut answers earlier notes. */
   when?: "always" | "revision";
+  /** The office's own record already says this line doesn't apply to THIS
+   *  video (Oct 5: the office chose "intentionally none" for its brand
+   *  assets). The line starts unanswered like every other; choosing "doesn't
+   *  apply" carries the office's recorded reason (naStartingReason). The
+   *  editor can still tick it if they did use the client's assets. */
+  naDefault?: boolean;
 };
+
+/** Facts about ONE video that change what its check may honestly say. Read
+ *  by the server (selfCheckStore) from the office's own records — never from
+ *  the browser. */
+export type SelfCheckFacts = {
+  /** The video's recorded logo / branding-card decision
+   *  (deliverableOutputs.readOutputBrief): "none" = the office recorded
+   *  intentionally no brand assets for it. */
+  brandChoice?: "asset" | "none" | "unspecified" | null;
+};
+
+/** The reason stored when brand assets don't apply because the office said so. */
+export const BRAND_NONE_REASON = "The office recorded no brand assets for this video.";
 
 export type SelfCheckProfile = {
   styleKey: string;
@@ -152,7 +171,9 @@ export const DEFAULT_SELF_CHECK: Record<string, { name: string; version: number;
     name: "Standard Reel with Agent Intro", version: 1,
     items: base({ captions_text: { naAllowed: false, naHint: undefined } }),
   },
-  // Kinetic text, the client's brand research and assets are the product.
+  // Kinetic text, the client's brand research and assets are the product —
+  // so "brand assets used" is never waved off here, EXCEPT where the office
+  // recorded intentionally none for the video (resolveSelfCheckProfile's facts).
   personal_branding: {
     name: "Personal Branding Reel", version: 1,
     items: base({ captions_text: { naAllowed: false, naHint: undefined }, brand_assets: { naAllowed: false, naHint: undefined } }),
@@ -165,18 +186,31 @@ export const DEFAULT_SELF_CHECK: Record<string, { name: string; version: number;
 
 /** Resolve a product's list, honouring a stored refinement when it is sane. A
  *  malformed override is ignored rather than trusted: an empty list would
- *  wave every cut through. */
+ *  wave every cut through.
+ *
+ *  `facts` (Oct 5) are the office's records about this one video. A Personal
+ *  Branding Reel normally may not answer "doesn't apply" to the brand-assets
+ *  line — the client's assets ARE the product — but when the office recorded
+ *  "intentionally none" for this video, a forced "Yes" would be an untrue
+ *  attestation. Then, and only then, the line takes "doesn't apply" (with the
+ *  office's reason, and starting there). The list's words are unchanged, so
+ *  the checklist key is too. */
 export function resolveSelfCheckProfile(
   styleKey: string | null | undefined,
   overrides?: Record<string, { version?: number; items?: SelfCheckItem[] } | undefined> | null,
+  facts?: SelfCheckFacts | null,
 ): SelfCheckProfile {
   const key = styleKey && DEFAULT_SELF_CHECK[styleKey] ? styleKey : "default";
   const def = DEFAULT_SELF_CHECK[key];
   const o = overrides?.[key];
-  const items =
+  const listed =
     o && Array.isArray(o.items) && o.items.length > 0 && o.items.every((i) => i && typeof i.key === "string" && typeof i.label === "string" && i.label.trim())
       ? o.items.map((i) => ({ key: i.key, label: i.label.trim(), help: i.help, naAllowed: !!i.naAllowed, naHint: i.naHint, when: i.when === "revision" ? ("revision" as const) : ("always" as const) }))
       : def.items;
+  const brandNone = facts?.brandChoice === "none";
+  const items = brandNone
+    ? listed.map((i) => (i.key === "brand_assets" ? { ...i, naAllowed: true, naHint: BRAND_NONE_REASON, naDefault: true } : i))
+    : listed;
   // Watching the actual export is the one line no refinement may remove (§3).
   const withWatch = items.some((i) => i.key === "watched_full") ? items : [ITEM.watched_full, ...items];
   const version = o && typeof o.version === "number" && o.version > def.version ? Math.floor(o.version) : def.version;
@@ -234,6 +268,95 @@ export function validateSelfCheck(
     return { ok: false, message: `Almost — ${parts.join(" and ")}.`, missing: [...missing, ...undeclared] };
   }
   return { ok: true, value: { items, addressed: [...declaredAddressed], notAddressed } };
+}
+
+// ---- the one-screen check (Oct 5) ------------------------------------------------
+//
+// Jordan, Oct 5: six separate "Yes" taps per upload is friction, not care. The
+// dialog lists every line at once with ONE send button. Nothing about the
+// record changes: each line is still stored on its own, against the exact
+// file, and validateSelfCheck is still the gate.
+//
+// EVERY LINE STARTS UNANSWERED (review, Oct 5 night). The first version of
+// this screen started every line ticked and every open revision note "fixed",
+// so one press recorded a full pass the editor never gave — and unticking a
+// line filled in a stock "doesn't apply" sentence for them. Now the editor
+// answers each line themselves: a tick, or "doesn't apply" with a reason they
+// type (the stock sentence is only the placeholder). Each open note is
+// answered "fixed" or "not fixed — why". The send button stays off until every
+// line and note has an answer. The one exception to typing is a line the
+// office's own record says doesn't apply (naDefault — no brand assets on this
+// video): choosing "doesn't apply" there carries the office's recorded reason,
+// which is a fact on file, not a sentence written for the editor.
+
+export type OneScreenAnswer = "YES" | "NA";
+
+export type OneScreenState = {
+  /** item key → the editor's answer; absent = not answered yet */
+  answer: Record<string, OneScreenAnswer | undefined>;
+  /** item key → why it doesn't apply (read for "NA" lines) */
+  why: Record<string, string>;
+  /** open issue id → fixed in this version (true), not fixed (false); absent = not answered yet */
+  fixed: Record<string, boolean | undefined>;
+  /** open issue id → why it isn't done */
+  fixedWhy: Record<string, string>;
+};
+
+/** Where the one screen starts: nothing answered — for any list and any
+ *  open notes (the arguments are kept so every caller states which check). */
+export function oneScreenStart(profile: SelfCheckProfile, ctx: { isRevision: boolean; openIssueIds: readonly string[] }): OneScreenState {
+  void profile;
+  void ctx;
+  return { answer: {}, why: {}, fixed: {}, fixedWhy: {} };
+}
+
+/** The reason a "doesn't apply" answer starts with: the office's recorded
+ *  reason on a line its record says doesn't apply, else nothing — the editor
+ *  types their own (the product's stock sentence is only the placeholder). */
+export function naStartingReason(item: SelfCheckItem): string {
+  return item.naDefault && item.naHint ? item.naHint : "";
+}
+
+/** How many of the asked lines and open notes have an answer — for the
+ *  dialog's "3 of 7 answered". */
+export function oneScreenProgress(
+  profile: SelfCheckProfile,
+  ctx: { isRevision: boolean; openIssueIds: readonly string[] },
+  state: OneScreenState,
+): { answered: number; total: number } {
+  const asked = itemsFor(profile, ctx);
+  const ids = [...new Set(ctx.openIssueIds)];
+  const answered = asked.filter((i) => state.answer[i.key] === "YES" || (state.answer[i.key] === "NA" && i.naAllowed)).length
+    + ids.filter((id) => state.fixed[id] === true || state.fixed[id] === false).length;
+  return { answered, total: asked.length + ids.length };
+}
+
+/** The answers the one screen sends — exactly what the editor answered,
+ *  nothing more: a ticked line as YES, a "doesn't apply" line (where the
+ *  product allows it) as NA with the reason they typed, and an unanswered
+ *  line not at all (validateSelfCheck refuses it). The same for notes. */
+export function oneScreenInput(
+  profile: SelfCheckProfile,
+  ctx: { isRevision: boolean; openIssueIds: readonly string[] },
+  state: OneScreenState,
+  file: { name: string; size?: number | null; lastModified?: number | null },
+): SelfCheckInput {
+  const answers: SelfCheckAnswers = {};
+  for (const it of itemsFor(profile, ctx)) {
+    const a = state.answer[it.key];
+    if (a === "YES") answers[it.key] = { answer: "YES", reason: null };
+    else if (a === "NA" && it.naAllowed) answers[it.key] = { answer: "NA", reason: state.why[it.key] ?? "" };
+  }
+  const ids = [...new Set(ctx.openIssueIds)];
+  return {
+    checklistKey: profile.checklistKey,
+    answers,
+    issues: {
+      addressed: ids.filter((id) => state.fixed[id] === true),
+      notAddressed: Object.fromEntries(ids.filter((id) => state.fixed[id] === false).map((id) => [id, state.fixedWhy[id] ?? ""])),
+    },
+    watchedFile: { name: file.name, size: file.size ?? null, lastModified: file.lastModified ?? null },
+  };
 }
 
 // ---- which cuts are held -------------------------------------------------------

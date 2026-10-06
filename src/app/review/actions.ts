@@ -104,6 +104,93 @@ function afterSafe(fn: () => Promise<void>): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE VERDICT IS THE CLICK; WHAT IT SETS OFF IS BACKGROUND (Jordan, Oct 5 2026:
+// "when we approve an edit, it should close and give a confirmation instantly
+// that it was approved, and then everything it's currently waiting on should
+// be done in the background so our team can keep moving and reviewing videos").
+//
+// approveCut and requestCutChanges answer once the verdict's own row has landed
+// together with the few fast, database-only writes that nothing would ever redo
+// (who ruled, the verified fixes, the timeline line, the 1080p queue row, the
+// edit card, the client's revision). The slow follow-ons — the Dropbox copy (it
+// polls Dropbox for up to 15 s), the client-library rebuild, the bells and their
+// Slack legs, the per-video rows — run in after(), once the response is out.
+//
+// after() is not a queue: a lambda that dies part-way loses whatever had not
+// run yet. So every step handed to it names the sweep that redoes it, each one
+// runs on its own (one failing never skips the next), and a failure is written
+// down — a console line and an AuditLog row ("review_followup_failed") naming
+// the step, the error and that sweep — instead of disappearing.
+// ---------------------------------------------------------------------------
+type FollowUp = { step: string; repairedBy: string; run: () => Promise<unknown> };
+
+async function runFollowUps(what: { verdict: string; submissionId: string; projectId: string }, steps: FollowUp[]): Promise<void> {
+  const failed: { step: string; repairedBy: string; error: string }[] = [];
+  for (const s of steps) {
+    try {
+      await s.run();
+    } catch (e) {
+      const error = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 300) || "unknown error";
+      failed.push({ step: s.step, repairedBy: s.repairedBy, error });
+      console.error(`[review] ${what.verdict}: "${s.step}" failed for cut ${what.submissionId} — ${s.repairedBy}.`, error);
+    }
+  }
+  if (failed.length === 0) return;
+  await prisma.auditLog
+    .create({
+      data: {
+        actor: "system",
+        action: "review_followup_failed",
+        target: what.submissionId,
+        detail: JSON.stringify({ projectId: what.projectId, verdict: what.verdict, failed }),
+      },
+    })
+    .catch((e) => console.error("[review] could not record the failed follow-ups", what.submissionId, e));
+}
+
+/** Hand a verdict's follow-ons to after(). Outside a request scope (a script, a
+ *  drill) nobody is waiting on a response, so the work runs now, in order —
+ *  unlike afterSafe's measurement, a follow-on is never skipped. */
+function afterVerdict(work: () => Promise<void>): Promise<void> {
+  try {
+    after(work);
+    return Promise.resolve();
+  } catch {
+    return work();
+  }
+}
+
+/**
+ * WHO HEARS A VERDICT (Oct 5 2026). The approved / sent-back bells were one
+ * `{ roles: ["ADMIN"] }` broadcast, and the bell shows a broadcast only to that
+ * exact login role — so Jordan, an OWNER, never saw a verdict on any cut, and a
+ * seat on a non-ADMIN login missed them too. Now: Jordan and every named review
+ * seat, each addressed by person (tm:<id>), minus whoever pressed it and anyone
+ * the caller already addresses (the shooter). Bell rows only — no sentence is
+ * attached, so nothing new is texted; each person's own saved switch for this
+ * event still decides any other channel, exactly as it did. The row's audience
+ * is the person's office role, not "every role", so the body (who ruled, what
+ * happens next — never money) survives the creatives' body clamp. With no seat
+ * named at all the office keeps its old ADMIN broadcast beside Jordan's row.
+ */
+async function reviewSeatTargets(skip: (string | null | undefined)[], href: string): Promise<NotifyTarget[]> {
+  const { reviewerChain } = await import("@/lib/reviewerAssignment");
+  const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+  const [chain, owners] = await Promise.all([
+    reviewerChain().catch(() => null),
+    ownerTeamMemberIds().catch(() => [] as string[]),
+  ]);
+  const people = new Map<string, "OWNER" | "ADMIN">();
+  for (const id of owners) people.set(id, "OWNER");
+  for (const m of chain?.members ?? []) if (!people.has(m.teamMemberId)) people.set(m.teamMemberId, m.isOwner ? "OWNER" : "ADMIN");
+  for (const id of skip) if (id) people.delete(id);
+  const targets: NotifyTarget[] = [...people].map(([id, role]) => ({ roles: [role], userKey: `tm:${id}`, href }));
+  if (!chain?.configured) targets.push({ roles: ["ADMIN"], href });
+  if (owners.length === 0) targets.push({ roles: ["OWNER"], href });
+  return targets;
+}
+
 // Who's writing (same convention as reviewActions.sessionAuthor): resolve a
 // photographer through the live roster-email fallback, and never alias a
 // signed-in NON-owner to "owner" — that key is an identity in the thread-reply
@@ -270,12 +357,21 @@ export async function submitCutForReview(
     where: { id: projectId },
     select: {
       id: true, title: true, status: true, addressLine: true, shootDate: true, createdAt: true, deliveredAt: true,
-      packageName: true, videosFilmed: true,
+      packageName: true, videosFilmed: true, contentMonthId: true,
       client: { select: { name: true, socialClient: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
     },
   });
   if (!project) return { ok: false, message: "That project no longer exists." };
+  // NOT FOR MONTHLY VIDEOS (Oct 5 2026). The edit page stopped offering the
+  // Final-folder send on a monthly content job, and this is the same rule
+  // where it can't be talked around (a stale tab, a held folder cut finished
+  // through submitSelfCheck): the client's portal only takes the checked
+  // 1080p file, and the 1080p pass needs the hub's own copy, so a cut sent
+  // from the Final folder could never reach the client. Nothing is written.
+  if (project.contentMonthId) {
+    return { ok: false, message: "This is a monthly video — upload the file here instead — the 1080p pass needs the hub's own copy." };
+  }
   const street = streetOf(project.title);
 
   const { authorKey, authorName } = await sessionAuthor();
@@ -956,8 +1052,10 @@ export async function setCutNoteStatus(
   return { ok: true };
 }
 
-// APPROVE the cut: verdict on the submission, praise bell to the editor, and a
-// delivery nudge to ADMIN (Kyle ships it via the normal delivery flow).
+// APPROVE the cut: the verdict on the submission and the fast bookkeeping, then
+// the reviewer's answer — and the copy, library, bells and per-video rows in
+// the background (Oct 5; see runFollowUps). Kyle's upload prompt comes from the
+// ready-to-send sweep once the finished file exists, not from this press.
 // `opts.verifyIssueIds` (§8.3): the issue list's "verified" ticks. Absent (the
 // plain Approve button) = every fix the editor marked done on this cut is
 // verified by the approval, which is what the list pre-ticks anyway.
@@ -1088,6 +1186,12 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // ONE APPROVAL, AND IT NAMES WHO GAVE IT (§8.1). Kyle or Jordan ruling on a
   // cut that was James's is a cover, recorded as a CutReviewerEvent AFTER the
   // verdict won its row — never a second approval anybody has to give.
+  //
+  // Everything from here to the after() hand-off is still on the response path
+  // (Oct 5), and on purpose: each write is fast, database-only, and nothing in
+  // the hub would ever redo it if a background run died — who ruled, the fixes
+  // this approval verified, the timeline line, the 1080p queue row, the edit
+  // card's close-out and the client's revision. The slow outward work is below.
   {
     const { recordRulingReviewer } = await import("@/lib/reviewerAssignment");
     await recordRulingReviewer(submissionId, { previous: submission.reviewerTeamMemberId ?? null, verdict: "approved", ruler });
@@ -1101,77 +1205,46 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // read by person as well as by sentence.
   await timelineLine(submission.projectId, `Cut approved in review (round ${submission.round})${authorName ? ` by ${authorName}` : ""}.`, ruler?.teamMemberId ?? null);
 
-  // QC passed → the cut joins the client's portal library the same moment
-  // (content-program jobs only; best-effort — approval never fails over it).
-  try {
-    const { addApprovedCutToLibrary } = await import("@/lib/portalLibrary");
-    await addApprovedCutToLibrary(submissionId);
-  } catch { /* library is best-effort */ }
-
-  // …and THIS is the release (CP-02): the client's review window opens now,
-  // with its deadline frozen, and clientReleasedAt is finally stamped. It runs
-  // BEFORE correctedCutApproved below, because releasing a video's next version
-  // is what answers the client's open round on it — the per-video ledger the
-  // revision close reads. Best-effort: the libraryRepair cron step opens any
-  // window this misses, from the true release time.
-  try {
-    const { openReviewWindow } = await import("@/lib/reviewWindows");
-    await openReviewWindow(submissionId, { at: decidedAt, by: authorName });
-  } catch { /* the repair covers it */ }
-
-  // Approved → the file goes to the job's Final folder on Dropbox and this
-  // cut is COMPLETE (Jordan: "if it's approved, it automatically gets
-  // uploaded to Dropbox, and it gets marked as complete for that cut").
-  let copyNote = "";
-  if (submission.blobUrl) {
-    try {
-      const { startDropboxCopy } = await import("@/lib/reviewCuts");
-      const r = await startDropboxCopy(submissionId);
-      copyNote = r.complete ? " Copied to the Final folder." : " Copying to the Final folder in the background.";
-    } catch (e) {
-      copyNote = ` Dropbox copy failed (${(e as Error).message.slice(0, 60)}) — it will be retried hourly.`;
-    }
-  }
-
   // ---- THE 1080p PASS ----------------------------------------------------
   // Jordan (Sep 16): "I want all videos to be ran through topaz when uploaded
   // and approved in ops hub." Approval QUEUES that render and nothing more —
   // one INSERT, guarded by a unique constraint on this submission id, which is
   // what makes re-approving, a double-click and two lambdas racing all land on
-  // the same row instead of spending twice.
+  // the same row instead of spending twice. A Topaz failure, a missing key, an
+  // empty balance or Topaz being down never breaks the approval (queueTopazRender
+  // answers instead of throwing, and this is wrapped besides).
   //
-  // It is deliberately AFTER the Dropbox copy above and deliberately wrapped:
-  // a Topaz failure, a missing API key, an empty credit balance or Topaz being
-  // down must never break or delay the approval, the copy of the editor's
-  // original, or delivery. Approval stays instant and stays correct with the
-  // 1080p pass switched off entirely — the render is an extra, not a step on
-  // the critical path.
-  let topazNote = "";
+  // It stays on the response path (Oct 5) because it is one insert and because
+  // NOTHING ELSE QUEUES A RENDER an approval missed: a background run that died
+  // before it would skip the 1080p pass for good, silently. What happens next is
+  // also read off it, just below.
   try {
     const { queueTopazRender } = await import("@/lib/topazJobs");
-    const q = await queueTopazRender(submissionId);
-    // "Queued", not "being made now" (Sep 16 review). A freshly queued job can
-    // legitimately wait — the lane is full, the month's credits are spent, the
-    // balance is low, Topaz is unreachable — or be refused outright for being
-    // over the per-video limit or over 500 MB, in which case no card ever
-    // arrives and the sentence would have been a promise the hub did not keep.
-    // "Queued" is true in every one of those cases, and the lane on Connections
-    // says what happened next.
-    // A program video gets no Aryeo card (9.6b): its finished file goes to the
-    // client's portal, so the sentence names what is true for both.
-    if (q.queued) topazNote = " Queued for the 1080p pass — the finished file is what goes out once it's done.";
+    await queueTopazRender(submissionId);
   } catch { /* the 1080p pass never blocks an approval */ }
 
-  // A42 (Sep 25 2026): …and onto the client's ACTUAL library (ContentVideo) now,
-  // rather than whenever their portal next renders or the hourly rotation
-  // reaches them. After the release and the 1080p queue above, so the rebuild
-  // sees both. Program jobs only (the function checks); never fails the
-  // approval — a miss is recorded on the enrollment for the libraryRepair step
-  // and the exceptions board.
+  // WHAT HAPPENS NEXT, read once from the cut as it now stands (Oct 5): is the
+  // 1080p pass still owed, and — a program job — is this version going to the
+  // client's portal or, by an explicit branding override, to Aryeo? Both the
+  // reviewer's confirmation and the bell are worded from this, and a portal
+  // publication is only attempted when there is nothing left to wait for.
+  const program = !!submission.project?.contentMonthId;
+  let renderPending = false;
+  let toPortal = program;
+  let readNext = false;
   try {
-    const { publishApprovedCutToLibrary } = await import("@/lib/contentVideos");
-    await publishApprovedCutToLibrary(submissionId);
-  } catch { /* the hourly repair retries it */ }
+    const { loadCut } = await import("@/lib/finalRendition");
+    const cut = await loadCut(submissionId);
+    if (cut) {
+      const { laneStillOwesWork } = await import("@/lib/readyToSend");
+      renderPending = !!cut.topazJob && laneStillOwesWork(cut.topazJob.state);
+      if (program) {
+        const { usesAryeoDelivery } = await import("@/lib/videoDeliveryDestination");
+        toPortal = !(await usesAryeoDelivery(cut));
+      }
+      readNext = true;
+    }
+  } catch { /* the plainest true sentence below; the hourly repair publishes */ }
 
   // Multi-video sets: "Ready to deliver" is a SET verdict, not a per-cut one
   // (audit: Kyle was told to deliver on video 1 of 4). Count the cuts still
@@ -1215,13 +1288,16 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // on the submitting editor's own key, and never on approval), and when no
   // lane is left open the job resolves the normal way — a delivered job back
   // to Delivered with the close-out and today's bells (resolveRevision).
+  // On the response path: no sweep closes a revision an approval missed, and
+  // with no client revision open it is two reads. (A program cut's revision is
+  // closed by its portal publication instead — publishApprovedCutToLibrary.)
   let revisionResolved = false;
   try {
     const { correctedCutApproved } = await import("@/lib/reviewCuts");
     // WHICH video was approved (WF-03). Without it the close falls back to
     // "nothing named is done", which holds the ask open — the row is right
     // here, so hand it over.
-    revisionResolved = !submission.project?.contentMonthId && (
+    revisionResolved = !program && (
       await correctedCutApproved(submission.projectId, {
         cutCreatedAt: submission.createdAt,
         round: submission.round,
@@ -1230,52 +1306,165 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
     ).resolved;
   } catch { /* the approval itself already landed */ }
 
-  try {
-    const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
-    // Only Kim/Remar have logins that can see an editor:<key> row — a Luma/
-    // vendor (or "editor:kyle") key would mint a row visible to NOBODY. The
-    // ADMIN row above already keeps dispatch-managed cuts humanly visible.
-    if (
-      submission.submittedByKey &&
-      (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(submission.submittedByKey)
-    ) {
-      targets.push({ roles: ["EDITOR"], userKey: `editor:${submission.submittedByKey}`, href: `/edit/${submission.projectId}` });
+  // THE HONEST NEXT STEP (Oct 5). This used to end by telling the reviewer Kyle
+  // had been pinged to deliver, and rang Ready to deliver, on every approval —
+  // false for a monthly portal video (nothing is ready until the 1080p pass
+  // finishes and the portal publishes it; nobody sends it) and early for a
+  // listing video (Kyle's upload prompt comes from the 5-minute ready-to-send
+  // sweep once the finished file is in the Final folder, not from this press).
+  const nextWords = ((): { message: string; bell: string } => {
+    // What happens to THIS video next…
+    const own: { message: string; bell: string } =
+      program && toPortal
+        ? renderPending
+          ? { message: "the 1080p (Topaz) pass is running in the background; the client's portal gets that finished file when it's done. Nothing to send.", bell: "1080p pass running — the client's portal gets it when done. Nothing to send." }
+          : readNext
+            ? { message: "publishing to the client's portal in the background. Nothing to send.", bell: "Publishing to the client's portal — nothing to send." }
+            : { message: "portal publication runs in the background.", bell: "Portal publication runs in the background." }
+        : renderPending
+          ? { message: "the 1080p (Topaz) pass and the Final-folder copy run in the background; Kyle gets the upload-and-send prompt when the finished file is ready.", bell: "1080p pass running — Kyle gets the upload prompt when the file is ready." }
+          : submission.blobUrl
+            ? { message: "the copy to the Final folder runs in the background; Kyle gets the upload-and-send prompt once it lands.", bell: "Final-folder copy running — Kyle gets the upload prompt once it lands." }
+            : { message: "Kyle gets the prompt to upload and send it.", bell: "Kyle gets the upload prompt." };
+    // …and of the set it belongs to. A listing set is delivered whole, so
+    // while videos are still in review nothing goes to Kyle yet; a program
+    // video goes to the portal on its own.
+    if (inFlight > 0) {
+      const more = `${inFlight} more video${inFlight === 1 ? "" : "s"} still in review`;
+      return program && toPortal
+        ? { message: `Approved — ${own.message} ${more} on ${street}.`, bell: `${own.bell} ${more}.` }
+        : {
+            message: `Approved — ${more} on ${street}.${renderPending ? " This one's 1080p pass and Final-folder copy run in the background." : submission.blobUrl ? " This one's Final-folder copy runs in the background." : ""}`,
+            bell: `${more} — not ready to deliver yet.`,
+          };
     }
-    // The photographer who shot it hears the verdict (Jordan, Sep 18). Their
-    // row carries its OWN href: the default above is /projects/<id>, a page a
-    // photographer is redirected off, so the office's link would have been a
-    // bounce to /shoot. Theirs opens the Room on the cut that was just ruled on.
-    const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
-    const shooter = await photographerNotifyTarget(submission.projectId, {
-      href: `/review/${submission.projectId}?cut=${submissionId}`,
-      slackDm: `✅ Approved — the cut from your shoot at ${street} passed review${authorName ? ` (${authorName})` : ""}.`,
-    }).catch(() => null);
-    if (shooter) targets.push(shooter);
-    // The bell says who approved it (Sep 28) — the row's own time is the when.
-    const approvedBy = authorName ? `Approved by ${authorName}. ` : "";
-    await notifyInApp({
-      kind: "review_approved",
-      title: `Cut approved — ${street}${submission.fileName ? ` (${submission.fileName})` : ""}`,
-      body: approvedBy + (inFlight > 0 ? `${inFlight} more video${inFlight === 1 ? "" : "s"} still in review — not ready to deliver yet.` : "Ready to deliver."),
-      href: `/projects/${submission.projectId}`,
-      targets,
-      dedupeKey: `review-approved-${submissionId}`,
-    });
-  } catch { /* bell is best-effort */ }
+    if (revisionResolved) {
+      return {
+        message: `Approved — the client's revision on ${street} is closed and the job is back where it stands; ${own.message}`,
+        bell: `The client's revision is closed. ${own.bell}`,
+      };
+    }
+    return { message: `Approved — ${own.message}`, bell: own.bell };
+  })();
 
-  await syncOutputs(submission.projectId);
+  // ---- IN THE BACKGROUND (Oct 5) -------------------------------------------
+  // Each step names the sweep that redoes it if this run dies (runFollowUps).
+  const approvedBy = authorName ? `Approved by ${authorName}. ` : "";
+  await afterVerdict(() =>
+    runFollowUps({ verdict: "approved", submissionId, projectId: submission.projectId }, [
+      {
+        // First, so the people waiting hear it before the slow copy starts.
+        step: "bells",
+        repairedBy: "no sweep — the verdict already shows in the Review Room, on the edit page and on the job's timeline",
+        run: async () => {
+          const href = `/projects/${submission.projectId}`;
+          const targets: NotifyTarget[] = [];
+          // Only Kim/John have logins that can see an editor:<key> row — a
+          // Luma/vendor (or "editor:kyle") key would mint a row visible to
+          // NOBODY; the seats below keep dispatch-managed cuts humanly visible.
+          if (submission.submittedByKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(submission.submittedByKey)) {
+            targets.push({ roles: ["EDITOR"], userKey: `editor:${submission.submittedByKey}`, href: `/edit/${submission.projectId}` });
+          }
+          // The photographer who shot it hears the verdict (Jordan, Sep 18).
+          // Their row carries its OWN href: /projects/<id> is a page a
+          // photographer is redirected off; theirs opens the Room on this cut.
+          // Not when they pressed it themselves.
+          const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
+          const shooter = await photographerNotifyTarget(submission.projectId, {
+            href: `/review/${submission.projectId}?cut=${submissionId}`,
+            slackDm: `✅ Approved — the cut from your shoot at ${street} passed review${authorName ? ` (${authorName})` : ""}.`,
+            skipMemberId: ruler?.teamMemberId ?? null,
+          }).catch(() => null);
+          if (shooter) targets.push(shooter);
+          const shooterId = shooter?.userKey?.startsWith("tm:") ? shooter.userKey.slice(3) : null;
+          targets.push(...(await reviewSeatTargets([ruler?.teamMemberId, shooterId], href)));
+          if (targets.length === 0) return;
+          // The bell says who approved it (Sep 28) and what happens next (Oct 5);
+          // the row's own time is the when.
+          await notifyInApp({
+            kind: "review_approved",
+            title: `Cut approved — ${street}${submission.fileName ? ` (${submission.fileName})` : ""}`,
+            body: approvedBy + nextWords.bell,
+            href,
+            targets,
+            dedupeKey: `review-approved-${submissionId}`,
+          });
+        },
+      },
+      {
+        // QC passed → the cut joins the client's portal library (content-program
+        // jobs only; a listing job returns at once).
+        step: "portal library row",
+        repairedBy: "hourly cron libraryRepair → repairApprovedCutLibrary",
+        run: async () => {
+          const { addApprovedCutToLibrary } = await import("@/lib/portalLibrary");
+          await addApprovedCutToLibrary(submissionId);
+        },
+      },
+      {
+        // The client's review window (CP-02). A program cut that still owes its
+        // portal publication opens it at publication instead — this is a no-op
+        // for it, and the repair dates any missed window from the true release.
+        // (It used to run before correctedCutApproved on purpose; that order
+        // never mattered in practice and does not now: a window only opens on
+        // a program job, and correctedCutApproved only runs on the others.)
+        step: "client review window",
+        repairedBy: "hourly cron libraryRepair → repairReviewWindows",
+        run: async () => {
+          const { openReviewWindow } = await import("@/lib/reviewWindows");
+          await openReviewWindow(submissionId, { at: decidedAt, by: authorName });
+        },
+      },
+      ...(submission.blobUrl
+        ? [{
+            // Approved → the file goes to the job's Final folder on Dropbox and
+            // this cut is COMPLETE (Jordan: "if it's approved, it automatically
+            // gets uploaded to Dropbox, and it gets marked as complete for that
+            // cut"). The slow one — it waits on Dropbox for up to 15 s.
+            step: "Final folder copy",
+            repairedBy: "hourly cron approvedCuts → finalizeApprovedCuts",
+            run: async () => {
+              const { startDropboxCopy } = await import("@/lib/reviewCuts");
+              await startDropboxCopy(submissionId);
+            },
+          }]
+        : []),
+      // A42: onto the client's ACTUAL library (ContentVideo) now, rather than
+      // whenever the portal next renders. NOT while the 1080p pass is still
+      // owed (Oct 5): the portal only ever gets the finished file, so the
+      // publication was refused every time and recorded a library FAILURE on
+      // the exceptions board for the whole length of every render. The render's
+      // own finish publishes it (topazJobs), and the hourly repair catches
+      // anything that still has not landed. Not on an Aryeo-bound version either
+      // (Kyle uploads that one), nor when the read above failed.
+      ...(program && toPortal && readNext && !renderPending
+        ? [{
+            step: "portal publication",
+            repairedBy: "hourly cron libraryRepair → repairMonthlyPublications / verifyApprovedCutsInLibrary",
+            run: async () => {
+              const { publishApprovedCutToLibrary } = await import("@/lib/contentVideos");
+              await publishApprovedCutToLibrary(submissionId);
+            },
+          }]
+        : []),
+      {
+        // The per-video rows (WF-02), derived from the rounds — so last, after
+        // the copy has had its chance to stamp the cut complete.
+        step: "per-video rows",
+        repairedBy: "hourly cron outputUnits → sweepOutputUnits",
+        run: async () => {
+          const { ensureOutputsForProject, refreshOutputsForProject } = await import("@/lib/deliverableOutputs");
+          await ensureOutputsForProject(submission.projectId);
+          await refreshOutputsForProject(submission.projectId);
+        },
+      },
+    ]),
+  );
+
   refresh(submission.projectId);
   revalidatePath("/tasks");
   revalidatePath(`/projects/${submission.projectId}`);
-  return {
-    ok: true,
-    message:
-      (inFlight > 0
-        ? `Approved — ${inFlight} more video${inFlight === 1 ? "" : "s"} still in review on ${street}.`
-        : revisionResolved
-          ? `Approved — the client's revision on ${street} is closed and the job is back where it stands.`
-          : `Approved — every cut on ${street} is done; Kyle's been pinged to deliver.`) + copyNote + topazNote,
-  };
+  return { ok: true, message: nextWords.message };
 }
 
 // REQUEST CHANGES: put the open EDITOR-lane notes on this cut onto the job's
@@ -1534,55 +1723,194 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
     ruler?.teamMemberId ?? null,
   );
 
-  try {
-    // Kim/Remar see their own editor:<key> row; a Luma/vendor key has no login
-    // or channel, so the news goes to ADMIN instead — Kyle dispatches vendor
-    // changes (same split as the manual-queue bell in editing/actions.ts).
-    const isTeamEditor = !!editorKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
-    // The shooter hears this verdict too (Sep 18) — the cut they watched is
-    // going back round, and a capture note in the bundle may be theirs to
-    // answer. Their href is the Room, never /edit/<id>: that page redirects a
-    // photographer straight back to /shoot/<id>.
-    const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
-    const shooter = await photographerNotifyTarget(submission.projectId, {
-      href: `/review/${submission.projectId}?cut=${submissionId}`,
-      slackDm: `↩︎ Changes requested on the cut from your shoot at ${street}${authorName ? ` by ${authorName}` : ""} — ${open.length} note${s}.`,
-    }).catch(() => null);
-    const changeTargets: NotifyTarget[] = isTeamEditor
-      ? [
-          { roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` },
-          { roles: ["ADMIN"], href: `/edit/${submission.projectId}` },
-        ]
-      : [{ roles: ["ADMIN"] }];
-    if (shooter) changeTargets.push(shooter);
-    // The bell names the sender (gap 6): an editor, or Kyle relaying to a
-    // vendor, is told whose notes these are, not just how many.
-    await notifyInApp({
-      kind: "review_changes",
-      title: isTeamEditor
-        ? `Changes requested — ${street}`
-        : editorKey
-          ? `Relay cut changes to ${editorMeta(editorKey)?.name ?? editorKey} — ${street}`
-          : `Cut changes need an editor — ${street}`,
-      body: `${authorName ? `${authorName} sent back ` : ""}${open.length} note${s}: ${open[0].body}`.slice(0, 140),
-      href: `/edit/${submission.projectId}`,
-      // ADMIN always rides along: an editor:<key> row reaches NOBODY when that
-      // editor has no login (Kim today), so a bounce could vanish silently —
-      // the owner at least sees the cut came back (audit HIGH).
-      targets: changeTargets,
-      dedupeKey: `review-changes-${submissionId}-${open[open.length - 1].id}`,
-    });
-  } catch { /* bell is best-effort */ }
+  // ---- WHO IS TOLD, AND WHAT MUST NOT BE LOST (Oct 5) -----------------------
+  // Everything above is the verdict itself and its fast bookkeeping. The rows
+  // that make the round reach a PERSON are written here too, before the
+  // answer (review, Oct 5 night): the answer names who was asked, so it may
+  // only say so once that ask exists — and after() is not a queue, so a round
+  // whose only trace was a background bell could be lost for good when the
+  // lambda died (an outside editor like Luma Visuals has no login and no
+  // channel; nothing else would ever tell them). Only the channel legs — the
+  // Slack DMs — and the slower bells go after the answer.
+  // Kim/John see their own editor:<key> row; an outside editor's round is the
+  // OFFICE's (Kyle's) to relay, as a task he owns.
+  const isTeamEditor = !!editorKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
+  const outsideEditor = !isTeamEditor && editorKey ? (editorMeta(editorKey)?.name ?? editorKey) : null;
+  const office = isTeamEditor ? [] : await officeMembers();
+  const rulerIsOffice = !!ruler?.teamMemberId && office.some((o) => o.id === ruler.teamMemberId);
+  // Kyle is never belled or Slacked about a send-back he pressed himself.
+  const officeToTell = office.filter((o) => o.id !== ruler?.teamMemberId);
+  const editHref = `/edit/${submission.projectId}`;
+  const lastNoteId = open[open.length - 1].id;
+  // The bell names the sender (gap 6): an editor, or Kyle relaying to a
+  // vendor, is told whose notes these are, not just how many.
+  const sentBy = `${authorName ? `${authorName} sent back ` : ""}${open.length} note${s}: ${open[0].body}`.slice(0, 140);
+  // 1 · the in-house editor's own bell row — durable now, its DM later.
+  const editorBell = isTeamEditor
+    ? await notifyInApp(
+        {
+          kind: "review_changes",
+          title: `Changes requested — ${street}`,
+          body: sentBy,
+          href: editHref,
+          targets: [{ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: editHref }],
+          dedupeKey: `review-changes-${submissionId}-${lastNoteId}-editor`,
+        },
+        { bridgeLater: true },
+      ).catch(() => null)
+    : null;
+  // 2 · the office's work: a task Kyle owns (relay to the outside editor, or
+  // pick an editor), and his bell row — both durable now; his Slack later.
+  let relayTaskId: string | null = null;
+  if (!isTeamEditor) {
+    const key = `review-relay:${submissionId}:${lastNoteId}`;
+    const kyleId = office[0]?.id ?? null;
+    const what = outsideEditor ? `Relay cut changes to ${outsideEditor}` : "Pick an editor for the cut changes";
+    await prisma.smartTask
+      .createMany({
+        data: [{
+          taskType: "internal_instruction", status: "OPEN", source: "system", priority: "HIGH",
+          title: `${what} — ${street}`.slice(0, 140),
+          summary: `${authorName ?? "The review desk"} sent back version ${submission.round} with ${open.length} note${s}. They are on the edit card as round ${submission.round + 1}.`.slice(0, 500),
+          description: (outsideEditor
+            ? `${outsideEditor} has no login here, so the notes reach them only through the office.\n\nSend them the ${open.length} note${s} on the edit card (${editHref}) — round ${submission.round + 1} — then close this task.`
+            : `The job has no editor, so the round waits for one. Pick an editor on the job's row in the Editing Room (/editing) — the round goes to them — then close this task.`).slice(0, 4000),
+          reasonCreated: outsideEditor ? "A cut by an outside editor was sent back" : "A cut with no editor was sent back",
+          clientId: submission.project?.clientId ?? null, projectId: submission.projectId,
+          assignedKey: "kyle", ownerId: kyleId, dedupeKey: key,
+        }],
+        skipDuplicates: true,
+      })
+      .catch((e) => console.error("[review] could not write the relay task", submissionId, e));
+    relayTaskId = (await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true } }).catch(() => null))?.id ?? null;
+  }
+  const officeBell = !isTeamEditor && (officeToTell.length || office.length === 0)
+    ? await notifyInApp(
+        {
+          kind: "review_changes",
+          title: outsideEditor ? `Relay cut changes to ${outsideEditor} — ${street}` : `Cut changes need an editor — ${street}`,
+          body: sentBy,
+          href: editHref,
+          targets: office.length
+            ? officeToTell.map((o): NotifyTarget => ({ roles: ["ADMIN"], userKey: `tm:${o.id}`, href: editHref }))
+            : [{ roles: ["ADMIN"], href: editHref }, { roles: ["OWNER"], href: editHref }],
+          dedupeKey: `review-relay-${submissionId}-${lastNoteId}`,
+        },
+        { bridgeLater: true },
+      ).catch(() => null)
+    : null;
+  if (!isTeamEditor && relayTaskId === null) {
+    // The task could not be written: the bell row above is then the only
+    // record, and the answer below says the bell, not the task.
+    console.error("[review] relay task missing after send-back", submissionId);
+  }
 
-  await syncOutputs(submission.projectId);
+  await afterVerdict(() =>
+    runFollowUps({ verdict: "sent back", submissionId, projectId: submission.projectId }, [
+      {
+        step: "editor DM",
+        repairedBy: "no sweep — the editor's bell row is already written, and the round is on their edit card",
+        run: async () => {
+          await editorBell?.bridgeRest?.();
+        },
+      },
+      {
+        step: "bells",
+        repairedBy: "no sweep — the round is already on the edit card and the job's timeline, and the job sits in Revisions",
+        run: async () => {
+          const targets: NotifyTarget[] = [];
+          // The shooter hears this verdict too (Sep 18) — the cut they watched
+          // is going back round, and a capture note in the bundle may be theirs
+          // to answer. Their href is the Room, never /edit/<id>: that page
+          // redirects a photographer straight back to /shoot/<id>.
+          const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
+          const shooter = await photographerNotifyTarget(submission.projectId, {
+            href: `/review/${submission.projectId}?cut=${submissionId}`,
+            slackDm: `↩︎ Changes requested on the cut from your shoot at ${street}${authorName ? ` by ${authorName}` : ""} — ${open.length} note${s}.`,
+            skipMemberId: ruler?.teamMemberId ?? null,
+          }).catch(() => null);
+          if (shooter) targets.push(shooter);
+          const shooterId = shooter?.userKey?.startsWith("tm:") ? shooter.userKey.slice(3) : null;
+          // Jordan and the review seats by person. The office has its own row
+          // above when it has something to DO (relay it, or pick an editor).
+          targets.push(...(await reviewSeatTargets([ruler?.teamMemberId, shooterId, ...office.map((o) => o.id)], editHref)));
+          if (targets.length === 0) return;
+          await notifyInApp({
+            kind: "review_changes",
+            title: `Changes requested — ${street}`,
+            body: sentBy,
+            href: editHref,
+            targets,
+            dedupeKey: `review-changes-${submissionId}-${lastNoteId}`,
+          });
+        },
+      },
+      ...(!isTeamEditor
+        ? [{
+            // THE OUTSIDE AGENCY'S ROUND IS KYLE'S TO RELAY (Oct 5). The task
+            // and his bell row are already written (above); this is his Slack
+            // DM through the staff helper — his own quiet time kept, and held
+            // overnight (10 PM–7 AM ET), never dropped. Not Slacked when he
+            // sent it back himself: he already knows.
+            step: outsideEditor ? `relay to ${outsideEditor}` : "pick an editor",
+            repairedBy: "no sweep — the relay task is already on Kyle's list and the round waits on the edit card",
+            run: async () => {
+              await officeBell?.bridgeRest?.();
+              if (outsideEditor && officeToTell.length) {
+                const { notifyStaffSms } = await import("@/lib/notify");
+                const { appBase } = await import("@/lib/appUrl");
+                await notifyStaffSms(
+                  officeToTell.map((o) => o.id),
+                  `↩︎ Relay to ${outsideEditor}: ${authorName ?? "The review desk"} sent back ${street} (version ${submission.round}) with ${open.length} note${s}. They're on the edit card as round ${submission.round + 1} — ${appBase()}${editHref}`,
+                  "review_changes",
+                  { holdOvernight: true },
+                );
+              }
+            },
+          }]
+        : []),
+      {
+        step: "per-video rows",
+        repairedBy: "hourly cron outputUnits → sweepOutputUnits",
+        run: async () => {
+          const { ensureOutputsForProject, refreshOutputsForProject } = await import("@/lib/deliverableOutputs");
+          await ensureOutputsForProject(submission.projectId);
+          await refreshOutputsForProject(submission.projectId);
+        },
+      },
+    ]),
+  );
+
   refresh(submission.projectId);
   revalidatePath("/tasks");
+  const round = submission.round + 1;
+  const officeFirst = officeToTell.map((o) => o.name.split(/\s+/)[0]).join(" and ");
+  const relayWords = relayTaskId ? "has a task to relay them" : "has been asked on the bell to relay them";
   return {
     ok: true,
-    message: editorKey
-      ? `Sent ${open.length} change${s} to ${editorMeta(editorKey)?.name ?? editorKey} — round ${submission.round + 1} is on their edit card.`
-      : `${open.length} change${s} added to the edit card as round ${submission.round + 1} — the job has no editor, so Kyle has been pinged; pick one on the job's row in the Editing Room (/editing) and the round goes to them.`,
+    message: isTeamEditor
+      ? `Sent ${open.length} change${s} to ${editorMeta(editorKey!)?.name ?? editorKey} — round ${round} is on their edit card.`
+      : outsideEditor
+        ? `${open.length} change${s} added to the edit card as round ${round} — ${outsideEditor} has no login here, so ${
+            rulerIsOffice && !officeToTell.length ? `relay them to ${outsideEditor} yourself (it's on your task list)` : officeToTell.length ? `${officeFirst} ${relayWords}` : `the office ${relayWords}`
+          }.`
+        : `${open.length} change${s} added to the edit card as round ${round} — the job has no editor, so ${officeToTell.length ? `${officeFirst} has a task to pick one` : rulerIsOffice ? "pick one" : "the office has a task to pick one"} on the job's row in the Editing Room (/editing) and the round goes to them.`,
   };
+}
+
+/** The office (Kyle today) by roster row, for the people a verdict asks to
+ *  act — relay an outside editor's round, or pick an editor. smsPrefs'
+ *  "Office" group, so it matches who Settings → Team notifications calls the
+ *  office. Empty on any failure: the caller then falls back to the role bell. */
+async function officeMembers(): Promise<{ id: string; name: string }[]> {
+  try {
+    const { officeTeamMemberIds } = await import("@/lib/smsPrefs");
+    const ids = await officeTeamMemberIds();
+    if (ids.length === 0) return [];
+    return await prisma.teamMember.findMany({ where: { id: { in: ids }, active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } });
+  } catch {
+    return [];
+  }
 }
 
 
@@ -1728,7 +2056,7 @@ export async function startCutUpload(input: {
   /** §8.2: the editor's self-check for THIS file. Required — without it
    *  nothing is reserved. Bound to the bytes at finalize. */
   selfCheck?: import("@/lib/selfCheck").SelfCheckInput | null;
-}): Promise<{ ok: true; submissionId: string; pathname: string; round: number; access: "private" | "public" } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean }> {
+}): Promise<{ ok: true; submissionId: string; pathname: string; round: number; access: "private" | "public" } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean; checkContext?: import("@/lib/selfCheckStore").SlotCheckContext }> {
   const reason = (input.reopenReason ?? "").trim();
   // A reason is what turns this into a REPLACEMENT, which is the one upload an
   // editor may make on a job whose task is closed — see uploadAuthor. Without

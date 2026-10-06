@@ -133,9 +133,14 @@ export default async function ShootDetailPage({
   }
   const briefLines = shootBriefLines(view, briefAssets);
   const briefDigestNow = briefDigest(briefSnapshot(briefLines));
-  const canReadBrief = user?.role === "PHOTOGRAPHER" && !user.impersonating && !!viewerMemberId;
+  // WHOEVER IS SHOOTING IT marks it read (Oct 5): the photographer, or James
+  // on his ADMIN login when the shoot is his — the same assignment test the
+  // action applies. Previews and office readers can look, not acknowledge.
+  const shooterId = viewerMemberId ?? (user && !user.impersonating ? await photographerMemberId(user).catch(() => null) : null);
+  const canReadBrief = !!user && !user.impersonating && !!shooterId &&
+    (viewerMemberId != null || (await photographerOwnsShoot(id, shooterId).catch(() => false)));
   let lastBriefRead: { snapshotJson: string; readAt: Date } | null = null;
-  if (canReadBrief) {
+  if (canReadBrief && user) {
     try {
       lastBriefRead = await prisma.shootBriefRead.findFirst({ where: { projectId: id, readerUserId: user.id }, orderBy: { readAt: "desc" }, select: { snapshotJson: true, readAt: true } });
     } catch { briefUnavailable = true; }
@@ -156,7 +161,6 @@ export default async function ShootDetailPage({
       <Suspense fallback={<ShootMapCardSkeleton />}>
         <ShootMapCard projectId={id} memberId={payMemberId} />
       </Suspense>
-      <BriefReadCard projectId={id} digest={briefDigestNow} readAtISO={lastBriefRead?.readAt.toISOString() ?? null} changes={briefDelta} canAcknowledge={!!canReadBrief} unavailable={briefUnavailable} />
       {/* §6.8 / A28 (Sep 25): what this session is FOR, straight under the
           route — the topics, the words the client was shown and the direction
           written with them, and any video with a brief of its own. The same
@@ -164,6 +168,10 @@ export default async function ShootDetailPage({
       <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} />
     </>
   );
+  // "I read this brief" sits UNDER what it is about (Oct 5): ShootScreen
+  // places it after the access brief, the checklist, the scripts and the
+  // client's own words, so the button is pressed after the reading.
+  const briefRead = <BriefReadCard projectId={id} digest={briefDigestNow} readAtISO={lastBriefRead?.readAt.toISOString() ?? null} changes={briefDelta} canAcknowledge={canReadBrief} unavailable={briefUnavailable} />;
 
   // THE JOB'S TEAM CHAT, on the photographer's screen (Kyle call, Sep 16).
   // Tagging a photographer already sent them here — postProjectMessage's
@@ -215,7 +223,7 @@ export default async function ShootDetailPage({
   // scoped list. Photographers never carry an ?as= back link (fail-closed).
   const backHref = user?.role !== "PHOTOGRAPHER" && as ? `/shoot?as=${as}` : "/shoot";
 
-  return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} />;
+  return <ShootScreen view={view} pay={pay} map={map} briefRead={briefRead} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,23 +251,30 @@ function SessionBriefCard({ session, outputs, assets }: { session: ShootView["se
       {toFilm.map((t, i) => (
         <div key={t.topicId} className="rounded-xl border border-border bg-surface-2/40 p-3">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="text-sm font-semibold">{i + 1}. {t.title}</span>
-            {t.pillarName && <span className="text-[11px] text-muted">{t.pillarName}</span>}
-            {t.overflow && <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">extra, if there is time</span>}
+            <span className="text-base font-semibold">{i + 1}. {t.title}</span>
+            {t.pillarName && <span className="text-xs text-muted">{t.pillarName}</span>}
+            {t.overflow && <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">extra, if there is time</span>}
           </div>
           {t.script ? (
-            <details className="mt-1.5">
-              <summary className="cursor-pointer text-xs text-foreground/85">
-                Script v{t.script.versionNo}{" "}
-                <span className={t.script.clientApproved ? "text-success" : "text-warning"}>({t.script.standing})</span>
+            // OPEN BY DEFAULT, READABLE ON A PHONE (Oct 5, photographer audit):
+            // the script is what they direct from, so it is on screen at a
+            // reading size, and the whole summary row is the tap target.
+            <details open className="group/script mt-2">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg px-1 text-sm font-medium text-foreground/90 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
+                <span aria-hidden="true" className="inline-block text-muted transition-transform group-open/script:rotate-90">›</span>
+                <span>Script v{t.script.versionNo}</span>
+                <span className={t.script.clientApproved ? "text-success" : "text-warning"}>· {t.script.standing}</span>
               </summary>
-              {t.script.text && <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{t.script.text}</p>}
+              {!t.script.clientApproved && (
+                <p className="mt-1 rounded-lg bg-warning/10 px-2.5 py-1.5 text-sm text-foreground/90">The client hasn&rsquo;t approved this script yet. Film it as written — the client can still ask for changes.</p>
+              )}
+              {t.script.text && <p className="mt-2 whitespace-pre-wrap text-base leading-relaxed">{t.script.text}</p>}
             </details>
           ) : (
-            <p className="mt-1 text-xs text-muted">{t.noScript}</p>
+            <p className="mt-1 text-sm text-muted">{t.noScript}</p>
           )}
           {t.script?.direction && (
-            <div className="mt-1.5 space-y-0.5 text-xs leading-relaxed text-foreground/85">
+            <div className="mt-2 space-y-0.5 text-sm leading-relaxed text-foreground/85">
               {t.script.direction.filmingNotes && <p><span className="text-muted">Filming: </span>{t.script.direction.filmingNotes}</p>}
               {t.script.direction.creativeDirection && <p><span className="text-muted">Direction: </span>{t.script.direction.creativeDirection}</p>}
               {t.script.direction.productionNotes && <p><span className="text-muted">Production: </span>{t.script.direction.productionNotes}</p>}

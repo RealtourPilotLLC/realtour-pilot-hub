@@ -156,7 +156,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                 ) : step.state === "done" ? (
                   <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Reschedule or cancel <ChevronRight className="size-4" aria-hidden /></Link>
                 ) : s && !s.locked ? (
-                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Manage filming in Appointments <ChevronRight className="size-4" aria-hidden /></Link>
+                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Manage filming in Schedule <ChevronRight className="size-4" aria-hidden /></Link>
                 ) : null)}
               </div>
             </div>

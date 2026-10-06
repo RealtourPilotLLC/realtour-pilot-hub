@@ -125,6 +125,7 @@ export const SETTINGS_SEARCH_LABELS: Record<SettingsCardKey, string> = {
 };
 
 const GROUP_EXTRA_SEARCH: Partial<Record<SettingsGroupId, string>> = {
+  program: "Client onboarding welcome portal account invite per client step by step send",
   team: "People access logins permissions passwords team coverage on call",
   integrations: "Connections connected provider Gmail OpenPhone Slack Dropbox Aryeo Calendly Drive Topaz Anthropic API run health sync cron",
   financial: "Payroll bank feeds accounts Plaid mileage adjustments pay",

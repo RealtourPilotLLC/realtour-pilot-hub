@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeftRight, Loader2, Pause, Play } from "lucide-react";
@@ -34,6 +34,12 @@ import { HOW_START_WORKS, yourClock, type DeskJob } from "@/lib/editorDesk";
 // Nothing here runs by itself: no effect, no timer, no page-open write. Every
 // action call sits inside an onClick, and one click carries one request id,
 // reused if the network makes them press it again.
+//
+// Oct 5 ("every action instant"): a press shows its result at once — the job
+// they chose is "You're on …" before the server answers, Pause clears it —
+// and the server's answer replaces that, or puts it back with the reason
+// (useOptimistic). Which job may be started, and the one-active-job rule, stay
+// the server's (editorWork).
 // ---------------------------------------------------------------------------
 
 const PREVIEW_TITLE = "You're previewing — exit the preview to press this.";
@@ -73,6 +79,9 @@ export function EditorDesk({
   // different button gets a new id and the same one pressed again replays.
   const inflight = useRef<{ what: string; id: string } | null>(null);
 
+  // What they just pressed, drawn before the server answers.
+  const [shownActive, showActive] = useOptimistic<ActiveWork | null, ActiveWork | null>(desk?.active ?? null, (_now, next) => next);
+
   const run = (what: string, fn: (requestId: string) => Promise<{ ok: boolean; message: string }>) => {
     if (readOnly) return;
     const id = inflight.current?.what === what ? inflight.current.id : newId();
@@ -95,17 +104,23 @@ export function EditorDesk({
     });
   };
 
-  const active = desk?.active ?? null;
+  const active = shownActive;
   // A tap on a legacy claim CONFIRMS it — and marks their other claims paused —
   // only from the on-nothing list, where the sentence under it says so. From
   // Switch job it is the plain Start: one job, nothing said about the others.
   // Neither sends a video: omitted, the server keeps the one they picked on
   // the job page (a resume must not wipe "· Video 3").
   const confirms = (j: DeskJob) => j.claim && !active;
-  const pick = (j: DeskJob) =>
-    confirms(j)
-      ? run(`confirm:${j.projectId}`, (requestId) => confirmCurrentWorkAction({ projectId: j.projectId, requestId }))
-      : run(`start:${j.projectId}`, (requestId) => startEditingAction({ projectId: j.projectId, requestId }));
+  const nowOn = (j: DeskJob): ActiveWork => ({ projectId: j.projectId, street: j.street, sinceISO: new Date().toISOString(), outputTitle: null });
+  const pick = (j: DeskJob) => {
+    if (readOnly) return;
+    setSwitching(false);
+    if (confirms(j)) {
+      run(`confirm:${j.projectId}`, (requestId) => { showActive(nowOn(j)); return confirmCurrentWorkAction({ projectId: j.projectId, requestId }); });
+    } else {
+      run(`start:${j.projectId}`, (requestId) => { showActive(nowOn(j)); return startEditingAction({ projectId: j.projectId, requestId }); });
+    }
+  };
 
   const startable = jobs.filter((j) => j.startable);
   const notYours = jobs.filter((j) => !j.startable);
@@ -160,7 +175,7 @@ export function EditorDesk({
       {hasClaims && (
         <div className="space-y-2 text-sm text-muted">
           <p>Confirming a previous &ldquo;In editing&rdquo; mark pauses the other marked jobs.</p>
-          <button type="button" {...lock} onClick={() => run("confirm:none", (requestId) => confirmCurrentWorkAction({ projectId: null, requestId }))}
+          <button type="button" {...lock} onClick={() => run("confirm:none", (requestId) => { showActive(null); return confirmCurrentWorkAction({ projectId: null, requestId }); })}
             className={cn(btn, "border border-border text-foreground hover:bg-surface-2")}>
             {spin("confirm:none") ? "Saving…" : "I'm not on any of them"}
           </button>
@@ -197,7 +212,7 @@ export function EditorDesk({
               <button
                 type="button"
                 {...lock}
-                onClick={() => run(`pause:${active.projectId}`, (requestId) => pauseEditingAction({ projectId: active.projectId, requestId }))}
+                onClick={() => run(`pause:${active.projectId}`, (requestId) => { showActive(null); return pauseEditingAction({ projectId: active.projectId, requestId }); })}
                 className={cn(btn, "border border-border bg-surface text-foreground hover:bg-surface-2")}
               >
                 {spin(`pause:${active.projectId}`) ? <Loader2 className="size-3.5 animate-spin" /> : <Pause className="size-3.5" />}

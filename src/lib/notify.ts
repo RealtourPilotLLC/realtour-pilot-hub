@@ -41,13 +41,21 @@ async function kyleSlackId(): Promise<string> {
 // local copy this file carried lacked the APP_URL fallback and the scheme
 // normalisation every other text already gets (Sep 11).
 
-// Where alerts go: SLACK_ALERT_CHANNEL env (a channel id or #name) wins; else
-// the ops channel the bot is already in (#rp-project-tracker family); else
-// Kyle's DM. Cached ~1h so we don't list channels on every ping.
+// Where alerts go: SLACK_ALERT_CHANNEL env (a channel id like C0123ABC, or
+// "#ops-alerts" — the bot must be invited to it) wins; else the ops channel
+// the bot is already in (#rp-project-tracker family); else Kyle's DM. Cached
+// ~1h so we don't list channels on every ping.
 let destCache: { at: number; channel: string } | null = null;
 export async function alertDestination(): Promise<string> {
-  const env = process.env.SLACK_ALERT_CHANNEL;
+  const env = alertChannelEnv();
   if (env) return env;
+  return defaultAlertDestination();
+}
+function alertChannelEnv(): string | null {
+  const env = (process.env.SLACK_ALERT_CHANNEL ?? "").trim();
+  return env || null;
+}
+async function defaultAlertDestination(): Promise<string> {
   if (destCache && Date.now() - destCache.at < 3600_000) return destCache.channel;
   let channel = await kyleSlackId();
   try {
@@ -61,12 +69,72 @@ export async function alertDestination(): Promise<string> {
   return channel;
 }
 
-// Post one internal alert line. Never throws; false = not delivered.
+/** A Slack user id (a DM to one person) rather than a channel. */
+const isPersonDm = (dest: string) => /^[UW][A-Z0-9]{2,}$/.test(dest);
+
+// ---------------------------------------------------------------------------
+// THE OPS CHANNEL IS A PERSON'S PHONE TODAY (Oct 5 2026, team notifications
+// pass). With no SLACK_ALERT_CHANNEL set and no ops channel the bot is in,
+// alertDestination() is Kyle's DM — so every relay, receipt and failure line
+// below buzzed his phone at whatever hour it fired, and the "⏸ Urgent page
+// held (quiet hours)" notice itself DMed him at 11:30 PM, defeating the very
+// hold it announced. A post to a CHANNEL is not a page (nobody's phone rings
+// for a channel line unless they asked it to), so a channel still gets every
+// line at once. A post that would land in one person's DM is now asked the
+// same question every other person-addressed notice asks: their own quiet
+// time, PLUS the business-wide 10 PM–7 AM ET overnight rule (the urgent-page
+// rule, notifySchedule.quietEnd's `page`). Inside it the line is KEPT — a
+// held Slack DM, released by the 5-minute flusher with anything else waiting
+// for them — never dropped. Rule 3 still holds: a read that fails sends now.
+//
+// SLACK_ALERT_CHANNEL: set it (Vercel env) to the channel's id or "#name"
+// once #ops-alerts exists and the bot is invited; every line then goes there
+// at once and Kyle's DM is left for what is actually his. A channel that
+// refuses the post (the bot not invited, a typo) falls back to the default
+// destination rather than swallowing the alert.
+// ---------------------------------------------------------------------------
+async function holdOpsDmOvernight(dest: string, text: string, at: Date): Promise<boolean> {
+  try {
+    const tm = await prisma.teamMember.findFirst({ where: { slackId: dest, active: true }, select: { id: true } });
+    if (!tm) return false; // the literal fallback ID with no roster row — nothing to time it by
+    const { holdFor } = await import("@/lib/notifySchedule");
+    const until = await holdFor(tm.id, at, { page: true });
+    if (!until) return false;
+    return await holdStaffDm({ teamMemberId: tm.id, slackId: dest, text, until, kind: "ops_alert", why: "ops alert, overnight / quiet time" });
+  } catch {
+    return false; // rule 3: never silent because a read failed
+  }
+}
+
+// Post one internal alert line. Never throws; false = not delivered (a line
+// KEPT for the morning counts as delivered — it will be).
 export async function opsAlert(text: string): Promise<boolean> {
   try {
-    return await slackNotify(await alertDestination(), text);
+    const env = alertChannelEnv();
+    if (env) {
+      if (isPersonDm(env)) {
+        if (await holdOpsDmOvernight(env, text, new Date())) return true;
+      }
+      if (await slackNotify(env, text)) return true;
+      console.warn(`opsAlert: SLACK_ALERT_CHANNEL (${env}) refused the post — falling back to the default destination`);
+    }
+    const dest = await defaultAlertDestination();
+    if (isPersonDm(dest) && (await holdOpsDmOvernight(dest, text, new Date()))) return true;
+    return await slackNotify(dest, text);
   } catch {
     return false;
+  }
+}
+
+/** Is the ops channel, as it stands, one person's DM (their Slack ID), or null
+ *  when it is a real channel. */
+async function opsDestinationPerson(): Promise<string | null> {
+  try {
+    const env = alertChannelEnv();
+    const dest = env ?? (await defaultAlertDestination());
+    return isPersonDm(dest) ? dest : null;
+  } catch {
+    return null;
   }
 }
 
@@ -209,9 +277,12 @@ const BELL_RULES: Record<string, BellRule> = {
   review_approved: "all", // the editor's loop closes here
   // §8.1 (Sep 25): a cut's ONE reviewer changed — the FYI to the person it
   // left, and the backup being OFFERED a cut the primary has held past the
-  // covered-hours line (lib/reviewerAssignment). Person-addressed and bell
-  // only: neither kind is in notifyPrefs.KIND_TO_EVENT, so no phone is used
-  // that nobody switched on. The new owner's own notice rides cut_ready.
+  // covered-hours line (lib/reviewerAssignment). Both person-addressed. The
+  // FYI stays bell-only (not in notifyPrefs.KIND_TO_EVENT). The OFFER rides
+  // the backup's "Video in review" switch since Oct 5 2026 — it asks them to
+  // rule on a cut, which is what that switch is for, and a bell nobody opens
+  // is how a cut waited nine covered hours in the first place. The new
+  // owner's own notice rides cut_ready.
   review_reassigned: "all",
   review_cover_offer: "all",
   // The photographer who shot the job asking for a change on the cut (Sep 18).
@@ -376,6 +447,11 @@ const ROUTINE_KINDS = new Set<string>([
   // next working day, never a weekend page (the banner on the brief and
   // Kyle's task carry it regardless). Kim keeps her own clock (tz above).
   "brand_updated",
+  // Oct 5 2026, both newly switch-governed (notifyPrefs.KIND_TO_EVENT): the
+  // backup's cover offer is review-lane work like cut_ready, and a cut held
+  // for its editor's check is edit-lane work like a revision.
+  "review_cover_offer",
+  "self_check_needed",
   // review_feedback is deliberately ABSENT (review, Sep 20). It was listed in
   // the first cut and it does not belong: notifyPrefs maps it to shoot_change,
   // BELL_RULES calls it "capture feedback the photographer has to fix", and it
@@ -531,6 +607,37 @@ function withinTextingHours(tz = "America/New_York"): boolean {
     new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date()),
   );
   return hour >= 7 && hour < 22;
+}
+
+/** Oct 5 2026: when `at` falls in the 10 PM–7 AM night of timezone `tz`, the
+ *  instant of the next 7:00 AM there; null in their daytime. The same window
+ *  as withinTextingHours, so a held DM and a held text wake together. Exported
+ *  for the drill (oct5-team-notify), which replays Manila nights. */
+export function localNightEnd(tz: string, at: Date = new Date()): Date | null {
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+    const wall = (d: Date) => {
+      const parts = fmt.formatToParts(d);
+      const g = (t: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+      return { y: g("year"), mo: g("month"), d: g("day"), h: g("hour") % 24, mi: g("minute"), s: g("second") };
+    };
+    const w = wall(at);
+    if (w.h >= 7 && w.h < 22) return null;
+    // 7:00 on the local day the night ends: tomorrow after 10 PM, today before 7 AM.
+    const naive = Date.UTC(w.y, w.mo - 1, w.d + (w.h >= 22 ? 1 : 0), 7, 0, 0);
+    // The zone's offset at an instant = its wall clock read as UTC, minus the instant.
+    const offsetAt = (ms: number) => {
+      const x = wall(new Date(ms));
+      return Date.UTC(x.y, x.mo - 1, x.d, x.h, x.mi, x.s) - ms;
+    };
+    let guess = naive - offsetAt(naive);
+    guess = naive - offsetAt(guess); // refine across a DST change
+    return new Date(guess);
+  } catch {
+    return null; // an unknown zone holds nothing — rule 3, never silent
+  }
 }
 
 // One text per person per window; everything else queues and flushes as ONE
@@ -1198,7 +1305,13 @@ export async function notifyStaffSms(
   teamMemberIds: string[],
   text: string,
   kind = "staff_sms",
-  opts: { urgency?: "routine" | "urgent" } = {},
+  opts: {
+    urgency?: "routine" | "urgent";
+    /** Oct 5 2026: the 10 PM–7 AM ET overnight rule for EVERY recipient, not
+     *  only an on-call being paged — for a desk ping that is never worth a
+     *  night-time buzz (pingKyle, the program desk tasks). Held, never dropped. */
+    holdOvernight?: boolean;
+  } = {},
 ): Promise<StaffSmsResult[]> {
   let ids = [...new Set(teamMemberIds.filter(Boolean))];
   if (ids.length === 0) return [];
@@ -1256,10 +1369,10 @@ export async function notifyStaffSms(
       // held DM for a Slack ID, else a text dated to the end. Only when
       // neither can keep it does it fall through and go now (a hold never
       // drops an alert).
-      const until = await holdFor(m.id, now, { page: paging === m.id });
+      const until = await holdFor(m.id, now, { page: paging === m.id || opts.holdOvernight === true });
       if (until) {
         const kept = m.slackId
-          ? await holdStaffDm({ teamMemberId: m.id, slackId: m.slackId, text, until, kind, why: paging === m.id ? "urgent page, quiet hours" : "their quiet time" })
+          ? await holdStaffDm({ teamMemberId: m.id, slackId: m.slackId, text, until, kind, why: paging === m.id ? "urgent page, quiet hours" : opts.holdOvernight ? "overnight / their quiet time" : "their quiet time" })
           : await queueStaffSms(m.id, text, undefined, { kind }, until);
         if (kept) {
           out.push({ teamMemberId: m.id, name: m.name, outcome: "held", until: until.toISOString() });
@@ -1317,12 +1430,18 @@ export async function notifyStaffSms(
     // pagers post to first — is told that plainly, with the time, instead of
     // the old silent "quiet-hours" that counted as reached.
     if (opts.urgency === "urgent") {
-      const held = out.filter((r) => r.outcome === "held" && r.until);
+      // Oct 5 2026: when the ops channel IS one person's DM and THEIR page is
+      // the one being held, the notice could only reach them when the page
+      // itself does (opsAlert holds a DM overnight too) — so it names only the
+      // OTHER people whose page is waiting, and says nothing when there are none.
+      const opsPerson = out.some((r) => r.outcome === "held") ? await opsDestinationPerson() : null;
+      const slackOf = new Map(members.map((m) => [m.id, m.slackId]));
+      const held = out.filter((r) => r.outcome === "held" && r.until && !(opsPerson && slackOf.get(r.teamMemberId) === opsPerson));
       if (held.length) {
         const { etDateTime } = await import("@/lib/datetime");
         const { scrubMoney } = await import("@/lib/text");
         await opsAlert(
-          `⏸ Urgent page held (quiet hours) — ${held.map((r) => `${r.name} gets it ${etDateTime(r.until!)}`).join(", ")}. Relaying: ${scrubMoney(text)}`,
+          `⏸ Urgent page held (quiet hours) — ${held.map((r) => `${r.name} gets it ${etDateTime(r.until!)} ET`).join(", ")}. Relaying: ${scrubMoney(text)}`,
         );
       }
     }
@@ -1683,8 +1802,17 @@ export async function notifyInApp(n: {
   href: string; // default deep link; a target's href wins for its row
   targets: NotifyTarget[]; // ONE Notification row per target
   dedupeKey?: string; // suffixed "-0","-1",… per target index so multi-target events insert every row
-}): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }>; silenced: number }> {
+}, opts: {
+  /** Oct 5 2026: write the bell rows NOW and hand back their channel legs
+   *  (Slack / text) as `bridgeRest`, for the caller to run in after(). A
+   *  verdict answers on the click, and the row — the durable part, the thing
+   *  a person can still open if the background dies — must not wait on a
+   *  Slack round trip, nor be lost with the background. `bridged` is empty
+   *  for rows handed back this way. */
+  bridgeLater?: boolean;
+} = {}): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }>; silenced: number; bridgeRest?: () => Promise<void> }> {
   const bridged: Array<{ userKey: string; channel: EditorChannel }> = [];
+  const later: Array<() => Promise<void>> = [];
   let silenced = 0;
   // TeamMember id → what went out for them in THIS call. An editor is
   // addressed through both a tm: row and an editor: row, and both resolve to
@@ -1750,37 +1878,42 @@ export async function notifyInApp(n: {
         });
         // Row is NEW (a dedupe hit throws P2002 and takes the retry branch in
         // the catch below) — the bridge fires once per row.
-        if (tmId || editorKey) {
-          // A person: their matrix row for this event decides Slack / text /
-          // both / neither (see the bridge header above and bridgePerson).
-          const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href, notificationId: row.id }, delivered);
-          if (editorKey && roles.includes("EDITOR")) {
-            // A held ping is "quiet", never "slack": the emitters turn this
-            // word into "pinged by Slack DM" on the job's timeline and the
-            // brand panel, and a DM waiting in its row has pinged nobody yet.
-            bridged.push({ userKey: t.userKey!, channel: out.held ? "quiet" : out.slack ? "slack" : out.sms ? "sms" : "bell" });
+        const rowRoles = roles;
+        const bridgeRow = async () => {
+          if (tmId || editorKey) {
+            // A person: their matrix row for this event decides Slack / text /
+            // both / neither (see the bridge header above and bridgePerson).
+            const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href, notificationId: row.id }, delivered);
+            if (editorKey && rowRoles.includes("EDITOR") && !opts.bridgeLater) {
+              // A held ping is "quiet", never "slack": the emitters turn this
+              // word into "pinged by Slack DM" on the job's timeline and the
+              // brand panel, and a DM waiting in its row has pinged nobody yet.
+              bridged.push({ userKey: t.userKey!, channel: out.held ? "quiet" : out.slack ? "slack" : out.sms ? "sms" : "bell" });
+            }
+          } else if ((rowRoles.includes("OWNER") || rowRoles.includes("ADMIN")) && t.ownerSms) {
+            // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
+            // "cut ready" row, which carries a sentence for the owner (Sep 11)
+            // and, since Sep 16, the office (bridgeBroadcast). `ownerActed` says
+            // the owner filed this one himself: the office leg still goes, his
+            // own is dropped inside the bridge (Sep 21 — see NotifyTarget).
+            await bridgeBroadcast(
+              n.kind,
+              t.ownerSms,
+              { roles: rowRoles, notificationId: row.id, ownerActed: t.ownerActed === true },
+              delivered,
+            );
           }
-        } else if ((roles.includes("OWNER") || roles.includes("ADMIN")) && t.ownerSms) {
-          // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
-          // "cut ready" row, which carries a sentence for the owner (Sep 11)
-          // and, since Sep 16, the office (bridgeBroadcast). `ownerActed` says
-          // the owner filed this one himself: the office leg still goes, his
-          // own is dropped inside the bridge (Sep 21 — see NotifyTarget).
-          await bridgeBroadcast(
-            n.kind,
-            t.ownerSms,
-            { roles, notificationId: row.id, ownerActed: t.ownerActed === true },
-            delivered,
-          );
-        }
-        // A NEW editor-addressed bell row with no login to see it → nudge Jordan
-        // once (deduped inside) to send that editor their Hub invite.
-        if (editorKey) {
-          try {
-            const { ensureEditorLoginNudge } = await import("@/lib/tasks");
-            await ensureEditorLoginNudge(editorKey);
-          } catch { /* the nudge must never break the bell */ }
-        }
+          // A NEW editor-addressed bell row with no login to see it → nudge Jordan
+          // once (deduped inside) to send that editor their Hub invite.
+          if (editorKey) {
+            try {
+              const { ensureEditorLoginNudge } = await import("@/lib/tasks");
+              await ensureEditorLoginNudge(editorKey);
+            } catch { /* the nudge must never break the bell */ }
+          }
+        };
+        if (opts.bridgeLater) later.push(bridgeRow);
+        else await bridgeRow();
       } catch (e) {
         // Unique violation on dedupeKey = this event was already announced.
         // Anything else is logged but still swallowed.
@@ -1859,7 +1992,20 @@ export async function notifyInApp(n: {
   } catch (e) {
     console.warn("notifyInApp failed", n.kind, e);
   }
-  return { bridged, silenced };
+  if (!opts.bridgeLater) return { bridged, silenced };
+  return {
+    bridged,
+    silenced,
+    bridgeRest: async () => {
+      for (const run of later) {
+        try {
+          await run();
+        } catch (e) {
+          console.warn("notifyInApp channel legs failed (bell row kept)", n.kind, e);
+        }
+      }
+    },
+  };
 }
 
 // What went out for one person in one notifyInApp call (the `delivered` map).
@@ -2098,8 +2244,25 @@ async function bridgePerson(
       // Their quiet time: the DM itself waits, on Slack, for the window's end
       // (holdStaffDm) — never turned into a text they did not ask for. Only if
       // that row cannot be written does it fall back to the rules below.
-      const heldDm = !!quiet && !!member.slackId &&
-        (await holdStaffDm({ teamMemberId: personId, slackId: member.slackId, text: dmText, until: quiet, kind, notificationId: ctx.notificationId, why: "their quiet time" }));
+      //
+      // AND THEIR OWN NIGHT (Oct 5 2026). An editor on their own clock —
+      // Manila for Kim and John Mark — was DMed the moment anything happened
+      // in the ET working day, which is 10 PM to 7 AM for them: a 3 AM buzz
+      // for a photographer's chat post on a job they could not start yet. The
+      // text leg has always kept their night (queueStaffSms's `tz`); the DM
+      // now waits for 7 AM in their own timezone the same way a quiet-time DM
+      // does, and goes with anything else that waited for them, once.
+      // That night is only the DEFAULT (review, Oct 5 night): an editor who
+      // saved a schedule of their own is timed by it alone (`quiet` above),
+      // exactly as the text leg and the rota already treat a saved schedule —
+      // their own word on when they may be reached beats the house guess.
+      const night = tz && !sched.own ? localNightEnd(tz) : null;
+      const dmUntil = quiet && night ? (quiet > night ? quiet : night) : quiet ?? night;
+      const heldDm = !!dmUntil && !!member.slackId &&
+        (await holdStaffDm({
+          teamMemberId: personId, slackId: member.slackId, text: dmText, until: dmUntil, kind, notificationId: ctx.notificationId,
+          why: dmUntil === quiet ? "their quiet time" : `night where they are (${tz}) — held until 7 AM their time`,
+        }));
       if (heldDm) {
         state.slack = true; // kept and dated — reached, as far as the relay is concerned
         dmKept = true;
@@ -2342,6 +2505,63 @@ function isoWeekKey(d: Date): string {
 // the title + a deep link into the queue.
 export async function notifyUrgent(taskTitle: string, path: string = "/queue"): Promise<void> {
   await opsAlert(`🔔 ${taskTitle} → ${appBase()}${path}`);
+}
+
+// ---------------------------------------------------------------------------
+// KYLE, BY NAME (Oct 5 2026, team notifications pass). Several things only the
+// office can do arrived as an ADMIN-role bell and nothing else: a job handed
+// to Luma Visuals (Kyle sends them the packet — the agency has no login), a
+// job ready for editing with nobody routed to edit it, a new program task on
+// his list. A role bell is a row Kyle may not open for a day. These go to HIM:
+// notifyStaffSms — Slack first (his roster phone is the company line, so
+// Slack is his only channel), his own quiet time AND the 10 PM–7 AM ET
+// overnight rule respected (held, then delivered once), a delivery row per
+// leg, and the ops relay if nothing could reach him. Exactly one active
+// roster row named Kyle, as the delivery-ready alerts require; otherwise the
+// line goes to the ops channel rather than to a guess.
+// `exceptTeamMemberId`: the person who just did the thing — Kyle is not told
+// about his own click.
+// ---------------------------------------------------------------------------
+export async function pingKyle(
+  text: string,
+  kind: string,
+  opts: { exceptTeamMemberId?: string | null } = {},
+): Promise<StaffSmsResult[] | "self" | "ops"> {
+  try {
+    const kyles = await prisma.teamMember.findMany({
+      where: { active: true, name: { contains: "Kyle", mode: "insensitive" } },
+      select: { id: true },
+      take: 2,
+    });
+    if (kyles.length !== 1) {
+      await opsAlert(text);
+      return "ops";
+    }
+    if (opts.exceptTeamMemberId && opts.exceptTeamMemberId === kyles[0].id) return "self";
+    return await notifyStaffSms([kyles[0].id], text, kind, { holdOvernight: true });
+  } catch (e) {
+    console.warn("pingKyle failed", kind, e);
+    return [];
+  }
+}
+
+/** Run follow-on notice work after the response when there is a request to
+ *  run after (a server action stays instant), inline otherwise — a cron, a
+ *  drill. The greetNewClient pattern (newClients.ts), shared. Never throws. */
+export async function inBackground(work: () => Promise<unknown>): Promise<void> {
+  const safe = async () => {
+    try {
+      await work();
+    } catch (e) {
+      console.warn("background notice failed", e);
+    }
+  };
+  try {
+    const { after } = await import("next/server");
+    after(safe);
+  } catch {
+    await safe();
+  }
 }
 
 // Cheap spike detector for webhook signature rejections: called from a

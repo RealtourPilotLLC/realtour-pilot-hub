@@ -124,12 +124,49 @@ import {
 //
 // PURE. Imports only testClients and hubWritePermit, which import nothing, so
 // client components, drills and readiness can all use it.
+//
+// PER-CLIENT CHOICES (Oct 5 2026, Jordan: "I'll do each client one by one …
+// I can customize what gets sent or not sent"). One shared `operations` list
+// for every pilot client could not say "Erica gets the portal, Kristin gets
+// the portal and the emails". The pilot now carries an optional
+//   clientOps[clientId] = the ops THAT client gets (an empty list = nothing)
+// and a listed client with no entry keeps the shared `operations` — so a
+// value stored before today means exactly what it meant. rolloutDecision,
+// rolloutClientFilter, the hub-write pilot and describeProgramScope all read
+// the client's own list (pilotOpsFor), so every enforcement point follows.
+// "Since" for a client's own op is the later of when they joined and when
+// THAT op was turned on for them (clientOpsSince, written by
+// settleRolloutChange), so turning one thing on never dumps a backlog of it.
+// setClientOpsChange is the Client onboarding page's one change; it never
+// widens anybody but the client it names (see its comment). The cap rose
+// from 3 to PROGRAM_PILOT_MAX (30) so every program client can be named —
+// still a cap.
+//
+// REVIEW FIXES (Oct 5 2026, late):
+//   · manual_messages — "Messages I send myself" — is its own op in its own
+//     group ("messages"). Jordan's step-5 sends used to ride the "Program
+//     emails" ops, which ALSO let the automatic reminders / scripts-ready /
+//     office-replied emails through the moment their switches went on. Now
+//     the manual send asks manual_messages only (the welcome also needs the
+//     portal account), and "Program emails" means the automatic ones alone.
+//     It has no switch and no feature lock: Jordan pressing Send is the
+//     decision. A value stored before it simply does not carry it.
+//   · setClientOpsChange no longer brings anybody else's stored choices back
+//     to life. When the named list is reaching nobody (the mode is "Only my
+//     TEST clients", or it has no approval) and another client on file still
+//     has something turned on, an allowing change is REFUSED with their ids
+//     (othersOnFile) unless the caller asks for `onlyThisClient`, which sets
+//     every other named client to nothing in the same write.
 // ---------------------------------------------------------------------------
 
 export const PROGRAM_ROLLOUT_SETTING_KEY = "program-rollout";
 
-/** Hard cap on REAL pilot clients (business default 2, Sep 28 2026). */
-export const PROGRAM_PILOT_MAX = 3;
+/**
+ * Hard cap on REAL pilot clients. Was 3 (business default 2, Sep 28 2026);
+ * raised Oct 5 2026 to cover every program client once Jordan turns each one
+ * on by hand from Settings → Client onboarding. Still a cap.
+ */
+export const PROGRAM_PILOT_MAX = 30;
 
 /**
  * Everything the program does that reaches a client, one name each. Twelve
@@ -152,6 +189,9 @@ export const PROGRAM_REACH_OPS = [
   "portal_sign_in",
   "portal_layout_v2",
   "program_message_notice",
+  // Oct 5 2026 review fix: the messages Jordan composes and sends himself from
+  // Settings → Client onboarding (step 5). No switch: only his press sends.
+  "manual_messages",
   "revision_policy",
   "review_auto_approve",
   "topic_carryover",
@@ -165,17 +205,19 @@ export function isProgramReachOp(x: unknown): x is ProgramReachOp {
   return typeof x === "string" && (PROGRAM_REACH_OPS as readonly string[]).includes(x);
 }
 
-export type ProgramPilotGroupKey = "accounts" | "layout" | "emails" | "portal_changes" | "bookings";
+export type ProgramPilotGroupKey = "accounts" | "layout" | "emails" | "messages" | "portal_changes" | "bookings";
 
 /**
- * How the owner approves operations: five plain-word groups, all ticked by
- * default when Jordan approves a pilot (business default 1). publishing is in
- * no group on purpose — it reaches TEST clients or ALL only.
+ * How the owner approves operations: plain-word groups, all ticked by default
+ * when Jordan approves a pilot (business default 1). publishing is in no group
+ * on purpose — it reaches TEST clients or ALL only. "messages" (Oct 5 2026) is
+ * the messages Jordan sends himself, apart from the automatic emails.
  */
 export const PROGRAM_PILOT_GROUPS: readonly { key: ProgramPilotGroupKey; label: string; ops: readonly ProgramReachOp[] }[] = [
   { key: "accounts", label: "Portal accounts — invitations, sign-in emails and signing in", ops: ["portal_invites", "portal_login_email", "portal_sign_in"] },
   { key: "layout", label: "The new portal layout", ops: ["portal_layout_v2"] },
   { key: "emails", label: "Program emails — reminders, scripts-ready and office-replied notices", ops: ["reminders", "script_share_email", "program_message_notice"] },
+  { key: "messages", label: "Messages you send yourself from Client onboarding (only when you press Send)", ops: ["manual_messages"] },
   {
     key: "portal_changes",
     label: "Automatic portal changes — auto-shared scripts, review deadlines, automatic approval, topic carry-over and the caption assistant",
@@ -189,9 +231,24 @@ export function pilotGroupOf(op: ProgramReachOp): (typeof PROGRAM_PILOT_GROUPS)[
   return PROGRAM_PILOT_GROUPS.find((g) => g.ops.includes(op)) ?? null;
 }
 
-/** Can a pilot carry this op at all? Only an op in a group — never publishing,
- *  even if a hand-edited stored value lists it. */
-const pilotCarries = (p: ProgramPilot, op: ProgramReachOp): boolean => p.operations.includes(op) && pilotGroupOf(op) !== null;
+/** Does this listed client have their OWN list (Oct 5 2026)? */
+const hasOwnOps = (p: ProgramPilot, clientId: string): boolean => !!p.clientOps && Object.prototype.hasOwnProperty.call(p.clientOps, clientId);
+
+/**
+ * The ops a listed pilot client gets: their own list when they have one
+ * (an empty list = nothing), else the pilot's shared `operations` (today's
+ * meaning for every value stored before per-client choices existed).
+ */
+export function pilotOpsFor(p: ProgramPilot, clientId: string): ProgramReachOp[] {
+  return hasOwnOps(p, clientId) ? p.clientOps![clientId] : p.operations;
+}
+
+/** Can the pilot carry this op for this client? Only an op in a group — never
+ *  publishing, even if a hand-edited stored value lists it. */
+const pilotCarries = (p: ProgramPilot, op: ProgramReachOp, clientId: string): boolean => pilotOpsFor(p, clientId).includes(op) && pilotGroupOf(op) !== null;
+
+/** The listed clients the pilot carries this op for, in list order. */
+const pilotCarriers = (p: ProgramPilot, op: ProgramReachOp): string[] => p.clientIds.filter((id) => pilotCarries(p, op, id));
 
 /** Every op of the given groups, in canonical order (the editor's "tick what they get"). */
 export function opsForGroups(keys: readonly ProgramPilotGroupKey[]): ProgramReachOp[] {
@@ -217,6 +274,20 @@ export type ProgramPilot = {
    * still carries are kept.
    */
   groupSince?: Partial<Record<ProgramPilotGroupKey, string>>;
+  /**
+   * PER-CLIENT OPERATIONS (Oct 5 2026). A listed client with an entry gets
+   * exactly these ops (an empty list = nothing at all); a listed client with
+   * no entry gets the shared `operations`. Optional and back-compatible: a
+   * value stored without it keeps today's shared meaning. Entries for clients
+   * not in clientIds are dropped; only ops some group carries are kept.
+   */
+  clientOps?: Record<string, ProgramReachOp[]>;
+  /**
+   * When each of a client's OWN ops was turned on for them (ISO), written by
+   * settleRolloutChange. A client's since for such an op is the later of this
+   * and their joinedAt, so a newly allowed feature starts with no backlog.
+   */
+  clientOpsSince?: Record<string, Partial<Record<ProgramReachOp, string>>>;
 };
 export type ProgramRollout = { mode: RolloutMode; modeSince: string | null; pilot: ProgramPilot | null };
 
@@ -280,8 +351,55 @@ export function parseProgramRollout(raw: string | null | undefined): { rollout: 
     };
     const groupSince = keptGroupSince(objOrNull(p.groupSince), operations);
     if (groupSince) pilot.groupSince = groupSince;
+    // Per-client choices (Oct 5 2026). PRESENT BUT NOT AN OBJECT is
+    // unreadable, never "absent": absent means the shared list, and reading a
+    // garbled per-client value as the shared list could WIDEN a client who
+    // had been set to nothing. A malformed entry for one client is an empty
+    // list for that client (nothing), for the same reason.
+    if (p.clientOps != null) {
+      const own = objOrNull(p.clientOps);
+      if (!own) return closed("the stored per-client choices are not a JSON object");
+      const clientOps = keptClientOps(own, clientIds);
+      if (clientOps) {
+        pilot.clientOps = clientOps;
+        const since = keptClientOpsSince(objOrNull(p.clientOpsSince), clientOps);
+        if (since) pilot.clientOpsSince = since;
+      }
+    }
   }
   return { rollout: { mode, modeSince: isoOrNull(o.modeSince), pilot }, problem: null };
+}
+
+/** One client's list, read: known ops some group carries, canonical order; anything else → []. */
+const opsList = (v: unknown): ProgramReachOp[] => {
+  if (!Array.isArray(v)) return [];
+  const want = new Set(v);
+  return PROGRAM_REACH_OPS.filter((op) => want.has(op) && pilotGroupOf(op) !== null);
+};
+
+/** clientOps reduced to listed clients, in list order; null when nobody has their own list. */
+function keptClientOps(raw: Record<string, unknown> | Record<string, ProgramReachOp[]> | null | undefined, clientIds: readonly string[]): Record<string, ProgramReachOp[]> | null {
+  if (!raw) return null;
+  const out: Record<string, ProgramReachOp[]> = {};
+  for (const id of clientIds) if (Object.prototype.hasOwnProperty.call(raw, id)) out[id] = opsList((raw as Record<string, unknown>)[id]);
+  return Object.keys(out).length ? out : null;
+}
+
+/** clientOpsSince reduced to real dates for ops each client still has, in canonical order; null when empty. */
+function keptClientOpsSince(raw: Record<string, unknown> | null | undefined, clientOps: Record<string, ProgramReachOp[]>): Record<string, Partial<Record<ProgramReachOp, string>>> | null {
+  if (!raw) return null;
+  const out: Record<string, Partial<Record<ProgramReachOp, string>>> = {};
+  for (const [id, ops] of Object.entries(clientOps)) {
+    const per = objOrNull(raw[id]);
+    if (!per) continue;
+    const kept: Partial<Record<ProgramReachOp, string>> = {};
+    for (const op of ops) {
+      const at = isoOrNull(per[op]);
+      if (at) kept[op] = at;
+    }
+    if (Object.keys(kept).length) out[id] = kept;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 /** A group is carried while any of its ops is in the pilot's operations. */
@@ -303,6 +421,10 @@ function keptGroupSince(raw: Record<string, unknown> | null | undefined, operati
 export function serializeProgramRollout(r: ProgramRollout): string {
   const p = r.pilot;
   const groupSince = p ? keptGroupSince(p.groupSince, p.operations) : null;
+  // Written only when present, AFTER the older keys: a value without
+  // per-client choices serializes byte-for-byte as it did before Oct 5.
+  const clientOps = p ? keptClientOps(p.clientOps, p.clientIds) : null;
+  const clientOpsSince = clientOps ? keptClientOpsSince(p!.clientOpsSince as Record<string, unknown> | undefined, clientOps) : null;
   return JSON.stringify({
     mode: r.mode,
     modeSince: r.modeSince,
@@ -316,6 +438,8 @@ export function serializeProgramRollout(r: ProgramRollout): string {
           note: p.note,
           joinedAt: Object.fromEntries(p.clientIds.filter((id) => p.joinedAt[id]).map((id) => [id, p.joinedAt[id]])),
           ...(groupSince ? { groupSince } : {}),
+          ...(clientOps ? { clientOps } : {}),
+          ...(clientOpsSince ? { clientOpsSince } : {}),
         }
       : null,
   });
@@ -356,8 +480,11 @@ const later = (a: Date | null, b: Date | null): Date | null => (!a ? b : !b ? a 
  * approval) and when the op's GROUP was ticked (see "SINCE, PER GROUP").
  */
 function pilotSince(p: ProgramPilot, clientId: string, op: ProgramReachOp): Date | null {
+  const joined = toDate(p.joinedAt[clientId]) ?? toDate(p.approvedAt);
+  // A client's OWN op starts when it was turned on for them (Oct 5 2026).
+  if (hasOwnOps(p, clientId)) return later(joined, toDate(p.clientOpsSince?.[clientId]?.[op]));
   const g = pilotGroupOf(op);
-  return later(toDate(p.joinedAt[clientId]) ?? toDate(p.approvedAt), g ? toDate(p.groupSince?.[g.key]) : null);
+  return later(joined, g ? toDate(p.groupSince?.[g.key]) : null);
 }
 
 /**
@@ -368,7 +495,7 @@ function pilotSince(p: ProgramPilot, clientId: string, op: ProgramReachOp): Date
 function allSince(rollout: ProgramRollout, clientId: string, op: ProgramReachOp): Date | null {
   const modeSince = toDate(rollout.modeSince);
   const p = rollout.pilot;
-  if (!p || !p.clientIds.includes(clientId) || !pilotCarries(p, op) || !p.joinedAt[clientId]) return modeSince;
+  if (!p || !p.clientIds.includes(clientId) || !pilotCarries(p, op, clientId) || !p.joinedAt[clientId]) return modeSince;
   const asPilot = pilotSince(p, clientId, op);
   if (!modeSince || !asPilot) return modeSince;
   return asPilot.getTime() < modeSince.getTime() ? asPilot : modeSince;
@@ -406,7 +533,7 @@ export function rolloutDecision(a: {
   const state = pilotState(p, now);
   if (state === "UNAPPROVED") return { ok: false, code: "pilot_unapproved", reason: "the program pilot has no recorded approval, so it covers nobody" };
   if (state === "EXPIRED") return { ok: false, code: "pilot_expired", reason: `the program pilot ended after ${pilotLastDay(p.expiresAt)}, so it no longer reaches its clients` };
-  if (!pilotCarries(p, op)) {
+  if (!pilotCarries(p, op, client.id)) {
     const g = pilotGroupOf(op);
     return {
       ok: false,
@@ -431,7 +558,10 @@ export function rolloutDecision(a: {
  */
 export function clientTier(rollout: ProgramRollout, client: { id: string; name: string | null }, now: Date): "TEST" | "PILOT" | "REAL" {
   if (isSyntheticClientRow({ id: client.id, name: client.name })) return "TEST";
-  if (rollout.mode === "PILOT" && rollout.pilot?.clientIds.includes(client.id) && pilotState(rollout.pilot, now) === "ACTIVE") return "PILOT";
+  const p = rollout.pilot;
+  // A client whose OWN list is empty (Oct 5 2026) is named but gets nothing,
+  // so they are not a pilot client for anything that asks "PILOT or REAL".
+  if (rollout.mode === "PILOT" && p?.clientIds.includes(client.id) && pilotState(p, now) === "ACTIVE" && !(hasOwnOps(p, client.id) && pilotOpsFor(p, client.id).length === 0)) return "PILOT";
   return "REAL";
 }
 
@@ -440,6 +570,7 @@ export const PROGRAM_PILOT_GROUP_SHORT: Record<ProgramPilotGroupKey, string> = {
   accounts: "portal accounts",
   layout: "the new layout",
   emails: "program emails",
+  messages: "messages you send",
   portal_changes: "automatic portal changes",
   bookings: "bookings in Aryeo/Calendly",
 };
@@ -501,8 +632,10 @@ export function rolloutClientFilter(a: {
   if (a.featureTestOnly) return { everyone: false, realClientIds: [] };
   if (rollout.mode === "ALL") return { everyone: true };
   const p = rollout.pilot;
-  if (rollout.mode !== "PILOT" || !p || pilotState(p, now) !== "ACTIVE" || !pilotCarries(p, op)) return { everyone: false, realClientIds: [] };
-  return { everyone: false, realClientIds: [...p.clientIds] };
+  if (rollout.mode !== "PILOT" || !p || pilotState(p, now) !== "ACTIVE") return { everyone: false, realClientIds: [] };
+  // Per client (Oct 5 2026): only the listed clients whose own list (or the
+  // shared one, for a client without their own) carries this op.
+  return { everyone: false, realClientIds: pilotCarriers(p, op) };
 }
 
 /**
@@ -588,8 +721,128 @@ export function settleRolloutChange(from: ProgramRollout, to: ProgramRollout, no
     }
     if (Object.keys(groupSince).length) next.pilot.groupSince = groupSince;
     else delete next.pilot.groupSince;
+    // Per client, per op (Oct 5 2026) — the same rule as groupSince, one
+    // client at a time: an op newly on FOR THIS CLIENT starts now (or at
+    // modeSince when the rollout was everyone, which already reached them);
+    // an op they already had keeps its start — their own stamp, or, the first
+    // time a shared-list client gets their own list, the shared group's.
+    const own = next.pilot.clientOps;
+    if (own) {
+      const since: Record<string, Partial<Record<ProgramReachOp, string>>> = {};
+      for (const [id, ops] of Object.entries(own)) {
+        const had = before && before.clientIds.includes(id) ? pilotOpsFor(before, id) : [];
+        const per: Partial<Record<ProgramReachOp, string>> = {};
+        for (const op of ops) {
+          if (!had.includes(op)) { per[op] = newGroupStart; continue; }
+          const g = pilotGroupOf(op);
+          const was = before && hasOwnOps(before, id) ? before.clientOpsSince?.[id]?.[op] : g ? before?.groupSince?.[g.key] : undefined;
+          if (was) per[op] = was;
+        }
+        if (Object.keys(per).length) since[id] = per;
+      }
+      if (Object.keys(since).length) next.pilot.clientOpsSince = since;
+      else delete next.pilot.clientOpsSince;
+    } else delete next.pilot.clientOpsSince;
   }
   return { rollout: next };
+}
+
+/**
+ * THE CLIENT ONBOARDING PAGE'S ONE CHANGE (Oct 5 2026): set exactly what ONE
+ * real client gets. Pure; updateProgramRollout runs it as the mutate and
+ * settleRolloutChange stamps the dates. Rules:
+ *   · the client gets their OWN list (`ops`, groups' ops only); an empty list
+ *     takes them out of the named list altogether (a later turn-on is a fresh
+ *     join, so nothing from the gap is owed);
+ *   · a change that ALLOWS something new is an approval: it re-stamps who
+ *     and when, and the first one while the rollout is "TEST clients only"
+ *     sets the mode to PILOT (named clients). "Every client" is left alone —
+ *     nothing here ever widens the mode to everyone, or narrows it from
+ *     there. A change that only takes things away re-stamps nothing;
+ *   · NOBODY ELSE IS WIDENED. The re-stamped approval, or the mode becoming
+ *     PILOT, could switch on a list that was sitting on file reaching nobody
+ *     (an old pilot under "TEST clients only", or one with no recorded
+ *     approval). So when the named list was reaching nobody before an
+ *     allowing change and any OTHER named client still has something on file
+ *     (their own list or the shared one), the change is REFUSED with their ids
+ *     in `othersOnFile` (review fix, Oct 5 2026: the first cut pinned only the
+ *     shared-list clients, and a client with their own list came back on).
+ *     With `onlyThisClient` every other named client is set to nothing (an
+ *     empty own list) in the same write, so only this client is reached;
+ *   · allowing something on a named list that has ENDED is refused:
+ *     re-opening it from here would restart everyone on it. Its end date is
+ *     changed in Settings → Who the program may reach. Taking things away
+ *     from an ended list is fine;
+ *   · TEST clients are never named (the writer refuses them too): they are
+ *     always reached.
+ * Returns the wanted rollout, or { error } with the sentence the page shows.
+ */
+export function setClientOpsChange(
+  cur: ProgramRollout,
+  a: { client: { id: string; name: string | null }; ops: readonly ProgramReachOp[]; by: string; now: Date; onlyThisClient?: boolean },
+): ProgramRollout | { error: string; othersOnFile?: string[] } {
+  const bad = pilotCandidateProblem(a.client);
+  if (bad) return { error: `${bad[0].toUpperCase()}${bad.slice(1)}. Nothing was changed.` };
+  const ops = opsList(a.ops);
+  const p = cur.pilot;
+  const listed = !!p?.clientIds.includes(a.client.id);
+  const had = p && listed ? pilotOpsFor(p, a.client.id) : [];
+  const allowing = ops.some((op) => !had.includes(op));
+  if (allowing && p && p.clientIds.length && pilotState(p, a.now) === "EXPIRED") {
+    return { error: `The named-client list ended after ${pilotLastDay(p.expiresAt)}. Change or remove its end date in Settings → Who the program may reach first. Nothing was changed.` };
+  }
+  const reachingBefore = cur.mode === "ALL" || (cur.mode === "PILOT" && !!p && pilotState(p, a.now) === "ACTIVE");
+  // This change would switch the named list on: anybody else with something
+  // on file would come back with it. Refuse, unless asked to turn them off.
+  const wakes = allowing && !reachingBefore;
+  const othersOnFile = wakes && p ? p.clientIds.filter((id) => id !== a.client.id && pilotOpsFor(p, id).some((op) => pilotGroupOf(op) !== null)) : [];
+  if (othersOnFile.length && !a.onlyThisClient) {
+    return {
+      error: `${othersOnFile.length === 1 ? "Another client still has" : `${othersOnFile.length} other clients still have`} choices on file, and this change would turn them back on as well. Nothing was changed.`,
+      othersOnFile,
+    };
+  }
+  const clientIds = ops.length
+    ? listed ? [...p!.clientIds] : [...(p?.clientIds ?? []), a.client.id]
+    : (p?.clientIds ?? []).filter((id) => id !== a.client.id);
+  if (clientIds.length > PROGRAM_PILOT_MAX) return { error: `The named list already has ${clientIds.length - 1} clients, the most it may have is ${PROGRAM_PILOT_MAX}. Nothing was changed.` };
+  const clientOps: Record<string, ProgramReachOp[]> = {};
+  for (const id of clientIds) {
+    if (id === a.client.id) clientOps[id] = ops;
+    else if (wakes) clientOps[id] = []; // set to nothing: never widened by this change
+    else if (p && hasOwnOps(p, id)) clientOps[id] = [...p.clientOps![id]];
+  }
+  const mode: RolloutMode = cur.mode === "TEST_ONLY" && allowing ? "PILOT" : cur.mode;
+  if (!clientIds.length) return { ...cur, mode, pilot: null };
+  return {
+    ...cur,
+    mode,
+    pilot: {
+      clientIds,
+      operations: p ? [...p.operations] : [],
+      approvedBy: allowing ? a.by : p?.approvedBy ?? null,
+      approvedAt: allowing ? a.now.toISOString() : p?.approvedAt ?? null,
+      expiresAt: p?.expiresAt ?? null,
+      note: p?.note ?? null,
+      joinedAt: { ...(p?.joinedAt ?? {}) },
+      ...(p?.groupSince ? { groupSince: { ...p.groupSince } } : {}),
+      clientOps,
+      ...(p?.clientOpsSince ? { clientOpsSince: { ...p.clientOpsSince } } : {}),
+    },
+  };
+}
+
+/**
+ * What ONE client is allowed right now, op by op, for the onboarding page:
+ * TEST clients get everything (always in scope); a real client gets what
+ * their own list (or the shared list) carries — whatever the mode or the
+ * pilot's state, which the page says separately. Pure.
+ */
+export function clientAllowedOps(rollout: ProgramRollout, client: { id: string; name: string | null }): ProgramReachOp[] {
+  if (isSyntheticClientRow({ id: client.id, name: client.name })) return PROGRAM_REACH_OPS.filter((op) => pilotGroupOf(op) !== null);
+  const p = rollout.pilot;
+  if (!p || !p.clientIds.includes(client.id)) return [];
+  return pilotOpsFor(p, client.id).filter((op) => pilotGroupOf(op) !== null);
 }
 
 // ---- the hub-write pilot (Jordan's Sep 28 rule) ---------------------------
@@ -604,9 +857,16 @@ export function settleRolloutChange(from: ProgramRollout, to: ProgramRollout, no
 export function programPilotAsHubPilot(rollout: ProgramRollout, switchKey: HubWriteSwitch): HubPilot | null {
   const p = rollout.pilot;
   if (rollout.mode === "TEST_ONLY" || !p) return null;
+  // PER CLIENT (Oct 5 2026). HubPilot has one operations list for all its
+  // clients, so with per-client choices it names only the clients whose own
+  // list (or the shared one) carries bookings — anyone else on the program
+  // list is "not in the program pilot" for writes, which is the same answer.
+  // With nobody booked it keeps every name and no operations, so the refusal
+  // still reads "does not include bookings".
+  const booked = pilotCarriers(p, "hub_writes");
   return {
-    clientIds: [...p.clientIds],
-    operations: p.operations.includes("hub_writes") ? HUB_WRITE_OPERATION_GROUPS[switchKey].flatMap((g) => g.operations) : [],
+    clientIds: booked.length ? booked : [...p.clientIds],
+    operations: booked.length ? HUB_WRITE_OPERATION_GROUPS[switchKey].flatMap((g) => g.operations) : [],
     approvedBy: p.approvedBy,
     approvedAt: p.approvedAt,
     expiresAt: p.expiresAt,
@@ -649,12 +909,16 @@ export function describeProgramScope(a: {
   if (ps === "NONE" || !p) return only("the rollout is set to a pilot, but no pilot client is named yet");
   if (ps === "UNAPPROVED") return only("the pilot has no recorded approval, so it covers nobody");
   if (ps === "EXPIRED") return only(`the pilot ended after ${pilotLastDay(p.expiresAt)}`);
-  if (!pilotCarries(p, op)) {
+  // Per client (Oct 5 2026): the clients this op actually reaches. Without
+  // per-client choices that is the whole list or nobody, exactly as before.
+  const carriers = pilotCarriers(p, op);
+  if (!carriers.length) {
     const g = pilotGroupOf(op);
-    return only(g ? `the pilot does not include "${g.label}"` : `${op} is never part of a pilot`);
+    return only(g ? (p.clientOps ? `no named client has "${g.label}" turned on` : `the pilot does not include "${g.label}"`) : `${op} is never part of a pilot`);
   }
+  const reached = carriers.map((id) => a.names.get(id) ?? `${id} (not found)`);
   const approval = `approved by ${p.approvedBy} ${etDay(p.approvedAt)}${p.expiresAt ? `, through ${pilotLastDay(p.expiresAt)}` : ""}`;
-  return { line: `${tests} + pilot: ${pilotNames.join(", ")} (${approval})`, realClients: true, pilotNames, pilotState: ps };
+  return { line: `${tests} + pilot: ${reached.join(", ")} (${approval})`, realClients: true, pilotNames: p.clientOps ? reached : pilotNames, pilotState: ps };
 }
 
 /**

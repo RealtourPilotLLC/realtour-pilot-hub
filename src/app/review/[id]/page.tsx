@@ -10,9 +10,11 @@ import { Avatar } from "@/components/ui/Avatar";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
-import { getCutWorkspace } from "@/lib/reviewRoom";
+import { getCutWorkspace, nextCutToReview } from "@/lib/reviewRoom";
+import { isSyntheticClientRow } from "@/lib/testClients";
 import { editorMeta } from "@/lib/editors";
 import { CutReviewPanel } from "@/components/review/CutReviewPanel";
+import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { cutTakeBackFlags } from "@/app/review/actions";
 import { BackLink } from "@/components/ui/BackLink";
 // §8.1: the one person each waiting cut is waiting on, and the take / cover /
@@ -21,6 +23,12 @@ import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
+// A verdict pressed here answers at once and finishes its follow-ons (the
+// Dropbox copy waits on Dropbox for up to 15 s, the client-library rebuild) in
+// after(), inside this route's function budget (Oct 5) — the same 60 s ceiling
+// /edit/<id> uses. Anything a cut-short run leaves undone, the hourly sweeps
+// named in review/actions.ts finish.
+export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
 // One project's cut-review workspace: the submitted video with timestamped
@@ -130,6 +138,21 @@ export default async function CutReviewPage({
           .catch(() => [])
       : [];
   const takeBack = active ? (cutFlags.find((f) => f.submissionId === active.id) ?? null) : null;
+  // WHERE A VERDICT TAKES THE REVIEWER (Oct 5): named now, so the move happens
+  // on the click instead of after the server answers. Only when there is a
+  // verdict to give. Test clients only from a test job, like the Room's index.
+  const nextCut =
+    active && !shotThis && active.status === "PENDING" && !active.heldForCheck
+      ? await nextCutToReview({
+          afterSubmissionId: active.id,
+          projectId: w.projectId,
+          viewer: {
+            teamMemberId: me && !me.impersonating ? me.teamMemberId : null,
+            office: !me || (!me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN")),
+          },
+          includeTest: isSyntheticClientRow({ name: w.clientName }),
+        }).catch(() => null)
+      : null;
   const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
   const clientAsk = active
     ? await prisma.smartTask.findFirst({
@@ -217,7 +240,6 @@ export default async function CutReviewPage({
             })}
           </nav>}
           {slots.length === 0 && currentCuts.length > 1 && <nav aria-label="Legacy videos" className="flex flex-wrap gap-2">{currentCuts.map((current) => <Link key={current.id} href={`/review/${w.projectId}?cut=${current.id}`} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm">{current.fileName ?? "Unmapped video"} · V{current.round}</Link>)}</nav>}
-          {!shotThis && <ProjectVideoStatus projectId={w.projectId} selectedKey={active?.deliverableId ? `${active.deliverableId}:${active.slot ?? 1}` : output} />}
           {active ? (
             <>
               <div id={`cut-${active.id}`} className="flex scroll-mt-24 flex-wrap items-center gap-2 text-sm text-muted">
@@ -267,9 +289,7 @@ export default async function CutReviewPage({
                   {(clientAsk.description ?? clientAsk.summary) && (
                     <p className="mt-1 whitespace-pre-wrap text-foreground/85">{(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
                   )}
-                  <p className="mt-1.5 text-xs text-muted">
-                    Approve → the revision closes and the job goes back to where it stands (a delivered job re-delivers, with Kyle&apos;s follow-up). Request changes → the job stays in Revisions and the ask stays open.
-                  </p>
+                  <p className="mt-1.5 text-xs text-muted">Approving closes this ask; sending it back keeps it open.</p>
                 </div>
               )}
               <CutReviewPanel
@@ -284,6 +304,8 @@ export default async function CutReviewPage({
                 heldForCheck={active.heldForCheck}
                 fixesToCheck={fixesToCheck}
                 readStamp={new Date().toISOString()}
+                nextCut={nextCut ? { href: nextCut.href, label: nextCut.label } : null}
+                street={w.street}
               />
 
             </>
@@ -296,9 +318,17 @@ export default async function CutReviewPage({
             </Section>
           )}
 
+          {/* Secondary detail, folded (Oct 5): every video's state and next
+              action, then the earlier versions of this cut. */}
+          {!shotThis && <ProjectVideoStatus projectId={w.projectId} selectedKey={active?.deliverableId ? `${active.deliverableId}:${active.slot ?? 1}` : output} />}
           {earlierRounds.length > 0 && (
-            <Section icon={History} title="Earlier rounds">
-              <ul className="divide-y divide-border">
+            <details className="rounded-xl border border-border px-4 py-1">
+              <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+                <History className="size-4 text-muted-2" />
+                <span className="font-semibold">Earlier versions</span>
+                <span className="text-muted">{earlierRounds.length}</span>
+              </summary>
+              <ul className="divide-y divide-border border-t border-border">
                 {earlierRounds.map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                     <span className="font-medium">Version {s.round}</span>
@@ -315,61 +345,89 @@ export default async function CutReviewPage({
                   </li>
                 ))}
               </ul>
-            </Section>
+            </details>
           )}
         </div>
 
         {/* RIGHT — what to judge it against */}
         <div className="min-w-0 space-y-4">
-          <Section icon={Film} title="What was ordered">
-            {w.deliverables.length ? (
-              <div className="flex flex-wrap gap-1.5">
-                {w.deliverables.map((d) => (
-                  <span key={d} className="rounded-lg bg-surface-2 px-2 py-1 text-xs font-medium text-foreground/85">
-                    {d}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted">No video deliverables listed.</p>
-            )}
-            {w.premium && (
-              <p className="mt-2 text-xs font-medium" style={{ color: "#a78bfa" }}>
-                Premium tier — hold it to the influencer standard.
-              </p>
-            )}
-          </Section>
-
-          {(w.reelHook || w.reelScript || w.reelSong) && (
-            <Section icon={ScrollText} title="The plan (reel recipe)">
-              <div className="space-y-2 text-sm">
-                {w.reelHook && (
-                  <p>
-                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-2">Hook</span>
-                    <br />
-                    {w.reelHook}
+          {/* What to judge the cut against, folded to one line (Oct 5): the
+              order, the plan and the photographer's notes are a tap away, and
+              the one fact that changes the bar — premium — stays on the line. */}
+          <details className="rounded-xl border border-border px-4 py-1">
+            <summary className="flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 text-sm">
+              <Film className="size-4 text-muted-2" />
+              <span className="font-semibold">The brief</span>
+              <span className="text-muted">
+                {[
+                  "what was ordered",
+                  w.reelHook || w.reelScript || w.reelSong ? "the plan" : null,
+                  w.editorBrief ? "editing notes" : null,
+                ].filter(Boolean).join(" · ")}
+              </span>
+              {w.premium && (
+                <span className="rounded-md px-1.5 py-0.5 text-[11px] font-medium" style={{ backgroundColor: "#a78bfa1a", color: "#a78bfa" }}>
+                  Premium
+                </span>
+              )}
+            </summary>
+            <div className="space-y-4 border-t border-border py-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-2">What was ordered</h3>
+                {w.deliverables.length ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {w.deliverables.map((d) => (
+                      <span key={d} className="rounded-lg bg-surface-2 px-2 py-1 text-xs font-medium text-foreground/85">
+                        {d}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-muted">No video deliverables listed.</p>
+                )}
+                {w.premium && (
+                  <p className="mt-2 text-xs font-medium" style={{ color: "#a78bfa" }}>
+                    Premium tier — hold it to the influencer standard.
                   </p>
                 )}
-                {w.reelSong && (
-                  <p className="flex items-center gap-1.5 text-foreground/85">
-                    <Music className="size-3.5 text-muted-2" /> {w.reelSong}
-                  </p>
-                )}
-                {w.reelScript && (
-                  <details>
-                    <summary className="cursor-pointer text-xs font-medium text-brand">Full script</summary>
-                    <p className="mt-1 whitespace-pre-wrap text-foreground/85">{w.reelScript}</p>
-                  </details>
-                )}
               </div>
-            </Section>
-          )}
 
-          {w.editorBrief && (
-            <Section icon={PenLine} title="Photographer's editing notes">
-              <p className="whitespace-pre-wrap text-sm text-foreground/85">{w.editorBrief}</p>
-            </Section>
-          )}
+              {(w.reelHook || w.reelScript || w.reelSong) && (
+                <div className="space-y-2 text-sm">
+                  <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-2">
+                    <ScrollText className="size-3.5" /> The plan (reel recipe)
+                  </h3>
+                  {w.reelHook && (
+                    <p>
+                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-2">Hook</span>
+                      <br />
+                      {w.reelHook}
+                    </p>
+                  )}
+                  {w.reelSong && (
+                    <p className="flex items-center gap-1.5 text-foreground/85">
+                      <Music className="size-3.5 text-muted-2" /> {w.reelSong}
+                    </p>
+                  )}
+                  {w.reelScript && (
+                    <details>
+                      <summary className="cursor-pointer text-xs font-medium text-brand">Full script</summary>
+                      <p className="mt-1 whitespace-pre-wrap text-foreground/85">{w.reelScript}</p>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {w.editorBrief && (
+                <div>
+                  <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-2">
+                    <PenLine className="size-3.5" /> Photographer&apos;s editing notes
+                  </h3>
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-foreground/85">{w.editorBrief}</p>
+                </div>
+              )}
+            </div>
+          </details>
 
           {/* The client's own portal notes on this job's cuts (interactive
               layer, Aug 28) — read-only context while judging the next round;
@@ -419,6 +477,8 @@ export default async function CutReviewPage({
           )}
         </div>
       </div>
+      {/* The confirmation a verdict leaves behind follows the reviewer here. */}
+      {!shotThis && <VerdictReceipts />}
     </div>
   );
 }

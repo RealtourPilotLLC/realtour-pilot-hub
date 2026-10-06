@@ -179,6 +179,14 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
               targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
             },
       );
+      // Oct 5 2026: Kyle hands the files over, so HE hears it on Slack, not
+      // only as an ADMIN bell — never about his own click, after the response.
+      if (external) {
+        const { inBackground, pingKyle } = await import("@/lib/notify");
+        const { appBase } = await import("@/lib/appUrl");
+        const me = await getCurrentUser().catch(() => null);
+        await inBackground(() => pingKyle(`📦 Hand to ${EXTERNAL_NAME()} — ${street}: send them the packet from the job page and record the send there. ${appBase()}/edit/${projectId}`, "luma_dispatch", { exceptTeamMemberId: me?.teamMemberId ?? null }));
+      }
     } catch { /* bell is best-effort */ }
   }
 

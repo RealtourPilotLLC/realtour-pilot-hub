@@ -105,6 +105,13 @@ export const OPERATIONAL_CORE = [
   // Platform machinery: sign-in, settings, integrations, logs, messaging rails.
   "AppUser", "AppSetting", "Connection", "WebhookEvent", "CronRun", "UsageEvent", "AuditLog",
   "Notification", "NotificationDelivery", "OutboxMessage", "PendingSms", "CommLog",
+  // Oct 5 2026: the five tables the Sep 30–Oct 4 audit fixes added. All are
+  // operational evidence, not program content, so they sit with the core
+  // (backup-all.ts holds them): the exact-version check before a final goes
+  // out, the delivery follow-up lanes' last good run, each editor's receipt
+  // for a brand change, the photographer's brief reads, and the editor's
+  // per-video brief acceptance. Left unlisted, this backup refused to run.
+  "FinalRenditionCheck", "DeliveryFollowUpHealth", "ClientBrandReceipt", "ShootBriefRead", "EditorBriefReceipt",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */

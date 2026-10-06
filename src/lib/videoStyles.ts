@@ -317,6 +317,50 @@ const BY_KEY: Record<VideoStyleKey, VideoStyleType> = Object.fromEntries(
   VIDEO_TYPES.map((t) => [t.key, t]),
 ) as Record<VideoStyleKey, VideoStyleType>;
 
+// ---------------------------------------------------------------------------
+// "MAKE THIS" — the specs line at the top of every video's brief (Oct 5 2026).
+//
+// A content video with no brief of its own from the office reached the editor
+// with no specs at all: no shape, no length, nothing about captions or the end
+// card. Every video now opens with one line of what to deliver. The personal-
+// branding / monthly line is Jordan's house spec; a listing video's line is
+// its shape plus its own Style Guide treatment (the chips above), so the two
+// can never say different things. The office overrides it per video with the
+// brief's "Make this" section (deliverableOutputs OUTPUT_BRIEF_FIELDS.specs) —
+// the default is shown to them beside that field.
+// ---------------------------------------------------------------------------
+const SHAPE: Record<VideoStyleKey, string> = {
+  standard_reel: "9:16 vertical · 1080×1920",
+  standard_reel_agent_intro: "9:16 vertical · 1080×1920",
+  standard_cinematic: "16:9 horizontal · 1920×1080",
+  personal_branding: "9:16 vertical · 1080×1920",
+  premium_social_reel: "9:16 vertical · 1080×1920",
+  premium_cinematic: "16:9 horizontal · 1920×1080",
+};
+
+/** Jordan's monthly / personal-branding spec, verbatim. */
+export const PERSONAL_BRANDING_MAKE_THIS =
+  "9:16 vertical · 1080×1920 · 30–60 s · burned-in captions inside the safe zone · hook in the first 2 s · logo end card (or a name card if no logo)";
+
+/** The default "Make this" line for a style — what to deliver when the office wrote nothing else. */
+export function defaultMakeThis(key: string | null | undefined): string {
+  const t = videoStyleByKey(key);
+  if (!t) return PERSONAL_BRANDING_MAKE_THIS;
+  if (t.key === "personal_branding") return PERSONAL_BRANDING_MAKE_THIS;
+  // Style chips read as a list after the shape; the first letter lowered so the
+  // line reads as one sentence ("· speed ramps · light transitions").
+  const treatment = t.style
+    .filter((s) => !/^horizontal 16:9/i.test(s))
+    .map((s) => (/^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s));
+  return [SHAPE[t.key], ...treatment].join(" · ");
+}
+
+/** The line the brief prints: the office's own for this video when it wrote one, else the style's default. */
+export function makeThisFor(key: string | null | undefined, office: string | null | undefined): { line: string; source: "office" | "default" } {
+  const own = (office ?? "").trim();
+  return own ? { line: own, source: "office" } : { line: defaultMakeThis(key), source: "default" };
+}
+
 /** The style behind a stored key — null for anything that is not a key
  *  (a legacy label someone typed into the column, an empty string). */
 export function videoStyleByKey(key: string | null | undefined): VideoStyleType | null {

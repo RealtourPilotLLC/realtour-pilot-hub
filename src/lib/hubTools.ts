@@ -927,7 +927,7 @@ export async function execHubTool(
         },
         orderBy: { createdAt: "desc" },
         take: 25, // score over a real pool (review)
-        select: { id: true, title: true, taskType: true, projectId: true },
+        select: { id: true, title: true, taskType: true, projectId: true, assignedKey: true },
       });
       const scored2 = matches
         .map((m) => ({ m, hits: q.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && m.title.toLowerCase().includes(w)).length }))
@@ -938,7 +938,13 @@ export async function execHubTool(
         return { ambiguous: scored2.slice(0, 3).map((x) => x.m.title), note: "Say which one you mean." };
       }
       // Human assignment through chat IS manual — the engines must respect it.
-      await writeTaskAssignment(best2.m, (db) => db.smartTask.update({ where: { id: best2.m.id }, data: { assignedKey: target.key, assignedManually: true } }));
+      // A VIDEO card also takes the job's saved editor with it, exactly as the
+      // task card's picker does (tasks.reassignVideoCard, Oct 5 2026), so the
+      // editor the job was hand-picked for doesn't get it back when the card
+      // closes.
+      const { isVideoLaneCard, reassignVideoCard } = await import("@/lib/tasks");
+      if (best2.m.projectId && isVideoLaneCard(best2.m.taskType, best2.m.assignedKey, target.key)) await reassignVideoCard(best2.m.id, target.key);
+      else await writeTaskAssignment(best2.m, (db) => db.smartTask.update({ where: { id: best2.m.id }, data: { assignedKey: target.key, assignedManually: true } }));
       // Handing an edit or video-revision card to someone else through chat
       // ends the previous editor's started work, as every other reassign does
       // (R01, Sep 28 2026) — after the write, recomputed under the desk lock,

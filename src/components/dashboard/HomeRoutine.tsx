@@ -3,8 +3,10 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 
-/** Keep old block anchors usable when the optional routine is collapsed. */
-export function HomeRoutine({ dayKey, current, attention, children }: { dayKey: string; current: string; attention: string; children: ReactNode }) {
+/** Keep old block anchors usable when the optional routine is collapsed.
+ *  `defaultOpen` (Oct 5 2026): Kyle's Home starts with it open; a fold he makes
+ *  himself still holds for the rest of that ET day. */
+export function HomeRoutine({ dayKey, current, attention, defaultOpen = false, children }: { dayKey: string; current: string; attention: string; defaultOpen?: boolean; children: ReactNode }) {
   const ref = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const openTarget = (hash: string) => {
@@ -21,14 +23,17 @@ export function HomeRoutine({ dayKey, current, attention, children }: { dayKey: 
       const url = new URL(href, window.location.href);
       if (url.origin === window.location.origin && url.pathname === window.location.pathname && url.search === window.location.search) openTarget(url.hash);
     };
-    try { if (sessionStorage.getItem(`home-routine:${dayKey}`) === "open" && ref.current) ref.current.open = true; } catch { /* local preference is optional */ }
+    try {
+      const saved = sessionStorage.getItem(`home-routine:${dayKey}`);
+      if (ref.current && (saved === "open" || saved === "closed")) ref.current.open = saved === "open";
+    } catch { /* local preference is optional */ }
     onHash();
     document.addEventListener("click", onClick, true);
     window.addEventListener("hashchange", onHash);
     return () => { document.removeEventListener("click", onClick, true); window.removeEventListener("hashchange", onHash); };
   }, [dayKey]);
   return (
-    <details id="operating-routine" ref={ref} className="group/routine scroll-mt-32 rounded-2xl border border-border bg-surface" onToggle={(event) => {
+    <details id="operating-routine" ref={ref} open={defaultOpen} className="group/routine scroll-mt-32 rounded-2xl border border-border bg-surface" onToggle={(event) => {
       try { sessionStorage.setItem(`home-routine:${dayKey}`, event.currentTarget.open ? "open" : "closed"); } catch { /* local preference is optional */ }
     }}>
       <summary className="flex min-h-14 cursor-pointer items-start gap-3 p-4 focus-visible:outline-2 focus-visible:outline-brand">

@@ -30,7 +30,7 @@ export type ReviewWorldKit = {
   world: (name: string, over?: Partial<ContentMonthFixtureOptions>, opts?: { slots?: number }) => Promise<ReviewWorld>;
   /** A cut the editor handed in: PENDING, playable, on video `slot`. Returns its id. */
   mkCut: (w: ReviewWorld, slot: number, round: number, over?: Record<string, unknown>) => Promise<string>;
-  /** Jordan's QC approve in the Review Room — which is the release. Throws if refused. */
+  /** Jordan's QC approve in the Review Room, then its portal publication (the release). Throws if refused. */
   release: (submissionId: string) => Promise<{ ok: boolean; message: string }>;
   /** An OPEN top-level note on the cut, written by the client's seat. */
   note: (w: ReviewWorld, submissionId: string, body: string) => Promise<{ id: string }>;
@@ -77,9 +77,28 @@ export async function reviewWorldKit(opts: { staffUserId: string; staffName?: st
     return row.id;
   };
 
+  // Since the portal publication gate (a60424b, Oct 2) approval no longer IS
+  // the release: a monthly cut reaches the client when its checked 1080p file
+  // is published (contentVideos.publishApprovedCutToLibrary → the monthly
+  // handoff). That needs Topaz and Dropbox, which a drill fences off, so the
+  // fixture records the part these drills are about — the release to the
+  // client — then opens the window and answers the open round, as
+  // publishApprovedCutToLibrary does. (The handoff's sent stamp is left off: the
+  // OLD-code comparisons in realpg-revision-expiry predate its marker and would
+  // read it as a send outside the portal.)
+  const publish = async (id: string) => {
+    await prisma.reviewSubmission.update({ where: { id }, data: { clientReleasedAt: new Date(), clientReleasedBy: "Portal publication" } });
+    const { openReviewWindow } = await import("@/lib/reviewWindows");
+    await openReviewWindow(id, { by: "Portal publication" });
+    const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id } });
+    const { correctedCutApproved } = await import("@/lib/reviewCuts");
+    await correctedCutApproved(cut.projectId, { cutCreatedAt: cut.createdAt, round: cut.round, cut: { id: cut.id, deliverableId: cut.deliverableId, slot: cut.slot, assetPath: cut.assetPath } });
+  };
+
   const release: ReviewWorldKit["release"] = async (id) => {
     const r = await rr.approveCut(id);
     if (!r.ok) throw new Error(`release ${id}: ${r.message}`);
+    await publish(id);
     return r;
   };
 

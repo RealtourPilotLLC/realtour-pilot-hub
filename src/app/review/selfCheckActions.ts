@@ -74,6 +74,98 @@ export async function submitSelfCheck(
   return { ok: r.ok, message: r.message, needsSelfCheck: r.needsSelfCheck };
 }
 
+// ---------------------------------------------------------------------------
+// THE UPLOAD PANEL'S JOB-LEVEL FACTS (Oct 5). The /edit page hands the Send to
+// Review panel only the selected video's row, so the panel asked "0 of 1
+// approved" of a four-video job and could not say who the cut went to or which
+// video is next. One read, for anyone who may see the job: the job's own
+// approved count, who a new version goes to first, the reviewer actually
+// holding a just-sent version, and every owed video in the page's numbering
+// with its topic and whether it still owes a cut. Read-only.
+// ---------------------------------------------------------------------------
+
+export type UploadPanelVideo = {
+  key: string;
+  /** the DeliverableOutput id — what /edit/<id>?output= selects */
+  outputId: string | null;
+  /** "Video 2" — the same number the page's Videos row prints */
+  number: number;
+  topic: string | null;
+  /** still owes a cut: nothing in, sent back, or waiting on the editor's check */
+  open: boolean;
+};
+export type UploadPanelSummary = {
+  approved: number;
+  total: number;
+  /** first name of whoever a new version goes to first; null = nobody set up */
+  firstReviewer: string | null;
+  /** first name of the reviewer holding `submissionId`, once one is assigned */
+  sentTo: string | null;
+  videos: UploadPanelVideo[];
+};
+
+export async function uploadPanelSummary(projectId: string, opts: { submissionId?: string | null } = {}): Promise<UploadPanelSummary | null> {
+  if (typeof projectId !== "string" || !projectId) return null;
+  const me = await getCurrentUser().catch(() => null);
+  if (!me && authEnforced()) return null;
+  if (me?.role === "PHOTOGRAPHER") return null;
+  const { canViewProject } = await import("@/lib/auth/guards");
+  if (!(await canViewProject(projectId, me))) return null;
+  const { cutSlots, slotKeyOf } = await import("@/lib/reviewCuts");
+  const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
+  const { videoNavigationFor } = await import("@/lib/videoNavigation");
+  const { firstName } = await import("@/lib/reviewAttribution");
+  const ra = await import("@/lib/reviewerAssignment");
+  const [slots, rounds, outputs, navigation, chain, sent] = await Promise.all([
+    cutSlots(projectId).catch(() => []),
+    prisma.reviewSubmission.findMany({
+      where: { projectId, deliverableId: { not: null }, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
+      orderBy: { round: "asc" },
+      select: { deliverableId: true, slot: true, status: true, selfCheckId: true, selfCheckedAt: true },
+    }),
+    prisma.deliverableOutput.findMany({ where: { projectId }, select: { id: true, deliverableId: true, slot: true, title: true } }),
+    videoNavigationFor(projectId).catch(() => new Map<string, { number: number; total: number }>()),
+    ra.resolveActiveReviewer().catch(() => null),
+    opts.submissionId
+      ? prisma.reviewSubmission.findUnique({ where: { id: opts.submissionId }, select: { projectId: true, reviewerTeamMemberId: true } })
+      : Promise.resolve(null),
+  ]);
+  // Newest round per video, the way the page counts: any round for "approved"
+  // (the page's own tally), a round that wasn't taken back for "still owed".
+  const latest = new Map<string, (typeof rounds)[number]>();
+  const latestLive = new Map<string, (typeof rounds)[number]>();
+  for (const r of rounds) {
+    const k = slotKeyOf(r.deliverableId!, r.slot);
+    latest.set(k, r);
+    if (r.status !== "WITHDRAWN") latestLive.set(k, r);
+  }
+  const outputOf = new Map(outputs.map((o) => [slotKeyOf(o.deliverableId, o.slot), o]));
+  const videos = slots.map((s, i): UploadPanelVideo => {
+    const key = slotKeyOf(s.deliverableId, s.slot);
+    const live = latestLive.get(key);
+    const out = outputOf.get(key);
+    return {
+      key,
+      outputId: out?.id ?? null,
+      number: navigation.get(key)?.number ?? i + 1,
+      topic: s.topicTitle?.trim() || out?.title?.trim() || null,
+      open: !live || live.status === "CHANGES_REQUESTED" || isHeldForSelfCheck(live),
+    };
+  });
+  let sentTo: string | null = null;
+  if (sent && sent.projectId === projectId && sent.reviewerTeamMemberId) {
+    const names = await ra.reviewerNamesFor([sent.reviewerTeamMemberId]).catch(() => new Map<string, string>());
+    sentTo = firstName(names.get(sent.reviewerTeamMemberId)) ?? null;
+  }
+  return {
+    approved: slots.filter((s) => latest.get(slotKeyOf(s.deliverableId, s.slot))?.status === "APPROVED").length,
+    total: slots.length,
+    firstReviewer: firstName(chain?.name) ?? null,
+    sentTo,
+    videos,
+  };
+}
+
 /**
  * James (or Jordan) refines a product's checklist (§8.2: "James can refine
  * checklist requirements by product"). A refinement is a NEW VERSION: checks
