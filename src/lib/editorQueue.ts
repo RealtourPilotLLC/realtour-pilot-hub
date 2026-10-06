@@ -32,6 +32,7 @@ import {
 } from "@/lib/editOverrides";
 import type { QueueRow } from "@/components/editing/SimpleQueue";
 import { officeReopenLine, officeReopenOf, requesterLine, verdictLine, verdictOf, whenET, type Verdict } from "@/lib/reviewAttribution";
+import { openRevisionAsks, reopenedByClient, waitedDays, type ClientAskFact, type RevisionAsk, type RevisionCutRound, type RevisionJobFacts } from "@/lib/openRevisions";
 
 // The Editor Queue's row builder, extracted from /editing so the message
 // center (/editing/messages) can reuse the exact same job set and the same
@@ -105,7 +106,13 @@ export const WAITING_ON_INSTRUCTIONS = "Waiting on instructions";
  *  due came from — "client revision · 24 to 48 business hours", "reopened ·
  *  due the same business day", "moved by Kyle", or that nothing dates it yet.
  *  Null on every other row, whose date is the delivery promise as before. */
-export type EditorQueueRow = QueueRow & { dueNote: string | null };
+export type EditorQueueRow = QueueRow & {
+  dueNote: string | null;
+  /** On a row reading "Revisions" only (Oct 6 2026): what is still owed, per
+   *  video, and since when (lib/openRevisions) — what the editor's reminder,
+   *  Kyle's stuck list and the row's "waiting N days" read. Absent elsewhere. */
+  revisionAsks?: RevisionAsk[];
+};
 
 export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {}): Promise<{ notDone: EditorQueueRow[]; upcoming: EditorQueueRow[]; done: EditorQueueRow[] }> {
   // The office's normal view hides fixtures; creative job/chat callers keep
@@ -204,7 +211,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       // got round to it yet", it is the owner deliberately taking the job off
       // the bench (see UNPINNED below). summary: a "Round N — …" edit card is
       // the video lane's redo signal (see ROUND ON THE CARD below).
-      select: { id: true, projectId: true, assignedKey: true, taskType: true, assignedManually: true, summary: true, contactName: true, source: true, title: true, reasonCreated: true, createdAt: true, updatedAt: true },
+      select: { id: true, projectId: true, assignedKey: true, taskType: true, assignedManually: true, summary: true, contactName: true, source: true, title: true, reasonCreated: true, createdAt: true, updatedAt: true, outputId: true },
     }),
     // The Slack messages column → the job's own chat. Revisions live THERE now,
     // not in channel dumps.
@@ -225,7 +232,9 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       },
       orderBy: { round: "asc" },
       // decided*/clientRequested*: who sent a bounced cut back (Sep 28).
-      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true, selfCheckId: true, selfCheckedAt: true, decidedAt: true, decidedBy: true, clientRequestedAt: true, clientRequestedBy: true },
+      // createdAt/outputId: when each version arrived and which video it is,
+      // for the open-revision ages below (openRevisions, Oct 6).
+      select: { id: true, projectId: true, deliverableId: true, slot: true, outputId: true, assetPath: true, round: true, status: true, createdAt: true, selfCheckId: true, selfCheckedAt: true, decidedAt: true, decidedBy: true, clientRequestedAt: true, clientRequestedBy: true },
     }),
     // WHO IS ON IT RIGHT NOW (§7.1) — the editor's own Start/Pause, not the
     // status. In-flight rows only: an upcoming shoot has nothing to start and
@@ -285,6 +294,66 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     if (t.taskType === "edit_video" && t.projectId && EDIT_ROUND_SUMMARY.test(t.summary ?? "")) roundOwed.add(t.projectId);
   const comments = new Map(msgCounts.map((m) => [m.projectId, m._count]));
 
+  // Every round that is a cut, per job, in the shape lib/openRevisions folds
+  // (the client's ask on an approved video, below, and the open-ask ages).
+  const cutsByProject = new Map<string, RevisionCutRound[]>();
+  for (const s of cutRows) {
+    const list = cutsByProject.get(s.projectId) ?? [];
+    list.push({
+      id: s.id, cutKey: cutKeyOf(s), deliverableId: s.deliverableId, slot: s.slot, outputId: s.outputId, round: s.round, status: s.status,
+      createdAt: s.createdAt, decidedAt: s.decidedAt, decidedBy: s.decidedBy, clientRequestedAt: s.clientRequestedAt, clientRequestedBy: s.clientRequestedBy,
+    });
+    cutsByProject.set(s.projectId, list);
+  }
+
+  // ---- THE CLIENT ASKED FOR CHANGES ON A VIDEO WE APPROVED (Oct 6 2026) ----
+  // An email, a text, a call or the Review Room's "record the client's
+  // changes" opens a video-lane revision card and leaves the cut APPROVED —
+  // the client keeps that version, and the Review Room's record is not
+  // touched. But the EDITOR owes the next one, and this row said "Approved",
+  // so the editor never saw it and no reminder could find it. Each open
+  // card's asks (its work-order briefs, or the card itself) are read here and
+  // folded by lib/openRevisions.reopenedByClient: a video whose newest round
+  // is approved and older than the ask counts as in revisions below — never a
+  // video already sent back (that would count it twice), and a version handed
+  // in after the ask answers it. Nothing is written; only the lane changes.
+  const clientAskTasks = openTasks.filter((t) => t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)) && !officeReopenOf(t));
+  const clientBriefs = clientAskTasks.length
+    ? await prisma.revisionBrief
+        .findMany({
+          // The reopen-clock rows are the office's (source "office", no card).
+          where: { taskId: { in: clientAskTasks.map((t) => t.id) }, source: { not: "office" } },
+          select: { id: true, taskId: true, projectId: true, outputId: true, submissionId: true, requestedBy: true, requestedByKind: true, createdAt: true },
+        })
+        .catch(() => [])
+    : [];
+  const clientAsksByProject = new Map<string, ClientAskFact[]>();
+  if (clientAskTasks.length) {
+    const roundById = new Map(cutRows.map((s) => [s.id, s]));
+    const roundByOutput = new Map(cutRows.filter((s) => s.outputId).map((s) => [s.outputId!, s]));
+    const named = [...new Set([...clientBriefs.map((b) => b.outputId), ...clientAskTasks.map((t) => t.outputId)].filter((id): id is string => !!id && !roundByOutput.has(id)))];
+    const outputSlot = new Map(
+      named.length
+        ? (await prisma.deliverableOutput.findMany({ where: { id: { in: named } }, select: { id: true, deliverableId: true, slot: true } }).catch(() => [])).map((o) => [o.id, `${o.deliverableId}:${o.slot}`] as const)
+        : [],
+    );
+    // The video an ask names: its pinned cut, else its video row; null = none.
+    const keyOf = (submissionId: string | null, outputId: string | null): string | null => {
+      const r = (submissionId ? roundById.get(submissionId) : undefined) ?? (outputId ? roundByOutput.get(outputId) : undefined);
+      return r ? cutKeyOf(r) : outputId ? outputSlot.get(outputId) ?? null : null;
+    };
+    const requestedAt = new Map(inflight.map((p) => [p.id, p.revisionRequestedAt]));
+    for (const t of clientAskTasks) {
+      const mine = clientBriefs.filter((b) => b.taskId === t.id);
+      const asks: ClientAskFact[] = mine.length
+        ? mine.map((b) => ({ id: b.id, at: b.createdAt, cutKey: keyOf(b.submissionId, b.outputId), by: b.requestedBy }))
+        // A card with no brief (the work order failed to write): the card is
+        // the ask, at the job's changes-requested stamp.
+        : [{ id: t.id, at: requestedAt.get(t.projectId!) ?? t.createdAt, cutKey: keyOf(null, t.outputId), by: t.contactName }];
+      clientAsksByProject.set(t.projectId!, [...(clientAsksByProject.get(t.projectId!) ?? []), ...asks]);
+    }
+  }
+
   // Per job: how many cuts exist and what each one's LATEST round says. Only
   // the newest round of a cut (deliverable × slot; legacy folder rows by file
   // path — cutKeyOf, the identity every reader uses) speaks for it, or round
@@ -310,6 +379,16 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     else if (c.status === "APPROVED") t.approved++;
     cutTally.set(c.projectId, t);
   }
+  // The client's ask on an approved video moves it from approved to in
+  // revisions (see above); an ask on the whole approved job adds one.
+  for (const [pid, asks] of clientAsksByProject) {
+    const t = cutTally.get(pid);
+    if (!t) continue;
+    for (const r of reopenedByClient(cutsByProject.get(pid) ?? [], asks)) {
+      if (r.cutKey) t.approved = Math.max(0, t.approved - 1);
+      t.revising++;
+    }
+  }
 
   // WHO SENT IT BACK (Review Room attribution, Sep 28). A row on "Revisions"
   // said so and nothing else; the line under the pill now names the newest
@@ -333,24 +412,38 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     // at the row's last write, ahead of any older brief the reused row still
     // carries. Named from the queue-add's own sentence (officeReopenOf), never
     // flaggedBy (review, Sep 28).
-    const clientTasks = revTasks.filter((t) => !officeReopenOf(t));
+    const clientTasks = clientAskTasks;
     for (const t of revTasks) {
       const office = officeReopenOf(t);
       if (office && t.projectId) offerAsk(t.projectId, t.updatedAt.getTime(), officeReopenLine(office));
     }
-    const briefs = clientTasks.length
-      ? await prisma.revisionBrief
-          .findMany({
-            where: { taskId: { in: clientTasks.map((t) => t.id) }, requestedBy: { not: null } },
-            select: { projectId: true, requestedBy: true, requestedByKind: true, createdAt: true },
-          })
-          .catch(() => [])
-      : [];
+    // The same briefs read above for the client's asks (one read, not two).
+    const briefs = clientBriefs.filter((b) => b.requestedBy != null);
     for (const b of briefs) offerAsk(b.projectId, b.createdAt.getTime(), requesterLine({ requestedBy: b.requestedBy, requestedByKind: b.requestedByKind, at: b.createdAt }));
     // No brief naming anyone: the task's own person (contactName). Nothing is guessed.
     for (const t of clientTasks) {
       if (!t.projectId || askLine.has(t.projectId)) continue;
       if (t.contactName) offerAsk(t.projectId, t.createdAt.getTime(), `Asked by ${t.contactName} · ${whenET(t.createdAt)}`);
+    }
+  }
+
+  // ---- WHAT IS OPEN ON A "REVISIONS" ROW, AND SINCE WHEN (Oct 6 2026) -----
+  // Jordan: "Can we also have notifications sent to the editors for projects
+  // that have been in revision for over 24 hours?" The row's word stays the
+  // ladder's above; these are the same rows and cards it was read from,
+  // handed to the one fold (lib/openRevisions) that dates each open ask —
+  // the bounced cut's verdict, the client's send-back, the revision card —
+  // so the reminder and the row say the same "waiting N days".
+  const editCardOf = new Map<string, string>();
+  const revisionCards = new Map<string, RevisionJobFacts["revisionTasks"]>();
+  for (const t of openTasks) {
+    if (!t.projectId) continue;
+    if (t.taskType === "edit_video") editCardOf.set(t.projectId, t.id);
+    else if (t.taskType === "revision" && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey))) {
+      const office = officeReopenOf(t);
+      const list = revisionCards.get(t.projectId) ?? [];
+      list.push({ id: t.id, createdAt: t.createdAt, outputId: t.outputId, office: !!office, officeBy: office?.by ?? null, contactName: t.contactName });
+      revisionCards.set(t.projectId, list);
     }
   }
 
@@ -580,6 +673,19 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     const due = upcoming ? p.shootDate ?? null
       : rd ? rd.at
       : effectiveDue(p, computedDue);
+    const rowStatus = upcoming && !pinned ? "Waiting" : reopened ? EXTRA_SHOOT_STATUS : wl.label;
+    // Only a row the ladder calls Revisions is folded (Oct 6, see above).
+    const revisionAsks = rowStatus === STATUS_LABEL.REVISION
+      ? openRevisionAsks({
+          cuts: cutsByProject.get(p.id) ?? [],
+          roundOwed: roundOwed.has(p.id),
+          editCardId: editCardOf.get(p.id) ?? null,
+          revisionTasks: revisionCards.get(p.id) ?? [],
+          clientAsks: clientAsksByProject.get(p.id) ?? [],
+          revisionRequestedAt: p.revisionRequestedAt,
+          statusPinnedAt: p.statusPinnedAt,
+        })
+      : [];
     return {
       id: p.id,
       url: `${base}/edit/${p.id}`,
@@ -592,9 +698,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       clientAvatarUrl: p.client.avatarUrl,
       tier,
       typeDetail: effectiveTypeDetail(p, computedTypeDetail),
-      status: upcoming && !pinned ? "Waiting"
-        : reopened ? EXTRA_SHOOT_STATUS
-        : wl.label,
+      status: rowStatus,
       // Who is on it, for the pill's Paused option and the row's chip (§7.1).
       work: {
         active: (w?.active ?? []).map((a) => ({ key: a.editorKey, name: a.name, sinceISO: a.sinceISO, outputTitle: a.outputTitle, onBehalfBy: a.onBehalfBy })),
@@ -616,6 +720,9 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       // row reading Revisions it also names who asked and when (Sep 28).
       progressSummary: [cut?.approved ? `${cut.approved} approved` : null, cut?.waiting ? `${cut.waiting} review` : null, cut?.revising ? `${cut.revising} changes` : null, cut?.checking ? `${cut.checking} self-check` : null, notStarted ? `${notStarted} to edit` : null].filter(Boolean).join(" · ") || null,
       revisionContext: askLine.get(p.id)?.line ?? null,
+      // The oldest open ask's age in whole days (Oct 6) — null off Revisions.
+      revisionWaitingDays: revisionAsks.length ? waitedDays(revisionAsks[0].sinceISO, now) : null,
+      ...(revisionAsks.length ? { revisionAsks } : {}),
       videoBreakdown: (() => {
         const label = upcoming && !pinned ? "Waiting" : reopened ? EXTRA_SHOOT_STATUS : wl.label;
         const ask = label === "Revisions" ? askLine.get(p.id)?.line ?? null : null;

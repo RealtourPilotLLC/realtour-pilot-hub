@@ -276,6 +276,12 @@ const BELL_RULES: Record<string, BellRule> = {
   review_ready: "all",
   review_submitted: "all",
   review_changes: "all", // changes asked for on a cut (the editor must act)
+  // Oct 6 2026 (lib/revisionReminders): a revision still waiting on its editor
+  // after 24 hours, once a day; the same to Kyle for an agency or unassigned
+  // job, and his once-a-day list of revisions stuck with editors 3+ days.
+  revision_waiting: "all",
+  revision_waiting_office: "all",
+  revision_stuck: "all",
   review_approved: "all", // the editor's loop closes here
   // §8.1 (Sep 25): a cut's ONE reviewer changed — the FYI to the person it
   // left, and the backup being OFFERED a cut the primary has held past the

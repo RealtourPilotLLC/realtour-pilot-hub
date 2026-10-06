@@ -76,7 +76,7 @@ const NOTE_FOR_STATUS: Record<string, string> = {
  * not, so the one-time "which one are you on?" answer is on the same list.
  */
 export function toDeskJobs(
-  rows: Pick<QueueRow, "id" | "street" | "dueISO" | "late" | "status" | "held" | "videoBreakdown" | "videosToEdit" | "startableBy" | "work">[],
+  rows: (Pick<QueueRow, "id" | "street" | "dueISO" | "late" | "status" | "held" | "videoBreakdown" | "videosToEdit" | "startableBy" | "work"> & Partial<Pick<QueueRow, "revisionWaitingDays">>)[],
   editorKey: string,
   claims: Pick<UnconfirmedClaim, "projectId" | "street" | "claimedAt">[],
 ): DeskJob[] {
@@ -91,6 +91,8 @@ export function toDeskJobs(
     if (r.status === "Paused" && minePaused) note = null; // the button says "Paused {time}" instead
     else if (withOffice) note = r.videosToEdit > 0 ? moreToEdit(r.videosToEdit) : null;
     else note = NOTE_FOR_STATUS[r.status] ?? r.videoBreakdown ?? null;
+    // How long the changes have waited (Oct 6 2026) — the age their reminder quotes.
+    if (r.status === "Revisions" && (r.revisionWaitingDays ?? 0) >= 1) note = `${note} · waiting ${r.revisionWaitingDays} day${r.revisionWaitingDays === 1 ? "" : "s"}`;
     out.push({
       projectId: r.id,
       street: r.street,

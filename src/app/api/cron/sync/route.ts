@@ -238,6 +238,19 @@ export async function GET(req: NextRequest) {
     const { reconcileReopenedClocks } = await import("@/lib/revisionBrief");
     return reconcileReopenedClocks();
   });
+  // A REVISION STILL WAITING ON ITS EDITOR (Jordan, Oct 6 2026: "notifications
+  // sent to the editors for projects that have been in revision for over 24
+  // hours"). The Editing Room's own "Revisions" rows, each open ask dated from
+  // when the changes were asked for: at 24 hours and every 24 hours after,
+  // the editor's bell + their Slack/text switch (Kyle instead for a Luma
+  // Visuals or unassigned job), and Kyle's one daily list of revisions stuck
+  // with an editor 3+ days. Deduped on the bell rows, so an hourly re-run
+  // sends nothing twice. Staff only — never a client. Runs after `tasks` and
+  // `reopenedClocks`, so the cards and clocks it reads are this tick's.
+  await step("revisionReminders", async () => {
+    const { sweepRevisionReminders } = await import("@/lib/revisionReminders");
+    return sweepRevisionReminders();
+  }, { maxMs: 30_000 });
   // DELIVERED-JOB NOTES CLOSE THEMSELVES (Jordan, Sep 28 2026). Editor-cut and
   // delivery-fix notes (lanes EDITOR, EDIT — never a photographer's coaching)
   // still open or awaiting a re-look on a job delivered AFTER they were

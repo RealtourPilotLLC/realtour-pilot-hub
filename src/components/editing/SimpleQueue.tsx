@@ -102,6 +102,10 @@ export type QueueRow = {
   videoBreakdown: string | null;
   progressSummary?: string | null;
   revisionContext?: string | null;
+  /** On a "Revisions" row: whole days the oldest open ask has waited on the
+   *  editor (Oct 6 2026, lib/openRevisions) — the same age the editor's
+   *  reminder quotes. Null/absent on every other row. */
+  revisionWaitingDays?: number | null;
   /** The same arithmetic as a number (Sep 28): videos still the editor's to
    *  make or redo — none in yet, sent back, or held for their check. Keeps a
    *  multi-video job on the editor's desk while one cut waits on a verdict. */
@@ -960,6 +964,14 @@ export function SimpleQueue({
                       {r.videoBreakdown && (
                         <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0 text-xs leading-4 text-muted" title={r.videoBreakdown}>
                           {(r.progressSummary ?? r.videoBreakdown).split(" · ").map((part, index) => <span key={index} className="whitespace-nowrap">{part}</span>)}
+                        </span>
+                      )}
+                      {/* HOW LONG THE CHANGES HAVE WAITED (Oct 6 2026) — the
+                          age the editor's daily reminder quotes, from 24 hours
+                          on. Who asked and when stays in the row's menu. */}
+                      {r.status === "Revisions" && (r.revisionWaitingDays ?? 0) >= 1 && (
+                        <span className="mt-1 block text-xs font-medium leading-4 text-warning" title={r.revisionContext ?? undefined}>
+                          Waiting {r.revisionWaitingDays} day{r.revisionWaitingDays === 1 ? "" : "s"}
                         </span>
                       )}
                       {/* WHAT THE HANDOFF IS WAITING ON (O01) — the engine's

@@ -138,6 +138,12 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   //     OWNER/ADMIN copy is a role broadcast and stays bell-only.
   review_cover_offer: "review_ready",
   self_check_needed: "job_ping",
+  // Oct 6 2026 (lib/revisionReminders): a revision still waiting on the editor
+  // after 24 hours — an edit-lane ping like the send-back that started it, so
+  // it rides the same "Job pings" switch (Slack by default for editors). The
+  // office copies (revision_waiting_office, revision_stuck) stay bell-only
+  // here: kyleNotice sends Kyle's DM itself.
+  revision_waiting: "job_ping",
 };
 export function eventForKind(kind: string): NotifyEvent | null {
   return KIND_TO_EVENT[kind] ?? null;
