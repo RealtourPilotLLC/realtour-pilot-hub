@@ -544,7 +544,7 @@ Manila runs **12 hours ahead of Eastern** in US summer and **13 hours ahead** in
 Those are the live settings; Jordan can change them, and the due dates follow automatically.
 
 ### Working hours
-The office runs Monday to Friday, 9am to 6pm ET. Shoots happen on Saturdays, so footage often lands over the weekend. Nobody expects a reply from you outside your own working hours — work pings land in the bell, and the hub deliberately does not text an offshore editor during their night.`,
+The office runs Monday to Friday, 9am to 6pm ET. Shoots happen on Saturdays, so footage often lands over the weekend. Nobody expects a reply from you outside your own working hours — pings can arrive at any hour, including your night, and they wait in the bell and on Slack until you start.`,
     },
     {
       id: "help",
@@ -786,7 +786,7 @@ The daily closeout block is where escalation happens: run its six checks and sen
 - **The bell** in the hub — mentions, revisions raised, new bookings and cancellations.
 - **A Slack DM on every @mention and reply** — anyone who tags you in a job's chat, a review note or a cut note, or replies to a message of yours, lands in your Slack DMs at once: who, a summary, and the link to the message. It reads your Slack member ID off your People card. Add everyone else's there too (People → the person → Slack member ID, Find on Slack, or **Sync Slack IDs from the workspace**, which fills every empty row it can match by email or a unique first name), or their mentions only ring the bell — and once a week the bell tells you whose ID is still missing. **Send test DM** on a row proves the bot can reach that person.
 
-**Who gets what is yours to set.** Settings → **Team notifications** is one row per person and a Slack / Text switch for each kind of ping: tagged or replied to, a message on one of their jobs, job pings (footage in, a revision, a verdict, a reassign), a video waiting on review, and shoot changes. The defaults are what Jordan asked for — the editors on Slack for tags, messages on their jobs and job pings; James and Harrison texted with the link when tagged or a shoot changes; Jordan texted and DMed on a tag and texted when a cut is waiting on him; you on Slack for tags. Texts respect the 7am–10pm quiet hours and the 30-minute digest; Slack DMs go at once. The bell always rings regardless.
+**Who gets what is yours to set.** Settings → **Team notifications** is one row per person and a Slack / Text switch for each kind of ping: tagged or replied to, a message on one of their jobs, job pings (footage in, a revision, a verdict, a reassign), a video waiting on review, and shoot changes. The defaults are what Jordan asked for — the editors on Slack for tags, messages on their jobs and job pings; James and Harrison texted with the link when tagged or a shoot changes; Jordan texted and DMed on a tag and texted when a cut is waiting on him; you on Slack for tags. Texts and Slack DMs go at any hour — several texts within half an hour arrive as one — except inside someone's own quiet time (Settings → Notification schedule; Jordan's default is Saturday until 7:30 PM), when they wait and arrive together as it ends. The bell always rings regardless.
 
 None of these replace Ops Day; they are the nudge when you are not looking at it.`,
     },

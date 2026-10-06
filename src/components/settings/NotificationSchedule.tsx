@@ -4,8 +4,6 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { Loader2, Plus, RotateCcw, X } from "lucide-react";
 import { loadNotifySchedules, saveNotifySchedule } from "@/app/settings/actions";
 import {
-  OVERNIGHT_FROM,
-  OVERNIGHT_TO,
   WEEKDAY_NAMES,
   clockLabel,
   describeQuietWindows,
@@ -22,6 +20,11 @@ import { SaveStatus } from "@/components/ui/SaveStatus";
 // THE NOTIFICATION SCHEDULE (Jordan, Sep 26 2026: "I just don't want
 // notifications on Saturdays, until 7:30pm. Implement in settings a setting for
 // controlling notification timing by day and time.")
+//
+// THE RULE IT STATES (Oct 6 2026, Jordan: "Editors can get night time pings.
+// Anyone on the team can get pinged anytime. Just not Jordan on Saturday until
+// 7:30PM."). No house night any more — the card used to promise a 10 PM–7 AM
+// text hold and an urgent page held overnight to 7 AM; both rules are gone.
 //
 // One block per active person: their quiet windows (weekday + from/to, Eastern),
 // the plain sentence of what that means, what is waiting for them right now,
@@ -67,11 +70,12 @@ export function NotificationSchedule() {
         Inside someone&rsquo;s quiet time the bell in the hub still rings at once. Their texts and Slack messages wait, and
         arrive together when it ends — once, oldest first. Nothing is dropped. Times are Eastern.
       </p>
-      <p className="mt-1.5 text-[12px] leading-relaxed text-muted-2">
-        For everyone: no texts between {clockLabel(OVERNIGHT_FROM)} and {clockLabel(OVERNIGHT_TO)}, and an urgent page to
-        the on-call person overnight waits until {clockLabel(OVERNIGHT_TO)} (the ops channel is told at once). People with no schedule of their own also follow the office rota —
-        routine work notices by text raised on a Saturday or Sunday wait for Monday 9 AM. Saving a schedule for someone
-        replaces that weekend rule with their own windows.
+      <p className="mt-1.5 text-[13px] text-foreground">
+        Anyone on the team can be notified at any hour. Jordan&rsquo;s default: quiet on Saturdays until 7:30 PM ET, then
+        everything held is delivered. Anyone can add their own quiet times here.
+      </p>
+      <p className="mt-1 text-[12px] leading-relaxed text-muted-2">
+        Weekends included: with no quiet time of their own, a work notice on a Saturday or Sunday reaches someone at once.
       </p>
       {failed ? (
         <p className="mt-2 text-[13px] text-muted">The schedules could not be read just now — reload to try again. Nothing about who gets notified has changed.</p>
@@ -161,7 +165,7 @@ export function PersonSchedule({ row, onSaved }: { row: NotifyScheduleRow; onSav
   };
 
   const sourceChip =
-    row.source === "saved" ? "saved" : row.source === "preset" ? "Jordan’s preset" : "not set — office rota";
+    row.source === "saved" ? "saved" : row.source === "preset" ? "Jordan’s preset" : "not set — any hour";
   const heldWords =
     row.held.texts + row.held.dms > 0
       ? `Waiting now: ${[
@@ -218,8 +222,8 @@ export function PersonSchedule({ row, onSaved }: { row: NotifyScheduleRow; onSav
           </Button>
         )}
         {row.source === "saved" && (
-          <Button variant="secondary" disabled={busy} onClick={() => save(null)} title={row.isOwner ? "Back to the preset: Saturday until 7:30 PM" : "Back to no schedule of their own — the office rota"}>
-            <RotateCcw className="size-3.5" /> {row.isOwner ? "Back to the preset" : "Back to the office rota"}
+          <Button variant="secondary" disabled={busy} onClick={() => save(null)} title={row.isOwner ? "Back to the preset: Saturday until 7:30 PM" : "Back to no schedule of their own — notified at any hour"}>
+            <RotateCcw className="size-3.5" /> {row.isOwner ? "Back to the preset" : "Back to the default"}
           </Button>
         )}
       </div>

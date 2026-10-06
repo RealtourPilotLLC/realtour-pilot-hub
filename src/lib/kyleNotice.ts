@@ -11,9 +11,10 @@ import { prisma } from "@/lib/prisma";
 //   · one bell row addressed to his roster row (bell-only kinds, so the bell
 //     bridge never sends a second DM), and
 //   · his Slack DM through the existing staff helper (notify.notifyStaffSms):
-//     Slack first, his own quiet time respected, and NEVER AT NIGHT — held to
-//     7 AM ET with the overnight rule (review, Oct 5: a held 1080p file at
-//     11 PM buzzed his phone), the ops relay if nothing could reach him.
+//     Slack first, at any hour — the Oct 5 overnight hold is gone (Oct 6 2026,
+//     Jordan: "Anyone on the team can get pinged anytime. Just not Jordan on
+//     Saturday until 7:30PM."); only a quiet time saved for him holds it — and
+//     the ops relay if nothing could reach him.
 // WHO "KYLE" IS (Oct 5 night): the program's DELIVERY duty owner — the same
 // lookup the delivery-ready alerts use (deliveryReadyNotify
 // .deliveryOwnerTeamMemberId: the owner's login → its roster link → the roster
@@ -81,7 +82,7 @@ export async function noticeForKyle(n: KyleNotice): Promise<{ bell: boolean; sla
       });
     if (!row) return { bell: false, slack: null };
     await logDelivery({ notificationId: row.id, teamMemberId: kyle, kind: n.kind, channel: "bell", status: "sent" });
-    const out = await notifyStaffSms([kyle], n.slack, n.kind, { holdOvernight: true });
+    const out = await notifyStaffSms([kyle], n.slack, n.kind);
     return { bell: true, slack: out[0]?.outcome ?? null };
   } catch (e) {
     console.warn("noticeForKyle failed", n.kind, e);

@@ -447,12 +447,12 @@ function thread(clientName: string, turns: [("client" | "us"), string, string][]
   // may DM Kyle: the switch is off, Jordan reads the first note before it goes.
   console.log("\n=== GATE 7: the routing claim in sendNote, checked not assumed ===");
   const { eventForKind } = await import("@/lib/notifyPrefs");
-  const { holdUntilCovered } = await import("@/lib/notify");
   ok("comms_coaching is unclassified, so notifyInApp's bridge is bell-only",
     eventForKind("comms_coaching") === null,
     `eventForKind("comms_coaching") = ${String(eventForKind("comms_coaching"))} — this is why sendNote sends the DM itself`);
-  const hold = await holdUntilCovered("comms_coaching", undefined);
-  console.log(`      holdUntilCovered today: ${hold ? hold.toISOString() : "null (send now)"}`);
+  // Oct 6 2026: the office-rota weekend hold (notify.holdUntilCovered) is gone —
+  // only the person's own quiet time can hold the note (holdStaffDmForQuietTime).
+  console.log("      weekend hold: none since Oct 6 2026 (only his own quiet time holds the note)");
   const prefs = await (await import("@/lib/notifyPrefs")).notifyPrefsFor(settings.teamMemberIds[0]);
   const anySms = Object.values(prefs).some((p) => (p as { sms: boolean }).sms);
   ok("his saved matrix wants no texts at all, and coaching never sends one anyway",

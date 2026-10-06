@@ -3,8 +3,6 @@ import { prisma } from "@/lib/prisma";
 import { getSetting, putSetting } from "@/lib/settings";
 import { etAt, etDayKey, etMinutesOfDay } from "@/lib/datetime";
 import {
-  OVERNIGHT_FROM,
-  OVERNIGHT_TO,
   OWNER_PRESET_WINDOWS,
   parseQuietWindows,
   type QuietWindow,
@@ -34,10 +32,16 @@ import {
 //   3. A READ THAT FAILS SENDS. holdFor never throws; a broken store answers
 //      "now", the same fail-open rule coverage.ts and BELL_RULES follow.
 //
-// WHOSE CLOCK. Windows are Eastern (the card says so); the business-wide
-// overnight rule for an urgent page is Eastern too (Jordan: "between 10 PM and
-// 7 AM ET"). A Manila editor's texting hours stay on their own clock inside
-// the queue — that is a different rule, and it is untouched.
+// WHOSE CLOCK. Windows are Eastern (the card says so).
+//
+// NO HOUSE NIGHT (Oct 6 2026, Jordan: "Editors can get night time pings.
+// Anyone on the team can get pinged anytime. Just not Jordan on Saturday until
+// 7:30PM."). Until then an urgent page to the on-call waited 10 PM–7 AM ET,
+// staff texts kept a 7 AM–10 PM window, a Manila editor's DMs waited for
+// their 7 AM, and a routine work notice on a Saturday or Sunday to somebody
+// with no schedule waited for Monday 9 AM (the office-rota weekend hold, which
+// scheduleHold used to arbitrate). All of it is gone: the only windows are a
+// person's own — saved on the card, or Jordan's Saturday preset.
 // ---------------------------------------------------------------------------
 
 export const notifyScheduleKey = (teamMemberId: string) => `notify-schedule:${teamMemberId}`;
@@ -106,16 +110,14 @@ const instantAt = (key: string, mins: number): Date =>
 /**
  * PURE: when the quiet period covering `at` ends, or null when `at` is not
  * quiet. Windows on consecutive days that touch at midnight chain (Friday
- * from 10 PM + Saturday until 7 AM is one night), and with `page` the
- * business-wide overnight window joins them — so an urgent page raised at
- * 11 PM on a Friday for somebody quiet until 9 AM Saturday goes at 9 AM, not
- * 7 AM. Day-key arithmetic throughout, so a clock change cannot move it.
+ * from 10 PM + Saturday until 7 AM is one night). Day-key arithmetic
+ * throughout, so a clock change cannot move it.
  */
-export function quietEnd(windows: readonly QuietWindow[], at: Date, page = false): Date | null {
+export function quietEnd(windows: readonly QuietWindow[], at: Date): Date | null {
   let t = at;
   let moved = false;
-  // Bounded: seven chained days of windows plus the overnight rule is the most
-  // a real schedule can produce; the guard only stops a pathological one.
+  // Bounded: seven chained days of windows is the most a real schedule can
+  // produce; the guard only stops a pathological one.
   for (let i = 0; i < 16; i++) {
     const key = etDayKey(t);
     const dow = weekdayOf(key);
@@ -127,12 +129,6 @@ export function quietEnd(windows: readonly QuietWindow[], at: Date, page = false
         if (!end || e > end) end = e;
       }
     }
-    if (page) {
-      const e = mins >= OVERNIGHT_FROM ? etAt(nextDayKey(key), Math.floor(OVERNIGHT_TO / 60), OVERNIGHT_TO % 60)
-        : mins < OVERNIGHT_TO ? instantAt(key, OVERNIGHT_TO)
-          : null;
-      if (e && (!end || e > end)) end = e;
-    }
     if (!end || end.getTime() <= t.getTime()) break;
     t = end;
     moved = true;
@@ -141,46 +137,23 @@ export function quietEnd(windows: readonly QuietWindow[], at: Date, page = false
 }
 
 /**
- * THE ONE QUESTION. The instant this person's notices may go, or null for now.
- *   · their own windows (saved, or Jordan's preset);
- *   · `page` — an urgent page to the on-call: the 10 PM–7 AM rule as well.
- * Never throws (rule 3). `teamMemberId` null — a recipient the roster does not
- * know, like the literal Slack ID the digests fall back to — is never held.
+ * THE ONE QUESTION. The instant this person's notices may go, or null for now:
+ * their own windows (saved, or Jordan's preset) and nothing else — an urgent
+ * page, an ops relay and a Manila editor at 3 AM their time all ask the same
+ * question (Oct 6 2026). Never throws (rule 3). `teamMemberId` null — a
+ * recipient the roster does not know, like the literal Slack ID the digests
+ * fall back to — is never held.
  */
 export async function holdFor(
   teamMemberId: string | null | undefined,
   at: Date = new Date(),
-  opts: { page?: boolean } = {},
 ): Promise<Date | null> {
   try {
     const windows = teamMemberId ? (await scheduleOf(teamMemberId)).windows : [];
-    return quietEnd(windows, at, opts.page === true);
+    return quietEnd(windows, at);
   } catch (e) {
     console.warn("notification schedule read failed (sending now)", teamMemberId, e);
     return null;
-  }
-}
-
-/**
- * holdFor plus WHO DECIDES, for the bell bridge. A person with a schedule of
- * their own — saved on the card, or Jordan's preset — is timed by it and by
- * nothing else: the office rota's weekend hold (notify.ts holdUntilCovered)
- * is for people nobody has set a schedule for. Jordan's answer is the reason:
- * quiet on Saturday until 7:30 PM means notified after 7:30 PM on Saturday
- * and all of Sunday, and the rota would otherwise date his Saturday-evening
- * and Sunday notices to Monday 9 AM. Everyone without a schedule — Kyle and
- * James today — is exactly as before.
- */
-export async function scheduleHold(
-  teamMemberId: string,
-  at: Date = new Date(),
-): Promise<{ own: boolean; until: Date | null }> {
-  try {
-    const s = await scheduleOf(teamMemberId);
-    return { own: s.source !== "none", until: quietEnd(s.windows, at) };
-  } catch (e) {
-    console.warn("notification schedule read failed (sending now)", teamMemberId, e);
-    return { own: false, until: null };
   }
 }
 

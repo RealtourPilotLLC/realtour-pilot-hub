@@ -926,15 +926,13 @@ async function sendNote(
   note: string,
   thanks: string,
 ): Promise<SendOutcome> {
-  const { notifyInApp, holdUntilCovered } = await import("@/lib/notify");
+  const { notifyInApp } = await import("@/lib/notify");
   const { eventForKind } = await import("@/lib/notifyPrefs");
 
-  // Kept even though it returns null today (COMMS_COACHING_KIND is not in
-  // ROUTINE_KINDS): a coaching note on a day nobody works should wait, and when
-  // this kind is classified the answer starts arriving through the same door
-  // every other alert uses.
-  const hold = await holdUntilCovered(COMMS_COACHING_KIND, undefined);
-  if (hold) return { sent: false, reason: `nobody works today, holding until ${hold.toISOString()}` };
+  // No weekend hold (Oct 6 2026, Jordan: "Anyone on the team can get pinged
+  // anytime."): the office-rota check that sat here (it never held this kind)
+  // is gone with the rule. Only the person's own quiet time holds the note —
+  // below, through the same flusher as every other held DM.
 
   // Clip first, escape second: escaping then slicing can cut an "&amp;" in half.
   const slackDm = escapeSlack(clip(note, 2800));

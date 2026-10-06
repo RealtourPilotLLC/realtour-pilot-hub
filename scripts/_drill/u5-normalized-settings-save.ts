@@ -29,7 +29,7 @@ async function main() {
     const officeHtml = renderToStaticMarkup(createElement(PersonSchedule, { row: office, onSaved() {} }));
     const emptyHtml = renderToStaticMarkup(createElement(PersonSchedule, { row: savedEmpty, onSaved() {} }));
     c.ok("owner preset, existing windows and held delivery evidence survive first paint", ownerHtml.includes("Jordan’s preset") && ownerHtml.includes("Sat") && ownerHtml.includes("7:30 PM") && ownerHtml.includes("2 texts and 1 Slack message"));
-    c.ok("an unset office schedule stays distinct from a deliberately saved empty schedule", officeHtml.includes("not set — office rota") && !officeHtml.includes("Back to the office rota") && emptyHtml.includes("Back to the office rota") && emptyHtml.includes("fixture writer"));
+    c.ok("an unset office schedule stays distinct from a deliberately saved empty schedule", officeHtml.includes("not set — any hour") && !officeHtml.includes("Back to the default") && emptyHtml.includes("Back to the default") && emptyHtml.includes("fixture writer"));
     c.ok("loaded schedules never claim that a save occurred", ownerHtml.includes("Loaded settings") && officeHtml.includes("Loaded settings") && emptyHtml.includes("Loaded settings"));
     c.ok("schedule controls have a person-specific save and readable input names", ownerHtml.includes("Save Jordan’s schedule") && ownerHtml.includes("Start of Jordan&#x27;s quiet time") && ownerHtml.includes("min-h-11"));
     const noPersonal = notificationScheduleDraft(office);

@@ -133,7 +133,7 @@ const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; fi
   photosUndelivered: { words: "the late-photos check, 4–7 PM", files: ["src/lib/deliveryWatch.ts"] },
   rawVideoMissing: { words: "the raw-footage check when a video job's folders are read", files: ["src/lib/tasks.ts"] },
   kyleDigests: { words: "Kyle's morning list and 4 o'clock check", files: ["src/lib/notify.ts", "src/lib/commsBoard.ts"] },
-  coverage: { words: "the client-reply pager, staff alerts, the notification bridge and the review cover clock", files: ["src/lib/coverage.ts"] },
+  coverage: { words: "the client-reply pager, the late-photos alert and the review cover clock", files: ["src/lib/coverage.ts"] },
 };
 
 function ReadBy({ k }: { k: keyof InternalAlertRules }) {
@@ -163,13 +163,21 @@ function coverageSentence(c: InternalAlertRules["coverage"], onCall: OnCallCandi
   }
   const days = c.weekdaysOnly ? "Monday to Friday" : "every day";
   const window = `${days}, ${hour12(c.fromHour)} to ${hour12(c.toHour)} Eastern`;
-  // Sep 26 2026 (Jordan): an urgent page to the on-call between 10 PM and
-  // 7 AM is HELD until 7 AM — Slack and text alike, so "goes to Kyle" is no
-  // longer the whole truth and the sentence says the rest.
+  // Oct 6 2026 (Jordan: "Anyone on the team can get pinged anytime. Just not
+  // Jordan on Saturday until 7:30PM."): the Sep 26 clause "except between
+  // 10 PM and 7 AM, when the page waits until 7 AM" is gone with the rule — an
+  // urgent page goes to the on-call at once, held only by their own quiet time.
+  const first = onCall?.name.split(/\s+/)[0];
   const rota = onCall
-    ? `Outside it, routine alerts wait for the next covered period and urgent ones go to ${onCall.name.split(/\s+/)[0]} — except between 10 PM and 7 AM, when the page waits until 7 AM (on Slack and by text alike) and the ops channel is told it is waiting.`
+    ? `Outside it, routine alerts wait for the next covered period and urgent ones go to ${first} at any hour — only a quiet time of ${first}'s own holds them.`
     : "Outside it, routine alerts wait for the next covered period. Nobody is named for urgent ones, so they still page whoever holds the owner or admin role — the same people as today.";
-  return `Somebody is on ${window}. ${rota}`;
+  // Oct 6 2026: coverage days decide when the OFFICE alerts run — it is not a
+  // hold on any person (Notification schedule says who may be reached when),
+  // so the sentence says plainly what widening it to seven days does.
+  const runs = c.weekdaysOnly
+    ? "The office alerts (late photos, the client-reply pager) run Monday to Friday only — turn off Weekdays only to run them every day."
+    : "The office alerts (late photos, the client-reply pager) run every day, weekends included.";
+  return `Somebody is on ${window}. ${rota} ${runs}`;
 }
 
 export function InternalAlertSettings({ initial }: { initial: InternalAlertRules }) {
@@ -191,8 +199,8 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
       <div className="rounded-lg border border-border p-3">
         <p className="text-sm font-semibold">Coverage — when somebody is actually here</p>
         <p className="text-[13px] text-muted">
-          Messages are captured around the clock and always show up on the boards. This only decides who gets
-          <i> interrupted</i>, and when.
+          Messages are captured around the clock and always show up on the boards. This decides when the office alerts
+          run — late photos and the client-reply pager. When a person may be notified is the Notification schedule.
         </p>
 
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
@@ -203,7 +211,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
         </div>
 
         <div className="mt-2 flex items-center justify-between gap-3 border-t border-border pt-2">
-          <span className="text-[13px]">Weekdays only<span className="text-muted"> — off means the weekend counts as a normal day</span></span>
+          <span className="text-[13px]">Weekdays only<span className="text-muted"> — turn off to run the office alerts every day, weekends included</span></span>
           <Toggle on={r.coverage.weekdaysOnly} onChange={(v) => setCover({ weekdaysOnly: v })} label="Weekdays only" />
         </div>
 

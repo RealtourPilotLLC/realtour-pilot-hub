@@ -95,8 +95,8 @@ export function TeamNotifications({ rows }: { rows: TeamNotifyRow[] }) {
       <div className="rounded-lg border border-border bg-surface-2 p-3 text-[13px] text-muted">
         <p>
           <b className="font-medium text-foreground">Slack DMs</b> go out straight away, from the Ops Hub app, and need the person&rsquo;s Slack member ID on
-          their card. <b className="font-medium text-foreground">Texts</b> go from the office line, marked &ldquo;⚙️ RealTour Hub&rdquo;, between 7 AM and 10 PM in the
-          person&rsquo;s own time zone (ET; Manila for the editors) — later ones wait for the morning, and several within half an hour arrive as one text.
+          their card. <b className="font-medium text-foreground">Texts</b> go from the office line, marked &ldquo;⚙️ RealTour Hub&rdquo;, at any hour — several
+          within half an hour arrive as one text. Both wait only inside a person&rsquo;s own quiet time (the notification schedule).
           Only a US number can be texted, and never the office line itself.
         </p>
         <p className="mt-2">

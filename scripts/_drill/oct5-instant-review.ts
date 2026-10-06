@@ -407,17 +407,13 @@ async function main() {
     const relay = await bells(`review-relay-${cut7}`);
     c.ok("Kyle has a bell addressed to HIM: 'Relay cut changes to Luma Visuals'", relay.length === 1 && relay[0].userKey === `tm:${kyle.id}` && relay[0].title.startsWith("Relay cut changes to Luma Visuals"), JSON.stringify(relay));
     const dm = slack.filter((m) => m.channel === "U-KYLE");
-    // Oct 5 night review: the relay DM keeps the overnight rule (10 PM–7 AM
-    // ET, held, never dropped). This drill runs on the real clock, so at night
-    // the same DM is the held row instead of a send.
-    const etHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hourCycle: "h23" }).format(new Date()));
-    const overnight = etHour >= 22 || etHour < 7;
+    // Oct 6 2026 (Jordan: "Anyone on the team can get pinged anytime."): the
+    // relay DM has no overnight hold any more — this drill runs on the real
+    // clock, and at any hour the DM goes at once (Kyle has no quiet time saved).
     const heldRelay = (await prisma.appSetting.findMany({ where: { key: { startsWith: "held-dm:" } } })).map((r) => JSON.parse(r.value) as { text?: string }).filter((v) => /Relay to Luma Visuals/.test(v.text ?? ""));
-    c.ok(`…and a Slack DM through the staff helper, with the link to the edit card${overnight ? " — held to 7 AM, it is night in ET" : ""}`,
-      overnight
-        ? dm.length === 0 && heldRelay.length === 1 && (heldRelay[0].text ?? "").includes(`/edit/${J7.id}`)
-        : dm.length === 1 && /Relay to Luma Visuals/.test(dm[0].text) && dm[0].text.includes(`/edit/${J7.id}`),
-      overnight ? JSON.stringify(heldRelay) : dm.map((m) => m.text).join(" | "));
+    c.ok("…and a Slack DM through the staff helper, with the link to the edit card — at once, whatever the hour",
+      dm.length === 1 && /Relay to Luma Visuals/.test(dm[0].text) && dm[0].text.includes(`/edit/${J7.id}`) && heldRelay.length === 0,
+      `${dm.map((m) => m.text).join(" | ")} · held ${heldRelay.length}`);
     c.ok("…Jordan still gets the FYI row; Kyle is not rung twice", (await bells(`review-changes-${cut7}`)).some((b) => b.userKey === `tm:${jordan.id}`) && !(await bells(`review-changes-${cut7}`)).some((b) => b.userKey === `tm:${kyle.id}`));
     c.ok("no other DM went out for it", slack.filter((m) => m.channel !== "U-KYLE").length === 0, slack.map((m) => m.channel).join(", "));
 

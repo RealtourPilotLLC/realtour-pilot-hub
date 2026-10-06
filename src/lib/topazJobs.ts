@@ -2207,7 +2207,7 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
     // broadcast, so Kyle got it as well as his own named row below: two bells
     // and a DM for one held file). Now: Jordan by role (the OWNER row), the
     // creative reviewer (James) by name, and Kyle ONLY through noticeForKyle
-    // below — one bell and one DM, held overnight. topaz_problem is bell-only
+    // below — one bell and one DM (any hour since Oct 6 2026). topaz_problem is bell-only
     // by design (notifyPrefs has no switch for it), so these rows page nobody.
     const approver = await creativeApprover().catch(() => null);
     const kyle = await kyleTeamMemberId().catch(() => null);
@@ -2548,9 +2548,9 @@ function derivedCutName(job: NonNullable<JobRow>): string {
 // review_ready, whose `appliesTo` already includes the Office group Kyle is
 // in, rather than job_ping, which is greyed out for him and would have
 // delivered nothing. topaz_ready now has a slackDm sentence below and reaches
-// him on whichever channels his own row names. See notifyPrefs.ts
-// KIND_TO_EVENT and notify.ts ROUTINE_KINDS for the full reasoning and for
-// what is still owed on the card's wording. topaz_problem is unchanged.
+// him on whichever channels his own row names, at any hour (Oct 6 2026: the
+// weekend hold notify.ts once applied to it is gone). See notifyPrefs.ts
+// KIND_TO_EVENT for the full reasoning. topaz_problem is unchanged.
 //
 // THE INCIDENT (Sep 21 2026): three approved videos — 5 Raymond Cir, 453
 // Cardigan Terrace, 5642 Limeport Rd — sat unsent for up to three days.

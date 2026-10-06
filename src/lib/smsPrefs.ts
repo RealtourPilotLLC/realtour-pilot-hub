@@ -6,8 +6,9 @@ import { prisma } from "@/lib/prisma";
 // video is in review or I'm mentioned in a chat").
 //
 // The texts themselves ride the photographers' SMS bridge in notify.ts — same
-// PendingSms queue, same 7:00–22:00 ET quiet hours, same 30-minute digest,
-// same bell-row dedupe. What lives HERE is only the question "does the owner
+// PendingSms queue, same 30-minute digest, same bell-row dedupe, and the same
+// timing: any hour except inside the person's own quiet time (Oct 6 2026; for
+// the owner that is his Saturday until 7:30 PM by default). What lives HERE is only the question "does the owner
 // want this kind on his phone?", stored as an AppSetting row
 // (`sms-prefs:<teamMemberId>` = {"kinds":[…]}) so a change is a click on
 // /settings, not a deploy. NO row means the default — and the default for the

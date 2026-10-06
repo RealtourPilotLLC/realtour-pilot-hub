@@ -15,15 +15,17 @@
  *      conversation — the two halves of the Sep 20 regression (1f, 1g).
  *   2. Two different team requests on one job.         (mentions ledger, closeTasksOnInactiveProjects)
  *   3. A bell backlog past one screenful.              (/api/notifications GET+POST, sweepReplySla)
- *   4. A routine weekend event versus an urgent one.   (holdUntilCovered, routeAlert, sweepReplySla)
+ *   4. A routine weekend event versus an urgent one.   (routeAlert, sweepReplySla; the person bridge
+ *      has NO weekend hold since Oct 6 2026 — Jordan: "Anyone on the team can get pinged anytime.")
  *   5. Slack fails transiently after the bell row.     (notifyInApp bridge, retry)
  *   6. A canned or automated message is not an answer. (OpenPhone receiver, hourly backstop, sweepReplySla)
  *      Sep 26 2026: the after-hours echo at the 9 PM backstop, OpenPhone's
  *      missed-call greeting, a real reply (and its replay), and a backstop
  *      with no row to go on. OLD behaviour first, off 17df024.
  *   9. A mailbox nobody can read owns one task.        (syncGmail, gmailHealth)
- *      (7 and 8 — the digest's delivery truth and the overnight urgent hold —
- *      are the notification builders' acceptance, not this file's.)
+ *      (7 and 8 — the digest's delivery truth and the urgent page's timing
+ *      (no overnight hold since Oct 6 2026) — are the notification builders'
+ *      acceptance, not this file's.)
  *
  * NOTHING SENDS. `fetch` itself is replaced with a recorder that answers Slack
  * and REFUSES every other URL, and OpenPhone is left unconnected, so no text can
@@ -189,9 +191,9 @@ process.env.SLACK_ALERT_CHANNEL = OPS_CHANNEL;
 
 // ---------------------------------------------------------------------------
 // A clock the drill can move. Journey 4 has to be replayed on a working Monday
-// as well as on the Sunday this runs, and the shipped bridge reads `new Date()`
-// itself (notify.ts bridgePerson: `holdUntilCovered(kind, tz)` — no `at`), so
-// the only honest way to exercise the in-cover branch is to move the clock.
+// as well as on the Sunday this runs, and the shipped code reads `new Date()`
+// itself (notifyStaffSms's routeAlert, the bridge's quiet-time question), so
+// the only honest way to exercise a given day is to move the clock.
 // ---------------------------------------------------------------------------
 const RealDate = Date;
 let clockShift = 0;
@@ -281,7 +283,8 @@ async function main() {
   const { closeReplyForOutbound, closeTasksOnInactiveProjects, expireStaleSlackTasks } = await import("@/lib/tasks");
   const { notifyMentions, parseMentionAsks } = await import("@/lib/mentions");
   const { postProjectMessage } = await import("@/app/projects/messageActions");
-  const { notifyInApp, notifyStaffSms, holdUntilCovered } = await import("@/lib/notify");
+  const notifyMod = await import("@/lib/notify");
+  const { notifyInApp, notifyStaffSms } = notifyMod;
   const { routeAlert, coverageRules, withinCoverageAt, nextCoveredMomentAt } = await import("@/lib/coverage");
   const notificationsRoute = await import("@/app/api/notifications/route");
   const { NextRequest } = await import("next/server");
@@ -837,18 +840,12 @@ async function main() {
   check("Monday 10:00 ET is covered", withinCoverageAt(MON, cover));
   check("a Saturday alert's next covered moment is Monday 09:00 ET", nextCoveredMomentAt(SAT, cover).toISOString() === "2026-09-21T13:00:00.000Z", nextCoveredMomentAt(SAT, cover).toISOString());
 
-  console.log("\n4b. Routine holds for a covered day; urgent does not");
-  const holdCut = await holdUntilCovered("cut_ready", undefined, SAT);
-  check("a routine cut_ready raised on Saturday is held", !!holdCut, String(holdCut));
-  check("…until Monday 09:00 ET", holdCut?.toISOString() === "2026-09-21T13:00:00.000Z", holdCut?.toISOString() ?? "null");
-  check("the same kind on a Monday is not held", (await holdUntilCovered("cut_ready", undefined, MON)) === null);
-  check("a Friday EVENING is not held — the texting window owns evenings", (await holdUntilCovered("cut_ready", undefined, FRI_EVE)) === null, String(await holdUntilCovered("cut_ready", undefined, FRI_EVE)));
-  check("an unlisted kind (a tag) is treated as urgent and is never held", (await holdUntilCovered("mention", undefined, SAT)) === null);
-  check("a field kind (review_feedback) is NOT on the office rota", (await holdUntilCovered("review_feedback", undefined, SAT)) === null);
-
-  console.log("\n4c. The RECIPIENT's timezone governs, not the office calendar");
-  check("a Manila editor's Saturday is a working day — nothing is held", (await holdUntilCovered("cut_ready", "Asia/Manila", SAT)) === null);
-  check("an ET recipient's Saturday is held", !!(await holdUntilCovered("cut_ready", "America/New_York", SAT)));
+  console.log("\n4b/4c. Oct 6 2026: the person bridge has no office-rota weekend hold any more");
+  // Jordan: "Anyone on the team can get pinged anytime. Just not Jordan on
+  // Saturday until 7:30PM." The Sep 20 helper that dated a routine weekend
+  // notice to Monday 9 AM (holdUntilCovered) is gone; 4f drives the bridge.
+  check("notify no longer exports the weekend hold (holdUntilCovered)", !("holdUntilCovered" in notifyMod));
+  check("the Friday-evening reference instant is still out of cover (the pager's question, not a person's)", !withinCoverageAt(FRI_EVE, cover));
 
   console.log("\n4d. routeAlert: routine defers, urgent reaches the named on-call");
   const rRoutine = await routeAlert("routine", SAT);
@@ -885,7 +882,7 @@ async function main() {
   check("the line is captured in the queue, dated forward", !!held?.deferUntil && held.deferUntil > SAT, held?.deferUntil?.toISOString() ?? "null");
   check("and it is unsent", held?.sentAt === null);
 
-  console.log("\n4f. The same coverage governs the person bridge (notifyInApp → Slack/SMS)");
+  console.log("\n4f. The person bridge (notifyInApp → Slack/SMS) ignores the office calendar (Oct 6 2026)");
   // Harrison wants a text for a cut; the bridge reads `new Date()` itself, so
   // the clock is moved to replay a real Saturday and a real Monday.
   await putSetting(`notify-prefs:${harrison.id}`, { review_ready: { slack: true, sms: true } });
@@ -900,11 +897,10 @@ async function main() {
     }),
   );
   check("the bell row is written whatever the day (capture always)", (await prisma.notification.count({ where: { dedupeKey: "drill-cut-ready-sat-0" } })) === 1, `bridged=${satRow.bridged.length}`);
-  check("no Slack DM on a Saturday for a routine kind", !slackCalls.some((c) => c.fn === "dm" && c.to === "U-KYLE" && /Windrow/.test(c.text)) && !slackCalls.some((c) => c.fn === "dm" && /Windrow/.test(c.text)), slackCalls.filter((c) => c.fn === "dm").map((c) => c.to).join(" ") || "none");
   const satHeld = await prisma.pendingSms.findFirst({ where: { teamMemberId: harrison.id, line: { contains: "Windrow" } }, orderBy: { createdAt: "desc" }, select: { deferUntil: true, sentAt: true } });
-  check("the text is held to Monday morning instead", satHeld?.deferUntil?.toISOString() === "2026-09-21T13:00:00.000Z", satHeld?.deferUntil?.toISOString() ?? "null");
+  check("Saturday: the routine cut text is NOT dated to Monday — queued with no hold, for now (Oct 6 2026)", satHeld !== null && satHeld.deferUntil === null, satHeld ? String(satHeld.deferUntil?.toISOString() ?? null) : "not queued");
   const satSkip = await prisma.notificationDelivery.findFirst({ where: { teamMemberId: harrison.id, channel: "slack", status: "skipped" }, orderBy: { createdAt: "desc" }, select: { detail: true } });
-  check("and the log says the DM was HELD with it, not dropped", /held as a text until/.test(satSkip?.detail ?? ""), satSkip?.detail ?? "no row");
+  check("…and the DM leg was not skipped for a held text (he simply has no Slack ID)", !/held as a text|nobody works today/.test(satSkip?.detail ?? "") && /no Slack ID/.test(satSkip?.detail ?? ""), satSkip?.detail ?? "no row");
 
   slackCalls.length = 0;
   blockedUrls.length = 0;

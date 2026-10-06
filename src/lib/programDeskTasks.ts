@@ -107,9 +107,10 @@ export function dueTodayET(now: Date = new Date()): Date {
  * before a shoot could sit unread until the shoot. Like the URGENT comms task
  * (tasks.ts createCommTask → notifyUrgent), a new or reopened one now pings
  * — the PERSON whose list it is on, by name, on Slack first (notifyStaffSms:
- * their quiet time and the 10 PM–7 AM ET overnight rule respected — held,
- * then delivered once). An assignee the roster cannot name exactly goes to the
- * ops channel instead of to a guess. Never for a TEST client (a probe forcing
+ * at any hour since Oct 6 2026 — "anyone on the team can get pinged anytime" —
+ * held only by their own quiet time, then delivered once). An assignee the
+ * roster cannot name exactly goes to the ops channel instead of to a guess.
+ * Never for a TEST client (a probe forcing
  * TEST tasks must not page anyone), never a MEDIUM task, never on a rewrite of
  * an open row. Off the request path when there is one (inBackground), so the
  * click or the webhook that raised the task does not wait on Slack.
@@ -131,7 +132,7 @@ async function pingDeskTask(
         ? (await prisma.teamMember.findMany({ where: { active: true, name: { startsWith: first, mode: "insensitive" } }, select: { id: true, name: true }, take: 5 }))
             .filter((m) => m.name.trim().split(/\s+/)[0]?.toLowerCase() === first)
         : [];
-      if (people.length === 1) await notifyStaffSms([people[0].id], line, "desk_task", { holdOvernight: true });
+      if (people.length === 1) await notifyStaffSms([people[0].id], line, "desk_task");
       else await opsAlert(`${line} (for ${input.assignedKey || "nobody yet"})`);
     });
   } catch (e) {

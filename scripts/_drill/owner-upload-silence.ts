@@ -95,8 +95,8 @@ globalThis.Date = new Proxy(RealDate, {
 }) as DateConstructor;
 
 /** Park the clock on the most recent Tuesday at 10:00 ET (14:00 UTC) — a day
- *  the office rota covers, inside the texting window, so nothing here is
- *  answering the weekend question by accident. */
+ *  the office rota covers, so nothing here is answering the weekend question
+ *  by accident. */
 function parkOnWeekday(): Date {
   clockOffsetMs = 0;
   const d = new RealDate();

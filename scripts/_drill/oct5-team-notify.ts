@@ -21,12 +21,15 @@
 //      whose list they are on; MEDIUM and TEST tasks never ping.
 //   3  Kyle's covered-hours cover offer reaches him on Slack, once.
 //   4  A cut held for its editor's check Slacks the editor (job_ping).
-//   5  Manila: an editor DM raised in their night waits for 7 AM THEIR time
-//      and goes once; a job-chat post before the raws are in pings no editor.
-//   6  The ops channel (Kyle's DM when nothing else is set) keeps the 10 PM–
-//      7 AM ET overnight rule and Kyle's own schedule; the "urgent page held"
-//      notice no longer DMs him at 11:30 PM; SLACK_ALERT_CHANNEL posts at once
-//      to a channel and falls back when the channel refuses.
+//   5  Manila (Oct 6 2026, Jordan: "Editors can get night time pings."): an
+//      editor DM raised in their night goes AT ONCE; a job-chat post before
+//      the raws are in pings no editor.
+//   6  The ops channel (Kyle's DM when nothing else is set), Kyle's pings, the
+//      desk tasks and the urgent page go at ANY hour (Oct 6 2026: "Anyone on
+//      the team can get pinged anytime") — only Kyle's OWN saved schedule
+//      holds them, and then once; the "urgent page held" notice never DMs the
+//      person whose own page is held; SLACK_ALERT_CHANNEL posts at once to a
+//      channel and falls back when the channel refuses.
 //   7  Luma Visuals: a dispatch and a "ready for editing" with no in-house
 //      editor Slack Kyle by name (never about his own click).
 //   8  Photographers hear job-chat posts on the jobs they shot (text) by
@@ -376,32 +379,28 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("5 · MANILA: AN EDITOR'S DM WAITS FOR 7 AM THEIR TIME");
+  c.head("5 · MANILA: AN EDITOR IS PINGED AT ANY HOUR (Oct 6 2026)");
   {
+    // Oct 6 2026 (Jordan: "Editors can get night time pings."): the Oct 5
+    // "hold an editor's DM until 7 AM their time" default is gone — the
+    // function that computed it (localNightEnd) no longer exists.
+    c.ok("notify no longer exports a night-end helper", !("localNightEnd" in notify));
     setClock(edt(10, 6, 15, 0)); // Tue 15:00 ET = Wed 03:00 Manila
-    c.ok("localNightEnd: Wed 03:00 Manila → Wed 07:00 Manila (Tue 19:00 ET)", notify.localNightEnd("Asia/Manila")?.toISOString() === edt(10, 6, 19, 0).toISOString(), notify.localNightEnd("Asia/Manila")?.toISOString());
-    c.ok("localNightEnd: Manila daytime → nothing to hold", notify.localNightEnd("Asia/Manila", edt(10, 6, 20, 0)) === null);
-    c.ok("localNightEnd: 23:30 Manila → the NEXT 07:00 there", notify.localNightEnd("Asia/Manila", edt(10, 6, 11, 30))?.toISOString() === edt(10, 6, 19, 0).toISOString());
     const job = await mkJob("60 Night Shift Rd", { status: "EDITING", editorId: kim.id, photographerId: harrison.id });
     const s0 = slack.length;
     await post(job.id, harrison, "Drone shots re-uploaded, the first set was blurry");
-    c.ok("a photographer's post at Wed 03:00 Manila: NO DM to Kim now", dms(S.kim, s0).length === 0);
-    const kh = await heldFor(kim.id);
-    c.ok("…it is HELD for her, until Wed 07:00 Manila", kh.length === 1 && kh[0].until === edt(10, 6, 19, 0).toISOString() && /Drone shots/.test(kh[0].text), JSON.stringify(kh.map((h) => h.until)));
+    c.ok("a photographer's post at Wed 03:00 Manila: a DM to Kim at once", dms(S.kim, s0).length === 1 && /Drone shots/.test(dms(S.kim, s0)[0]?.text ?? ""), dms(S.kim, s0).map((m) => m.text).join(" | "));
+    c.ok("…nothing held for her", (await heldFor(kim.id)).length === 0, JSON.stringify((await heldFor(kim.id)).map((h) => h.until)));
     const cut = await mkCut(job, { submittedByKey: "john", submittedByName: "John Mark" });
     await notifySelfCheckNeeded(cut, "Dropped straight into Final.");
-    c.ok("John Mark's self-check ping at 03:00 Manila: held too, no DM now", dms(S.john, s0).length === 0 && (await heldFor(john.id)).length === 1);
+    c.ok("John Mark's self-check ping at 03:00 Manila: a DM at once, nothing held", dms(S.john, s0).length === 1 && /Check needed before review — 60 Night Shift Rd/.test(dms(S.john, s0)[0]?.text ?? "") && (await heldFor(john.id)).length === 0);
     const s1 = slack.length;
     await notify.opsAlert("🔔 Raws in for 60 Night Shift Rd — files received");
-    c.ok("meanwhile Kyle's ops line at 15:00 ET (his working day) goes at once", dms(S.kyle, s1).length === 1);
-    setClock(edt(10, 6, 18, 59));
-    await notify.flushPendingSms();
-    c.ok("18:59 ET (06:59 Manila): still nothing", dms(S.kim, s0).length === 0 && dms(S.john, s0).length === 0);
+    c.ok("meanwhile Kyle's ops line at 15:00 ET goes at once", dms(S.kyle, s1).length === 1);
     setClock(edt(10, 6, 19, 1));
     await notify.flushPendingSms();
     await notify.flushPendingSms();
-    c.ok("19:01 ET (07:01 Manila): Kim gets it, ONCE", dms(S.kim, s0).length === 1 && /Drone shots/.test(dms(S.kim, s0)[0].text));
-    c.ok("…and John Mark gets his, ONCE", dms(S.john, s0).length === 1 && /Check needed before review — 60 Night Shift Rd/.test(dms(S.john, s0)[0].text));
+    c.ok("19:01 ET (07:01 Manila): nothing more — each went once, in their night", dms(S.kim, s0).length === 1 && dms(S.john, s0).length === 1);
     const s2 = slack.length;
     setClock(edt(10, 6, 20, 0)); // Wed 08:00 Manila
     await post(job.id, harrison, "Second twilight set is up too");
@@ -409,64 +408,72 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("6 · THE OPS CHANNEL KEEPS KYLE'S NIGHT (it is his DM today)");
+  c.head("6 · ANY HOUR FOR KYLE (Oct 6 2026) — ONLY HIS OWN SAVED SCHEDULE HOLDS HIM");
   {
     // Kyle's own schedule: quiet Wednesday until 8 AM (his choice on Settings).
     await sched.saveSchedule(kyle.id, [{ day: 3, from: 0, to: 8 * 60 }], "drill");
-    setClock(edt(10, 6, 23, 30)); // Tue 23:30 ET
+    setClock(edt(10, 6, 23, 30)); // Tue 23:30 ET — outside his own window
     const s0 = slack.length;
     c.ok("the ops destination is Kyle's DM (no SLACK_ALERT_CHANNEL, no ops channel)", (await notify.alertDestination()) === S.kyle);
     const ok = await notify.opsAlert("🟥 Cron \"topaz\" degraded: drill");
-    c.ok("23:30: an ops relay is KEPT (true), not DMed", ok && dms(S.kyle, s0).length === 0);
+    c.ok("23:30: an ops relay is a DM at once (no 10 PM–7 AM rule)", ok && dms(S.kyle, s0).length === 1 && /Cron "topaz" degraded/.test(dms(S.kyle, s0)[0]?.text ?? ""));
     await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: kyle.id } });
     const page = await notify.notifyStaffSms([jordan.id], "Client still unanswered (VIP) — Ann Lee, 2h", "reply_sla", { urgency: "urgent" });
-    c.ok("23:31: the urgent page goes to the on-call (Kyle) and is held", page.length === 1 && page[0].teamMemberId === kyle.id && page[0].outcome === "held", JSON.stringify(page));
-    c.ok("…and the 'Urgent page held' notice does NOT DM Kyle at 11:30 PM — not now, not later (the page itself says it)", dms(S.kyle, s0).length === 0 && !(await heldFor(kyle.id)).some((h) => /Urgent page held/.test(h.text)));
+    c.ok("23:30: the urgent page goes to the on-call (Kyle) as a DM at once", page.length === 1 && page[0].teamMemberId === kyle.id && page[0].outcome === "slack" && dms(S.kyle, s0).some((m) => /Ann Lee/.test(m.text)), JSON.stringify(page));
+    c.ok("…and no 'Urgent page held' line anywhere", !slack.slice(s0).some((m) => /Urgent page held/.test(m.text)) && (await heldFor(kyle.id)).length === 0);
     await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: jordan.id } });
     const page2 = await notify.notifyStaffSms([kyle.id], "Client still unanswered (VIP) — Bo Diaz, 2h", "reply_sla", { urgency: "urgent" });
-    c.ok("on-call Jordan's page is held to 7 AM", page2[0]?.teamMemberId === jordan.id && page2[0]?.outcome === "held", JSON.stringify(page2));
-    const kh = await heldFor(kyle.id);
-    c.ok("…the notice that it is waiting is KEPT for Kyle's morning, not sent at 23:31", dms(S.kyle, s0).length === 0 && kh.some((h) => /Urgent page held \(quiet hours\) — Jordan Spackman gets it Wed, Oct 7, 7:00 AM ET/.test(h.text)), kh.map((h) => h.text).join(" | "));
+    c.ok("on-call Jordan on a Tuesday night: a DM at once (only his Saturday is quiet)", page2[0]?.teamMemberId === jordan.id && page2[0]?.outcome === "slack" && dms(S.jordan, s0).some((m) => /Bo Diaz/.test(m.text)), JSON.stringify(page2));
     await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null } });
-    // Kyle's own pings at night: a Luma ready notice and an URGENT desk task.
     const ping = await notify.pingKyle("📦 Ready for editing — 70 Late Ln: it's Luma Visuals' job", "luma_dispatch");
-    c.ok("a Luma ping at 23:3x: held, not sent", Array.isArray(ping) && ping[0]?.outcome === "held", JSON.stringify(ping));
+    c.ok("a Luma ping at 23:3x: a DM at once", Array.isArray(ping) && ping[0]?.outcome === "slack" && dms(S.kyle, s0).some((m) => /70 Late Ln/.test(m.text)), JSON.stringify(ping));
     const paula = await prisma.client.findFirstOrThrow({ where: { name: "Paula Prospect" }, select: { id: true } });
     await desk.openProgramDeskTask({ dedupeKey: "program-scripts-unapproved:drill-month:session-2", clientId: paula.id, clientName: "Paula Prospect", title: "Scripts not approved before filming — Paula Prospect · Wednesday, October 7, 11:00 PM", lines: ["x"], assignedKey: "kyle", reasonCreated: "drill", reopenIfClosed: false, dueAt: edt(10, 7, 23, 0), priority: "URGENT" });
-    c.ok("an URGENT desk task at 23:3x: held, not sent", dms(S.kyle, s0).length === 0 && (await heldFor(kyle.id)).length >= 5, String((await heldFor(kyle.id)).length));
+    c.ok("an URGENT desk task at 23:3x: a DM at once", dms(S.kyle, s0).some((m) => /Scripts not approved before filming/.test(m.text)) && (await heldFor(kyle.id)).length === 0, dms(S.kyle, s0).map((m) => m.text.slice(0, 60)).join(" | "));
+
+    // Inside HIS OWN window (Wed 00:00–08:00): the same four are kept, once.
+    setClock(edt(10, 7, 0, 30)); // Wed 00:30 ET
+    const s1 = slack.length;
+    const kept0 = await notify.opsAlert("🟥 Cron \"backup\" degraded: drill");
+    c.ok("Wed 00:30, inside Kyle's own window: an ops relay is KEPT (true), not DMed", kept0 && dms(S.kyle, s1).length === 0);
+    await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: kyle.id } });
+    const page3 = await notify.notifyStaffSms([jordan.id], "Client still unanswered (VIP) — Cy Moss, 2h", "reply_sla", { urgency: "urgent" });
+    c.ok("…the urgent page to on-call Kyle is held to the END of his window (Wed 08:00)", page3[0]?.outcome === "held" && page3[0]?.until === edt(10, 7, 8, 0).toISOString(), JSON.stringify(page3));
+    c.ok("…and the 'Urgent page held' notice does NOT DM Kyle about his own page — not now, not later", dms(S.kyle, s1).length === 0 && !(await heldFor(kyle.id)).some((h) => /Urgent page held/.test(h.text)));
+    await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null } });
+    const ping2 = await notify.pingKyle("📦 Ready for editing — 72 Late Ln: it's Luma Visuals' job", "luma_dispatch");
+    c.ok("…a Luma ping: held", Array.isArray(ping2) && ping2[0]?.outcome === "held", JSON.stringify(ping2));
+    await desk.openProgramDeskTask({ dedupeKey: "program-scripts-unapproved:drill-month:session-3", clientId: paula.id, clientName: "Paula Prospect", title: "Scripts not approved before filming — Paula Prospect · Thursday, October 8, 11:00 PM", lines: ["x"], assignedKey: "kyle", reasonCreated: "drill", reopenIfClosed: false, dueAt: edt(10, 8, 23, 0), priority: "URGENT" });
     const wake = (await heldFor(kyle.id)).map((h) => h.until);
-    c.ok("…everything for Kyle is dated to the END of his quiet time: Wed 08:00 (his own window runs past 7 AM)", wake.every((u) => u === edt(10, 7, 8, 0).toISOString()), wake.join(", "));
-    setClock(edt(10, 7, 6, 55));
+    c.ok("…an URGENT desk task: held — four notices, every one dated Wed 08:00", dms(S.kyle, s1).length === 0 && wake.length === 4 && wake.every((u) => u === edt(10, 7, 8, 0).toISOString()), wake.join(", "));
+    setClock(edt(10, 7, 7, 59));
     await notify.flushPendingSms();
-    c.ok("06:55: nothing for anyone", dms(S.kyle, s0).length === 0 && dms(S.jordan, s0).length === 0);
-    setClock(edt(10, 7, 7, 1));
-    await notify.flushPendingSms();
-    c.ok("07:01: Jordan's held page reaches him, once", dms(S.jordan, s0).length === 1 && /Bo Diaz/.test(dms(S.jordan, s0)[0].text));
-    c.ok("…Kyle is still inside HIS window (until 8:00): nothing yet", dms(S.kyle, s0).length === 0);
+    c.ok("07:59: still nothing (no house 7 AM either way — his own 08:00 decides)", dms(S.kyle, s1).length === 0);
     setClock(edt(10, 7, 8, 1));
     await notify.flushPendingSms();
     await notify.flushPendingSms();
-    const kd = dms(S.kyle, s0);
-    c.ok("08:01: Kyle gets ONE DM carrying all of it, oldest first", kd.length === 1 && /Held during your quiet time — \d+ notices/.test(kd[0].text) && /Cron "topaz" degraded/.test(kd[0].text) && /Ann Lee/.test(kd[0].text) && /Jordan Spackman gets it/.test(kd[0].text) && /70 Late Ln/.test(kd[0].text) && /Scripts not approved before filming/.test(kd[0].text), kd[0]?.text.slice(0, 400));
+    const kd = dms(S.kyle, s1);
+    c.ok("08:01: Kyle gets ONE DM carrying all of it, oldest first", kd.length === 1 && /Held during your quiet time — 4 notices/.test(kd[0].text) && /Cron "backup" degraded/.test(kd[0].text) && /Cy Moss/.test(kd[0].text) && /72 Late Ln/.test(kd[0].text) && /October 8/.test(kd[0].text) && kd[0].text.indexOf("backup") < kd[0].text.indexOf("Cy Moss"), kd[0]?.text.slice(0, 400));
     c.ok("…nothing waiting any more", (await heldFor(kyle.id)).length === 0);
 
     // SLACK_ALERT_CHANNEL: a real channel gets every line at once, night or day.
     setClock(edt(10, 7, 23, 0));
     process.env.SLACK_ALERT_CHANNEL = "C0OPSALRT1";
-    const s1 = slack.length;
+    const s2 = slack.length;
     await notify.opsAlert("⚠️ drill: webhooks bouncing");
-    c.ok("SLACK_ALERT_CHANNEL set: 23:00 line posts to #ops-alerts at once (a channel is not a page)", dms("C0OPSALRT1", s1).length === 1 && dms(S.kyle, s1).length === 0);
+    c.ok("SLACK_ALERT_CHANNEL set: 23:00 line posts to #ops-alerts at once (a channel is not a page)", dms("C0OPSALRT1", s2).length === 1 && dms(S.kyle, s2).length === 0);
     process.env.SLACK_ALERT_CHANNEL = " #ops-alerts ";
     refuse.add("#ops-alerts");
-    const s2 = slack.length;
-    const kept = await notify.opsAlert("⚠️ drill: the bot is not in the channel yet");
-    c.ok("a channel that refuses (bot not invited): falls back to Kyle's DM — kept for his morning at 23:00", kept && dms(S.kyle, s2).length === 0 && (await heldFor(kyle.id)).some((h) => /not in the channel yet/.test(h.text)));
+    const s3 = slack.length;
+    const sent = await notify.opsAlert("⚠️ drill: the bot is not in the channel yet");
+    c.ok("a channel that refuses (bot not invited): falls back to Kyle's DM — at once, at 23:00", sent && dms(S.kyle, s3).length === 1 && /not in the channel yet/.test(dms(S.kyle, s3)[0]?.text ?? "") && (await heldFor(kyle.id)).length === 0);
     setClock(edt(10, 8, 12, 0));
     await notify.flushPendingSms();
-    const s3 = slack.length;
+    const s4 = slack.length;
     await notify.opsAlert("⚠️ drill: still not invited, midday");
-    c.ok("…and in the day it reaches Kyle's DM at once", dms(S.kyle, s3).length === 1 && /midday/.test(dms(S.kyle, s3)[0].text));
+    c.ok("…and in the day it reaches Kyle's DM at once", dms(S.kyle, s4).length === 1 && /midday/.test(dms(S.kyle, s4)[0].text));
     delete process.env.SLACK_ALERT_CHANNEL;
+    await sched.saveSchedule(kyle.id, null, "drill");
   }
 
   // =========================================================================

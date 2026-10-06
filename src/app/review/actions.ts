@@ -1849,9 +1849,10 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
         ? [{
             // THE OUTSIDE AGENCY'S ROUND IS KYLE'S TO RELAY (Oct 5). The task
             // and his bell row are already written (above); this is his Slack
-            // DM through the staff helper — his own quiet time kept, and held
-            // overnight (10 PM–7 AM ET), never dropped. Not Slacked when he
-            // sent it back himself: he already knows.
+            // DM through the staff helper — at any hour (Oct 6 2026: no
+            // overnight hold, "anyone on the team can get pinged anytime"),
+            // held only by a quiet time saved for him, never dropped. Not
+            // Slacked when he sent it back himself: he already knows.
             step: outsideEditor ? `relay to ${outsideEditor}` : "pick an editor",
             repairedBy: "no sweep — the relay task is already on Kyle's list and the round waits on the edit card",
             run: async () => {
@@ -1863,7 +1864,6 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
                   officeToTell.map((o) => o.id),
                   `↩︎ Relay to ${outsideEditor}: ${authorName ?? "The review desk"} sent back ${street} (version ${submission.round}) with ${open.length} note${s}. They're on the edit card as round ${submission.round + 1} — ${appBase()}${editHref}`,
                   "review_changes",
-                  { holdOvernight: true },
                 );
               }
             },

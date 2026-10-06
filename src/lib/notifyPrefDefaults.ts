@@ -383,18 +383,15 @@ export type QuietWindow = { day: number; from: number; to: number };
 
 /** Jordan's own answer, as a code default — used for the OWNER login's roster
  *  row until a schedule is saved for him (never written to production by the
- *  deploy). Saturday from midnight to 7:30 PM Eastern. */
+ *  deploy). Saturday from midnight to 7:30 PM Eastern.
+ *
+ *  THE ONLY DEFAULT QUIET TIME THERE IS (Oct 6 2026, Jordan: "Editors can get
+ *  night time pings. Anyone on the team can get pinged anytime. Just not
+ *  Jordan on Saturday until 7:30PM."). That replaced his Sep 26 answer that
+ *  overnight urgent pages wait for 7 AM, and with it every house night hold —
+ *  the 10 PM–7 AM page rule, the staff texting window, a Manila editor's night.
+ *  Anyone else is quiet only inside windows saved for them on the card. */
 export const OWNER_PRESET_WINDOWS: readonly QuietWindow[] = [{ day: 6, from: 0, to: 19 * 60 + 30 }];
-
-/**
- * The business-wide layer, the same for everyone (Jordan, Sep 26: an URGENT
- * page to the on-call person between 10 PM and 7 AM is held until 7 AM, not
- * texted). Texts already keep this window in the staff queue (its 7:00–22:00
- * texting hours); what is new is that the on-call page's Slack leg keeps it
- * too. A person's own windows add to it.
- */
-export const OVERNIGHT_FROM = 22 * 60;
-export const OVERNIGHT_TO = 7 * 60;
 
 export const MAX_QUIET_WINDOWS = 21;
 

@@ -200,12 +200,15 @@ export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ o
     // forever on is an empty rota, so that case gets its own sentence.
     const { describeCoverage } = await import("@/lib/coverage");
     const window = describeCoverage(merged.coverage);
-    // Sep 26 2026 (Jordan): an urgent page to the on-call between 10 PM and
-    // 7 AM waits until 7 AM — the sentence says so rather than "goes to Kyle".
+    // Oct 6 2026 (Jordan: "Anyone on the team can get pinged anytime."): no
+    // overnight clause — the Sep 26 "page waits until 7 AM" rule is gone.
     const rota = onCallName
-      ? `Outside that, routine alerts wait for the next covered period and urgent ones go to ${onCallName.split(/\s+/)[0]} — except between 10 PM and 7 AM, when the page waits until 7 AM and the ops channel is told it is waiting.`
+      ? `Outside that, routine alerts wait for the next covered period and urgent ones go to ${onCallName.split(/\s+/)[0]} at any hour — only a quiet time of their own holds them.`
       : "Outside that, routine alerts wait for the next covered period. Nobody is named for urgent ones, so they page whoever holds the owner/admin role, exactly as before.";
-    return { ok: true, message: `Saved — the next run follows these rules. Covered ${window}. ${rota}` };
+    const runs = merged.coverage.weekdaysOnly
+      ? "The office alerts (late photos, the client-reply pager) run Monday to Friday only — turn off Weekdays only to run them every day."
+      : "The office alerts (late photos, the client-reply pager) run every day, weekends included.";
+    return { ok: true, message: `Saved — the next run follows these rules. Covered ${window}. ${rota} ${runs}` };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };
   }
@@ -403,7 +406,7 @@ export async function saveNotifySchedule(
       .catch(() => {});
     revalidatePath("/settings");
     const [row] = await scheduleRows([teamMemberId]);
-    const tail = after.source === "preset" ? " (Jordan's preset — nothing of his own saved)" : after.source === "none" ? " The office weekend rule applies to routine notices again." : "";
+    const tail = after.source === "preset" ? " (Jordan's preset — nothing of his own saved)" : after.source === "none" ? " (the default — notified at any hour)" : "";
     return { ok: true, message: `Saved. ${afterWords}${tail} Applies from the next notice.`, row };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };

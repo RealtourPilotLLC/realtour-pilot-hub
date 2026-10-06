@@ -21,9 +21,9 @@
 //   §6  CutUploader: a refused check reopens with the server's list; a
 //       confirming hand-in survives "Next" and shows its failure (11)
 //   §7  "Got it": only this video, success only after the save (8)
-//   §8  Kyle by duty, held overnight, deduped under a race; held-file bells (3, 17, A)
+//   §8  Kyle by duty, any hour (Oct 6 2026), deduped under a race; held-file bells (3, 17, A)
 //   §9  a send-back: the relay task and bells exist before the answer;
-//       Kyle never belled about his own; DM held at night (3, 10, 16)
+//       Kyle never belled about his own; DM at night goes at once (3, 10, 16)
 //   §10 rawsAreIn counts a SHOT job with raw footage (14)
 //   §11 monthly jobs: no Final-folder send, server-side (B)
 //   §12 the edit page: Studio script/song/shot list on a premium cinematic;
@@ -481,13 +481,15 @@ async function main() {
     });
 
     // =========================================================================
-    await section("§8 · Kyle by DUTY, never at night, once under a race; one bell for a held file (items 3, 17, A)", async () => {
+    await section("§8 · Kyle by DUTY, at any hour, once under a race; one bell for a held file (items 3, 17, A)", async () => {
       const { noticeForKyle, kyleTeamMemberId } = await import("@/lib/kyleNotice");
       c.ok("\"Kyle\" is the DELIVERY duty owner — with a second Kyle on the roster (the old name lookup gave up on two)", (await kyleTeamMemberId()) === kyle.id);
       setClock(edt(10, 6, 23, 30));
       const s0 = slack.length;
       const night = await noticeForKyle({ kind: "topaz_problem", title: "1080p file held — 9 Night Ln", body: "Listen to it.", href: "/#video-review", dedupeKey: "ssfix-night-1", slack: "1080p file held — 9 Night Ln" });
-      c.ok("at 11:30 PM ET his Slack is HELD to the morning, not sent (holdOvernight)", night.bell && night.slack === "held" && slack.slice(s0).filter((m) => m.channel === "U-KYLE").length === 0, JSON.stringify(night));
+      // Oct 6 2026 (Jordan: "Anyone on the team can get pinged anytime."): the
+      // Oct 5 overnight hold on Kyle's notices is gone.
+      c.ok("at 11:30 PM ET his Slack DM goes at once — no overnight hold", night.bell && night.slack === "slack" && slack.slice(s0).filter((m) => m.channel === "U-KYLE").length === 1, JSON.stringify(night));
       setClock(edt(10, 7, 10, 0));
       const s1 = slack.length;
       const race = await Promise.all([1, 2, 3].map(() => noticeForKyle({ kind: "topaz_problem", title: "Topaz credits are running low", body: "Top up.", href: "/#video-review", dedupeKey: "ssfix-race-1", slack: "Topaz credits are running low" })));
@@ -537,7 +539,7 @@ async function main() {
       c.ok("…the answer says what is true: Kyle has a task to relay it", /Kyle has a task to relay them/.test(r.message), r.message);
       c.ok("…only the DM waits for the background", afterQueue.length === 1 && slack.length === s0);
       await flush();
-      c.ok("in the background at 11 PM ET: Kyle's DM is HELD overnight, never sent at night", slack.slice(s0).filter((m) => m.channel === "U-KYLE").length === 0);
+      c.ok("in the background at 11 PM ET: Kyle's relay DM goes at once (Oct 6 2026 — no overnight hold)", slack.slice(s0).filter((m) => m.channel === "U-KYLE" && /Relay to Luma Visuals/.test(m.text)).length === 1, slack.slice(s0).map((m) => `${m.channel}: ${m.text.slice(0, 60)}`).join(" | "));
       // Kyle sends one back himself.
       setClock(edt(10, 8, 10, 0));
       const S = await mkJob("108 Self Relay Ct");

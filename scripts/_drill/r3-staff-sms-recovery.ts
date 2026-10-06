@@ -40,10 +40,12 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
 };
 
 // THE CLOCK (Oct 5 2026). This drill read the real clock, and the staff
-// digest only goes 7 AM–10 PM ET: run at night, the first flush (rightly)
-// held everything, `sent[0]` was undefined, the throw left the PGlite server
-// up and the suite killed it at 600 s. Pinned to Tue Sep 29 2026 14:00 ET and
-// running forward in real time. Every row this drill writes is stamped from
+// digest then only went 7 AM–10 PM ET: run at night, the first flush held
+// everything, `sent[0]` was undefined, the throw left the PGlite server up and
+// the suite killed it at 600 s. Since Oct 6 2026 there is no texting window
+// (Jordan: "Anyone on the team can get pinged anytime"), but the clock stays
+// pinned — Tue Sep 29 2026 14:00 ET, running forward in real time — so the
+// drill never depends on when it is run. Every row this drill writes is stamped from
 // that same clock (createdAt is set explicitly below), so the 30-minute batch
 // window is measured on one clock — the database's own now() is the real one.
 const RealDate = Date;
@@ -105,8 +107,9 @@ async function main() {
   };
 
   const member = await prisma.teamMember.create({ // NOT a name from the editor roster. "Kim Drill" matched the real editor
-  // Kim, whose timezone is Manila — withinTextingHours then deferred the whole
-  // flush and this drill read as "the digest did not go" for three runs.
+  // Kim, whose timezone is Manila — the (since removed, Oct 6 2026) texting
+  // window then deferred the whole flush and this drill read as "the digest
+  // did not go" for three runs.
   data: { name: "Dana Quill", email: "dana.quill@realtourpilot.com", phone: "+16105550143" }, select: { id: true } });
 
   // ======================================================================

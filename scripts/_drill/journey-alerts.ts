@@ -31,8 +31,8 @@
  *   5. THE CONSERVATIVE HALF: a queued text counts as reached, so the retry can
  *      never add a second text — not even when the delivery log has LOST the
  *      row that said so, because the queue itself is asked before a retry
- *      texts — and a routine weekend alert held until Monday is not un-held by
- *      a re-announcement;
+ *      texts — and a routine cut alert (which, since Oct 6 2026, goes at once
+ *      on ANY day: no weekend hold) is not sent twice by a re-announcement;
  *   6. a missing Slack ID stays the weekly People nudge's problem and burns its
  *      attempts like any other dead end.
  *
@@ -197,7 +197,7 @@ async function main() {
   const { prisma } = await import("@/lib/prisma");
   const { saveSecret } = await import("@/lib/integrations/connections");
   const { putSetting } = await import("@/lib/settings");
-  const { notifyInApp, holdUntilCovered, flushPendingSms } = await import("@/lib/notify");
+  const { notifyInApp, flushPendingSms } = await import("@/lib/notify");
   type Role = Parameters<typeof prisma.teamMember.create>[0]["data"]["role"];
 
   // Slack is "connected" so the real client takes its normal path; every call
@@ -465,12 +465,12 @@ async function main() {
   check("and the DM, which nothing else recorded, IS retried", dms("U-JAMES").length === 1, `${dms("U-JAMES").length} attempts`);
   check("no ops relay: the queued line means he is being reached", !slackCalls.some((c) => c.fn === "notify" && /Couldn't reach James/.test(c.text)));
 
-  console.log("\n5b. A ROUTINE WEEKEND ALERT HELD UNTIL MONDAY IS NOT UN-HELD BY A RE-ANNOUNCEMENT");
-  // cut_ready is a ROUTINE kind on the office clock. Raised on a day the rota
-  // does not cover, the text is dated to the next covered moment and the DM is
-  // held beside it (Sep 20, audit F07). A retry must not undo that.
-  const hold = await holdUntilCovered("cut_ready", undefined);
-  console.log(`     holdUntilCovered("cut_ready") → ${hold ? hold.toISOString() : "null (a day somebody works)"}`);
+  console.log("\n5b. A ROUTINE CUT ALERT GOES AT ONCE, ANY DAY, AND A RE-ANNOUNCEMENT DOES NOT SEND IT TWICE");
+  // Until Oct 6 2026, cut_ready raised on a day the rota did not cover was
+  // dated to Monday and its DM skipped (audit F07). Jordan, Oct 6: "Anyone on
+  // the team can get pinged anytime." — so whatever day this drill runs on,
+  // the DM goes now and the text is queued undated; a retry must still not add
+  // a second DM or a second line.
   const CUT_KEY = "drill-cutready-james-weekend";
   slackUp = true;
   slackCalls.length = 0;
@@ -479,21 +479,13 @@ async function main() {
     prisma.pendingSms.findFirst({ where: { teamMemberId: james.id, line: { contains: "Cut ready" } }, select: { id: true, deferUntil: true } }),
   );
   const dmsAfterFirst = dms("U-JAMES").length;
-  if (hold) {
-    check("the text is dated to the next covered moment", heldRow?.deferUntil?.toISOString() === hold.toISOString(), `${heldRow?.deferUntil?.toISOString() ?? "null"}`);
-    check("and the DM is held beside it, not fired", dmsAfterFirst === 0, `${dmsAfterFirst} DM attempts`);
-    check("the hold is logged as a hold, not a failure", (await legs(james.id, "slack", "skipped")) >= 1);
-  } else {
-    check("in cover, the DM goes now", dmsAfterFirst === 1, `${dmsAfterFirst} DM attempts`);
-  }
+  check("the DM goes now, whatever the day (no weekend hold)", dmsAfterFirst === 1, `${dmsAfterFirst} DM attempts`);
+  check("the text is queued with NO date on it", !!heldRow && heldRow.deferUntil === null, `${heldRow?.deferUntil?.toISOString() ?? (heldRow ? "null" : "not queued")}`);
+  check("nothing logs the DM as skipped for a held text", (await dbRetry(() => prisma.notificationDelivery.count({ where: { teamMemberId: james.id, channel: "slack", status: "skipped", detail: { contains: "held as a text" } } }))) === 0);
   slackCalls.length = 0;
   await ageBellRow(CUT_KEY);
   await announce({ tmId: james.id, key: CUT_KEY, dm: "", kind: "cut_ready", title: "Cut ready to review — 632 Greenridge Rd" });
-  const heldAfter = await dbRetry(() =>
-    prisma.pendingSms.findFirst({ where: { teamMemberId: james.id, line: { contains: "Cut ready" } }, select: { deferUntil: true } }),
-  );
-  check("re-announcing does not release the hold", heldAfter?.deferUntil?.toISOString() === heldRow?.deferUntil?.toISOString(), `${heldAfter?.deferUntil?.toISOString() ?? "null"}`);
-  check("and does not buzz the DM the hold was protecting", dms("U-JAMES").length === 0, `${dms("U-JAMES").length} attempts`);
+  check("re-announcing does not send the DM a second time", dms("U-JAMES").length === 0, `${dms("U-JAMES").length} attempts`);
   const cutTexts = await dbRetry(() => prisma.pendingSms.count({ where: { teamMemberId: james.id, line: { contains: "Cut ready" } } }));
   check("exactly one queued line for the cut, not two", cutTexts === 1, `${cutTexts}`);
 

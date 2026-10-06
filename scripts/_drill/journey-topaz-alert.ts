@@ -37,9 +37,11 @@
  *
  * THE CLOCK IS MOVED, ON PURPOSE. Sections 3 and 4 ask the Saturday question,
  * and the bridge asks it of `new Date()` from inside itself. Rather than
- * re-implement the rule in the test (the mistake holdUntilCovered's own
- * comment warns about), the drill shifts the process clock onto a real
- * Saturday and lets the product code answer for itself.
+ * re-implement the rule in the test, the drill shifts the process clock onto
+ * a real Saturday and lets the product code answer for itself. Since Oct 6
+ * 2026 the answer is "at once" for anyone without a quiet time of their own
+ * (Jordan: "Anyone on the team can get pinged anytime. Just not Jordan on
+ * Saturday until 7:30PM.") — the Sep 20 weekend hold is gone.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
@@ -221,7 +223,8 @@ async function main() {
   const { prisma } = await import("@/lib/prisma");
   const { saveSecret } = await import("@/lib/integrations/connections");
   const { putSetting } = await import("@/lib/settings");
-  const { notifyInApp, holdUntilCovered, flushPendingSms } = await import("@/lib/notify");
+  const notifyMod = await import("@/lib/notify");
+  const { notifyInApp, flushPendingSms } = notifyMod;
   const { eventForKind } = await import("@/lib/notifyPrefs");
   type Role = Parameters<typeof prisma.teamMember.create>[0]["data"]["role"];
 
@@ -441,22 +444,10 @@ async function main() {
   console.log("3. THE CLOCK IS PARKED ON A SATURDAY");
   console.log(`   drill clock: ${sat.toISOString()} (${sat.toString().slice(0, 3)}, ET ${sat.toLocaleString("en-US", { timeZone: "America/New_York" })})`);
   console.log("-".repeat(78));
-  const holdTopaz = await holdUntilCovered("topaz_ready", undefined);
-  const holdCut = await holdUntilCovered("cut_ready", undefined);
-  const holdProblem = await holdUntilCovered("topaz_problem", undefined);
-  console.log(`     holdUntilCovered("topaz_ready")   → ${holdTopaz?.toISOString() ?? "null"}`);
-  console.log(`     holdUntilCovered("cut_ready")     → ${holdCut?.toISOString() ?? "null"}`);
-  console.log(`     holdUntilCovered("topaz_problem") → ${holdProblem?.toISOString() ?? "null"}`);
-  check("topaz_ready is ROUTINE, so a Saturday render is dated forward", !!holdTopaz);
-  check("…to the same Monday cut_ready is dated to", holdTopaz?.toISOString() === holdCut?.toISOString(), `${holdTopaz?.toISOString()} vs ${holdCut?.toISOString()}`);
-  check(
-    "…which is a Monday, 9am ET",
-    !!holdTopaz && holdTopaz.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric" }) === "Mon 9 AM",
-    holdTopaz?.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric" }),
-  );
-  check("a Topaz FAILURE is not routine — it is not on the list at all", holdProblem === null);
+  // Oct 6 2026: the office-rota weekend hold (holdUntilCovered) is gone.
+  check("notify no longer has a weekend hold to ask (holdUntilCovered removed, Oct 6 2026)", !("holdUntilCovered" in notifyMod));
 
-  console.log("\n3a. KYLE ON A SATURDAY — the hold is real but it cannot touch him");
+  console.log("\n3a. KYLE ON A SATURDAY — at once");
   slackCalls.length = 0;
   await announceTopaz("drill-topaz-saturday");
   console.log(`     Kyle DM attempts: ${dms("U-KYLE").length}, texts queued: ${(await texts(kyle.id)).length}`);
@@ -471,11 +462,10 @@ async function main() {
   );
   check("and the DM was NOT suppressed — quieter than today is the goal, silent never is", suppressed === 0, `${suppressed} skipped legs`);
 
-  console.log("\n3b. SOMEBODY WHO *CAN* BE HELD — the classification proved on a text switch");
+  console.log("\n3b. SOMEBODY WITH A TEXT SWITCH ON — a Saturday render reaches him now (Oct 6 2026)");
   // Harrison is not addressed by the real emitter; this is the same kind put
-  // in front of a person whose text switch is on, which is what the ROUTINE
-  // entry is a standing declaration about. If Jordan ever turns Kyle's text
-  // on, this is the behaviour he gets.
+  // in front of a person whose text switch is on. Until Oct 6 2026 it was
+  // dated to Monday 9 AM; now nothing but his own quiet time could hold it.
   slackCalls.length = 0;
   await notifyInApp({
     kind: "topaz_ready",
@@ -486,8 +476,8 @@ async function main() {
   });
   const hTexts = await texts(harrison.id);
   console.log(`     Harrison texts queued: ${hTexts.length}, deferUntil ${hTexts[0]?.deferUntil?.toISOString() ?? "null"}`);
-  check("the alert is KEPT, as a queued line", hTexts.length === 1, `${hTexts.length}`);
-  check("…dated to Monday morning rather than buzzing his phone on a Saturday", hTexts[0]?.deferUntil?.toISOString() === holdTopaz?.toISOString(), hTexts[0]?.deferUntil?.toISOString() ?? "null");
+  check("the alert is queued for his phone", hTexts.length === 1, `${hTexts.length}`);
+  check("…with NO date on it — not held to Monday (anyone, any time)", hTexts.length === 1 && hTexts[0]?.deferUntil === null, hTexts[0]?.deferUntil?.toISOString() ?? "null");
   check("nothing is dropped: a delivery leg records the queued line", (await legs(harrison.id, "sms", "queued")) === 1);
 
   // =========================================================================
@@ -517,7 +507,7 @@ async function main() {
     "…dated to the end of HIS quiet time — Saturday 7:30 PM ET, not Monday",
     !!quietEnds && jSat[0]?.deferUntil?.toISOString() === quietEnds.toISOString() &&
       quietEnds.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" }) === "Sat 7:30 PM",
-    `${jSat[0]?.deferUntil?.toISOString()} vs ${quietEnds?.toISOString()} (Monday would be ${holdCut?.toISOString()})`,
+    `${jSat[0]?.deferUntil?.toISOString()} vs ${quietEnds?.toISOString()}`,
   );
   const jHeld = await dbRetry(() =>
     prisma.notificationDelivery.findFirst({

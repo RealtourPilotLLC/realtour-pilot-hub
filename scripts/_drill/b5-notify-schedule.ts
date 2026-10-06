@@ -19,18 +19,22 @@
 //      Slack DM at 23:30; a refused 4 o'clock DM reports sent and keeps the
 //      day; an away review seat is left off the cut FYI.
 //   1  The schedule itself: Jordan's preset, the summary sentence, pure hold
-//      arithmetic across DST, chained windows and the overnight rule.
+//      arithmetic across DST and chained windows — and (Oct 6 2026) NO
+//      overnight rule: with no windows of your own, 2 AM is not held.
 //   2  Saturday 10:00: Jordan's bell at once, his texts and DMs held to 19:30;
 //      Kyle and James pinged at once. 19:25 nothing; 19:31 ONE text and ONE
 //      DM carrying everything, in order; 19:40 nothing more.
 //   3  Sunday and a weekday: Jordan notified at once; someone with no schedule
-//      is exactly as the old code had them.
+//      is notified at once on a Sunday too (Oct 6 2026 — the old code dated
+//      their routine text to Monday 9 AM; that weekend hold is gone).
 //   4  The away seat still hears about the cut.
 //   5  The switches do what they say: raw video missing off → the task, no
 //      bell; Kyle's digests off → nothing claimed, nothing sent.
-//   6  The urgent on-call page: 23:30 → 7 AM on Slack and by text, the ops
-//      channel told; Saturday 10:00 unchanged; Jordan on call on his Saturday
-//      waits for 19:30.
+//   6  The urgent on-call page (Oct 6 2026, Jordan: "Anyone on the team can
+//      get pinged anytime. Just not Jordan on Saturday until 7:30PM."): 23:30
+//      is a Slack DM at 23:30, a phone-only on-call is texted at 23:45, no
+//      "held" line on the ops channel; Saturday 10:00 unchanged; Jordan on
+//      call on his Saturday waits for 19:30 and the ops channel is told.
 //   7  A digest that failed never reports sent: claim released, a failed
 //      delivery row, the next tick sends once; Kyle's own quiet time holds it.
 //   8  The Settings actions: who may save whose schedule, a stale tab refused,
@@ -44,9 +48,11 @@
 //      evening cron at Sat 19:00 — the OLD code texts Jordan's own Saturday
 //      shoot and DMs Kyle's coaching note inside their windows; now both wait
 //      (19:31 one text, 21:01 one DM). The 10 PM chaser and the late split
-//      notice for somebody quiet at night wait too, and go once at 7 AM on
-//      the Sunday the clocks go back.
-//   11 (review) A held editor ping is reported "quiet", never "slack".
+//      notice for somebody quiet 9 PM–midnight wait too, and go once at 00:05
+//      when HIS window ends (Oct 6 2026: no 7 AM texting rule behind it).
+//   11 (review) A held editor ping is reported "quiet", never "slack"; with
+//      no saved schedule a Manila editor at midnight their time is DMed at
+//      once (Oct 6 2026: "Editors can get night time pings").
 //
 // ISOLATION: PGlite on 127.0.0.1:5781 (the harness); production is never
 // opened; every non-loopback call is fenced; Slack answered by a fake and
@@ -124,9 +130,10 @@ const fence = fenceFetch((url, init) => {
   return json({ ok: false, error: `drill: ${method}` });
 });
 
-/** 17df024's copy of a file, its `@/` imports aimed at this tree. */
-function baseCopy(dir: string, name: string, file: string): string {
-  const src = execFileSync("git", ["show", `${BASE}:${file}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+/** 17df024's copy of a file, its `@/` imports aimed at this tree. `patch`
+ *  adapts a line that reaches for something this tree no longer exports. */
+function baseCopy(dir: string, name: string, file: string, patch: (src: string) => string = (x) => x): string {
+  const src = patch(execFileSync("git", ["show", `${BASE}:${file}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
   const pointed = src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`);
   const out = path.join(dir, name);
   fs.writeFileSync(out, pointed);
@@ -182,7 +189,7 @@ async function main() {
   // Saved matrices as production has them (Sep 21 reads): Jordan Slack + text,
   // Kyle Slack. James and Harrison: their shipped photographer default
   // (tags by text). Harrison's "video in review" text is switched on here so
-  // the office weekend rule has somebody to hold in section 3.
+  // section 3 can show the old weekend rule held it and the new code does not.
   const allOff = { mention: { slack: false, sms: false }, project_message: { slack: false, sms: false }, job_ping: { slack: false, sms: false }, review_ready: { slack: false, sms: false }, shoot_change: { slack: false, sms: false } };
   await putSetting(`notify-prefs:${jordan.id}`, { ...allOff, mention: { slack: true, sms: true }, review_ready: { slack: true, sms: true }, shoot_change: { slack: true, sms: true } });
   await putSetting(`notify-prefs:${kyle.id}`, { ...allOff, mention: { slack: true, sms: false }, review_ready: { slack: true, sms: false }, shoot_change: { slack: true, sms: false } });
@@ -290,15 +297,16 @@ async function main() {
     // DST: Sat Nov 7 2026 is EST (clocks went back Nov 1), so 19:30 is 00:30Z.
     const nov = new RealDate(RealDate.UTC(2026, 10, 7, 15)); // Sat Nov 7 10:00 EST
     c.ok("DST: Sat Nov 7 10:00 EST → 19:30 EST (00:30Z)", iso(sched.quietEnd(W, nov)) === "2026-11-08T00:30:00.000Z", iso(sched.quietEnd(W, nov)));
-    // Spring forward: an overnight page at 23:30 EST Sat Mar 13 2027 waits for
-    // 7:00 EDT on Sun Mar 14 (11:00Z), across the missing 2 AM hour.
+    // Oct 6 2026: there is no overnight rule any more (Jordan: "Anyone on the
+    // team can get pinged anytime. Just not Jordan on Saturday until 7:30PM.").
+    // quietEnd takes no `page` flag; with no windows nothing is ever held.
     const mar = new RealDate(RealDate.UTC(2027, 2, 14, 4, 30)); // Sat Mar 13 23:30 EST
-    c.ok("DST: an overnight page at 23:30 before spring-forward waits for 7:00 EDT", iso(sched.quietEnd([], mar, true)) === "2027-03-14T11:00:00.000Z", iso(sched.quietEnd([], mar, true)));
-    c.ok("overnight rule: 02:00 → 07:00 the same morning", iso(sched.quietEnd([], edt(9, 23, 2), true)) === iso(edt(9, 23, 7)));
-    c.ok("overnight rule: 21:59 is not overnight", sched.quietEnd([], edt(9, 22, 21, 59), true) === null);
+    c.ok("Oct 6: no windows → 23:30 before spring-forward is NOT held", sched.quietEnd([], mar) === null, iso(sched.quietEnd([], mar)));
+    c.ok("Oct 6: no windows → 02:00 is NOT held (no 10 PM–7 AM rule)", sched.quietEnd([], edt(9, 23, 2)) === null);
+    c.ok("Oct 6: quietEnd takes the windows and the instant only", sched.quietEnd.length === 2, String(sched.quietEnd.length));
     const chain = [{ day: 5, from: 22 * 60, to: 1440 }, { day: 6, from: 0, to: 7 * 60 }];
     c.ok("chained windows: Friday from 10 PM + Saturday until 7 AM → Fri 23:00 waits for Sat 07:00", iso(sched.quietEnd(chain, edt(9, 25, 23))) === iso(edt(9, 26, 7)));
-    c.ok("a page raised Fri 23:00 for someone quiet Saturday until 19:30 chains through to 19:30", iso(sched.quietEnd(W, edt(9, 25, 23), true)) === iso(edt(9, 26, 19, 30)));
+    c.ok("Fri 23:00 for someone quiet only on Saturday → not held (no overnight bridge into his Saturday)", sched.quietEnd(W, edt(9, 25, 23)) === null, iso(sched.quietEnd(W, edt(9, 25, 23))));
     c.ok("the reader refuses a window that runs past midnight", defaults.parseQuietWindows([{ day: 5, from: 1320, to: 420 }]) === null && /two windows/.test(defaults.quietWindowProblem({ day: 5, from: 1320, to: 420 }) ?? ""));
     c.ok("…and merges overlapping windows on one day", JSON.stringify(defaults.parseQuietWindows([{ day: 6, from: 0, to: 700 }, { day: 6, from: 660, to: 1170 }])) === JSON.stringify([{ day: 6, from: 0, to: 1170 }]));
   }
@@ -363,7 +371,7 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("3 · SUNDAY AND A WEEKDAY: Jordan at once; nobody without a schedule changes");
+  c.head("3 · SUNDAY AND A WEEKDAY: Jordan at once; nobody without a schedule is held either (Oct 6 2026)");
   {
     setClock(edt(9, 27, 10)); // Sunday
     const s0 = slack.length, t0 = texts.length;
@@ -384,16 +392,20 @@ async function main() {
     c.ok("unchanged for Kyle: a DM at once, old and new", dmsTo(kyle, s1).length === 2, String(dmsTo(kyle, s1).length));
     await resetQueues();
 
-    // Harrison — no schedule, "video in review" by text: the office weekend rule
-    // still dates his Sunday line to Monday 9 AM, exactly as the old code did.
+    // Harrison — no schedule, "video in review" by text. The old code dated his
+    // Sunday line to Monday 9 AM (the office weekend rule); since Oct 6 2026
+    // ("Anyone on the team can get pinged anytime") it is texted at once.
     const shooterRow = (key: string, n: typeof notify) =>
       n.notifyInApp({ kind: "cut_ready", title: "A cut from your shoot — 26 Sunday St", href: "/review/drill", targets: [{ roles: ["PHOTOGRAPHER"], userKey: `tm:${harrison.id}`, slackDm: "🎬 A cut from your shoot is in review — 26 Sunday St. https://drill.invalid/review/drill" }], dedupeKey: key });
+    const th = texts.length;
     await shooterRow("b5-sun-shooter-new", notify);
-    const hNew = (await pending(harrison)).map((p) => p.deferUntil?.toISOString());
+    const hNewTexts = textsTo(HARRISON_PH, th);
+    const hNewQueued = await pending(harrison);
     await resetQueues();
     await shooterRow("b5-sun-shooter-old", old.notify);
     const hOld = (await pending(harrison)).map((p) => p.deferUntil?.toISOString());
-    c.ok("Harrison (no schedule), Sunday cut by text: held to Monday 9 AM — identical to the old code", JSON.stringify(hNew) === JSON.stringify(hOld) && hNew[0] === edt(9, 28, 9).toISOString(), `new ${JSON.stringify(hNew)} old ${JSON.stringify(hOld)}`);
+    c.ok("old: Harrison (no schedule), Sunday cut by text — held to Monday 9 AM", hOld.length === 1 && hOld[0] === edt(9, 28, 9).toISOString(), JSON.stringify(hOld));
+    c.ok("new: the same Sunday cut is TEXTED at once — nothing dated, nothing left in the queue", hNewTexts.length === 1 && /26 Sunday St/.test(hNewTexts[0]?.body ?? "") && hNewQueued.length === 0, `${hNewTexts.length} text(s), ${hNewQueued.length} queued`);
     await resetQueues();
 
     setClock(edt(9, 29, 10)); // Tuesday
@@ -458,36 +470,31 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("6 · THE URGENT ON-CALL PAGE: overnight waits for 7 AM, on Slack and by text");
+  c.head("6 · THE URGENT ON-CALL PAGE: any hour (Oct 6 2026) — only Jordan's Saturday waits");
   {
     await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: kyle.id } });
     setClock(edt(9, 30, 23, 30)); // Wed 23:30
     const s0 = slack.length;
+    const sentRows = () => prisma.notificationDelivery.count({ where: { teamMemberId: kyle.id, kind: "reply_sla", channel: "slack", status: "sent" } });
+    const sentBefore = await sentRows();
     const r = await notify.notifyStaffSms([jordan.id], "Client still unanswered (VIP) — Ann Lee, 2h", "reply_sla", { urgency: "urgent" });
-    c.ok("23:30: the page goes to the on-call (Kyle) and is HELD — no DM at 23:30", r.length === 1 && r[0].teamMemberId === kyle.id && r[0].outcome === "held" && dmsTo(kyle, s0).length === 0, JSON.stringify(r));
-    c.ok("…dated 7:00 AM", r[0]?.until === edt(10, 1, 7).toISOString(), r[0]?.until);
-    const ops = opsLines(s0);
-    c.ok("…and the ops channel is told, in words, that it is waiting and until when", ops.length === 1 && /Urgent page held/.test(ops[0].text) && /Kyle Cabrera gets it/.test(ops[0].text), ops.map((m) => m.text).join(" | "));
-    c.ok("…the delivery log reads queued / held until 7 AM", (await prisma.notificationDelivery.count({ where: { teamMemberId: kyle.id, kind: "reply_sla", channel: "slack", status: "queued", detail: { contains: "urgent page" } } })) === 1);
-    setClock(edt(10, 1, 6, 55));
-    await notify.flushPendingSms();
-    c.ok("06:55: still held", dmsTo(kyle, s0).length === 0);
+    c.ok("23:30: the page goes to the on-call (Kyle) as a Slack DM at 23:30 — not held", r.length === 1 && r[0].teamMemberId === kyle.id && r[0].outcome === "slack" && dmsTo(kyle, s0).length === 1 && /Ann Lee/.test(dmsTo(kyle, s0)[0]?.text ?? ""), JSON.stringify(r));
+    c.ok("…no 'Urgent page held' line on the ops channel, nothing held for him", !opsLines(s0).some((m) => /Urgent page held/.test(m.text)) && (await heldDmRows()).length === 0, opsLines(s0).map((m) => m.text).join(" | "));
+    c.ok("…the delivery log reads slack/sent", (await sentRows()) - sentBefore === 1);
     setClock(edt(10, 1, 7, 1));
     await notify.flushPendingSms();
-    await notify.flushPendingSms();
-    c.ok("07:01: ONE DM to Kyle, once", dmsTo(kyle, s0).length === 1 && /Ann Lee/.test(dmsTo(kyle, s0)[0].text));
+    c.ok("07:01: nothing more — it went once, at 23:30", dmsTo(kyle, s0).length === 1);
 
-    // A phone-only on-call: the text is held with a date instead of "quiet-hours".
+    // A phone-only on-call: texted at once, at night (the old code queued it "for the morning").
     await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: dana.id } });
     setClock(edt(10, 1, 23, 45));
     const s1 = slack.length, t1 = texts.length;
     const r2 = await notify.notifyStaffSms([jordan.id], "Unhappy client unanswered — Bo Park, 40m", "reply_sla", { urgency: "urgent" });
-    const dp = await pending(dana);
-    c.ok("phone-only on-call at 23:45: the text is queued dated 7:00 AM, outcome held", r2[0]?.outcome === "held" && dp.length === 1 && dp[0].deferUntil?.toISOString() === edt(10, 2, 7).toISOString(), JSON.stringify(r2));
-    c.ok("…and the ops channel hears it is held (the old code counted it reached and said nothing)", opsLines(s1).some((m) => /Urgent page held/.test(m.text)));
+    c.ok("phone-only on-call at 23:45: texted at 23:45, outcome sent, nothing queued", r2[0]?.outcome === "sent" && textsTo(DANA_PH, t1).length === 1 && /Bo Park/.test(textsTo(DANA_PH, t1)[0]?.body ?? "") && (await pending(dana)).length === 0, JSON.stringify(r2));
+    c.ok("…and no 'held' line on the ops channel", !opsLines(s1).some((m) => /Urgent page held/.test(m.text)));
     setClock(edt(10, 2, 7, 2));
     await notify.flushPendingSms();
-    c.ok("07:02: Dana gets the text once", textsTo(DANA_PH, t1).length === 1);
+    c.ok("07:02: nothing more for Dana", textsTo(DANA_PH, t1).length === 1);
     await resetQueues();
 
     // Saturday 10:00 — daytime, out of cover: unchanged, straight to Kyle.
@@ -502,6 +509,7 @@ async function main() {
     const s3 = slack.length;
     const r4 = await notify.notifyStaffSms([kyle.id], "Client still unanswered — Di Nash, 2h", "reply_sla", { urgency: "urgent" });
     c.ok("Jordan on call, Saturday 10:00: his page waits for 19:30 (held, not dropped)", r4[0]?.outcome === "held" && r4[0]?.until === edt(10, 3, 19, 30).toISOString() && dmsTo(jordan, s3).length === 0, JSON.stringify(r4));
+    c.ok("…and the ops channel is told it is waiting for HIS quiet time, until when", opsLines(s3).some((m) => /Urgent page held \(their quiet time\)/.test(m.text) && /Jordan Spackman gets it/.test(m.text)), opsLines(s3).map((m) => m.text).join(" | "));
     setClock(edt(10, 3, 19, 31));
     await notify.flushPendingSms();
     c.ok("…and reaches him once at 19:31", dmsTo(jordan, s3).length === 1);
@@ -666,7 +674,17 @@ async function main() {
   c.head("10 · THE SENDERS OUTSIDE THE BRIDGE: the 7 PM upload text, the 10 PM chaser, the split notice, the coaching note");
   {
     const oldDigest = (await import(baseCopy(tmp, "uploadDigest.base.ts", "src/lib/uploadDigest.ts"))) as typeof import("@/lib/uploadDigest");
-    const oldCoaching = (await import(baseCopy(tmp, "commsCoaching.base.ts", "src/lib/commsCoaching.ts"))) as typeof import("@/lib/commsCoaching");
+    // The old coaching note asked notify.holdUntilCovered, which this tree no
+    // longer exports (Oct 6 2026, the weekend hold removed). For this kind it
+    // always answered null (comms_coaching was never ROUTINE), so the old copy
+    // is given exactly that answer — its behaviour is unchanged.
+    const oldCoaching = (await import(baseCopy(tmp, "commsCoaching.base.ts", "src/lib/commsCoaching.ts", (src) => {
+      const out = src
+        .replace("const { notifyInApp, holdUntilCovered } = await import(\"@/lib/notify\");", "const { notifyInApp } = await import(\"@/lib/notify\");")
+        .replace("const hold = await holdUntilCovered(COMMS_COACHING_KIND, undefined);", "const hold = null as Date | null;");
+      if (out.includes("holdUntilCovered")) throw new Error("b5: the old coaching copy still reaches for holdUntilCovered");
+      return out;
+    }))) as typeof import("@/lib/commsCoaching");
     const digest = await import("@/lib/uploadDigest");
     const coaching = await import("@/lib/commsCoaching");
     const { NextRequest } = await import("next/server");
@@ -753,13 +771,17 @@ async function main() {
     c.ok("…pressing it again: already told (the job's claim stays taken)", !again.sent && /already told/.test(again.reason), JSON.stringify(again));
     const hp = await pending(harrison);
     c.ok("…both lines wait in the queue, dated midnight", hp.length === 2 && hp.every((p) => p.deferUntil?.toISOString() === "2026-11-01T04:00:00.000Z"), hp.map((p) => `${p.deferUntil?.toISOString()} ${p.line.slice(0, 30)}`).join(" | "));
+    setClock(new RealDate(RealDate.UTC(2026, 10, 1, 3, 55))); // Sat Oct 31 23:55 EDT
+    await notify.flushPendingSms();
+    c.ok("23:55: still inside his window — nothing", textsTo(HARRISON_PH, t2).length === 0);
     setClock(new RealDate(RealDate.UTC(2026, 10, 1, 4, 5))); // Sun Nov 1 00:05 EDT
     await notify.flushPendingSms();
-    c.ok("00:05: his window is over, but the queue's own 7 AM texting rule still holds a text at night", textsTo(HARRISON_PH, t2).length === 0);
+    const ht = textsTo(HARRISON_PH, t2);
+    // Oct 6 2026: no 7 AM texting rule behind his own window — it goes at 00:05.
+    c.ok("00:05, his window over: ONE text carrying both, in order — at night, no 7 AM texting rule", ht.length === 1 && /2 updates/.test(ht[0].body) && ht[0].body.indexOf("84 Harrison Ave") >= 0 && ht[0].body.indexOf("84 Harrison Ave") < ht[0].body.indexOf("video is not"), ht.map((t) => t.body.slice(0, 160)).join(" | "));
     setClock(new RealDate(RealDate.UTC(2026, 10, 1, 12, 1))); // Sun Nov 1 07:01 EST — the clocks went back at 2 AM
     await notify.flushPendingSms();
-    const ht = textsTo(HARRISON_PH, t2);
-    c.ok("07:01 EST, across the clock change: ONE text carrying both, in order", ht.length === 1 && /2 updates/.test(ht[0].body) && ht[0].body.indexOf("84 Harrison Ave") >= 0 && ht[0].body.indexOf("84 Harrison Ave") < ht[0].body.indexOf("video is not"), ht.map((t) => t.body.slice(0, 160)).join(" | "));
+    c.ok("07:01 EST: nothing more — sent once", textsTo(HARRISON_PH, t2).length === 1);
     await sched.saveSchedule(kyle.id, null, "drill");
     await sched.saveSchedule(harrison.id, null, "drill");
     await putSetting(coaching.COMMS_COACHING_SETTING_KEY, { teamMemberIds: [], sendEnabled: false });
@@ -788,37 +810,25 @@ async function main() {
     setClock(new RealDate(RealDate.UTC(2026, 10, 9, 5, 1))); // Mon Nov 9 00:01 EST
     await notify.releaseHeldStaffDms();
     c.ok("Monday 00:01: the held ping reaches him, once", dmsTo(john, s0).length === 1 && /90 Quiet Ct/.test(dmsTo(john, s0)[0]?.text ?? ""));
-    // Oct 5 2026 — TWO RULES NOW, both asserted. (1) John SAVED a schedule
-    // of his own (Sundays off), and an editor's own saved schedule is the only
-    // clock he is timed by (notify.ts, review Oct 5 night: "their own word on
-    // when they may be reached beats the house guess") — so Monday 10:00 EST,
-    // 11 PM in Manila, is still a DM at once, as this always said. (2) With NO
-    // saved schedule, an editor's DM now keeps their own night (10 PM–7 AM
-    // where they are, localNightEnd) exactly as their texts always did — the
-    // 3 AM buzz for an ET-daytime event was the bug Jordan reported — and goes
-    // once at 7 AM their time.
+    // Oct 6 2026 — ONE RULE: an editor is timed by a schedule of their OWN and
+    // nothing else (Jordan: "Editors can get night time pings."). (1) John
+    // SAVED one (Sundays off), so Monday 10:00 EST — 11 PM in Manila — is a DM
+    // at once. (2) With NO saved schedule, midnight in Manila is a DM at once
+    // too: the Oct 5 "hold an editor's DM to 7 AM their time" default is gone.
     setClock(new RealDate(RealDate.UTC(2026, 10, 9, 15))); // Mon 10:00 EST = Mon 23:00 in Manila
     const mon = await raws("b5-john-mon");
     c.ok("Monday 10:00 EST (11 PM Manila), John's OWN saved schedule says he is reachable: a DM at once, and the bridge says 'slack'", mon.bridged.find((b) => b.userKey === "editor:john")?.channel === "slack" && dmsTo(john, s0).length === 2, JSON.stringify(mon.bridged));
-    await sched.saveSchedule(john.id, null, "drill"); // no schedule of his own: the house default applies
+    await sched.saveSchedule(john.id, null, "drill"); // no schedule of his own
     setClock(new RealDate(RealDate.UTC(2026, 10, 9, 16))); // Mon 11:00 EST = Tue 00:00 in Manila
     const s1 = slack.length;
     const night = await raws("b5-john-night");
     const nightCh = night.bridged.find((b) => b.userKey === "editor:john")?.channel;
     const johnHeld = async () => (await heldDmRows()).map((r) => JSON.parse(r.value) as { teamMemberId: string; until: string }).filter((v) => v.teamMemberId === john.id);
-    const nightRows = await johnHeld();
-    c.ok("no saved schedule, midnight in Manila (Mon 11:00 EST): no DM now, the bridge answers 'quiet' (never 'slack')", nightCh === "quiet" && dmsTo(john, s1).length === 0, `${nightCh} · ${dmsTo(john, s1).length} DM(s)`);
-    c.ok("…one DM held for him, dated 7 AM Manila (Tue Nov 10 07:00 PHT = 2026-11-09T23:00Z)", nightRows.length === 1 && nightRows[0].until === "2026-11-09T23:00:00.000Z", JSON.stringify(nightRows));
-    setClock(new RealDate(RealDate.UTC(2026, 10, 9, 22, 59))); // 06:59 in Manila
-    await notify.releaseHeldStaffDms();
-    c.ok("06:59 Manila: still held", dmsTo(john, s1).length === 0 && (await johnHeld()).length === 1);
+    c.ok("no saved schedule, midnight in Manila (Mon 11:00 EST): a DM at once, the bridge says 'slack'", nightCh === "slack" && dmsTo(john, s1).length === 1 && /90 Quiet Ct/.test(dmsTo(john, s1)[0]?.text ?? ""), `${nightCh} · ${dmsTo(john, s1).length} DM(s)`);
+    c.ok("…nothing held for him", (await johnHeld()).length === 0, JSON.stringify(await johnHeld()));
     setClock(new RealDate(RealDate.UTC(2026, 10, 9, 23, 1))); // Tue 07:01 in Manila (Mon 18:01 EST)
     await notify.releaseHeldStaffDms();
-    await notify.releaseHeldStaffDms(); // a second tick sends nothing more
-    c.ok("07:01 Manila: the held ping reaches him, once", dmsTo(john, s1).length === 1 && /90 Quiet Ct/.test(dmsTo(john, s1)[0]?.text ?? "") && (await johnHeld()).length === 0, `${dmsTo(john, s1).length} DM(s)`);
-    setClock(new RealDate(RealDate.UTC(2026, 10, 10, 1))); // Mon 20:00 EST = Tue 09:00 in Manila — his working day
-    const day = await raws("b5-john-tue");
-    c.ok("Tue 09:00 Manila (Mon 20:00 EST), still no saved schedule: a DM at once, and the bridge says 'slack'", day.bridged.find((b) => b.userKey === "editor:john")?.channel === "slack" && dmsTo(john, s1).length === 2, JSON.stringify(day.bridged));
+    c.ok("07:01 Manila: nothing more — it went once, at midnight", dmsTo(john, s1).length === 1, `${dmsTo(john, s1).length} DM(s)`);
     await resetQueues();
   }
 

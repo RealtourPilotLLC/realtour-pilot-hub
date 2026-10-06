@@ -33,9 +33,10 @@ export type EditorMeta = {
   //     for her until Jordan adds it. Externals (Luma) intentionally have none.
   //   · `slackUserId`   — a Slack DM id (preferred over SMS when present, same as
   //     Kyle's DM). Fill once we know their Slack ids.
-  // `tz` is the recipient's LOCAL timezone for quiet hours — the Manila editors'
-  // night is precisely the old ET texting window, so a text keyed to ET would fire
-  // at 3am their time. Default Asia/Manila for the offshore in-house editors.
+  // `tz` is the recipient's LOCAL timezone — their own clock on the editor
+  // desk ("12:40am your time"). It holds no notification: since Oct 6 2026
+  // editors get night-time pings (Jordan). Default Asia/Manila for the
+  // offshore in-house editors.
   teamMemberName?: string;
   slackUserId?: string;
   tz?: string;
@@ -45,7 +46,7 @@ export type EditorMeta = {
   departed?: boolean;
 };
 
-// Quiet-hours default when an editor has no explicit tz. The in-house video
+// Timezone default when an editor has no explicit tz. The in-house video
 // editors (Kim, John) are in the Philippines.
 export const DEFAULT_EDITOR_TZ = "Asia/Manila";
 

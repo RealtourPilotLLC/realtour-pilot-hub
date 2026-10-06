@@ -3025,7 +3025,7 @@ async function announceReady(
       luma ? "luma_dispatch" : "edit_unrouted",
     );
     const how = Array.isArray(r) ? r[0]?.outcome : r;
-    return `— posted to the editor bench (bell); ${slack}; ${how === "slack" || how === "sent" ? "Kyle pinged by Slack DM" : how === "held" ? "Kyle's ping held until his morning" : how === "ops" ? "Kyle's ping went to ops Slack" : "Kyle not reached directly"}.`;
+    return `— posted to the editor bench (bell); ${slack}; ${how === "slack" || how === "sent" ? "Kyle pinged by Slack DM" : how === "held" ? "Kyle's ping held until his quiet time ends" : how === "ops" ? "Kyle's ping went to ops Slack" : "Kyle not reached directly"}.`;
   }
   if (!routedKey) return `— posted to the editor bench (bell); ${slack}.`;
   const name = editorMeta(routedKey)?.name ?? routedKey;
