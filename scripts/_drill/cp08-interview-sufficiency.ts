@@ -84,11 +84,11 @@ interceptModule(
         return {
           result: {
             title, category: "Market Authority",
-            hook: long ? `Your photos decide the first weekend ${w(14, "really")}.` : "The first weekend decides your price.",
+            hook: long ? `Your photos decide the first weekend ${w(30, "really")}.` : "The first weekend decides your price.",
             points: long
-              ? [{ role: "re-hook", text: `Buyers scroll past dark rooms ${w(13, "quickly")}.` }, { role: "build-up", text: `Bright wide shots bring showings ${w(13, "reliably")}.` }, { role: "payoff", text: `More showings mean stronger offers ${w(13, "usually")}.` }]
+              ? [{ role: "re-hook", text: `Buyers scroll past dark rooms ${w(35, "quickly")}.` }, { role: "build-up", text: `Bright wide shots bring showings ${w(35, "reliably")}.` }, { role: "payoff", text: `More showings mean stronger offers ${w(35, "usually")}.` }]
               : [{ role: "re-hook", text: "Buyers read days on market." }, { role: "build-up", text: "A stale listing invites low offers." }, { role: "payoff", text: "Price it right on day one." }],
-            close: long ? `Book the photographer before anything else ${w(6, "please")}.` : "Plan the first weekend first.",
+            close: long ? `Book the photographer before anything else ${w(20, "please")}.` : "Plan the first weekend first.",
             captionCta: null, filmingNotes: null, contentPillarCheck: { Trust: "t", Value: "v", Credibility: "c", Entertainment: "e" }, sourceExcerpts: [], gaps: [],
           },
           usage, model: "drill-stub",
@@ -384,10 +384,10 @@ async function main() {
     // ======================================================================
     c.head("7 · shorter drafts at the prompt; length stays a warning");
     const sys = scriptPrompt?.system ?? "";
-    c.ok("the system prompt carries the part budgets", /PART BUDGETS \(spoken words\): hook ≤12/.test(sys) && /each talking point ≤14/.test(sys) && /close ≤10/.test(sys));
+    c.ok("the system prompt carries the part budgets (Oct 6 2026: rescaled for 30–50 s)", /PART BUDGETS \(spoken words\): hook ≤16/.test(sys) && /each talking point ≤26/.test(sys) && /close ≤16/.test(sys));
     c.ok("…and 'evidence, not copy'", /EVIDENCE, NOT COPY/.test(sys));
     const runs7 = await prisma.programAiRun.findMany({ where: { kind: "script_draft" }, select: { promptVersion: true } });
-    c.ok("every script draft is stamped script.v2-budgets", runs7.length > 0 && runs7.every((r) => r.promptVersion === "script.v2-budgets"), JSON.stringify([...new Set(runs7.map((r) => r.promptVersion))]));
+    c.ok("every script draft is stamped script.v3-budgets-30-50s", runs7.length > 0 && runs7.every((r) => r.promptVersion === "script.v3-budgets-30-50s"), JSON.stringify([...new Set(runs7.map((r) => r.promptVersion))]));
     const longV = await prisma.contentScriptVersion.findFirst({ where: { title: LONG_TITLE } });
     const val = JSON.parse(longV?.validationJson ?? "{}") as { ok?: boolean; findings?: { code: string; severity: string }[] };
     const timing = (val.findings ?? []).filter((f) => f.code === "timing.out-of-range");

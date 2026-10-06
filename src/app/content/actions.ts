@@ -445,7 +445,7 @@ export async function reviseScriptAI(scriptId: string, instructions: string): Pr
  * INTERNAL_REVIEW, which is what contentGeneration.reviseScript writes for
  * every AI revision, not DRAFT as this comment and the success message used to
  * say (review, Sep 18 2026) — and that version goes through the same validator
- * and the same approval gate; nothing here relaxes the 20–30 s target, which
+ * and the same approval gate; nothing here relaxes the 30–50 s target, which
  * has no override field anywhere in the policy layer. Both statuses sit in the
  * Scripts tab's review queue, so where it lands is unchanged; what was wrong
  * was the word, and a wrong word here is what somebody would go looking for in
@@ -469,7 +469,7 @@ export async function tightenScriptAI(scriptId: string): Promise<Result> {
     if (seconds == null || words == null) return { ok: false, message: "This version has no spoken-length estimate yet — save or regenerate it once and the estimate is recorded." };
     // UNDER-TARGET IS NOT "INSIDE THE TARGET" (review, Sep 18 2026). One
     // `seconds <= hi` test used to answer both of the cases it is not an
-    // overrun, and told a 19-second draft it was "inside the 20–30 s target".
+    // overrun, and told a 19-second draft it was "inside the target" (then 20–30 s).
     // Four live current versions estimate at 19 s (measured against production,
     // scripts/_fix/CE/probe-under.ts), so four rows were being told something
     // false about themselves — and the fix for a short script is the opposite

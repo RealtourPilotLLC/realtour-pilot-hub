@@ -6,17 +6,11 @@ import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ScriptView } from "@/components/script/ScriptView";
 // policy.ts is pure data with no imports of its own ("no node:crypto so this
-// file can be imported from client components") — the 20–30 s target is read
-// from it rather than copied, so the chip, the findings row and the validator
-// can never drift from each other.
-//
-// NOT "every reader of the target" (review, Sep 18 2026 — the claim was made
-// and it is false): contentPolicy/prompts.ts:108 still writes "exactly three
-// points, 20–30 s" into the script prompt's prose as a literal. Changing
-// GENERATION_POLICY.timing.targetSec today would move this chip, the row below,
-// validateNewScript, tightenInstruction and policyRulesText, and leave that one
-// sentence behind. It is named here rather than claimed away; prompts.ts was
-// outside this change's files.
+// file can be imported from client components") — the 30–50 s target and the
+// 25 s / 65 s warning thresholds are read from it rather than copied, so the
+// chip, the findings row and the validator can never drift from each other.
+// (Oct 6 2026: prompts.ts's prior-scripts line, once a "20–30 s" literal, now
+// reads the policy too.)
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
 import { approveScriptVersionAction, draftOwedScriptsAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText, tightenScriptAI } from "@/app/content/actions";
 
@@ -40,6 +34,7 @@ const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted ho
 const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "");
 
 const [TARGET_LO, TARGET_HI] = GENERATION_POLICY.timing.targetSec;
+const { warnBelowSec: WARN_LO, warnAboveSec: WARN_HI } = GENERATION_POLICY.timing;
 
 /**
  * Where a version's spoken estimate sits against the target.
@@ -52,7 +47,9 @@ const [TARGET_LO, TARGET_HI] = GENERATION_POLICY.timing.targetSec;
  */
 function band(seconds: number | null): "under" | "on" | "over" | null {
   if (seconds == null) return null;
-  return seconds > TARGET_HI ? "over" : seconds < TARGET_LO ? "under" : "on";
+  // Tinted only when CLEARLY out of range (Oct 6 2026: 30–50 s, "sometimes a
+  // minute") — the same thresholds as the validator's soft warning.
+  return seconds > WARN_HI ? "over" : seconds < WARN_LO ? "under" : "on";
 }
 
 export function ScriptsPanel({ scripts, queueCount, scriptOwner, owed = [] }: { scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[] }) {
@@ -129,8 +126,8 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
             {cur.estimatedSeconds != null && (
               // Never colour alone: the words "over"/"under" carry the same
               // information for anyone who cannot tell the tints apart.
-              <span className={pace === "on" || pace === null ? "" : "font-medium text-warning"} title={`${TARGET_LO}–${TARGET_HI}s target · ${GENERATION_POLICY.timing.wordsPerSec} words per second`}>
-                {" "}· ≈{cur.estimatedSeconds}s / {cur.spokenWordCount}w{pace === "over" ? ` · over ${TARGET_LO}–${TARGET_HI}s` : pace === "under" ? ` · under ${TARGET_LO}–${TARGET_HI}s` : ""}
+              <span className={pace === "on" || pace === null ? "" : "font-medium text-warning"} title={`${TARGET_LO}–${TARGET_HI}s target (about a minute is fine) · ${GENERATION_POLICY.timing.wordsPerSec} words per second`}>
+                {" "}· ≈{cur.estimatedSeconds}s / {cur.spokenWordCount}w{pace === "over" ? " · well over a minute" : pace === "under" ? ` · under ${TARGET_LO}s` : ""}
               </span>
             )}
             {cur.pointCount !== 3 && !s.historical ? ` · ${cur.pointCount} points` : ""}
@@ -163,7 +160,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
             {cur.findings.filter((f) => f.severity !== "info" && f.code !== "timing.out-of-range" && !/^Spoken estimate /.test(f.message)).map((f, i) => <p key={`f${i}`} className={f.severity === "block" ? "text-danger" : "text-warning"}>{f.severity === "block" ? "Format: " : "Note: "}{f.message}</p>)}
             {pace === "over" && (
               <p className="flex flex-wrap items-center gap-1.5 text-warning">
-                <span>Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) against the {TARGET_LO}–{TARGET_HI}s target. It can still be approved — this is an estimate from a word count, not a rejection.</span>
+                <span>Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) — well over a minute; the target is {TARGET_LO}–{TARGET_HI}s. It can still be approved — this is an estimate from a word count, not a rejection.</span>
                 <button disabled={busy} onClick={() => run(() => tightenScriptAI(s.id))} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">
                   <Scissors className="size-3" />Tighten to {TARGET_LO}–{TARGET_HI}s
                 </button>
@@ -177,7 +174,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
                 camera; add substance rather than padding". */}
             {pace === "under" && (
               <p className="text-warning">
-                Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) is under the {TARGET_LO}–{TARGET_HI}s target. It can still be approved — this is an estimate from a word count, not a rejection — but it may read as thin on camera. Add substance with &ldquo;Ask AI to revise&rdquo; or &ldquo;Edit myself&rdquo; rather than padding; both keep this version.
+                Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) is clearly short of the {TARGET_LO}–{TARGET_HI}s target. It can still be approved — this is an estimate from a word count, not a rejection — but it may read as thin on camera. Add substance with &ldquo;Ask AI to revise&rdquo; or &ldquo;Edit myself&rdquo; rather than padding; both keep this version.
               </p>
             )}
             {cur.gaps.map((g, i) => <p key={`g${i}`} className="text-muted">Gap ({g.kind}): {g.text}{g.question ? ` → ${g.question}` : ""}</p>)}

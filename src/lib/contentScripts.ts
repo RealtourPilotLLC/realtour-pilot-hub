@@ -126,7 +126,7 @@ export async function createScriptVersion(opts: NewVersionOpts): Promise<{ scrip
       alternateHooksJson: parts.alternateHooks?.length ? JSON.stringify(parts.alternateHooks) : null, placeholdersJson: canonical.internal.placeholders.length ? JSON.stringify(canonical.internal.placeholders) : null,
       speakerLabelsJson: parts.speakerLabels?.length ? JSON.stringify(parts.speakerLabels) : null, sourceExcerptsJson: parts.sourceExcerpts?.length ? JSON.stringify(parts.sourceExcerpts) : null,
       dimensionsCheckJson: parts.dimensionsCheck ? JSON.stringify(parts.dimensionsCheck) : null,
-      spokenWordCount: estimate.words, estimatedSeconds: estimate.seconds, timingNote: parts.timingNote ?? (estimate.inTarget ? null : `Estimate ≈${estimate.seconds}s (${estimate.words} words) vs the ${estimate.target[0]}–${estimate.target[1]}s target — informational, not an override.`),
+      spokenWordCount: estimate.words, estimatedSeconds: estimate.seconds, timingNote: parts.timingNote ?? (estimate.withinTolerance ? null : `Estimate ≈${estimate.seconds}s (${estimate.words} words) vs the ${estimate.target[0]}–${estimate.target[1]}s target — informational, not an override.`),
       validationJson: opts.validation ? JSON.stringify(opts.validation) : null, gapsJson: opts.gaps?.length ? JSON.stringify(opts.gaps) : null,
       source: opts.source, basedOnVersionId: opts.basedOnVersionId ?? null, regeneratedSections: opts.regeneratedSections?.length ? JSON.stringify(opts.regeneratedSections) : null, changeSummary: opts.changeSummary ?? null,
       interviewId: opts.interviewId ?? null, answerIdsJson: opts.answerIds?.length ? JSON.stringify(opts.answerIds) : null, callRecordId: opts.callRecordId ?? null,
@@ -314,8 +314,9 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
   // the one thing a reason cannot argue with. Everything else that blocks (a
   // missing pillar link, say) is a mapping judgement and still takes a written
   // override, recorded on the ledger. Pacing stays a warning, deliberately: the
-  // 20–30s figure is an ESTIMATE from a word count, and it is Jordan's open
-  // question whether it should ever hard-block.
+  // seconds are an ESTIMATE from a word count, and Jordan's Oct 6 2026 ruling
+  // ("between 30-50 seconds long, sometimes a minute") makes length a soft
+  // warning that never blocks.
   const unoverridable = blocking.filter((f) => STRUCTURAL_CODES.has(f.code));
   if (unoverridable.length) {
     // NOT prefixed "Format check:" on purpose — that prefix is what the panel

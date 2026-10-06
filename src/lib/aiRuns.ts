@@ -283,7 +283,7 @@ export function sha256(s: string): string {
 // (src/lib/contentPolicy); this row is its versioned, stamp-able identity so
 // every bank, strategy draft and script can say which policy produced it. One
 // ACTIVE row at a time; the first call mints version 1 from the code defaults
-// (10 per pillar, max 15, three points, 20–30 s — Jordan's rulings).
+// (10 per pillar, max 15, three points, 30–50 s — Jordan's rulings).
 // ---------------------------------------------------------------------------
 export type ActivePolicy = { id: string; versionNo: number; topicsPerPillar: number; topicsPerPillarMax: number; recommendedPerSession: number | null };
 

@@ -667,9 +667,18 @@ export type SpokenEstimate = {
   seconds: number;
   wordsPerSec: number;
   breakdown: { hook: number; points: number[]; extra: number; close: number };
-  /** True when the estimate falls inside the policy target. */
+  /** True when the estimate falls inside the policy target (30–50 s). */
   inTarget: boolean;
   target: readonly [number, number];
+  /**
+   * False only when the estimate is CLEARLY out of range — under
+   * timing.warnBelowSec or over timing.warnAboveSec. This, not inTarget, is
+   * what raises the (soft, never-blocking) timing warning: a 55-second script
+   * is outside the target but "sometimes a minute" is fine (Jordan, Oct 6 2026).
+   */
+  withinTolerance: boolean;
+  /** [warnBelowSec, warnAboveSec]. */
+  tolerance: readonly [number, number];
 };
 
 function allSpokenText(script: CanonicalScript): string {
@@ -684,7 +693,12 @@ export function estimateSpokenSeconds(script: CanonicalScript, wordsPerSec: numb
   const words = hook + points.reduce((a, b) => a + b, 0) + extra + close;
   const seconds = Math.round(words / wordsPerSec);
   const target = GENERATION_POLICY.timing.targetSec;
-  return { words, seconds, wordsPerSec, breakdown: { hook, points, extra, close }, inTarget: seconds >= target[0] && seconds <= target[1], target };
+  const tolerance = [GENERATION_POLICY.timing.warnBelowSec, GENERATION_POLICY.timing.warnAboveSec] as const;
+  return {
+    words, seconds, wordsPerSec, breakdown: { hook, points, extra, close },
+    inTarget: seconds >= target[0] && seconds <= target[1], target,
+    withinTolerance: seconds >= tolerance[0] && seconds <= tolerance[1], tolerance,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,33 +1029,31 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
   // Close
   if (!script.close?.text.trim()) push("close.missing", "block", "Every script must end with a strong close — none present.", "close");
 
-  // Timing — a finding with the measured seconds. It is "warn" today, and
-  // deliberately NOT in contentScripts.STRUCTURAL_CODES, because the seconds
-  // are an ESTIMATE from a word count and a word count alone should not reject
-  // a script. The TARGET is settled at 20–30 s; the ENFORCEMENT MODE — should
-  // pacing ever hard-block? — is still Jordan's open question and he has not
-  // answered it. A Sep 17 2026 edit put an answer in his mouth here; it was not
-  // one he gave, and the note in contentScripts.approveScriptVersion has said
-  // "it is Jordan's open question whether it should ever hard-block" the whole
-  // time (restored in the Sep 18 review, which found the two comments in the
-  // same repo contradicting each other). Warn is the SAFE default, not a
-  // ruling: it is the one setting that cannot silently refuse work. Changing it
-  // needs his answer, not another comment.
+  // Timing — a finding with the measured seconds. It is "warn", never
+  // "block", and deliberately NOT in contentScripts.STRUCTURAL_CODES: the
+  // seconds are an ESTIMATE from a word count, and a word count alone should
+  // not reject a script. The TARGET is 30–50 s (Jordan, Oct 6 2026: "video
+  // length varies for all clients. They should be between 30-50 seconds long,
+  // sometimes a minute, but I don't think that's important to note anywhere" —
+  // superseding the Sep 16 20–30 s ruling). Because "sometimes a minute" is
+  // fine, the warning only fires when the estimate is CLEARLY out of range:
+  // under timing.warnBelowSec (25 s) or over timing.warnAboveSec (65 s). A
+  // 55-second script is outside the target and is not nagged about.
   //
   // The one-click tighten built by tightenInstruction() does not depend on the
   // answer either way: it is an action a person chooses, not a duration
   // override — there are none anywhere in this layer — and it changes nothing
   // about what passes the gate.
   const estimate = estimateSpokenSeconds(script);
-  if (!estimate.inTarget) {
+  if (!estimate.withinTolerance) {
     const [lo, hi] = estimate.target;
     const over = estimate.seconds > hi;
     push(
       "timing.out-of-range",
       "warn",
-      `Spoken estimate ≈${estimate.seconds} s (${estimate.words} words at ${estimate.wordsPerSec} w/s) is ${over ? "over" : "under"} the ${lo}–${hi} s target. ${over ? "Send it back for a tighter cut rather than forcing rapid delivery — or approve it and say why." : "It may read as thin on camera; add substance rather than padding."}`,
+      `Spoken estimate ≈${estimate.seconds} s (${estimate.words} words at ${estimate.wordsPerSec} w/s) is ${over ? "well over a minute" : "clearly short"} — the target is ${lo}–${hi} s, and about a minute is fine. ${over ? "Send it back for a tighter cut rather than forcing rapid delivery — or approve it as it is." : "It may read as thin on camera; add substance rather than padding."}`,
       "spoken",
-      { seconds: estimate.seconds, words: estimate.words, targetLo: lo, targetHi: hi, over },
+      { seconds: estimate.seconds, words: estimate.words, targetLo: lo, targetHi: hi, warnBelow: estimate.tolerance[0], warnAbove: estimate.tolerance[1], over },
     );
   }
 

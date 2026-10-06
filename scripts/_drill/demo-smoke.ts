@@ -278,7 +278,7 @@ async function main() {
   c.ok("'Apply with AI' writes a new script version from the stub", (await prisma.contentScriptVersion.count({ where: { scriptId: scriptB } })) === before + 1 && preload.aiCallCount() === calls + 1, after[0]?.hook ?? "");
   // The app's own estimate (spoken parts only, 2.2 words/s), as stored on the version.
   const secs = after[0]?.estimatedSeconds ?? -1;
-  c.ok("…inside the 20–30 s target by the app's own estimate, so the demo shows no length warning", secs >= 20 && secs <= 30, `${after[0]?.spokenWordCount} spoken words ≈ ${secs}s`);
+  c.ok("…inside the length tolerance by the app's own estimate, so the demo shows no length warning", secs >= 25 && secs <= 65, `${after[0]?.spokenWordCount} spoken words ≈ ${secs}s`);
   const run = await prisma.programAiRun.findFirst({ where: { kind: "script_revise" }, orderBy: { createdAt: "desc" }, select: { status: true } });
   c.ok("…through the real run ledger", run?.status === "SUCCEEDED", run?.status);
   c.ok("…and nothing tried to leave the process", preload.blocked.length === blockedBefore, preload.blocked.slice(blockedBefore).join(", "));

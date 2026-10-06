@@ -11,7 +11,7 @@ import type { TranscriptJobHandler, TranscriptJobHandlers, TranscriptJobOutcome 
 // them runs THROUGH the versioned policy (src/lib/contentPolicy) and the run
 // ledger (src/lib/aiRuns.ts) via src/lib/contentGeneration.ts:
 //   transcript → PROPOSED selections + bank ideas + PROPOSED facts + proposals
-//   selected topics → ContentScriptVersion drafts (three points, 20–30 s)
+//   selected topics → ContentScriptVersion drafts (three points, 30–50 s)
 //   script → a NEW version on revision (an edit is never erased)
 //   bank seeding → a ContentTopicRefreshRun with reviewable suggestions
 //
@@ -120,7 +120,7 @@ export async function processMonthTranscript(monthId: string, opts?: PipelineOpt
 // ---------------------------------------------------------------------------
 // 2. Script generation — one ContentScriptVersion per SELECTED topic that has
 // none yet, through the policy prompt (hook, exactly three roled points,
-// close, 20–30 s) and the validator. INTERNAL_REVIEW. Call-PROPOSED
+// close, 30–50 s) and the validator. INTERNAL_REVIEW. Call-PROPOSED
 // selections are skipped until a person reconciles them.
 // ---------------------------------------------------------------------------
 export async function generateScriptsForMonth(monthId: string, opts?: PipelineOpts): Promise<{ generated: number; skipped: number }> {

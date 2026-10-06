@@ -24,7 +24,8 @@ import { programReach, rolloutSweepClientIds } from "@/lib/programRollout";
 //   · drafted by the unattended sweep (source AI, created by "cron", with a
 //     model run) — never a hand edit, a revision or a client-requested change;
 //   · no blocking format finding, and (config.requireInTarget, default on) no
-//     length warning: a script outside 20-30 s waits for Jordan;
+//     length warning: a script clearly under 30 s or well over a minute
+//     (the validator's soft timing warning) waits for Jordan;
 //   · drafted from the strategy version that is STILL the approved one;
 //   · a topic in the month's allowance (R01's allowanceOrder), not an extra;
 //   · an ACTIVE program with portal access, and no open change request from
@@ -69,7 +70,7 @@ export async function autoShareEligible(versionId: string, opts: { now?: Date; c
   try { findings = v.validationJson ? ((JSON.parse(v.validationJson) as { findings?: typeof findings }).findings ?? []) : []; } catch { reasons.push("its format check could not be read"); }
   if (!v.validationJson) reasons.push("no format check on record");
   if (findings.some((f) => f.severity === "block")) reasons.push("a blocking format finding");
-  if (cfg.requireInTarget && findings.some((f) => f.code === "timing.out-of-range")) reasons.push("outside the 20-30 second target");
+  if (cfg.requireInTarget && findings.some((f) => f.code === "timing.out-of-range")) reasons.push("a length warning (clearly under 30 seconds or well over a minute)");
 
   // The strategy it was drafted from is still the approved one.
   const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: v.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true } });

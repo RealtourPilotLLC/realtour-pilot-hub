@@ -105,7 +105,7 @@ function contextBlock(ctx: ClientContext): string {
     for (const e of ctx.sourceExcerpts) lines.push(`[${e.speaker}${e.speakerName ? ` · ${e.speakerName}` : ""} · ${e.source}] ${e.text}`);
   }
   if (ctx.priorScripts?.length) {
-    lines.push("", "PRIOR DELIVERED SCRIPTS — VOICE AND SPECIFICITY REFERENCES ONLY. Their structure and length are historical; the policy controls format (exactly three points, 20–30 s).");
+    lines.push("", `PRIOR DELIVERED SCRIPTS — VOICE AND SPECIFICITY REFERENCES ONLY. Their structure and length are historical; the policy controls format (exactly three points, ${GENERATION_POLICY.timing.targetSec[0]}–${GENERATION_POLICY.timing.targetSec[1]} s).`);
     for (const s of ctx.priorScripts) lines.push(`--- ${s.title}${s.monthKey ? ` (${s.monthKey})` : ""} ---`, s.text);
   }
   lines.push("", "Everything above belongs to this one client. Nothing from any other client is available and none may be assumed.");
@@ -397,15 +397,19 @@ export type ScriptPromptSource =
   | { path: "transcript"; topic: Topic; excerpts: SourceExcerpt[]; selectedOnCall: boolean };
 
 /**
- * THE PART BUDGETS (CP-08, Sep 24 2026). The 45–65-word total on its own did
+ * THE PART BUDGETS (CP-08, Sep 24 2026). The word total on its own did
  * not keep drafts short: the model met it by compressing EVERYTHING it was
  * given into long lines, and two drafts were estimated at about 39 s and 51 s
  * from their word counts (an estimate, never a measurement). Budgets per part
  * plus "evidence, not copy" address the cause. The duration check stays a
  * visible WARNING (scriptFormat's timing finding) — Jordan reviews; nothing
  * here hard-blocks on length.
+ *
+ * Oct 6 2026: rescaled with the 30–50 s target (Jordan). The budgets sum to
+ * the heuristic's ceiling — 16 + 3 × 26 + 16 = 110 words ≈ 50 s at 2.2 words
+ * per second — so a draft that fills every part still lands inside the target.
  */
-export const SCRIPT_PART_BUDGETS = { hookWords: 12, pointWords: 14, closeWords: 10 } as const;
+export const SCRIPT_PART_BUDGETS = { hookWords: 16, pointWords: 26, closeWords: 16 } as const;
 
 export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource): PromptBundle {
   const topic =

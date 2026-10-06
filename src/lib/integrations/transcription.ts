@@ -29,7 +29,7 @@ import { getConnection, getSecret } from "./connections";
 //     would hit. This is the better fit for the hub, so it is preferred when
 //     both keys exist.
 //   · OpenAI Whisper needs the BYTES in a multipart upload and caps a request
-//     at 25 MB. A finished 20–30 s reel at 1080p is usually under that; a 4K
+//     at 25 MB. A finished 30–60 s reel at 1080p is usually under that; a 4K
 //     source is often not. Over the cap the provider refuses BEFORE any upload
 //     with a plain-language, non-retryable error, so a driver does not burn its
 //     attempts on a file that can never fit.

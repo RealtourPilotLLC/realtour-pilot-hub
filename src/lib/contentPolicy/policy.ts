@@ -9,9 +9,16 @@
 //   §2.1 the Scripting GPT system prompt, verbatim, is the BASE rules text;
 //   §2.2 the consolidated device list (Anatomy / Scripting Success / 10 Laws);
 //   §2.4 what the policy hard-codes and where each element comes from;
-//   §9   Jordan's rulings — exactly three points, 20–30 s target, "archive =
-//        voice, policy = format". There is deliberately NO duration override
-//        field anywhere in this object. Do not add one.
+//   §9   Jordan's rulings — exactly three points, "archive = voice, policy =
+//        format". There is deliberately NO duration override field anywhere
+//        in this object. Do not add one.
+//   LENGTH (Jordan, Oct 6 2026, superseding the Sep 16 20–30 s ruling):
+//        "video length varies for all clients. They should be between 30-50
+//        seconds long, sometimes a minute, but I don't think that's important
+//        to note anywhere." → target 30–50 s of natural spoken delivery; the
+//        length check is a soft warning that never blocks and only fires when
+//        an estimate is clearly under 30 s or over a minute (timing.warnBelowSec
+//        / warnAboveSec); no length is written into any client's style notes.
 //
 // Pure data + pure functions. No DB, no AI, no I/O.
 // ---------------------------------------------------------------------------
@@ -20,7 +27,11 @@
 // 2026-10-06.1: the Video Structure Framework is one definition for every
 // client (Jordan, Oct 6 2026) — "bold statement" added to the Hook, and the
 // framework itself is now part of the rules text every prompt carries.
-export const GENERATION_POLICY_VERSION = "2026-10-06.1";
+// 2026-10-06.2: length target 30–50 s (Jordan, Oct 6 2026 — supersedes the
+// Sep 16 20–30 s ruling), warn only under 25 s / over 65 s, part budgets and
+// the word heuristic rescaled to match; client-specific direction from a
+// document's own framework parts is carried into its Client style notes.
+export const GENERATION_POLICY_VERSION = "2026-10-06.2";
 
 /** The three roles, in order. Stored as roles; the label style is a rendering choice (C-A3). */
 export type TalkingPointRole = "re-hook" | "build-up" | "payoff";
@@ -122,11 +133,14 @@ export const QUALITY_DIMENSIONS: readonly { name: QualityDimension; means: strin
 // Where §27 / Jordan's rulings override it (exactly three points; caption CTA;
 // dimensions not pillars) the override is stated in POLICY_OVERRIDES below and
 // wins. The verbatim text is kept whole so the archive's origin stays legible.
+// ONE EDIT to the verbatim text (Oct 6 2026): its three length sentences said
+// "20 to 30 second(s)"; they now say 30 to 50, Jordan's Oct 6 target, so no
+// prompt carries the superseded number even inside the "base" block.
 // ---------------------------------------------------------------------------
 
 export const SCRIPTING_GPT_INSTRUCTIONS_VERBATIM = `You are an elite short-form real estate personal branding script strategist for Realtour Pilot.
 
-Your job is to turn strategy call transcripts, past scripts, content strategy documents, hook examples, and scripting reference materials into high-performing 20 to 30 second personal branding video scripts for real estate agents.
+Your job is to turn strategy call transcripts, past scripts, content strategy documents, hook examples, and scripting reference materials into high-performing 30 to 50 second personal branding video scripts for real estate agents.
 
 You do not write generic real estate content.
 You write scripts that are strategic, sharp, natural on camera, and built to perform on short-form video.
@@ -155,7 +169,7 @@ CORE RESPONSIBILITIES
    - target audience
    - content pillars
    - strategic positioning
-4. Turn the best topics into 20 to 30 second scripts.
+4. Turn the best topics into 30 to 50 second scripts.
 5. Structure every script clearly and consistently.
 6. Make sure the scripts sound human, direct, and natural out loud.
 7. Use the uploaded examples as the quality benchmark.
@@ -169,7 +183,7 @@ NON-NEGOTIABLE SCRIPT RULES
 - Every script must end with a strong close that lands with authority.
 - Scripts must be written for on-camera delivery.
 - Scripts must sound conversational, not like a blog post.
-- Keep scripts within 20 to 30 seconds.
+- Keep scripts within 30 to 50 seconds.
 - The middle must maintain engagement.
 
 PILLAR RULE
@@ -233,12 +247,17 @@ A successful output feels like a skilled strategist turned a real conversation i
  * Where the current policy overrides the verbatim GPT text. These are the
  * rulings (manifest §7 C-A1…A7 + §9). Each line is authoritative over the base.
  */
+/** Jordan, Oct 6 2026: "between 30-50 seconds long, sometimes a minute". */
+const TARGET_SEC = [30, 50] as const;
+/** Manifest §4.3: the measured rate of natural spoken delivery. */
+const WORDS_PER_SEC = 2.2;
+
 export const POLICY_OVERRIDES: readonly string[] = [
   "TALKING POINTS: exactly three, never “3 to 4”. Roles in order: Talking Point 1 = Re-hook, Talking Point 2 = Build up, Talking Point 3 = Payoff. The four-slot SCRIPT FORMAT above is historical; the canonical output format is the one in CANONICAL SCRIPT PRESENTATION below.",
-  "LENGTH: spoken content targets 20–30 seconds of natural delivery. Roughly 45–65 spoken words is a drafting heuristic, not proof of duration. There is no per-client, per-session or per-script duration override. Tighten rather than force rapid delivery.",
+  `LENGTH: spoken content targets ${TARGET_SEC[0]}–${TARGET_SEC[1]} seconds of natural delivery; about a minute is acceptable when the idea needs it. Roughly ${Math.round(TARGET_SEC[0] * WORDS_PER_SEC)}–${Math.round(TARGET_SEC[1] * WORDS_PER_SEC)} spoken words is a drafting heuristic, not proof of duration. There is no per-client, per-session or per-script duration override, and no length belongs in a client's style notes. Tighten rather than force rapid delivery. (Jordan, Oct 6 2026: “video length varies for all clients. They should be between 30-50 seconds long, sometimes a minute, but I don't think that's important to note anywhere.”)`,
   "CLOSE: the close is a memorable takeaway or a natural invitation that lands with authority. A direct contact CTA (“DM me PLAN”) belongs in the optional caption CTA, not in the spoken close, when that better fits the strategy.",
   "TRUST / VALUE / CREDIBILITY / ENTERTAINMENT are quality dimensions built through the actual content of every video. They are not topic categories and not a scoring rubric. The CONTENT PILLAR CHECK block is internal reviewer metadata only — one line per dimension, never a number, never client-visible.",
-  "ARCHIVE = VOICE, POLICY = FORMAT: historical examples establish the client’s voice and style, but the current policy controls the format. Older scripts with four talking points, and any script longer than 30 seconds, do not override the three-point, 20–30-second requirement. (Jordan, Sep 16 2026: “historical examples establish your voice and style, but your current instructions control the format. Older scripts with four talking points should not override your requirement for three points and 20–30 seconds.”)",
+  "ARCHIVE = VOICE, POLICY = FORMAT: historical examples establish the client’s voice and style, but the current policy controls the format. Older scripts with four talking points, and older scripts of any length, do not override the three-point requirement or the current length target. (Jordan, Sep 16 2026: “historical examples establish your voice and style, but your current instructions control the format. Older scripts with four talking points should not override your requirement for three points …” — the length he named then was replaced on Oct 6 2026; see LENGTH.)",
   "TRUTHFULNESS: never invent client stories, transaction outcomes, local statistics, credentials, personal anecdotes, offers, or guarantees. Anything the sources do not support becomes an explicit gap object in the output, never a plausible sentence in the script.",
   "SPEAKER ATTRIBUTION: only statements the client made are the client’s experience. Jordan’s suggestions, devil’s-advocate lines and hook ideas on a call are his; third parties mentioned on a call are not the client and never enter the client’s file as theirs.",
 ];
@@ -337,11 +356,20 @@ export type GenerationPolicy = {
     specs: readonly TalkingPointRoleSpec[];
   };
   timing: {
-    /** Seconds of natural spoken delivery, inclusive. */
+    /** Seconds of natural spoken delivery, inclusive — the target a draft aims at. */
     targetSec: readonly [number, number];
-    /** Drafting heuristic only — never proof of duration. */
+    /**
+     * The soft length warning (timing.out-of-range, never blocking) fires only
+     * when the estimate is CLEARLY outside what Jordan accepts: under
+     * warnBelowSec ("clearly under ~30 s") or over warnAboveSec ("sometimes a
+     * minute" is fine; well past one is not). The ~5 s margins are there
+     * because the seconds are an estimate from a word count, not a timing.
+     */
+    warnBelowSec: number;
+    warnAboveSec: number;
+    /** Drafting heuristic only — never proof of duration. targetSec × wordsPerSec, rounded. */
     heuristicWords: readonly [number, number];
-    /** Manifest §4.3: the rate implied by 45–65 words ≈ 20–30 s. */
+    /** Manifest §4.3: the measured rate of natural spoken delivery, in words per second. */
     wordsPerSec: number;
     /** What counts as spoken (manifest §4.3 rule). */
     spokenParts: readonly string[];
@@ -368,9 +396,11 @@ export const GENERATION_POLICY: GenerationPolicy = {
   version: GENERATION_POLICY_VERSION,
   talkingPoints: { count: 3, roles: TALKING_POINT_ROLES, specs: TALKING_POINT_ROLE_SPECS },
   timing: {
-    targetSec: [20, 30],
-    heuristicWords: [45, 65],
-    wordsPerSec: 2.2,
+    targetSec: [TARGET_SEC[0], TARGET_SEC[1]],
+    warnBelowSec: 25,
+    warnAboveSec: 65,
+    heuristicWords: [Math.round(TARGET_SEC[0] * WORDS_PER_SEC), Math.round(TARGET_SEC[1] * WORDS_PER_SEC)],
+    wordsPerSec: WORDS_PER_SEC,
     spokenParts: ["hook", "talking points", "separately labelled spoken re-hook/payoff blocks (archive only)", "close"],
     excludedParts: ["title", "category", "labels", "stage directions", "filming notes", "production notes", "creative direction", "caption CTA"],
   },
@@ -414,7 +444,7 @@ export function policyRulesText(policy: GenerationPolicy = GENERATION_POLICY): s
     roles,
     "",
     "=== TIMING ===",
-    `Target ${policy.timing.targetSec[0]}–${policy.timing.targetSec[1]} seconds of natural spoken delivery. Drafting heuristic ${policy.timing.heuristicWords[0]}–${policy.timing.heuristicWords[1]} spoken words at about ${policy.timing.wordsPerSec} words per second. Count only: ${policy.timing.spokenParts.join("; ")}. Exclude: ${policy.timing.excludedParts.join("; ")}. Word count is a heuristic, not proof of duration; validate with a natural read. No duration overrides exist.`,
+    `Target ${policy.timing.targetSec[0]}–${policy.timing.targetSec[1]} seconds of natural spoken delivery; about a minute is acceptable when the idea needs it. Drafting heuristic ${policy.timing.heuristicWords[0]}–${policy.timing.heuristicWords[1]} spoken words at about ${policy.timing.wordsPerSec} words per second. Count only: ${policy.timing.spokenParts.join("; ")}. Exclude: ${policy.timing.excludedParts.join("; ")}. Word count is a heuristic, not proof of duration; validate with a natural read. No duration overrides exist.`,
     "",
     "=== QUALITY DIMENSIONS (never categories, never a score) ===",
     dims,

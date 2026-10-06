@@ -312,9 +312,11 @@ async function main() {
   const PARTS = (hook: string) => ({
     hook,
     points: [
-      { role: "re-hook" as const, text: "Most sellers learn this the expensive way, after the listing is live." },
-      { role: "build-up" as const, text: "Buyers read every week on the market as a signal about your price." },
-      { role: "payoff" as const, text: "Get the price and the photos right before day one and they compete." },
+      // Oct 6 2026: sized for the 30–50 s target (≈30–35 s with any hook) — the
+      // old ~25 s parts now draw the soft "clearly short" length warning.
+      { role: "re-hook" as const, text: "Most sellers learn this the expensive way, after the listing is live and the first weekend is gone." },
+      { role: "build-up" as const, text: "Buyers read every week on the market as a signal about your price, and they adjust their offers to match." },
+      { role: "payoff" as const, text: "Get the price and the photos right before day one and they compete with each other instead of waiting." },
     ],
     close: "Planning to sell this year? Call me before you book the photographer.",
   });
@@ -625,7 +627,7 @@ async function main() {
     const early = new Date(Date.now() + 10 * 60_000);
     c.ok("eligibility: a clean sweep draft qualifies after the hold", (await auto.autoShareEligible(g0.versionId, { now: later })).ok);
     c.ok("…not inside the hold", (await auto.autoShareEligible(g3.versionId, { now: early })).reasons.some((r) => /hold/.test(r)));
-    c.ok("…never outside the 20-30 s target", (await auto.autoShareEligible(g1.versionId, { now: later })).reasons.some((r) => /20-30 second/.test(r)));
+    c.ok("…never with a length warning (well over a minute)", (await auto.autoShareEligible(g1.versionId, { now: later })).reasons.some((r) => /length warning/.test(r)));
     c.ok("…never with a blocking format finding", (await auto.autoShareEligible(g2.versionId, { now: later })).reasons.some((r) => /blocking format/.test(r)));
     // Jordan approves g3 by hand inside the hold.
     await share.shareApprovedScript(g3.versionId, { email: STAFF_EMAIL });

@@ -191,8 +191,12 @@ async function excerptsForTopic(topicId: string, monthId: string | null): Promis
   return kept.map((e): SourceExcerpt => ({ speaker: e.speaker, speakerName: e.speakerName, source: e.source, text: e.text }));
 }
 
-/** CP-08: the script prompt with the per-part word budgets — every script draft names it, so a before/after on estimated length is attributable. */
-const SCRIPT_PROMPT_VERSION = "script.v2-budgets";
+/**
+ * CP-08: the script prompt with the per-part word budgets — every script draft
+ * names it, so a before/after on estimated length is attributable. v3 (Oct 6
+ * 2026): the budgets rescaled for the 30–50 s target.
+ */
+const SCRIPT_PROMPT_VERSION = "script.v3-budgets-30-50s";
 
 export type GenerateScriptOpts = {
   topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean;

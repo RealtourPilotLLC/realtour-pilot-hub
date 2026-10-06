@@ -18,8 +18,13 @@
 //   - No database reads or writes. Nothing here imports prisma. The pipeline /
 //     schema builder wires these pure functions to rows.
 //   - No AI provider calls. prompts.ts builds text and schemas only.
-//   - No duration overrides. The 20–30 s target has no per-client, per-session
-//     or per-script escape hatch anywhere in this layer (Jordan, Sep 16 2026).
+//   - No duration overrides. The 30–50 s target (Jordan, Oct 6 2026: "video
+//     length varies for all clients. They should be between 30-50 seconds
+//     long, sometimes a minute, but I don't think that's important to note
+//     anywhere" — superseding the Sep 16 20–30 s ruling) has no per-client,
+//     per-session or per-script escape hatch anywhere in this layer, and no
+//     length is carried into a client's style notes. The length check is a
+//     soft warning that only fires under 25 s or over 65 s.
 //   - No "fixing" of historical scripts. parseDeliveredScript reads four-point
 //     archive scripts as four points; validateNewScript is for NEW generation.
 //   - No other client's context. assertClientScoped refuses mixed inputs on

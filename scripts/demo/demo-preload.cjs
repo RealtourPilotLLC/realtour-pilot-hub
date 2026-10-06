@@ -73,23 +73,24 @@ function contextOf(body) {
   return { topic: (topic || "your market this month").trim().replace(/["“”]/g, "").slice(0, 80), tag: hashOf(text) };
 }
 
-// Short on purpose: a script is hook + three points + close, and the house
-// target is 20–30 seconds spoken (~50–75 words). Filler that overran it would
-// put a length warning on every stub draft and read as a fault in the demo.
+// Sized on purpose: a script is hook + three points + close, and the house
+// target is 30–50 seconds spoken (~66–110 words; Jordan, Oct 6 2026). Filler
+// that missed it by much would put a length warning on every stub draft and
+// read as a fault in the demo. These land at about 75 words ≈ 34 s.
 function stringFor(name, ctx, i) {
   const n = String(name || "").toLowerCase();
   const t = ctx.topic;
   if (n === "title" || n.endsWith("title")) return i ? `${t} (${i + 1})` : t;
-  if (n.includes("hook")) return `Most people get ${t.toLowerCase()} wrong.`;
-  if (n === "close" || n.includes("closing")) return "That is the short version. Message me for the rest.";
+  if (n.includes("hook")) return `Most people get ${t.toLowerCase()} wrong, and it costs them.`;
+  if (n === "close" || n.includes("closing")) return "That is the short version. Message me and I will walk you through the rest.";
   if (n.includes("cta")) return "Message me the word DEMO for the details.";
   if (n.includes("caption")) return `Most people only see half of ${t.toLowerCase()}. Here is the other half, in plain words. Save this for later.`;
   if (n === "category" || n.includes("pillar")) return "Market Authority";
   if (n.includes("note")) return "Demo stub: nothing to add.";
   const lines = [
-    "Here is a real example from a client this month.",
-    "Why it changes what a buyer is willing to offer.",
-    "One thing to do this week, before you call anyone.",
+    "Here is a real example from a client this month, and what we noticed before anyone else did.",
+    "Why it changes what a buyer is willing to offer, and why most sellers never see it coming.",
+    "One thing to do this week, before you call anyone, so the first conversation starts on your terms.",
   ];
   return lines[i % lines.length];
 }

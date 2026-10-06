@@ -16,9 +16,12 @@
 // are immutable), but every reader swaps it for the canonical one at read
 // time — renderStrategy, canonicalFrameworkSectionText (the staff view) and
 // withCanonicalFramework (the document a prompt is built from). The only
-// thing kept from a document's own framework is a genuinely client-specific
-// delivery note ("Style: …", Janice's "Visual and Delivery Style" block),
-// shown apart as one "Client style notes" line, never as a framework part.
+// thing kept from a document's own framework is genuinely client-specific
+// direction — its delivery note ("Style: …", a "Visual and Delivery Style"
+// block) plus the client-specific sentences written inside its own parts
+// (Jordan, Oct 6 2026: "Yes"; see frameworkStyleNotesFromText) — shown apart
+// as one "Client style notes" line, never as a framework part, and never with
+// a video length in it.
 //
 // Pure. No DB, no AI.
 // ---------------------------------------------------------------------------
@@ -163,43 +166,251 @@ export function canonicalFrameworkText(): string {
 
 const tidyNote = (s: string) => s.replace(/\s+/g, " ").trim();
 
+// ---------------------------------------------------------------------------
+// CLIENT-SPECIFIC DIRECTION INSIDE A DOCUMENT'S OWN FRAMEWORK (Jordan, Oct 6
+// 2026: "Yes" — keep it). Imported documents wrote some client direction INTO
+// their framework parts ("No gimmicks, no dancing, and no forced trends." in a
+// Hook; "Show <client> making a decision…" in a preamble; "Deliver the value in
+// <client>'s voice: …" in an S1 Payoff). The parts themselves are replaced by
+// the house framework, so that direction is carried into the Client style
+// notes line instead — at READ time; no stored version is rewritten.
+//
+// The rule is deterministic (no AI). Each sentence of the document's own
+// preamble and parts is scored:
+//   1. The client's own name (any capitalised word the section uses in the
+//      possessive — "Erica's approach") is read as "the team", so a part that
+//      only swaps the team for the client's name stays generic.
+//   2. KEEP if it carries a client-specific signal:
+//        a do / don't         — no, never, avoid, don't, do not, without;
+//        a voice descriptor   — "voice: smart, witty…" / "voice (fun, …)";
+//        a proper noun        — a place or name other than the client's own
+//                               ("Main Line", "Lehigh Valley", "Chesterbrook");
+//        what to show         — "show / film / feature / capture <client>".
+//   3. Otherwise KEEP only if at least half of its content words are NOT in
+//      the framework vocabulary — the house definitions plus
+//      GENERIC_FRAMEWORK_WORDS, the words the generic template wording found
+//      in the imported documents is written in (S1 "Strong, direct, and
+//      attention-grabbing… Keep it practical, structured…", the S3 variants).
+//      A sentence that merely restates what a hook / talking point / close is
+//      is made of those words and is dropped.
+//   4. Timings never travel: "(0–3s)" sits in a heading (not read), and any
+//      duration phrase ("Usually 30–60 seconds", "under a minute") is removed
+//      from every kept sentence AND from the document's own style note —
+//      length is not a per-client note ("video length varies for all
+//      clients… I don't think that's important to note anywhere", Oct 6 2026).
+// A sentence that is ONLY a duration is dropped.
+// ---------------------------------------------------------------------------
+
 /**
- * The client-specific delivery note inside a framework section's TEXT, or
- * null: a "Style: …" line or a "… Style" heading and the lines after it, up
- * to the next framework part or the Caption CTA / Strategic Direction tail.
- * Framework parts, timings ("Hook (0–3s)") and the document's own preamble are
- * not notes — they are replaced by the house framework.
+ * The words generic framework definitions are written in, beyond the house
+ * definitions themselves (which are always included). Stems (see stemWord).
+ * Collected from the generic template wording of the imported strategy
+ * documents (Oct 6 2026 probe of every active enrollment's latest version) —
+ * structural vocabulary only, no client wording.
  */
-export function frameworkStyleNotesFromText(text: string): string | null {
-  const notes: string[] = [];
-  let on = false;
+const GENERIC_FRAMEWORK_WORDS =
+  "add answer attention beginn better build callback captur catch client complication confident decision different direct easier easy end experienc explain explanation four frustration fuller grabb guidanc homeowner insight instant intend languag leav lesson local make new post problem process punchlin put quick rather real recognizabl refram relatabl reminder repeat rest serv set show simpl solv spoken stak start stay step strategy strong stronger structur subject thoughtful truth turn unexpect up use valu video visibl visual voic want worth wrap";
+
+const STOP_WORDS = new Set(
+  ("a an the and or of to in on for with that this these those it its is are be been being as at by from what why how who whom when where which there their them they your you we our us i me my he she his her him each every one another more most should can could will would may might must into while than so but if then also just only very any some such about because through whether not no never team s").split(" "),
+);
+
+function stemWord(raw: string): string {
+  let w = raw.toLowerCase().replace(/['’]s$/, "").replace(/['’]/g, "");
+  if (w.length > 4 && w.endsWith("ies")) w = `${w.slice(0, -3)}y`;
+  else if (w.length > 5 && w.endsWith("ing")) w = w.slice(0, -3);
+  else if (w.length > 5 && w.endsWith("ly")) w = w.slice(0, -2);
+  else if (w.length > 4 && w.endsWith("ed")) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
+  if (w.length > 4 && w.endsWith("e")) w = w.slice(0, -1);
+  return w;
+}
+
+function contentStems(text: string): string[] {
+  return (text.match(/[A-Za-z][A-Za-z'’]*/g) ?? [])
+    .filter((w) => !STOP_WORDS.has(w.toLowerCase()))
+    .map(stemWord)
+    .filter((w) => w.length > 1 && !STOP_WORDS.has(w));
+}
+
+let frameworkVocabCache: Set<string> | null = null;
+function frameworkVocabulary(): Set<string> {
+  if (frameworkVocabCache) return frameworkVocabCache;
+  const house = [FRAMEWORK_PREAMBLE, FRAMEWORK_HOOK.definition, FRAMEWORK_CLOSE.definition, ...TALKING_POINT_ROLE_SPECS.map((s) => s.definition)].join(" ");
+  frameworkVocabCache = new Set([...contentStems(house), ...GENERIC_FRAMEWORK_WORDS.split(/\s+/).filter(Boolean)]);
+  return frameworkVocabCache;
+}
+
+/** Capitalised words that are part of the framework's own vocabulary, never a client signal. */
+const STRUCTURAL_CAPS = new Set(["Hook", "Talking", "Point", "Rehook", "Re-hook", "Build", "Up", "Payoff", "Close", "Call", "Action", "Context", "CTA", "CTAs", "DM", "DMs", "I", "Video", "Structure", "Framework"]);
+const DONT_RE = /\b(?:no|never|avoid|don['’]t|do not|without)\b/i;
+const VOICE_DESCRIPTOR_RE = /\bvoice\s*(?::|\()/i;
+
+/** Duration phrases — "30–60 seconds", "(0–3s)", "a 45-second video", "Usually … seconds, with", "under a minute". */
+const DURATION_RE =
+  /\b(?:(?:usually|typically|generally|ideally|often|about|around|roughly|approximately|under|over|up to|at least|at most|no (?:more|longer) than|between|aim(?:ing)? for|keep(?:ing)? (?:it|them|each video|videos|reels?)(?: to| at| under| around| between)?)\s+)*(?:(?:\d+(?:\.\d+)?\s*(?:[–—-]|to|and)\s*)?\d+(?:\.\d+)?\s*-?\s*(?:s|secs?|seconds?|mins?|minutes?)\b|(?:a|one|half a)[\s-]minute\b)(?:\s+long)?/gi;
+
+/** A sentence with every duration phrase removed, tidied; null when nothing but a duration was said. */
+export function stripDurationPhrases(sentence: string): string | null {
+  const MARK = "\u0000";
+  let s = sentence.replace(DURATION_RE, MARK);
+  if (!s.includes(MARK)) return tidyNote(sentence) || null;
+  s = s.replace(/\(\s*\u0000\s*\)/g, "");
+  // Leading: "Usually 30–60 seconds, with a mix of …" → "A mix of …".
+  s = s.replace(/^\s*\u0000[\s,;:–—-]*(?:with|and)?\s*/i, "");
+  s = s.replace(/[\s,;:]*\u0000[\s,;:]*(?=[.!?]?\s*$)/g, "");
+  s = s.replace(/\s*,?\s*\u0000\s*,?\s*/g, " ");
+  s = tidyNote(s).replace(/\s+([,.;:!?])/g, "$1").replace(/^[,;:\s]+/, "").replace(/[,;:\s]+$/, "");
+  if (contentStems(s).length < 2) return null;
+  s = s.charAt(0).toUpperCase() + s.slice(1);
+  if (!/[.!?]["”’)]?$/.test(s)) s = `${s}.`;
+  return s;
+}
+
+/** Sentences of a paragraph (PDF line wraps already joined). */
+function splitSentences(text: string): string[] {
+  return tidyNote(text)
+    .split(/(?<=[.!?]["”’)]?)\s+(?=["“‘(]?[A-Z0-9])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Capitalised words that take an apostrophe-s without being anyone's name ("Let's", "Today's"). */
+const NOT_NAMES = new Set(["let", "here", "today", "tomorrow", "everyone", "someone", "nobody", "year", "week", "month", "season", "market", "home", "buyer", "seller"]);
+
+/** The client's own name(s): capitalised words the section uses in the possessive ("Erica's approach"). */
+function clientNamesIn(text: string): string[] {
+  const names = new Set<string>();
+  for (const m of text.matchAll(/\b([A-Z][a-z]+)['’]s\b/g)) {
+    const w = m[1];
+    if (STRUCTURAL_CAPS.has(w) || STOP_WORDS.has(w.toLowerCase()) || NOT_NAMES.has(w.toLowerCase())) continue;
+    names.add(w);
+  }
+  return [...names];
+}
+
+export type FrameworkSentenceVerdict = { sentence: string; kept: string | null; reason: string };
+
+/** Classify one sentence of a document's own framework (exported for drills and the probe). */
+export function classifyFrameworkSentence(sentence: string, clientNames: readonly string[]): FrameworkSentenceVerdict {
+  const nameRe = clientNames.length ? new RegExp(`\\b(?:${clientNames.join("|")})(?:['’]s)?\\b`, "g") : null;
+  const generic = nameRe ? sentence.replace(nameRe, "the team") : sentence;
+  const kept = () => stripDurationPhrases(sentence);
+  if (DONT_RE.test(generic)) return { sentence, kept: kept(), reason: "do/don't" };
+  if (VOICE_DESCRIPTOR_RE.test(generic)) return { sentence, kept: kept(), reason: "voice descriptor" };
+  if (clientNames.length && new RegExp(`\\b(?:show|film|feature|capture)\\s+(?:${clientNames.join("|")})\\b`, "i").test(sentence)) return { sentence, kept: kept(), reason: "what to show" };
+  const words = generic.match(/[A-Za-z][A-Za-z'’-]*/g) ?? [];
+  const proper = words.slice(1).filter((w) => /^[A-Z]/.test(w) && !STRUCTURAL_CAPS.has(w.replace(/['’]s$/, "")));
+  if (proper.length) return { sentence, kept: kept(), reason: `proper noun (${proper.join(", ")})` };
+  const stems = contentStems(generic);
+  if (!stems.length) return { sentence, kept: null, reason: "no content" };
+  const vocab = frameworkVocabulary();
+  const novel = stems.filter((w) => !vocab.has(w));
+  const share = novel.length / stems.length;
+  if (share >= 0.5) return { sentence, kept: kept(), reason: `novel ${novel.length}/${stems.length} (${novel.join(" ")})` };
+  return { sentence, kept: null, reason: `generic ${stems.length - novel.length}/${stems.length}` };
+}
+
+/** Client-specific direction from a document's own framework preamble + part paragraphs, in order, timings removed. */
+function frameworkDirection(paragraphs: readonly string[], allText: string): string[] {
+  const names = clientNamesIn(allText);
+  const out: string[] = [];
+  for (const p of paragraphs) {
+    for (const s of splitSentences(p)) {
+      const v = classifyFrameworkSentence(s, names);
+      if (v.kept) out.push(v.kept);
+    }
+  }
+  return out;
+}
+
+/** A style note with its duration phrases removed (sentence by sentence; null if nothing else was said). */
+function styleWithoutDurations(note: string): string | null {
+  const kept = splitSentences(note).map(stripDurationPhrases).filter((s): s is string => !!s);
+  return kept.length ? kept.join(" ") : null;
+}
+
+/**
+ * Every sentence of a framework section's own preamble and parts with its
+ * verdict — for the probe and the drills. The style note is not classified
+ * (it is client direction by definition), only stripped of durations.
+ */
+export function explainFrameworkDirection(text: string): FrameworkSentenceVerdict[] {
+  const { paragraphs } = splitFrameworkText(text);
+  const names = clientNamesIn(text);
+  return paragraphs.flatMap((p) => splitSentences(p).map((s) => classifyFrameworkSentence(s, names)));
+}
+
+/** A framework section's text split into body paragraphs (preamble, each part — headings and timings excluded) and the style note. */
+function splitFrameworkText(text: string): { paragraphs: string[]; style: string[] } {
+  const paragraphs: string[] = [];
+  const style: string[] = [];
+  let cur: string[] = [];
+  let mode: "body" | "style" = "body";
+  const flush = () => {
+    if (cur.length) paragraphs.push(cur.join(" "));
+    cur = [];
+  };
   for (const raw of text.replace(/\r/g, "").split("\n")) {
     const t = raw.trim();
     if (FRAMEWORK_TAIL_RE.test(t)) break;
     const m = STYLE_START_RE.exec(t);
     if (m) {
-      on = true;
-      if (m[1]?.trim()) notes.push(m[1].trim());
+      flush();
+      mode = "style";
+      if (m[1]?.trim()) style.push(m[1].trim());
       continue;
     }
-    if (!on) continue;
-    if (FRAMEWORK_PART_RE.test(t)) { on = false; continue; }
-    if (t) notes.push(t);
+    const fp = FRAMEWORK_PART_RE.exec(t);
+    if (fp) {
+      flush();
+      mode = "body";
+      if (fp[4]?.trim()) cur.push(fp[4].trim());
+      continue;
+    }
+    if (mode === "style") {
+      if (t) style.push(t);
+      continue;
+    }
+    if (!t) { flush(); continue; }
+    cur.push(t);
   }
+  flush();
+  return { paragraphs, style };
+}
+
+/**
+ * The client-specific notes inside a framework section's TEXT, or null: the
+ * client direction carried in its own preamble and parts (the rule above),
+ * then its "Style: …" line or "… Style" block up to the next framework part or
+ * the Caption CTA / Strategic Direction tail — all with durations removed.
+ * The parts themselves, their timings ("Hook (0–3s)") and generic wording are
+ * not notes — they are replaced by the house framework.
+ */
+export function frameworkStyleNotesFromText(text: string): string | null {
+  const { paragraphs, style } = splitFrameworkText(text);
+  const notes = [...frameworkDirection(paragraphs, text)];
+  const s = style.length ? styleWithoutDurations(style.join(" ")) : null;
+  if (s) notes.push(s);
   const joined = tidyNote(notes.join(" "));
   return joined || null;
 }
 
-/** The same note from a PARSED framework (its Style field and any other labelled field). */
+/** The same notes from a PARSED framework (preamble + parts, then its Style field and any other labelled field). */
 export function frameworkStyleNotesFromDocument(fw: StrategyDocument["framework"]): string | null {
   if (!fw) return null;
-  const parts: string[] = [];
-  if (fw.style?.trim()) parts.push(fw.style.trim());
+  const paragraphs = [fw.preamble.join(" "), ...fw.parts.map((p) => p.text)].filter((p) => p.trim());
+  const allText = [...paragraphs, fw.style ?? "", ...fw.otherFields.map((f) => f.value)].join(" ");
+  const parts: string[] = [...frameworkDirection(paragraphs, allText)];
+  const styleBits: string[] = [];
+  if (fw.style?.trim()) styleBits.push(fw.style.trim());
   for (const f of fw.otherFields) {
     const v = f.value.trim();
     if (!v) continue;
-    parts.push(!f.label || STYLE_START_RE.test(`${f.label}:`) ? v : `${f.label}: ${v}`);
+    styleBits.push(!f.label || STYLE_START_RE.test(`${f.label}:`) ? v : `${f.label}: ${v}`);
   }
+  const s = styleBits.length ? styleWithoutDurations(styleBits.join(" ")) : null;
+  if (s) parts.push(s);
   const joined = tidyNote(parts.join(" "));
   return joined || null;
 }
@@ -971,11 +1182,12 @@ export function validateStrategyStructure(doc: StrategyDocument & { structureVer
         path: "framework",
       });
     }
-    if (fw.style) {
+    const notes = frameworkStyleNotesFromDocument(fw);
+    if (notes) {
       findings.push({
         code: "strategy.framework.style-note",
         severity: "info",
-        message: `The document states a delivery style (“${fw.style}”). Kept as a separate "${CLIENT_STYLE_NOTES_LABEL}" line, not as part of the framework; the policy's 20–30 s target is not overridden by it.`,
+        message: `The document carries client-specific direction (“${notes}”). Kept as a separate "${CLIENT_STYLE_NOTES_LABEL}" line, not as part of the framework; any length it states is left out (length is the policy's, the same for every client).`,
         path: "framework.style",
       });
     }
